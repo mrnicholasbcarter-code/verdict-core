@@ -108,7 +108,14 @@ def test_ledger_does_not_replace_agentic_or_apply_to_frontier(tmp_path: Path) ->
     cache._routes[ROUTE] = replace(cache._routes[ROUTE], agentic_ok=False)
     assert ladder.evaluate(REQ, now=NOW)[0].reason == "no_agentic_probe"
     ledger.append(outcome(False, failure="false_success_claim", days=1))
-    assert ladder.select(TaskRequirements(frontier_worthy=True), now=NOW)[0] is not None
+    # frontier_worthy=True with tools still requires agentic proof on FREE routes.
+    frontier_tools = TaskRequirements(frontier_worthy=True)
+    assert ladder.evaluate(frontier_tools, now=NOW)[0].reason == "no_agentic_probe"
+    # frontier_worthy=True reasoning-only keeps single-call qualification.
+    frontier_reasoning = TaskRequirements(
+        frontier_worthy=True, required_capabilities=frozenset({"reasoning"})
+    )
+    assert ladder.select(frontier_reasoning, now=NOW)[0] is not None
 
 
 @pytest.mark.parametrize("days,verified", [(15, True), (0, False)])
@@ -147,8 +154,17 @@ def test_cli_json_exposes_attached_session_counts(
     from verdict.orchestration import cli as orch_cli
     from verdict.orchestration import eligibility_report
 
-    ladder, ledger, _ = setup_ladder(tmp_path)
+    ladder, ledger, cache = setup_ladder(tmp_path)
     ledger.append(replace(outcome(True), at=datetime.now(timezone.utc)))
+    # The CLI evaluates at wall-clock now; the fixture probe stamp (NOW) is
+    # stale by then, so re-record agentic proof at the real current time.
+    cache.record(
+        ROUTE,
+        ProbeResult(
+            category=CATEGORY_OK, chat_ok=True, tool_ok=True, probe_class="agentic", agentic_ok=True
+        ),
+        datetime.now(timezone.utc),
+    )
     monkeypatch.setattr(eligibility_report, "build_selector", lambda *a, **kw: ladder)
     # This mocked CLI is read-only and makes no inventory, gateway or provider calls.
     assert orch_cli.dispatch(_args(json=True, probe=False, frontier=True)) == 0
@@ -207,7 +223,10 @@ def test_corrupt_ledger_preserves_valid_evidence_and_returns_verdicts(
     ladder, ledger, _ = setup_ladder(tmp_path)
     ledger.append(outcome(False))
     ledger.path.write_text("not valid json\n" + ledger.path.read_text())
-    selected, verdicts = ladder.select(TaskRequirements(frontier_worthy=frontier), now=NOW)
+    # Reasoning-only frontier keeps single-call qualification; the session
+    # ledger still narrows worker (tools) requirements on FREE routes.
+    req = TaskRequirements(frontier_worthy=frontier, required_capabilities=frozenset({"reasoning"}))
+    selected, verdicts = ladder.select(req, now=NOW)
     assert ledger.last_load_skipped == 1
     if frontier:
         assert selected is not None
@@ -254,8 +273,13 @@ def test_pool_alias_cannot_bypass_worker_evidence_gate(tmp_path: Path, false_cla
     assert verdicts[0].reason == (
         "recent_false_claim" if false_claim else "session_evidence_insufficient"
     )
-    # Pool observations remain visible for frontier work without gating it.
-    selected, _ = ladder.select(TaskRequirements(frontier_worthy=True), now=NOW)
+    # Pool observations remain visible for reasoning-only frontier work
+    # without gating it; tool-requiring frontier work on FREE routes now
+    # needs the same fresh agentic proof as a worker.
+    frontier_reasoning = TaskRequirements(
+        frontier_worthy=True, required_capabilities=frozenset({"reasoning"})
+    )
+    selected, _ = ladder.select(frontier_reasoning, now=NOW)
     assert selected is not None
     assert selected.rank_components["session_passes"] == 0
     assert selected.rank_components["session_fails"] == (6 if false_claim else 3)

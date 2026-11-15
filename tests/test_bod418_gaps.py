@@ -30,7 +30,12 @@ from verdict.openrouter_free_set import (
 )
 from verdict.orchestration.contracts import TaskRequirements
 from verdict.orchestration.eligibility import EligibilityLadder
-from verdict.orchestration.health_cache import CATEGORY_NOT_FOUND
+from verdict.orchestration.health_cache import (
+    CATEGORY_NOT_FOUND,
+    CATEGORY_OK,
+    HealthCache,
+    ProbeResult,
+)
 from verdict.subagent_selection import HealthResult
 
 NOW = datetime(2026, 11, 14, 10, 0, tzinfo=timezone.utc)
@@ -90,6 +95,28 @@ def _free_set() -> OpenRouterFreeSet:
         source="live",
         ttl_seconds=DEFAULT_TTL_SECONDS,
     )
+
+
+def _agentic_cache(tmp_path: Path, *routes: str) -> HealthCache:
+    """Fresh agentic tool proof so FREE routes pass the BOD-299 AC2 gate.
+
+    REQ is frontier_worthy=True with tools, so FREE routes need agentic proof
+    before selection reaches the pool-override recording these tests assert.
+    """
+    cache = HealthCache(tmp_path / "health-cache.json")
+    for route in routes:
+        cache.record(
+            route,
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            NOW,
+        )
+    return cache
 
 
 def _probe_with(paid_403: bool = True) -> dict[str, HealthResult]:
@@ -228,6 +255,7 @@ class TestG1PoolNotCooledByPaidKeyLimit:
             probe,
             tmp_path / "state.json",
             openrouter_free_set=_free_set(),
+            health_cache=_agentic_cache(tmp_path, FREE_A, FREE_B),
         )
         ladder.select(REQ, now=NOW)
 
