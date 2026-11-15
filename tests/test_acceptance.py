@@ -979,35 +979,26 @@ def test_cli_check_retry_both_fail_records_second_attempt() -> None:
     assert len(check.detail["attempts"]) == 2
 
 
-def test_eligibility_check_retries_on_transient_gateway_failure(
-    live: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The eligibility check retries once when the gateway stalls."""
-    calls: list[int] = []
-    elig_calls: list[int] = []
+def test_eligibility_check_retries_on_transient_gateway_failure(live: Path) -> None:
+    """The eligibility check retries its CLI call once when the gateway stalls."""
+    calls: list[list[str]] = []
 
     def fake_cli(args: Sequence[str], timeout: float, env: Any = None) -> tuple[int, str, str]:
-        calls.append(1)
-        if args[0] == "eligibility":
-            elig_calls.append(1)
-            if len(elig_calls) == 1:
-                return (
-                    1,
-                    json.dumps({"error": "gateway /v1/models failed (connection error)"}),
-                    "",
-                )
-            return 0, json.dumps({"verdicts": [_verdict("p/a", eligible=True)]}), ""
-        if args[0] == "doctor":
-            return 0, json.dumps({"status": "ok", "issues": []}), ""
-        if args[0] == "choose":
-            return 0, json.dumps({"selected": {"model": "p/a"}}), ""
-        if args[0] == "route":
-            return 0, json.dumps({"model": "p/a"}), ""
-        return 0, json.dumps({"enabled": True, "provider": "verdict"}), ""
+        calls.append(list(args))
+        if len(calls) == 1:
+            return (1, json.dumps({"error": "gateway /v1/models failed (connection error)"}), "")
+        return 0, json.dumps({"verdicts": [_verdict("p/a", eligible=True)]}), ""
 
-    monkeypatch.setattr(acceptance, "run_cli", fake_cli)
-    result = acceptance.run_acceptance(gateway="http://gw")
-    eligibility = next(c for c in result["checks"] if c["name"] == "eligibility")
-    assert eligibility["passed"] is True
-    assert "attempts" in eligibility["detail"]
-    assert len(eligibility["detail"]["attempts"]) == 2
+    check = acceptance.eligibility_check("http://gw", None, seed="s", _run_cli=fake_cli)
+    # The retry re-runs the same eligibility command exactly once.
+    assert len(calls) == 2
+    assert calls[0][0] == calls[1][0] == "eligibility"
+    assert check.passed is True
+    # The retry is recorded in detail["attempts"]; the final reason is the
+    # measurement outcome, which replaces the interim "retried" note.
+    assert "attempts" in check.detail
+    assert len(check.detail["attempts"]) == 2
+    assert check.detail["attempts"][0]["attempt"] == 1
+    assert check.detail["attempts"][1]["attempt"] == 2
+    # The retried payload still feeds the independent measurement path.
+    assert check.detail["eligible_free"] == 1

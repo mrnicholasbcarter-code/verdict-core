@@ -405,7 +405,13 @@ def gateway_get(base_url: str, api_key: str | None, path: str, timeout: float = 
         return json.loads(response.read())
 
 
-def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
+def eligibility_check(
+    gateway: str,
+    api_key: str | None,
+    *,
+    seed: str,
+    _run_cli: Callable[..., tuple[int, str, str]] | None = None,
+) -> Check:
     from verdict.acceptance_toolcheck import (
         cooling_providers,
         gateway_post,
@@ -413,9 +419,10 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
         measure,
     )
 
+    _run = _run_cli or run_cli
     args = ["eligibility", "--json", "--gateway", gateway]
     started = time.monotonic()
-    code, out, err = run_cli(args, 900, gateway_env(gateway))
+    code, out, err = _run(args, 900, gateway_env(gateway))
     check = Check(
         "eligibility",
         ["verdict", *args],
@@ -440,7 +447,7 @@ def eligibility_check(gateway: str, api_key: str | None, *, seed: str) -> Check:
                 "stdout_sha256": check.stdout_sha256,
                 "stderr_sha256": check.stderr_sha256,
             }
-            code, out, err = run_cli(args, 900, gateway_env(gateway))
+            code, out, err = _run(args, 900, gateway_env(gateway))
             check.exit_code = code
             check.stdout_sha256 = _digest(out)
             check.stderr_sha256 = _digest(err)
