@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -888,3 +889,116 @@ def test_serve_check_accepts_reasoning_content_when_content_is_null():
     msg = reply["choices"][0].get("message") or {}
     content = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning")
     assert content == "The user wants OK so I respond OK."
+
+
+# -- transient gateway retry (BOD-345) ----------------------------------------
+
+
+def test_cli_check_retries_once_on_transient_gateway_failure() -> None:
+    """A CLI check that fails with a gateway timeout recovers on retry."""
+    calls: list[int] = []
+
+    def fake_cli(args: Sequence[str], timeout: float, env: Any = None) -> tuple[int, str, str]:
+        calls.append(1)
+        if len(calls) == 1:
+            return (
+                1,
+                json.dumps(
+                    {
+                        "error": "gateway /v1/models failed (connection error); "
+                        "check --gateway and gateway credentials"
+                    }
+                ),
+                "",
+            )
+        return 0, json.dumps({"model": "p/a"}), ""
+
+    check = acceptance._cli_check(
+        "route",
+        ["route", "--terse", "hello"],
+        300,
+        acceptance.judge_route,
+        "http://gw",
+        _run_cli=fake_cli,
+    )
+    assert check.passed is True
+    assert "retry" in check.reason.lower()
+    assert "attempts" in check.detail
+    assert len(check.detail["attempts"]) == 2
+    assert check.detail["attempts"][0]["attempt"] == 1
+    assert check.detail["attempts"][1]["attempt"] == 2
+
+
+def test_cli_check_does_not_retry_non_transient_failure() -> None:
+    """A genuine 'no eligible target' is not retried."""
+    calls: list[int] = []
+
+    def fake_cli(args: Sequence[str], timeout: float, env: Any = None) -> tuple[int, str, str]:
+        calls.append(1)
+        return 1, json.dumps({"model": None, "reason": "no_eligible_route"}), ""
+
+    check = acceptance._cli_check(
+        "route",
+        ["route", "--terse", "hello"],
+        300,
+        acceptance.judge_route,
+        "http://gw",
+        _run_cli=fake_cli,
+    )
+    assert check.passed is False
+    assert len(calls) == 1  # no retry
+    assert "attempts" not in check.detail
+
+
+def test_cli_check_retry_both_fail_records_second_attempt() -> None:
+    """When both attempts fail, the check records both and stays failed."""
+
+    def fake_cli(args: Sequence[str], timeout: float, env: Any = None) -> tuple[int, str, str]:
+        return (
+            1,
+            json.dumps(
+                {
+                    "model": None,
+                    "reason": "gateway_discovery_failed",
+                    "reasons": ["gateway /v1/models failed (connection error)"],
+                }
+            ),
+            "",
+        )
+
+    check = acceptance._cli_check(
+        "route",
+        ["route", "--terse", "hello"],
+        300,
+        acceptance.judge_route,
+        "http://gw",
+        _run_cli=fake_cli,
+    )
+    assert check.passed is False
+    assert "attempts" in check.detail
+    assert len(check.detail["attempts"]) == 2
+
+
+def test_eligibility_check_retries_on_transient_gateway_failure(live: Path) -> None:
+    """The eligibility check retries its CLI call once when the gateway stalls."""
+    calls: list[list[str]] = []
+
+    def fake_cli(args: Sequence[str], timeout: float, env: Any = None) -> tuple[int, str, str]:
+        calls.append(list(args))
+        if len(calls) == 1:
+            return (1, json.dumps({"error": "gateway /v1/models failed (connection error)"}), "")
+        return 0, json.dumps({"verdicts": [_verdict("p/a", eligible=True)]}), ""
+
+    check = acceptance.eligibility_check("http://gw", None, seed="s", _run_cli=fake_cli)
+    # The retry re-runs the same eligibility command exactly once.
+    assert len(calls) == 2
+    assert calls[0][0] == calls[1][0] == "eligibility"
+    assert check.passed is True
+    # The retry is recorded in detail["attempts"]; the final reason is the
+    # measurement outcome, which replaces the interim "retried" note.
+    assert "attempts" in check.detail
+    assert len(check.detail["attempts"]) == 2
+    assert check.detail["attempts"][0]["attempt"] == 1
+    assert check.detail["attempts"][1]["attempt"] == 2
+    # The retried payload still feeds the independent measurement path.
+    assert check.detail["eligible_free"] == 1
