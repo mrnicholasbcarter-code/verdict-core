@@ -36,8 +36,28 @@ Owned files: `scripts/check_dod.py`, `proof/dod.schema.json`,
   `scripts/check_doc_links.py`: `doc links ok (510 files checked)`.
 
 ## 5. Review
-- [ ] 5.1 Cross-family review of the diff; every finding is fixed or declined
-  with a reason.
+- [x] 5.1 Cross-family review of the diff; every finding is fixed or declined
+  with a reason. Reviewer `groq/openai/gpt-oss-120b` (the author is a Claude
+  model), after `antigravity/gemini-3-flash` approved the first head in 3 s with
+  no findings. The SHAs below are from before the branch was rebased onto
+  main `185342f2`; the rebase changed no file content.
+  - Round 2, head `50f0cb86`, REQUEST_CHANGES: change names were compared case
+    sensitively; tests wanted for an upper-case directory, an extra field, and
+    the other checks on the new form. Fixed in `57acd16f`. Its `ARCHIVE_DIR`
+    remark was wrong: the constant already exists in the module.
+  - Round 3, head `57acd16f`, REQUEST_CHANGES: escape the ticket prefix and
+    test both guards together; fixed in `42c076ec`. Declined: tests that
+    `bod-7-0` and `cleanupthing` do not match. `bod-7-0` is a change for
+    ticket `bod-7` and must match; the non-matches `bod-70` and `cleanups`
+    are tested.
+  - Rounds 4 and 5, head `42c076ec`, REQUEST_CHANGES on files left out of the
+    input for the reviewer's size limit (the schema, then the tests); no
+    defect in what was shown.
+  - Round 6, head `42c076ec`, with the script, schema and tests in full:
+    APPROVE, no finding in correctness, security and fail-closed, or
+    spec/tasks. Its one suggestion, a test for an object with both `change`
+    and `status`, already exists in
+    `test_no_change_needs_the_exact_shape_and_a_reason`.
 
 ## 6. Live checks (pending; needs merged main)
 Nothing below has run.
