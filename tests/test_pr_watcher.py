@@ -659,6 +659,29 @@ class TestBoundedRecoveryAdapter:
         ]
         assert disk(ws)["pr_states"][f"state:{REPO}:pr7:{head}"]["action"] == "BLOCKED"
 
+    @pytest.mark.parametrize(
+        ("mergeable", "merge_state"),
+        [
+            ("UNKNOWN", "UNKNOWN"),
+            ("MERGEABLE", "UNKNOWN"),
+            ("MERGEABLE", "BLOCKED"),
+            ("MERGEABLE", "UNSTABLE"),
+            ("MERGEABLE", "DRAFT"),
+        ],
+    )
+    def test_green_checks_without_clean_mergeability_are_pending_not_ready(
+        self, gh: FakeGitHubClient, ws: WatcherState, mergeable: str, merge_state: str
+    ) -> None:
+        """Catches a PR being called READY while GitHub has not said it can merge."""
+        open_pr(gh, 1, "a" * 40, [check("lint")], mergeable, merge_state)
+
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(2)]
+
+        assert [outcomes(r) for r in runs] == [[(1, "PENDING", "NO_ACTION")]] * 2
+        assert runs[0]["observations"][0]["ci_classification"] == "GREEN"
+        assert [r["records"] + r["notifications"] for r in runs] == [[], []]
+        assert gh.rerun_calls == []
+
     def test_green_pr_is_ready_and_nothing_is_written_to_github_or_linear(
         self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient
     ) -> None:

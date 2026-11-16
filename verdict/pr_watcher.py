@@ -161,11 +161,14 @@ def _is_stalled(check: dict[str, Any], current: datetime) -> bool:
 def _combine_classifications(ci: str, merge: str) -> str:
     """Combine CI and merge classifications into a single result.
 
-    Merge issues (CONFLICT, BEHIND) take precedence over CI status
-    when the PR is not mergeable.
+    CONFLICT and BEHIND outrank the CI result.  GREEN stands only when GitHub
+    reports the PR mergeable and clean; while mergeability is unknown or held
+    back the PR is PENDING, which is neither ready nor a repair.
     """
     if merge in {"CONFLICT", "BEHIND"}:
         return merge
+    if ci == "GREEN" and merge != "MERGEABLE":
+        return "PENDING"
     return ci
 
 
