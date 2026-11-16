@@ -1,0 +1,251 @@
+{
+ "story": "bod-286",
+ "merged_sha": "e14332715a7d4e48faccef6c69598ba32d94d90e",
+ "installed_main_sha": "726e8303cde2ffdf12cfa7db8dfd5f6074039fcf",
+ "run_dir": "/tmp/bod286-live-run/runs2/20261115T164724Z",
+ "command": "verdict orchestrate --graph graph.json --repo /tmp/bod286-live-repo --runs-dir /tmp/bod286-live-run/runs2 --executor prime-headless --json",
+ "note": "Run reached REVIEW_INDEPENDENCE (reviewer route selection) when the launching shell hit its 420s cap; both worker nodes completed VALIDATED through the registry-built PrimeHeadlessExecutor before that. Terminal events below are the dispatch proof.",
+ "worker_terminals": [
+  {
+   "attempt": 1,
+   "duration_seconds": 25.18,
+   "error": "",
+   "executor_kind": "live",
+   "fault_injected": false,
+   "harness": "prime-headless",
+   "ok": true,
+   "reported_model": "antigravity/gemini-3.5-flash-lite",
+   "research_duplication": {
+    "baseline_fetches": 0,
+    "duplicated_research_call_share": 0.0,
+    "duplicated_research_share": 0.0,
+    "duplicated_research_tokens": 0,
+    "duplicated_research_tool_calls": 0,
+    "model": "antigravity/gemini-3.5-flash-lite",
+    "pack_id": "e3b0c44298fc1c14",
+    "pack_revision": "e3b0c44298fc1c14",
+    "partial_overlap_tool_calls": 0,
+    "research_tokens": 0,
+    "research_tool_calls": 0,
+    "token_accounting_status": "complete",
+    "total_input_tokens": 50306,
+    "worker_id": "alpha-a1"
+   },
+   "route_id": "antigravity/gemini-3.5-flash-lite",
+   "session_ref": "",
+   "stop_reason": "stop",
+   "usage": {
+    "cost_usd": 0.0,
+    "input_tokens": 50306,
+    "output_tokens": 870,
+    "tokens_source": "prime_stdout",
+    "turns": 4
+   }
+  },
+  {
+   "attempt": 1,
+   "duration_seconds": 34.3,
+   "error": "",
+   "executor_kind": "live",
+   "fault_injected": false,
+   "harness": "prime-headless",
+   "ok": true,
+   "reported_model": "antigravity/gemini-3.5-flash-lite",
+   "research_duplication": {
+    "baseline_fetches": 0,
+    "duplicated_research_call_share": 0.0,
+    "duplicated_research_share": 0.0,
+    "duplicated_research_tokens": 0,
+    "duplicated_research_tool_calls": 0,
+    "model": "antigravity/gemini-3.5-flash-lite",
+    "pack_id": "e3b0c44298fc1c14",
+    "pack_revision": "e3b0c44298fc1c14",
+    "partial_overlap_tool_calls": 0,
+    "research_tokens": 0,
+    "research_tool_calls": 0,
+    "token_accounting_status": "complete",
+    "total_input_tokens": 60903,
+    "worker_id": "beta-a1"
+   },
+   "route_id": "antigravity/gemini-3.5-flash-lite",
+   "session_ref": "",
+   "stop_reason": "stop",
+   "usage": {
+    "cost_usd": 0.0,
+    "input_tokens": 60903,
+    "output_tokens": 1329,
+    "tokens_source": "prime_stdout",
+    "turns": 7
+   }
+  }
+ ],
+ "selections": [
+  {
+   "attempt": 1,
+   "cache_checked_at": "2026-11-15T15:21:03.876277+00:00",
+   "cache_freshness": "fresh",
+   "capacity_class": "free",
+   "chosen_effort": "medium",
+   "effort_reason": {
+    "attempt": 1,
+    "clamp": null,
+    "default_effort": "medium",
+    "metadata_source": "model_rows",
+    "route_id": "antigravity/gemini-3.5-flash-lite",
+    "task_kind": "implement"
+   },
+   "evidence_level": "probation",
+   "plan": "free",
+   "probe_class": "agentic",
+   "provider": "antigravity",
+   "rank": 0,
+   "route_id": "antigravity/gemini-3.5-flash-lite"
+  },
+  {
+   "attempt": 1,
+   "cache_checked_at": "2026-11-15T15:21:03.876277+00:00",
+   "cache_freshness": "fresh",
+   "capacity_class": "free",
+   "chosen_effort": "medium",
+   "effort_reason": {
+    "attempt": 1,
+    "clamp": null,
+    "default_effort": "medium",
+    "metadata_source": "model_rows",
+    "route_id": "antigravity/gemini-3.5-flash-lite",
+    "task_kind": "implement"
+   },
+   "evidence_level": "probation",
+   "plan": "free",
+   "probe_class": "agentic",
+   "provider": "antigravity",
+   "rank": 0,
+   "route_id": "antigravity/gemini-3.5-flash-lite"
+  }
+ ],
+ "node_states": [
+  {
+   "at": "2026-11-15T16:48:16.294480Z",
+   "data": {
+    "attempt": 1,
+    "route_id": "antigravity/gemini-3.5-flash-lite",
+    "state": "ADMITTED"
+   },
+   "node_id": "alpha",
+   "seq": 7,
+   "type": "node_state"
+  },
+  {
+   "at": "2026-11-15T16:48:16.312561Z",
+   "data": {
+    "attempt": 1,
+    "route_id": "antigravity/gemini-3.5-flash-lite",
+    "state": "DISPATCHED"
+   },
+   "node_id": "alpha",
+   "seq": 8,
+   "type": "node_state"
+  },
+  {
+   "at": "2026-11-15T16:48:16.323636Z",
+   "data": {
+    "attempt": 1,
+    "route_id": "antigravity/gemini-3.5-flash-lite",
+    "state": "RUNNING"
+   },
+   "node_id": "alpha",
+   "seq": 10,
+   "type": "node_state"
+  },
+  {
+   "at": "2026-11-15T16:48:41.808540Z",
+   "data": {
+    "attempt": 1,
+    "route_id": "antigravity/gemini-3.5-flash-lite",
+    "state": "TERMINAL_SUCCESS"
+   },
+   "node_id": "alpha",
+   "seq": 14,
+   "type": "node_state"
+  },
+  {
+   "at": "2026-11-15T16:48:41.929277Z",
+   "data": {
+    "attempt": 1,
+    "commit": "2a0f55e1c47252c831c55d70220373b0283c4229",
+    "route_id": "antigravity/gemini-3.5-flash-lite",
+    "state": "VALIDATED"
+   },
+   "node_id": "alpha",
+   "seq": 18,
+   "type": "node_state"
+  },
+  {
+   "at": "2026-11-15T16:48:59.466386Z",
+   "data": {
+    "attempt": 1,
+    "route_id": "antigravity/gemini-3.5-flash-lite",
+    "state": "ADMITTED"
+   },
+   "node_id": "beta",
+   "seq": 21,
+   "type": "node_state"
+  },
+  {
+   "at": "2026-11-15T16:48:59.484080Z",
+   "data": {
+    "attempt": 1,
+    "route_id": "antigravity/gemini-3.5-flash-lite",
+    "state": "DISPATCHED"
+   },
+   "node_id": "beta",
+   "seq": 22,
+   "type": "node_state"
+  },
+  {
+   "at": "2026-11-15T16:48:59.491966Z",
+   "data": {
+    "attempt": 1,
+    "route_id": "antigravity/gemini-3.5-flash-lite",
+    "state": "RUNNING"
+   },
+   "node_id": "beta",
+   "seq": 24,
+   "type": "node_state"
+  },
+  {
+   "at": "2026-11-15T16:49:34.136199Z",
+   "data": {
+    "attempt": 1,
+    "route_id": "antigravity/gemini-3.5-flash-lite",
+    "state": "TERMINAL_SUCCESS"
+   },
+   "node_id": "beta",
+   "seq": 28,
+   "type": "node_state"
+  },
+  {
+   "at": "2026-11-15T16:49:34.244815Z",
+   "data": {
+    "attempt": 1,
+    "commit": "7fb762098ca9eaf46d7f2d3b4a6a9cdc29fa9e1b",
+    "route_id": "antigravity/gemini-3.5-flash-lite",
+    "state": "VALIDATED"
+   },
+   "node_id": "beta",
+   "seq": 32,
+   "type": "node_state"
+  }
+ ],
+ "integrate": [
+  {
+   "commit": "7fb762098ca9eaf46d7f2d3b4a6a9cdc29fa9e1b",
+   "commits": [
+    "2a0f55e1c47252c831c55d70220373b0283c4229",
+    "7fb762098ca9eaf46d7f2d3b4a6a9cdc29fa9e1b"
+   ],
+   "ok": true,
+   "ref": "7fb762098ca9eaf46d7f2d3b4a6a9cdc29fa9e1b"
+  }
+ ]
+}
