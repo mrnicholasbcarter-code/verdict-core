@@ -14,10 +14,13 @@ from verdict.ci_policy import classify_ci, classify_merge_state
 from verdict.pr_watcher_github import WatcherGitHubClient
 from verdict.pr_watcher_notifications import (
     LinearClient,
+    assert_no_mutation as assert_linear_no_mutation,
     build_digest_event,
     build_linear_event,
+    retry_failed_notifications,
     should_notify,
 )
+from verdict.pr_watcher_github import assert_no_mutation as assert_github_no_mutation
 from verdict.pr_watcher_state import (
     BlockRecord,
     MalformedStateError,
@@ -293,6 +296,9 @@ def run_watcher(
     """
     # Acquire non-blocking lock
     try:
+        assert_github_no_mutation(gh)
+        if linear is not None:
+            assert_linear_no_mutation(linear)
         state.acquire_lock()
     except Exception as exc:
         return {"error": str(exc), "type": "lock_failure"}
@@ -354,8 +360,10 @@ def run_watcher(
                         classification=new_class,
                         reason=f"PR classified as {new_class}",
                     )
-                    data = state.add_record(data, rec.to_dict())
-                    records.append(rec.to_dict())
+                    record = rec.to_dict()
+                    if not state.has_record(data, record["idempotency_key"]):
+                        data = state.add_record(data, record)
+                        records.append(record)
 
                 elif action == "BLOCKED":
                     blk = BlockRecord(
@@ -364,8 +372,10 @@ def run_watcher(
                         head=obs_item["head"],
                         reason=f"attempts exhausted for {new_class}",
                     )
-                    data = state.add_record(data, blk.to_dict())
-                    records.append(blk.to_dict())
+                    record = blk.to_dict()
+                    if not state.has_record(data, record["idempotency_key"]):
+                        data = state.add_record(data, record)
+                        records.append(record)
 
                 # Update PR state
                 data = state.set_pr_state(
@@ -387,8 +397,9 @@ def run_watcher(
             # 2. Reconcile merged PRs
             regressions = reconcile_merged_prs(gh, state, repo, verdict_fail_receipts)
             for reg in regressions:
-                data = state.add_record(data, reg["record"])
-                records.append(reg["record"])
+                if not state.has_record(data, reg["record"]["idempotency_key"]):
+                    data = state.add_record(data, reg["record"])
+                    records.append(reg["record"])
 
                 if should_notify(None, "REGRESSION"):
                     event = build_digest_event(
