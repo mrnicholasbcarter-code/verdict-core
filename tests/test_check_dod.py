@@ -428,6 +428,7 @@ def _structured_evidence(root, evidence, *, review_status='PASS'):
         run['raw_output'] = _artifact(root, name, _structured_result(review_status=review_status, run_id=f'run-{index}', started_at='2099-01-02T00:00:00Z' if index else '2099-01-01T00:00:00Z', finished_at='2099-01-02T00:10:00Z' if index else '2099-01-01T00:10:00Z'))
         run['at'] = '2099-01-01T00:05:00Z' if index == 0 else '2099-01-02T00:05:00Z'
     evidence['parent_confirmation']['raw_output'] = _artifact(root, 'structured-confirm.json', _structured_result(run_id='run-confirm'))
+    evidence['parent_confirmation']['at'] = '2099-01-01T00:06:00Z'
 
 
 def test_structured_result_exit_and_outcome_must_agree(repo):
