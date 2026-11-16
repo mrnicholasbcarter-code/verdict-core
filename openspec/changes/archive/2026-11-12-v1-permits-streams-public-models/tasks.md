@@ -15,5 +15,5 @@
 
 - **Active scope**: Waves 3-5, pre-merge implementation and automated test verification only.
 - **Not claimed**: live acceptance on the operator's gateway from merged main, full DoD proof, Done status, or archive.
-- **Not delivered**: phase 2c (`DagRuntime` permits; `RuntimePolicy.require_dispatch_permit` defaults to off) and the S05 maintenance lane and later phases.
+- **Not delivered**: the S05 maintenance lane and later phases. Phase 2c (`DagRuntime` permits) shipped: `verdict/orchestration/cli.py` sets `RuntimePolicy.require_dispatch_permit=True`.
 - **Umbrella plan**: `docs/contracts/v1-hardening-umbrella-plan.md` is unchanged.
