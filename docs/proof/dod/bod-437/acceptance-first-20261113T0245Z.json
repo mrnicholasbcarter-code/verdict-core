@@ -1,0 +1,338 @@
+{
+  "checks": [
+    {
+      "argv": [
+        "verdict",
+        "doctor",
+        "--json"
+      ],
+      "detail": {
+        "exit_code": 1,
+        "issues": [],
+        "own_issues": 1
+      },
+      "exit_code": 1,
+      "name": "doctor",
+      "passed": true,
+      "reason": "no doctor issue",
+      "seconds": 23.3,
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "sha256:38b3cff3b13d51921290363eeb51f625f225306f8f6f0be3c272a2f6eea117e9"
+    },
+    {
+      "argv": [
+        "verdict",
+        "eligibility",
+        "--json",
+        "--gateway",
+        "http://127.0.0.1:20128"
+      ],
+      "detail": {
+        "eligible_free": 2,
+        "independent_check": {
+          "checks": [
+            {
+              "detail": "read_file then write_file",
+              "listed": true,
+              "outcome": "pass",
+              "route": "opencode-go/beam-free"
+            },
+            {
+              "detail": "read_file then write_file",
+              "listed": true,
+              "outcome": "pass",
+              "route": "groq/openai/gpt-oss-120b"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "af/gemini-2.5-pro"
+            },
+            {
+              "detail": "turn1: HTTP 402",
+              "listed": false,
+              "outcome": "account",
+              "route": "hf/Qwen/Qwen3.6-35B-A3B"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "ollama-cloud/clef:27b"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "af/nova-lite-v1"
+            },
+            {
+              "detail": "turn1: HTTP 401",
+              "listed": false,
+              "outcome": "account",
+              "route": "lmarena/march26-chatbot1-public"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "af/qwen3-vl-30b-a3b-instruct"
+            },
+            {
+              "detail": "turn1: HTTP 402",
+              "listed": false,
+              "outcome": "account",
+              "route": "llm7/claude-opus-5"
+            },
+            {
+              "detail": "turn1: HTTP 402",
+              "listed": false,
+              "outcome": "account",
+              "route": "hf/deepseek-ai/DeepSeek-V3.2"
+            },
+            {
+              "detail": "turn1: HTTP 402",
+              "listed": false,
+              "outcome": "account",
+              "route": "huggingface/google/gemma-3-12b-it"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "af/suno-v4.5"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "mistral/ministral-8b-latest"
+            },
+            {
+              "detail": "turn1: HTTP 400",
+              "listed": false,
+              "outcome": "fail",
+              "route": "api-airforce/skyfall-36b-v2"
+            }
+          ],
+          "estimated_missed": 0.0,
+          "listed": 2,
+          "listed_in_cooling_pool": [],
+          "listed_unserved": [],
+          "population_after": 1509,
+          "population_before": 1643,
+          "population_excluded": {
+            "catalog_non_chat": 44,
+            "id_non_chat": 0,
+            "inactive_provider": 90
+          },
+          "precision": 1.0,
+          "precision_min": 0.95,
+          "recall_estimate": 1.0,
+          "recall_min": 0.9,
+          "served_set_source": "synced+v1_models",
+          "unlisted_measured": 7,
+          "unlisted_passes": 0,
+          "unlisted_population": 1509,
+          "unlisted_wilson": [
+            0.0,
+            0.35433884297520657
+          ]
+        },
+        "listed_without_agentic_proof": [],
+        "recall_trend": {
+          "estimate": 1.0,
+          "excluded": {
+            "catalog_non_chat": 44,
+            "id_non_chat": 0,
+            "inactive_provider": 90
+          },
+          "n": 7,
+          "passes": 0,
+          "population_after": 1509,
+          "population_before": 1643,
+          "wilson_high": 0.35433884297520657,
+          "wilson_low": 0.0
+        },
+        "summary": {
+          "available": 56,
+          "by_reached_stage": {
+            "AVAILABLE": 16,
+            "DISCOVERED": 398,
+            "ENTITLED": 3555,
+            "HEALTHY": 11,
+            "NONE": 0,
+            "SELECTED": 0,
+            "TASK_ELIGIBLE": 40
+          },
+          "discovered": 4020,
+          "eligible": 40,
+          "entitled": 3622,
+          "healthy": 67,
+          "selected": null
+        }
+      },
+      "exit_code": 0,
+      "name": "eligibility",
+      "passed": true,
+      "reason": "2 eligible; precision 100%, recall 100% (trend, 0/7 unlisted pass)",
+      "seconds": 19.8,
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "sha256:27c8c36e5dc4a1caaa5485fbdd2c21e81b801b653850f9baf96680ac1a1043dd"
+    },
+    {
+      "argv": [
+        "verdict",
+        "choose",
+        "--task-class",
+        "implementation",
+        "--requires",
+        "tools,code",
+        "--capacity",
+        "free,subscription",
+        "--json"
+      ],
+      "detail": {
+        "selected": {
+          "capability_tier": 2,
+          "capacity_class": "free",
+          "capacity_evidence": "import_free_only",
+          "context_window": 131072,
+          "cooldown_scope": "",
+          "cooldown_until": null,
+          "failed_stage": null,
+          "gateway": "http://127.0.0.1:20128",
+          "model": "groq/openai/gpt-oss-120b",
+          "plan_label": "",
+          "pool": "groq",
+          "price": 0.75,
+          "provider": "groq",
+          "rank": 0,
+          "rank_components": {
+            "advisory_category": "coding",
+            "advisory_omission": "no_entry",
+            "advisory_provenance": null,
+            "advisory_rank": null,
+            "cache_checked_at": "2026-11-13T00:01:01.505201+00:00",
+            "cache_freshness": "fresh",
+            "capacity_order": 0,
+            "declared_tier": null,
+            "evidence_level": "probation",
+            "expected_tokens": null,
+            "fit": 0,
+            "load": 0,
+            "price": 0.75,
+            "probe_class": "agentic",
+            "provider_pref": 0,
+            "quota_percent": null,
+            "quota_rank": 2,
+            "rating": null,
+            "rating_as_of": null,
+            "rating_basis": "unknown",
+            "rating_metric": "aa_coding",
+            "rating_source": null,
+            "route_id": "groq/openai/gpt-oss-120b",
+            "session_fails": 0,
+            "session_passes": 0,
+            "session_score": 0.5,
+            "slack": 1
+          },
+          "reached": "SELECTED",
+          "reason": "selected",
+          "resource_pool": "free",
+          "route_id": "groq/openai/gpt-oss-120b",
+          "supports_structured_output": true,
+          "supports_tools": true
+        }
+      },
+      "exit_code": 0,
+      "name": "choose",
+      "passed": true,
+      "reason": "route selected",
+      "seconds": 23.3,
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "sha256:a0b7734e60716609a195f2373be31a5d414bb40f6c17952e3b89c1bf75e870f1"
+    },
+    {
+      "argv": [
+        "verdict",
+        "route",
+        "--terse",
+        "Write a Python function that returns the sum of two integers."
+      ],
+      "detail": {
+        "model": "groq/openai/gpt-oss-120b",
+        "reason": null
+      },
+      "exit_code": 0,
+      "name": "route",
+      "passed": true,
+      "reason": "routed to groq/openai/gpt-oss-120b",
+      "seconds": 37.1,
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "sha256:0e1f7ba56a1e3a8b4451be6ef70819fb5ecaa3fc8386c215fb2dfb133b965fbe"
+    },
+    {
+      "argv": [
+        "verdict",
+        "serve",
+        "--port",
+        "51233",
+        "--host",
+        "127.0.0.1",
+        "+ POST /v1/chat/completions"
+      ],
+      "detail": {
+        "http_status": 200,
+        "model": "openai/gpt-oss-120b",
+        "served_by": "groq/openai/gpt-oss-120b"
+      },
+      "exit_code": 200,
+      "name": "serve",
+      "passed": true,
+      "reason": "HTTP 200 from openai/gpt-oss-120b",
+      "seconds": 57.3,
+      "stderr_sha256": "sha256:a1357cb910de93c86b68047de69ea717efdec96f56b892f35672dd2ade9afdc4",
+      "stdout_sha256": "sha256:9ea587d58445c22326f5fe4a294afd528459a6fc0fd8e9325a56a7b528ac550a"
+    },
+    {
+      "argv": [
+        "verdict",
+        "harness",
+        "prime",
+        "status",
+        "--json"
+      ],
+      "detail": {
+        "base_url": "http://127.0.0.1:8000/v1",
+        "enabled": true,
+        "integration": "openai-compatible",
+        "provider": "verdict"
+      },
+      "exit_code": 0,
+      "name": "harness-prime",
+      "passed": true,
+      "reason": "Prime uses verdict serve",
+      "seconds": 0.6,
+      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "sha256:7dc1d16738516b67793e0601dd9323ade98c6cc3a64196391404b2e4dd8d3ded"
+    }
+  ],
+  "eligible_free": 2,
+  "failed": [],
+  "finished_at": "2026-11-13T02:46:48.964981+00:00",
+  "gateway": "http://127.0.0.1:20128",
+  "notification": {
+    "event": "recovery",
+    "mode": "off",
+    "red_streak": 0
+  },
+  "path": "/operator/.verdict/acceptance/20261113T024407Z.json",
+  "python": "/operator/.local/share/verdict/installed-main/.venv/bin/python",
+  "schema_version": 1,
+  "source_sha": "df1f61930fff7cc80188cb4f97293ef1e98919bd",
+  "started_at": "2026-11-13T02:44:07.471470+00:00",
+  "status": "green",
+  "verdict_version": "0.5.0"
+}

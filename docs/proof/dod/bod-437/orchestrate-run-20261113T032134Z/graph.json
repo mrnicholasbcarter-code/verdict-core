@@ -1,0 +1,67 @@
+{
+  "schema_version": "verdict.orchestration/v1",
+  "goal": "create ok.txt",
+  "topology": "PARALLEL_WORK_UNITS",
+  "rationale": [],
+  "max_parallel": 3,
+  "nodes": [
+    {
+      "node_id": "t1",
+      "objective": "create file ok.txt containing the word ok",
+      "kind": "implement",
+      "story": "",
+      "depends_on": [],
+      "owned_files": [
+        "ok.txt"
+      ],
+      "required_context": [],
+      "acceptance": [
+        "test -f ok.txt"
+      ],
+      "verification_command": [
+        "test",
+        "-f",
+        "ok.txt"
+      ],
+      "barrier": "",
+      "risk": "low",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": false,
+      "min_context_tokens": 1024
+    },
+    {
+      "node_id": "t2",
+      "objective": "verify ok.txt exists and contains ok",
+      "kind": "implement",
+      "story": "",
+      "depends_on": [
+        "t1"
+      ],
+      "owned_files": [
+        "ok.txt"
+      ],
+      "required_context": [],
+      "acceptance": [
+        "grep -q ok ok.txt"
+      ],
+      "verification_command": [
+        "grep",
+        "-q",
+        "ok",
+        "ok.txt"
+      ],
+      "barrier": "",
+      "risk": "low",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": false,
+      "min_context_tokens": 1024
+    }
+  ],
+  "run_id": "20261113T032134Z"
+}
