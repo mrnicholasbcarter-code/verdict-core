@@ -1,13 +1,17 @@
 """Transition-only notifications for the PR watcher.
 
-Emits digest events and Linear comments only on state transitions
-(new failure, blocked, regression).  Duplicate timer invocations,
-concurrent runs, and unchanged observations produce no notification.
+A digest event is built for every new failure, blocked transition and
+regression, whether or not a Linear client is configured.  A Linear comment is
+queued in addition only when the PR names a linked story.  Both are
+deduplicated by durable idempotency key, so a repeated observation, a duplicate
+timer invocation or an overlapping run produces nothing.
 """
 
 from __future__ import annotations
 
 from typing import Any, Protocol
+
+from verdict.pr_watcher_state import MAX_LINEAR_RETRY
 
 
 class LinearClient(Protocol):
@@ -16,7 +20,19 @@ class LinearClient(Protocol):
     def add_comment(self, issue_id: str, body: str) -> dict[str, Any]: ...
 
 
-# --- Digest event builder ---------------------------------------------------------
+# --- Transition detector ----------------------------------------------------------
+
+# READY and NO_ACTION are absent on purpose: a healthy or still-running PR is
+# never a notification.
+_EVENT_TYPE_FOR_ACTION = {"RETRY": "new_failure", "REPAIR": "new_failure", "BLOCKED": "blocked"}
+
+
+def transition_event_type(action: str) -> str | None:
+    """Digest event type for a watcher action, or None when it is not a failure."""
+    return _EVENT_TYPE_FOR_ACTION.get(action)
+
+
+# --- Event builders ---------------------------------------------------------------
 
 
 def build_digest_event(
@@ -25,11 +41,10 @@ def build_digest_event(
     pr_number: int,
     head: str,
     classification: str,
-    reason: str | None = None,
+    reason: str | None,
+    timestamp: str,
 ) -> dict[str, Any]:
-    """Build a deterministic digest event."""
-    import time
-
+    """Build a digest event whose key is stable for one transition on one head."""
     return {
         "type": event_type,
         "repo": repo,
@@ -37,111 +52,47 @@ def build_digest_event(
         "head": head,
         "classification": classification,
         "reason": reason,
-        "idempotency_key": f"digest:{event_type}:{repo}:pr{pr_number}:{head}",
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "idempotency_key": f"digest:{event_type}:{repo}:pr{pr_number}:{head}:{classification}",
+        "timestamp": timestamp,
     }
 
 
-# --- Linear notification builder --------------------------------------------------
-
-
-def build_linear_event(
-    issue_id: str,
-    event_type: str,
-    repo: str,
-    pr_number: int,
-    head: str,
-    classification: str,
-    reason: str | None = None,
-) -> dict[str, Any]:
-    """Build a Linear comment payload with idempotency key."""
-    import time
-
+def build_linear_event(issue_id: str, digest: dict[str, Any]) -> dict[str, Any]:
+    """Build the Linear comment event for the story linked to a digest event."""
     return {
-        "type": event_type,
+        **digest,
         "linear_issue_id": issue_id,
-        "repo": repo,
-        "pr_number": pr_number,
-        "head": head,
-        "classification": classification,
-        "reason": reason,
-        "idempotency_key": f"linear:{event_type}:{repo}:pr{pr_number}:{head}",
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "idempotency_key": "linear:" + digest["idempotency_key"].removeprefix("digest:"),
+        "retry_count": 0,
     }
 
 
-# --- Transition detector ----------------------------------------------------------
+# --- Linear delivery --------------------------------------------------------------
 
 
-def should_notify(previous_classification: str | None, new_classification: str) -> bool:
-    """Return True only for state transitions that warrant notification.
+def deliver_linear_events(
+    pending: list[dict[str, Any]], linear: LinearClient, max_attempts: int = MAX_LINEAR_RETRY
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Attempt each queued Linear comment once; return (remaining, sent).
 
-    Notifies on:
-    - Any new failure (CODE_FAILURE, INFRA_FAILURE, CANCELLED, CONFLICT, EMPTY, MISSING_REQUIRED)
-    - BLOCKED transitions
-    - Regression (merged with fail review)
-    Does NOT notify on:
-    - GREEN/PROCEED_MERGE
-    - PENDING/WAIT_CI
-    - Repeated identical classifications
+    A failed event stays queued with its attempt count raised.  Once the count
+    reaches ``max_attempts`` the event is no longer attempted, but it is kept:
+    an undelivered notification is never dropped.
     """
-    if previous_classification == new_classification:
-        return False
-    if new_classification in {"GREEN", "PENDING"}:
-        return False
-    return new_classification in {
-        "CODE_FAILURE",
-        "INFRA_FAILURE",
-        "CANCELLED",
-        "STALLED",
-        "CONFLICT",
-        "EMPTY",
-        "MISSING_REQUIRED",
-        "BLOCKED",
-        "REGRESSION",
-    }
-
-
-# --- Failed Linear notification retry ---------------------------------------------
-
-
-class FailedNotification:
-    """Tracks a failed Linear notification for bounded retry."""
-
-    def __init__(self, event: dict[str, Any]) -> None:
-        self.event = event
-        self.attempts = 0
-
-    def increment(self) -> int:
-        self.attempts += 1
-        return self.attempts
-
-    def is_exhausted(self, max_attempts: int = 5) -> bool:
-        return self.attempts >= max_attempts
-
-
-def retry_failed_notifications(
-    pending: list[dict[str, Any]], linear: LinearClient, max_attempts: int = 5
-) -> tuple[list[dict[str, Any]], list[FailedNotification]]:
-    """Retry failed Linear notifications within a bounded window.
-
-    Returns (still_pending, exhausted) where exhausted are removed from
-    the pending queue but kept for diagnostic purposes.
-    """
-    still_pending = []
-    exhausted = []
+    remaining: list[dict[str, Any]] = []
+    sent: list[dict[str, Any]] = []
     for event in pending:
-        attempt = event.get("retry_count", 0) + 1
+        attempts = int(event.get("retry_count", 0))
+        if attempts >= max_attempts:
+            remaining.append(event)
+            continue
         try:
             linear.add_comment(event["linear_issue_id"], _format_linear_body(event))
-            # Success: drop from pending
         except Exception:
-            if attempt >= max_attempts:
-                exhausted.append(FailedNotification(event))
-            else:
-                event["retry_count"] = attempt
-                still_pending.append(event)
-    return still_pending, exhausted
+            remaining.append({**event, "retry_count": attempts + 1})
+        else:
+            sent.append(event)
+    return remaining, sent
 
 
 def _format_linear_body(event: dict[str, Any]) -> str:

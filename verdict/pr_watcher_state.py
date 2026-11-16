@@ -290,6 +290,7 @@ class WatcherState:
             "rerun_attempts": {},
             "records": {"repair": [], "block": [], "regression": []},
             "pending_events": [],
+            "digest_events": {},
             "last_run_at": None,
         }
 
@@ -323,6 +324,16 @@ class WatcherState:
             return data
         records[kind].append(record)
         return {**data, "records": records}
+
+    def has_digest_event(self, data: dict[str, Any], idempotency_key: str) -> bool:
+        return idempotency_key in data.get("digest_events", {})
+
+    def add_digest_event(self, data: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+        """Record an emitted digest event under its idempotency key."""
+        _safe_key(event["idempotency_key"])
+        events = dict(data.get("digest_events", {}))
+        events.setdefault(event["idempotency_key"], event)
+        return {**data, "digest_events": events}
 
     def get_pending_events(self, data: dict[str, Any]) -> list[dict[str, Any]]:
         raw = data.get("pending_events", [])

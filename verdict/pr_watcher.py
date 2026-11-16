@@ -17,8 +17,8 @@ from verdict.pr_watcher_notifications import (
     LinearClient,
     build_digest_event,
     build_linear_event,
-    retry_failed_notifications,
-    should_notify,
+    deliver_linear_events,
+    transition_event_type,
 )
 from verdict.pr_watcher_notifications import assert_no_mutation as assert_linear_no_mutation
 from verdict.pr_watcher_state import (
@@ -116,6 +116,7 @@ def poll_open_prs(
             "action": action,
             "checks": required_checks,
             "merge_state": pr.get("merge_state_status", ""),
+            "linear_issue": pr.get("linear_issue"),
         }
         observations.append(obs)
 
@@ -309,6 +310,28 @@ def request_bounded_rerun(
 # --- Run coordinator -------------------------------------------------------------
 
 
+def _emit_transition(
+    state: WatcherState,
+    data: dict[str, Any],
+    emitted: list[dict[str, Any]],
+    event: dict[str, Any],
+    linear_issue: object,
+    linear_enabled: bool,
+) -> dict[str, Any]:
+    """Record a digest event once, and queue the linked story's Linear comment.
+
+    The durable idempotency key is what makes this transition-only: the same
+    transition on the same head is already recorded and emits nothing.
+    """
+    if state.has_digest_event(data, event["idempotency_key"]):
+        return data
+    data = state.add_digest_event(data, event)
+    emitted.append(event)
+    if linear_enabled and isinstance(linear_issue, str) and linear_issue:
+        data = state.add_pending_event(data, build_linear_event(linear_issue, event))
+    return data
+
+
 def run_watcher(
     gh: WatcherGitHubClient,
     state: WatcherState,
@@ -344,13 +367,6 @@ def run_watcher(
         reruns: list[dict[str, Any]] = []
         records: list[dict[str, Any]] = []
         notifications: list[dict[str, Any]] = []
-
-        # Retry durable Linear events before creating new side effects.
-        if linear is not None:
-            pending = state.get_pending_events(data)
-            if pending:
-                still_pending, _ = retry_failed_notifications(pending, linear)
-                data = {**data, "pending_events": still_pending}
 
         for repo in repos:
             # 1. Poll open PRs
@@ -439,16 +455,29 @@ def run_watcher(
                 )
 
                 # Transition notifications
-                if should_notify(prev_class, new_class):
+                event_type = transition_event_type(action)
+                if event_type is not None:
+                    blocked = action == "BLOCKED"
                     event = build_digest_event(
-                        "classification_change",
+                        event_type,
                         repo,
                         obs_item["pr_number"],
                         obs_item["head"],
-                        new_class,
-                        reason=f"transitioned from {prev_class or 'unknown'} to {new_class}",
+                        "BLOCKED" if blocked else new_class,
+                        f"attempts exhausted for {new_class}"
+                        if blocked
+                        else f"transitioned from {prev_class or 'first observation'}"
+                        f" to {new_class}",
+                        format_timestamp(current),
                     )
-                    notifications.append(event)
+                    data = _emit_transition(
+                        state,
+                        data,
+                        notifications,
+                        event,
+                        obs_item["linear_issue"],
+                        linear is not None,
+                    )
 
             # 2. Reconcile merged PRs
             regressions = reconcile_merged_prs(
@@ -459,16 +488,23 @@ def run_watcher(
                     data = state.add_record(data, reg["record"])
                     records.append(reg["record"])
 
-                if should_notify(None, "REGRESSION"):
-                    event = build_digest_event(
-                        "regression",
-                        repo,
-                        reg["pr"]["number"],
-                        reg["pr"]["head_sha"],
-                        "REGRESSION",
-                        reason=f"merged with fail review: {', '.join(reg['review_sources'])}",
-                    )
-                    notifications.append(event)
+                event = build_digest_event(
+                    "regression",
+                    repo,
+                    reg["pr"]["number"],
+                    reg["pr"]["head_sha"],
+                    "REGRESSION",
+                    f"merged with fail review: {', '.join(reg['review_sources'])}",
+                    format_timestamp(current),
+                )
+                data = _emit_transition(
+                    state,
+                    data,
+                    notifications,
+                    event,
+                    reg["pr"].get("linear_issue"),
+                    linear is not None,
+                )
 
         # Every repository reconciled, so the cursor may move; a run that
         # raised above keeps the old cursor and re-covers the same window.
@@ -477,36 +513,23 @@ def run_watcher(
         # Persist state before side effects
         state.save(data)
 
-        # Side effects: notifications
+        # Side effects: Linear comments, sent only from the durable queue so a
+        # failed or interrupted send is retried by the next run.
         sent: list[dict[str, Any]] = []
         if linear is not None:
-            for event in notifications:
-                if linear is not None:
-                    linear_event = build_linear_event(
-                        event["idempotency_key"],
-                        event["type"],
-                        event["repo"],
-                        event["pr_number"],
-                        event["head"],
-                        event["classification"],
-                        event.get("reason"),
-                    )
-                    try:
-                        linear.add_comment(
-                            event["idempotency_key"],
-                            f"PR {event['repo']}#{event['pr_number']}: {event['classification']}",
-                        )
-                        sent.append(linear_event)
-                    except Exception:
-                        data = state.add_pending_event(data, {**linear_event, "retry_count": 0})
-                        state.save(data)
+            pending = state.get_pending_events(data)
+            remaining, sent = deliver_linear_events(pending, linear)
+            if remaining != pending:
+                data = {**data, "pending_events": remaining}
+                state.save(data)
 
         return {
             "observations": observations,
             "reruns": reruns,
             "records": records,
-            "notifications": sent,
-            "pending_events": data.get("pending_events", []),
+            "notifications": notifications,
+            "linear_sent": sent,
+            "pending_events": state.get_pending_events(data),
         }
 
     finally:

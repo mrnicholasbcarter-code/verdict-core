@@ -10,6 +10,7 @@ import json
 import socket
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -26,8 +27,8 @@ from verdict.pr_watcher_github import assert_no_mutation as gh_assert_no_mutatio
 from verdict.pr_watcher_notifications import (
     build_digest_event,
     build_linear_event,
-    retry_failed_notifications,
-    should_notify,
+    deliver_linear_events,
+    transition_event_type,
 )
 from verdict.pr_watcher_state import (
     BlockRecord,
@@ -117,12 +118,20 @@ class FakeLinearClient:
 
     def __init__(self) -> None:
         self.comments: list[dict[str, Any]] = []
+        self.attempts: list[str] = []
+        self.before_comment: Callable[[], None] | None = None
         self._fail_on: set[str] = set()
 
     def set_fail(self, *issue_ids: str) -> None:
         self._fail_on.update(issue_ids)
 
+    def clear_fail(self) -> None:
+        self._fail_on.clear()
+
     def add_comment(self, issue_id: str, body: str) -> dict[str, Any]:
+        self.attempts.append(issue_id)
+        if self.before_comment is not None:
+            self.before_comment()
         if issue_id in self._fail_on:
             raise RuntimeError("simulated Linear API failure")
         self.comments.append({"issue_id": issue_id, "body": body})
@@ -903,78 +912,144 @@ class TestCodeAndMergeFailures:
 # ============================================================================
 
 
+def kinds(result: dict[str, Any]) -> list[str]:
+    return [event["type"] for event in result["notifications"]]
+
+
 class TestTransitionNotifications:
     """Requirement: Notifications occur only on transitions."""
 
-    def test_idle_healthy_run_emits_no_message(
+    def test_new_failure_emits_one_digest_event_without_a_linear_client(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
-        """Previously ready PR remains ready at the same head -> no message."""
-        repo = "org/repo"
-        head = "g" * 40
+        """Catches the digest event being tied to the Linear client being present."""
+        head = "f" * 40
+        open_pr(gh, 1, head, [check("lint", "FAILURE", check_run_id="job-1")])
 
-        # First run: PR is GREEN
-        gh.set_open_prs(
-            repo,
-            [{"number": 1, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}],
-        )
-        gh.set_pr(repo, 1, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
-        gh.set_checks(
-            repo,
-            head,
-            [
-                {
-                    "name": "test (3.11)",
-                    "status": "COMPLETED",
-                    "conclusion": "SUCCESS",
-                    "required": True,
-                }
-            ],
-        )
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(3)]
 
-        run_watcher(gh, ws, [repo], linear=None)
+        assert [kinds(r) for r in runs] == [["new_failure"], [], []]
+        event = runs[0]["notifications"][0]
+        assert (event["repo"], event["pr_number"], event["head"]) == (REPO, 1, head)
+        assert event["classification"] == "CODE_FAILURE"
+        assert list(disk(ws)["digest_events"]) == [event["idempotency_key"]]
 
-        # Second run: same state, should not notify
-        result = run_watcher(gh, ws, [repo], linear=None)
-        assert len(result.get("notifications", [])) == 0
+    def test_blocked_transition_emits_its_own_digest_event_once(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches the RETRY -> BLOCKED transition passing silently."""
+        open_pr(gh, 2, "b" * 40, [check("proof-full", "CANCELLED", check_run_id="job-2")])
 
-    def test_should_notify_detects_transitions(self) -> None:
-        """should_notify returns True only on classification changes."""
-        assert should_notify(None, "CODE_FAILURE") is True
-        assert should_notify("GREEN", "CODE_FAILURE") is True
-        assert should_notify("CODE_FAILURE", "CODE_FAILURE") is False
-        assert should_notify("PENDING", "GREEN") is False
-        assert should_notify(None, "GREEN") is False
-        assert should_notify("GREEN", "BLOCKED") is True
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(4)]
 
-    def test_new_failure_emits_notification(
+        assert [kinds(r) for r in runs] == [["new_failure"], ["blocked"], [], []]
+        assert runs[1]["notifications"][0]["classification"] == "BLOCKED"
+
+    def test_regression_digest_is_emitted_once_while_the_lookback_relists_it(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a regression notification repeated on every run that re-lists the PR."""
+        gh.set_merged_prs(REPO, [{"number": 9, "head_sha": "e" * 40, "merged_at": MERGED_AT}])
+        gh.set_reviews(REPO, 9, [{"state": "CHANGES_REQUESTED", "id": 1}])
+
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * timedelta(minutes=1)) for n in range(3)]
+
+        assert len(gh.merged_since_calls) == 3
+        assert [kinds(r) for r in runs] == [["regression"], [], []]
+
+    def test_new_head_with_the_same_failure_is_a_new_transition(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches idempotency keyed without the head, which would hide a re-broken PR."""
+        open_pr(gh, 3, "1" * 40, [check("lint", "FAILURE")])
+        first = run_watcher(gh, ws, [REPO], now=T0)
+
+        gh.set_open_prs(REPO, [])
+        open_pr(gh, 3, "2" * 40, [check("lint", "FAILURE")])
+        second = run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
+
+        assert [e["head"] for e in first["notifications"]] == ["1" * 40]
+        assert [e["head"] for e in second["notifications"]] == ["2" * 40]
+
+    @pytest.mark.parametrize(
+        "checks",
+        [[check("test (3.11)")], [check("test (3.11)", None, "IN_PROGRESS")]],
+        ids=["ready", "pending"],
+    )
+    def test_healthy_or_pending_pr_never_notifies(
+        self,
+        gh: FakeGitHubClient,
+        ws: WatcherState,
+        linear: FakeLinearClient,
+        checks: list[dict[str, Any]],
+    ) -> None:
+        """Catches a message for a PR that is ready or simply still running."""
+        open_pr(gh, 4, "a" * 40, checks, linear_issue="ENG-101")
+
+        runs = [
+            run_watcher(gh, ws, [REPO], linear=linear, now=T0 + n * RUN_INTERVAL) for n in range(2)
+        ]
+
+        assert [r["notifications"] for r in runs] == [[], []]
+        assert linear.comments == []
+        assert disk(ws)["digest_events"] == {}
+
+    def test_linked_story_gets_exactly_one_comment_on_the_linked_issue(
         self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient
     ) -> None:
-        """New failure classification emits a digest event."""
-        repo = "org/repo"
-        head = "f" * 40
-        gh.set_open_prs(
-            repo,
-            [{"number": 1, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}],
-        )
-        gh.set_pr(repo, 1, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
-        gh.set_checks(
-            repo,
-            head,
-            [
-                {
-                    "name": "osv-security / osv-scan",
-                    "status": "COMPLETED",
-                    "conclusion": "FAILURE",
-                    "required": True,
-                    "check_run_id": "r1",
-                }
-            ],
-        )
+        """Catches the comment going to something other than the linked story, or repeating."""
+        open_pr(gh, 5, "c" * 40, [check("lint", "FAILURE")], linear_issue="ENG-101")
 
-        result = run_watcher(gh, ws, [repo], linear=linear)
-        # Should have created a repair record for CODE_FAILURE
-        assert len(result.get("records", [])) > 0
+        for n in range(3):
+            run_watcher(gh, ws, [REPO], linear=linear, now=T0 + n * RUN_INTERVAL)
+
+        assert [c["issue_id"] for c in linear.comments] == ["ENG-101"]
+        assert f"{REPO}" in linear.comments[0]["body"]
+        assert "#5" in linear.comments[0]["body"]
+        assert "CODE_FAILURE" in linear.comments[0]["body"]
+
+    def test_unlinked_pr_gets_a_digest_event_and_no_linear_comment(
+        self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient
+    ) -> None:
+        """Catches a Linear comment being sent when no story is linked."""
+        open_pr(gh, 6, "d" * 40, [check("lint", "FAILURE")])
+
+        result = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+
+        assert kinds(result) == ["new_failure"]
+        assert linear.comments == []
+
+    def test_linear_comment_carries_state_written_before_it_is_sent(
+        self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient
+    ) -> None:
+        """Catches a comment sent before the digest and Linear events are durable."""
+        open_pr(gh, 8, "8" * 40, [check("lint", "FAILURE")], linear_issue="ENG-102")
+        seen: list[dict[str, Any]] = []
+        linear.before_comment = lambda: seen.append(disk(ws))
+
+        result = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+
+        key = result["notifications"][0]["idempotency_key"]
+        assert len(seen) == 1
+        assert list(seen[0]["digest_events"]) == [key]
+        assert [e["linear_issue_id"] for e in seen[0]["pending_events"]] == ["ENG-102"]
+        assert disk(ws)["pending_events"] == []
+
+    @pytest.mark.parametrize(
+        ("action", "expected"),
+        [
+            ("RETRY", "new_failure"),
+            ("REPAIR", "new_failure"),
+            ("BLOCKED", "blocked"),
+            ("READY", None),
+            ("NO_ACTION", None),
+        ],
+    )
+    def test_only_failure_actions_map_to_a_digest_event_type(
+        self, action: str, expected: str | None
+    ) -> None:
+        """Catches a healthy or pending action being given an event type."""
+        assert transition_event_type(action) == expected
 
 
 # ============================================================================
@@ -1018,46 +1093,57 @@ class TestMalformedState:
 class TestFailedLinearRetry:
     """Requirement: Failed Linear notification is durable and retried."""
 
-    def test_linear_notification_failure_persists_event(
+    def test_failed_comment_stays_durable_and_is_retried_until_it_lands(
         self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient
     ) -> None:
-        """When Linear fails, event stays durable for retry."""
-        repo = "org/repo"
-        head = "g" * 40
-        gh.set_open_prs(
-            repo,
-            [{"number": 1, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}],
-        )
-        gh.set_pr(repo, 1, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
-        gh.set_checks(
-            repo,
-            head,
-            [
-                {
-                    "name": "test (3.11)",
-                    "status": "COMPLETED",
-                    "conclusion": "SUCCESS",
-                    "required": True,
-                }
-            ],
-        )
-        linear.set_fail("any-key")
+        """Catches a failed comment being dropped, or re-sent after it finally lands."""
+        open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")], linear_issue="ENG-7")
+        linear.set_fail("ENG-7")
 
-        # No notifications expected on GREEN
-        result = run_watcher(gh, ws, [repo], linear=linear)
-        assert result.get("notifications", []) == []
+        run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+        run_watcher(gh, ws, [REPO], linear=linear, now=T0 + RUN_INTERVAL)
+        pending = disk(ws)["pending_events"]
+        assert [(e["linear_issue_id"], e["retry_count"]) for e in pending] == [("ENG-7", 2)]
+        assert linear.comments == []
 
-    def test_pending_events_retry_bounded(self) -> None:
-        """Pending events are retried within a bounded window of 5 runs."""
+        linear.clear_fail()
+        for n in (2, 3, 4):
+            run_watcher(gh, ws, [REPO], linear=linear, now=T0 + n * RUN_INTERVAL)
 
-        event = {"type": "test", "idempotency_key": "k1", "linear_issue_id": "ISS-1"}
+        assert [c["issue_id"] for c in linear.comments] == ["ENG-7"]
+        assert linear.attempts == ["ENG-7"] * 3
+        assert disk(ws)["pending_events"] == []
+
+    def test_retries_stop_after_five_runs_and_the_event_is_kept(
+        self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient
+    ) -> None:
+        """Catches unbounded retries, and an exhausted event vanishing from state."""
+        open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")], linear_issue="ENG-7")
+        linear.set_fail("ENG-7")
+
+        results = [
+            run_watcher(gh, ws, [REPO], linear=linear, now=T0 + n * RUN_INTERVAL) for n in range(8)
+        ]
+
+        assert linear.attempts == ["ENG-7"] * 5
+        pending = disk(ws)["pending_events"]
+        assert [(e["linear_issue_id"], e["retry_count"]) for e in pending] == [("ENG-7", 5)]
+        assert [len(r["pending_events"]) for r in results] == [1] * 8
+
+    def test_deliver_reports_sent_and_remaining_separately(self) -> None:
+        """Catches a delivered event being left queued, or a failed one being lost."""
         linear = FakeLinearClient()
-        linear.set_fail("ISS-1")
+        linear.set_fail("ENG-2")
+        events = [
+            build_linear_event("ENG-1", digest_event("new_failure", 1)),
+            build_linear_event("ENG-2", digest_event("new_failure", 2)),
+        ]
 
-        still, exhausted = retry_failed_notifications([event], linear, max_attempts=5)
-        assert len(still) == 1
-        assert len(exhausted) == 0
-        assert still[0]["retry_count"] == 1
+        remaining, sent = deliver_linear_events(events, linear)
+
+        assert [e["linear_issue_id"] for e in sent] == ["ENG-1"]
+        assert [(e["linear_issue_id"], e["retry_count"]) for e in remaining] == [("ENG-2", 1)]
+        assert events[1]["retry_count"] == 0
 
 
 # ============================================================================
@@ -1442,21 +1528,35 @@ class TestRecordTypes:
 # ============================================================================
 
 
+def digest_event(event_type: str, pr_number: int) -> dict[str, Any]:
+    return build_digest_event(
+        event_type, REPO, pr_number, "a" * 40, "CODE_FAILURE", "lint failed", iso(T0)
+    )
+
+
 class TestNotificationBuild:
     """Verify digest and Linear event construction."""
 
-    def test_digest_event_has_idempotency_key(self) -> None:
-        event = build_digest_event(
-            "classification_change", "org/repo", 42, "abc123", "CODE_FAILURE", "test failed"
-        )
-        assert event["type"] == "classification_change"
-        assert "idempotency_key" in event
-        assert event["idempotency_key"].startswith("digest:")
+    def test_digest_key_separates_type_pr_head_and_classification(self) -> None:
+        """Catches two distinct transitions collapsing onto one idempotency key."""
+        base = build_digest_event("new_failure", REPO, 42, "a" * 40, "CODE_FAILURE", None, iso(T0))
+        variants = [
+            build_digest_event("blocked", REPO, 42, "a" * 40, "CODE_FAILURE", None, iso(T0)),
+            build_digest_event("new_failure", REPO, 43, "a" * 40, "CODE_FAILURE", None, iso(T0)),
+            build_digest_event("new_failure", REPO, 42, "b" * 40, "CODE_FAILURE", None, iso(T0)),
+            build_digest_event("new_failure", REPO, 42, "a" * 40, "CONFLICT", None, iso(T0)),
+        ]
+        keys = {base["idempotency_key"], *(v["idempotency_key"] for v in variants)}
+        assert len(keys) == 5
+        assert base["idempotency_key"] == f"digest:new_failure:{REPO}:pr42:{'a' * 40}:CODE_FAILURE"
+        assert base["timestamp"] == iso(T0)
 
-    def test_linear_event_has_idempotency_key(self) -> None:
-        event = build_linear_event(
-            "ISS-123", "regression", "org/repo", 42, "abc123", "REGRESSION", "merged with fail"
-        )
-        assert event["type"] == "regression"
-        assert event["linear_issue_id"] == "ISS-123"
-        assert event["idempotency_key"].startswith("linear:")
+    def test_linear_event_names_the_linked_issue_and_mirrors_the_digest(self) -> None:
+        """Catches the Linear event losing its issue, or its link to the digest event."""
+        digest = digest_event("regression", 42)
+        event = build_linear_event("ENG-123", digest)
+
+        assert event["linear_issue_id"] == "ENG-123"
+        assert event["idempotency_key"] == "linear:" + digest["idempotency_key"][len("digest:") :]
+        assert event["retry_count"] == 0
+        assert (event["repo"], event["pr_number"], event["head"]) == (REPO, 42, "a" * 40)
