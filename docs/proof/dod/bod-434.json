@@ -63,12 +63,12 @@
     "change": "v1-permits-streams-public-models"
   },
   "parent_confirmation": {
-    "by": "TODO-independent-confirmer (a non-author model family; not t_236d3f15 / cc/claude-opus-5-5)",
-    "at": "1970-01-01T00:00:00Z",
+    "by": "gem-devops confirmer (omniroute worker/free-first, gem-orchestrator run 20261116-m1-dod-confirm)",
+    "at": "2026-11-16T12:11:51Z",
     "command": "env -i HOME=$HOME PATH=/operator/.local/bin:/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/$(id -u) .venv/bin/python -m verdict acceptance run --json",
     "raw_output": {
-      "path": "docs/proof/dod/bod-434/TODO-parent-confirmation.txt",
-      "sha256": "2f73349cfc4630255319c6c8dfc1b46a8996ace9d14d8e07563b165915918ec2"
+      "path": "docs/proof/dod/bod-434/parent-confirmation-20261116T121028Z.json",
+      "sha256": "f1dd08b7efa2a83b49ee7d9e690d0355022523778333a51c37bbc8df34bbdbc7"
     }
   }
 }
