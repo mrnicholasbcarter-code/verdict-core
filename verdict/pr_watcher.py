@@ -164,15 +164,22 @@ def reconcile_merged_prs(
     state: WatcherState,
     repo: str,
     verdict_fail_receipts: dict[str, dict[str, Any]] | None = None,
+    data: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Discover closed+merged PRs since durable cursor.
 
     A merged PR with a fail review (GitHub CHANGES_REQUESTED or
     Verdict/ocr fail receipt) becomes a regression record.
     """
-    data = state.load()
-    cursor = state.get_merged_cursor(data)
-    merged_prs = gh.list_merged_prs(repo, cursor)
+    current_data = state.load() if data is None else data
+    cursor = state.get_merged_cursor(current_data)
+    lookback = cursor
+    if cursor is not None:
+        try:
+            lookback = (datetime.fromisoformat(cursor.replace("Z", "+00:00")) - __import__("datetime").timedelta(minutes=5)).isoformat()
+        except ValueError:
+            lookback = cursor
+    merged_prs = gh.list_merged_prs(repo, lookback)
 
     regressions: list[dict[str, Any]] = []
     verdict_fail = verdict_fail_receipts or {}
@@ -421,7 +428,7 @@ def run_watcher(
                     notifications.append(event)
 
             # 2. Reconcile merged PRs
-            regressions = reconcile_merged_prs(gh, state, repo, verdict_fail_receipts)
+            regressions = reconcile_merged_prs(gh, state, repo, verdict_fail_receipts, data)
             for reg in regressions:
                 if not state.has_record(data, reg["record"]["idempotency_key"]):
                     data = state.add_record(data, reg["record"])
