@@ -27,6 +27,7 @@ from verdict.pr_watcher_state import (
     RegressionRecord,
     RepairRecord,
     WatcherState,
+    format_timestamp,
 )
 
 # --- Action adapter (from spec table) --------------------------------------------
@@ -157,6 +158,28 @@ def _combine_classifications(ci: str, merge: str) -> str:
 
 # --- Merged PR reconciliation ---------------------------------------------------
 
+# Re-list this far behind the cursor: GitHub search lags merges, and a merge
+# can be stamped slightly before the run that should have seen it.
+MERGED_LOOKBACK = timedelta(minutes=5)
+# Window for a run with no usable cursor, so the first query is never unbounded.
+MERGED_INITIAL_LOOKBACK = timedelta(hours=24)
+
+
+def _resolve_clock(now: datetime | None) -> datetime:
+    current = datetime.now(timezone.utc) if now is None else now
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("injected clock must be timezone-aware")
+    return current
+
+
+def _merged_since(cursor: datetime | None, now: datetime) -> str:
+    """Lower bound for the merged-PR query; always a concrete instant."""
+    # A cursor ahead of the clock would hide every merge until the clock
+    # caught up, so it is treated like a missing one.
+    if cursor is None or cursor > now:
+        return format_timestamp(now - MERGED_INITIAL_LOOKBACK)
+    return format_timestamp(cursor - MERGED_LOOKBACK)
+
 
 def reconcile_merged_prs(
     gh: WatcherGitHubClient,
@@ -164,23 +187,16 @@ def reconcile_merged_prs(
     repo: str,
     verdict_fail_receipts: dict[str, dict[str, Any]] | None = None,
     data: dict[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Discover closed+merged PRs since durable cursor.
+    """Discover closed+merged PRs since the durable cursor minus a bounded lookback.
 
     A merged PR with a fail review (GitHub CHANGES_REQUESTED or
     Verdict/ocr fail receipt) becomes a regression record.
     """
     current_data = state.load() if data is None else data
-    cursor = state.get_merged_cursor(current_data)
-    lookback = cursor
-    if cursor is not None:
-        try:
-            lookback = (
-                datetime.fromisoformat(cursor.replace("Z", "+00:00")) - timedelta(minutes=5)
-            ).isoformat()
-        except ValueError:
-            lookback = cursor
-    merged_prs = gh.list_merged_prs(repo, lookback)
+    since = _merged_since(state.get_merged_cursor(current_data), _resolve_clock(now))
+    merged_prs = gh.list_merged_prs(repo, since)
 
     regressions: list[dict[str, Any]] = []
     verdict_fail = verdict_fail_receipts or {}
@@ -307,6 +323,7 @@ def run_watcher(
     State is written atomically before any side effects.
     No LLM or model-routing calls are made.
     """
+    current = _resolve_clock(now)
     # Acquire non-blocking lock
     try:
         assert_github_no_mutation(gh)
@@ -337,7 +354,7 @@ def run_watcher(
 
         for repo in repos:
             # 1. Poll open PRs
-            obs = poll_open_prs(gh, state, repo, now=now)
+            obs = poll_open_prs(gh, state, repo, now=current)
             observations.extend(obs)
 
             for obs_item in obs:
@@ -438,7 +455,9 @@ def run_watcher(
                     notifications.append(event)
 
             # 2. Reconcile merged PRs
-            regressions = reconcile_merged_prs(gh, state, repo, verdict_fail_receipts, data)
+            regressions = reconcile_merged_prs(
+                gh, state, repo, verdict_fail_receipts, data, current
+            )
             for reg in regressions:
                 if not state.has_record(data, reg["record"]["idempotency_key"]):
                     data = state.add_record(data, reg["record"])
@@ -454,6 +473,10 @@ def run_watcher(
                         reason=f"merged with fail review: {', '.join(reg['review_sources'])}",
                     )
                     notifications.append(event)
+
+        # Every repository reconciled, so the cursor may move; a run that
+        # raised above keeps the old cursor and re-covers the same window.
+        data = state.set_merged_cursor(data, current)
 
         # Persist state before side effects
         state.save(data)

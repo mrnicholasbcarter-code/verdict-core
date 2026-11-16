@@ -11,6 +11,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,27 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 class MalformedStateError(Exception):
     """Raised when durable state is corrupt or unreadable."""
+
+
+# --- Timestamps -------------------------------------------------------------------
+
+
+def format_timestamp(moment: datetime) -> str:
+    """Render a timezone-aware instant as the UTC form GitHub search accepts."""
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise ValueError("timestamp must be timezone-aware")
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_timestamp(value: object) -> datetime:
+    """Parse a persisted timestamp; anything else is malformed state."""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise MalformedStateError(f"malformed timestamp in state: {value!r}") from exc
+    if not isinstance(value, str) or parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise MalformedStateError(f"malformed timestamp in state: {value!r}")
+    return parsed
 
 
 # --- Lock helpers -----------------------------------------------------------------
@@ -345,8 +367,11 @@ class WatcherState:
         }
         return {**data, "pr_states": pr_states}
 
-    def set_merged_cursor(self, data: dict[str, Any], cursor: str) -> dict[str, Any]:
-        return {**data, "merged_cursor": cursor}
+    def set_merged_cursor(self, data: dict[str, Any], cursor: datetime) -> dict[str, Any]:
+        """Advance the merged-PR cursor; it doubles as the last-run stamp."""
+        stamp = format_timestamp(cursor)
+        return {**data, "merged_cursor": stamp, "last_run_at": stamp}
 
-    def get_merged_cursor(self, data: dict[str, Any]) -> str | None:
-        return data.get("merged_cursor")
+    def get_merged_cursor(self, data: dict[str, Any]) -> datetime | None:
+        raw = data.get("merged_cursor")
+        return None if raw is None else parse_timestamp(raw)

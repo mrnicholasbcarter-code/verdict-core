@@ -7,6 +7,7 @@ Covers all 17 requirements from openspec/changes/bod358-pr-watcher/specs/pr-watc
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,8 @@ class FakeGitHubClient:
         self._reviews: dict[tuple[str, int], list[dict[str, Any]]] = {}
         self._merged_prs: dict[str, list[dict[str, Any]]] = {}
         self.rerun_calls: list[dict[str, Any]] = []
+        self.merged_since_calls: list[str | None] = []
+        self.merged_listing_error: Exception | None = None
         self._check_runs: dict[str, dict[str, Any]] = {}
 
     def set_open_prs(self, repo: str, prs: list[dict[str, Any]]) -> None:
@@ -88,7 +91,13 @@ class FakeGitHubClient:
         return list(self._reviews.get((repo, pr_number), []))
 
     def list_merged_prs(self, repo: str, since: str | None) -> list[dict[str, Any]]:
-        return list(self._merged_prs.get(repo, []))
+        self.merged_since_calls.append(since)
+        if self.merged_listing_error is not None:
+            raise self.merged_listing_error
+        prs = self._merged_prs.get(repo, [])
+        if since is None:
+            return list(prs)
+        return [p for p in prs if p["merged_at"] >= since]
 
     def rerun_check(self, check_run_id: str, repo: str) -> dict[str, Any]:
         self.rerun_calls.append({"check_run_id": check_run_id, "repo": repo})
@@ -137,6 +146,50 @@ def state_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def ws(state_dir: Path) -> WatcherState:
     return WatcherState(state_dir)
+
+
+REPO = "org/repo"
+T0 = datetime(2026, 3, 2, 12, 0, 0, tzinfo=timezone.utc)
+RUN_INTERVAL = timedelta(minutes=5)
+MERGED_AT = "2026-03-02T11:58:00Z"
+
+
+def iso(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def check(
+    name: str, conclusion: str | None = "SUCCESS", status: str = "COMPLETED", **extra: Any
+) -> dict[str, Any]:
+    return {"name": name, "status": status, "conclusion": conclusion, "required": True, **extra}
+
+
+def open_pr(
+    gh: FakeGitHubClient,
+    number: int,
+    head: str,
+    checks: list[dict[str, Any]],
+    mergeable: str = "MERGEABLE",
+    merge_state: str = "CLEAN",
+    **extra: Any,
+) -> None:
+    """Register one open PR at ``head`` with its exact-head checks."""
+    pr = {
+        "number": number,
+        "head_sha": head,
+        "mergeable": mergeable,
+        "merge_state_status": merge_state,
+        **extra,
+    }
+    gh.set_open_prs(REPO, [*gh.list_open_prs(REPO), pr])
+    gh.set_pr(REPO, number, pr)
+    gh.set_checks(REPO, head, checks)
+
+
+def disk(ws: WatcherState) -> dict[str, Any]:
+    """The state as persisted, read without going through the watcher."""
+    loaded: dict[str, Any] = json.loads(ws.state_file.read_text())
+    return loaded
 
 
 # ============================================================================
@@ -281,13 +334,11 @@ class TestMergedPRReconciliation:
         """PR merges with CHANGES_REQUESTED review -> regression record."""
         repo = "org/repo"
         head = "m" * 40
-        gh.set_merged_prs(
-            repo, [{"number": 42, "head_sha": head, "merged_at": "2026-01-01T00:00:00Z"}]
-        )
+        gh.set_merged_prs(repo, [{"number": 42, "head_sha": head, "merged_at": MERGED_AT}])
         gh.set_reviews(
             repo, 42, [{"state": "CHANGES_REQUESTED", "id": 1}, {"state": "APPROVED", "id": 2}]
         )
-        regs = reconcile_merged_prs(gh, ws, repo)
+        regs = reconcile_merged_prs(gh, ws, repo, now=T0)
         assert len(regs) == 1
         assert "github_changes_requested" in regs[0]["review_sources"]
 
@@ -297,12 +348,10 @@ class TestMergedPRReconciliation:
         """PR merges with Verdict/ocr fail receipt -> regression record."""
         repo = "org/repo"
         head = "m" * 40
-        gh.set_merged_prs(
-            repo, [{"number": 42, "head_sha": head, "merged_at": "2026-01-01T00:00:00Z"}]
-        )
+        gh.set_merged_prs(repo, [{"number": 42, "head_sha": head, "merged_at": MERGED_AT}])
         gh.set_reviews(repo, 42, [{"state": "APPROVED", "id": 1}])
         fail_receipts = {f"{repo}:42:{head}": {"status": "FAIL"}}
-        regs = reconcile_merged_prs(gh, ws, repo, fail_receipts)
+        regs = reconcile_merged_prs(gh, ws, repo, fail_receipts, now=T0)
         assert len(regs) == 1
         assert "verdict_ocr_fail" in regs[0]["review_sources"]
 
@@ -331,15 +380,13 @@ class TestMergedPRReconciliation:
 
         # Run N+1: PR is no longer open, but merged with CHANGES_REQUESTED
         gh.set_open_prs(repo, [])  # PR no longer open
-        gh.set_merged_prs(
-            repo, [{"number": 42, "head_sha": head, "merged_at": "2026-01-01T00:00:00Z"}]
-        )
+        gh.set_merged_prs(repo, [{"number": 42, "head_sha": head, "merged_at": MERGED_AT}])
         gh.set_reviews(repo, 42, [{"state": "CHANGES_REQUESTED", "id": 3}])
 
         obs = poll_open_prs(gh, ws, repo)
         assert len(obs) == 0  # PR not in open list
 
-        regs = reconcile_merged_prs(gh, ws, repo)
+        regs = reconcile_merged_prs(gh, ws, repo, now=T0)
         assert len(regs) == 1
         assert regs[0]["pr"]["number"] == 42
         assert "github_changes_requested" in regs[0]["review_sources"]
@@ -350,12 +397,10 @@ class TestMergedPRReconciliation:
         """GitHub APPROVED but Verdict/ocr fail receipt -> disagreeing evidence, treated as fail."""
         repo = "org/repo"
         head = "d" * 40
-        gh.set_merged_prs(
-            repo, [{"number": 50, "head_sha": head, "merged_at": "2026-01-01T00:00:00Z"}]
-        )
+        gh.set_merged_prs(repo, [{"number": 50, "head_sha": head, "merged_at": MERGED_AT}])
         gh.set_reviews(repo, 50, [{"state": "APPROVED", "id": 1}])
         fail_receipts = {f"{repo}:50:{head}": {"status": "FAIL"}}
-        regs = reconcile_merged_prs(gh, ws, repo, fail_receipts)
+        regs = reconcile_merged_prs(gh, ws, repo, fail_receipts, now=T0)
         assert len(regs) == 1
         assert "disagreeing_evidence" in regs[0]["review_sources"]
         # Both sources named
@@ -365,12 +410,88 @@ class TestMergedPRReconciliation:
         """Merged PR with all APPROVED reviews produces no regression."""
         repo = "org/repo"
         head = "g" * 40
-        gh.set_merged_prs(
-            repo, [{"number": 60, "head_sha": head, "merged_at": "2026-01-01T00:00:00Z"}]
-        )
+        gh.set_merged_prs(repo, [{"number": 60, "head_sha": head, "merged_at": MERGED_AT}])
         gh.set_reviews(repo, 60, [{"state": "APPROVED", "id": 1}])
-        regs = reconcile_merged_prs(gh, ws, repo)
+        regs = reconcile_merged_prs(gh, ws, repo, now=T0)
         assert len(regs) == 0
+
+
+class TestMergedCursor:
+    """The merged-PR cursor is durable, advances, and bounds every query."""
+
+    def test_first_run_uses_bounded_initial_lookback(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches an unbounded first query: no cursor must not mean since=None."""
+        run_watcher(gh, ws, [REPO], now=T0)
+        assert gh.merged_since_calls == [iso(T0 - timedelta(hours=24))]
+
+    def test_cursor_is_persisted_and_advances_across_runs(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a cursor that is computed but never saved."""
+        run_watcher(gh, ws, [REPO], now=T0)
+        assert disk(ws)["merged_cursor"] == iso(T0)
+        assert disk(ws)["last_run_at"] == iso(T0)
+
+        run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
+        assert disk(ws)["merged_cursor"] == iso(T0 + RUN_INTERVAL)
+        assert disk(ws)["last_run_at"] == iso(T0 + RUN_INTERVAL)
+
+    def test_second_run_queries_since_cursor_minus_lookback(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a lookback that is skipped or applied to the wrong instant."""
+        run_watcher(gh, ws, [REPO], now=T0)
+        run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
+        assert gh.merged_since_calls[1] == iso(T0 - timedelta(minutes=5))
+
+    def test_cursor_ahead_of_clock_falls_back_to_bounded_lookback(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a clock step backwards leaving a future cursor that hides merges."""
+        run_watcher(gh, ws, [REPO], now=T0)
+        earlier = T0 - timedelta(hours=1)
+        run_watcher(gh, ws, [REPO], now=earlier)
+        assert gh.merged_since_calls[1] == iso(earlier - timedelta(hours=24))
+        assert disk(ws)["merged_cursor"] == iso(earlier)
+
+    def test_failed_reconciliation_does_not_advance_cursor(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a cursor that advances past merges the run never managed to list."""
+        run_watcher(gh, ws, [REPO], now=T0)
+
+        gh.merged_listing_error = RuntimeError("search unavailable")
+        with pytest.raises(RuntimeError, match="search unavailable"):
+            run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
+        assert disk(ws)["merged_cursor"] == iso(T0)
+
+    def test_open_on_run_n_merged_with_fail_review_before_next_run(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches both a missed merge and a regression duplicated by the lookback."""
+        head = "5" * 40
+        open_pr(gh, 42, head, [check("test (3.11)")])
+        run_watcher(gh, ws, [REPO], now=T0)
+        assert disk(ws)["records"]["regression"] == []
+
+        gh.set_open_prs(REPO, [])
+        merged_at = iso(T0 + timedelta(minutes=2))
+        gh.set_merged_prs(REPO, [{"number": 42, "head_sha": head, "merged_at": merged_at}])
+        gh.set_reviews(REPO, 42, [{"state": "CHANGES_REQUESTED", "id": 7}])
+
+        new_records = []
+        for run in (1, 2, 3):
+            result = run_watcher(gh, ws, [REPO], now=T0 + run * RUN_INTERVAL)
+            new_records.append([r["type"] for r in result["records"]])
+
+        assert new_records == [["regression"], [], []]
+        regressions = disk(ws)["records"]["regression"]
+        assert [(r["pr_number"], r["head"]) for r in regressions] == [(42, head)]
+        assert None not in gh.merged_since_calls
+        # The lookback really did re-list the merged PR on the run after discovery.
+        assert merged_at >= gh.merged_since_calls[2]
 
 
 # ============================================================================
@@ -898,13 +1019,11 @@ class TestDisagreeingEvidence:
         """APPROVED review + Verdict/ocr fail receipt -> regression with both sources."""
         repo = "org/repo"
         head = "d" * 40
-        gh.set_merged_prs(
-            repo, [{"number": 99, "head_sha": head, "merged_at": "2026-01-01T00:00:00Z"}]
-        )
+        gh.set_merged_prs(repo, [{"number": 99, "head_sha": head, "merged_at": MERGED_AT}])
         gh.set_reviews(repo, 99, [{"state": "APPROVED", "id": 1}])
         fail_receipts = {f"{repo}:99:{head}": {"status": "FAIL"}}
 
-        regs = reconcile_merged_prs(gh, ws, repo, fail_receipts)
+        regs = reconcile_merged_prs(gh, ws, repo, fail_receipts, now=T0)
         assert len(regs) == 1
         rec = regs[0]["record"]
         # Both sources named
