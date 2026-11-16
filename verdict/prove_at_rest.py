@@ -2874,8 +2874,11 @@ def import_sessions(
 
     Reuses BOD-299's importer. Session evidence does not refresh chat health,
     capacity, entitlement or identity. Future timestamps are never accepted.
+    Imported outcomes are also appended to the SessionLedger so eligibility's
+    session gate sees the same durable task evidence; the ledger's identity
+    dedupe makes repeat imports idempotent.
     """
-    from verdict.orchestration.session_evidence import import_worker_outcomes
+    from verdict.orchestration.session_evidence import SessionLedger, import_worker_outcomes
 
     current = now or _now()
     outcomes = import_worker_outcomes(ledger)
@@ -2894,11 +2897,23 @@ def import_sessions(
                 )
 
     cache.merge_and_save(mutate)
+
+    session_ledger = SessionLedger()
+    before = len(session_ledger.load())
+    for item in outcomes:
+        if item.verified_by_controller and item.at <= current:
+            try:
+                session_ledger.append(item)
+            except OSError:
+                break  # unreadable ledger: fail open, keep the health-cache import
+    session_appended = len(session_ledger.load()) - before
+
     return {
         "cache_path": str(cache.path),
         "ledger": str(ledger),
         "read": len(outcomes),
         "updated": updated,
+        "session_appended": session_appended,
     }
 
 
