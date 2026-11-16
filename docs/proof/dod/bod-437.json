@@ -63,12 +63,12 @@
     "change": "v1-ledger-history-runtimes"
   },
   "parent_confirmation": {
-    "by": "TODO-independent-confirmer (a non-author model family; not t_07010be2 / auto/reasoning:pro)",
-    "at": "1970-01-01T00:00:00Z",
+    "by": "gem-devops confirmer (omniroute worker/free-first, gem-orchestrator run 20261116-m1-dod-confirm)",
+    "at": "2026-11-16T11:57:29Z",
     "command": "TMPDIR=/tmp uv run python -m pytest -q -p no:cacheprovider tests/test_outcome_attempts.py tests/test_outcome_records.py tests/test_autodev_outcome_attempts.py tests/test_outcome_shadow.py tests/test_orch_receipt.py",
     "raw_output": {
-      "path": "docs/proof/dod/bod-437/TODO-parent-confirmation.txt",
-      "sha256": "2f73349cfc4630255319c6c8dfc1b46a8996ace9d14d8e07563b165915918ec2"
+      "path": "docs/proof/dod/bod-437/parent-confirmation-20261116T115729Z.txt",
+      "sha256": "689d4b6e032e34bc48ca5b9f7c6d2c708113cffc403c5d1f101aba2682b60ad3"
     }
   }
 }
