@@ -398,23 +398,11 @@ async def test_hung_worker_is_timed_out_and_reassigned(repo: Path) -> None:
     ex = Executor({("a", "cc/s"): "hang"})
     rt, ev, _ = make(repo, graph, ex, ["cc/s", "cx/g"], attempt_timeout_seconds=0.2)
     rt.policy = RuntimePolicy(attempt_timeout_seconds=0.2)
-    # watchdog = attempt timeout + 30s; shrink for the test
-    import verdict.orchestration.runtime as mod
-
-    orig = mod.asyncio.wait_for
-
-    async def fast_wait_for(aw: Any, timeout: float | None) -> Any:
-        # Shrink only the attempt watchdog. The runtime also waits 0.1s to
-        # notice a cancel; shrinking that poll makes it return before the hang.
-        if timeout is not None and timeout > 1:
-            timeout = 0.3
-        return await orig(aw, timeout)
-
-    mod.asyncio.wait_for = fast_wait_for  # type: ignore[assignment]
-    try:
-        result = await rt.run()
-    finally:
-        mod.asyncio.wait_for = orig  # type: ignore[assignment]
+    # bounded_executor_call bounds the whole executor call at attempt_timeout_seconds
+    # (0.2s here), so the hang is cancelled without any watchdog patch. Patching
+    # asyncio.wait_for globally would also shrink subprocess_runner's git timeout
+    # and make unrelated git calls flaky under load.
+    result = await rt.run()
     assert result.outcome is RunOutcome.COMPLETE, result.reason
     assert "timeout" in ev.of("failure", "a")[0]["evidence"]
 

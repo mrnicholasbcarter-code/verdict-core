@@ -76,6 +76,9 @@ def with_relay_proofs(
             model=model,
             route_id=model,
             profile_digest=digest,
+            protocol=context.get("_relay_protocol")
+            if isinstance(context, dict) and context.get("_relay_protocol") == "anthropic.messages"
+            else None,
         )
         proof = admission_proof(
             confirmation,

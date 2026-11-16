@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,80 @@ def test_two_turn_check_passes_fails_and_names_account_blocks() -> None:
     assert acceptance_toolcheck.check_route("p/good", post).outcome == "pass"
     assert acceptance_toolcheck.check_route("p/bad", post).outcome == "fail"
     assert acceptance_toolcheck.check_route("p/blocked", post).outcome == "account"
+
+
+def _flaky_tool_gateway(
+    fail_always: frozenset[str] = frozenset(), fail_once: frozenset[str] = frozenset()
+):
+    """Fake gateway that fails every attempt on fail_always and the first attempt on fail_once."""
+    calls: dict[str, int] = {}
+
+    def post(path: str, body: dict[str, Any]) -> tuple[int, Any]:
+        route = body["model"]
+        calls[route] = calls.get(route, 0) + 1
+        if route in fail_always or (route in fail_once and calls[route] == 1):
+            return 502, None
+        turn2 = any(m["role"] == "tool" for m in body["messages"])
+        name, args = (
+            ("write_file", {"path": "out.txt", "content": NOTE.upper()})
+            if turn2
+            else ("read_file", {"path": "notes.txt"})
+        )
+        call = {"id": "c1", "function": {"name": name, "arguments": json.dumps(args)}}
+        return 200, {"choices": [{"message": {"content": "", "tool_calls": [call]}}]}
+
+    return post
+
+
+def test_listed_route_fails_once_then_passes_retry_counts_as_pass() -> None:
+    listed = [_verdict("p/a", eligible=True), _verdict("p/b", eligible=True)]
+    synced = {"p": [{"id": "a"}, {"id": "b"}]}
+    quality = acceptance_toolcheck.measure(
+        listed,
+        [*listed],
+        synced=synced,
+        cooling=set(),
+        post=_flaky_tool_gateway(fail_once={"p/a"}),
+        seed="s",
+    )
+    assert quality["precision"] == pytest.approx(1.0)
+    pa = [c for c in quality["checks"] if c["route"] == "p/a"]
+    assert [c["attempt"] for c in pa] == [1, 2]
+    assert pa[0]["outcome"] == "fail" and pa[1]["outcome"] == "pass"
+    assert [c["attempt"] for c in quality["checks"] if c["route"] == "p/b"] == [1]
+
+
+def test_listed_route_failing_both_attempts_counts_once() -> None:
+    listed = [_verdict("p/a", eligible=True), _verdict("p/b", eligible=True)]
+    synced = {"p": [{"id": "a"}, {"id": "b"}]}
+    quality = acceptance_toolcheck.measure(
+        listed,
+        [*listed],
+        synced=synced,
+        cooling=set(),
+        post=_flaky_tool_gateway(fail_always={"p/a"}),
+        seed="s",
+    )
+    assert quality["precision"] == pytest.approx(0.5)
+    pa = [c for c in quality["checks"] if c["route"] == "p/a"]
+    assert [c["attempt"] for c in pa] == [1, 2]
+    assert all(c["outcome"] == "fail" for c in pa)
+
+
+def test_account_blocked_listed_route_is_not_retried() -> None:
+    listed = [_verdict("p/blocked", eligible=True)]
+    synced = {"p": [{"id": "blocked"}]}
+    quality = acceptance_toolcheck.measure(
+        listed,
+        [*listed],
+        synced=synced,
+        cooling=set(),
+        post=_good_tool_gateway(blocked=frozenset({"p/blocked"})),
+        seed="s",
+    )
+    assert quality["precision"] is None
+    pb = [c for c in quality["checks"] if c["route"] == "p/blocked"]
+    assert len(pb) == 1 and pb[0]["attempt"] == 1 and pb[0]["outcome"] == "account"
 
 
 def test_measure_counts_unserved_listed_routes_against_precision() -> None:
@@ -814,3 +889,116 @@ def test_serve_check_accepts_reasoning_content_when_content_is_null():
     msg = reply["choices"][0].get("message") or {}
     content = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning")
     assert content == "The user wants OK so I respond OK."
+
+
+# -- transient gateway retry (BOD-345) ----------------------------------------
+
+
+def test_cli_check_retries_once_on_transient_gateway_failure() -> None:
+    """A CLI check that fails with a gateway timeout recovers on retry."""
+    calls: list[int] = []
+
+    def fake_cli(args: Sequence[str], timeout: float, env: Any = None) -> tuple[int, str, str]:
+        calls.append(1)
+        if len(calls) == 1:
+            return (
+                1,
+                json.dumps(
+                    {
+                        "error": "gateway /v1/models failed (connection error); "
+                        "check --gateway and gateway credentials"
+                    }
+                ),
+                "",
+            )
+        return 0, json.dumps({"model": "p/a"}), ""
+
+    check = acceptance._cli_check(
+        "route",
+        ["route", "--terse", "hello"],
+        300,
+        acceptance.judge_route,
+        "http://gw",
+        _run_cli=fake_cli,
+    )
+    assert check.passed is True
+    assert "retry" in check.reason.lower()
+    assert "attempts" in check.detail
+    assert len(check.detail["attempts"]) == 2
+    assert check.detail["attempts"][0]["attempt"] == 1
+    assert check.detail["attempts"][1]["attempt"] == 2
+
+
+def test_cli_check_does_not_retry_non_transient_failure() -> None:
+    """A genuine 'no eligible target' is not retried."""
+    calls: list[int] = []
+
+    def fake_cli(args: Sequence[str], timeout: float, env: Any = None) -> tuple[int, str, str]:
+        calls.append(1)
+        return 1, json.dumps({"model": None, "reason": "no_eligible_route"}), ""
+
+    check = acceptance._cli_check(
+        "route",
+        ["route", "--terse", "hello"],
+        300,
+        acceptance.judge_route,
+        "http://gw",
+        _run_cli=fake_cli,
+    )
+    assert check.passed is False
+    assert len(calls) == 1  # no retry
+    assert "attempts" not in check.detail
+
+
+def test_cli_check_retry_both_fail_records_second_attempt() -> None:
+    """When both attempts fail, the check records both and stays failed."""
+
+    def fake_cli(args: Sequence[str], timeout: float, env: Any = None) -> tuple[int, str, str]:
+        return (
+            1,
+            json.dumps(
+                {
+                    "model": None,
+                    "reason": "gateway_discovery_failed",
+                    "reasons": ["gateway /v1/models failed (connection error)"],
+                }
+            ),
+            "",
+        )
+
+    check = acceptance._cli_check(
+        "route",
+        ["route", "--terse", "hello"],
+        300,
+        acceptance.judge_route,
+        "http://gw",
+        _run_cli=fake_cli,
+    )
+    assert check.passed is False
+    assert "attempts" in check.detail
+    assert len(check.detail["attempts"]) == 2
+
+
+def test_eligibility_check_retries_on_transient_gateway_failure(live: Path) -> None:
+    """The eligibility check retries its CLI call once when the gateway stalls."""
+    calls: list[list[str]] = []
+
+    def fake_cli(args: Sequence[str], timeout: float, env: Any = None) -> tuple[int, str, str]:
+        calls.append(list(args))
+        if len(calls) == 1:
+            return (1, json.dumps({"error": "gateway /v1/models failed (connection error)"}), "")
+        return 0, json.dumps({"verdicts": [_verdict("p/a", eligible=True)]}), ""
+
+    check = acceptance.eligibility_check("http://gw", None, seed="s", _run_cli=fake_cli)
+    # The retry re-runs the same eligibility command exactly once.
+    assert len(calls) == 2
+    assert calls[0][0] == calls[1][0] == "eligibility"
+    assert check.passed is True
+    # The retry is recorded in detail["attempts"]; the final reason is the
+    # measurement outcome, which replaces the interim "retried" note.
+    assert "attempts" in check.detail
+    assert len(check.detail["attempts"]) == 2
+    assert check.detail["attempts"][0]["attempt"] == 1
+    assert check.detail["attempts"][1]["attempt"] == 2
+    # The retried payload still feeds the independent measurement path.
+    assert check.detail["eligible_free"] == 1

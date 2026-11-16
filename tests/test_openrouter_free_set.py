@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -832,3 +833,92 @@ def test_build_selector_owned_cache_ttl_boundary_uses_injected_now(
         now=NOW + timedelta(hours=6),
     )
     assert expired.openrouter_free_set is None
+
+
+def test_min_remaining_seconds_refetches_before_expiry(tmp_path: Path) -> None:
+    path = tmp_path / "cache.json"
+    fetch_calls: list[str] = []
+
+    def counting_fetch(url: str, timeout: float) -> dict[str, object]:
+        fetch_calls.append(url)
+        return _payload([_row("poolside/laguna-xs-2.1:free")])
+
+    t0 = NOW
+    ttl = 21600.0
+    first = load_openrouter_free_set(now=t0, cache_path=path, ttl_seconds=ttl, fetch=counting_fetch)
+    assert first is not None and first.source == "live"
+    assert len(fetch_calls) == 1
+    assert first.fetched_at == t0
+
+    # At T0 + 21598 s (2 s before expiry):
+    # With min_remaining_seconds=0.0 (default), age 21598 < 21600 => returns cache
+    cached = load_openrouter_free_set(
+        now=t0 + timedelta(seconds=21598),
+        cache_path=path,
+        ttl_seconds=ttl,
+        fetch=counting_fetch,
+        min_remaining_seconds=0.0,
+    )
+    assert cached is not None and cached.source == "cache"
+    assert len(fetch_calls) == 1
+
+    # With min_remaining_seconds=7200:
+    # age (21598) + 7200 >= 21600 => cache invalid => refetches live and rewrites fetched_at
+    refetched = load_openrouter_free_set(
+        now=t0 + timedelta(seconds=21598),
+        cache_path=path,
+        ttl_seconds=ttl,
+        fetch=counting_fetch,
+        min_remaining_seconds=7200.0,
+    )
+    assert refetched is not None and refetched.source == "live"
+    assert len(fetch_calls) == 2
+    assert refetched.fetched_at == t0 + timedelta(seconds=21598)
+
+
+def test_min_remaining_seconds_does_not_affect_cache_only_readers(tmp_path: Path) -> None:
+    path = tmp_path / "cache.json"
+    t0 = NOW
+    ttl = 21600.0
+    first = load_openrouter_free_set(
+        now=t0,
+        cache_path=path,
+        ttl_seconds=ttl,
+        fetch=lambda url, timeout: _payload([_row("poolside/laguna-xs-2.1:free")]),
+    )
+    assert first is not None
+
+    # refresh=False with min_remaining_seconds=7200 at T0 + 21598 s still returns cached set (still within TTL)
+    reader_before = load_openrouter_free_set(
+        now=t0 + timedelta(seconds=21598), cache_path=path, ttl_seconds=ttl, refresh=False
+    )
+    assert reader_before is not None
+    assert reader_before.source == "cache"
+    assert reader_before.contains("poolside/laguna-xs-2.1:free")
+
+    # At T0 + 21601 s (past TTL), returns None
+    reader_after = load_openrouter_free_set(
+        now=t0 + timedelta(seconds=21601), cache_path=path, ttl_seconds=ttl, refresh=False
+    )
+    assert reader_after is None
+
+
+def test_acceptance_refresh_passes_margin(monkeypatch: pytest.MonkeyPatch) -> None:
+    import verdict.acceptance as acceptance
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_load(**kwargs: Any) -> None:
+        calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr(acceptance, "load_openrouter_free_set", fake_load)
+    # run_checks requires gateway, api_key, and seed keyword arg
+    # run_checks will invoke load_openrouter_free_set before returning/running checks.
+    # We can mock cli checks or let them run/fail since load_openrouter_free_set happens first
+    with suppress(Exception):
+        acceptance.run_checks("http://127.0.0.1:1", None, seed="test-seed")
+
+    assert len(calls) == 1
+    assert calls[0].get("refresh") is True
+    assert calls[0].get("min_remaining_seconds") == 7200

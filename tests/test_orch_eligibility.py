@@ -436,7 +436,11 @@ class TestCapacityAndRanking:
             conn("claude", auth="oauth", plan="claude_max"),
         ]
         ladder, _ = make_ladder(tmp_path, rows, connections)
-        frontier_req = TaskRequirements(frontier_worthy=True, max_capability_tier=3)
+        frontier_req = TaskRequirements(
+            frontier_worthy=True,
+            max_capability_tier=3,
+            required_capabilities=frozenset({"reasoning"}),
+        )
         verdicts = ladder.evaluate(frontier_req, now=NOW)
         ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
         # D6 applies to frontier ranking too; the capability floor still gates.
@@ -873,7 +877,12 @@ def test_planner_respects_capability_floor_before_cheapest_tier(tmp_path, free_t
         [conn("glm", plan="free"), conn("claude")],
     )
     choice, _ = ladder.select(
-        TaskRequirements(frontier_worthy=True, max_capability_tier=2), now=NOW
+        TaskRequirements(
+            frontier_worthy=True,
+            max_capability_tier=2,
+            required_capabilities=frozenset({"reasoning"}),
+        ),
+        now=NOW,
     )
     assert choice is not None and choice.route_id == expected
 

@@ -596,6 +596,41 @@ def gate_admit_prove_confirm(
             confirm_evidence=confirm_rows,
         )
 
+    # BOD-297: live confirm joins the shared coordinator lease and never
+    # sends while another producer owns the job.
+    from verdict.orchestration.health_cache import default_cache_path
+    from verdict.orchestration.verified_refresh import _JobLock
+
+    _confirm_lock_path = (
+        Path(health_cache_path).parent / "verified-refresh.lock"
+        if health_cache_path is not None
+        else default_cache_path().parent / "verified-refresh.lock"
+    )
+    if _JobLock(_confirm_lock_path).live():
+        for identity_id in shortlist:
+            exclusions.append(
+                NamedDrop(
+                    identity_id,
+                    REASON_CONFIRM_UNAVAILABLE,
+                    "coordinator lease held by another producer",
+                )
+            )
+            confirm_rows.append(
+                ConfirmEvidence(
+                    identity_id=identity_id,
+                    confirmed=False,
+                    status=REASON_CONFIRM_UNAVAILABLE,
+                    error="coordinator lease held by another producer",
+                )
+            )
+        return _finalize(
+            receipt,
+            admitted=(),
+            exclusions=exclusions,
+            passport_evidence=passport_rows,
+            confirm_evidence=confirm_rows,
+        )
+
     if confirm_transport is None:
         for identity_id in shortlist:
             exclusions.append(

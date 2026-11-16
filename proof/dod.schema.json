@@ -199,17 +199,39 @@
       ]
     },
     "openspec": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "change"
-      ],
-      "properties": {
-        "change": {
-          "type": "string",
-          "pattern": "^[a-z0-9][a-z0-9-]*$"
+      "description": "The archived change, or not_applicable with a reason for a story that changed no behaviour (AGENTS.md asks for a change only on behaviour changes).",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "change"
+          ],
+          "properties": {
+            "change": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reason"
+          ],
+          "properties": {
+            "status": {
+              "const": "not_applicable"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 10
+            }
+          }
         }
-      }
+      ]
     },
     "parent_confirmation": {
       "type": "object",

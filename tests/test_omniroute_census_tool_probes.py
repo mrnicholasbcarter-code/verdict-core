@@ -93,7 +93,9 @@ def _tick(tmp_path: Path, prober: Any, **kw: Any) -> dict[str, Any]:
 
     return census_passports.run_census(
         _snapshot(),
-        lambda *a: ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True),
+        lambda *a: ProbeExchange(
+            http_status=200, ok=True, chat_exact=True, tool_called=True, reported_model="good/a"
+        ),
         cache=HealthCache(tmp_path / "health.json"),
         passport_store_path=tmp_path / "state.json",
         now=datetime.now(timezone.utc),

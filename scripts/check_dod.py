@@ -17,6 +17,10 @@ The check fails on any missing or mismatched field:
 * the OpenSpec change is archived and every task in it is ticked, including
   ``- [ ] (post-merge)`` tasks, which ``scripts/check_openspec_tasks.py`` lets
   stay open at merge time;
+* a story that changed no behaviour may name no change: ``"openspec":
+  {"status": "not_applicable", "reason": "..."}``. That fails when the merged
+  commit changed anything under ``openspec/`` or when a change, active or
+  archived, is named after the story's ticket;
 * the parent confirmation is by someone other than the author, re-runs one of
   the acceptance commands and shows the expected output.
 
@@ -58,6 +62,9 @@ PRE_GATE_ARCHIVES = frozenset(
     {"2026-10-08-bod-288-review-coverage-fail-closed", "2026-10-09-bod-198-codiv-candidate"}
 )
 ACTIONS_RUN_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/actions/runs/\d+")
+# The ticket at the start of a story name: "bod-384" in "bod-384-dead-code".
+TICKET = re.compile(r"([a-z]+)-(\d+)")
+ARCHIVE_DATE = re.compile(r"\d{4}-\d{2}-\d{2}-")
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -125,6 +132,41 @@ def _openspec(root: Path, change: str, errors: list[str]) -> None:
         errors.append(f"openspec change {change} has unticked tasks")
 
 
+def _merged_files(root: Path, merged: str) -> list[str]:
+    """Paths the merged commit changed against its first parent."""
+    return _git(
+        root, "diff-tree", "-m", "--first-parent", "--no-commit-id", "--name-only", "-r", merged
+    ).stdout.splitlines()
+
+
+def _no_openspec_change(root: Path, story: str, merged: str, errors: list[str]) -> None:
+    """Reasons the claim "this story has no OpenSpec change" is false."""
+    touched = [name for name in _merged_files(root, merged) if name.startswith("openspec/")]
+    if touched:
+        errors.append(
+            f"openspec: not_applicable, but the merged commit changed {', '.join(touched[:5])}"
+        )
+    ticket = TICKET.match(story)
+    # Changes are named "bod-384-..." or "bod384-..."; "bod-3840-..." is another ticket.
+    # Story names are lower case (schema); a change directory may not be.
+    owned = re.compile(
+        rf"{re.escape(ticket.group(1))}-?{ticket.group(2)}(?!\d)"
+        if ticket
+        else rf"{re.escape(story)}(-|$)",
+        re.IGNORECASE,
+    )
+    changes = root / "openspec/changes"
+    found = [p for p in (*changes.glob("*"), *(root / ARCHIVE_DIR).glob("*")) if p.is_dir()]
+    for directory in sorted(found):
+        name = directory.name
+        if directory.parent.name == "archive":
+            name = ARCHIVE_DATE.sub("", name, count=1)
+        elif name == "archive":
+            continue
+        if owned.match(name):
+            errors.append(f"openspec: not_applicable, but change {name} is named after this story")
+
+
 def check_evidence(root: Path, path: Path) -> list[str]:
     """Return every reason the evidence file at ``path`` does not prove DONE."""
     try:
@@ -149,10 +191,7 @@ def check_evidence(root: Path, path: Path) -> list[str]:
     merged_at = _time(_git(root, "show", "-s", "--format=%cI", merged).stdout.strip())
 
     if evidence["kind"] == "repo-tooling":
-        changed = _git(
-            root, "diff-tree", "-m", "--first-parent", "--no-commit-id", "--name-only", "-r", merged
-        ).stdout
-        product = [name for name in changed.split() if name.startswith("verdict/")]
+        product = [name for name in _merged_files(root, merged) if name.startswith("verdict/")]
         if product:
             errors.append(f"repo-tooling story changed product code: {', '.join(product[:5])}")
     elif evidence["setup_doctor"]["status"] != "green":
@@ -187,7 +226,10 @@ def check_evidence(root: Path, path: Path) -> list[str]:
         if _time(fresh["at"]) - _time(first["at"]) < window:
             errors.append(f"acceptance[{index}].fresh_run: not after the freshness window")
 
-    _openspec(root, evidence["openspec"]["change"], errors)
+    if "change" in evidence["openspec"]:
+        _openspec(root, evidence["openspec"]["change"], errors)
+    else:
+        _no_openspec_change(root, evidence["story"], merged, errors)
 
     confirmation = evidence["parent_confirmation"]
     if confirmation["by"] == evidence["author"]:

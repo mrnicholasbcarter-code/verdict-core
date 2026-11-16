@@ -422,7 +422,9 @@ def _cache_payload(
     }
 
 
-def _load_cached_set(path: Path, *, now: datetime, ttl_seconds: float) -> OpenRouterFreeSet | None:
+def _load_cached_set(
+    path: Path, *, now: datetime, ttl_seconds: float, min_remaining_seconds: float = 0.0
+) -> OpenRouterFreeSet | None:
     raw = _read_cache(path)
     if raw is None:
         return None
@@ -442,7 +444,7 @@ def _load_cached_set(path: Path, *, now: datetime, ttl_seconds: float) -> OpenRo
     if cached_ttl <= 0:
         return None
     age = (now - fetched_at).total_seconds()
-    if age < 0 or age >= cached_ttl:
+    if age < 0 or age + min_remaining_seconds >= cached_ttl:
         return None
     entries_raw = raw.get("entries")
     entries: dict[str, OpenRouterFreeEntry] = {}
@@ -478,6 +480,7 @@ def load_openrouter_free_set(
     timeout: float = 30.0,
     url: str = OPENROUTER_MODELS_URL,
     refresh: bool = True,
+    min_remaining_seconds: float = 0.0,
 ) -> OpenRouterFreeSet | None:
     """Return the cached-or-fresh free set, or None when membership cannot be asserted.
 
@@ -485,13 +488,22 @@ def load_openrouter_free_set(
     ``refresh=False`` is cache-only (never fetches, even with ``fetch=``).
     ``refresh=True`` (default) fetches only on cache miss/expiry; pass an
     explicit ``fetch=`` for tests. Failed fetch with no valid cache yields None.
+
+    ``min_remaining_seconds`` is a keyword-only refresh margin: the cache is
+    treated as valid only when ``age + min_remaining_seconds < ttl``. The
+    acceptance refresher passes ``2 * 3600`` because the hourly
+    ``verdict-acceptance.timer`` (``OnCalendar=hourly``) previously landed just
+    before the 6-hour TTL boundary and skipped refetching, leaving a ~1-hour
+    gap for cache-only readers.
     """
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     path = cache_path or default_cache_path()
     ttl = float(default_ttl_seconds() if ttl_seconds is None else ttl_seconds)
-    cached = _load_cached_set(path, now=current, ttl_seconds=ttl)
+    cached = _load_cached_set(
+        path, now=current, ttl_seconds=ttl, min_remaining_seconds=min_remaining_seconds
+    )
     if cached is not None:
         return cached
     if not refresh:

@@ -84,6 +84,24 @@ def test_absent_connection_limit_cache_is_not_unlimited(sources):
     assert connection.quota_reason == "cache_missing"
 
 
+def test_parse_omniroute_evidence_wires_capacity_evidence_and_live_candidates(sources):
+    """The parser must populate route_capacity_evidence and live_candidates.
+
+    Regression guard for the positional-constructor mis-wire: a positional
+    argument shift once dropped capacity_rules into live_candidates, leaving
+    route_capacity_evidence empty on every route.
+    """
+    evidence = parse_omniroute_evidence(**sources, now=NOW)
+    assert evidence.route_capacity_evidence
+    assert all(isinstance(rule, str) and rule for rule in evidence.route_capacity_evidence.values())
+    assert evidence.live_candidates
+    assert all(
+        isinstance(candidate, LiveCandidate) for candidate in evidence.live_candidates.values()
+    )
+    assert "a/best" in evidence.route_capacity_evidence
+    assert "a/best" in evidence.live_candidates
+
+
 def test_catalog_aliases_and_cooldowns_retain_exact_ids(sources):
     sources["v1_models"]["data"].append({"id": "alpha/best", "root": "best", "owned_by": "alpha"})
     sources["health_matrix"]["providers"][0]["accounts"][0]["models"].append(

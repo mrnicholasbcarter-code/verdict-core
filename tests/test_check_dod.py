@@ -276,3 +276,143 @@ def test_root_without_a_schema_copy_is_checked_with_the_checker_schema(
     (root / "docs/proof/dod/gate.json").write_text(json.dumps(evidence), encoding="utf-8")
     assert check_dod.main(["--all", "--root", str(root)]) == 0
     assert "DONE: " in capsys.readouterr().out
+
+
+NO_CHANGE = {"status": "not_applicable", "reason": "dead code removal, no behaviour change"}
+
+
+def _no_change_story(
+    root: Path, evidence: dict[str, Any], story: str = "cleanup", extra: str | None = None
+) -> dict[str, Any]:
+    """Evidence for ``story``, merged in a new commit, that names no OpenSpec change."""
+    (root / "scripts/tool.py").write_text(f"print({story!r})\n", encoding="utf-8")
+    if extra is not None:
+        path = root / extra
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# touched\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-qm", story)
+    sha = _git(root, "rev-parse", "HEAD")
+    changed = copy.deepcopy(evidence)
+    changed.update(story=story, merged_sha=sha, openspec=dict(NO_CHANGE))
+    changed["on_main"]["sha"] = sha
+    for item in changed["acceptance"]:
+        item["first_run"]["sha"] = item["fresh_run"]["sha"] = sha
+    return changed
+
+
+def _check_story(root: Path, evidence: dict[str, Any]) -> list[str]:
+    path = root / f"docs/proof/dod/{evidence['story']}.json"
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    return check_dod.check_evidence(root, path)
+
+
+def test_story_with_no_openspec_change_is_done(repo: tuple[Path, dict[str, Any]]) -> None:
+    root, evidence = repo
+    assert _check_story(root, _no_change_story(root, evidence)) == []
+
+
+@pytest.mark.parametrize(
+    "touched", ["openspec/changes/other/tasks.md", "openspec/specs/other/spec.md"]
+)
+def test_no_change_claim_fails_when_the_merged_commit_changed_openspec(
+    repo: tuple[Path, dict[str, Any]], touched: str
+) -> None:
+    root, evidence = repo
+    errors = _check_story(root, _no_change_story(root, evidence, extra=touched))
+    assert any("merged commit changed" in e and touched in e for e in errors), errors
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "openspec/changes/bod-7",
+        "openspec/changes/bod-7-thing",
+        "openspec/changes/bod7-thing",
+        "openspec/changes/BOD-7-thing",
+        "openspec/changes/archive/2026-10-20-bod-7-thing",
+    ],
+)
+def test_no_change_claim_fails_when_a_change_is_named_after_the_story(
+    repo: tuple[Path, dict[str, Any]], change: str
+) -> None:
+    root, evidence = repo
+    story = _no_change_story(root, evidence, story="bod-7-cleanup")
+    (root / change).mkdir(parents=True)
+    errors = _check_story(root, story)
+    assert any("named after this story" in e for e in errors), errors
+
+
+def test_a_change_for_another_ticket_does_not_block_a_no_change_story(
+    repo: tuple[Path, dict[str, Any]],
+) -> None:
+    root, evidence = repo
+    story = _no_change_story(root, evidence, story="bod-7")
+    (root / "openspec/changes/bod-70-thing").mkdir(parents=True)
+    (root / "openspec/changes/bod70-thing").mkdir(parents=True)
+    assert _check_story(root, story) == []
+
+
+def test_a_story_without_a_ticket_is_matched_by_its_whole_name(
+    repo: tuple[Path, dict[str, Any]],
+) -> None:
+    root, evidence = repo
+    story = _no_change_story(root, evidence)
+    (root / "openspec/changes/cleanup-later").mkdir(parents=True)
+    errors = _check_story(root, story)
+    assert any("named after this story" in e for e in errors), errors
+    shutil.move(root / "openspec/changes/cleanup-later", root / "openspec/changes/cleanups")
+    assert _check_story(root, story) == []
+
+
+@pytest.mark.parametrize(
+    "openspec",
+    [
+        {},
+        {"status": "not_applicable"},
+        {"status": "not_applicable", "reason": "short"},
+        {"status": "skipped", "reason": NO_CHANGE["reason"]},
+        {"change": "gate", **NO_CHANGE},
+        {**NO_CHANGE, "extra": "x"},
+    ],
+)
+def test_no_change_needs_the_exact_shape_and_a_reason(
+    repo: tuple[Path, dict[str, Any]], openspec: dict[str, str]
+) -> None:
+    root, evidence = repo
+    story = _no_change_story(root, evidence)
+    story["openspec"] = openspec
+    errors = _check_story(root, story)
+    assert any(e.startswith("openspec") for e in errors), errors
+
+
+def test_both_no_change_guards_report_together(repo: tuple[Path, dict[str, Any]]) -> None:
+    root, evidence = repo
+    story = _no_change_story(
+        root, evidence, story="bod-7-cleanup", extra="openspec/changes/bod-7-thing/tasks.md"
+    )
+    errors = _check_story(root, story)
+    assert any("merged commit changed" in e for e in errors), errors
+    assert any("named after this story" in e for e in errors), errors
+
+
+def test_the_other_checks_still_run_for_a_no_change_story(
+    repo: tuple[Path, dict[str, Any]],
+) -> None:
+    root, evidence = repo
+    story = _no_change_story(root, evidence, extra="verdict/thing.py")
+    assert any("changed product code" in e for e in _check_story(root, story))
+    story["parent_confirmation"]["by"] = story["author"]
+    assert any("cannot confirm their own story" in e for e in _check_story(root, story))
+
+
+def test_all_still_flags_an_unproven_archive_beside_a_no_change_story(
+    repo: tuple[Path, dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, evidence = repo
+    story = _no_change_story(root, evidence)
+    (root / "docs/proof/dod/cleanup.json").write_text(json.dumps(story), encoding="utf-8")
+    assert check_dod.main(["--all", "--root", str(root)]) == 1
+    lines = capsys.readouterr().out.splitlines()
+    assert any(line.startswith("DONE: ") and "cleanup.json" in line for line in lines), lines
+    assert "NOT DONE: openspec change gate was archived without DoD evidence" in lines, lines

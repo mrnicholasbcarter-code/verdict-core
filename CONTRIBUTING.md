@@ -86,6 +86,13 @@ fails it unless the pull request has the `wip` label; `(post merge)`,
 open tasks. `scripts/check_dod.py` counts post-merge tasks like any other: the
 story is not done, and archiving its change fails, until they are ticked.
 
+A story that changed no behaviour (dead-code removal, a fix inside an existing
+spec) has no OpenSpec change. Its evidence file says
+`"openspec": {"status": "not_applicable", "reason": "<why>"}` instead of
+`{"change": "<name>"}`. `scripts/check_dod.py` fails that claim when the merged
+commit changed anything under `openspec/`, or when an active or archived change
+is named after the story's ticket. The other six parts apply unchanged.
+
 Reviewers still ask **"who calls this in production?"** An answer naming only
 `tests/` is not a production caller, and `scripts/check_reachability.py` must
 not report the new code.

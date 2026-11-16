@@ -9,18 +9,16 @@ CLI surface (do not rename):
     verdict harness claude certify  [--force]
 
 ``enable`` backs up ``~/.claude/settings.json`` before upserting Verdict-managed
-``env.OPENAI_BASE_URL`` (OpenAI-compatible path at Verdict ``:8000``, never
-OmniRoute ``:20128``) and ensuring a SessionStart ``verdict hook claude-gate``
-entry. ``disable`` restores the backup byte-for-byte.
+``env.OPENAI_BASE_URL`` (OpenAI-compatible path at Verdict ``:8000/v1``) and
+``env.ANTHROPIC_BASE_URL`` (origin root, no ``/v1``; Claude Code appends
+``/v1/messages``). OmniRoute ``:20128`` is refused. A SessionStart
+``verdict hook claude-gate`` entry is ensured. ``disable`` restores the backup
+byte-for-byte.
 
-Claude Code's default wire format is Anthropic Messages (``/v1/messages``).
-Verdict's proxy today is OpenAI-compatible only, so full Anthropic routing via
-``ANTHROPIC_BASE_URL`` remains a known gap. This adapter therefore
-certifies as **partial**: gate + OpenAI side-path are managed; Messages proxy
-is unsupported until Core grows that surface.
-
-Live enable that writes secrets is NEEDS_OWNER — this module never stores token
-values; status/certify only report whether the named env var is set.
+Anthropic Messages is served by Verdict and translated by the upstream gateway.
+This adapter still certifies as **partial**: live token use is NEEDS_OWNER and
+exact model selection is unproven. It never stores token values; status/certify
+only report whether the named env var is set.
 """
 
 from __future__ import annotations
@@ -35,6 +33,7 @@ from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from verdict.harness_codex import DEFAULT_BASE_URL, DEFAULT_TOKEN_ENV, HealthCheck, probe_health
 
@@ -106,6 +105,49 @@ class CertifyReport:
     needs_owner: tuple[str, ...]
 
 
+def _anthropic_origin(base_url: str) -> str:
+    """Verdict origin root. Claude Code appends ``/v1/messages`` itself."""
+
+    parsed = urlsplit(base_url.strip())
+    if parsed.scheme and parsed.netloc:
+        return urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
+    text = base_url.strip().rstrip("/")
+    for suffix in ("/v1/messages", "/v1"):
+        if text.endswith(suffix):
+            return text[: -len(suffix)]
+    return text
+
+
+def _env_url(env: Mapping[str, Any], key: str) -> str | None:
+    raw = env.get(key)
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def _points_at_verdict(url: str) -> bool:
+    return "8000" in url and "20128" not in url
+
+
+def _points_at_omniroute(url: str) -> bool:
+    return "20128" in url
+
+
+def _configured_base_urls(env: Mapping[str, Any]) -> tuple[str | None, str | None, str | None]:
+    """Return ``(reported, openai, anthropic)``. Prefer a Verdict OpenAI URL."""
+
+    openai = _env_url(env, "OPENAI_BASE_URL")
+    anthropic = _env_url(env, "ANTHROPIC_BASE_URL")
+    reported: str | None
+    if openai and _points_at_verdict(openai):
+        reported = openai
+    elif anthropic and _points_at_verdict(anthropic):
+        reported = anthropic
+    else:
+        reported = openai or anthropic
+    return reported, openai, anthropic
+
+
 def resolve_paths(
     *, claude_home: Path | None = None, home: Path | None = None
 ) -> ClaudeHarnessPaths:
@@ -131,17 +173,19 @@ def discover(
     binary = finder("claude")
     exists = paths.config.is_file()
     base_url: str | None = None
+    openai_url: str | None = None
+    anthropic_url: str | None = None
     gate = False
     managed = paths.backup.is_file() or paths.absent_marker.exists()
     if exists:
         data = _load_settings(paths.config)
         env = data.get("env") if isinstance(data.get("env"), Mapping) else {}
-        raw = env.get("OPENAI_BASE_URL") if isinstance(env, Mapping) else None
-        if isinstance(raw, str) and raw.strip():
-            base_url = raw.strip()
+        if isinstance(env, Mapping):
+            base_url, openai_url, anthropic_url = _configured_base_urls(env)
         gate = _gate_hook_present(data)
-        if base_url and "8000" in base_url and _gate_hook_present(data):
+        if base_url and _points_at_verdict(base_url) and gate:
             managed = True
+    urls = tuple(url for url in (openai_url, anthropic_url) if url)
     return DiscoverReport(
         installed=binary is not None,
         binary_path=binary,
@@ -149,8 +193,8 @@ def discover(
         config_exists=exists,
         managed_by_verdict=managed,
         base_url=base_url,
-        pointing_at_verdict=bool(base_url and "8000" in base_url and "20128" not in base_url),
-        pointing_at_omniroute=bool(base_url and "20128" in base_url),
+        pointing_at_verdict=any(_points_at_verdict(url) for url in urls),
+        pointing_at_omniroute=any(_points_at_omniroute(url) for url in urls),
         gate_hook_present=gate,
     )
 
@@ -163,7 +207,7 @@ def enable(
     claude_home: Path | None = None,
     health_check: HealthCheck | Callable[[str], bool] | None = None,
 ) -> EnableResult:
-    """Backup Claude settings, then point OpenAI-compatible traffic at Verdict."""
+    """Backup Claude settings, then point Claude Code at Verdict."""
 
     resolved_base = base_url.strip() or DEFAULT_BASE_URL
     resolved_token_env = token_env.strip() or DEFAULT_TOKEN_ENV
@@ -249,19 +293,16 @@ def status(*, claude_home: Path | None = None) -> StatusReport:
         data = _load_settings(paths.config)
         env = data.get("env") if isinstance(data.get("env"), Mapping) else {}
         if isinstance(env, Mapping):
-            raw = env.get("OPENAI_BASE_URL")
-            if isinstance(raw, str) and raw.strip():
-                base_url = raw.strip()
+            base_url, _, _ = _configured_base_urls(env)
             marker = env.get("VERDICT_HARNESS_TOKEN_ENV")
             if isinstance(marker, str) and marker.strip():
                 token_env = marker.strip()
             if env.get("VERDICT_HARNESS") == "claude":
                 integration = "openai-compatible"
         gate = _gate_hook_present(data)
+    pointing_verdict = bool(base_url and _points_at_verdict(base_url))
     enabled = bool(
-        base_url
-        and "8000" in base_url
-        and "20128" not in base_url
+        pointing_verdict
         and gate
         and (
             paths.backup.exists()
@@ -302,7 +343,7 @@ def certify(
 
     facets: dict[str, Parity] = {
         "hooks": "supported" if report.gate_hook_present else "unsupported",
-        "model_selection": "partial",  # OpenAI side-path only
+        "model_selection": "partial",  # exact selection unproven; Messages transport is gateway-delegated
         "config_import": "supported"
         if report.config_exists or discovered.managed_by_verdict
         else "partial",
@@ -328,7 +369,10 @@ def certify(
     }
     notes: list[str] = [
         "OpenAI-compatible path via env.OPENAI_BASE_URL → Verdict :8000",
-        "Anthropic Messages (/v1/messages) via ANTHROPIC_BASE_URL is unsupported until BOD-102",
+        (
+            "Anthropic Messages (/v1/messages) via ANTHROPIC_BASE_URL → Verdict :8000; "
+            "translation delegated to the upstream gateway"
+        ),
         "SessionStart claude-gate provides fail-closed catalog admission",
     ]
     live_events = [e for e, lvl in CLAUDE_HOOK_EVENT_CAPABILITY.items() if lvl == "supported"]
@@ -411,20 +455,20 @@ def format_certify(report: CertifyReport) -> str:
 def apply_verdict_provider(
     data: MutableMapping[str, Any], *, base_url: str, token_env: str
 ) -> dict[str, Any]:
-    """Upsert Verdict OpenAI-compatible env + SessionStart claude-gate hook.
+    """Upsert Verdict env + SessionStart claude-gate hook.
 
-    Preference: existing Verdict-managed settings.env markers → OpenAI-compatible
-    env keys. Never writes token values. Does not set ANTHROPIC_BASE_URL (Messages
-    proxy gap).
+    Sets ``OPENAI_BASE_URL`` to ``base_url`` unchanged and ``ANTHROPIC_BASE_URL``
+    to the origin root (no ``/v1``). Never writes token values.
     """
 
     result = dict(data)
     env = dict(result.get("env") or {})
     env["OPENAI_BASE_URL"] = base_url
+    env["ANTHROPIC_BASE_URL"] = _anthropic_origin(base_url)
     env["VERDICT_HARNESS"] = "claude"
     env["VERDICT_HARNESS_TOKEN_ENV"] = token_env
-    # Point OpenAI API key env name indirectly — Claude expands process env.
-    # Do not embed the secret; operators export token_env / OPENAI_API_KEY.
+    # Claude expands process env. Do not embed the secret; operators export
+    # token_env / OPENAI_API_KEY / ANTHROPIC_AUTH_TOKEN.
     result["env"] = env
     result["hooks"] = _ensure_claude_gate(result.get("hooks"))
     return result
