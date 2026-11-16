@@ -1,10 +1,10 @@
-# Spec Delta
+# public-verified-models Specification
 
 ## Purpose
 
 Defines `GET /v1/models` as a local verified projection kept fresh by a lifespan task.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: /v1/models publishes only locally verified models
 

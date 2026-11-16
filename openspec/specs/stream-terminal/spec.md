@@ -1,10 +1,10 @@
-# Spec Delta
+# stream-terminal Specification
 
 ## Purpose
 
 Defines checked terminal outcomes, bounds and close-once for relayed SSE streams.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Stream outcome follows the terminal event, not byte framing
 

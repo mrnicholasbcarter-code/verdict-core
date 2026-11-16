@@ -1,10 +1,10 @@
-# Spec Delta
+# dispatch-permits Specification
 
 ## Purpose
 
 Defines durable dispatch permits and per-scope revocation that gate every relay send and worker spawn.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: A permit is committed before every send or spawn
 

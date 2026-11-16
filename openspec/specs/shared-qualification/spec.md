@@ -1,10 +1,10 @@
-# Spec Delta
+# shared-qualification Specification
 
 ## Purpose
 
 Defines scope-bound reuse and per-provider fairness in the shared verified-model refresh coordinator (phase 1).
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Refresh reuse is bound to a stable scope
 
