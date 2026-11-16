@@ -18,7 +18,7 @@ The repository already centralizes CI classification and bounded recovery decisi
 4. **Capability restriction.** The watcher receives a client exposing discovery, check/review/merge reads, bounded rerun, and notification operations only. No merge, push, branch creation, or source-edit method exists on that interface. The normative adapter table is defined in specs/pr-watcher/spec.md; this file does not restate it.
 5. **Concurrency and idempotency.** A non-blocking `flock` under the common state directory makes a second overlapping invocation exit. Atomic writes use stable keys for rerun, repair, block, regression, digest, and Linear events, suppressing duplicates across timer invocations and retries.
 6. **Durable state before side effects.** Attempt counters, cursor, last classification, transitions, and records are persisted atomically before bounded GitHub/Linear side effects. Malformed state fails closed.
-7. **Installation follows host patterns.** Add one watcher service/timer to the existing setup step model and doctor timer diagnostics, with an interval no greater than five minutes and explicit state scope.
+7. **Installation follows host patterns.** Add one watcher service/timer to the existing setup step model and doctor timer diagnostics, with an interval no greater than five minutes and explicit state scope. Parser modules expose register(subparsers) and are assembled in verdict/cli.py; dispatch.py routes parsed commands.
 
 ## Data flow
 

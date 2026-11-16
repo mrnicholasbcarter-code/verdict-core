@@ -71,7 +71,7 @@ tasks:
       - 'Open PR polling uses exact-head checks and merge state; zero, unknown, pending, cancelled, and >30 minute stalled checks are never green.'
       - 'Merged reconciliation reads closed+merged PRs since a durable cursor with bounded lookback and identifies fail review via CHANGES_REQUESTED or a keyed Verdict/ocr fail receipt; fixture covers open at run N and merged fail before N+1.'
       - 'Rerun key is repo + PR number + head SHA + check name + workflow/job identity; counters update atomically, immediate reread fences head/check, duplicate timers and concurrent requests do not duplicate reruns, and changed heads are rejected.'
-      - 'GREEN / PROCEED_MERGE -> READY, no side effect; PENDING / WAIT_CI -> no action; INFRA_FAILURE / CANCELLED / stalled (>30m) / RETRY_CI -> one bounded rerun per key; CODE_FAILURE / CORRECTIVE_IMPLEMENTATION, CONFLICT / BEHIND / REBASE_AND_REPROOF -> durable controller repair record; EMPTY / MISSING_REQUIRED -> not green, repair record with reason; attempts exhausted / BLOCKED -> BLOCKED with reason, with no merge/push/branch/source-edit capability exposed to the watcher.'
+      - 'Action mapping: the adapter table in specs/pr-watcher/spec.md is normative; this file does not restate it.'
       - 'Non-blocking flock serializes writers; repair, block, regression, digest, and Linear events have stable idempotency keys and atomic persistence.'
       - 'Fixtures cover multiple checks, changed head, duplicate timer, concurrent invocation, retry exhaustion, regression, and negative capability.'
     handoff:
