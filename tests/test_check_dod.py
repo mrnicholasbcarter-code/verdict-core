@@ -645,16 +645,24 @@ def test_orchestrate_regression_key_shapes_fail_closed(repo):
     errors = _check(root, evidence)
     assert len([e for e in errors if "raw output is not the run" in e]) == 3
 
+
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("started_at", "2026-11-16T18:10:41"), ("finished_at", "2026-11-16T18:10:41"), ("started_at", 12345), ("finished_at", None)],
+    [
+        ("started_at", "2026-11-16T18:10:41"),
+        ("finished_at", "2026-11-16T18:10:41"),
+        ("started_at", 12345),
+        ("finished_at", None),
+    ],
 )
 def test_structured_result_invalid_time_fails_without_crashing(repo, field, value):
     root, evidence = repo
     _structured_evidence(root, evidence)
     result = json.loads(_structured_result())
     result[field] = value
-    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(root, "invalid-time.json", json.dumps(result))
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "invalid-time.json", json.dumps(result)
+    )
     errors = _check(root, evidence)
     assert any("structured result time is invalid" in e for e in errors), errors
 
@@ -662,8 +670,12 @@ def test_structured_result_invalid_time_fails_without_crashing(repo, field, valu
 def test_structured_result_timezone_offsets_and_fraction_pass(repo):
     root, evidence = repo
     _structured_evidence(root, evidence)
-    result = _structured_result(started_at="2026-11-16T18:10:41.123+00:00", finished_at="2026-11-16T18:10:41.456+00:00")
-    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(root, "offset-time.json", result)
+    result = _structured_result(
+        started_at="2026-11-16T18:10:41.123+00:00", finished_at="2026-11-16T18:10:41.456+00:00"
+    )
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "offset-time.json", result
+    )
     evidence["acceptance"][0]["first_run"]["at"] = "2026-11-16T18:10:41.200+00:00"
     assert not any("structured result time is invalid" in e for e in _check(root, evidence))
 
@@ -671,7 +683,9 @@ def test_structured_result_timezone_offsets_and_fraction_pass(repo):
 def test_structured_result_inverted_interval_fails(repo):
     root, evidence = repo
     _structured_evidence(root, evidence)
-    result = _structured_result(started_at="2026-11-16T18:14:00Z", finished_at="2026-11-16T18:10:00Z")
+    result = _structured_result(
+        started_at="2026-11-16T18:14:00Z", finished_at="2026-11-16T18:10:00Z"
+    )
     evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(root, "inverted.json", result)
     errors = _check(root, evidence)
     assert any("started_at" in e and "finished_at" in e and "later" in e for e in errors), errors
@@ -680,7 +694,9 @@ def test_structured_result_inverted_interval_fails(repo):
 def test_structured_parent_confirmation_review_must_pass(repo):
     root, evidence = repo
     _orchestrate_evidence(root, evidence, _structured_result() + "\n")
-    evidence["parent_confirmation"]["raw_output"] = _artifact(root, "error-review.json", _structured_result(review_status="ERROR"))
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root, "error-review.json", _structured_result(review_status="ERROR")
+    )
     errors = _check(root, evidence)
     assert any("parent_confirmation" in e and "review status ERROR" in e for e in errors), errors
 
@@ -688,16 +704,21 @@ def test_structured_parent_confirmation_review_must_pass(repo):
 def test_structured_parent_confirmation_complete_passes(repo):
     root, evidence = repo
     _orchestrate_evidence(root, evidence, _structured_result() + "\n")
-    assert not any("parent_confirmation" in e and "review status" in e for e in _check(root, evidence))
+    assert not any(
+        "parent_confirmation" in e and "review status" in e for e in _check(root, evidence)
+    )
 
 
-@pytest.mark.parametrize("command,expected", [
-    ("verdict orchestrate -j", False),
-    ("verdict orchestrate --json=true", False),
-    ("v orchestrate --json", False),
-    ("verdict  orchestrate --json", True),
-    ("verdict orchestrate --graph 'my graph.json' --json", True),
-])
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ("verdict orchestrate -j", False),
+        ("verdict orchestrate --json=true", False),
+        ("v orchestrate --json", False),
+        ("verdict  orchestrate --json", True),
+        ("verdict orchestrate --graph 'my graph.json' --json", True),
+    ],
+)
 def test_orchestrate_command_matcher_boundaries(command, expected):
     assert check_dod._is_orchestrate_json_command(command) is expected
 
