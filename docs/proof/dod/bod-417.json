@@ -64,11 +64,11 @@
   },
   "parent_confirmation": {
     "by": "gem-devops confirmer (omniroute worker/free-first, gem-orchestrator run 20261116-m1-dod-confirm)",
-    "at": "2026-11-16T12:06:32.948406Z",
+    "at": "2026-11-16T12:44:47Z",
     "command": "verdict choose --task-class implementation --requires tools,code --json",
     "raw_output": {
-      "path": "docs/proof/dod/bod-417/parent-confirmation-20261116T120451Z.json",
-      "sha256": "5c7b873ae2bc1e3b9d4361376e761285a79418bb8e344e6236edcdfa3311010c"
+      "path": "docs/proof/dod/bod-417/parent-confirmation-20261116T124447Z.json",
+      "sha256": "c3e953693b255639f6cc547c7b5231af30c5ea7cbb7729c51864122af67b5711"
     }
   }
 }

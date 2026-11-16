@@ -1,17 +1,10 @@
-outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/smoke-test-20261116/.verdict/runs/20261116T030505Z (receipt_bytes_exceeded)
-outcome history: skipped indexed run /operator/dev/verdict-core/.worktrees/harness-contracts-confirm/runs/20261116T021048Z (receipt_bytes_exceeded)
-outcome history: skipped indexed run /tmp/bod286-live-run/runs3/20261115T180726Z (receipt_bytes_exceeded)
-outcome history: skipped indexed run /tmp/bod286-live-run/runs/20261115T164123Z (receipt_bytes_exceeded)
-outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/m-swarm-20261112/stories/BOD-300/live-proof/runs/20261115T154800Z (receipt_bytes_exceeded)
-outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/m-swarm-20261112/stories/BOD-300/live-proof/runs/20261115T111804Z (receipt_bytes_exceeded)
-outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/m-swarm-20261112/stories/BOD-300/live-proof/runs/20261115T105109Z (receipt_bytes_exceeded)
 {
   "confirm": "production_ladder",
   "funnel": {
-    "AVAILABLE": 168,
-    "DISCOVERED": 4167,
-    "ENTITLED": 2920,
-    "HEALTHY": 191,
+    "AVAILABLE": 164,
+    "DISCOVERED": 4171,
+    "ENTITLED": 2924,
+    "HEALTHY": 187,
     "SELECTED": 1,
     "TASK_ELIGIBLE": 100
   },
@@ -10105,6 +10098,10 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
         },
         {
           "reason": "admission:missing_capability:tools",
+          "route_id": "aihorde/DucHaiten GameArt (Unreal) Pony"
+        },
+        {
+          "reason": "admission:missing_capability:tools",
           "route_id": "aihorde/Dungeons and Diffusion"
         },
         {
@@ -10381,6 +10378,10 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
         },
         {
           "reason": "admission:missing_capability:tools",
+          "route_id": "aihorde/Qwen-Image_fp8"
+        },
+        {
+          "reason": "admission:missing_capability:tools",
           "route_id": "aihorde/RPG"
         },
         {
@@ -10437,6 +10438,10 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
         },
         {
           "reason": "admission:missing_capability:tools",
+          "route_id": "aihorde/Stable Cascade 1.0"
+        },
+        {
+          "reason": "admission:missing_capability:tools",
           "route_id": "aihorde/SwamPonyXL"
         },
         {
@@ -10454,6 +10459,10 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
         {
           "reason": "admission:missing_capability:tools",
           "route_id": "aihorde/Uhmami"
+        },
+        {
+          "reason": "admission:missing_capability:tools",
+          "route_id": "aihorde/Ultraspice"
         },
         {
           "reason": "admission:missing_capability:tools",
@@ -17612,6 +17621,7 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
         "aihorde/Dreamshaper",
         "aihorde/DucHaiten",
         "aihorde/DucHaiten Classic Anime",
+        "aihorde/DucHaiten GameArt (Unreal) Pony",
         "aihorde/Dungeons and Diffusion",
         "aihorde/Dungeons n Waifus",
         "aihorde/Edge Of Realism",
@@ -17681,6 +17691,7 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
         "aihorde/Pretty 2.5D",
         "aihorde/Project Unreal Engine 5",
         "aihorde/Quiet Goodnight XL",
+        "aihorde/Qwen-Image_fp8",
         "aihorde/RPG",
         "aihorde/Rag Illustrious Mix",
         "aihorde/Real Dos Mix",
@@ -17695,11 +17706,13 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
         "aihorde/SDXL 1.0",
         "aihorde/Sci-Fi Diffusion",
         "aihorde/Something",
+        "aihorde/Stable Cascade 1.0",
         "aihorde/SwamPonyXL",
         "aihorde/TUNIX Pony",
         "aihorde/ToonYou",
         "aihorde/URPM",
         "aihorde/Uhmami",
+        "aihorde/Ultraspice",
         "aihorde/Unstable Diffusers XL",
         "aihorde/Unstable Ink Dream",
         "aihorde/Vector Art",
@@ -19411,7 +19424,7 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
     },
     "TASK_ELIGIBLE": {
       "admission:insufficient_context": 69,
-      "admission:missing_capability:tools": 277,
+      "admission:missing_capability:tools": 281,
       "agentic_probe_stale": 17,
       "effort_duplicate": 8,
       "no_agentic_probe": 1425,
@@ -29527,6 +29540,10 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           },
           {
             "reason": "admission:missing_capability:tools",
+            "route_id": "aihorde/DucHaiten GameArt (Unreal) Pony"
+          },
+          {
+            "reason": "admission:missing_capability:tools",
             "route_id": "aihorde/Dungeons and Diffusion"
           },
           {
@@ -29803,6 +29820,10 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           },
           {
             "reason": "admission:missing_capability:tools",
+            "route_id": "aihorde/Qwen-Image_fp8"
+          },
+          {
+            "reason": "admission:missing_capability:tools",
             "route_id": "aihorde/RPG"
           },
           {
@@ -29859,6 +29880,10 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           },
           {
             "reason": "admission:missing_capability:tools",
+            "route_id": "aihorde/Stable Cascade 1.0"
+          },
+          {
+            "reason": "admission:missing_capability:tools",
             "route_id": "aihorde/SwamPonyXL"
           },
           {
@@ -29876,6 +29901,10 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           {
             "reason": "admission:missing_capability:tools",
             "route_id": "aihorde/Uhmami"
+          },
+          {
+            "reason": "admission:missing_capability:tools",
+            "route_id": "aihorde/Ultraspice"
           },
           {
             "reason": "admission:missing_capability:tools",
@@ -37034,6 +37063,7 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           "aihorde/Dreamshaper",
           "aihorde/DucHaiten",
           "aihorde/DucHaiten Classic Anime",
+          "aihorde/DucHaiten GameArt (Unreal) Pony",
           "aihorde/Dungeons and Diffusion",
           "aihorde/Dungeons n Waifus",
           "aihorde/Edge Of Realism",
@@ -37103,6 +37133,7 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           "aihorde/Pretty 2.5D",
           "aihorde/Project Unreal Engine 5",
           "aihorde/Quiet Goodnight XL",
+          "aihorde/Qwen-Image_fp8",
           "aihorde/RPG",
           "aihorde/Rag Illustrious Mix",
           "aihorde/Real Dos Mix",
@@ -37117,11 +37148,13 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           "aihorde/SDXL 1.0",
           "aihorde/Sci-Fi Diffusion",
           "aihorde/Something",
+          "aihorde/Stable Cascade 1.0",
           "aihorde/SwamPonyXL",
           "aihorde/TUNIX Pony",
           "aihorde/ToonYou",
           "aihorde/URPM",
           "aihorde/Uhmami",
+          "aihorde/Ultraspice",
           "aihorde/Unstable Diffusers XL",
           "aihorde/Unstable Ink Dream",
           "aihorde/Vector Art",
@@ -48914,6 +48947,10 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           },
           {
             "reason": "admission:missing_capability:tools",
+            "route_id": "aihorde/DucHaiten GameArt (Unreal) Pony"
+          },
+          {
+            "reason": "admission:missing_capability:tools",
             "route_id": "aihorde/Dungeons and Diffusion"
           },
           {
@@ -49190,6 +49227,10 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           },
           {
             "reason": "admission:missing_capability:tools",
+            "route_id": "aihorde/Qwen-Image_fp8"
+          },
+          {
+            "reason": "admission:missing_capability:tools",
             "route_id": "aihorde/RPG"
           },
           {
@@ -49246,6 +49287,10 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           },
           {
             "reason": "admission:missing_capability:tools",
+            "route_id": "aihorde/Stable Cascade 1.0"
+          },
+          {
+            "reason": "admission:missing_capability:tools",
             "route_id": "aihorde/SwamPonyXL"
           },
           {
@@ -49263,6 +49308,10 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           {
             "reason": "admission:missing_capability:tools",
             "route_id": "aihorde/Uhmami"
+          },
+          {
+            "reason": "admission:missing_capability:tools",
+            "route_id": "aihorde/Ultraspice"
           },
           {
             "reason": "admission:missing_capability:tools",
@@ -56421,6 +56470,7 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           "aihorde/Dreamshaper",
           "aihorde/DucHaiten",
           "aihorde/DucHaiten Classic Anime",
+          "aihorde/DucHaiten GameArt (Unreal) Pony",
           "aihorde/Dungeons and Diffusion",
           "aihorde/Dungeons n Waifus",
           "aihorde/Edge Of Realism",
@@ -56490,6 +56540,7 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           "aihorde/Pretty 2.5D",
           "aihorde/Project Unreal Engine 5",
           "aihorde/Quiet Goodnight XL",
+          "aihorde/Qwen-Image_fp8",
           "aihorde/RPG",
           "aihorde/Rag Illustrious Mix",
           "aihorde/Real Dos Mix",
@@ -56504,11 +56555,13 @@ outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/
           "aihorde/SDXL 1.0",
           "aihorde/Sci-Fi Diffusion",
           "aihorde/Something",
+          "aihorde/Stable Cascade 1.0",
           "aihorde/SwamPonyXL",
           "aihorde/TUNIX Pony",
           "aihorde/ToonYou",
           "aihorde/URPM",
           "aihorde/Uhmami",
+          "aihorde/Ultraspice",
           "aihorde/Unstable Diffusers XL",
           "aihorde/Unstable Ink Dream",
           "aihorde/Vector Art",
