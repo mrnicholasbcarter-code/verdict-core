@@ -1,0 +1,22 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.18, pytest-9.1.1, pluggy-1.6.0
+rootdir: /operator/dev/verdict-core
+configfile: pyproject.toml
+plugins: asyncio-1.4.0, cov-7.1.0, anyio-4.14.2, xdist-3.8.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 143 items
+
+tests/test_outcome_attempts.py ........................                  [ 16%]
+tests/test_outcome_records.py ...................                        [ 30%]
+tests/test_autodev_outcome_attempts.py .........                         [ 36%]
+tests/test_outcome_shadow.py .sssssssssss......................ss....    [ 64%]
+tests/test_orch_receipt.py ............................................. [ 95%]
+......                                                                   [100%]
+
+=============================== warnings summary ===============================
+tests/conftest.py:9
+  /operator/dev/verdict-core/tests/conftest.py:9: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================= 130 passed, 13 skipped, 1 warning in 11.49s ==================
