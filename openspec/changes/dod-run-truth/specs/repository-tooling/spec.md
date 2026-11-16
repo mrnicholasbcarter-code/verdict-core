@@ -1,6 +1,9 @@
 # Spec Delta
 
-## MODIFIED Requirements
+## Purpose
+Extend repository tooling so definition-of-done evidence cannot claim an orchestration run without the command's structured result stdout.
+
+## ADDED Requirements
 
 ### Requirement: Definition-of-done evidence proves orchestration run truth
 The definition-of-done checker MUST preserve its existing artifact, expected-text, exit-code, ancestry, and timestamp checks. When an acceptance or parent-confirmation raw output is a top-level JSON object containing `outcome`, `run_id`, `started_at`, `finished_at`, and `events_digest`, it MUST additionally verify that a recorded zero exit code agrees with `outcome: COMPLETE` (and a non-zero exit agrees with any non-COMPLETE outcome), that a zero-exit result has review status `PASS`, and that the recorded `at` is within five minutes before `started_at` through five minutes after `finished_at`. Each failure MUST identify the field and both compared values. Raw outputs that do not meet the structured-result shape MUST retain existing behavior.

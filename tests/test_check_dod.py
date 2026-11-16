@@ -570,6 +570,8 @@ def test_orchestrate_command_matcher(repo):
     assert check_dod._is_orchestrate_json_command(ORCH_COMMAND)
     assert check_dod._is_orchestrate_json_command('/path/to/.venv/bin/verdict orchestrate --json')
     assert check_dod._is_orchestrate_json_command('python -m verdict orchestrate --json')
+    assert check_dod._is_orchestrate_json_command('env X=1 verdict orchestrate --json')
+    assert check_dod._is_orchestrate_json_command('timeout 900 verdict orchestrate --json')
     assert not check_dod._is_orchestrate_json_command('verdict route --json')
     assert not check_dod._is_orchestrate_json_command('verdict orchestrate')
 
