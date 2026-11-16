@@ -24,8 +24,9 @@ ordered pool of routes per task type.
   integration. Hard admission comes first (catalog, live, usable connection, not cooled, no
   401/403/404 traffic). Admitted routes with fresh tool proof are `eligible`; admitted routes
   without it are `fallback` (probation that needs bounded qualification, never
-  dispatch-authorized). Each pool is ordered free, subscription, metered, unknown, then by
-  task rating, then route id. Aliases of the same backend model collapse to one row.
+  dispatch-authorized). Each pool is ordered by task rating strongest first, then route id.
+  Capacity class is a membership filter only (`--capacity`), never an order key. Aliases of
+  the same backend model collapse to one row.
 - Passive identify reads tool proof from the health cache read-only. An unreadable cache gives
   `tool_proof_error: health_cache_unavailable`; it never writes.
 - The doctor identify report row adds the implementation pool and supply summary when those
