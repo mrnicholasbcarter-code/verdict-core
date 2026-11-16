@@ -41,7 +41,7 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -281,7 +281,7 @@ def check_evidence(root: Path, path: Path) -> list[str]:
     confirmation = evidence["parent_confirmation"]
     run_artifacts.append(("parent_confirmation", confirmation))
     seen: set[str] = set()
-    for where, run in run_artifacts:
+    for _where, run in run_artifacts:
         digest = run["raw_output"]["sha256"]
         if digest in seen:
             errors.append("the same raw output cannot serve as two runs")
