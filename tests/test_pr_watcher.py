@@ -1083,6 +1083,12 @@ class TestPathSafeKeys:
         with pytest.raises(ValueError, match=r"control character|invalid"):
             _safe_key("repo\x00name")
 
+    @pytest.mark.parametrize("name", REAL_CHECK_NAMES)
+    def test_real_check_names_are_valid_key_material(self, name: str) -> None:
+        """Catches key validation treating a space, parenthesis or slash as unsafe."""
+        key = f"{REPO}:pr1:{'a' * 40}:{name}:job-1"
+        assert _safe_key(key) == key
+
     def test_valid_key_accepted(self) -> None:
         """Normal keys are accepted."""
         assert _safe_key("org/repo-pr-42-abc123") == "org/repo-pr-42-abc123"

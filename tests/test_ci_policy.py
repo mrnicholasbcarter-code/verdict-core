@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 from verdict.ci_policy import INFRA_PATTERNS, ci_recovery_action, classify_ci, classify_merge_state
 
 
@@ -194,6 +199,32 @@ class TestScriptsPrimeStateCompatibility:
         assert mod.classify_ci is classify_ci
         assert mod.classify_merge_state is classify_merge_state
         assert mod.ci_recovery_action is ci_recovery_action
+
+    def test_script_loads_without_site_packages_from_a_foreign_cwd(self, tmp_path: Path) -> None:
+        """Catches the re-export depending on an installed verdict or on the cwd.
+
+        ``python -S`` drops site-packages, and the temp cwd is not the repository,
+        so the script can only find ``verdict.ci_policy`` through its own path setup.
+        """
+        script = Path(__file__).resolve().parents[1] / "scripts" / "prime_state.py"
+        loader = (
+            "import importlib.util, sys\n"
+            "spec = importlib.util.spec_from_file_location('prime_state', sys.argv[1])\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(mod)\n"
+            "print(mod.classify_ci([]), mod.classify_ci.__module__)\n"
+        )
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        done = subprocess.run(
+            [sys.executable, "-S", "-c", loader, str(script)],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.split() == ["EMPTY", "verdict.ci_policy"]
 
     def test_scripts_prime_state_behavior_unchanged(self) -> None:
         import importlib.util
