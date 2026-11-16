@@ -972,6 +972,48 @@ class TestDefaultTestIsolation:
 
 
 # ============================================================================
+# Regression tests for watcher core fixes
+# ============================================================================
+
+
+class TestWatcherCoreRegressionFixes:
+    def test_one_rerun_survives_repeated_runs(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
+        repo = "org/repo"
+        head = "r" * 40
+        gh.set_open_prs(repo, [{"number": 1, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}])
+        gh.set_pr(repo, 1, {"head_sha": head})
+        gh.set_checks(repo, head, [{"name": "runner timeout", "status": "COMPLETED", "conclusion": "FAILURE", "check_run_id": "job-1"}])
+        for _ in range(5):
+            run_watcher(gh, ws, [repo])
+        assert len(gh.rerun_calls) == 1
+        state = ws.load()
+        assert state["rerun_attempts"][f"{repo}:pr1:{head}:runner timeout:job-1"] == 1
+        assert len(state["records"]["block"]) == 1
+
+    def test_code_failure_record_is_idempotent(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
+        repo = "org/repo"
+        head = "c" * 40
+        gh.set_open_prs(repo, [{"number": 1, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}])
+        gh.set_pr(repo, 1, {"head_sha": head})
+        gh.set_checks(repo, head, [{"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}])
+        for _ in range(3):
+            run_watcher(gh, ws, [repo])
+        assert len(ws.load()["records"]["repair"]) == 1
+
+    def test_stalled_clock_is_timezone_aware_datetime(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
+        from datetime import datetime, timezone, timedelta
+        repo = "org/repo"
+        head = "s" * 40
+        gh.set_open_prs(repo, [{"number": 1, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}])
+        gh.set_pr(repo, 1, {"head_sha": head})
+        now = datetime.now(timezone.utc)
+        gh.set_checks(repo, head, [{"name": "test (3.11)", "status": "IN_PROGRESS", "conclusion": None, "started_at": (now - timedelta(minutes=95)).isoformat(), "check_run_id": "job-2"}])
+        result = run_watcher(gh, ws, [repo], now=now)
+        assert result["observations"][0]["ci_classification"] == "STALLED"
+        assert len(gh.rerun_calls) == 1
+
+
+# ============================================================================
 # Additional: Record type tests
 # ============================================================================
 

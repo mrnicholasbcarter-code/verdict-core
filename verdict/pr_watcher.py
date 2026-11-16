@@ -8,6 +8,7 @@ notifications only.  No LLM or model-routing calls.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from verdict.ci_policy import classify_ci, classify_merge_state
@@ -66,7 +67,7 @@ def _adapter_action(classification: str, attempt: int, max_attempts: int) -> str
 
 
 def poll_open_prs(
-    gh: WatcherGitHubClient, state: WatcherState, repo: str, now: float | None = None
+    gh: WatcherGitHubClient, state: WatcherState, repo: str, now: datetime | None = None
 ) -> list[dict[str, Any]]:
     """Classify every open PR at its exact head SHA.
 
@@ -121,9 +122,11 @@ def poll_open_prs(
     return observations
 
 
-def _detect_stalled(checks: list[dict[str, Any]], head: str, now: float | None = None) -> bool:
+def _detect_stalled(checks: list[dict[str, Any]], head: str, now: datetime | None = None) -> bool:
     """Return True if any required check has been in progress for over 30 minutes."""
-    current = time.time() if now is None else now
+    current = datetime.now(timezone.utc) if now is None else now
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("injected clock must be timezone-aware")
     threshold = 30 * 60
     for check in checks:
         if check.get("status") not in {"IN_PROGRESS", "QUEUED"}:
@@ -132,15 +135,12 @@ def _detect_stalled(checks: list[dict[str, Any]], head: str, now: float | None =
         if started_at is None:
             continue
         try:
-            started = float(started_at)
+            started = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
         except (TypeError, ValueError):
-            try:
-                from datetime import datetime
-
-                started = datetime.fromisoformat(str(started_at).replace("Z", "+00:00")).timestamp()
-            except (TypeError, ValueError):
-                continue
-        if current - started > threshold:
+            continue
+        if started.tzinfo is None or started.utcoffset() is None:
+            continue
+        if (current - started).total_seconds() > threshold:
             return True
     return False
 
@@ -225,6 +225,7 @@ def request_bounded_rerun(
     check_name: str,
     workflow_job_id: str,
     max_attempts: int = 1,
+    data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Request a bounded rerun with exact-head fencing.
 
@@ -234,7 +235,8 @@ def request_bounded_rerun(
     4. Persist state
     5. Only then request the rerun
     """
-    data = state.load()
+    if data is None:
+        data = state.load()
 
     # Re-read PR head immediately before rerun (fencing)
     pr = gh.get_pr(repo, pr_number)
@@ -261,7 +263,10 @@ def request_bounded_rerun(
         }
 
     # Increment attempt atomically BEFORE the rerun call
-    data = state.set_rerun_attempt(data, rerun_key, attempt + 1)
+    updated_data = state.set_rerun_attempt(data, rerun_key, attempt + 1)
+    if data is not updated_data:
+        data.clear()
+        data.update(updated_data)
 
     # Persist state before side effect
     try:
@@ -287,7 +292,7 @@ def run_watcher(
     linear: LinearClient | None = None,
     max_attempts: int = 1,
     verdict_fail_receipts: dict[str, dict[str, Any]] | None = None,
-    now: float | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Execute one watcher run: poll, classify, adapt, persist, notify.
 
@@ -335,9 +340,22 @@ def run_watcher(
 
                 # Apply adapter action
                 if action == "RETRY":
+                    # Once the persisted budget is spent, record one stable block.
+                    if any(
+                        state.get_rerun_attempt(data, f"{repo}:pr{obs_item['pr_number']}:{obs_item['head']}:{c['name']}:{c.get('check_run_id', '')}") >= max_attempts
+                        for c in obs_item["checks"]
+                        if c.get("conclusion") in ("FAILURE", "CANCELLED")
+                        or obs_item["ci_classification"] == "STALLED"
+                    ):
+                        blk = BlockRecord(repo, obs_item["pr_number"], obs_item["head"], f"attempts exhausted for {new_class}")
+                        record = blk.to_dict()
+                        if not state.has_record(data, record["idempotency_key"]):
+                            data = state.add_record(data, record)
+                            records.append(record)
+                        action = "BLOCKED"
                     # Find the failing check
                     for check in obs_item["checks"]:
-                        if (
+                        if action != "BLOCKED" and (
                             check.get("conclusion") in ("FAILURE", "CANCELLED")
                             or obs_item["ci_classification"] == "STALLED"
                         ):
@@ -350,6 +368,7 @@ def run_watcher(
                                 check["name"],
                                 check.get("check_run_id", ""),
                                 max_attempts,
+                                data,
                             )
                             reruns.append(rerun)
                             break
