@@ -365,47 +365,43 @@ def run_watcher(
 
                 # Apply adapter action
                 if action == "RETRY":
-                    # Once the persisted budget is spent, record one stable block.
-                    if any(
-                        state.get_rerun_attempt(
-                            data,
-                            f"{repo}:pr{obs_item['pr_number']}:{obs_item['head']}:{c['name']}:{c.get('check_run_id', '')}",
-                        )
-                        >= max_attempts
+                    targets = [
+                        c
                         for c in obs_item["checks"]
                         if c.get("conclusion") in ("FAILURE", "CANCELLED")
                         or obs_item["ci_classification"] == "STALLED"
-                    ):
-                        blk = BlockRecord(
+                    ]
+                    # The budget is the persisted per-key counter, so the
+                    # reported action is BLOCKED on every run after it is spent.
+                    spent = max(
+                        (
+                            state.get_rerun_attempt(
+                                data,
+                                f"{repo}:pr{obs_item['pr_number']}:{obs_item['head']}"
+                                f":{c['name']}:{c.get('check_run_id', '')}",
+                            )
+                            for c in targets
+                        ),
+                        default=0,
+                    )
+                    action = _adapter_action(new_class, spent, max_attempts)
+                    obs_item["action"] = action
+
+                if action == "RETRY":
+                    check = targets[0]
+                    reruns.append(
+                        request_bounded_rerun(
+                            gh,
+                            state,
                             repo,
                             obs_item["pr_number"],
                             obs_item["head"],
-                            f"attempts exhausted for {new_class}",
+                            check["name"],
+                            check.get("check_run_id", ""),
+                            max_attempts,
+                            data,
                         )
-                        record = blk.to_dict()
-                        if not state.has_record(data, record["idempotency_key"]):
-                            data = state.add_record(data, record)
-                            records.append(record)
-                        action = "BLOCKED"
-                    # Find the failing check
-                    for check in obs_item["checks"]:
-                        if action != "BLOCKED" and (
-                            check.get("conclusion") in ("FAILURE", "CANCELLED")
-                            or obs_item["ci_classification"] == "STALLED"
-                        ):
-                            rerun = request_bounded_rerun(
-                                gh,
-                                state,
-                                repo,
-                                obs_item["pr_number"],
-                                obs_item["head"],
-                                check["name"],
-                                check.get("check_run_id", ""),
-                                max_attempts,
-                                data,
-                            )
-                            reruns.append(rerun)
-                            break
+                    )
 
                 elif action == "REPAIR":
                     rec = RepairRecord(

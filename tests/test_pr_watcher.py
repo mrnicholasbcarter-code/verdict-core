@@ -616,6 +616,29 @@ class TestBoundedRecoveryAdapter:
         assert _adapter_action("INFRA_FAILURE", 3, 3) == "BLOCKED"
         assert _adapter_action("CANCELLED", 3, 3) == "BLOCKED"
 
+    def test_spent_budget_reports_blocked_and_requests_nothing(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a run that still reports RETRY after its rerun budget is spent."""
+        head = "2" * 40
+        open_pr(gh, 7, head, [check("install-smoke (3.10)", "CANCELLED", check_run_id="job-9")])
+
+        first = run_watcher(gh, ws, [REPO], now=T0)
+        assert first["observations"][0]["action"] == "RETRY"
+        assert gh.rerun_calls == [{"check_run_id": "job-9", "repo": REPO}]
+
+        later = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in (1, 2, 3)]
+
+        assert [r["observations"][0]["action"] for r in later] == ["BLOCKED"] * 3
+        assert [r["reruns"] for r in later] == [[], [], []]
+        assert len(gh.rerun_calls) == 1
+        assert [[rec["type"] for rec in r["records"]] for r in later] == [["block"], [], []]
+        blocks = disk(ws)["records"]["block"]
+        assert [(b["pr_number"], b["head"], b["reason"]) for b in blocks] == [
+            (7, head, "attempts exhausted for CANCELLED")
+        ]
+        assert disk(ws)["pr_states"][f"state:{REPO}:pr7:{head}"]["action"] == "BLOCKED"
+
     def test_green_has_no_side_effect(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
         """GREEN PR produces no repair record, no rerun, no GitHub/Linear write."""
         repo = "org/repo"
