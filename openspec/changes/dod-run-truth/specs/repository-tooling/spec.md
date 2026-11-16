@@ -20,6 +20,47 @@ The definition-of-done checker MUST preserve its existing artifact, expected-tex
 - **THEN** the run passes; another status fails naming review status and `PASS`
 - **TEST** `tests/test_check_dod.py::test_structured_result_review_must_pass_for_zero_exit`
 
+### Requirement: Orchestration JSON commands require structured stdout
+When an acceptance or parent-confirmation command invokes `verdict orchestrate` with a `--json` token, the checker MUST require raw output to be a structured result object containing `outcome`, `run_id`, `started_at`, `finished_at`, and `events_digest`. The matcher MUST recognize a `verdict` token by basename, including path-prefixed executables and `python -m verdict`, and MUST NOT match `verdict route --json` or `verdict orchestrate` without `--json`. Missing, empty, hand-built, event-list, or noisy output MUST fail and identify the missing keys and that stdout must be the command's result JSON.
+
+#### Scenario: Hand-built orchestration summary is rejected
+- **WHEN** an orchestrate JSON command records a summary without the five result keys
+- **THEN** the evidence fails with a structured-result error naming missing keys
+- **TEST** `tests/test_check_dod.py::test_orchestrate_command_rejects_hand_built_summary`
+
+#### Scenario: Result stdout with trailing newline is accepted
+- **WHEN** an orchestrate JSON command records a complete result object followed by a newline
+- **THEN** structured truth validation proceeds normally
+- **TEST** `tests/test_check_dod.py::test_orchestrate_command_accepts_result_json`
+
+#### Scenario: Leading stderr noise is rejected
+- **WHEN** an orchestrate JSON command records a stderr line before the result JSON
+- **THEN** the evidence fails because stdout must contain only result JSON
+- **TEST** `tests/test_check_dod.py::test_orchestrate_command_rejects_leading_noise`
+
+#### Scenario: Command matching is conservative
+- **WHEN** commands are path-prefixed verdict invocations or `python -m verdict` with `orchestrate` and `--json`
+- **THEN** they match; route commands and orchestrate commands without `--json` do not
+- **TEST** `tests/test_check_dod.py::test_orchestrate_command_matcher`
+
+#### Scenario: Non-orchestration JSON remains unchanged
+- **WHEN** another command records arbitrary JSON
+- **THEN** existing substring and exit checks apply without requiring result keys
+- **TEST** `tests/test_check_dod.py::test_non_orchestrate_json_is_unaffected`
+
+### Requirement: Structured parent confirmations prove successful runs
+When a parent confirmation raw output is a structured result, it MUST have `outcome: COMPLETE`, review status `PASS`, and a recorded `at` within the result window with five-minute tolerance. A BLOCKED result MUST fail confirmation even though confirmations have no recorded exit-code field.
+
+#### Scenario: BLOCKED confirmation is rejected
+- **WHEN** parent confirmation records a structured BLOCKED result
+- **THEN** the evidence fails naming the outcome and COMPLETE requirement
+- **TEST** `tests/test_check_dod.py::test_blocked_structured_parent_confirmation_fails`
+
+#### Scenario: Confirmation outside result window is rejected
+- **WHEN** a COMPLETE/PASS confirmation's recorded time is outside the tolerated window
+- **THEN** the evidence fails naming `at` and the result window
+- **TEST** `tests/test_check_dod.py::test_structured_parent_confirmation_time_must_be_in_window`
+
 #### Scenario: Plain text remains supported
 - **WHEN** raw output is a transcript or unrelated JSON without all result keys
 - **THEN** existing substring validation is used without structured-result checks

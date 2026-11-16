@@ -15,7 +15,7 @@ The DoD checker validates raw output markers but does not interpret the structur
 - Reinterpret arbitrary JSON or transcripts.
 
 ## Decisions
-A raw output is a structured result only when its top-level JSON object contains `outcome`, `run_id`, `started_at`, `finished_at`, and `events_digest`. Structured results require `COMPLETE` exactly when the recorded exit code is zero, require review status `PASS` for zero exit, and require the recorded `at` timestamp to be within five minutes of the result interval. Malformed or other JSON remains ordinary raw output.
+A raw output is a structured result only when its complete stdout, after allowing trailing whitespace, is a top-level JSON object containing `outcome`, `run_id`, `started_at`, `finished_at`, and `events_digest`. For commands matching `verdict orchestrate --json`, this shape is mandatory; leading noise is rejected because stdout must be the command's result JSON. Structured results require `COMPLETE` exactly when the recorded exit code is zero, require review status `PASS` for zero exit, and require the recorded `at` timestamp to be within five minutes of the result interval. Structured parent confirmations have no exit code and instead require COMPLETE and PASS. Malformed or other JSON remains ordinary raw output.
 
 The checker compares raw artifact SHA-256 values across acceptance runs and parent confirmation. Any duplicate digest used for two distinct runs fails with `the same raw output cannot serve as two runs`; setup and on-main artifacts are not acceptance runs.
 

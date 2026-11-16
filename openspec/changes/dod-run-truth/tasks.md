@@ -15,8 +15,9 @@ Tests/verification: run both pinned OpenSpec validators and require exit 0.
 - [ ] 2.5 Add a non-JSON raw-output regression test. Verification: focused pytest passes before and after implementation.
 
 ## 3. Implementation
-- [ ] 3.1 Parse structured orchestration results and enforce run truth. Verification: focused pytest and strict mypy pass.
+- [ ] 3.1 Parse structured orchestration results, require them for `verdict orchestrate --json`, and enforce run truth. Verification: focused pytest and strict mypy pass.
 - [ ] 3.2 Reject duplicate raw outputs across distinct evidence runs. Verification: focused pytest passes with the exact required error.
+- [ ] 3.3 Validate structured parent confirmations without an exit-code field. Verification: focused pytest passes for BLOCKED and out-of-window confirmations.
 
 ## 4. Docs
 Tests/verification: inspect the exact AGENTS.md sentence and run the repository documentation checks.
