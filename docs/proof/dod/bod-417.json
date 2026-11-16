@@ -14,7 +14,7 @@
     "exit_code": 0,
     "raw_output": {
       "path": "docs/proof/dod/bod-417/pr_checks_1030.txt",
-      "sha256": "d83b96521c0794fa2692ad44584294bd5b2dfaa1685fef4335df6e14599760d6"
+      "sha256": "3f46a2ce2448839e5b91e9565c7e5245df0bbf7fb0ed6b59c7dda746343c698e"
     }
   },
   "acceptance": [
@@ -68,7 +68,7 @@
     "command": "verdict choose --task-class implementation --requires tools,code --json",
     "raw_output": {
       "path": "docs/proof/dod/bod-417/parent-confirmation-20261116T120451Z.json",
-      "sha256": "33cec78c6a66ba8b8dab571202afc24b95259fc2556652a05fbbada2ca74c946"
+      "sha256": "5c7b873ae2bc1e3b9d4361376e761285a79418bb8e344e6236edcdfa3311010c"
     }
   }
 }
