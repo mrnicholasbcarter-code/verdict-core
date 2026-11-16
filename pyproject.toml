@@ -15,6 +15,17 @@ artifacts = ["schemas/contracts.v1.json", "schemas/evaluation.v1.json", "schemas
 # Default benchmark fixtures ship in the wheel so the documented
 # `verdict benchmark [--savings]` commands work without a source checkout.
 "benchmarks/fixtures" = "verdict/data/benchmarks/fixtures"
+# The ai-memory lifecycle client (packages/verdict-memory) ships inside the root
+# wheel under ``verdict_memory`` so the installed control plane can reach the
+# mandatory memory backend without a second distribution. The package is the
+# only source of ``verdict_memory``; nothing in ``verdict/`` imports it yet.
+"packages/verdict-memory/src/verdict_memory" = "verdict_memory"
+# Same-byte golden vectors and their generator, so the installed package keeps
+# its language-neutral parity fixtures (native Rust parity compares against them).
+# The package's own bundled golden set already ships via src/verdict_memory/vectors/;
+# only the language-neutral parity tree needs an explicit include.
+"packages/verdict-memory/vectors/golden" = "verdict_memory/vectors/golden"
+"packages/verdict-memory/scripts/gen_golden_vectors.py" = "verdict_memory/scripts/gen_golden_vectors.py"
 
 [project]
 name = "verdict-core"
