@@ -489,3 +489,99 @@ def test_distinct_raw_outputs_are_valid(repo):
 def test_non_structured_raw_output_is_unchanged(repo):
     root, evidence = repo
     assert _check(root, evidence) == []
+
+ORCH_COMMAND = 'verdict orchestrate --graph graph.json --repo /tmp/x --runs-dir /tmp/y --executor prime-headless --json'
+
+
+def _orchestrate_evidence(root, evidence, output):
+    for index, run in enumerate((evidence['acceptance'][0]['first_run'], evidence['acceptance'][0]['fresh_run'])):
+        run['command'] = ORCH_COMMAND
+        run['raw_output'] = _artifact(root, f'orchestrate-{index}.txt', output)
+    confirmation = evidence['parent_confirmation']
+    confirmation['command'] = ORCH_COMMAND
+    confirmation['raw_output'] = _artifact(root, 'orchestrate-confirm.txt', output)
+
+
+def test_orchestrate_command_rejects_hand_built_summary(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, '{"story": "x", "integrate": {}}')
+    errors = _check(root, evidence)
+    assert all('raw output is not the run' in e for e in errors if 'orchestrate' in e), errors
+    assert len([e for e in errors if 'raw output is not the run' in e]) == 3
+
+
+def test_orchestrate_command_rejects_empty_output(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, '')
+    errors = _check(root, evidence)
+    assert len([e for e in errors if 'raw output is not the run' in e]) == 3
+
+
+def test_orchestrate_command_rejects_leading_noise(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, 'stderr warning\n' + _structured_result())
+    errors = _check(root, evidence)
+    assert len([e for e in errors if 'stdout only' in e]) == 3
+
+
+def test_orchestrate_command_accepts_result_json(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _structured_result() + '\n')
+    evidence['freshness_window_hours'] = 0.01
+    evidence['acceptance'][0]['fresh_run']['at'] = '2099-01-01T00:06:00Z'
+    evidence['acceptance'][0]['fresh_run']['raw_output'] = _artifact(root, 'structured-fresh-2.txt', _structured_result(run_id='fresh-2') + '\n\n')
+    evidence['parent_confirmation']['raw_output'] = _artifact(root, 'structured-confirm-2.txt', _structured_result(run_id='confirm-2') + '\n')
+    evidence['parent_confirmation']['at'] = '2099-01-01T00:06:00Z'
+    assert _check(root, evidence) == []
+
+
+def test_non_orchestrate_json_is_unaffected(repo):
+    root, evidence = repo
+    output = '{"story": "x", "integrate": {}}\n' + RUN_URL + '\ndrill: orphan module FAILED as intended\n'
+    _orchestrate_evidence(root, evidence, output)
+    for run in (evidence['acceptance'][0]['first_run'], evidence['acceptance'][0]['fresh_run']):
+        run['command'] = 'verdict route --json'
+    evidence['parent_confirmation']['command'] = 'verdict route --json'
+    evidence['acceptance'][0]['first_run']['raw_output'] = _artifact(root, 'route-first.txt', output + ' first')
+    evidence['acceptance'][0]['fresh_run']['raw_output'] = _artifact(root, 'route-fresh.txt', output + ' fresh')
+    evidence['parent_confirmation']['raw_output'] = _artifact(root, 'route-confirm.txt', output)
+    assert _check(root, evidence) == []
+
+
+def test_blocked_structured_parent_confirmation_fails(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _structured_result() + '\n')
+    blocked = _structured_result(outcome='BLOCKED', review_status='ERROR', run_id='blocked')
+    evidence['parent_confirmation']['raw_output'] = _artifact(root, 'blocked-confirm.txt', blocked)
+    errors = _check(root, evidence)
+    assert any('outcome BLOCKED' in e and 'COMPLETE' in e for e in errors), errors
+
+
+def test_structured_parent_confirmation_time_must_be_in_window(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _structured_result() + '\n')
+    evidence['parent_confirmation']['at'] = '2099-01-01T00:20:00Z'
+    errors = _check(root, evidence)
+    assert any('parent_confirmation' in e and 'outside result window' in e for e in errors), errors
+
+
+def test_orchestrate_command_matcher(repo):
+    assert check_dod._is_orchestrate_json_command(ORCH_COMMAND)
+    assert check_dod._is_orchestrate_json_command('/path/to/.venv/bin/verdict orchestrate --json')
+    assert check_dod._is_orchestrate_json_command('python -m verdict orchestrate --json')
+    assert not check_dod._is_orchestrate_json_command('verdict route --json')
+    assert not check_dod._is_orchestrate_json_command('verdict orchestrate')
+
+
+def test_orchestrate_regression_key_shapes_fail_closed(repo):
+    root, evidence = repo
+    shapes = [
+        '{"story":"x","merged_sha":"x","installed_main_sha":"x","run_dir":"x","command":"x","note":"x","worker_terminals":[],"selections":[],"node_states":[],"integrate":{}}',
+        '{"run_id":"x","events":[]}',
+        '{"outcome":"BLOCKED","reason":"review status ERROR"}',
+    ]
+    for index, (run, output) in enumerate(zip((evidence['acceptance'][0]['first_run'], evidence['acceptance'][0]['fresh_run'], evidence['parent_confirmation']), shapes)):
+        run['command'] = ORCH_COMMAND
+        run['raw_output'] = _artifact(root, f'hand-built-{index}.json', output)
+    errors = _check(root, evidence)
+    assert len([e for e in errors if 'raw output is not the run' in e]) == 3
