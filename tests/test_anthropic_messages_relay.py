@@ -104,6 +104,37 @@ class PackIntelligence(FixedIntelligence):
         )
 
 
+class FreeSupplyUnknownIntelligence(FixedIntelligence):
+    """Selection whose free supply is unknown; higher-tier fallback is denied.
+
+    ``free_supply_unknown`` only bites under ``subscription_fallback_policy``,
+    which requires capacity-ordered candidate rows, so the fixture carries them.
+    """
+
+    async def route(self, task, criticality="medium", context=None, *, request_id=None):  # type: ignore[no-untyped-def]
+        decision = await super().route(task, criticality, context, request_id=request_id)
+        return replace(
+            decision,
+            safety_flags=[
+                *decision.safety_flags,
+                "free_supply_unknown",
+                "subscription_fallback_policy",
+            ],
+            candidate_states=[
+                {"model_id": "selected-model", "capacity_order": 1},
+                {"model_id": "selected-model", "admitted": True, "capacity_order": 1},
+            ],
+        )
+
+
+class ProtectedOpaqueIntelligence(FixedIntelligence):
+    """Protected work whose selected route is an opaque alias."""
+
+    async def route(self, task, criticality="medium", context=None, *, request_id=None):  # type: ignore[no-untyped-def]
+        decision = await super().route(task, criticality, context, request_id=request_id)
+        return replace(decision, protected=True, model="auto/frontier", alternatives=[])
+
+
 def _require_server_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "server-token")
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "false")
@@ -206,6 +237,58 @@ def test_empty_attempt_set_fails_closed_before_upstream(monkeypatch) -> None:
     assert transport.requests == []
     assert response.json()["error"]["message"] == "no executable route was selected"
     assert response.json()["type"] == "error"
+
+
+def test_live_admission_unavailable_fails_closed_before_upstream(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+
+    def broken() -> Any:
+        raise RuntimeError("gateway down")
+
+    monkeypatch.setattr(api, "relay_admission_provider", broken)
+
+    with TestClient(api.app) as client:
+        response = client.post("/v1/messages", json=_messages_body())
+
+    assert response.status_code == 503
+    assert transport.requests == []
+    body = response.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "api_error"
+    assert "live admission unavailable" in body["error"]["message"]
+
+
+def test_free_supply_unknown_fails_closed_before_upstream(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    monkeypatch.setattr(api, "_build_intelligence", lambda: FreeSupplyUnknownIntelligence())
+
+    with TestClient(api.app) as client:
+        response = client.post("/v1/messages", json=_messages_body())
+
+    assert response.status_code == 503
+    assert transport.requests == []
+    body = response.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "api_error"
+    assert "free supply unknown" in body["error"]["message"]
+
+
+def test_protected_opaque_route_fails_closed_before_upstream(monkeypatch) -> None:
+    transport = RecordingTransport()
+    _configure_test_app(monkeypatch, transport)
+    monkeypatch.setattr(api, "_build_intelligence", lambda: ProtectedOpaqueIntelligence())
+
+    with TestClient(api.app) as client:
+        response = client.post("/v1/messages", json=_messages_body())
+
+    assert response.status_code == 503
+    assert transport.requests == []
+    body = response.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "api_error"
+    assert "attested actual route" in body["error"]["message"]
 
 
 def test_x_api_key_authenticates_messages_and_is_never_forwarded(monkeypatch) -> None:
