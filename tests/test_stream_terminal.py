@@ -432,3 +432,102 @@ def test_stream_state_is_a_closed_vocabulary() -> None:
         "abrupt_eof",
         "transport_error",
     }
+
+
+def _messages_success_wire() -> bytes:
+    return b"".join(
+        [
+            b'event: message_start\ndata: {"type":"message_start","message":{"model":"m"}}\n\n',
+            b'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+            b'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+            b'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n',
+            b'event: ping\ndata: {"type":"ping"}\n\n',
+            b'event: message_stop\ndata: {"type":"message_stop","usage":{"output_tokens":1}}\n\n',
+        ]
+    )
+
+
+async def test_messages_message_stop_after_content_is_checked_success() -> None:
+    wire = _messages_success_wire()
+    validated = ValidatedSSEStream(CloseCountingStream([wire]), surface="messages")
+    assert await drain(validated) == wire
+    assert validated.outcome is not None
+    assert validated.outcome.checked_success
+    assert validated.outcome.state == StreamState.SUCCESS
+    assert validated.outcome.terminal_event == "message_stop"
+    assert validated.outcome.finish_reasons == ("end_turn",)
+    assert validated.outcome.usage == {"output_tokens": 1}
+
+
+async def test_messages_delta_content_without_block_stop_still_succeeds() -> None:
+    """A valid Anthropic stream may omit content_block_stop entirely.
+
+    ``content_block_delta`` events carry the content and ``message_delta``
+    carries the stop reason; ``message_stop`` after either is a checked
+    success, not an INCOMPLETE.
+    """
+    wire = b"".join(
+        [
+            b'event: message_start\ndata: {"type":"message_start","message":{"model":"m"}}\n\n',
+            b'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+            b'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n',
+            b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ]
+    )
+    validated = ValidatedSSEStream(CloseCountingStream([wire]), surface="messages")
+    assert await drain(validated) == wire
+    assert validated.outcome is not None
+    assert validated.outcome.checked_success
+    assert validated.outcome.state == StreamState.SUCCESS
+    assert validated.outcome.finish_reasons == ("end_turn",)
+
+
+async def test_messages_message_stop_without_any_content_is_incomplete() -> None:
+    wire = b"".join(
+        [
+            b'event: message_start\ndata: {"type":"message_start"}\n\n',
+            b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ]
+    )
+    validated = ValidatedSSEStream(CloseCountingStream([wire]), surface="messages")
+    with pytest.raises(StreamProtocolError):
+        await drain(validated)
+    assert validated.outcome is not None
+    assert validated.outcome.state == StreamState.INCOMPLETE
+    assert not validated.outcome.checked_success
+
+
+async def test_messages_eof_before_message_stop_is_abrupt() -> None:
+    payload = b'event: message_start\ndata: {"type":"message_start"}\n\n'
+    validated = ValidatedSSEStream(CloseCountingStream([payload]), surface="messages")
+    with pytest.raises(StreamProtocolError):
+        await drain(validated)
+    assert validated.outcome is not None
+    assert validated.outcome.state == StreamState.ABRUPT_EOF
+    assert not validated.outcome.checked_success
+
+
+async def test_messages_error_event_fails_closed() -> None:
+    payload = (
+        b'event: error\ndata: {"type":"error","error":{"type":"api_error","message":"boom"}}\n\n'
+    )
+    validated = ValidatedSSEStream(CloseCountingStream([payload]), surface="messages")
+    with pytest.raises(StreamProtocolError):
+        await drain(validated)
+    assert validated.outcome is not None
+    assert validated.outcome.state == StreamState.PROTOCOL_ERROR
+
+
+async def test_messages_data_after_message_stop_fails() -> None:
+    payload = _messages_success_wire() + b'data: {"type":"message_start"}\n\n'
+    validated = ValidatedSSEStream(CloseCountingStream([payload]), surface="messages")
+    with pytest.raises(StreamProtocolError):
+        await drain(validated)
+    assert validated.outcome is not None
+    assert validated.outcome.state == StreamState.PROTOCOL_ERROR
+
+
+def test_messages_surface_is_accepted_and_unknown_surfaces_stay_rejected() -> None:
+    ValidatedSSEStream(CloseCountingStream([b""]), surface="messages")
+    with pytest.raises(ValueError, match="unsupported relay surface"):
+        ValidatedSSEStream(CloseCountingStream([b""]), surface="batch")

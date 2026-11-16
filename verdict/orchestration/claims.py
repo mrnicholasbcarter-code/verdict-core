@@ -465,6 +465,16 @@ def _executed_identity(terminal: Mapping[str, Any]) -> str:
     return "" if model == _MECHANICAL_MODEL else model
 
 
+def _usable_reviewer_identity(value: Any) -> str:
+    """Non-blank, non-opaque string. Containers are not stringified into an identity."""
+    if not isinstance(value, str):
+        return ""
+    stripped = value.strip().removeprefix("omniroute/")
+    if not stripped or _is_opaque(stripped):
+        return ""
+    return value.strip()
+
+
 def _claim_replacement_completed(
     events: Sequence[Mapping[str, Any]], receipt: Mapping[str, Any]
 ) -> Claim:
@@ -567,7 +577,14 @@ def _claim_validation_passed(
 def _claim_independent_review(
     events: Sequence[Mapping[str, Any]], receipt: Mapping[str, Any]
 ) -> Claim:
-    """Review PASS, zero blocking, by an executed identity no worker attempt used."""
+    """Review PASS, zero blocking, by an observed identity no worker attempt used.
+
+    ``observed_model`` is the model the review event recorded. For an OCR review
+    that value is what OCR reported, not a verified gateway-served identity.
+    A missing, blank, non-string, or opaque value is ``NOT_OBSERVED``, including
+    event streams that predate the field. This function does not invent an
+    identity and does not rewrite stored receipt bytes.
+    """
     cid, text = "independent_review", "Independent review passed"
     reviews = [e for e in events if e.get("type") == "review"]
     if not reviews:
@@ -582,7 +599,10 @@ def _claim_independent_review(
         return _claim(cid, text, CLAIM_STATUS_NOT_OBSERVED)
     if blocking > 0:
         return _claim(cid, text, CLAIM_STATUS_CONTRADICTED, [_ev(review, {"blocking": blocking})])
-    reviewer_ids = {reviewer} | {
+    observed = _usable_reviewer_identity(rd.get("observed_model"))
+    if not observed:
+        return _claim(cid, text, CLAIM_STATUS_NOT_OBSERVED)
+    reviewer_ids = {reviewer, observed} | {
         _str(_data(a).get("route_id"))
         for a in events
         if a.get("type") == "review_attempt" and _str(_data(a).get("route_id"))

@@ -7,7 +7,14 @@ from typing import Any
 
 def register(subparsers: Any) -> None:
     route_p = subparsers.add_parser("route", help="Route a single prompt/task")
-    route_p.add_argument("task", help="Task description or prompt text")
+    route_p.add_argument("task", nargs="?", default=None, help="Task description or prompt text")
+    route_p.add_argument(
+        "--task",
+        dest="task_flag",
+        default=None,
+        help="Task description or prompt text (alternative to positional)",
+    )
+    route_p.add_argument("--json", action="store_true", help="Output machine-readable JSON receipt")
     route_p.add_argument("--terse", action="store_true", help="Output ONLY the target model string")
     route_p.add_argument(
         "--criticality", default="medium", choices=["critical", "high", "medium", "low"]

@@ -19,6 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The proof gates run the full suite, whose check_dod validation needs
+          # the merged_sha commit of every docs/proof/dod/*.json to be present.
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -49,6 +53,10 @@ jobs:
     needs: [proof-targeted]
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Same history depth as proof-targeted: the unit_full gate validates
+          # docs/proof/dod/*.json merged_sha commits (scripts/check_dod.py).
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@v7
         with:

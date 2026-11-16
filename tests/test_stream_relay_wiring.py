@@ -144,3 +144,102 @@ def test_responses_terminal_event_decides_outcome(monkeypatch, terminal, outcome
     assert event["outcome"] == outcome
     assert event["details"]["stream_state"] == state
     assert transport.body.close_count == 1
+
+
+def test_complete_stream_chain_preserves_semantics_identity_and_cleanup(monkeypatch) -> None:
+    """A17-A23 combined: the full primed -> validated -> evidence chain for one
+    chat turn and its cancellations, verified end to end through the relay.
+
+    The chain is exercised on current main; every behaviour it asserts was
+    implemented by the merged S06 work (PR #918/#920, stream_terminal.py plus
+    the api.py wiring) — there is no behaviour gap to fix on main, so this test
+    is the acceptance artefact and runs green. It is kept so the full chain is
+    asserted in one place: semantic terminal over transport EOF, chunking
+    independence, bounded events, close-once upstream, and E1/E2/E3 identity
+    that never mints proof on wrong or missing served identity.
+    """
+    wire = b"".join(CHAT_STANDARD)
+
+    # A17/A18: identical bytes, one chunk vs byte-at-a-time -> identical valid result.
+    transport = StreamTransport([wire])
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        response = _post(client, "chat", "chain-ok-one")
+        event = _evidence(client, "chain-ok-one")
+    assert response.status_code == 200
+    assert response.content == wire
+    assert event["event_type"] == "chat_completion_streamed"
+    assert event["outcome"] == "success"
+    assert event["details"]["stream_state"] == "success"
+    assert transport.body.close_count == 1
+
+    transport = StreamTransport([bytes([b]) for b in wire])
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        response = _post(client, "chat", "chain-ok-two")
+        event = _evidence(client, "chain-ok-two")
+    assert response.status_code == 200
+    assert response.content == wire
+    assert event["event_type"] == "chat_completion_streamed"
+    assert event["outcome"] == "success"
+    assert event["details"]["stream_state"] == "success"
+    assert transport.body.close_count == 1
+
+    # A17: abrupt EOF (transport ends without [DONE]) never becomes checked success.
+    transport = StreamTransport(CHAT_STANDARD[:2])
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        _post(client, "chat", "chain-eof")
+        event = _evidence(client, "chain-eof")
+    assert event["outcome"] == "error"
+    assert event["details"]["stream_state"] == "abrupt_eof"
+    assert transport.body.close_count == 1
+
+    # A19/A20: client hangs up mid-stream -> upstream closed exactly once, one
+    # non-success terminal outcome (the relay classifies a client disconnect as
+    # a transport error; either way it is not success and nothing is retried).
+    transport = StreamTransport(CHAT_STANDARD[:1])
+    _configure_test_app(monkeypatch, transport)
+    events: list[tuple[str | None, str | None]] = []
+    real_finish = api._finish_evidence
+
+    def spy(route_evidence, outcome, evidence_key):
+        events.append((getattr(outcome, "event_type", None), getattr(outcome, "outcome", None)))
+        return real_finish(route_evidence, outcome, evidence_key)
+
+    monkeypatch.setattr(api, "_finish_evidence", spy)
+    with (
+        TestClient(api.app) as client,
+        client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "preserve all fields"}],
+                "stream": True,
+                "correlation_id": "chain-close",
+            },
+        ) as response,
+    ):
+        iterator = response.iter_bytes()
+        next(iterator)  # first chunk, then the client goes away
+    assert events, "no terminal evidence event recorded on disconnect"
+    assert events[-1][1] != "success"
+    assert all(
+        e[1] != "success"
+        for e in events
+        if e[0] == "chat_completion_stream_aborted" or e[0] == "chat_completion_stream_error"
+    )
+    assert transport.body.close_count == 1
+
+    # A21: missing served identity never mints verified proof.
+    transport = StreamTransport(CHAT_STANDARD)
+    _configure_test_app(monkeypatch, transport)
+    with TestClient(api.app) as client:
+        response = _post(client, "chat", "chain-no-id")
+        event = _evidence(client, "chain-no-id")
+    assert response.status_code == 200
+    assert event["outcome"] == "success"
+    assert event["details"]["identity_proof_status"] != "verified"
+    assert event["details"]["actual_route_status"] != "verified"
+    assert event["details"]["stream_state"] == "success"
+    assert transport.body.close_count == 1

@@ -310,8 +310,28 @@ def measure(
     rng = random.Random(seed)
     sample_listed = rng.sample(probe_listed, min(LISTED_SAMPLE, len(probe_listed)))
     sample_unlisted = rng.sample(population, min(UNLISTED_SAMPLE, len(population)))
+    checks: list[dict[str, Any]] = []
+
+    def probe(route: str, listed: bool) -> ToolCheck:
+        first = check_route(route, post)
+        entries = [asdict(first) | {"listed": listed, "attempt": 1}]
+        final = first
+        # BOD-345 change D (operator-approved 2026-11-11): a listed route whose first
+        # attempt fails is retried once before it counts against precision. Both attempts
+        # are logged so flaky routes stay visible; the 95% bar, sample and formula do not
+        # change. Account blocks are not retried, and the unlisted recall sample keeps one
+        # attempt.
+        if listed and first.outcome == "fail":
+            second = check_route(route, post)
+            entries.append(asdict(second) | {"listed": listed, "attempt": 2})
+            final = second
+        checks.extend(entries)
+        return final
+
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-        results = list(pool.map(lambda r: check_route(r, post), sample_listed + sample_unlisted))
+        listed_results = list(pool.map(lambda r: probe(r, True), sample_listed))
+        unlisted_results = list(pool.map(lambda r: probe(r, False), sample_unlisted))
+    results = listed_results + unlisted_results
     on_listed = results[: len(sample_listed)]
     on_unlisted = results[len(sample_listed) :]
     listed_measured = [r for r in on_listed if r.outcome != "account"]
@@ -353,5 +373,5 @@ def measure(
         "estimated_missed": missed,
         "precision_min": PRECISION_MIN,
         "recall_min": RECALL_MIN,
-        "checks": [asdict(r) | {"listed": i < len(sample_listed)} for i, r in enumerate(results)],
+        "checks": checks,
     }

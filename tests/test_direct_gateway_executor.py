@@ -1135,6 +1135,48 @@ def test_explicit_key_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert DirectGatewayExecutor(api_key="explicit").api_key == "explicit"
 
 
+FILE_KEY = "file-key-fixture"
+
+
+@pytest.fixture
+def executor_key_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Owner-only omniroute-api-key under a tmp XDG_CONFIG_HOME (0700 dir, 0600 file)."""
+    config = tmp_path / "config"
+    (config / "verdict").mkdir(parents=True, mode=0o700)
+    path = config / "verdict" / "omniroute-api-key"
+    path.write_text(FILE_KEY + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+
+def test_executor_resolves_key_file_when_env_is_unset(
+    executor_key_file: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The executor must use the same credential-store resolver as every other
+    transport site: with only the key file present it must send the key."""
+    for name in ("VERDICT_OMNIROUTE_API_KEY", "OMNIROUTE_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    executor = DirectGatewayExecutor()
+    assert executor.api_key == FILE_KEY
+    assert executor._headers()["authorization"] == f"Bearer {FILE_KEY}"
+
+
+def test_executor_env_key_beats_key_file(
+    executor_key_file: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "env-key")
+    executor = DirectGatewayExecutor()
+    assert executor.api_key == "env-key"
+
+
+def test_executor_openai_key_still_last_resort(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("VERDICT_OMNIROUTE_API_KEY", "OMNIROUTE_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "a")
+    executor = DirectGatewayExecutor()
+    assert executor.api_key == "a"
+
+
 def test_cli_executor_builder_honours_verdict_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression: the orchestrate CLI must not override executor key precedence."""
     import argparse

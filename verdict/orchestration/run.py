@@ -19,6 +19,7 @@ import contextlib
 import hashlib
 import json
 import os
+import subprocess
 import time
 import urllib.parse
 import urllib.request
@@ -32,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from verdict.availability import opaque_connection_token
-from verdict.context_pack import ContextPlan
+from verdict.context_pack import ContextPlan, estimate_tokens
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import (
     FailureClassification,
@@ -49,8 +50,14 @@ from verdict.orchestration.contracts import (
     WorkNode,
 )
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, backend_model, pool_of
+from verdict.orchestration.harness import DEFAULT_REGISTRY
 from verdict.orchestration.planner import FrontierPlanner, PlanValidationError, hydrate_node_prompt
-from verdict.orchestration.worker_context import WorkerPrompt
+from verdict.orchestration.worker_context import (
+    ResearchPack,
+    WorkerPrompt,
+    project_research_pack,
+    reuse_research_pack,
+)
 
 if TYPE_CHECKING:
     from verdict.decision_signals.contracts import DecisionSignalProvider
@@ -761,6 +768,7 @@ async def run_golden_path(
     decision_signal_provider: DecisionSignalProvider | None = None,
     mode: str = "",
     dispatch_authority: DispatchAuthority | None = None,
+    model_rows: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> GoldenRunResult:
     # TYPESAFE credentials migration: auto-wire factory default when no provider injected
     if decision_signal_provider is None:
@@ -791,20 +799,8 @@ async def run_golden_path(
             pass  # Existing graph validation below fails closed as before.
     # BOD-188: record executor identity for harness-independence proof.
     # Planning can now use a distinct answer-only backend from worker dispatch.
-    _worker_executor_identity = getattr(executor, "__class__", type(executor)).__name__
-    _planner_executor_for_event = planner_executor or executor
-    _planner_executor_identity = getattr(
-        _planner_executor_for_event, "__class__", type(_planner_executor_for_event)
-    ).__name__
-    _executor_labels: dict[str, str] = {
-        "DirectGatewayExecutor": "direct-gateway",
-        "FaultInjectingExecutor": "fault-injecting",
-        "MixedExecutor": "mixed",
-        "PrimeHeadlessExecutor": "prime-headless",
-        "ScriptedExecutor": "scripted",
-    }
-    _worker_backend = _executor_labels.get(_worker_executor_identity, _worker_executor_identity)
-    _planner_backend = _executor_labels.get(_planner_executor_identity, _planner_executor_identity)
+    _worker_backend = DEFAULT_REGISTRY.label_for(executor)
+    _planner_backend = DEFAULT_REGISTRY.label_for(planner_executor or executor)
     # BOD-225: capture once; resumed starts keep the original producer. Legacy
     # runs without producer remain legacy, even after an upgrade of Verdict.
     prior_started = next((e for e in log.read() if e.type == "run_started"), None)
@@ -1019,6 +1015,35 @@ async def run_golden_path(
                     "run_finished", outcome=RunOutcome.BLOCKED.value, reason=admission_reason
                 )
                 return _blocked_before_plan(run_dir, admission_reason)
+        # BOD-340: the approved operator policy is the single authority for
+        # native execution boundaries; fail closed before any planning or
+        # dispatch.  Memory retrieval never approves or promotes rules.
+        from verdict.operator_policy import ActionContext, PolicyUnavailableError, admit_action
+
+        try:
+            _policy_verdict, _policy_audit = admit_action(
+                ActionContext(
+                    action="orchestrate.run",
+                    argv=("verdict", "orchestrate"),
+                    cwd=str(repo),
+                    worktree=str(repo),
+                    linear_issue=(openspec_block or {}).get("linear_issue"),
+                    acceptance_criteria=tuple(
+                        str(item) for item in (openspec_block or {}).get("acceptance_criteria", ())
+                    ),
+                )
+            )
+        except PolicyUnavailableError as exc:
+            admission_reason = f"operator policy unavailable: {exc}"
+            return _blocked_before_plan(run_dir, admission_reason)
+        if not _policy_verdict.allowed:
+            admission_reason = f"operator policy denied: {_policy_verdict.reason}"
+            events.emit(
+                "operator_policy_denied",
+                decision_id=_policy_audit["decision_id"],
+                reason=_policy_verdict.reason,
+            )
+            return _blocked_before_plan(run_dir, admission_reason)
         # BOD-203: collect decision signals ONCE, reuse for both planning
         # and context-budget advisory (one provider call per run).
         if decision_signal_provider is not None:
@@ -1115,14 +1140,71 @@ async def run_golden_path(
             )
             events.emit("executor_map_unmatched", unmatched_keys=unmatched)
 
-    def prompt_for(
+    def _git_head(cwd: Path) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        return result.stdout.strip()
+
+    def hydrate_with_research_pack(
         node: WorkNode,
         cwd: Path,
+        run_dir: Path,
         *,
+        goal: str,
         context_budget_bytes: int = 60_000,
         context_plan: ContextPlan | None = None,
         mandatory_suffix: str = "",
     ) -> WorkerPrompt:
+        """Hydrate a node prompt, reusing a persisted research pack when available.
+
+        On retry/replacement the persisted ResearchPack (same
+        research_pack_id/research_revision) is re-bound with any accumulated
+        failure/review deltas and passed as prepared_context, so the worker
+        does not repeat settled research. A stale or non-fitting pack falls
+        back to building fresh context.
+        """
+        pack_path = run_dir / "context_artifacts" / f"{node.node_id}.json"
+        prepared = None
+        if pack_path.exists():
+            try:
+                research = ResearchPack.from_dict(json.loads(pack_path.read_text()))
+                repo_revision = _git_head(cwd)
+                research = reuse_research_pack(
+                    node,
+                    research,
+                    repo_revision=repo_revision,
+                    source_revisions=dict(research.source_revisions),
+                )
+                prepared = project_research_pack(
+                    research,
+                    max_context_bytes=context_budget_bytes,
+                    context_plan=context_plan,
+                    mandatory_prompt_tokens=estimate_tokens(mandatory_suffix) + 1,
+                )
+            except (ValueError, OSError, json.JSONDecodeError, subprocess.SubprocessError):
+                # Stale pack or unreadable worktree: build fresh context.
+                prepared = None
+        if prepared is not None:
+            try:
+                return hydrate_node_prompt(
+                    node,
+                    repo=cwd,
+                    goal=goal,
+                    max_context_bytes=context_budget_bytes,
+                    max_prompt_bytes=context_budget_bytes,
+                    context_plan=context_plan,
+                    mandatory_suffix=mandatory_suffix,
+                    structured=True,
+                    prepared_context=prepared,
+                )
+            except ValueError:
+                # Prepared context exceeds the budget: build fresh instead.
+                prepared = None
         return hydrate_node_prompt(
             node,
             repo=cwd,
@@ -1132,6 +1214,24 @@ async def run_golden_path(
             context_plan=context_plan,
             mandatory_suffix=mandatory_suffix,
             structured=True,
+        )
+
+    def prompt_for(
+        node: WorkNode,
+        cwd: Path,
+        *,
+        context_budget_bytes: int = 60_000,
+        context_plan: ContextPlan | None = None,
+        mandatory_suffix: str = "",
+    ) -> WorkerPrompt:
+        return hydrate_with_research_pack(
+            node,
+            cwd,
+            run_dir,
+            goal=goal,
+            context_budget_bytes=context_budget_bytes,
+            context_plan=context_plan,
+            mandatory_suffix=mandatory_suffix,
         )
 
     runtime = DagRuntime(
@@ -1147,6 +1247,7 @@ async def run_golden_path(
         policy=policy,
         inflight=inflight,
         dispatch_authority=dispatch_authority,
+        model_rows=model_rows,
     )
     # Attempts dispatched by an earlier controller life keep their numbers; the
     # next attempt continues after them so the receipt never merges two lives.

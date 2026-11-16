@@ -873,11 +873,13 @@ async def test_plan_repair_names_conflicting_nodes_and_file(tmp_path):
 # ---------------------------------------------------------------- planner reselection (SH-1)
 
 
-def _planner_ladder(tmp_path: Path, routes: list[tuple[str, str, int]], connections):
+def _planner_ladder(
+    tmp_path: Path, routes: list[tuple[str, str, int]], connections, health_cache=None
+):
     from tests.test_orch_eligibility import make_ladder, row
 
     rows = [{**row(r, owned_by=owner), "capability_tier": tier} for r, owner, tier in routes]
-    ladder, _ = make_ladder(tmp_path, rows, connections)
+    ladder, _ = make_ladder(tmp_path, rows, connections, health_cache=health_cache)
     return ladder
 
 
@@ -1030,7 +1032,24 @@ async def test_planner_reselection_follows_cheapest_qualified_capacity(tmp_path,
         ("ms/mistral-large", "mistral", 2),
     ]
     connections = [conn("claude"), conn("glm", plan="free"), conn("mistral", plan="free")]
-    ladder = _planner_ladder(tmp_path, routes, connections)
+    # Planner requirements include tools, so FREE routes need fresh agentic
+    # proof (BOD-299 AC2); seed the health cache for both free routes.
+    from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+    cache = HealthCache(tmp_path / "health-cache.json")
+    for free_route in ("gl/glm-5", "ms/mistral-large"):
+        cache.record(
+            free_route,
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            NOW,
+        )
+    ladder = _planner_ladder(tmp_path, routes, connections, health_cache=cache)
     planner = _RoutedPlanner(lambda r: _COLLIDING_PLAN if r.startswith("gl/") else _GOOD_PLAN)
 
     rows = await _plan(tmp_path, monkeypatch, ladder, planner, NOW)

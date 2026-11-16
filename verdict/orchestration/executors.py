@@ -27,15 +27,17 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import httpx
 
 from verdict.http_safety import omniroute_evidence_headers
 from verdict.orchestration.contracts import (
+    EFFORT_OMITTED,
     AttemptUsage,
     WorkerExecutor,
     WorkerTerminal,
+    _accepts_keyword,
     executor_gateway_origin,
     gateway_origin_matches,
     normalize_gateway_origin,
@@ -51,6 +53,7 @@ from verdict.orchestration.prime_settings import (
     prepare_launch_agent_dir,
     prime_retry_policy_problems,
 )
+from verdict.orchestration.research_metrics import extract_prime_research_fetches
 from verdict.served_identity import check_served, served_identity_from_headers
 
 __all__ = [
@@ -321,7 +324,9 @@ class PrimeHeadlessExecutor:
             f"(launch has {origin or 'no gateway origin'})"
         )
 
-    def _command(self, prompt: str, route_id: str, cwd: Path) -> list[str]:
+    def _command(
+        self, prompt: str, route_id: str, cwd: Path, *, effort: Any = EFFORT_OMITTED
+    ) -> list[str]:
         cmd = [
             self.prime_bin,
             "-p",
@@ -336,28 +341,45 @@ class PrimeHeadlessExecutor:
             str(cwd),
             *self.extra_args,
         ]
-        if self.thinking is not None:
+        if self.thinking is not None and effort is EFFORT_OMITTED:
             cmd.extend(["--thinking", self.thinking])
+        elif effort is not None and effort is not EFFORT_OMITTED:
+            cmd.extend(["--thinking", effort])
         cmd.append("--")  # prompt is data, never a flag
         cmd.append(prompt)
         return cmd
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         """Run one prompt as an agent worker. Prime headless has no answer-only mode."""
         terminal = await self._run(
-            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, effort=effort
         )
         if not terminal.harness:
             terminal = replace(terminal, harness="prime-headless")
         return terminal
 
     async def _run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         started = time.monotonic()
-        argv = self._command(prompt, route_id, cwd)
+        if _accepts_keyword(self._command, "effort"):
+            argv = self._command(prompt, route_id, cwd, effort=effort)
+        else:
+            argv = self._command(prompt, route_id, cwd)
         child_env = self._child_env()
         # Prime's retry policy is semantic: each Verdict launch must make at
         # most one model request before Verdict classifies its terminal. Only
@@ -574,6 +596,7 @@ class PrimeHeadlessExecutor:
     ) -> WorkerTerminal:
         values, parsed_any = _iter_json_values(stdout)
         messages = _collect_messages(values)
+        research_fetches = extract_prime_research_fetches(messages) if messages else None
         assistant: dict[str, Any] | None = None
         for message in messages:
             if message.get("role") == "assistant":
@@ -594,6 +617,7 @@ class PrimeHeadlessExecutor:
                     status_code=returncode if returncode == 125 else None,
                     duration_seconds=duration,
                     usage=usage,
+                    research_fetches=research_fetches,
                 )
             if not parsed_any:
                 return WorkerTerminal(
@@ -603,6 +627,7 @@ class PrimeHeadlessExecutor:
                     error=f"malformed: {_sanitize(stdout, 200) or 'empty stdout'}",
                     duration_seconds=duration,
                     usage=usage,
+                    research_fetches=research_fetches,
                 )
             return WorkerTerminal(
                 executor_kind="live",
@@ -611,6 +636,7 @@ class PrimeHeadlessExecutor:
                 error="no_final_answer",
                 duration_seconds=duration,
                 usage=usage,
+                research_fetches=research_fetches,
             )
 
         reported_model = str(assistant.get("model", ""))
@@ -627,6 +653,7 @@ class PrimeHeadlessExecutor:
                 error="model_mismatch",
                 duration_seconds=duration,
                 usage=usage,
+                research_fetches=research_fetches,
             )
         error_message = assistant.get("errorMessage")
         if error_message:
@@ -640,6 +667,7 @@ class PrimeHeadlessExecutor:
                 status_code=_parse_status_code(error_text),
                 duration_seconds=duration,
                 usage=usage,
+                research_fetches=research_fetches,
             )
         if stop_reason not in {"stop", "end_turn"}:
             return WorkerTerminal(
@@ -650,6 +678,7 @@ class PrimeHeadlessExecutor:
                 error="no_final_answer",
                 duration_seconds=duration,
                 usage=usage,
+                research_fetches=research_fetches,
             )
         if not text.strip():
             return WorkerTerminal(
@@ -660,6 +689,7 @@ class PrimeHeadlessExecutor:
                 error="empty_output",
                 duration_seconds=duration,
                 usage=usage,
+                research_fetches=research_fetches,
             )
         return WorkerTerminal(
             executor_kind="live",
@@ -669,6 +699,7 @@ class PrimeHeadlessExecutor:
             stop_reason=stop_reason,
             duration_seconds=duration,
             usage=usage,
+            research_fetches=research_fetches,
         )
 
 
@@ -782,7 +813,14 @@ class FaultInjectingExecutor:
         return None
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        tools: bool = True,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         self._state.dispatches += 1
         if self._is_worker_attempt(cwd):
@@ -796,6 +834,7 @@ class FaultInjectingExecutor:
                 cwd=cwd,
                 timeout_seconds=timeout_seconds,
                 tools=tools,
+                effort=effort,
             )
         if kind == "hang":
             await asyncio.sleep(timeout_seconds)
@@ -909,16 +948,10 @@ class DirectGatewayExecutor:
         self.base_url = base_url.rstrip("/")
         # The gateway this executor sends to; the runtime checks it against the permit.
         self.gateway_origin = self.base_url
-        # Same precedence as the rest of Verdict (orchestration.run.resolve_api_key):
-        # the certify workflow and operators set VERDICT_OMNIROUTE_API_KEY.
-        self.api_key = api_key or next(
-            (
-                value
-                for name in ("VERDICT_OMNIROUTE_API_KEY", "OMNIROUTE_API_KEY", "OPENAI_API_KEY")
-                if (value := os.environ.get(name, "").strip())
-            ),
-            "",
-        )
+        # The one gateway key resolver; OPENAI_API_KEY stays a last resort here.
+        from verdict.credentials_store import resolve_api_key
+
+        self.api_key = api_key or resolve_api_key() or os.environ.get("OPENAI_API_KEY", "").strip()
         self.timeout_connect = timeout_connect
 
     def _headers(self) -> dict[str, str]:
@@ -1434,17 +1467,36 @@ class DirectGatewayExecutor:
             diff_path.unlink(missing_ok=True)
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        tools: bool = True,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         terminal = await self._run(
-            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds, tools=tools
+            prompt,
+            route_id=route_id,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            tools=tools,
+            effort=effort,
         )
         if not terminal.harness:
             terminal = replace(terminal, harness="direct-gateway")
         return terminal
 
     async def _run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        tools: bool = True,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         started = time.monotonic()
         owned_files = self._parse_owned_files(prompt) if tools else []
@@ -1464,6 +1516,9 @@ class DirectGatewayExecutor:
             # implement prompts often take longer to produce the whole answer.
             "stream": is_implement,
         }
+        if effort is not EFFORT_OMITTED and effort is not None:
+            # Passthrough field. OmniRoute does not report applied effort.
+            payload["reasoning_effort"] = effort
         try:
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 if is_implement:
@@ -1761,13 +1816,8 @@ class MixedExecutor:
     Usage (via ``--executor-map``)::
 
         verdict orchestrate "goal" \
-            --executor-map "node-1=prime,node-2=direct-gateway"
+            --executor-map "node-1=prime-headless,node-2=direct-gateway"
     """
-
-    _BACKEND_KINDS: ClassVar[dict[str, str]] = {
-        "prime": "prime-headless",
-        "direct-gateway": "direct-gateway",
-    }
 
     def __init__(self, node_map: dict[str, WorkerExecutor], default: WorkerExecutor) -> None:
         self._map = dict(node_map)
@@ -1814,7 +1864,14 @@ class MixedExecutor:
         return self._default
 
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float, tools: bool = True
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        tools: bool = True,
+        effort: Any = EFFORT_OMITTED,
     ) -> WorkerTerminal:
         # Delegate entirely.  executor_kind and harness are set by the delegate
         # (PrimeHeadlessExecutor/DirectGatewayExecutor self-stamp harness;
@@ -1828,4 +1885,5 @@ class MixedExecutor:
             cwd=cwd,
             timeout_seconds=timeout_seconds,
             tools=tools,
+            effort=effort,
         )

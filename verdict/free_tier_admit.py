@@ -1273,7 +1273,9 @@ def _quota_blocks(payload: object) -> tuple[NamedDrop, ...]:
         before = len(blocks)
         has_capacity = False
         account = row.get("connectionId", "unknown")
-        if row.get("available") is False and row.get("reason") != "not_supported":
+        if row.get("available") is False and (
+            row.get("reason") is None or row.get("reason") == "quota_exhausted"
+        ):
             blocks.append(
                 NamedDrop(
                     provider,
@@ -1414,11 +1416,29 @@ def _unsupported_fields(payloads: Mapping[str, object]) -> tuple[str, ...]:
 def snapshot_from_payloads(
     *, catalog: object, free_tier: object, providers: object, account_status: object = None
 ) -> OmniRouteAdmitSnapshot:
+    # A successful account-status response whose shape we cannot read means
+    # quota is unknown, not exhausted: fail closed instead of admitting as if
+    # quota were known (BOD-297 whole-source failure).
+    account_rows = _rows_of(account_status, ("accountQuotas",))
+    account_source_unknown = account_status is not None and account_rows is None
+    quota_blocks = list(_quota_blocks(account_status))
+    if account_source_unknown:
+        known_providers: set[str] = set()
+        for identity in parse_catalog_identities(catalog):
+            known_providers.add(identity.provider)
+        for row in parse_free_tier_models(free_tier):
+            known_providers.add(row.provider)
+        blocked = {block.model_id for block in quota_blocks}
+        quota_blocks.extend(
+            NamedDrop(provider, "quota_exhausted", "account status source failed: unknown quota")
+            for provider in sorted(known_providers)
+            if provider not in blocked
+        )
     return OmniRouteAdmitSnapshot(
         catalog=parse_catalog_identities(catalog),
         free_tier=parse_free_tier_models(free_tier),
         connections=parse_provider_connections(providers),
-        quota_blocks=_quota_blocks(account_status),
+        quota_blocks=tuple(quota_blocks),
         inventory_complete=_surface_rows(catalog) is not None,
         inventory_diagnostics=_surface_shape_diagnostics(
             catalog, free_tier, providers, account_status

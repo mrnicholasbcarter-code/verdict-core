@@ -406,6 +406,78 @@ def test_known_subscription_tokens_always_before_unknown(monkeypatch):
     assert prepared.pool_receipt.shortlist[0].route_id == live.STRONG
 
 
+def _usage_series(route, totals, family="code_edit"):
+    """Distinct accepted attempts with varying token totals for a real median."""
+    from verdict.candidate_pool import OutcomeObservation
+
+    return tuple(
+        OutcomeObservation(
+            route_id=route,
+            task_family=family,
+            success=True,
+            quality_credit=1.0,
+            total_tokens=total,
+            observation_id=f"{route}:{i}",
+        )
+        for i, total in enumerate(totals)
+    )
+
+
+def _subscription_order(tmp_path, monkeypatch, quotas, observations):
+    """Rank subscription routes once, with the given per-provider quota headroom."""
+    _history(monkeypatch, observations)
+    ids = ("aaa/low", "bbb/high", "ccc/sparse")
+    rows = [_ladder_row(r, pricing={"input": 1}, tier=2) for r in ids]
+    conns = []
+    for route in ids:
+        provider = route.split("/", 1)[0]
+        conn = _conn(provider, auth="oauth")
+        conn["quota_percent"] = quotas[provider]
+        conns.append(conn)
+    ladder = EligibilityLadder(
+        rows,
+        conns,
+        lambda _: HealthResult(True, "ok"),
+        tmp_path / f"state-{','.join(str(q) for q in quotas.values())}.json",
+        metadata=_snapshot(_record("aaa/low", ids[0], aa_coding=_score(90))),
+    )
+    verdicts = ladder.evaluate(TaskRequirements(), now=NOW)
+    ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)
+    return [v.route_id for v in ranked], {v.route_id: v for v in verdicts}
+
+
+def test_subscription_order_follows_token_median_not_quota_headroom(tmp_path, monkeypatch):
+    """Measured subscription usage orders routes; remaining quota never does."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+    ids = ("aaa/low", "bbb/high", "ccc/sparse")
+    observations = (
+        _usage_series(ids[0], (800, 1000, 1400))  # median 1000
+        + _usage_series(ids[1], (2000, 3000, 4000))  # median 3000
+        + _usage_series(ids[2], (100, 200))  # below the three-sample minimum
+    )
+    # Sparse route gets the most headroom; measured routes get the least.
+    order_a, verdicts_a = _subscription_order(
+        tmp_path, monkeypatch, {"aaa": 10.0, "bbb": 20.0, "ccc": 95.0}, observations
+    )
+    assert order_a == [ids[0], ids[1], ids[2]]
+    assert verdicts_a[ids[0]].rank_components["expected_tokens"] == 1000
+    assert verdicts_a[ids[1]].rank_components["expected_tokens"] == 3000
+    assert verdicts_a[ids[2]].rank_components["expected_tokens"] is None
+    # Flip every headroom value; the order and token estimates must not move.
+    order_b, verdicts_b = _subscription_order(
+        tmp_path, monkeypatch, {"aaa": 95.0, "bbb": 5.0, "ccc": 50.0}, observations
+    )
+    assert order_b == order_a
+    for route in ids:
+        assert (
+            verdicts_b[route].rank_components["expected_tokens"]
+            == verdicts_a[route].rank_components["expected_tokens"]
+        )
+    assert verdicts_b[ids[0]].rank_components["quota_percent"] == 95.0
+    assert verdicts_b[ids[2]].rank_components["quota_percent"] == 50.0
+
+
 def test_subscription_token_tie_uses_rating(monkeypatch):
     """Use rating to break ties between equal subscription token estimates."""
     service = _service()
@@ -906,3 +978,262 @@ def test_relay_three_free_failures_report_budget_exhaustion(monkeypatch, tmp_pat
     assert terminal["termination_reason"] == "budget_exhausted"
     assert [row["model"] for row in terminal["attempted_routes"]] == list(ids[:3])
     assert not any(row.get("details", {}).get("fallback") for row in events)
+
+
+def test_permitted_metered_sorts_after_capable_free_and_subscription(tmp_path, monkeypatch):
+    """Order a mixed-tier ladder free, then subscription, then metered last."""
+    from datetime import timedelta
+
+    from verdict.orchestration.contracts import CapacityClass, EligibilityStage
+    from verdict.orchestration.health_cache import ProbeResult
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+
+    free_id, sub_id, paid_id = "freeco/model", "subco/model", "paidco/model"
+    rows = [
+        _ladder_row(free_id, pricing={"input": 1}, tier=2),
+        _ladder_row(sub_id, pricing={"input": 1}, tier=2),
+        _ladder_row(paid_id, pricing={"input": 1}, tier=2),
+    ]
+    conns = [
+        _conn("freeco", auth="apikey", free=True),
+        _conn("subco", auth="oauth"),
+        _conn("paidco", auth="apikey"),
+    ]
+    cache = HealthCache(tmp_path / "health.json")
+    for route in (free_id, sub_id, paid_id):
+        cache.record(
+            route,
+            ProbeResult(
+                category="ok", chat_ok=True, tool_ok=True, agentic_ok=True, probe_class="agentic"
+            ),
+            NOW,
+        )
+    cache.save()
+    ladder = EligibilityLadder(
+        rows,
+        conns,
+        lambda _: HealthResult(True, "ok"),
+        tmp_path / "state.json",
+        health_cache=cache,
+        metadata=None,
+    )
+    requirements = TaskRequirements(max_capability_tier=3)
+
+    verdicts = {v.route_id: v for v in ladder.evaluate(requirements, now=NOW)}
+    ranked = sorted((v for v in verdicts.values() if v.rank is not None), key=lambda v: v.rank)
+    assert [v.route_id for v in ranked] == [free_id, sub_id, paid_id]
+    assert [v.capacity_class for v in ranked] == [
+        CapacityClass.FREE,
+        CapacityClass.SUBSCRIPTION,
+        CapacityClass.METERED,
+    ]
+    assert [v.rank_components["capacity_order"] for v in ranked] == [0, 1, 2]
+
+    # A payment-required negative still excludes the metered route outright.
+    # The failure is recorded one second later so it wins the cache's
+    # strictly-newer checked_at merge over the earlier healthy probe.
+    later = NOW + timedelta(seconds=1)
+    cache.record(
+        paid_id,
+        ProbeResult(category="payment_required", chat_ok=False, tool_ok=False, http_status=402),
+        later,
+    )
+    cache.save()
+    excluded = {v.route_id: v for v in ladder.evaluate(requirements, now=later)}
+    paid = excluded[paid_id]
+    assert paid.rank is None
+    assert paid.failed_stage is EligibilityStage.HEALTHY
+    assert paid.reason == "payment_required"
+
+
+def test_terminal_reasons_free_supply_unknown_and_budget_exhausted_preserve_names_and_distinction(
+    monkeypatch, tmp_path
+):
+    """Prove free_supply_unknown and budget_exhausted keep current names and remain distinct."""
+    from fastapi.testclient import TestClient
+
+    from tests.relay_proof_helpers import with_relay_proofs
+    from tests.test_api_relay_context_length import ContextLengthTransport
+    from tests.test_proxy import FixedIntelligence
+    from verdict import api
+    from verdict.models import RoutingDecision
+    from verdict.orchestration.eligibility import selection_accounting
+    from verdict.proxy import UpstreamProxy
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("TMPDIR", "/tmp")
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.setenv("LLMGATE_LOG_PATH", "")
+
+    # 1. Assert free_supply_unknown terminal reason appears under its current name
+    # when an unverified free supply fails upstream without escalation.
+    free_unknown_ids = ("free-unknown-a", "sub-a")
+
+    class FreeUnknownIntelligence(FixedIntelligence):
+        async def route(self, task, criticality="medium", context=None, *, request_id=None):
+            decision = with_relay_proofs(
+                RoutingDecision(
+                    model=free_unknown_ids[0],
+                    provider="omniroute",
+                    tier=2,
+                    reason="test",
+                    alternatives=[free_unknown_ids[1]],
+                    safety_flags=["subscription_fallback_policy", "free_supply_unknown"],
+                    candidate_states=[
+                        {
+                            "model_id": free_unknown_ids[0],
+                            "route_id": free_unknown_ids[0],
+                            "admitted": True,
+                            "capacity_order": 0,
+                        }
+                    ],
+                ),
+                context,
+            )
+            return replace(
+                decision,
+                alternatives=[free_unknown_ids[1]],
+                candidate_states=[
+                    {"model_id": model, "route_id": model, "admitted": True, "capacity_order": tier}
+                    for model, tier in zip(free_unknown_ids, (0, 1), strict=True)
+                ],
+            )
+
+    transport_free_unknown = ContextLengthTransport([(503, '{"error":"service_unavailable"}')])
+    events_free_unknown = []
+    original_finish = api._finish_evidence
+
+    def capture_free_unknown(evidence, outcome, key):
+        events_free_unknown.append(outcome.to_dict())
+        return original_finish(evidence, outcome, key)
+
+    monkeypatch.setattr(api, "_finish_evidence", capture_free_unknown)
+    monkeypatch.setattr(api, "_build_intelligence", lambda: FreeUnknownIntelligence())
+    monkeypatch.setattr(
+        api,
+        "_build_proxy",
+        lambda: UpstreamProxy("http://upstream.test/v1", transport=transport_free_unknown),
+    )
+
+    with TestClient(api.app) as client:
+        res = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "fix code"}]},
+            headers={"idempotency-key": "regression-free-supply-unknown"},
+        )
+    assert res.status_code == 503
+    assert len(transport_free_unknown.requests) == 1
+    free_unknown_terminal = events_free_unknown[-1]["details"]
+    free_reason = free_unknown_terminal["termination_reason"]
+    assert free_reason == "free_supply_unknown"
+
+    # 2. Assert budget_exhausted terminal reason appears under its current name
+    # when all three free attempts fail.
+    budget_ids = ("free-b1", "free-b2", "free-b3", "sub-b1")
+
+    class BudgetExhaustedIntelligence(FixedIntelligence):
+        async def route(self, task, criticality="medium", context=None, *, request_id=None):
+            decision = with_relay_proofs(
+                RoutingDecision(
+                    model=budget_ids[0],
+                    provider="omniroute",
+                    tier=2,
+                    reason="test",
+                    alternatives=list(budget_ids[1:3]),
+                    safety_flags=["subscription_fallback_policy"],
+                    candidate_states=[
+                        {
+                            "model_id": model,
+                            "route_id": model,
+                            "admitted": True,
+                            "capacity_order": 0,
+                        }
+                        for model in budget_ids[:3]
+                    ],
+                ),
+                context,
+            )
+            return replace(
+                decision,
+                alternatives=list(budget_ids[1:]),
+                candidate_states=[
+                    {"model_id": model, "route_id": model, "admitted": True, "capacity_order": tier}
+                    for model, tier in zip(budget_ids, (0, 0, 0, 1), strict=True)
+                ],
+            )
+
+    transport_budget = ContextLengthTransport([(503, '{"error":"service_unavailable"}')] * 3)
+    events_budget = []
+
+    def capture_budget(evidence, outcome, key):
+        events_budget.append(outcome.to_dict())
+        return original_finish(evidence, outcome, key)
+
+    monkeypatch.setattr(api, "_finish_evidence", capture_budget)
+    monkeypatch.setattr(api, "_build_intelligence", lambda: BudgetExhaustedIntelligence())
+    monkeypatch.setattr(
+        api,
+        "_build_proxy",
+        lambda: UpstreamProxy("http://upstream.test/v1", transport=transport_budget),
+    )
+
+    with TestClient(api.app) as client:
+        res = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "fix code"}]},
+            headers={"idempotency-key": "regression-budget-exhausted"},
+        )
+    assert res.status_code == 503
+    assert len(transport_budget.requests) == 3
+    budget_terminal = events_budget[-1]["details"]
+    budget_reason = budget_terminal["termination_reason"]
+    assert budget_reason == "budget_exhausted"
+
+    # 3. Both reasons are distinct and not merged into the selection_accounting classes.
+    assert free_reason != budget_reason
+
+    accounting_classes = {
+        "eligible_free_attempted",
+        "known_unavailable",
+        "unqualified_supply",
+        "eligible_unattempted_authority_expired",
+    }
+    accounting_reasons_fields = {"known_unavailable_reasons", "unqualified_reasons"}
+    expected_accounting_keys = accounting_classes | accounting_reasons_fields
+
+    for terminal_details, reason_name in (
+        (free_unknown_terminal, "free_supply_unknown"),
+        (budget_terminal, "budget_exhausted"),
+    ):
+        accounting = terminal_details["selection_accounting"]
+        # The reason is recorded as termination_reason, not as a selection_accounting class key
+        assert terminal_details["termination_reason"] == reason_name
+        assert reason_name not in accounting
+        assert set(accounting.keys()) == expected_accounting_keys
+        # Neither reason replaces or is merged into category lists as class labels
+        for cls_name in accounting_classes:
+            assert reason_name not in accounting[cls_name]
+            assert cls_name != reason_name
+
+    # Check direct selection_accounting projection behavior:
+    # authority_expired=False vs True maps to eligible_unattempted_authority_expired,
+    # never introducing budget_exhausted or free_supply_unknown as class names.
+    sample_candidates = [
+        {"route_id": "free/a", "capacity_order": 0, "admitted": True},
+        {"route_id": "sub/a", "capacity_order": 1, "admitted": True},
+    ]
+    acct_no_expire = selection_accounting(
+        sample_candidates, attempted=["free/a"], authority_expired=False
+    )
+    acct_expired = selection_accounting(
+        sample_candidates, attempted=["free/a"], authority_expired=True
+    )
+    assert "budget_exhausted" not in acct_no_expire
+    assert "free_supply_unknown" not in acct_no_expire
+    assert "budget_exhausted" not in acct_expired
+    assert "free_supply_unknown" not in acct_expired
+    assert acct_no_expire["eligible_unattempted_authority_expired"] == []
+    assert acct_expired["eligible_unattempted_authority_expired"] == ["sub/a"]

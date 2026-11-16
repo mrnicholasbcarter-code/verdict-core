@@ -59,6 +59,11 @@ def build_candidates(
 
     for v in verdicts:
         d = v.to_dict() if hasattr(v, "to_dict") else {"route_id": str(getattr(v, "route_id", ""))}
+        components = d.get("rank_components")
+        if isinstance(components, dict):
+            components.pop("selection_accounting", None)
+            if not components:
+                d.pop("rank_components")
         rid = d.get("route_id", "")
         if selected_route and rid == selected_route and selected_verdict is None:
             selected_verdict = d

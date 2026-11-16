@@ -135,9 +135,9 @@ def test_screen_caps_strongest_first_alias_dedupe_and_subscription_proof(tmp_pat
     calls = []
     report = screen(tmp_path, calls, capacities=("free", "subscription"))
     checked = [r for r in report["routes"] if r["turns_sent"]]
-    assert [r["route_id"] for r in checked] == ["p/weak", "q/model"]
+    assert [r["route_id"] for r in checked] == ["alias/strong", "q/model"]
     assert checked[0]["basis"] == "score"
-    assert checked[0]["score"] == 10
+    assert checked[0]["score"] == 90
     assert checked[0]["provider"] == "p"
     assert all(r["result"] == "pass" and r["turns_sent"] == 3 for r in checked)
     assert report["routes_checked"] == report["passed"] == 2
@@ -145,7 +145,7 @@ def test_screen_caps_strongest_first_alias_dedupe_and_subscription_proof(tmp_pat
     assert report["stopped_reason"] == "route_cap"
     assert {r["result"] for r in report["routes"]} >= {"skipped_alias", "skipped_cap"}
     cache = HealthCache(tmp_path / "health.json")
-    entry = cache.entry("p/weak")
+    entry = cache.entry("alias/strong")
     assert entry.agentic_ok and entry.identity == "verified"
     assert entry.agentic_checked_at == NOW
     assert cache.entry("p/strong") is None
@@ -428,12 +428,12 @@ def test_screen_auth_keeps_existing_failure_scope_and_pool_cooldown(
     assert ("alias" in _cooled_pools(cache, NOW)) is cooled
 
 
-def test_free_screens_before_higher_rated_subscription(tmp_path):
+def test_strongest_rating_screens_before_lower_rated_free(tmp_path):
     calls = []
     report = screen(tmp_path, calls, capacities=("free", "subscription"))
     checked = [r for r in report["routes"] if r["turns_sent"]]
-    assert [r["route_id"] for r in checked] == ["p/weak", "q/model"]
-    assert [r[0] for r in calls] == ["p/weak"] * 3 + ["q/model"] * 3
+    assert [r["route_id"] for r in checked] == ["alias/strong", "q/model"]
+    assert [r[0] for r in calls] == ["alias/strong"] * 3 + ["q/model"] * 3
     assert report["passed"] == 2
 
 

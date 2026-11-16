@@ -52,6 +52,7 @@ from verdict.orchestration.controller_operations import (
     executor_timeout_within,
     owned_worker_command,
 )
+from verdict.orchestration.eligibility import _OPAQUE_PREFIXES
 from verdict.orchestration.provider_catalog import aliased_pools_for
 
 __all__ = ["OcrRun", "OcrRunner", "OpenCodeReviewer", "make_subprocess_runner"]
@@ -606,14 +607,16 @@ class OpenCodeReviewer:
         """Reviewer failures use the same policy as workers (BOD-224).
 
         A provider 429/401/402 cools the whole provider; a timeout or 5xx cools
-        the route; an identity mismatch is route-scoped. An unclassifiable
-        reviewer error keeps the previous conservative route cooldown.
+        the route; an identity mismatch or an unobserved OCR-reported model is
+        route-scoped and reselects another reviewer. An unclassifiable reviewer
+        error keeps the previous conservative route cooldown. Coverage vetoes
+        are not classified here: they are not provider failures.
         """
         from verdict.orchestration.contracts import WorkerTerminal
         from verdict.orchestration.recovery import FailureIntelligence
 
         detail = result.detail
-        if detail.startswith("identity_mismatch"):
+        if detail.startswith(("identity_mismatch", "identity_unobserved")):
             return FailureClassification("model_mismatch", "REROUTE", 3600, "route", detail)
         match = re.search(r"(?<!\d)(4\d\d|5\d\d)(?!\d)", detail)
         terminal = WorkerTerminal(
@@ -754,13 +757,23 @@ class OpenCodeReviewer:
             # outage. Changing reviewer cannot repair an empty selected range.
             return self._error(route_id, raw_ref, empty_reason)
 
+        observed = self._observed_model(payload)
+        if observed is None:
+            # Positive coverage without a usable OCR-reported model is not a pass.
+            # ``manifest.execution.model`` is what OCR reports, not a verified
+            # gateway-served identity. Missing, blank, non-string, and opaque
+            # values cannot be trusted and are not stringified into an identity.
+            # This error is reviewer-scoped: another reviewer may report a usable
+            # model, so review() reselects. Coverage vetoes do not. Checked before
+            # the all-failed veto so an unusable model is not hidden by that veto.
+            return self._error(
+                route_id,
+                raw_ref,
+                f"identity_unobserved: selected {route_id}, OCR reported no usable model",
+            )
         if self._every_item_failed(payload):
             return self._error(route_id, raw_ref, "every reviewed item failed")
-
-        observed = self._observed_model(payload)
-        if observed is not None and observed.removeprefix("omniroute/") != route_id.removeprefix(
-            "omniroute/"
-        ):
+        if observed.removeprefix("omniroute/") != route_id.removeprefix("omniroute/"):
             # Fail closed on substitution: the review ran on a model Verdict did
             # not select, so it is not evidence from the selected reviewer.
             return self._error(
@@ -780,10 +793,23 @@ class OpenCodeReviewer:
 
     @staticmethod
     def _observed_model(payload: Mapping[str, object]) -> str | None:
+        """OCR-reported model, or None when it cannot be trusted.
+
+        ``manifest.execution.model`` is what OCR reports. It is not, by itself,
+        a verified gateway-served identity. Only a non-blank string that is not
+        an opaque router alias is usable. Mappings, lists, numbers, booleans,
+        blanks, and ``auto/`` ``combo/`` ``router/`` ``virtual/`` values are
+        unobserved; they are never ``str()``'d into an identity.
+        """
         manifest = payload.get("manifest")
         execution = manifest.get("execution") if isinstance(manifest, Mapping) else None
         model = execution.get("model") if isinstance(execution, Mapping) else None
-        return str(model).strip() or None if model else None
+        if not isinstance(model, str):
+            return None
+        stripped = model.strip().removeprefix("omniroute/")
+        if not stripped or stripped.lower().startswith(_OPAQUE_PREFIXES):
+            return None
+        return model.strip()
 
     @staticmethod
     def _provider_failure(result: ReviewResult) -> bool:
@@ -792,6 +818,7 @@ class OpenCodeReviewer:
             token in detail
             for token in (
                 "identity_mismatch",
+                "identity_unobserved",
                 "exited",
                 "timed out",
                 "provider",
