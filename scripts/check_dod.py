@@ -78,7 +78,12 @@ def _is_ancestor(root: Path, older: str, newer: str) -> bool:
 
 
 def _time(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if not isinstance(value, str):
+        raise ValueError(f"{value!r} must be an ISO-8601 time with a timezone")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError(f"{value!r} must be an ISO-8601 time with a timezone")
+    return parsed
 
 
 STRUCTURED_KEYS = ("outcome", "run_id", "started_at", "finished_at", "events_digest")
@@ -144,6 +149,10 @@ def _check_run_truth(
     except (TypeError, ValueError, KeyError) as exc:
         errors.append(f"{where}: structured result time is invalid: {exc}")
     else:
+        if started > finished:
+            errors.append(
+                f"{where}: started_at {result['started_at']!r} is later than finished_at {result['finished_at']!r}"
+            )
         tolerance = timedelta(minutes=5)
         if not (started - tolerance <= recorded <= finished + tolerance):
             errors.append(
