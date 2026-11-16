@@ -1,7 +1,7 @@
-"""Comprehensive tests for verdict.pr_watcher core.
+"""Tests for the PR watcher core, driven through injected fake clients.
 
-Covers all 17 requirements from openspec/changes/bod358-pr-watcher/specs/pr-watcher/spec.md
-(excluding Setup/doctor and live smoke which are host tasks).
+Each test names the failure it catches.  The concrete ``gh`` client, the
+setup/doctor timer and the live smoke are outside this file.
 """
 
 from __future__ import annotations
@@ -18,12 +18,12 @@ from typing import Any
 import pytest
 
 from verdict.pr_watcher import (
-    poll_open_prs,
+    _adapter_action,
     reconcile_merged_prs,
     request_bounded_rerun,
     run_watcher,
 )
-from verdict.pr_watcher_github import assert_no_mutation as gh_assert_no_mutation
+from verdict.pr_watcher_github import WatcherGitHubClient
 from verdict.pr_watcher_notifications import (
     build_digest_event,
     build_linear_event,
@@ -36,6 +36,7 @@ from verdict.pr_watcher_state import (
     MalformedStateError,
     RegressionRecord,
     RepairRecord,
+    UnsafeKeyError,
     WatcherState,
     _safe_key,
     redact_secrets,
@@ -59,7 +60,8 @@ class FakeGitHubClient:
         self.rerun_calls: list[dict[str, Any]] = []
         self.merged_since_calls: list[str | None] = []
         self.merged_listing_error: Exception | None = None
-        self._check_runs: dict[str, dict[str, Any]] = {}
+        self.before_rerun: Callable[[], None] | None = None
+        self.checks_calls: list[str] = []
 
     def set_open_prs(self, repo: str, prs: list[dict[str, Any]]) -> None:
         self._open_prs[repo] = prs
@@ -76,9 +78,6 @@ class FakeGitHubClient:
     def set_merged_prs(self, repo: str, prs: list[dict[str, Any]]) -> None:
         self._merged_prs[repo] = prs
 
-    def set_check_run(self, check_run_id: str, data: dict[str, Any]) -> None:
-        self._check_runs[check_run_id] = data
-
     def list_open_prs(self, repo: str) -> list[dict[str, Any]]:
         return list(self._open_prs.get(repo, []))
 
@@ -89,6 +88,7 @@ class FakeGitHubClient:
         return dict(self._pr_details[key])
 
     def get_checks(self, repo: str, sha: str) -> list[dict[str, Any]]:
+        self.checks_calls.append(sha)
         return list(self._checks.get((repo, sha), []))
 
     def get_reviews(self, repo: str, pr_number: int) -> list[dict[str, Any]]:
@@ -104,13 +104,13 @@ class FakeGitHubClient:
         return [p for p in prs if p["merged_at"] >= since]
 
     def rerun_check(self, check_run_id: str, repo: str) -> dict[str, Any]:
+        if self.before_rerun is not None:
+            self.before_rerun()
         self.rerun_calls.append({"check_run_id": check_run_id, "repo": repo})
         return {"status": "queued"}
 
     def get_check_run(self, check_run_id: str, repo: str) -> dict[str, Any]:
-        if check_run_id not in self._check_runs:
-            return {}
-        return dict(self._check_runs[check_run_id])
+        return {}
 
 
 class FakeLinearClient:
@@ -178,6 +178,9 @@ REAL_CHECK_NAMES = (
 # pattern, and no real check name here does. This single synthetic name exists
 # to reach that branch.
 INFRA_NAMED_CHECK = "runner timeout"
+# Shaped like a GitHub token so the redactor sees a realistic value; assembled
+# here so that no token-shaped literal is stored in the repository.
+FAKE_TOKEN = "ghp_" + "Ab1" * 12
 
 
 def iso(moment: datetime) -> str:
@@ -197,6 +200,7 @@ def open_pr(
     checks: list[dict[str, Any]],
     mergeable: str = "MERGEABLE",
     merge_state: str = "CLEAN",
+    repo: str = REPO,
     **extra: Any,
 ) -> None:
     """Register one open PR at ``head`` with its exact-head checks."""
@@ -207,9 +211,13 @@ def open_pr(
         "merge_state_status": merge_state,
         **extra,
     }
-    gh.set_open_prs(REPO, [*gh.list_open_prs(REPO), pr])
-    gh.set_pr(REPO, number, pr)
-    gh.set_checks(REPO, head, checks)
+    gh.set_open_prs(repo, [*gh.list_open_prs(repo), pr])
+    gh.set_pr(repo, number, pr)
+    gh.set_checks(repo, head, checks)
+
+
+def outcomes(result: dict[str, Any]) -> list[tuple[int, str, str]]:
+    return [(o["pr_number"], o["classification"], o["action"]) for o in result["observations"]]
 
 
 def disk(ws: WatcherState) -> dict[str, Any]:
@@ -226,168 +234,125 @@ def disk(ws: WatcherState) -> dict[str, Any]:
 class TestExactHeadPolling:
     """Requirement: Exact-head polling classifies every open configured pull request."""
 
-    def test_paginated_exact_head_observation(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """Paginated exact-head observation: two pages contain open PRs."""
-        repo = "org/repo"
-        head_a = "a" * 40
-        head_b = "b" * 40
-        head_c = "c" * 40
+    def test_every_open_pr_is_classified_from_the_checks_of_its_own_head(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches checks being read for the wrong head, or a listed PR being skipped.
 
-        # Page 1: PRs 1 and 2
-        gh.set_open_prs(
-            repo,
-            [
-                {"number": 1, "head_sha": head_a, "mergeable": True, "merge_state_status": "CLEAN"},
-                {"number": 2, "head_sha": head_b, "mergeable": True, "merge_state_status": "CLEAN"},
-                {
-                    "number": 3,
-                    "head_sha": head_c,
-                    "mergeable": False,
-                    "merge_state_status": "DIRTY",
-                },
-            ],
-        )
+        The fake returns one list: pagination is the client's job and is not
+        exercised here, and nor is a head that moves between the listing and
+        the checks read.
+        """
+        open_pr(gh, 1, "a" * 40, [check("test (3.11)")])
+        open_pr(gh, 2, "b" * 40, [check("Analyze (python)", None, "IN_PROGRESS")])
+        open_pr(gh, 3, "c" * 40, [check("lint", "FAILURE")])
 
-        # PR 1: all green
-        gh.set_pr(repo, 1, {"head_sha": head_a, "mergeable": True, "merge_state_status": "CLEAN"})
-        gh.set_checks(
-            repo,
-            head_a,
-            [
-                {
-                    "name": "test (3.11)",
-                    "status": "COMPLETED",
-                    "conclusion": "SUCCESS",
-                    "required": True,
-                }
-            ],
-        )
+        result = run_watcher(gh, ws, [REPO], now=T0)
 
-        # PR 2: pending
-        gh.set_pr(repo, 2, {"head_sha": head_b, "mergeable": True, "merge_state_status": "CLEAN"})
-        gh.set_checks(
-            repo,
-            head_b,
-            [
-                {
-                    "name": "Analyze (python)",
-                    "status": "IN_PROGRESS",
-                    "conclusion": None,
-                    "required": True,
-                }
-            ],
-        )
+        assert gh.checks_calls == ["a" * 40, "b" * 40, "c" * 40]
+        assert outcomes(result) == [
+            (1, "GREEN", "READY"),
+            (2, "PENDING", "NO_ACTION"),
+            (3, "CODE_FAILURE", "REPAIR"),
+        ]
 
-        # PR 3: conflict
-        gh.set_pr(repo, 3, {"head_sha": head_c, "mergeable": False, "merge_state_status": "DIRTY"})
-        gh.set_checks(
-            repo,
-            head_c,
-            [
-                {
-                    "name": "test (3.11)",
-                    "status": "COMPLETED",
-                    "conclusion": "SUCCESS",
-                    "required": True,
-                }
-            ],
-        )
+    def test_zero_checks_is_not_green_and_gets_a_repair_record_with_a_reason(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a PR with no checks at all being treated as ready."""
+        open_pr(gh, 1, "a" * 40, [])
 
-        obs = poll_open_prs(gh, ws, repo)
-        classifications = {o["pr_number"]: o["classification"] for o in obs}
-        assert classifications[1] == "GREEN"
-        assert classifications[2] == "PENDING"
-        assert classifications[3] == "CONFLICT"
+        result = run_watcher(gh, ws, [REPO], now=T0)
 
-    def test_zero_checks_never_green(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """Zero checks shall not be green."""
-        gh.set_open_prs(
-            "org/repo",
-            [{"number": 1, "head_sha": "a" * 40, "mergeable": True, "merge_state_status": "CLEAN"}],
-        )
-        gh.set_pr(
-            "org/repo", 1, {"head_sha": "a" * 40, "mergeable": True, "merge_state_status": "CLEAN"}
-        )
-        gh.set_checks("org/repo", "a" * 40, [])  # no checks
-        obs = poll_open_prs(gh, ws, "org/repo")
-        assert obs[0]["classification"] == "EMPTY"
-        assert obs[0]["classification"] != "GREEN"
+        assert outcomes(result) == [(1, "EMPTY", "REPAIR")]
+        repairs = disk(ws)["records"]["repair"]
+        assert [(r["classification"], r["reason"]) for r in repairs] == [
+            ("EMPTY", "PR classified as EMPTY")
+        ]
 
-    def test_pending_checks_remain_pending(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """Pending checks remain pending."""
-        gh.set_open_prs(
-            "org/repo",
-            [{"number": 1, "head_sha": "a" * 40, "mergeable": True, "merge_state_status": "CLEAN"}],
-        )
-        gh.set_pr(
-            "org/repo", 1, {"head_sha": "a" * 40, "mergeable": True, "merge_state_status": "CLEAN"}
-        )
-        gh.set_checks(
-            "org/repo",
+    @pytest.mark.parametrize("status", ["QUEUED", "IN_PROGRESS"])
+    def test_unfinished_check_stays_pending_with_no_action(
+        self, gh: FakeGitHubClient, ws: WatcherState, status: str
+    ) -> None:
+        """Catches a still-running check being rerun, repaired or reported."""
+        open_pr(gh, 1, "a" * 40, [check("proof-full", None, status, check_run_id="job-1")])
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert outcomes(result) == [(1, "PENDING", "NO_ACTION")]
+        assert gh.rerun_calls == []
+        assert disk(ws)["records"] == {"repair": [], "block": [], "regression": []}
+
+    @pytest.mark.parametrize(
+        ("minutes", "expected"),
+        [(29, "PENDING"), (30, "PENDING"), (31, "STALLED"), (95, "STALLED")],
+    )
+    def test_check_is_stalled_only_after_more_than_thirty_minutes(
+        self, gh: FakeGitHubClient, ws: WatcherState, minutes: int, expected: str
+    ) -> None:
+        """Catches an off-by-one at the 30 minute boundary in either direction."""
+        started = iso(T0 - timedelta(minutes=minutes))
+        open_pr(gh, 1, "a" * 40, [check("proof-full", None, "IN_PROGRESS", started_at=started)])
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert result["observations"][0]["classification"] == expected
+
+    def test_check_without_a_start_time_is_pending_not_stalled(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a missing start time being read as an old one."""
+        open_pr(gh, 1, "a" * 40, [check("proof-full", None, "IN_PROGRESS")])
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert outcomes(result) == [(1, "PENDING", "NO_ACTION")]
+
+    def test_stalled_rerun_targets_the_stalled_check_not_a_finished_one(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches the rerun going to whichever check happens to be listed first."""
+        started = iso(T0 - timedelta(minutes=95))
+        open_pr(
+            gh,
+            1,
             "a" * 40,
             [
-                {
-                    "name": "Analyze (python)",
-                    "status": "QUEUED",
-                    "conclusion": None,
-                    "required": True,
-                }
+                check("lint", check_run_id="job-done"),
+                check(
+                    "proof-full", None, "IN_PROGRESS", started_at=started, check_run_id="job-slow"
+                ),
             ],
         )
-        obs = poll_open_prs(gh, ws, "org/repo")
-        assert obs[0]["classification"] == "PENDING"
 
-    def test_cancelled_checks_not_green(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """Cancelled checks are classified, never green."""
-        gh.set_open_prs(
-            "org/repo",
-            [{"number": 1, "head_sha": "a" * 40, "mergeable": True, "merge_state_status": "CLEAN"}],
-        )
-        gh.set_pr(
-            "org/repo", 1, {"head_sha": "a" * 40, "mergeable": True, "merge_state_status": "CLEAN"}
-        )
-        gh.set_checks(
-            "org/repo",
-            "a" * 40,
-            [
-                {
-                    "name": "Analyze (python)",
-                    "status": "COMPLETED",
-                    "conclusion": "CANCELLED",
-                    "required": True,
-                }
-            ],
-        )
-        obs = poll_open_prs(gh, ws, "org/repo")
-        assert obs[0]["classification"] == "CANCELLED"
-        assert obs[0]["classification"] != "GREEN"
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(3)]
 
-    def test_stalled_checks_over_30_minutes(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """A check in progress for >30 minutes is treated as stalled."""
-        # Stalled detection in current implementation is handled by
-        # timestamp checks; the classify_ci handles COMPLETED/IN_PROGRESS states
-        gh.set_open_prs(
-            "org/repo",
-            [{"number": 1, "head_sha": "a" * 40, "mergeable": True, "merge_state_status": "CLEAN"}],
-        )
-        gh.set_pr(
-            "org/repo", 1, {"head_sha": "a" * 40, "mergeable": True, "merge_state_status": "CLEAN"}
-        )
-        gh.set_checks(
-            "org/repo",
-            "a" * 40,
-            [
-                {
-                    "name": "Analyze (python)",
-                    "status": "IN_PROGRESS",
-                    "conclusion": None,
-                    "required": True,
-                }
-            ],
-        )
-        obs = poll_open_prs(gh, ws, "org/repo")
-        # Without a started_at timestamp, an in-progress check is pending.
-        assert obs[0]["ci_classification"] == "PENDING"
+        assert gh.rerun_calls == [{"check_run_id": "job-slow", "repo": REPO}]
+        assert [r["observations"][0]["action"] for r in runs] == ["RETRY", "BLOCKED", "BLOCKED"]
+
+    def test_check_run_id_reaches_github_exactly_as_the_client_reported_it(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches the numeric id GitHub reports being rewritten on its way to the rerun."""
+        head = "a" * 40
+        open_pr(gh, 1, head, [check("lint", "CANCELLED", check_run_id=987654321)])
+
+        run_watcher(gh, ws, [REPO], now=T0)
+
+        assert gh.rerun_calls == [{"check_run_id": 987654321, "repo": REPO}]
+        assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr1:{head}:lint:987654321": 1}
+
+    def test_naive_clock_is_rejected_before_anything_is_read_or_written(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a naive datetime silently shifting the stall and cursor arithmetic."""
+        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", check_run_id="job-1")])
+
+        with pytest.raises(ValueError, match="timezone-aware"):
+            run_watcher(gh, ws, [REPO], now=datetime(2026, 3, 2, 12, 0, 0))
+
+        assert gh.checks_calls == []
+        assert not ws.state_file.exists()
 
 
 # ============================================================================
@@ -398,97 +363,49 @@ class TestExactHeadPolling:
 class TestMergedPRReconciliation:
     """Requirement: Merged PR discovery reconciles the open poll."""
 
-    def test_merged_pr_with_changes_requested(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """PR merges with CHANGES_REQUESTED review -> regression record."""
-        repo = "org/repo"
-        head = "m" * 40
-        gh.set_merged_prs(repo, [{"number": 42, "head_sha": head, "merged_at": MERGED_AT}])
-        gh.set_reviews(
-            repo, 42, [{"state": "CHANGES_REQUESTED", "id": 1}, {"state": "APPROVED", "id": 2}]
-        )
-        regs = reconcile_merged_prs(gh, ws, repo, now=T0)
-        assert len(regs) == 1
-        assert "github_changes_requested" in regs[0]["review_sources"]
+    def merged(self, gh: FakeGitHubClient, number: int, head: str, *states: str) -> None:
+        gh.set_merged_prs(REPO, [{"number": number, "head_sha": head, "merged_at": MERGED_AT}])
+        gh.set_reviews(REPO, number, [{"state": s, "id": i} for i, s in enumerate(states)])
 
-    def test_merged_pr_with_verdict_fail_receipt(
+    def test_changes_requested_review_is_a_regression(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
-        """PR merges with Verdict/ocr fail receipt -> regression record."""
-        repo = "org/repo"
-        head = "m" * 40
-        gh.set_merged_prs(repo, [{"number": 42, "head_sha": head, "merged_at": MERGED_AT}])
-        gh.set_reviews(repo, 42, [{"state": "APPROVED", "id": 1}])
-        fail_receipts = {f"{repo}:42:{head}": {"status": "FAIL"}}
-        regs = reconcile_merged_prs(gh, ws, repo, fail_receipts, now=T0)
-        assert len(regs) == 1
-        assert "verdict_ocr_fail" in regs[0]["review_sources"]
+        """Catches a merged PR with a fail review being passed over."""
+        self.merged(gh, 42, "e" * 40, "CHANGES_REQUESTED")
 
-    def test_pr_open_on_run_n_merged_with_fail_before_run_n_plus_1(
+        regs = reconcile_merged_prs(gh, ws, REPO, now=T0)
+
+        assert [(r["record"]["pr_number"], r["record"]["head"]) for r in regs] == [(42, "e" * 40)]
+        assert regs[0]["review_sources"] == ["github_changes_requested"]
+
+    def test_fail_receipt_counts_only_for_the_merged_head(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
-        """PR open on run N and merged with fail review before run N+1.
+        """Catches a receipt for another PR or an older head being applied to this merge."""
+        head = "e" * 40
+        self.merged(gh, 42, head)
+        other_head = {f"{REPO}:42:{'0' * 40}": {"status": "FAIL"}}
+        other_pr = {f"{REPO}:43:{head}": {"status": "FAIL"}}
+        passed = {f"{REPO}:42:{head}": {"status": "PASS"}}
+        exact = {f"{REPO}:42:{head}": {"status": "FAIL"}}
 
-        A fixture covers a PR that was open during the first poll but
-        is discovered as merged+failed during reconciliation.
-        """
-        repo = "org/repo"
-        head = "m" * 40
-        # Run N: PR is open
-        gh.set_open_prs(
-            repo,
-            [{"number": 42, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}],
-        )
-        gh.set_pr(repo, 42, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
-        gh.set_checks(
-            repo,
-            head,
-            [
-                {
-                    "name": "test (3.11)",
-                    "status": "COMPLETED",
-                    "conclusion": "SUCCESS",
-                    "required": True,
-                }
-            ],
-        )
-        gh.set_reviews(repo, 42, [{"state": "APPROVED", "id": 1}])
+        assert reconcile_merged_prs(gh, ws, REPO, other_head, now=T0) == []
+        assert reconcile_merged_prs(gh, ws, REPO, other_pr, now=T0) == []
+        assert reconcile_merged_prs(gh, ws, REPO, passed, now=T0) == []
+        regs = reconcile_merged_prs(gh, ws, REPO, exact, now=T0)
+        assert [r["review_sources"] for r in regs] == [["verdict_ocr_fail"]]
 
-        # Run N+1: PR is no longer open, but merged with CHANGES_REQUESTED
-        gh.set_open_prs(repo, [])  # PR no longer open
-        gh.set_merged_prs(repo, [{"number": 42, "head_sha": head, "merged_at": MERGED_AT}])
-        gh.set_reviews(repo, 42, [{"state": "CHANGES_REQUESTED", "id": 3}])
-
-        obs = poll_open_prs(gh, ws, repo)
-        assert len(obs) == 0  # PR not in open list
-
-        regs = reconcile_merged_prs(gh, ws, repo, now=T0)
-        assert len(regs) == 1
-        assert regs[0]["pr"]["number"] == 42
-        assert "github_changes_requested" in regs[0]["review_sources"]
-
-    def test_disagreeing_evidence_recorded_and_treated_as_fail(
+    def test_approved_merge_with_no_fail_evidence_is_not_a_regression(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
-        """GitHub APPROVED but Verdict/ocr fail receipt -> disagreeing evidence, treated as fail."""
-        repo = "org/repo"
-        head = "d" * 40
-        gh.set_merged_prs(repo, [{"number": 50, "head_sha": head, "merged_at": MERGED_AT}])
-        gh.set_reviews(repo, 50, [{"state": "APPROVED", "id": 1}])
-        fail_receipts = {f"{repo}:50:{head}": {"status": "FAIL"}}
-        regs = reconcile_merged_prs(gh, ws, repo, fail_receipts, now=T0)
-        assert len(regs) == 1
-        assert "disagreeing_evidence" in regs[0]["review_sources"]
-        # Both sources named
-        assert "verdict_ocr_fail" in regs[0]["review_sources"]
+        """Catches every merged PR being recorded as a regression."""
+        self.merged(gh, 60, "e" * 40, "APPROVED")
 
-    def test_merged_pr_green_no_regression(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """Merged PR with all APPROVED reviews produces no regression."""
-        repo = "org/repo"
-        head = "g" * 40
-        gh.set_merged_prs(repo, [{"number": 60, "head_sha": head, "merged_at": MERGED_AT}])
-        gh.set_reviews(repo, 60, [{"state": "APPROVED", "id": 1}])
-        regs = reconcile_merged_prs(gh, ws, repo, now=T0)
-        assert len(regs) == 0
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert result["records"] == []
+        assert result["notifications"] == []
+        assert disk(ws)["records"]["regression"] == []
 
 
 class TestMergedCursor:
@@ -577,72 +494,106 @@ class TestMergedCursor:
 class TestStableRerunFencing:
     """Requirement: Stable rerun identity and fencing."""
 
-    def test_changed_head_before_rerun(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """Head changed between scheduling and execution -> no rerun."""
-        repo = "org/repo"
-        old_head = "a" * 40
-        new_head = "b" * 40
-
-        gh.set_pr(
-            repo, 42, {"head_sha": new_head, "mergeable": True, "merge_state_status": "CLEAN"}
-        )
-
-        result = request_bounded_rerun(
-            gh, ws, repo, 42, old_head, "Analyze (python)", "run-1", max_attempts=3
-        )
-        assert result["rerun"] is False
-        assert result["type"] == "fence_mismatch"
-
-    def test_rerun_counter_persisted_before_call(
+    def test_changed_head_aborts_without_a_rerun_or_a_spent_attempt(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
-        """Attempt counter is persisted atomically BEFORE the rerun call."""
-        repo = "org/repo"
-        head = "a" * 40
-        gh.set_pr(repo, 42, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
+        """Catches a rerun against a head that moved, or the old key being advanced."""
+        gh.set_pr(REPO, 42, {"head_sha": "b" * 40})
 
-        result = request_bounded_rerun(
-            gh, ws, repo, 42, head, "Analyze (python)", "run-1", max_attempts=3
-        )
+        result = request_bounded_rerun(gh, ws, REPO, 42, "a" * 40, "lint", "job-1", max_attempts=3)
+
+        assert (result["rerun"], result["type"]) == (False, "fence_mismatch")
+        assert gh.rerun_calls == []
+        assert not ws.state_file.exists()
+
+    def test_attempt_is_on_disk_before_github_is_called(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches the counter being written after, not before, the rerun request."""
+        head = "a" * 40
+        gh.set_pr(REPO, 42, {"head_sha": head})
+        seen: list[dict[str, int]] = []
+        gh.before_rerun = lambda: seen.append(disk(ws)["rerun_attempts"])
+
+        result = request_bounded_rerun(gh, ws, REPO, 42, head, "Analyze (python)", "job-1")
+
         assert result["rerun"] is True
+        assert seen == [{f"{REPO}:pr42:{head}:Analyze (python):job-1": 1}]
 
-        # Check counter persisted
-        data = ws.load()
-        key = f"{repo}:pr42:{head}:Analyze (python):run-1"
-        assert ws.get_rerun_attempt(data, key) == 1
-
-    def test_retry_exhaustion_blocks(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """After max attempts, rerun is blocked."""
-        repo = "org/repo"
-        head = "a" * 40
-        gh.set_pr(repo, 42, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
-
-        # Exhaust 3 attempts
-        for _ in range(3):
-            request_bounded_rerun(
-                gh, ws, repo, 42, head, "Analyze (python)", "run-1", max_attempts=3
-            )
-
-        result = request_bounded_rerun(
-            gh, ws, repo, 42, head, "Analyze (python)", "run-1", max_attempts=3
-        )
-        assert result["rerun"] is False
-        assert result["type"] == "exhausted"
-
-    def test_rerun_key_is_repo_pr_head_check_workflow(
+    def test_budget_of_three_allows_exactly_three_reruns(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
-        """Rerun key is repo + PR number + exact head SHA + check name + workflow/job identity."""
-        repo = "org/repo"
+        """Catches the bound being off by one, or not being enforced at all."""
         head = "a" * 40
-        gh.set_pr(repo, 42, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
+        gh.set_pr(REPO, 42, {"head_sha": head})
 
-        request_bounded_rerun(gh, ws, repo, 42, head, "lint", "job-1", max_attempts=3)
-        request_bounded_rerun(gh, ws, repo, 42, head, "test (3.11)", "job-2", max_attempts=3)
+        results = [
+            request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-1", max_attempts=3)
+            for _ in range(5)
+        ]
 
-        data = ws.load()
-        assert ws.get_rerun_attempt(data, f"{repo}:pr42:{head}:lint:job-1") == 1
-        assert ws.get_rerun_attempt(data, f"{repo}:pr42:{head}:test (3.11):job-2") == 1
+        assert [r["rerun"] for r in results] == [True, True, True, False, False]
+        assert [r.get("type") for r in results[3:]] == ["exhausted", "exhausted"]
+        assert len(gh.rerun_calls) == 3
+        assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr42:{head}:lint:job-1": 3}
+
+    def test_key_separates_check_name_job_pr_and_head(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches two different reruns sharing one budget."""
+        head = "a" * 40
+        gh.set_pr(REPO, 42, {"head_sha": head})
+        gh.set_pr(REPO, 43, {"head_sha": "b" * 40})
+
+        request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-1")
+        request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-2")
+        request_bounded_rerun(gh, ws, REPO, 42, head, "test (3.11)", "job-1")
+        request_bounded_rerun(gh, ws, REPO, 43, "b" * 40, "lint", "job-1")
+
+        assert disk(ws)["rerun_attempts"] == {
+            f"{REPO}:pr42:{head}:lint:job-1": 1,
+            f"{REPO}:pr42:{head}:lint:job-2": 1,
+            f"{REPO}:pr42:{head}:test (3.11):job-1": 1,
+            f"{REPO}:pr43:{'b' * 40}:lint:job-1": 1,
+        }
+        assert len(gh.rerun_calls) == 4
+
+    def test_each_failed_check_gets_its_own_single_rerun(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches one check's spent budget denying another check its only rerun."""
+        head = "a" * 40
+        open_pr(
+            gh,
+            1,
+            head,
+            [
+                check("lint", "CANCELLED", check_run_id="job-1"),
+                check("proof-full", "CANCELLED", check_run_id="job-2"),
+            ],
+        )
+
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(3)]
+
+        assert [c["check_run_id"] for c in gh.rerun_calls] == ["job-1", "job-2"]
+        assert [r["observations"][0]["action"] for r in runs] == ["RETRY", "BLOCKED", "BLOCKED"]
+        assert disk(ws)["rerun_attempts"] == {
+            f"{REPO}:pr1:{head}:lint:job-1": 1,
+            f"{REPO}:pr1:{head}:proof-full:job-2": 1,
+        }
+
+    def test_new_head_gets_a_fresh_budget(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
+        """Catches a budget keyed without the head, which would block every later push."""
+        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", check_run_id="job-1")])
+        run_watcher(gh, ws, [REPO], now=T0)
+        run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
+
+        gh.set_open_prs(REPO, [])
+        open_pr(gh, 1, "b" * 40, [check("lint", "CANCELLED", check_run_id="job-2")])
+        result = run_watcher(gh, ws, [REPO], now=T0 + 2 * RUN_INTERVAL)
+
+        assert outcomes(result) == [(1, "CANCELLED", "RETRY")]
+        assert [c["check_run_id"] for c in gh.rerun_calls] == ["job-1", "job-2"]
 
 
 # ============================================================================
@@ -653,51 +604,37 @@ class TestStableRerunFencing:
 class TestBoundedRecoveryAdapter:
     """Requirement: Bounded recovery adapter is normative."""
 
-    def test_green_produces_ready(self) -> None:
-        """GREEN / PROCEED_MERGE -> READY, no side effect."""
-        from verdict.pr_watcher import _adapter_action
-
-        assert _adapter_action("GREEN", 0, 3) == "READY"
-        assert _adapter_action("PROCEED_MERGE", 0, 3) == "READY"
-
-    def test_pending_produces_no_action(self) -> None:
-        """PENDING / WAIT_CI -> No action."""
-        from verdict.pr_watcher import _adapter_action
-
-        assert _adapter_action("PENDING", 0, 3) == "NO_ACTION"
-        assert _adapter_action("WAIT_CI", 0, 3) == "NO_ACTION"
-
-    def test_infra_failure_retried(self) -> None:
-        """INFRA_FAILURE / CANCELLED / STALLED -> one bounded rerun."""
-        from verdict.pr_watcher import _adapter_action
-
-        assert _adapter_action("INFRA_FAILURE", 0, 3) == "RETRY"
-        assert _adapter_action("CANCELLED", 0, 3) == "RETRY"
-        assert _adapter_action("RETRY_CI", 0, 3) == "RETRY"
-
-    def test_code_failure_routes_to_repair(self) -> None:
-        """CODE_FAILURE / CONFLICT / BEHIND -> durable repair record."""
-        from verdict.pr_watcher import _adapter_action
-
-        assert _adapter_action("CODE_FAILURE", 0, 3) == "REPAIR"
-        assert _adapter_action("CONFLICT", 0, 3) == "REPAIR"
-        assert _adapter_action("BEHIND", 0, 3) == "REPAIR"
-        assert _adapter_action("CORRECTIVE_IMPLEMENTATION", 0, 3) == "REPAIR"
-        assert _adapter_action("REBASE_AND_REPROOF", 0, 3) == "REPAIR"
-
-    def test_empty_missing_required_not_green(self) -> None:
-        """EMPTY / MISSING_REQUIRED -> not green, durable repair."""
-        from verdict.pr_watcher import _adapter_action
-
-        assert _adapter_action("EMPTY", 0, 3) == "REPAIR"
-        assert _adapter_action("MISSING_REQUIRED", 0, 3) == "REPAIR"
-
-    def test_exhausted_retry_becomes_blocked(self) -> None:
-        """When attempts exhausted, retryable becomes BLOCKED."""
-        from verdict.pr_watcher import _adapter_action
-
-        assert _adapter_action("INFRA_FAILURE", 3, 3) == "BLOCKED"
-        assert _adapter_action("CANCELLED", 3, 3) == "BLOCKED"
+    @pytest.mark.parametrize(
+        ("classification", "attempts", "expected"),
+        [
+            ("GREEN", 0, "READY"),
+            ("PROCEED_MERGE", 0, "READY"),
+            ("PENDING", 0, "NO_ACTION"),
+            ("WAIT_CI", 0, "NO_ACTION"),
+            ("INFRA_FAILURE", 0, "RETRY"),
+            ("CANCELLED", 0, "RETRY"),
+            ("STALLED", 0, "RETRY"),
+            ("RETRY_CI", 0, "RETRY"),
+            ("CODE_FAILURE", 0, "REPAIR"),
+            ("CORRECTIVE_IMPLEMENTATION", 0, "REPAIR"),
+            ("CONFLICT", 0, "REPAIR"),
+            ("BEHIND", 0, "REPAIR"),
+            ("REBASE_AND_REPROOF", 0, "REPAIR"),
+            ("EMPTY", 0, "REPAIR"),
+            ("MISSING_REQUIRED", 0, "REPAIR"),
+            ("INFRA_FAILURE", 1, "BLOCKED"),
+            ("CANCELLED", 1, "BLOCKED"),
+            ("STALLED", 1, "BLOCKED"),
+            ("RETRY_CI", 2, "BLOCKED"),
+            ("BLOCKED", 0, "BLOCKED"),
+            # A spent budget never turns a repair or a ready PR into a block.
+            ("CODE_FAILURE", 5, "REPAIR"),
+            ("GREEN", 5, "READY"),
+        ],
+    )
+    def test_adapter_table_row(self, classification: str, attempts: int, expected: str) -> None:
+        """Catches any row of the normative adapter table mapping to the wrong result."""
+        assert _adapter_action(classification, attempts, 1) == expected
 
     def test_spent_budget_reports_blocked_and_requests_nothing(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -722,31 +659,20 @@ class TestBoundedRecoveryAdapter:
         ]
         assert disk(ws)["pr_states"][f"state:{REPO}:pr7:{head}"]["action"] == "BLOCKED"
 
-    def test_green_has_no_side_effect(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """GREEN PR produces no repair record, no rerun, no GitHub/Linear write."""
-        repo = "org/repo"
-        head = "g" * 40
-        gh.set_open_prs(
-            repo,
-            [{"number": 1, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}],
-        )
-        gh.set_pr(repo, 1, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
-        gh.set_checks(
-            repo,
-            head,
-            [
-                {
-                    "name": "test (3.11)",
-                    "status": "COMPLETED",
-                    "conclusion": "SUCCESS",
-                    "required": True,
-                }
-            ],
-        )
+    def test_green_pr_is_ready_and_nothing_is_written_to_github_or_linear(
+        self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient
+    ) -> None:
+        """Catches any side effect on a green, mergeable PR."""
+        open_pr(gh, 1, "a" * 40, [check("test (3.11)"), check("lint")], linear_issue="ENG-1")
 
-        result = run_watcher(gh, ws, [repo], linear=None)
-        assert len(result.get("reruns", [])) == 0
-        assert len(result.get("records", [])) == 0
+        result = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+
+        assert outcomes(result) == [(1, "GREEN", "READY")]
+        assert gh.rerun_calls == []
+        assert linear.attempts == []
+        assert result["records"] == []
+        assert result["notifications"] == []
+        assert disk(ws)["records"] == {"repair": [], "block": [], "regression": []}
 
 
 class TestRealCheckNames:
@@ -806,15 +732,78 @@ class TestRealCheckNames:
 # ============================================================================
 
 
+GITHUB_MUTATIONS = (
+    "merge",
+    "push",
+    "create_branch",
+    "delete_branch",
+    "edit_source",
+    "force_push",
+    "checkout",
+    "commit",
+    "apply_patch",
+    "write_file",
+    "create_pull_request",
+    "delete_repository",
+)
+LINEAR_MUTATIONS = (
+    "create_issue",
+    "update_issue",
+    "delete_issue",
+    "create_branch",
+    "push",
+    "merge",
+)
+
+
 class TestCapabilityRestriction:
     """Requirement: Watcher capability excludes mutations."""
 
-    def test_mutation_methods_absent(self) -> None:
-        """Capability inspection finds no merge, push, branch, or source-edit operation."""
-        gh_assert_no_mutation(FakeGitHubClient())
+    def test_client_protocol_is_exactly_reads_and_one_bounded_rerun(self) -> None:
+        """Catches a mutation method being added to the interface the watcher is given."""
+        public = {name for name in vars(WatcherGitHubClient) if not name.startswith("_")}
+        assert public == {
+            "list_open_prs",
+            "get_pr",
+            "get_checks",
+            "get_reviews",
+            "list_merged_prs",
+            "rerun_check",
+            "get_check_run",
+        }
 
-    def test_watcher_makes_no_llm_call(self) -> None:
-        """The watcher makes no LLM or model-routing call on any run."""
+    @pytest.mark.parametrize("method", GITHUB_MUTATIONS)
+    def test_github_client_with_a_mutation_method_is_refused(
+        self, ws: WatcherState, method: str
+    ) -> None:
+        """Catches the capability check being skipped, or a forbidden name going unlisted."""
+        client_type = type("MutatingClient", (FakeGitHubClient,), {method: lambda self: None})
+        gh = client_type()
+        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", check_run_id="job-1")])
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert set(result) == {"error", "type"}
+        assert method in result["error"]
+        assert gh.rerun_calls == []
+        assert gh.checks_calls == []
+        assert not ws.state_file.exists()
+
+    @pytest.mark.parametrize("method", LINEAR_MUTATIONS)
+    def test_linear_client_with_a_mutation_method_is_refused(
+        self, gh: FakeGitHubClient, ws: WatcherState, method: str
+    ) -> None:
+        """Catches a Linear client that can do more than comment being accepted."""
+        client_type = type("MutatingLinear", (FakeLinearClient,), {method: lambda self: None})
+        linear = client_type()
+        open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")], linear_issue="ENG-1")
+
+        result = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+
+        assert set(result) == {"error", "type"}
+        assert method in result["error"]
+        assert linear.attempts == []
+        assert not ws.state_file.exists()
 
 
 # ============================================================================
@@ -825,50 +814,80 @@ class TestCapabilityRestriction:
 class TestSingleWriterIdempotency:
     """Requirement: Single writer and idempotent events."""
 
-    def test_duplicate_timer_invocation(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """Same exact-head timer invocation runs twice: only one rerun per idempotency key."""
-        repo = "org/repo"
-        head = "a" * 40
-        gh.set_open_prs(
-            repo,
-            [{"number": 1, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}],
+    def test_duplicate_timer_invocation_persists_one_rerun_and_one_event_per_key(
+        self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient
+    ) -> None:
+        """Catches the same exact-head invocation doing its work twice."""
+        open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")], linear_issue="ENG-1")
+        open_pr(gh, 2, "b" * 40, [check("proof-full", "CANCELLED", check_run_id="job-2")])
+
+        first = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+        second = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+
+        assert [r["type"] for r in first["records"]] == ["repair"]
+        assert [r["type"] for r in second["records"]] == ["block"]
+        assert len(gh.rerun_calls) == 1
+        assert linear.attempts == ["ENG-1"]
+        state = disk(ws)
+        assert len(state["records"]["repair"]) == 1
+        assert len(state["records"]["block"]) == 1
+        assert sorted(e["type"] for e in state["digest_events"].values()) == [
+            "blocked",
+            "new_failure",
+            "new_failure",
+        ]
+
+    def test_overlapping_invocation_exits_without_state_or_provider_writes(
+        self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient
+    ) -> None:
+        """Catches a second watcher on the same directory running alongside the first."""
+        open_pr(
+            gh,
+            1,
+            "a" * 40,
+            [check("lint", "CANCELLED", check_run_id="job-1")],
+            linear_issue="ENG-1",
         )
-        gh.set_pr(repo, 1, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
-        gh.set_checks(
-            repo,
-            head,
-            [
-                {
-                    "name": "osv-security / osv-scan",
-                    "status": "COMPLETED",
-                    "conclusion": "FAILURE",
-                    "required": True,
-                    "check_run_id": "run-1",
-                }
-            ],
-        )
+        holder = WatcherState(ws.state_dir)
+        holder.acquire_lock()
+        try:
+            result = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+        finally:
+            holder.release_lock()
 
-        # First run - should create repair record
-        result1 = run_watcher(gh, ws, [repo], linear=None)
-        records1 = result1.get("records", [])
+        assert result["type"] == "lock_failure"
+        assert "already holds the lock" in result["error"]
+        assert gh.checks_calls == []
+        assert gh.rerun_calls == []
+        assert linear.attempts == []
+        assert not ws.state_file.exists()
 
-        # Second run - idempotency should prevent duplicates
-        result2 = run_watcher(gh, ws, [repo], linear=None)
-        records2 = result2.get("records", [])
+        after = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+        assert len(gh.rerun_calls) == 1
+        assert outcomes(after) == [(1, "CANCELLED", "RETRY")]
 
-        # Repair record should be idempotent (not duplicated)
-        if records1:
-            assert records2 == records1 or not records2  # same record or no new record
-
-    def test_non_blocking_flock_excludes_overlapping_run(self, ws: WatcherState) -> None:
-        """When two invocations overlap, one gets the lock, the other exits."""
-        # First invocation holds the lock
+    def test_second_state_object_cannot_take_a_held_lock(self, ws: WatcherState) -> None:
+        """Catches the lock being advisory in name only, or blocking instead of failing."""
+        other = WatcherState(ws.state_dir)
         ws.acquire_lock()
-        # Second invocation should fail to acquire
-        ws2 = WatcherState(ws.state_dir)
-        with pytest.raises(LockAcquisitionError, match="another watcher"):
-            ws2.acquire_lock()
-        ws.release_lock()
+        try:
+            with pytest.raises(LockAcquisitionError, match="already holds the lock"):
+                other.acquire_lock()
+        finally:
+            ws.release_lock()
+        other.acquire_lock()
+        other.release_lock()
+
+    def test_lock_is_released_when_a_run_ends_in_an_error(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a failed run leaving the lock held and stopping every later run."""
+        ws.state_file.write_text("{not json")
+        assert run_watcher(gh, ws, [REPO], now=T0)["type"] == "malformed_state"
+
+        other = WatcherState(ws.state_dir)
+        other.acquire_lock()
+        other.release_lock()
 
 
 # ============================================================================
@@ -879,32 +898,52 @@ class TestSingleWriterIdempotency:
 class TestCodeAndMergeFailures:
     """Requirement: Code and merge failures route to durable repair."""
 
-    def test_conflict_writes_repair_record(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """CONFLICT -> repair record, PR not mutated."""
-        repo = "org/repo"
+    @pytest.mark.parametrize(
+        ("mergeable", "merge_state", "classification"),
+        [("CONFLICTING", "DIRTY", "CONFLICT"), ("MERGEABLE", "BEHIND", "BEHIND")],
+    )
+    def test_conflict_or_behind_writes_a_repair_record_and_mutates_nothing(
+        self,
+        gh: FakeGitHubClient,
+        ws: WatcherState,
+        mergeable: str,
+        merge_state: str,
+        classification: str,
+    ) -> None:
+        """Catches a merge-state failure being hidden behind passing checks."""
         head = "c" * 40
-        gh.set_open_prs(
-            repo,
-            [{"number": 1, "head_sha": head, "mergeable": False, "merge_state_status": "DIRTY"}],
-        )
-        gh.set_pr(repo, 1, {"head_sha": head, "mergeable": False, "merge_state_status": "DIRTY"})
-        gh.set_checks(
-            repo,
-            head,
-            [
-                {
-                    "name": "test (3.11)",
-                    "status": "COMPLETED",
-                    "conclusion": "SUCCESS",
-                    "required": True,
-                    "check_run_id": "r1",
-                }
-            ],
-        )
+        open_pr(gh, 1, head, [check("test (3.11)", check_run_id="job-1")], mergeable, merge_state)
 
-        result = run_watcher(gh, ws, [repo], linear=None)
-        records = result.get("records", [])
-        assert any(r["type"] == "repair" for r in records)
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert outcomes(result) == [(1, classification, "REPAIR")]
+        assert gh.rerun_calls == []
+        assert disk(ws)["records"]["repair"] == [
+            {
+                "type": "repair",
+                "repo": REPO,
+                "pr_number": 1,
+                "head": head,
+                "failing_checks": [],
+                "log_excerpt": "",
+                "classification": classification,
+                "reason": f"PR classified as {classification}",
+                "idempotency_key": f"repair:{REPO}:pr1:{head}",
+                "created_at": iso(T0),
+            }
+        ]
+
+    def test_code_failure_writes_one_repair_record_across_three_runs(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a repair record being rewritten or duplicated by every poll."""
+        open_pr(gh, 1, "c" * 40, [check("lint", "FAILURE"), check("proof-full")])
+
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(3)]
+
+        assert [[r["type"] for r in run["records"]] for run in runs] == [["repair"], [], []]
+        repairs = disk(ws)["records"]["repair"]
+        assert [(r["failing_checks"], r["created_at"]) for r in repairs] == [(["lint"], iso(T0))]
 
 
 # ============================================================================
@@ -1057,32 +1096,82 @@ class TestTransitionNotifications:
 # ============================================================================
 
 
+def valid_state(**overrides: Any) -> str:
+    state: dict[str, Any] = {
+        "schema_version": 1,
+        "merged_cursor": None,
+        "last_run_at": None,
+        "pr_states": {},
+        "rerun_attempts": {},
+        "records": {"repair": [], "block": [], "regression": []},
+        "pending_events": [],
+        "digest_events": {},
+    }
+    state.update(overrides)
+    return json.dumps(state)
+
+
+MALFORMED_STATES = {
+    "not json": "{invalid json!!!",
+    "empty file": "",
+    "not an object": "[]",
+    "required fields missing": json.dumps({"schema_version": 1}),
+    "unsupported schema version": valid_state(schema_version=99),
+    "attempts not a mapping": valid_state(rerun_attempts=[]),
+    "negative attempt count": valid_state(rerun_attempts={"org/repo:pr1:a:lint:job-1": -1}),
+    "record kind missing": valid_state(records={"repair": [], "block": []}),
+    "cursor not a timestamp": valid_state(merged_cursor="yesterday"),
+    "cursor without a timezone": valid_state(merged_cursor="2026-03-02T12:00:00"),
+}
+
+
 class TestMalformedState:
     """Requirement: Malformed or unreadable durable state fails closed."""
 
-    def test_corrupt_state_file(self, state_dir: Path) -> None:
-        """Corrupt state file -> watcher exits immediately with error."""
-        ws = WatcherState(state_dir)
+    def test_valid_state_shape_loads(self, ws: WatcherState) -> None:
+        """Catches the fixture builder itself being malformed, which would void the cases below."""
+        ws.state_file.write_text(valid_state())
+        assert ws.load()["schema_version"] == 1
+
+    @pytest.mark.parametrize("payload", MALFORMED_STATES.values(), ids=MALFORMED_STATES.keys())
+    def test_malformed_state_ends_the_run_with_no_write_rerun_or_notification(
+        self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient, payload: str
+    ) -> None:
+        """Catches a damaged state file being read as empty, which would reset every budget."""
+        open_pr(
+            gh,
+            1,
+            "a" * 40,
+            [check("lint", "CANCELLED", check_run_id="job-1")],
+            linear_issue="ENG-1",
+        )
+        ws.state_file.write_text(payload)
+
+        result = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+
+        assert set(result) == {"error", "type"}
+        assert result["type"] == "malformed_state"
+        assert "pr_watcher_state.json" in result["error"]
+        assert ws.state_file.read_text() == payload
+        assert gh.rerun_calls == []
+        assert linear.attempts == []
+
+    def test_unreadable_state_fails_closed(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
+        """Catches an unreadable state path being treated as a missing one."""
+        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", check_run_id="job-1")])
+        ws.state_file.mkdir()
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert result["type"] == "malformed_state"
+        assert gh.rerun_calls == []
+        assert ws.state_file.is_dir()
+
+    def test_load_raises_for_a_corrupt_file(self, ws: WatcherState) -> None:
+        """Catches load() swallowing a parse error and returning a fresh state."""
         ws.state_file.write_text("{invalid json!!!")
-        with pytest.raises(MalformedStateError, match="malformed"):
+        with pytest.raises(MalformedStateError, match="malformed state"):
             ws.load()
-
-    def test_missing_required_fields_treated_as_new(self, state_dir: Path) -> None:
-        """State with missing required fields is treated as fresh if version is right."""
-        ws = WatcherState(state_dir)
-        ws.state_file.write_text(json.dumps({"schema_version": 1}))
-        data = ws.load()
-        assert data["schema_version"] == 1
-
-    def test_wrong_schema_version_fails(self, state_dir: Path) -> None:
-        """State with unsupported schema version raises error."""
-        ws = WatcherState(state_dir)
-        ws.state_file.write_text(json.dumps({"schema_version": 99}))
-        # Currently the load just returns the data; validation happens at use
-        # The MalformedStateError is raised on parse failure
-        data = ws.load()
-        # This should still be loadable but would cause issues downstream
-        assert data.get("schema_version") == 99
 
 
 # ============================================================================
@@ -1151,23 +1240,27 @@ class TestFailedLinearRetry:
 # ============================================================================
 
 
+UNSAFE_KEYS = {
+    "leading traversal": "../etc/passwd",
+    "embedded traversal": "org/../../etc",
+    "traversal inside a segment": "org/repo:pr1:..",
+    "absolute path": "/etc/passwd",
+    "backslash": "org\\repo",
+    "empty segment": "org//repo",
+    "empty": "",
+    "null byte": "repo\x00name",
+    "newline": "repo\nname",
+}
+
+
 class TestPathSafeKeys:
     """Requirement: State keys are path-safe and reject traversal."""
 
-    def test_path_traversal_rejected(self) -> None:
-        """Key containing .. is rejected."""
-        with pytest.raises(ValueError, match=r"traversal|invalid"):
-            _safe_key("../etc/passwd")
-
-    def test_absolute_path_rejected(self) -> None:
-        """Key with absolute path is rejected."""
-        with pytest.raises(ValueError, match=r"traversal|invalid"):
-            _safe_key("/etc/passwd")
-
-    def test_control_chars_rejected(self) -> None:
-        """Key with null bytes is rejected."""
-        with pytest.raises(ValueError, match=r"control character|invalid"):
-            _safe_key("repo\x00name")
+    @pytest.mark.parametrize("key", UNSAFE_KEYS.values(), ids=UNSAFE_KEYS.keys())
+    def test_unsafe_key_is_rejected(self, key: str) -> None:
+        """Catches a traversal, absolute or control-character key being accepted."""
+        with pytest.raises(UnsafeKeyError):
+            _safe_key(key)
 
     @pytest.mark.parametrize("name", REAL_CHECK_NAMES)
     def test_real_check_names_are_valid_key_material(self, name: str) -> None:
@@ -1175,9 +1268,41 @@ class TestPathSafeKeys:
         key = f"{REPO}:pr1:{'a' * 40}:{name}:job-1"
         assert _safe_key(key) == key
 
-    def test_valid_key_accepted(self) -> None:
-        """Normal keys are accepted."""
-        assert _safe_key("org/repo-pr-42-abc123") == "org/repo-pr-42-abc123"
+    @pytest.mark.parametrize("repo", ["../evil", "/abs/repo"])
+    def test_unsafe_repository_fails_the_run_closed_with_nothing_persisted(
+        self, gh: FakeGitHubClient, ws: WatcherState, repo: str
+    ) -> None:
+        """Catches an unsafe key reaching the state file, or the run acting anyway."""
+        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", check_run_id="job-1")], repo=repo)
+
+        result = run_watcher(gh, ws, [repo], now=T0)
+
+        assert result["type"] == "unsafe_state_key"
+        assert repo in result["error"]
+        assert gh.rerun_calls == []
+        assert not ws.state_file.exists()
+
+    def test_unsafe_check_name_from_github_fails_the_run_closed(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches untrusted check text being used as key material without validation."""
+        open_pr(gh, 1, "a" * 40, [check("lint/../../x", "CANCELLED", check_run_id="job-1")])
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert result["type"] == "unsafe_state_key"
+        assert gh.rerun_calls == []
+        assert not ws.state_file.exists()
+
+    def test_state_writers_reject_an_unsafe_key(self, ws: WatcherState) -> None:
+        """Catches a writer that stores a key without validating it."""
+        data = ws.load()
+        with pytest.raises(UnsafeKeyError):
+            ws.set_rerun_attempt(data, "org/repo:pr1:../x", 1)
+        with pytest.raises(UnsafeKeyError):
+            ws.add_record(data, {"type": "repair", "idempotency_key": "repair:../x"})
+        with pytest.raises(UnsafeKeyError):
+            RepairRecord(repo="../x", pr_number=1, head="a" * 40, failing_checks=[])
 
 
 # ============================================================================
@@ -1188,31 +1313,49 @@ class TestPathSafeKeys:
 class TestLogExcerptBounds:
     """Requirement: Repair record log excerpts are bounded and redacted."""
 
-    def test_large_log_truncated(self) -> None:
-        """Log exceeding 4096 chars is truncated."""
-        big_log = "x" * 8000
-        excerpt = truncate_log(big_log)
-        assert len(excerpt) <= 4096
+    def test_excerpt_is_cut_to_exactly_4096_characters(self) -> None:
+        """Catches an unbounded excerpt, and one cut to nothing."""
+        assert truncate_log("x" * 8000) == "x" * 4096
 
-    def test_token_in_url_redacted(self) -> None:
-        """GitHub token in URL is replaced with [REDACTED]."""
-        log = "Auth with ghp_abc123secret456 at https://example.com"
-        result = redact_secrets(log)
-        assert "ghp_abc123secret456" not in result
-        assert "[REDACTED]" in result
+    def test_short_ordinary_log_is_left_alone(self) -> None:
+        """Catches over-redaction eating check names and ordinary output."""
+        log = "test (3.11) failed: tests/test_router.py::test_token_bucket_refill - assert 3 == 4"
+        assert truncate_log(log) == log
 
-    def test_repair_record_bounds_excerpt(self) -> None:
-        """RepairRecord truncates and redacts the log excerpt."""
-        rec = RepairRecord(
-            repo="org/repo",
-            pr_number=1,
-            head="a" * 40,
-            failing_checks=["lint"],
-            log_excerpt="x" * 8000 + " token=ghp_secret",
+    def test_token_in_a_url_is_redacted(self) -> None:
+        """Catches a token-bearing clone URL being stored as-is."""
+        log = f"fatal: unable to access 'https://x-access-token:{FAKE_TOKEN}@github.com/org/repo/'"
+        assert redact_secrets(log) == (
+            "fatal: unable to access 'https://[REDACTED]@github.com/org/repo/'"
         )
-        d = rec.to_dict()
-        assert len(d["log_excerpt"]) <= 4096
-        assert "ghp_secret" not in d["log_excerpt"]
+
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            (f"> Authorization: Bearer {FAKE_TOKEN}", "> Authorization: [REDACTED]"),
+            ("authorization: Basic dXNlcjpwYXNzd29yZA==", "authorization: [REDACTED]"),
+            (f"GH_TOKEN={FAKE_TOKEN}", "GH_TOKEN=[REDACTED]"),
+            (f"using {FAKE_TOKEN} for checkout", "using [REDACTED] for checkout"),
+            ("password: hunter2-not-real", "password: [REDACTED]"),
+        ],
+        ids=["bearer header", "basic header", "token field", "bare token", "password field"],
+    )
+    def test_authorization_headers_and_secret_fields_are_redacted(
+        self, line: str, expected: str
+    ) -> None:
+        """Catches a secret that is not shaped like a GitHub token slipping through."""
+        assert redact_secrets(line) == expected
+
+    def test_repair_record_redacts_a_secret_that_straddles_the_4096_limit(self) -> None:
+        """Catches cutting before redacting, which leaves the front of a token in the record."""
+        log = "x" * 4050 + f" https://x-access-token:{FAKE_TOKEN}@github.com/o/r " + "y" * 8000
+        record = RepairRecord(
+            repo=REPO, pr_number=1, head="a" * 40, failing_checks=["lint"], log_excerpt=log
+        ).to_dict(iso(T0))
+
+        assert len(record["log_excerpt"]) == 4096
+        assert FAKE_TOKEN[:12] not in record["log_excerpt"]
+        assert record["log_excerpt"].count("[REDACTED]") == 1
 
 
 # ============================================================================
@@ -1220,53 +1363,79 @@ class TestLogExcerptBounds:
 # ============================================================================
 
 
+class Killed(BaseException):
+    """Stands in for the process dying: nothing in the watcher may catch it."""
+
+
 class TestStateBeforeSideEffects:
     """Requirement: Durable state is written before side effects."""
 
-    def test_attempt_counter_persisted_before_rerun(
+    def test_rerun_is_requested_only_after_the_whole_run_is_durable(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
-        """Attempt counter is persisted atomically BEFORE the rerun call."""
-        repo = "org/repo"
+        """Catches a rerun sent before the counter, classification, transition or cursor is saved."""
         head = "a" * 40
-        gh.set_pr(repo, 42, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
+        open_pr(gh, 42, head, [check("proof-full", "CANCELLED", check_run_id="job-1")])
+        seen: list[dict[str, Any]] = []
+        gh.before_rerun = lambda: seen.append(disk(ws))
 
-        request_bounded_rerun(gh, ws, repo, 42, head, "Analyze (python)", "run-1", max_attempts=3)
+        run_watcher(gh, ws, [REPO], now=T0)
 
-        # Verify counter is persisted
-        data = ws.load()
-        key = f"{repo}:pr42:{head}:Analyze (python):run-1"
-        assert ws.get_rerun_attempt(data, key) == 1
+        assert len(seen) == 1
+        assert seen[0]["rerun_attempts"] == {f"{REPO}:pr42:{head}:proof-full:job-1": 1}
+        assert seen[0]["pr_states"][f"state:{REPO}:pr42:{head}"]["classification"] == "CANCELLED"
+        assert [e["type"] for e in seen[0]["digest_events"].values()] == ["new_failure"]
+        assert seen[0]["merged_cursor"] == iso(T0)
 
-    def test_process_death_preserves_bound(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """Process dies between state write and rerun -> next run respects bound."""
-        repo = "org/repo"
+    def test_death_between_state_write_and_rerun_never_exceeds_the_bound(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a restarted watcher re-taking an attempt it had already written down."""
         head = "a" * 40
-        gh.set_pr(repo, 42, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
+        open_pr(gh, 42, head, [check("proof-full", "CANCELLED", check_run_id="job-1")])
 
-        # Run once - counter should be 1
-        request_bounded_rerun(gh, ws, repo, 42, head, "Analyze (python)", "run-1", max_attempts=2)
-        data = ws.load()
-        key = f"{repo}:pr42:{head}:Analyze (python):run-1"
-        assert ws.get_rerun_attempt(data, key) == 1
+        def die() -> None:
+            raise Killed
 
-        # Next run reads persisted counter
-        request_bounded_rerun(gh, ws, repo, 42, head, "Analyze (python)", "run-1", max_attempts=2)
-        data = ws.load()
-        assert ws.get_rerun_attempt(data, key) == 2
+        gh.before_rerun = die
+        with pytest.raises(Killed):
+            run_watcher(gh, ws, [REPO], now=T0)
+        assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr42:{head}:proof-full:job-1": 1}
+        assert gh.rerun_calls == []
 
-    def test_state_write_fails_no_rerun(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """When atomic state write fails, no rerun is requested."""
-        repo = "org/repo"
-        head = "a" * 40
-        gh.set_pr(repo, 42, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
+        gh.before_rerun = None
+        later = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in (1, 2, 3)]
 
-        # Corrupt the state to cause failure
-        # This is hard to simulate directly; the watcher's run_watcher
-        # returns an error on malformed state
-        result = run_watcher(gh, ws, [repo], linear=None)
-        # Normal run should succeed
-        assert "error" not in result or result["error"] is None
+        assert gh.rerun_calls == []
+        assert [r["observations"][0]["action"] for r in later] == ["BLOCKED"] * 3
+
+    def test_failed_state_write_reports_the_error_and_causes_no_side_effect(
+        self,
+        gh: FakeGitHubClient,
+        ws: WatcherState,
+        linear: FakeLinearClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Catches a rerun or comment going out when the state could not be written."""
+        open_pr(
+            gh,
+            1,
+            "a" * 40,
+            [check("proof-full", "CANCELLED", check_run_id="job-1")],
+            linear_issue="ENG-1",
+        )
+
+        def disk_full(src: str, dst: str) -> None:
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr("verdict.pr_watcher_state.os.replace", disk_full)
+        result = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+
+        assert result["type"] == "state_write_failed"
+        assert "No space left on device" in result["error"]
+        assert gh.rerun_calls == []
+        assert linear.attempts == []
+        assert not ws.state_file.exists()
 
 
 # ============================================================================
@@ -1277,23 +1446,31 @@ class TestStateBeforeSideEffects:
 class TestDisagreeingEvidence:
     """Requirement: Disagreeing review evidence is recorded and treated as fail."""
 
-    def test_approved_with_verdict_fail(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        """APPROVED review + Verdict/ocr fail receipt -> regression with both sources."""
-        repo = "org/repo"
+    def test_approved_review_with_keyed_fail_receipt_is_a_regression_naming_both(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches an APPROVED review overriding a recorded Verdict/ocr fail."""
         head = "d" * 40
-        gh.set_merged_prs(repo, [{"number": 99, "head_sha": head, "merged_at": MERGED_AT}])
-        gh.set_reviews(repo, 99, [{"state": "APPROVED", "id": 1}])
-        fail_receipts = {f"{repo}:99:{head}": {"status": "FAIL"}}
+        gh.set_merged_prs(REPO, [{"number": 99, "head_sha": head, "merged_at": MERGED_AT}])
+        gh.set_reviews(REPO, 99, [{"state": "APPROVED", "id": 1}])
+        receipts = {f"{REPO}:99:{head}": {"status": "FAIL"}}
 
-        regs = reconcile_merged_prs(gh, ws, repo, fail_receipts, now=T0)
-        assert len(regs) == 1
-        rec = regs[0]["record"]
-        # Both sources named
-        sources = regs[0]["review_sources"]
-        assert "verdict_ocr_fail" in sources
-        assert "disagreeing_evidence" in sources
-        # No merge or source mutation
-        assert rec["type"] == "regression"
+        result = run_watcher(gh, ws, [REPO], verdict_fail_receipts=receipts, now=T0)
+
+        assert disk(ws)["records"]["regression"] == [
+            {
+                "type": "regression",
+                "repo": REPO,
+                "pr_number": 99,
+                "head": head,
+                "review_sources": ["verdict_ocr_fail", "disagreeing_evidence"],
+                "reason": "merged PR had fail review evidence",
+                "idempotency_key": f"regression:{REPO}:pr99:{head}",
+                "created_at": iso(T0),
+            }
+        ]
+        assert kinds(result) == ["regression"]
+        assert gh.rerun_calls == []
 
 
 # ============================================================================
@@ -1373,110 +1550,29 @@ class TestNoModelCall:
 
 
 # ============================================================================
-# Requirement 16: Live smoke is opt-in (covered by test design)
-# ============================================================================
-
-# Default tests use fixtures and fake clients. No live GitHub/Linear calls.
-
-# ============================================================================
-# Requirement 17: Default test isolation
-# ============================================================================
-
-
-class TestDefaultTestIsolation:
-    """Requirement: Default tests use fixtures and fake clients."""
-
-    def test_no_live_github_calls(self) -> None:
-        """No live GitHub calls when VERDICT_LIVE_SMOKE is unset."""
-        # The test infrastructure uses FakeGitHubClient exclusively
-        # No subprocess or network calls in these tests
-        assert True
-
-    def test_no_live_linear_calls(self) -> None:
-        """No live Linear calls when VERDICT_LIVE_SMOKE is unset."""
-        # The test infrastructure uses FakeLinearClient exclusively
-        assert True
-
-
-# ============================================================================
 # Regression tests for watcher core fixes
 # ============================================================================
 
 
-class TestWatcherCoreRegressionFixes:
-    def test_one_rerun_survives_repeated_runs(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
-        repo = "org/repo"
-        head = "r" * 40
-        gh.set_open_prs(
-            repo,
-            [{"number": 1, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}],
-        )
-        gh.set_pr(repo, 1, {"head_sha": head})
-        gh.set_checks(
-            repo,
-            head,
-            [
-                {
-                    "name": INFRA_NAMED_CHECK,
-                    "status": "COMPLETED",
-                    "conclusion": "FAILURE",
-                    "check_run_id": "job-1",
-                }
-            ],
-        )
-        for _ in range(5):
-            run_watcher(gh, ws, [repo])
-        assert len(gh.rerun_calls) == 1
-        state = ws.load()
-        assert state["rerun_attempts"][f"{repo}:pr1:{head}:{INFRA_NAMED_CHECK}:job-1"] == 1
-        assert len(state["records"]["block"]) == 1
+class TestInfraNamedFailure:
+    """A failure the classifier calls infrastructure is rerun once, then blocked."""
 
-    def test_code_failure_record_is_idempotent(
+    def test_infra_failure_is_rerun_once_and_blocked_once_across_five_runs(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
-        repo = "org/repo"
-        head = "c" * 40
-        gh.set_open_prs(
-            repo,
-            [{"number": 1, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}],
-        )
-        gh.set_pr(repo, 1, {"head_sha": head})
-        gh.set_checks(
-            repo, head, [{"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}]
-        )
-        for _ in range(3):
-            run_watcher(gh, ws, [repo])
-        assert len(ws.load()["records"]["repair"]) == 1
+        """Catches a rerun on every poll, and a block record on every poll after it."""
+        head = "a" * 40
+        open_pr(gh, 1, head, [check(INFRA_NAMED_CHECK, "FAILURE", check_run_id="job-1")])
 
-    def test_stalled_clock_is_timezone_aware_datetime(
-        self, gh: FakeGitHubClient, ws: WatcherState
-    ) -> None:
-        from datetime import datetime, timedelta, timezone
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(5)]
 
-        repo = "org/repo"
-        head = "s" * 40
-        gh.set_open_prs(
-            repo,
-            [{"number": 1, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}],
-        )
-        gh.set_pr(repo, 1, {"head_sha": head})
-        now = datetime.now(timezone.utc)
-        gh.set_checks(
-            repo,
-            head,
-            [
-                {
-                    "name": "test (3.11)",
-                    "status": "IN_PROGRESS",
-                    "conclusion": None,
-                    "started_at": (now - timedelta(minutes=95)).isoformat(),
-                    "check_run_id": "job-2",
-                }
-            ],
-        )
-        result = run_watcher(gh, ws, [repo], now=now)
-        assert result["observations"][0]["ci_classification"] == "STALLED"
-        assert len(gh.rerun_calls) == 1
+        assert [r["observations"][0]["classification"] for r in runs] == ["INFRA_FAILURE"] * 5
+        assert gh.rerun_calls == [{"check_run_id": "job-1", "repo": REPO}]
+        state = disk(ws)
+        assert state["rerun_attempts"] == {f"{REPO}:pr1:{head}:{INFRA_NAMED_CHECK}:job-1": 1}
+        assert [b["idempotency_key"] for b in state["records"]["block"]] == [
+            f"block:{REPO}:pr1:{head}"
+        ]
 
 
 # ============================================================================
@@ -1485,42 +1581,31 @@ class TestWatcherCoreRegressionFixes:
 
 
 class TestRecordTypes:
-    """Verify RepairRecord, BlockRecord, and RegressionRecord structure."""
+    """Each record carries its identity and a key that is stable per head."""
 
-    def test_repair_record_structure(self) -> None:
-        rec = RepairRecord(
-            repo="org/repo",
-            pr_number=1,
-            head="a" * 40,
-            failing_checks=["lint"],
-            classification="CODE_FAILURE",
-            reason="test failed",
-        )
-        d = rec.to_dict()
-        assert d["type"] == "repair"
-        assert d["repo"] == "org/repo"
-        assert d["pr_number"] == 1
-        assert d["failing_checks"] == ["lint"]
-        assert "idempotency_key" in d
+    def test_block_record(self) -> None:
+        """Catches a block record losing its reason or its per-head identity."""
+        record = BlockRecord(REPO, 1, "a" * 40, "attempts exhausted for CANCELLED")
+        assert record.to_dict(iso(T0)) == {
+            "type": "block",
+            "repo": REPO,
+            "pr_number": 1,
+            "head": "a" * 40,
+            "reason": "attempts exhausted for CANCELLED",
+            "idempotency_key": f"block:{REPO}:pr1:{'a' * 40}",
+            "created_at": iso(T0),
+        }
 
-    def test_block_record_structure(self) -> None:
-        rec = BlockRecord(repo="org/repo", pr_number=1, head="a" * 40, reason="attempts exhausted")
-        d = rec.to_dict()
-        assert d["type"] == "block"
-        assert "idempotency_key" in d
-
-    def test_regression_record_structure(self) -> None:
-        rec = RegressionRecord(
-            repo="org/repo",
-            pr_number=1,
-            head="a" * 40,
-            review_sources=["github_changes_requested", "verdict_ocr_fail"],
-            reason="merged with fail",
-        )
-        d = rec.to_dict()
-        assert d["type"] == "regression"
-        assert d["review_sources"] == ["github_changes_requested", "verdict_ocr_fail"]
-        assert "idempotency_key" in d
+    def test_record_keys_differ_by_kind_pr_and_head(self) -> None:
+        """Catches two different records colliding on one idempotency key."""
+        keys = {
+            BlockRecord(REPO, 1, "a" * 40, "r").idempotency_key,
+            BlockRecord(REPO, 2, "a" * 40, "r").idempotency_key,
+            BlockRecord(REPO, 1, "b" * 40, "r").idempotency_key,
+            RepairRecord(REPO, 1, "a" * 40, []).idempotency_key,
+            RegressionRecord(REPO, 1, "a" * 40, [], "r").idempotency_key,
+        }
+        assert len(keys) == 5
 
 
 # ============================================================================

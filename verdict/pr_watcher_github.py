@@ -14,6 +14,10 @@ class WatcherGitHubClient(Protocol):
     """Read-only plus bounded rerun GitHub client.
 
     Deliberately excludes mutation methods.
+
+    A PR dict may carry ``linear_issue``, the id of the Linear story the PR is
+    linked to.  The watcher comments on that story and on nothing else; a PR
+    without the field gets a digest event only.
     """
 
     def list_open_prs(self, repo: str) -> list[dict[str, Any]]: ...

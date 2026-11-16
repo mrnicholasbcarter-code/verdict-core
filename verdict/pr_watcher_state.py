@@ -6,44 +6,45 @@ for malformed or unreadable state files.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
 import re
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from verdict.security import CREDENTIAL_SHAPES
+
+SCHEMA_VERSION = 1
+RECORD_KINDS = ("repair", "block", "regression")
 MAX_LOG_EXCERPT = 4096
-MAX_REDACTED = 4096
 MAX_LINEAR_RETRY = 5
 STALLED_THRESHOLD_MINUTES = 30
 
 # --- Path-safe key validation -----------------------------------------------------
 
 
-def _safe_key(key: str) -> str:
-    """Validate a state key: no path traversal, no absolute paths, no control chars.
+class UnsafeKeyError(ValueError):
+    """Raised when a durable state key could escape or corrupt the state store."""
 
-    Allows / within keys (e.g. ``org/repo``) but rejects ``..`` components
-    and absolute paths on POSIX.
+
+def _safe_key(key: str) -> str:
+    """Validate a state key: no traversal, no absolute path, no control chars.
+
+    ``/`` is allowed inside a key (``org/repo``, ``osv-security / osv-scan``), as
+    are spaces and parentheses, which real check names contain.  ``..`` is
+    rejected anywhere in the key, not only as a whole path component.
     """
     if not isinstance(key, str) or not key:
-        raise ValueError(f"invalid state key: {key!r}")
-    # Reject path traversal components
-    parts = key.split("/")
-    for part in parts:
-        if part == ".." or part == "":
-            raise ValueError(f"path-traversal in state key: {key!r}")
-    # Reject absolute paths
-    if os.path.isabs(key):
-        raise ValueError(f"absolute path in state key: {key!r}")
-    # Reject null bytes and control chars; spaces and punctuation are valid
-    # identifiers (check names commonly contain spaces and parentheses).
-    for ch in key:
-        if ord(ch) < 0x20:
-            raise ValueError(f"control character in state key: {key!r}")
+        raise UnsafeKeyError(f"invalid state key: {key!r}")
+    if key.startswith("/") or os.path.isabs(key):
+        raise UnsafeKeyError(f"absolute path in state key: {key!r}")
+    if ".." in key or "\\" in key or any(not part for part in key.split("/")):
+        raise UnsafeKeyError(f"path traversal in state key: {key!r}")
+    if any(ord(ch) < 0x20 for ch in key):
+        raise UnsafeKeyError(f"control character in state key: {key!r}")
     return key
 
 
@@ -51,29 +52,36 @@ def _safe_key(key: str) -> str:
 
 
 def _atomic_write_json(path: Path, value: dict[str, Any]) -> Path:
-    """Write JSON atomically via temp-file + rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Write JSON atomically via temp-file + rename; the old file survives a failure."""
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
-    os.replace(str(tmp), str(path))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
+        os.replace(str(tmp), str(path))
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise StateWriteError(f"cannot write state {path}: {exc}") from exc
     return path
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    """Read a JSON file; return {} for missing files, fail closed for corrupt ones."""
-    if not path.is_file():
-        return {}
+    """Read a JSON object; anything unreadable or unparseable is malformed state."""
     try:
         data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
+    except (OSError, ValueError) as exc:
         raise MalformedStateError(f"malformed state {path}: {exc}") from exc
     if not isinstance(data, dict):
-        raise MalformedStateError(f"state {path} is not a JSON object")
+        raise MalformedStateError(f"malformed state {path}: not a JSON object")
     return data
 
 
 class MalformedStateError(Exception):
     """Raised when durable state is corrupt or unreadable."""
+
+
+class StateWriteError(Exception):
+    """Raised when durable state cannot be written."""
 
 
 # --- Timestamps -------------------------------------------------------------------
@@ -95,6 +103,46 @@ def parse_timestamp(value: object) -> datetime:
     if not isinstance(value, str) or parsed.tzinfo is None or parsed.utcoffset() is None:
         raise MalformedStateError(f"malformed timestamp in state: {value!r}")
     return parsed
+
+
+# --- State shape ------------------------------------------------------------------
+
+_STATE_CONTAINERS: dict[str, type] = {
+    "pr_states": dict,
+    "rerun_attempts": dict,
+    "records": dict,
+    "pending_events": list,
+    "digest_events": dict,
+}
+
+
+def _validate_state(data: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Return ``data`` only if it has the full expected shape; otherwise fail closed."""
+
+    def malformed(why: str) -> MalformedStateError:
+        return MalformedStateError(f"malformed state {path}: {why}")
+
+    if data.get("schema_version") != SCHEMA_VERSION:
+        raise malformed(f"unsupported schema_version {data.get('schema_version')!r}")
+    for field, kind in _STATE_CONTAINERS.items():
+        if not isinstance(data.get(field), kind):
+            raise malformed(f"field {field!r} is missing or not a {kind.__name__}")
+    for record_kind in RECORD_KINDS:
+        if not isinstance(data["records"].get(record_kind), list):
+            raise malformed(f"records[{record_kind!r}] is missing or not a list")
+    for key, count in data["rerun_attempts"].items():
+        # A negative or non-integer count would hand back a spent rerun budget.
+        if type(count) is not int or count < 0:
+            raise malformed(f"rerun attempt count for {key!r} is not a non-negative integer")
+    for field in ("merged_cursor", "last_run_at"):
+        if field not in data:
+            raise malformed(f"field {field!r} is missing")
+        if data[field] is not None:
+            try:
+                parse_timestamp(data[field])
+            except MalformedStateError as exc:
+                raise malformed(f"field {field!r}: {exc}") from exc
+    return data
 
 
 # --- Lock helpers -----------------------------------------------------------------
@@ -128,31 +176,49 @@ class LockAcquisitionError(RuntimeError):
     """Raised when the non-blocking lock cannot be acquired."""
 
 
-# --- Idempotency key helpers ------------------------------------------------------
+# --- Key helpers ------------------------------------------------------------------
+
+
+def rerun_key(
+    repo: str, pr_number: int, head: str, check_name: str, workflow_job_id: object
+) -> str:
+    """Stable rerun identity: repository, PR, exact head, check name, workflow/job id."""
+    return _safe_key(f"{repo}:pr{pr_number}:{head}:{check_name}:{workflow_job_id}")
 
 
 def _idempotency_key(kind: str, repo: str, pr_number: int, head: str) -> str:
     """Deterministic idempotency key for deduplication."""
-    _safe_key(repo)
-    return f"{kind}:{repo}:pr{pr_number}:{head}"
+    return _safe_key(f"{kind}:{repo}:pr{pr_number}:{head}")
 
 
 # --- Secret redaction -------------------------------------------------------------
 
-_SECRET_RE = re.compile(
-    r"(ghp_|gho_|github_pat_|ghs_|token=|x-oauth-basic-|Bearer\s)"
-    r"[A-Za-z0-9_\-\.]{10,}"
+_REDACTED = "[REDACTED]"
+# Credentials in a URL's userinfo, e.g. https://x-access-token:<token>@github.com/...
+_URL_USERINFO = re.compile(r"(?i)(https?://)[^/\s@]+@")
+# The whole value of an Authorization header, whatever the scheme.
+_AUTH_HEADER = re.compile(r"(?i)(authorization\s*:\s*)[^\r\n]+")
+# key=value / key: value fields whose name marks the value as a secret.
+_SECRET_FIELD = re.compile(
+    r"(?i)((?:token|password|passwd|secret|api[_-]?key)[\"']?\s*[=:]\s*)[^\s&,;]+"
 )
 
 
 def redact_secrets(text: str) -> str:
-    """Replace known secret patterns with [REDACTED]."""
-    return _SECRET_RE.sub("[REDACTED]", text)
+    """Replace token-bearing URLs, authorization headers and secret fields."""
+    text = _URL_USERINFO.sub(rf"\g<1>{_REDACTED}@", text)
+    for pattern in (_AUTH_HEADER, *CREDENTIAL_SHAPES, _SECRET_FIELD):
+        text = pattern.sub(rf"\g<1>{_REDACTED}", text)
+    return text
 
 
 def truncate_log(text: str, limit: int = MAX_LOG_EXCERPT) -> str:
-    """Truncate and redact a log excerpt."""
-    return redact_secrets(text[:limit])
+    """Redact, then bound, a log excerpt.
+
+    Redaction runs first: cutting first could split a secret at the limit and
+    leave a prefix of it that no pattern recognises.
+    """
+    return redact_secrets(text)[:limit]
 
 
 # --- Repair / block / regression record builders ----------------------------------
@@ -180,7 +246,7 @@ class RepairRecord:
         self.reason = reason
         self.idempotency_key = _idempotency_key("repair", repo, pr_number, head)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, created_at: str) -> dict[str, Any]:
         return {
             "type": "repair",
             "repo": self.repo,
@@ -191,7 +257,7 @@ class RepairRecord:
             "classification": self.classification,
             "reason": self.reason,
             "idempotency_key": self.idempotency_key,
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "created_at": created_at,
         }
 
 
@@ -205,7 +271,7 @@ class BlockRecord:
         self.reason = reason
         self.idempotency_key = _idempotency_key("block", repo, pr_number, head)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, created_at: str) -> dict[str, Any]:
         return {
             "type": "block",
             "repo": self.repo,
@@ -213,7 +279,7 @@ class BlockRecord:
             "head": self.head,
             "reason": self.reason,
             "idempotency_key": self.idempotency_key,
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "created_at": created_at,
         }
 
 
@@ -230,7 +296,7 @@ class RegressionRecord:
         self.reason = reason
         self.idempotency_key = _idempotency_key("regression", repo, pr_number, head)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, created_at: str) -> dict[str, Any]:
         return {
             "type": "regression",
             "repo": self.repo,
@@ -239,7 +305,7 @@ class RegressionRecord:
             "review_sources": self.review_sources,
             "reason": self.reason,
             "idempotency_key": self.idempotency_key,
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "created_at": created_at,
         }
 
 
@@ -272,10 +338,9 @@ class WatcherState:
 
     def load(self) -> dict[str, Any]:
         """Load state; fail closed on corruption."""
-        data = _read_json(self.state_file)
-        if not data:
+        if not self.state_file.exists():
             return self._empty()
-        return data
+        return _validate_state(_read_json(self.state_file), self.state_file)
 
     def save(self, data: dict[str, Any]) -> None:
         """Atomically persist state."""
@@ -284,7 +349,7 @@ class WatcherState:
     @staticmethod
     def _empty() -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": SCHEMA_VERSION,
             "merged_cursor": None,
             "pr_states": {},
             "rerun_attempts": {},
@@ -307,7 +372,7 @@ class WatcherState:
 
     def has_record(self, data: dict[str, Any], idempotency_key: str) -> bool:
         """Check if a record with this key already exists."""
-        for kind in ("repair", "block", "regression"):
+        for kind in RECORD_KINDS:
             for rec in data.get("records", {}).get(kind, []):
                 if rec.get("idempotency_key") == idempotency_key:
                     return True

@@ -7,20 +7,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from verdict.ci_policy import INFRA_PATTERNS, ci_recovery_action, classify_ci, classify_merge_state
 
 
-class TestInfraPatterns:
-    def test_infra_patterns_tuple_contains_expected_values(self) -> None:
-        assert "runner" in INFRA_PATTERNS
-        assert "availability" in INFRA_PATTERNS
-        assert "infrastructure" in INFRA_PATTERNS
-        assert "network" in INFRA_PATTERNS
-        assert "quota" in INFRA_PATTERNS
-        assert "rate-limit" in INFRA_PATTERNS
-        assert "timeout" in INFRA_PATTERNS
-        assert "dependency-download" in INFRA_PATTERNS
-        assert "artifact-upload" in INFRA_PATTERNS
+def required(name: str, conclusion: str) -> dict[str, object]:
+    return {"name": name, "status": "COMPLETED", "conclusion": conclusion, "required": True}
 
 
 class TestClassifyCI:
@@ -50,23 +43,59 @@ class TestClassifyCI:
         failure = {"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE", "required": True}
         assert classify_ci([ok, failure]) == "CODE_FAILURE"
 
-    def test_infra_failure_when_failed_check_matches_infra_pattern(self) -> None:
-        infra_failure = {
-            "name": "runner-availability",
+    @pytest.mark.parametrize("pattern", INFRA_PATTERNS)
+    def test_failed_check_named_for_an_infra_pattern_is_infra_failure(self, pattern: str) -> None:
+        """Catches a pattern being dropped from the list, or matched case-sensitively."""
+        assert classify_ci([required(f"check-{pattern}", "FAILURE")]) == "INFRA_FAILURE"
+        assert classify_ci([required(f"Check {pattern.upper()}", "FAILURE")]) == "INFRA_FAILURE"
+
+    def test_one_code_failure_among_infra_failures_is_a_code_failure(self) -> None:
+        """Catches a real code failure being retried away as infrastructure."""
+        checks = [required("runner-availability", "FAILURE"), required("lint", "FAILURE")]
+        assert classify_ci(checks) == "CODE_FAILURE"
+        assert classify_ci(list(reversed(checks))) == "CODE_FAILURE"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "test (3.11)",
+            "Analyze (python)",
+            "osv-security / osv-scan",
+            "install-smoke (3.10)",
+            "lint",
+            "proof-full",
+        ],
+    )
+    def test_real_check_names_fail_as_code_cancel_as_cancelled_and_pass_as_green(
+        self, name: str
+    ) -> None:
+        """Catches a real check name accidentally matching an infra pattern."""
+        assert classify_ci([required(name, "FAILURE")]) == "CODE_FAILURE"
+        assert classify_ci([required(name, "CANCELLED")]) == "CANCELLED"
+        assert classify_ci([required(name, "SUCCESS")]) == "GREEN"
+
+    def test_unfinished_required_check_outranks_a_failure(self) -> None:
+        """Catches a verdict being reached while a required check is still running."""
+        checks = [
+            required("lint", "FAILURE"),
+            {"name": "proof-full", "status": "IN_PROGRESS", "conclusion": None, "required": True},
+        ]
+        assert classify_ci(checks) == "PENDING"
+
+    def test_failure_outranks_cancelled(self) -> None:
+        """Catches a code failure being hidden behind a cancelled sibling check."""
+        checks = [required("proof-full", "CANCELLED"), required("lint", "FAILURE")]
+        assert classify_ci(checks) == "CODE_FAILURE"
+
+    def test_optional_failure_does_not_stop_green(self) -> None:
+        """Catches an optional check deciding the result."""
+        optional = {
+            "name": "lint",
             "status": "COMPLETED",
             "conclusion": "FAILURE",
-            "required": True,
+            "required": False,
         }
-        assert classify_ci([infra_failure]) == "INFRA_FAILURE"
-        # Also test other patterns
-        for pattern in INFRA_PATTERNS:
-            check = {
-                "name": f"check-{pattern}",
-                "status": "COMPLETED",
-                "conclusion": "FAILURE",
-                "required": True,
-            }
-            assert classify_ci([check]) == "INFRA_FAILURE", f"pattern {pattern} should match"
+        assert classify_ci([required("proof-full", "SUCCESS"), optional]) == "GREEN"
 
     def test_cancelled_when_any_required_cancelled(self) -> None:
         cancelled = {
