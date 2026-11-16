@@ -35,15 +35,15 @@
         }
       },
       "fresh_run": {
-        "at": "1970-01-01T00:00:00Z",
-        "sha": "0000000000000000000000000000000000000000",
+        "at": "2026-11-16T11:55:31Z",
+        "sha": "3eb2e9079c6c545da1988c7411274b7002ed5f28",
         "environment": "operator-host",
         "command": "scripts/bod416_keyfile_route.sh <raw-output-file>",
-        "real_state_marker": "TODO-fresh-run",
-        "exit_code": -1,
+        "real_state_marker": "RESULT: routed with the gateway key from the key file only",
+        "exit_code": 0,
         "raw_output": {
-          "path": "docs/proof/dod/bod-416-route-key-file/TODO-fresh-route-keyfile-only.txt",
-          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          "path": "docs/proof/dod/bod-416-route-key-file/fresh-route-keyfile-only-20261116T115527Z.txt",
+          "sha256": "6a6c67a703ac5792393bfb1d499dc6e27ad2fce8dab4aedba6d015a69dc45093"
         }
       }
     }
@@ -63,12 +63,12 @@
     "change": "bod-416-route-discovery-key-file"
   },
   "parent_confirmation": {
-    "by": "confirmer card t_119a0d06 (antigravity/gemini-3-flash)",
-    "at": "1970-01-01T00:00:00Z",
+    "by": "gem-devops confirmer (omniroute worker/free-first, gem-orchestrator run 20261116-m1-dod-confirm)",
+    "at": "2026-11-16T11:56:21Z",
     "command": "scripts/bod416_keyfile_route.sh <raw-output-file>",
     "raw_output": {
-      "path": "docs/proof/dod/bod-416-route-key-file/TODO-parent-confirmation.txt",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "path": "docs/proof/dod/bod-416-route-key-file/parent-confirmation-20261116T115620Z.txt",
+      "sha256": "845fe1792f57de0584c260fb6784dab914422ef6cd5ddf8a43b3dda08d4e0f00"
     }
   }
 }
