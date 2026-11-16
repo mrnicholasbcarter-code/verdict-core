@@ -156,6 +156,20 @@ T0 = datetime(2026, 3, 2, 12, 0, 0, tzinfo=timezone.utc)
 RUN_INTERVAL = timedelta(minutes=5)
 MERGED_AT = "2026-03-02T11:58:00Z"
 
+# Check names exactly as GitHub reports them for this repository's workflows.
+REAL_CHECK_NAMES = (
+    "test (3.11)",
+    "Analyze (python)",
+    "osv-security / osv-scan",
+    "install-smoke (3.10)",
+    "lint",
+    "proof-full",
+)
+# classify_ci calls a failure INFRA only when the check name contains an infra
+# pattern, and no real check name here does. This single synthetic name exists
+# to reach that branch.
+INFRA_NAMED_CHECK = "runner timeout"
+
 
 def iso(moment: datetime) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -230,7 +244,14 @@ class TestExactHeadPolling:
         gh.set_checks(
             repo,
             head_a,
-            [{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "required": True}],
+            [
+                {
+                    "name": "test (3.11)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "required": True,
+                }
+            ],
         )
 
         # PR 2: pending
@@ -238,7 +259,14 @@ class TestExactHeadPolling:
         gh.set_checks(
             repo,
             head_b,
-            [{"name": "ci", "status": "IN_PROGRESS", "conclusion": None, "required": True}],
+            [
+                {
+                    "name": "Analyze (python)",
+                    "status": "IN_PROGRESS",
+                    "conclusion": None,
+                    "required": True,
+                }
+            ],
         )
 
         # PR 3: conflict
@@ -246,7 +274,14 @@ class TestExactHeadPolling:
         gh.set_checks(
             repo,
             head_c,
-            [{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "required": True}],
+            [
+                {
+                    "name": "test (3.11)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "required": True,
+                }
+            ],
         )
 
         obs = poll_open_prs(gh, ws, repo)
@@ -281,7 +316,14 @@ class TestExactHeadPolling:
         gh.set_checks(
             "org/repo",
             "a" * 40,
-            [{"name": "ci", "status": "QUEUED", "conclusion": None, "required": True}],
+            [
+                {
+                    "name": "Analyze (python)",
+                    "status": "QUEUED",
+                    "conclusion": None,
+                    "required": True,
+                }
+            ],
         )
         obs = poll_open_prs(gh, ws, "org/repo")
         assert obs[0]["classification"] == "PENDING"
@@ -298,7 +340,14 @@ class TestExactHeadPolling:
         gh.set_checks(
             "org/repo",
             "a" * 40,
-            [{"name": "ci", "status": "COMPLETED", "conclusion": "CANCELLED", "required": True}],
+            [
+                {
+                    "name": "Analyze (python)",
+                    "status": "COMPLETED",
+                    "conclusion": "CANCELLED",
+                    "required": True,
+                }
+            ],
         )
         obs = poll_open_prs(gh, ws, "org/repo")
         assert obs[0]["classification"] == "CANCELLED"
@@ -318,7 +367,14 @@ class TestExactHeadPolling:
         gh.set_checks(
             "org/repo",
             "a" * 40,
-            [{"name": "ci", "status": "IN_PROGRESS", "conclusion": None, "required": True}],
+            [
+                {
+                    "name": "Analyze (python)",
+                    "status": "IN_PROGRESS",
+                    "conclusion": None,
+                    "required": True,
+                }
+            ],
         )
         obs = poll_open_prs(gh, ws, "org/repo")
         # Without a started_at timestamp, an in-progress check is pending.
@@ -377,7 +433,14 @@ class TestMergedPRReconciliation:
         gh.set_checks(
             repo,
             head,
-            [{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "required": True}],
+            [
+                {
+                    "name": "test (3.11)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "required": True,
+                }
+            ],
         )
         gh.set_reviews(repo, 42, [{"state": "APPROVED", "id": 1}])
 
@@ -515,7 +578,9 @@ class TestStableRerunFencing:
             repo, 42, {"head_sha": new_head, "mergeable": True, "merge_state_status": "CLEAN"}
         )
 
-        result = request_bounded_rerun(gh, ws, repo, 42, old_head, "ci", "run-1", max_attempts=3)
+        result = request_bounded_rerun(
+            gh, ws, repo, 42, old_head, "Analyze (python)", "run-1", max_attempts=3
+        )
         assert result["rerun"] is False
         assert result["type"] == "fence_mismatch"
 
@@ -527,12 +592,14 @@ class TestStableRerunFencing:
         head = "a" * 40
         gh.set_pr(repo, 42, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
 
-        result = request_bounded_rerun(gh, ws, repo, 42, head, "ci", "run-1", max_attempts=3)
+        result = request_bounded_rerun(
+            gh, ws, repo, 42, head, "Analyze (python)", "run-1", max_attempts=3
+        )
         assert result["rerun"] is True
 
         # Check counter persisted
         data = ws.load()
-        key = f"{repo}:pr42:{head}:ci:run-1"
+        key = f"{repo}:pr42:{head}:Analyze (python):run-1"
         assert ws.get_rerun_attempt(data, key) == 1
 
     def test_retry_exhaustion_blocks(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
@@ -543,9 +610,13 @@ class TestStableRerunFencing:
 
         # Exhaust 3 attempts
         for _ in range(3):
-            request_bounded_rerun(gh, ws, repo, 42, head, "ci", "run-1", max_attempts=3)
+            request_bounded_rerun(
+                gh, ws, repo, 42, head, "Analyze (python)", "run-1", max_attempts=3
+            )
 
-        result = request_bounded_rerun(gh, ws, repo, 42, head, "ci", "run-1", max_attempts=3)
+        result = request_bounded_rerun(
+            gh, ws, repo, 42, head, "Analyze (python)", "run-1", max_attempts=3
+        )
         assert result["rerun"] is False
         assert result["type"] == "exhausted"
 
@@ -558,11 +629,11 @@ class TestStableRerunFencing:
         gh.set_pr(repo, 42, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
 
         request_bounded_rerun(gh, ws, repo, 42, head, "lint", "job-1", max_attempts=3)
-        request_bounded_rerun(gh, ws, repo, 42, head, "test", "job-2", max_attempts=3)
+        request_bounded_rerun(gh, ws, repo, 42, head, "test (3.11)", "job-2", max_attempts=3)
 
         data = ws.load()
         assert ws.get_rerun_attempt(data, f"{repo}:pr42:{head}:lint:job-1") == 1
-        assert ws.get_rerun_attempt(data, f"{repo}:pr42:{head}:test:job-2") == 1
+        assert ws.get_rerun_attempt(data, f"{repo}:pr42:{head}:test (3.11):job-2") == 1
 
 
 # ============================================================================
@@ -654,12 +725,71 @@ class TestBoundedRecoveryAdapter:
         gh.set_checks(
             repo,
             head,
-            [{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "required": True}],
+            [
+                {
+                    "name": "test (3.11)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "required": True,
+                }
+            ],
         )
 
         result = run_watcher(gh, ws, [repo], linear=None)
         assert len(result.get("reruns", [])) == 0
         assert len(result.get("records", [])) == 0
+
+
+class TestRealCheckNames:
+    """Every real check name survives classification, keying and persistence."""
+
+    @pytest.mark.parametrize("name", REAL_CHECK_NAMES)
+    def test_success_is_ready_with_no_side_effect(
+        self, gh: FakeGitHubClient, ws: WatcherState, name: str
+    ) -> None:
+        """Catches a real name being misread as anything but a passing check."""
+        open_pr(gh, 3, "3" * 40, [check(name, "SUCCESS", check_run_id="job-3")])
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert [(o["classification"], o["action"]) for o in result["observations"]] == [
+            ("GREEN", "READY")
+        ]
+        assert gh.rerun_calls == []
+        assert disk(ws)["records"] == {"repair": [], "block": [], "regression": []}
+        assert disk(ws)["rerun_attempts"] == {}
+
+    @pytest.mark.parametrize("name", REAL_CHECK_NAMES)
+    def test_failure_writes_one_repair_record_naming_the_check(
+        self, gh: FakeGitHubClient, ws: WatcherState, name: str
+    ) -> None:
+        """Catches a real name being dropped from, or mangled in, the repair record."""
+        head = "4" * 40
+        open_pr(gh, 4, head, [check(name, "FAILURE", check_run_id="job-4")])
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert [(o["classification"], o["action"]) for o in result["observations"]] == [
+            ("CODE_FAILURE", "REPAIR")
+        ]
+        assert gh.rerun_calls == []
+        repairs = disk(ws)["records"]["repair"]
+        assert [(r["pr_number"], r["head"], r["failing_checks"]) for r in repairs] == [
+            (4, head, [name])
+        ]
+
+    @pytest.mark.parametrize("name", REAL_CHECK_NAMES)
+    def test_cancelled_is_rerun_once_under_a_key_holding_the_exact_name(
+        self, gh: FakeGitHubClient, ws: WatcherState, name: str
+    ) -> None:
+        """Catches key validation rejecting spaces, parentheses or slashes in a name."""
+        head = "6" * 40
+        open_pr(gh, 6, head, [check(name, "CANCELLED", check_run_id="job-6")])
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert [(o["classification"], o["action"]) for o in result["observations"]] == [
+            ("CANCELLED", "RETRY")
+        ]
+        assert gh.rerun_calls == [{"check_run_id": "job-6", "repo": REPO}]
+        assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr6:{head}:{name}:job-6": 1}
 
 
 # ============================================================================
@@ -700,7 +830,7 @@ class TestSingleWriterIdempotency:
             head,
             [
                 {
-                    "name": "ci",
+                    "name": "osv-security / osv-scan",
                     "status": "COMPLETED",
                     "conclusion": "FAILURE",
                     "required": True,
@@ -754,7 +884,7 @@ class TestCodeAndMergeFailures:
             head,
             [
                 {
-                    "name": "test",
+                    "name": "test (3.11)",
                     "status": "COMPLETED",
                     "conclusion": "SUCCESS",
                     "required": True,
@@ -792,7 +922,14 @@ class TestTransitionNotifications:
         gh.set_checks(
             repo,
             head,
-            [{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "required": True}],
+            [
+                {
+                    "name": "test (3.11)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "required": True,
+                }
+            ],
         )
 
         run_watcher(gh, ws, [repo], linear=None)
@@ -826,7 +963,7 @@ class TestTransitionNotifications:
             head,
             [
                 {
-                    "name": "ci",
+                    "name": "osv-security / osv-scan",
                     "status": "COMPLETED",
                     "conclusion": "FAILURE",
                     "required": True,
@@ -895,7 +1032,14 @@ class TestFailedLinearRetry:
         gh.set_checks(
             repo,
             head,
-            [{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "required": True}],
+            [
+                {
+                    "name": "test (3.11)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "required": True,
+                }
+            ],
         )
         linear.set_fail("any-key")
 
@@ -971,7 +1115,7 @@ class TestLogExcerptBounds:
             repo="org/repo",
             pr_number=1,
             head="a" * 40,
-            failing_checks=["ci"],
+            failing_checks=["lint"],
             log_excerpt="x" * 8000 + " token=ghp_secret",
         )
         d = rec.to_dict()
@@ -995,11 +1139,11 @@ class TestStateBeforeSideEffects:
         head = "a" * 40
         gh.set_pr(repo, 42, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
 
-        request_bounded_rerun(gh, ws, repo, 42, head, "ci", "run-1", max_attempts=3)
+        request_bounded_rerun(gh, ws, repo, 42, head, "Analyze (python)", "run-1", max_attempts=3)
 
         # Verify counter is persisted
         data = ws.load()
-        key = f"{repo}:pr42:{head}:ci:run-1"
+        key = f"{repo}:pr42:{head}:Analyze (python):run-1"
         assert ws.get_rerun_attempt(data, key) == 1
 
     def test_process_death_preserves_bound(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
@@ -1009,13 +1153,13 @@ class TestStateBeforeSideEffects:
         gh.set_pr(repo, 42, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
 
         # Run once - counter should be 1
-        request_bounded_rerun(gh, ws, repo, 42, head, "ci", "run-1", max_attempts=2)
+        request_bounded_rerun(gh, ws, repo, 42, head, "Analyze (python)", "run-1", max_attempts=2)
         data = ws.load()
-        key = f"{repo}:pr42:{head}:ci:run-1"
+        key = f"{repo}:pr42:{head}:Analyze (python):run-1"
         assert ws.get_rerun_attempt(data, key) == 1
 
         # Next run reads persisted counter
-        request_bounded_rerun(gh, ws, repo, 42, head, "ci", "run-1", max_attempts=2)
+        request_bounded_rerun(gh, ws, repo, 42, head, "Analyze (python)", "run-1", max_attempts=2)
         data = ws.load()
         assert ws.get_rerun_attempt(data, key) == 2
 
@@ -1181,7 +1325,7 @@ class TestWatcherCoreRegressionFixes:
             head,
             [
                 {
-                    "name": "runner timeout",
+                    "name": INFRA_NAMED_CHECK,
                     "status": "COMPLETED",
                     "conclusion": "FAILURE",
                     "check_run_id": "job-1",
@@ -1192,7 +1336,7 @@ class TestWatcherCoreRegressionFixes:
             run_watcher(gh, ws, [repo])
         assert len(gh.rerun_calls) == 1
         state = ws.load()
-        assert state["rerun_attempts"][f"{repo}:pr1:{head}:runner timeout:job-1"] == 1
+        assert state["rerun_attempts"][f"{repo}:pr1:{head}:{INFRA_NAMED_CHECK}:job-1"] == 1
         assert len(state["records"]["block"]) == 1
 
     def test_code_failure_record_is_idempotent(
@@ -1256,7 +1400,7 @@ class TestRecordTypes:
             repo="org/repo",
             pr_number=1,
             head="a" * 40,
-            failing_checks=["ci"],
+            failing_checks=["lint"],
             classification="CODE_FAILURE",
             reason="test failed",
         )
@@ -1264,7 +1408,7 @@ class TestRecordTypes:
         assert d["type"] == "repair"
         assert d["repo"] == "org/repo"
         assert d["pr_number"] == 1
-        assert d["failing_checks"] == ["ci"]
+        assert d["failing_checks"] == ["lint"]
         assert "idempotency_key" in d
 
     def test_block_record_structure(self) -> None:
