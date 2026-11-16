@@ -55,7 +55,7 @@ def _run(
         "real_state_marker": RUN_URL,
         "exit_code": 0,
         "raw_output": _artifact(
-            root, name, f"{RUN_URL}\ndrill: orphan module FAILED as intended\n"
+            root, name, f"{RUN_URL}\ndrill: orphan module FAILED as intended\n{name}\n"
         ),
     }
 
@@ -416,3 +416,76 @@ def test_all_still_flags_an_unproven_archive_beside_a_no_change_story(
     lines = capsys.readouterr().out.splitlines()
     assert any(line.startswith("DONE: ") and "cleanup.json" in line for line in lines), lines
     assert "NOT DONE: openspec change gate was archived without DoD evidence" in lines, lines
+
+
+def _structured_result(*, outcome='COMPLETE', review_status='PASS', run_id='run-1', started_at='2099-01-01T00:00:00Z', finished_at='2099-01-01T00:10:00Z'):
+    return json.dumps({'outcome': outcome, 'run_id': run_id, 'started_at': started_at, 'finished_at': finished_at, 'events_digest': 'a' * 64, 'review': {'status': review_status}, 'marker': RUN_URL, 'drill': 'orphan module FAILED as intended'})
+
+
+def _structured_evidence(root, evidence, *, review_status='PASS'):
+    item = evidence['acceptance'][0]
+    for index, (run, name) in enumerate(((item['first_run'], 'structured-first.json'), (item['fresh_run'], 'structured-fresh.json'))):
+        run['raw_output'] = _artifact(root, name, _structured_result(review_status=review_status, run_id=f'run-{index}', started_at='2099-01-02T00:00:00Z' if index else '2099-01-01T00:00:00Z', finished_at='2099-01-02T00:10:00Z' if index else '2099-01-01T00:10:00Z'))
+        run['at'] = '2099-01-01T00:05:00Z' if index == 0 else '2099-01-02T00:05:00Z'
+    evidence['parent_confirmation']['raw_output'] = _artifact(root, 'structured-confirm.json', _structured_result(run_id='run-confirm'))
+
+
+def test_structured_result_exit_and_outcome_must_agree(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    evidence['acceptance'][0]['first_run']['exit_code'] = 1
+    evidence['acceptance'][0]['expect_exit_code'] = 1
+    evidence['acceptance'][0]['fresh_run']['exit_code'] = 1
+    errors = _check(root, evidence)
+    assert any('exit_code 1' in e and 'outcome COMPLETE' in e for e in errors), errors
+
+
+def test_structured_result_exit_and_outcome_agreement_passes(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    assert _check(root, evidence) == []
+
+
+def test_structured_result_time_must_be_in_own_window(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    evidence['acceptance'][0]['first_run']['at'] = '2099-01-01T00:20:00Z'
+    errors = _check(root, evidence)
+    assert any('at' in e and 'started_at' in e and 'finished_at' in e for e in errors), errors
+
+
+def test_structured_result_time_in_own_window_passes(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    assert _check(root, evidence) == []
+
+
+def test_structured_result_review_must_pass_for_zero_exit(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence, review_status='ERROR')
+    errors = _check(root, evidence)
+    assert any('review status ERROR' in e and 'PASS' in e for e in errors), errors
+
+
+def test_structured_result_review_passes_for_zero_exit(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    assert _check(root, evidence) == []
+
+
+def test_same_raw_output_cannot_serve_as_two_runs(repo):
+    root, evidence = repo
+    first = evidence['acceptance'][0]['first_run']['raw_output']
+    evidence['acceptance'][0]['fresh_run']['raw_output'] = first
+    errors = _check(root, evidence)
+    assert 'the same raw output cannot serve as two runs' in errors, errors
+
+
+def test_distinct_raw_outputs_are_valid(repo):
+    root, evidence = repo
+    assert _check(root, evidence) == []
+
+
+def test_non_structured_raw_output_is_unchanged(repo):
+    root, evidence = repo
+    assert _check(root, evidence) == []
