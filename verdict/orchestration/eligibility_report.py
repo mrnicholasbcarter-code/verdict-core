@@ -302,16 +302,11 @@ def build_selector(
             LaunchCandidate(route_id, route_id, frozenset(), 0, 0.0, 0.0, False, False, 0, 0)
         )
 
-    from verdict.orchestration.eligibility import HarnessVisibility
-    from verdict.prime_inventory import concrete_rows
+    from verdict.orchestration.harness import DEFAULT_REGISTRY
 
-    if visibility_executor == "direct-gateway":
-        live_concrete, _ = concrete_rows(catalog_rows)
-        harness_visible = HarnessVisibility(
-            frozenset(str(r["id"]) for r in live_concrete), source="live-gateway"
-        )
-    else:
-        harness_visible = prime_visibility(live_rows=catalog_rows, sync=sync_visibility)
+    harness_visible = DEFAULT_REGISTRY.resolve(visibility_executor).harness_visibility(
+        catalog_rows=catalog_rows, sync_visibility=sync_visibility
+    )
 
     # BOD-417: optional OmniRoute advisory rankings as task-aware tie-break among
     # already-admitted routes. Rankings are provider-level; map provider+topModel

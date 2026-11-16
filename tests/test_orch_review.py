@@ -750,7 +750,13 @@ def test_selected_only_signal_is_sufficient_for_pass(
 ) -> None:
     """AC 2: non-empty selected list alone can produce PASS."""
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
-    payload = {"manifest": {"coverage": {"selected": [{"path": "x.py"}]}}, "findings": []}
+    payload = {
+        "manifest": {
+            "coverage": {"selected": [{"path": "x.py"}]},
+            "execution": {"model": "cx/gpt-5.5-low"},
+        },
+        "findings": [],
+    }
     runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
     reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
     result = _run(reviewer)
@@ -763,7 +769,13 @@ def test_completed_only_signal_is_sufficient_for_pass(
 ) -> None:
     """AC 2: non-empty completed list alone can produce PASS."""
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
-    payload = {"manifest": {"coverage": {"completed": [{"path": "y.py"}]}}, "findings": []}
+    payload = {
+        "manifest": {
+            "coverage": {"completed": [{"path": "y.py"}]},
+            "execution": {"model": "cx/gpt-5.5-low"},
+        },
+        "findings": [],
+    }
     runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
     reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
     result = _run(reviewer)
@@ -776,7 +788,11 @@ def test_summary_only_signal_is_sufficient_for_pass(
 ) -> None:
     """AC 2: valid positive files_reviewed alone can produce PASS."""
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
-    payload = {"summary": {"files_reviewed": 1}, "findings": []}
+    payload = {
+        "summary": {"files_reviewed": 1},
+        "findings": [],
+        "manifest": {"execution": {"model": "cx/gpt-5.5-low"}},
+    }
     runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
     reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
     result = _run(reviewer)
@@ -1076,7 +1092,10 @@ def test_positive_coverage_with_blocking_finding_still_fails(
     """AC 5: blocking findings still reject covered output."""
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
     payload = {
-        "manifest": {"coverage": {"selected": [{"path": "x.py"}]}},
+        "manifest": {
+            "coverage": {"selected": [{"path": "x.py"}]},
+            "execution": {"model": "cx/gpt-5.5-low"},
+        },
         "summary": {"files_reviewed": 1},
         "comments": [
             {
@@ -1125,14 +1144,16 @@ def test_malformed_coverage_containers_fail_closed(
     assert result.detail == "review coverage missing"
 
 
-def test_summary_alone_can_pass_without_manifest(
+def test_summary_alone_without_reported_model_is_unobserved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """AC 2: summary-only positive signal works without manifest."""
+    """Positive summary coverage is not a pass when OCR reports no model."""
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
     payload = {"summary": {"files_reviewed": 3}, "findings": []}
     runner = FakeRunner(OcrRun(exit_code=0), review_payload=json.dumps(payload))
     reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner)
     result = _run(reviewer)
-    assert result.status == "PASS"
-    assert result.passed
+    assert result.status == "ERROR"
+    assert not result.passed
+    assert result.detail.startswith("identity_unobserved:")
+    assert reviewer._provider_failure(result)

@@ -101,13 +101,16 @@ class CountingTransport:
                 ok=True,
                 chat_exact=True,
                 tool_called=True,
+                reported_model=route,
                 response_body={
                     "id": "chatcmpl-fake-1",
                     "choices": [{"message": {"content": "PONG"}}],
                     "usage": {"total_tokens": 5},
                 },
             )
-        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+        return ProbeExchange(
+            http_status=200, ok=True, chat_exact=True, tool_called=True, reported_model=route
+        )
 
 
 class CountingProber:

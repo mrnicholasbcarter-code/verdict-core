@@ -395,11 +395,16 @@ def test_probe_no_leak(planted_environment):
 
 
 def test_credentials_test_no_leak(planted_environment):
-    """credentials.test: VACUOUS - requires provider client mock."""
-    # Controller requirement: fake provider client, verify credentials not echoed
-    # This would require mocking credential store internals
-    # Marking VACUOUS until we understand the exact credentials.test path
-    pass
+    """credentials.test: assert resolved key value never appears in ActionResult.data or JSON dump."""
+    from verdict.actions import run_action
+
+    result = run_action("credentials.test", {"name": "OMNIROUTE_API_KEY"})
+    # Even if missing or tested, verify secrets aren't leaked in data representation
+    data_str = json.dumps(result.data)
+    for secret in PLANTED_SECRETS.values():
+        if secret and secret != "«redacted:sk-…»":
+            assert secret not in data_str
+    assert_no_secret_leak(result, "credentials.test")
 
 
 @pytest.mark.parametrize("harness", ["prime", "cursor", "cline", "claude", "windsurf"])

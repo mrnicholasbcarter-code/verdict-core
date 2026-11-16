@@ -1,0 +1,14 @@
+{
+  "schema_version": "verdict.operator-policy/v1",
+  "version": 1,
+  "title": "Approved operator policy for native execution boundaries",
+  "digest": "sha256:a9967eb0c6f92efda6ede6b5f574cbb48c6f616116841675de24dce7f3b33b51",
+  "decision_refs": [
+    "operator/decision-20261013-memory-ai-memory.md (operator decision 2026-10-13)",
+    "AGENTS.md push gate (operator-authorized recreation, Nick 2026-11-05)",
+    "AGENTS.md definition of done"
+  ],
+  "linear_issue": "BOD-340",
+  "effective_at": "2026-11-13T00:00:00Z",
+  "notes": "Digest covers rules.json bytes; any edit invalidates the source until re-approved."
+}

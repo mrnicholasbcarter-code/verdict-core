@@ -60,7 +60,13 @@ def _parse_utc(value: Any) -> datetime | None:
 
 
 def dispatch_scope(
-    *, gateway_origin: str, provider: str, model: str, route_id: str, profile_digest: str
+    *,
+    gateway_origin: str,
+    provider: str,
+    model: str,
+    route_id: str,
+    profile_digest: str,
+    protocol: str | None = None,
 ) -> DispatchScope:
     """Build a scope from non-secret gateway and concrete-route identity.
 
@@ -74,11 +80,18 @@ def dispatch_scope(
     if parsed.username or parsed.password or not parsed.hostname:
         raise ValueError("dispatch origin must be a resolved gateway URL without credentials")
     origin = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
-    identity = json.dumps(
-        {"gateway_origin": origin, "provider": provider, "model": model, "route_id": route_id},
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    identity_fields = {
+        "gateway_origin": origin,
+        "provider": provider,
+        "model": model,
+        "route_id": route_id,
+    }
+    # Protocol is part of the scope only when the caller names one. Chat and
+    # responses proofs omit it, so their hashes stay unchanged; a messages
+    # proof cannot satisfy a chat dispatch or the reverse.
+    if protocol:
+        identity_fields["protocol"] = protocol
+    identity = json.dumps(identity_fields, sort_keys=True, separators=(",", ":"))
     generation = "sha256:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
     return DispatchScope(
         gateway_origin=origin,
@@ -173,6 +186,8 @@ def protocol_for_surface(surface: str) -> str:
         return "openai.responses"
     if surface == "chat":
         return "openai.chat.completions"
+    if surface == "messages":
+        return "anthropic.messages"
     raise ValueError(f"unsupported relay surface: {surface}")
 
 

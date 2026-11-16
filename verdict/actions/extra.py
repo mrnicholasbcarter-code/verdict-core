@@ -159,7 +159,7 @@ def _action_credentials_test(**kwargs: Any) -> ActionResult:
     import os
 
     from verdict.credentials_registry import get_credential
-    from verdict.credentials_store import CredentialsStore
+    from verdict.credentials_store import GATEWAY_KEY_ENV_NAMES, CredentialsStore, resolve_api_key
 
     name: str = kwargs["name"]
     cred = get_credential(name)
@@ -175,6 +175,8 @@ def _action_credentials_test(**kwargs: Any) -> ActionResult:
         )
     CredentialsStore().load_into_env()
     value = os.environ.get(name)
+    if not value and name in GATEWAY_KEY_ENV_NAMES:
+        value = resolve_api_key()
     if not value:
         return ActionResult(
             data={"name": name, "status": "missing", "message": "credential not set"},

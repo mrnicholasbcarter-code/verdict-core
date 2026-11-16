@@ -1,6 +1,5 @@
 """Clean-runner spawn visibility does not supply launch authority."""
 
-import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,24 +66,78 @@ def test_clean_runner_executor_visibility(tmp_path, monkeypatch, executor):
 
 
 @pytest.mark.parametrize(
-    "default,mapping,expected",
+    "executor,expected_source",
     [
-        ("prime", "", "prime"),
-        ("direct-gateway", "", "direct-gateway"),
-        ("direct-gateway", "node-1=prime", "prime"),
-        ("prime", "node-1=direct-gateway", "prime"),
-        ("direct-gateway", "node-1=direct-gateway", "prime"),
+        ("prime-headless", "none"),
+        ("prime", "none"),  # legacy alias resolves to prime-headless
+        ("direct-gateway", "live-gateway"),
     ],
 )
-def test_shared_ladder_mixed_maps_remain_strict(default, mapping, expected):
-    assert (
-        cli._selector_visibility_executor(
-            argparse.Namespace(executor=default, executor_map=mapping)
-        )
-        == expected
+def test_visibility_backend_bound_to_executor(executor, expected_source, monkeypatch, tmp_path):
+    """Visibility is bound to the chosen worker executor backend via the registry,
+    not to the executor_map."""
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "home"))
+    rows = [row("cc/claude-sonnet-5", owned_by="anthropic")]
+    monkeypatch.setattr(run, "fetch_inventory", lambda *a, **k: rows)
+    monkeypatch.setattr(run, "fetch_connections", lambda *a, **k: [conn("kr")])
+    monkeypatch.setattr(run, "resolve_api_key", lambda: None)
+    calls = []
+    monkeypatch.setattr(
+        "verdict.subagent_selection.openai_health_probe",
+        lambda *a, **k: lambda c: calls.append(c.route_id) or HealthResult(True, ""),
     )
+    ladder = build_selector(
+        "http://127.0.0.1:1",
+        scope="",
+        prefer="",
+        state_file=tmp_path / "state.json",
+        required_capabilities=frozenset({"tools"}),
+        capacity=("subscription",),
+        visibility_executor=executor,
+    )
+    assert ladder._harness_visible.source == expected_source
+    if expected_source == "live-gateway":
+        assert ladder._harness_visible("cc/claude-sonnet-5") is True
+    else:
+        assert ladder._harness_visible.ids is None
 
 
 def test_cli_threads_visibility_policy():
     source = Path(cli.__file__).read_text()
+    assert "from verdict.orchestration.harness import DEFAULT_REGISTRY" in source
     assert "visibility_executor=_selector_visibility_executor(args)" in source
+    assert "_selector_visibility_executor" in source
+
+
+def test_selector_visibility_executor_preserves_mixed_map_rule() -> None:
+    """Any --executor-map keeps the strict default visibility, matching main.
+
+    On main, ``_selector_visibility_executor`` returned ``prime`` whenever an
+    executor map was present (mixed dispatch), and ``direct-gateway`` only for a
+    pure direct-gateway run.  The registry-backed version must keep that rule:
+    a map forces the default adapter's visibility regardless of the default
+    backend name.
+    """
+    import argparse
+
+    def ns(executor: str, executor_map: str = "") -> argparse.Namespace:
+        return argparse.Namespace(executor=executor, executor_map=executor_map)
+
+    # Pure direct-gateway run -> live-gateway visibility
+    assert cli._selector_visibility_executor(ns("direct-gateway")) == "direct-gateway"
+    # Pure prime / alias runs -> prime-headless visibility
+    assert cli._selector_visibility_executor(ns("prime")) == "prime"
+    assert cli._selector_visibility_executor(ns("prime-headless")) == "prime-headless"
+    # Any executor map -> default adapter visibility (prime-headless)
+    assert (
+        cli._selector_visibility_executor(ns("direct-gateway", "node-1=prime-headless"))
+        == "prime-headless"
+    )
+    assert (
+        cli._selector_visibility_executor(ns("prime-headless", "node-1=direct-gateway"))
+        == "prime-headless"
+    )
+    assert (
+        cli._selector_visibility_executor(ns("prime", "node-1=prime,node-2=direct-gateway"))
+        == "prime-headless"
+    )

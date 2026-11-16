@@ -36,7 +36,7 @@ class TestCmdRun:
                 **{**decision.__dict__, "transport_outcome": "sent", "execute_preview": "ok"}
             ),
         )
-        cli.cmd_run("deploy prod", "critical", terse=True)
+        cli.cmd_run("deploy prod", "critical", terse=True, allow_legacy_selector=True)
         assert capsys.readouterr().out.strip() == "anthropic/claude-opus-5"
 
 

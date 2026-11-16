@@ -52,3 +52,9 @@ See the OpenSpec changes
 and [selected context bridge](../../openspec/changes/bod-303-selected-context-bridge/design.md),
 [ADR-022](../adr/ADR-022-context-provider-conformance.md) and
 [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md).
+
+## Research reuse
+
+`SETTLED_EVIDENCE` lists observed unit ids. `OPEN_QUESTIONS` lists unavailable, omitted or excluded facts. Settled evidence is not authenticated truth or route authority. Workers do not re-verify unchanged settled facts unless a check fails, a cited source changes, or a named open question needs research. Independent acceptance checks still run.
+
+A research pack binds task, observed repository revision and source revisions. Failure and review deltas do not change that identity. Reuse and projection do not retrieve sources, and prepared context is rejected unless it already fits.

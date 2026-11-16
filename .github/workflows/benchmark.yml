@@ -24,7 +24,25 @@ jobs:
       - name: Run reproducible local benchmark gate
         run: uv run python benchmarks/run_reproducible.py --output-json benchmark-reproducible.json --fail-on-threshold
       - name: Model selection report (real selector, offline fixture)
+        if: always()
         run: uv run python scripts/selection_report.py --output-json benchmark-selection.json --output-md benchmark-selection.md
+      - name: Model selection report for the base commit
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          PYTHONPATH="$RUNNER_TEMP/base" uv run python "$RUNNER_TEMP/base/scripts/selection_report.py" --output-json benchmark-selection-base.json
+      - name: Build the pull request comment
+        if: always() && github.event_name == 'pull_request'
+        run: >-
+          uv run python scripts/pr_check_comment.py
+          --gate-json benchmark-reproducible.json
+          --head-json benchmark-selection.json
+          --base-json benchmark-selection-base.json
+          --output-md benchmark-comment.md
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@v7
@@ -34,27 +52,31 @@ jobs:
             benchmark-reproducible.json
             benchmark-selection.json
             benchmark-selection.md
-      - name: Comment benchmark results
+            benchmark-selection-base.json
+            benchmark-comment.md
+      - name: Comment only when this pull request changed a result
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
             const marker = '<!-- verdict-benchmark-report -->';
-            let body = `${marker}\n## Benchmark\n\n`;
-            if (fs.existsSync('benchmark-reproducible.json')) {
-              const r = JSON.parse(fs.readFileSync('benchmark-reproducible.json', 'utf8'));
-              body += `Reproducible local gate: **${r.metrics.thresholds_passed ? 'passed' : 'failed'}** `
-                + `(${r.metrics.sample_count} samples, fixture \`${r.fixture_digest_sha256.slice(0, 12)}\`).\n\n`;
-            }
-            body += fs.existsSync('benchmark-selection.md')
-              ? fs.readFileSync('benchmark-selection.md', 'utf8')
-              : 'Selection report did not run.\n';
-            body += `\n_Updated for ${context.payload.pull_request.head.sha.slice(0, 7)}._\n`;
+            const built = fs.existsSync('benchmark-comment.md');
+            const text = built
+              ? fs.readFileSync('benchmark-comment.md', 'utf8').trim()
+              : 'The check comment could not be built. See the Benchmark job log.';
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
             const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
             const existing = comments.find(c => c.user.type === 'Bot' && c.body.includes(marker));
+            if (!text) {
+              if (existing) {
+                await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id });
+              }
+              return;
+            }
+            const pr = context.payload.pull_request;
+            const body = `${marker}\n${text}\n\n_Base ${pr.base.sha.slice(0, 7)}, head ${pr.head.sha.slice(0, 7)}._\n`;
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
             } else {

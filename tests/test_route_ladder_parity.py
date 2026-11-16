@@ -1,0 +1,967 @@
+"""Parity tests between verdict choose and verdict route using the ladder."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from verdict import cli
+from verdict.admission import RuntimeEvidence
+from verdict.metadata.records import (
+    FieldProvenance,
+    ModelMetadataRecord,
+    ProvenancedField,
+    SoftScores,
+)
+from verdict.metadata.store import MetadataSnapshot
+from verdict.orchestration.contracts import (
+    CapacityClass,
+    EligibilityStage,
+    FailureClassification,
+    NodeKind,
+    RouteVerdict,
+    RunOutcome,
+    TaskRequirements,
+    WorkerTerminal,
+    WorkGraph,
+    WorkNode,
+)
+from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
+from verdict.subagent_selection import HealthResult
+
+
+@pytest.fixture
+def live_pool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    from verdict.metadata import store
+    from verdict.orchestration import run
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HEALTH_CACHE", str(tmp_path / "health-cache.json"))
+    monkeypatch.setenv("VERDICT_SESSION_EVIDENCE", str(tmp_path / "sessions.jsonl"))
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:1/v1")
+    rows = [
+        {"id": "free/weak", "owned_by": "free", "pricing": {"input": 0, "output": 0}},
+        {"id": "sub/strong", "owned_by": "sub", "pricing": {"input": 5, "output": 10}},
+    ]
+    now = datetime.now(timezone.utc)
+    records = []
+    cache = HealthCache(tmp_path / "health-cache.json")
+    for row, score in zip(rows, (30, 80), strict=True):
+        row.update(context_length=200_000, capabilities={"tool_calling": True})
+        route = row["id"]
+        records.append(
+            ModelMetadataRecord(
+                id=route,
+                omniroute_ids=(route,),
+                provider=row["owned_by"],
+                scores=SoftScores(
+                    aa_coding=ProvenancedField(
+                        value=score,
+                        provenance=FieldProvenance(
+                            source="openrouter_aa", fetched_at=now.isoformat()
+                        ),
+                    )
+                ),
+            )
+        )
+        cache.record(
+            route, ProbeResult(CATEGORY_OK, True, True, probe_class="agentic", agentic_ok=True), now
+        )
+    cache.save()
+    snapshot = MetadataSnapshot(
+        schema_version="1", refreshed_at=now.isoformat(), sources={}, records=tuple(records)
+    )
+    monkeypatch.setattr(store, "load_store", lambda *a, **kw: snapshot)
+    monkeypatch.setattr(run, "fetch_inventory", lambda *a, **kw: rows)
+    monkeypatch.setattr(
+        run,
+        "fetch_connections",
+        lambda *a, **kw: [
+            {
+                "provider": "free",
+                "authType": "apikey",
+                "isActive": True,
+                "plan_label": "free",
+                "import_free_only": True,
+            },
+            {"provider": "sub", "authType": "oauth", "isActive": True, "plan_label": "max"},
+        ],
+    )
+    monkeypatch.setattr(
+        "verdict.omniroute_health.load_omniroute_health", lambda *a, **kw: RuntimeEvidence()
+    )
+    monkeypatch.setattr(
+        "verdict.subagent_selection.openai_health_probe",
+        lambda *a, **kw: lambda candidate: HealthResult(True, "healthy"),
+    )
+    return rows
+
+
+def test_choose_and_route_terse_parity(
+    live_pool: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Run choose --json
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "verdict",
+            "choose",
+            "--task",
+            "fix a failing unit test",
+            "--task-class",
+            "implementation",
+            "--requires",
+            "tools,code",
+            "--json",
+        ],
+    )
+    cli.main()
+    choose_out = capsys.readouterr().out
+    choose_payload = json.loads(choose_out)
+    chosen_id = choose_payload["selected"]["route_id"]
+
+    # Run route --terse
+    monkeypatch.setattr("sys.argv", ["verdict", "route", "fix a failing unit test", "--terse"])
+    cli.main()
+    route_out = capsys.readouterr().out.strip()
+    assert route_out == chosen_id
+
+
+def test_choose_and_route_json_parity(
+    live_pool: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """verdict choose --json and verdict route --json name the same first route."""
+    task_text = "fix a failing unit test"
+
+    # Run choose --json
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "verdict",
+            "choose",
+            "--task",
+            task_text,
+            "--task-class",
+            "implementation",
+            "--requires",
+            "tools,code",
+            "--json",
+        ],
+    )
+    cli.main()
+    choose_out = capsys.readouterr().out
+    choose_payload = json.loads(choose_out)
+    chosen_id = choose_payload["selected"]["route_id"]
+
+    # Run route --json with the same task text
+    monkeypatch.setattr("sys.argv", ["verdict", "route", "--task", task_text, "--json"])
+    cli.main()
+    route_out = capsys.readouterr().out
+    route_payload = json.loads(route_out)
+    route_id = route_payload["selected"]["route_id"]
+
+    assert route_id == chosen_id
+
+
+def test_orchestrate_selector_and_choose_share_first_route(live_pool, monkeypatch, capsys):
+    from verdict.orchestration.cli import build_selector
+    from verdict.orchestration.contracts import TaskRequirements
+
+    monkeypatch.setattr("sys.argv", ["verdict", "choose", "--task", "fix code", "--json"])
+    cli.main()
+    chosen = json.loads(capsys.readouterr().out)["selected"]["route_id"]
+    selector = build_selector(
+        "http://127.0.0.1:1", scope="", prefer="", visibility_executor="direct-gateway"
+    )
+    route, _ = selector.select(TaskRequirements(), now=datetime.now(timezone.utc))
+    assert route is not None
+    assert route.route_id == chosen == "free/weak"
+
+
+def test_route_preserves_explicit_requirement_floors(live_pool, monkeypatch, capsys):
+    from verdict.orchestration.selection import SelectionResult
+
+    captured = []
+
+    def select(requirements, **kwargs):
+        captured.append(requirements)
+        return SelectionResult(None, ("no_candidates",), {}, {})
+
+    monkeypatch.setattr("verdict.orchestration.selection.select_route_for_task", select)
+    with pytest.raises(SystemExit, match="1"):
+        cli.cmd_route(
+            "fix code",
+            "medium",
+            terse=True,
+            min_context_tokens=200_000,
+            reasoning_required=True,
+            vision_required=True,
+            structured_output_required=True,
+        )
+    assert captured[0].min_context_tokens == 200_000
+    assert captured[0].required_capabilities >= {"vision", "structured_output", "reasoning"}
+    assert json.loads(capsys.readouterr().out)["reason"] == "no_eligible_route"
+
+
+def test_default_route_does_not_construct_gate(live_pool, monkeypatch, capsys):
+    def forbidden(**kwargs):
+        pytest.fail("default route constructed the legacy Gate")
+
+    monkeypatch.setattr(cli._action_helpers, "build_route_gate", forbidden)
+    cli.cmd_route("fix a failing unit test", "medium", terse=True)
+    assert capsys.readouterr().out == "free/weak\n"
+
+
+def test_serve_uses_only_ladder_candidates_in_ladder_order(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    import test_live_candidate_shortlist as fixtures
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    service = fixtures._service([], top_k=4)
+    service.admit_snapshot = None
+    monkeypatch.setattr(
+        service,
+        "_load_admit_snapshot",
+        lambda: (fixtures._snapshot(), ("http://127.0.0.1:1/v1", ""), False, None),
+    )
+    candidates = [SimpleNamespace(route_id=rid) for rid in (fixtures.FAST, fixtures.STRONG)]
+    selector = SimpleNamespace(_assess_all=lambda *args: ([], candidates))
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", lambda *a, **kw: selector
+    )
+    request = fixtures._request(fixtures.NEW, fixtures.STRONG, fixtures.FAST)
+    prepared = service._prepare_execution_path_request(
+        "fix code", "low", fixtures._context(request), request
+    )
+    assert [o.route.route_id for o in prepared.offers] == [fixtures.FAST, fixtures.STRONG]
+    assert [entry.route_id for entry in prepared.pool_receipt.shortlist] == [
+        fixtures.FAST,
+        fixtures.STRONG,
+    ]
+
+
+def test_serve_final_decision_matches_shared_selector_first_route(
+    monkeypatch, tmp_path, no_gateway_network
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    import test_live_candidate_shortlist as fixtures
+
+    from verdict.execution_path import optimize_execution_path
+
+    assessed = []
+    optimized = []
+
+    def observe_optimizer(request):
+        decision = optimize_execution_path(request)
+        optimized.append((request, decision))
+        return decision
+
+    # Observe, do not replace, ADR-035's final strategy authority.
+    monkeypatch.setattr("verdict.serve_path.optimize_execution_path", observe_optimizer)
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("TMPDIR", "/tmp")
+
+    ladder_candidates = tuple(
+        SimpleNamespace(route_id=route_id) for route_id in (fixtures.FAST, fixtures.STRONG)
+    )
+
+    class FakeSelector:
+        def select(self, requirements, *, now):
+            del requirements, now
+            return ladder_candidates[0], ladder_candidates
+
+        def _assess_all(self, requirements, now):
+            assessed.append((requirements, now))
+            return [], list(ladder_candidates)
+
+    selector = FakeSelector()
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", lambda *a, **kw: selector
+    )
+
+    service = fixtures._service([], top_k=4)
+    service.admit_snapshot = None
+    monkeypatch.setattr(
+        service,
+        "_load_admit_snapshot",
+        lambda: (fixtures._snapshot(), ("http://127.0.0.1:1/v1", ""), False, None),
+    )
+
+    request = fixtures._request(fixtures.NEW, fixtures.STRONG, fixtures.FAST)
+    serve_decision = asyncio.run(
+        service.route("fix code", criticality="low", context=fixtures._context(request))
+    )
+    assert len(optimized) == len(assessed) == 1
+    prepared, execution_decision = optimized[0]
+    requirements, now = assessed[0]
+    shared_first, _ = selector.select(requirements, now=now)
+    admitted_order = [candidate.route_id for candidate in ladder_candidates]
+    assert [offer.route.route_id for offer in prepared.offers] == admitted_order
+    assert [entry.route_id for entry in prepared.pool_receipt.shortlist] == admitted_order
+    assert execution_decision.selected_candidate_id == shared_first.route_id
+    assert "bod104_execution_path_authority" in serve_decision.safety_flags
+
+    admitted = {candidate.route_id for candidate in ladder_candidates}
+    prepared_ids = {offer.route.route_id for offer in prepared.offers}
+    shortlist_ids = {entry.route_id for entry in prepared.pool_receipt.shortlist}
+
+    assert prepared_ids <= admitted
+    assert shortlist_ids <= admitted
+    assert f"bod104_route_id:{shared_first.route_id}" in serve_decision.safety_flags
+    assert serve_decision.model == shared_first.route_id.split("/", 1)[1]
+
+
+def test_allow_legacy_selector_flag_uses_the_gate_and_never_the_ladder(
+    live_pool: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from verdict.models import RoutingDecision
+    from verdict.serve_path import CONTEXT_ALLOW_LEGACY
+
+    built: list[bool] = []
+    contexts: list[Any] = []
+
+    class _LegacyGate:
+        def route(self, task: str, criticality: str, context: Any = None) -> RoutingDecision:
+            del task, criticality
+            contexts.append(context)
+            return RoutingDecision(
+                model="legacy/route",
+                provider="omniroute",
+                tier=3,
+                reason="legacy stub",
+                decision="selected",
+                transport_outcome="sent",
+                request_id="req-legacy",
+            )
+
+    def build(allow_offline: bool = False) -> _LegacyGate:
+        built.append(allow_offline)
+        return _LegacyGate()
+
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("--allow-legacy-selector reached the selection ladder")
+
+    monkeypatch.setattr(cli._action_helpers, "build_route_gate", build)
+    monkeypatch.setattr("verdict.orchestration.selection.select_route_for_task", forbidden)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["verdict", "route", "fix a failing unit test", "--allow-legacy-selector", "--terse"],
+    )
+    try:
+        cli.main()
+    except SystemExit as exc:
+        assert exc.code in (0, None)
+
+    # The flag builds the legacy gate once, online, and prints the gate's route, not the
+    # ladder's ("free/weak" for this inventory). The escape is recorded on the request.
+    assert built == [False]
+    assert capsys.readouterr().out == "legacy/route\n"
+    assert len(contexts) == 1
+    assert contexts[0][CONTEXT_ALLOW_LEGACY] is True
+
+
+class SimpleClassifier:
+    def classify(self, terminal: WorkerTerminal, *, now: datetime) -> FailureClassification:
+        return FailureClassification("worker_error", "REROUTE", 300, "route", terminal.error[:200])
+
+
+class _FirstRouteSelector:
+    """Fake ModelSelector that returns a known first route."""
+
+    def __init__(self, first_route: str) -> None:
+        self.first_route = first_route
+        self.calls: list[TaskRequirements] = []
+
+    def evaluate(
+        self, requirements: TaskRequirements, *, now: datetime
+    ) -> tuple[RouteVerdict, ...]:
+        return self.select(requirements, now=now)[1]
+
+    def select(
+        self, requirements: TaskRequirements, *, now: datetime
+    ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
+        self.calls.append(requirements)
+        provider = self.first_route.split("/", 1)[0]
+        verdict = RouteVerdict(
+            route_id=self.first_route,
+            provider=provider,
+            reached=EligibilityStage.SELECTED,
+            failed_stage=None,
+            reason="ok",
+            capacity_class=CapacityClass.FREE,
+            rank=1,
+        )
+        return verdict, (verdict,)
+
+    def record_success(self, route_id: str, *, now: datetime) -> None:
+        pass
+
+    def record_failure(self, route_id: str, failure: Any, *, now: datetime) -> None:
+        pass
+
+
+class _SuccessExecutor:
+    """Fake executor that always succeeds on the route it is given."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        node_id = prompt.split(":", 1)[0]
+        self.calls.append((node_id, route_id))
+        (cwd / f"{node_id}.txt").write_text(f"{node_id} done by {route_id}\n")
+        return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
+
+
+def test_runtime_first_attempt_matches_selector_first_route(
+    live_pool: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A DagRuntime node's first dispatch attempt route_id equals the shared
+    selector's first route for the same evidence."""
+    selector = _FirstRouteSelector("free/weak")
+    executor = _SuccessExecutor()
+    events_rows: list[dict[str, Any]] = []
+
+    class Events:
+        def emit(self, type: str, node_id: str = "", **data: Any) -> None:
+            events_rows.append({"type": type, "node_id": node_id, **data})
+
+    def of(type: str) -> list[dict[str, Any]]:
+        return [r for r in events_rows if r["type"] == type]
+
+    def prompt_for(node: WorkNode, cwd: Path, **kw: Any) -> str:
+        return f"{node.node_id}: {node.objective}"
+
+    node = WorkNode(
+        "a",
+        "do it",
+        kind=NodeKind.IMPLEMENT,
+        owned_files=("a.txt",),
+        verification_command=("true",),
+    )
+    graph = WorkGraph("g", (node,))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "t@t"],
+        ["config", "user.name", "t"],
+    ):
+        subprocess.run(["git", *args], cwd=repo_root, check=True)
+    (repo_root / "README.md").write_text("x\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo_root, check=True)
+
+    runtime = DagRuntime(
+        repo=repo_root,
+        run_dir=run_dir,
+        graph=graph,
+        selector=selector,
+        executor=executor,
+        classifier=SimpleClassifier(),
+        events=Events(),
+        prompt_for=prompt_for,
+        reviewer=None,
+        policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+        now=lambda: datetime.now(timezone.utc),
+    )
+
+    result = asyncio.run(runtime.run())
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+
+    run = runtime.nodes["a"]
+    assert run.attempt == 1
+    assert run.route_id == "free/weak"
+
+    first_selection = [e for e in of("selection") if e.get("attempt") == 1]
+    assert first_selection
+    assert first_selection[0]["route_id"] == selector.first_route
+
+    assert executor.calls == [("a", "free/weak")]
+
+
+@pytest.mark.parametrize("surface", ["route", "run", "choose", "orchestrate"])
+def test_legacy_contract_no_silent_fallback_on_missing_supply(
+    surface, live_pool, monkeypatch, tmp_path, capsys, no_gateway_network
+):
+    from verdict.orchestration import run
+
+    monkeypatch.setenv("TMPDIR", "/tmp")
+    monkeypatch.setattr(run, "fetch_inventory", lambda *a, **kw: [])
+
+    def forbidden(*args, **kwargs):
+        pytest.fail(f"{surface} fell back to a legacy selector")
+
+    monkeypatch.setattr("verdict.gate.Gate.route", forbidden)
+    monkeypatch.setattr("verdict.gate.Gate.route_with_strategy", forbidden)
+    monkeypatch.setattr("verdict.eligibility.EligibilityGate.evaluate", forbidden)
+    if surface == "orchestrate":
+        # Fail at the real discovery boundary, before any planning/model call.
+        def unavailable(*args, **kwargs):
+            raise OSError("legacy-contract inventory unavailable")
+
+        monkeypatch.setattr(run, "fetch_inventory", unavailable)
+        monkeypatch.setattr(run, "resolve_api_key", lambda: "fixture-key")
+        argv = [surface, "fix code", "--repo", str(tmp_path), "--plain"]
+    elif surface == "choose":
+        argv = [surface, "--task", "fix code", "--json"]
+    else:
+        argv = [surface, "fix code", "--terse"]
+    monkeypatch.setattr("sys.argv", ["verdict", *argv])
+    if surface == "orchestrate":
+        from verdict.orchestration.eligibility_report import GatewayDiscoveryError
+
+        with pytest.raises(GatewayDiscoveryError, match=r"gateway /v1/models failed"):
+            cli.main()
+        return
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == "no_eligible_route"
+
+
+@pytest.mark.parametrize("surface", ["route", "run", "serve"])
+def test_legacy_contract_escape_is_request_local_and_durably_logged(
+    surface, monkeypatch, tmp_path, capsys, no_gateway_network
+):
+    import asyncio
+
+    from verdict import api
+    from verdict.execution_path import ExecutionPathError
+    from verdict.gate import Gate
+    from verdict.intelligence import IntelligenceService
+    from verdict.serve_path import CONTEXT_ALLOW_LEGACY, LEGACY_NON_AUTHORITY_FLAG
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("TMPDIR", "/tmp")
+    path = tmp_path / "legacy-decisions.jsonl"
+    service = IntelligenceService(
+        primary_model="fixture/primary",
+        providers={},
+        profile="production",
+        log_path=str(path),
+        log_full_task=False,
+        discovery_ttl=60,
+        allow_offline=True,
+        require_execution_path_authority=True,
+    )
+    gate = Gate(providers={}, intelligence_service=service, allow_offline=True)
+    monkeypatch.setattr(cli._action_helpers, "build_route_gate", lambda **kw: gate)
+    monkeypatch.setattr(api, "intelligence_instance", service)
+
+    if surface == "serve":
+        with pytest.raises(api.HTTPException, match="missing ExecutionPathDecision"):
+            asyncio.run(api._route_with_intelligence("fix code", "low"))
+        decision = asyncio.run(
+            api._route_with_intelligence("fix code", "low", context={CONTEXT_ALLOW_LEGACY: True})
+        )
+        assert LEGACY_NON_AUTHORITY_FLAG in decision.safety_flags
+        # The next request on the same service must not inherit the escape.
+        with pytest.raises(api.HTTPException, match="missing ExecutionPathDecision"):
+            asyncio.run(api._route_with_intelligence("fix code", "low"))
+    else:
+        command = cli.cmd_route if surface == "route" else cli.cmd_run
+        # Offline catalog mode alone does not bypass authority. Use the action
+        # boundary because the CLI renderer expects a decision on offline runs.
+        from verdict.actions.registry import run_action
+
+        refused = run_action(
+            "route", {"task": "fix code", "gate": gate, "terse": True, "allow_offline": True}
+        )
+        assert not refused.ok
+        assert "missing ExecutionPathDecision" in refused.data["error"]
+        assert not path.exists()
+        with pytest.raises(SystemExit) as exc:
+            command("fix code", "low", terse=True, allow_offline=True, allow_legacy_selector=True)
+        assert exc.value.code == 1  # offline is never execution authority
+        assert json.loads(capsys.readouterr().out)["reason"] == (
+            "offline routing does not execute a provider completion"
+        )
+        refused = run_action(
+            "route", {"task": "fix code", "gate": gate, "terse": True, "allow_offline": True}
+        )
+        assert not refused.ok
+        assert "missing ExecutionPathDecision" in refused.data["error"]
+
+    # Read real JSONL from disk, not a mocked logger or captured context.
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert len(records) == 1
+    assert records[0]["model_chosen"] == "fixture/primary"
+    assert LEGACY_NON_AUTHORITY_FLAG in records[0]["safety_flags"]
+    assert "bod104_execution_path_authority" not in records[0]["safety_flags"]
+    with pytest.raises(ExecutionPathError, match="missing ExecutionPathDecision"):
+        asyncio.run(service.route("fix code", context={CONTEXT_ALLOW_LEGACY: False}))
+
+
+def test_four_surfaces_agree_on_first_route(
+    live_pool: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_gateway_network: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """choose --json, route --json, serve and orchestrate all name the same first route.
+
+    One evidence set (``live_pool``) feeds all four surfaces: CLI choose, CLI route,
+    IntelligenceService serve, and DagRuntime first-attempt dispatch.  No live
+    provider calls; HOME/VERDICT_HOME point at tmp_path and TMPDIR=/tmp.
+    """
+    first_route = "free/weak"
+    second_route = "sub/strong"
+    task_text = "fix a failing unit test"
+
+    # ---- shared fake selector for the serve path ----
+    # ``IntelligenceService._prepare_execution_path_request`` imports
+    # ``build_selector`` locally, so patching it there steers the serve surface.
+    # choose/route use the real ladder via ``select_route_for_task``; the real
+    # ladder ranks the cheap free route first, agreeing with the fake.
+    class FakeSelector:
+        def select(self, requirements, *, now):
+            from verdict.orchestration.contracts import (
+                CapacityClass,
+                EligibilityStage,
+                RouteVerdict,
+            )
+
+            verdict = RouteVerdict(
+                route_id=first_route,
+                provider="free",
+                reached=EligibilityStage.SELECTED,
+                failed_stage=None,
+                reason="ok",
+                capacity_class=CapacityClass.FREE,
+                rank=1,
+            )
+            return verdict, (verdict,)
+
+        def _assess_all(self, requirements, now):
+            candidate = type("C", (), {"route_id": first_route})()
+            return [], [candidate]
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", lambda *a, **kw: FakeSelector()
+    )
+
+    # ---- 1. route --json only ----
+    from verdict.actions.registry import run_action
+
+    route_result = run_action(
+        "route",
+        {
+            "task": task_text,
+            "criticality": "medium",
+            "terse": False,
+            "output_json": True,
+            "allow_offline": False,
+            "allow_legacy_selector": False,
+            "gate": None,
+            "context": {},
+        },
+    )
+    assert route_result.ok, route_result.data
+    route_id = route_result.data["selected"]["route_id"]
+    chosen_id = route_id
+
+    # ---- 3. serve ----
+    import asyncio
+    from datetime import datetime, timezone
+
+    from verdict.effective_capability import (
+        AssistanceCost,
+        AssistancePlan,
+        DecompositionRequirement,
+        ProvenanceClaim,
+        TaskSlice,
+        VerificationStrategy,
+    )
+    from verdict.execution_path import ExecutionPathOffer, ExecutionPathRequest
+    from verdict.expected_cost import build_strategy_from_assistance
+    from verdict.free_tier_admit import snapshot_from_payloads
+    from verdict.intelligence import IntelligenceService
+    from verdict.metadata.records import (
+        CapabilityCaps,
+        FieldProvenance,
+        ModelMetadataRecord,
+        ProvenancedField,
+        SoftScores,
+    )
+    from verdict.metadata.store import MetadataSnapshot
+    from verdict.model_passports import ModelPassport
+    from verdict.models import ProviderConfig
+    from verdict.runtime_certification import CertificationState
+    from verdict.session_economics import ConcreteRoute
+
+    now = datetime.now(timezone.utc)
+
+    def _prov(value) -> ProvenancedField:
+        return ProvenancedField(
+            value=value,
+            provenance=FieldProvenance(source="openrouter_aa", fetched_at=now.isoformat()),
+        )
+
+    # Metadata snapshot with both routes carrying tool_calling + context.
+    records = []
+    for route_id, score in ((first_route, 30), (second_route, 80)):
+        records.append(
+            ModelMetadataRecord(
+                id=route_id,
+                omniroute_ids=(route_id,),
+                provider=route_id.split("/", 1)[0],
+                caps=CapabilityCaps(tools=_prov(True), context=_prov(200_000)),
+                scores=SoftScores(aa_coding=_prov(score)),
+            )
+        )
+    metadata_snapshot = MetadataSnapshot(
+        schema_version="1", refreshed_at=now.isoformat(), sources={}, records=tuple(records)
+    )
+
+    # Admit snapshot: first_route is free-tier, second_route is paid subscription.
+    snapshot = snapshot_from_payloads(
+        catalog={
+            "data": [
+                {"id": first_route, "owned_by": "free", "pricing": {"input": 0, "output": 0}},
+                {"id": second_route, "owned_by": "sub", "pricing": {"input": 5, "output": 10}},
+            ]
+        },
+        free_tier={
+            "perModel": [
+                {"modelId": first_route.split("/", 1)[1], "provider": "free", "freeType": "keyless"}
+            ]
+        },
+        providers={
+            "connections": [
+                {"provider": "free", "isActive": True, "testStatus": "active"},
+                {"provider": "sub", "isActive": True, "testStatus": "active", "authType": "oauth"},
+            ]
+        },
+    )
+
+    # Fresh passport for first_route so admit/confirm does not drop it.
+    passport = ModelPassport(
+        provider="free",
+        model_id=first_route,
+        auth_state="authorized",
+        availability_state="eligible",
+        qualified_at=now,
+        tool_support=True,
+    )
+
+    def _make_plan(candidate_id: str, *, assisted: bool) -> AssistancePlan:
+        assistance = AssistanceCost(
+            context_tokens=50_000 if assisted else 0,
+            tool_tokens=2_000 if assisted else 0,
+            planning_tokens=0,
+            verification_tokens=50,
+        )
+        return AssistancePlan(
+            plan_id=f"plan-{candidate_id}",
+            candidate_id=candidate_id,
+            task_slice=TaskSlice(
+                slice_id="slice-test",
+                objective=task_text,
+                acceptance_criteria=("tests pass",),
+                proof_criteria=("pytest green",),
+            ),
+            required_intrinsic_capabilities=("tools",),
+            required_context_slots=("evidence",),
+            required_context_evidence=("proof",),
+            required_tool_capabilities=("pytest",),
+            selected_tool_surface=("pytest",),
+            decomposition=DecompositionRequirement(
+                required=False,
+                child_slices=(),
+                preserves_parent_acceptance=True,
+                preserves_parent_proof=True,
+                reason="",
+                planner_role="",
+            ),
+            verification=VerificationStrategy(kind="pytest", proof_criteria=("pytest green",)),
+            assistance_cost=assistance,
+            result="sufficient",
+            reasons=("needs_assistance",) if assisted else ("intrinsic_ok",),
+            intrinsic_sufficient=not assisted,
+            assisted_sufficient=True,
+            assistance_delta=("context:evidence",) if assisted else (),
+            provenance=(
+                ProvenanceClaim(
+                    kind="candidate",
+                    claim=candidate_id,
+                    source="fixture",
+                    digest=f"sha256:{candidate_id}",
+                    observed_at=now.isoformat(),
+                    freshness="fresh",
+                    fresh=True,
+                ),
+            ),
+            evidence_digest=f"sha256:{candidate_id}",
+        )
+
+    def _make_offer(model_id: str, *, assisted: bool = False) -> ExecutionPathOffer:
+        route = ConcreteRoute(
+            route_id=model_id,
+            gateway="omniroute",
+            provider=model_id.split("/", 1)[0],
+            model=model_id.split("/", 1)[1],
+            credential_pool="pool-a",
+            capability_tier=2,
+            eligible=True,
+            excluded=False,
+        )
+        plan = _make_plan(model_id, assisted=assisted)
+        strategy = "cheap_with_assistance" if assisted else "direct_cheap"
+        return ExecutionPathOffer(
+            strategy=strategy,
+            route=route,
+            assistance_plan=plan,
+            expected_cost=build_strategy_from_assistance(
+                strategy_id=f"{strategy}:{model_id}",
+                trajectory_id="traj-test",
+                assistance=plan.assistance_cost,
+                execution_tokens=8_000,
+                price={
+                    "input_usd_per_mtok": "0",
+                    "output_usd_per_mtok": "0",
+                    "evidence_id": "test",
+                },
+                is_free=True,
+                now=now,
+            ),
+            certification_state=CertificationState.READY,
+            certification_freshness="fresh",
+        )
+
+    service = IntelligenceService(
+        primary_model="primary/frontier",
+        providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
+        profile="production",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+        admit_snapshot=None,
+        metadata_snapshot=metadata_snapshot,
+        passports={first_route: passport},
+        confirm_transport=None,
+        admit_now=now,
+        require_execution_path_authority=True,
+        candidate_top_k=4,
+        context_roots=(),
+        mcp_root="",
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_admit_snapshot",
+        lambda: (snapshot, ("http://127.0.0.1:1/v1", ""), False, None),
+    )
+
+    task_slice = TaskSlice(
+        slice_id="slice-test",
+        objective=task_text,
+        acceptance_criteria=("tests pass",),
+        proof_criteria=("pytest green",),
+    )
+    request = ExecutionPathRequest(
+        task_slice=task_slice,
+        trajectory_id="traj-test",
+        offers=(_make_offer(first_route), _make_offer(second_route)),
+        now=now,
+    )
+    context = {
+        "execution_path_request": request,
+        "tools_required": True,
+        "task_family": "coding",
+        "spend_policy": "free_only",
+    }
+
+    serve_decision = asyncio.run(service.route(task_text, criticality="low", context=context))
+    assert serve_decision.model == first_route.split("/", 1)[1]
+
+    # ---- 4. orchestrate ----
+    from verdict.orchestration.contracts import NodeKind, RunOutcome, WorkGraph, WorkNode
+    from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
+
+    orch_selector = _FirstRouteSelector(first_route)
+    executor = _SuccessExecutor()
+    events_rows: list[dict[str, Any]] = []
+
+    class Events:
+        def emit(self, type: str, node_id: str = "", **data: Any) -> None:
+            events_rows.append({"type": type, "node_id": node_id, **data})
+
+    def of(type: str) -> list[dict[str, Any]]:
+        return [r for r in events_rows if r["type"] == type]
+
+    def prompt_for(node: WorkNode, cwd: Path, **kw: Any) -> str:
+        return f"{node.node_id}: {node.objective}"
+
+    node = WorkNode(
+        "a",
+        "do it",
+        kind=NodeKind.IMPLEMENT,
+        owned_files=("a.txt",),
+        verification_command=("true",),
+    )
+    graph = WorkGraph("g", (node,))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "t@t"],
+        ["config", "user.name", "t"],
+    ):
+        subprocess.run(["git", *args], cwd=repo_root, check=True)
+    (repo_root / "README.md").write_text("x\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo_root, check=True)
+
+    runtime = DagRuntime(
+        repo=repo_root,
+        run_dir=run_dir,
+        graph=graph,
+        selector=orch_selector,
+        executor=executor,
+        classifier=SimpleClassifier(),
+        events=Events(),
+        prompt_for=prompt_for,
+        reviewer=None,
+        policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+        now=lambda: datetime.now(timezone.utc),
+    )
+
+    result = asyncio.run(runtime.run())
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+
+    run = runtime.nodes["a"]
+    assert run.attempt == 1
+    assert run.route_id == first_route
+
+    # All four surfaces name the same first route.
+    assert chosen_id == first_route
+    assert serve_decision.model == first_route.split("/", 1)[1]
