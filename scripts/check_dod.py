@@ -340,11 +340,20 @@ def check_evidence(root: Path, path: Path) -> list[str]:
     confirmation = evidence["parent_confirmation"]
     run_artifacts.append(("parent_confirmation", confirmation))
     seen: set[str] = set()
+    run_ids: set[str] = set()
     for _where, run in run_artifacts:
         digest = run["raw_output"]["sha256"]
         if digest in seen:
             errors.append("the same raw output cannot serve as two runs")
         seen.add(digest)
+        text = _artifact(root, run["raw_output"], _where, errors)
+        if text is not None:
+            result = _structured_result(text.rstrip()) if text == text.lstrip() else None
+            if result is not None:
+                run_id = result["run_id"]
+                if run_id in run_ids:
+                    errors.append("the same run_id cannot serve as two runs")
+                run_ids.add(run_id)
     if confirmation["by"] == evidence["author"]:
         errors.append("parent_confirmation: the author cannot confirm their own story")
     if confirmation["command"] not in expected:
