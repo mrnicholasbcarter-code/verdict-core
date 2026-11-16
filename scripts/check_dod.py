@@ -36,6 +36,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from contextlib import suppress
 import hashlib
 import json
 import re
@@ -90,10 +91,8 @@ def _is_orchestrate_json_command(command: str) -> bool:
         return False
     has_verdict = any(Path(token).name == "verdict" for token in tokens)
     if "python" in tokens and "-m" in tokens:
-        try:
+        with suppress(IndexError):
             has_verdict = has_verdict or tokens[tokens.index("-m") + 1] == "verdict"
-        except IndexError:
-            pass
     try:
         verdict_index = next(i for i, token in enumerate(tokens) if Path(token).name == "verdict")
         has_orchestrate = "orchestrate" in tokens[verdict_index + 1 :]
@@ -128,10 +127,7 @@ def _check_run_truth(run: dict[str, Any], text: str, where: str, errors: list[st
             )
         return
     outcome = result["outcome"]
-    if "exit_code" not in run:
-        exit_code = None
-    else:
-        exit_code = run["exit_code"]
+    exit_code = run.get("exit_code")
     complete = outcome == "COMPLETE"
     if exit_code is not None and (exit_code == 0) != complete:
         errors.append(f"{where}: exit_code {exit_code} disagrees with outcome {outcome}")

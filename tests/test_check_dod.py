@@ -581,7 +581,7 @@ def test_orchestrate_regression_key_shapes_fail_closed(repo):
         '{"run_id":"x","events":[]}',
         '{"outcome":"BLOCKED","reason":"review status ERROR"}',
     ]
-    for index, (run, output) in enumerate(zip((evidence['acceptance'][0]['first_run'], evidence['acceptance'][0]['fresh_run'], evidence['parent_confirmation']), shapes)):
+    for index, (run, output) in enumerate(zip((evidence['acceptance'][0]['first_run'], evidence['acceptance'][0]['fresh_run'], evidence['parent_confirmation']), shapes, strict=True)):
         run['command'] = ORCH_COMMAND
         run['raw_output'] = _artifact(root, f'hand-built-{index}.json', output)
     errors = _check(root, evidence)
