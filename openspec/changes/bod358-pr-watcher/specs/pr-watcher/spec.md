@@ -104,3 +104,35 @@ Default tests SHALL use fixtures and fake clients. Any fixture-free live smoke S
 #### Scenario: Default test isolation
 - **WHEN** `VERDICT_LIVE_SMOKE` is unset
 - **THEN** no live GitHub, Linear, or paid-provider call is made
+
+### Requirement: Malformed or unreadable durable state fails closed
+
+The watcher SHALL treat any malformed or unreadable durable state as a fatal error. The run SHALL exit without requesting any rerun and without emitting any notification. The run SHALL report the error with sufficient context for diagnosis.
+
+#### Scenario: Corrupt state file
+- **WHEN** the durable state file exists but cannot be parsed or is missing required fields
+- **THEN** the watcher exits immediately with a non-zero status, writes no state, requests no rerun, and emits no notification
+
+### Requirement: Failed Linear notification is durable and retried
+
+When a Linear notification fails, the event SHALL remain durably recorded and SHALL be retried on the next watcher run within a bounded window of five consecutive runs. The event SHALL never be silently dropped.
+
+#### Scenario: Linear notification failure
+- **WHEN** a Linear comment request returns an error or times out
+- **THEN** the idempotency key persists the event, the watcher does not advance past the failed notification, and the next run within five attempts retries the same event
+
+### Requirement: State keys are path-safe and reject traversal
+
+All durable state keys SHALL be validated to contain no path traversal sequences. A key containing `..`, absolute paths, or other traversal patterns SHALL be rejected at write time and the operation SHALL fail closed.
+
+#### Scenario: Path traversal in state key
+- **WHEN** a state key containing `..` or an absolute path is constructed
+- **THEN** the write is rejected, the run reports the error, and no state is persisted
+
+### Requirement: Repair record log excerpts are bounded and redacted
+
+Log excerpts stored in repair records SHALL be bounded to at most 4096 characters. The excerpt SHALL be secret-redacted: token-bearing URLs, authorization headers, and any field matching known secret patterns SHALL be replaced with `[REDACTED]` before persistence.
+
+#### Scenario: Large log with secrets
+- **WHEN** a failing check produces a log exceeding 4096 characters and containing a GitHub token in a URL
+- **THEN** the stored excerpt is truncated to 4096 characters and the token is replaced with `[REDACTED]`
