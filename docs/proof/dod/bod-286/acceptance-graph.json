@@ -1,0 +1,62 @@
+{
+  "schema_version": "verdict.orchestration/v1",
+  "goal": "live controller failover demo",
+  "topology": "PARALLEL_WORK_UNITS",
+  "rationale": [],
+  "max_parallel": 1,
+  "nodes": [
+    {
+      "node_id": "alpha",
+      "objective": "Create the file alpha.py containing exactly the line: VALUE = \"ok\"",
+      "kind": "implement",
+      "story": "",
+      "depends_on": [],
+      "owned_files": [
+        "alpha.py"
+      ],
+      "required_context": [],
+      "acceptance": [],
+      "verification_command": [
+        "sh",
+        "-c",
+        "grep -qx 'VALUE = \"ok\"' alpha.py"
+      ],
+      "barrier": "",
+      "risk": "low",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": false,
+      "min_context_tokens": 32000
+    },
+    {
+      "node_id": "beta",
+      "objective": "Create the file beta.py containing exactly the line: VALUE = \"ok\"",
+      "kind": "implement",
+      "story": "",
+      "depends_on": [
+        "alpha"
+      ],
+      "owned_files": [
+        "beta.py"
+      ],
+      "required_context": [],
+      "acceptance": [],
+      "verification_command": [
+        "sh",
+        "-c",
+        "grep -qx 'VALUE = \"ok\"' beta.py"
+      ],
+      "barrier": "",
+      "risk": "low",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": false,
+      "min_context_tokens": 32000
+    }
+  ],
+  "run_id": "ctrl-demo"
+}

@@ -1,0 +1,74 @@
+{
+ "schema_version": 1,
+ "story": "bod-286",
+ "kind": "product",
+ "author": "default (queen card t_69ea93e9)",
+ "merged_sha": "e14332715a7d4e48faccef6c69598ba32d94d90e",
+ "pr": 1025,
+ "on_main": {
+  "at": "2026-11-16T19:51:20Z",
+  "sha": "e14332715a7d4e48faccef6c69598ba32d94d90e",
+  "environment": "operator-host",
+  "command": "gh pr checks 1025 --required",
+  "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/43726363921",
+  "exit_code": 0,
+  "raw_output": {
+   "path": "docs/proof/dod/bod-286/pr_checks_1025.txt",
+   "sha256": "c2cb77dc0322aeac6d253289bff9e124466ec6ca969080c7e02e2d170e9c638e"
+  }
+ },
+ "freshness_window_hours": 1,
+ "stays_true_job": "verdict-acceptance.timer runs the acceptance gate hourly on installed main; the Prime dispatch path itself is re-proven by the acceptance graph in docs/proof/dod/bod-286/acceptance-graph.json, which this evidence ran three times",
+ "setup_doctor": {
+  "status": "green",
+  "command": "verdict doctor --json",
+  "at": "2026-11-16T19:51:14Z",
+  "raw_output": {
+   "path": "docs/proof/dod/bod-286/doctor_green.json",
+   "sha256": "2f9d26013ada928d896214de52e5f74504e7e0f44931c8b0024694da414a835a"
+  }
+ },
+ "acceptance": [
+  {
+   "criterion": "A bounded Prime work unit dispatched by verdict orchestrate through the harness registry completes: both worker nodes run on the prime-headless harness, validate and integrate, the independent review passes, and a digest-bound receipt is written. The scratch repo and runs directory are placeholders; the graph is acceptance-graph.json.",
+   "expect": "\"harness\": \"prime-headless\"",
+   "expect_exit_code": 0,
+   "first_run": {
+    "at": "2026-11-16T18:14:02Z",
+    "sha": "0c6262d298eb33633f574228aaecc100679e9e06",
+    "environment": "operator-host",
+    "command": "verdict orchestrate --graph graph.json --repo <scratch-repo> --runs-dir <scratch-runs> --executor prime-headless --json",
+    "real_state_marker": "http://127.0.0.1:20128",
+    "exit_code": 0,
+    "raw_output": {
+     "path": "docs/proof/dod/bod-286/orchestrate-first-20261116T181041Z.json",
+     "sha256": "29148747664a1ae28b76d29b024699ee16ab7670b779d6c54b9a60d589eff4fa"
+    }
+   },
+   "fresh_run": {
+    "at": "2026-11-16T19:44:07Z",
+    "sha": "8fdb2005ec7c68a06187c3760c91984b7a90479c",
+    "environment": "operator-host",
+    "command": "verdict orchestrate --graph graph.json --repo <scratch-repo> --runs-dir <scratch-runs> --executor prime-headless --json",
+    "real_state_marker": "http://127.0.0.1:20128",
+    "exit_code": 0,
+    "raw_output": {
+     "path": "docs/proof/dod/bod-286/orchestrate-fresh-20261116T194110Z.json",
+     "sha256": "02f257262f2b34a5714abcb6d8b84a376ae9a8855074cf30d71dfffccec275da"
+    }
+   }
+  }
+ ],
+ "openspec": {
+  "change": "bod286-generic-harness-contracts"
+ },
+ "parent_confirmation": {
+  "by": "gem-orchestrator session 20261116 (cc/claude-fable-5-2); run executed by gem-devops on omniroute worker/free-first, result verified by the orchestrator from the run directory (receipt digest, terminals, review coverage)",
+  "at": "2026-11-16T19:45:58Z",
+  "command": "verdict orchestrate --graph graph.json --repo <scratch-repo> --runs-dir <scratch-runs> --executor prime-headless --json",
+  "raw_output": {
+   "path": "docs/proof/dod/bod-286/orchestrate-parent-confirmation-20261116T194430Z.json",
+   "sha256": "4a43bfa9ef759523e4ee28ad16dea01b8e90a522fc5ad74b55720035cc423ac2"
+  }
+ }
+}
