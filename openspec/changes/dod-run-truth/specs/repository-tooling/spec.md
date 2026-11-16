@@ -3,6 +3,8 @@
 ## Purpose
 Extend repository tooling so definition-of-done evidence cannot claim an orchestration run without the command's structured result stdout.
 
+The gate checks that a recorded run is internally consistent and matches its own result; it cannot prove the result JSON was produced by the command, because a hand-edited valid result would pass. Duplicate detection compares file digests, so two different files describing the same `run_id` are not detected by digest comparison alone.
+
 ## ADDED Requirements
 
 ### Requirement: Definition-of-done evidence proves orchestration run truth
@@ -68,6 +70,19 @@ When a parent confirmation raw output is a structured result, it MUST have `outc
 - **WHEN** raw output is a transcript or unrelated JSON without all result keys
 - **THEN** existing substring validation is used without structured-result checks
 - **TEST** `tests/test_check_dod.py::test_non_structured_raw_output_is_unchanged`
+
+### Requirement: Structured orchestration results use distinct run ids
+Structured results used by first_run, fresh_run, and parent_confirmation MUST have three different `run_id` values. Reuse MUST fail with `the same run_id cannot serve as two runs`.
+
+#### Scenario: Reused run id is rejected
+- **WHEN** two structured run outputs have the same run_id but different bytes
+- **THEN** the evidence fails with the repeated-run-id message
+- **TEST** `tests/test_check_dod.py::test_same_run_id_cannot_serve_as_two_structured_runs`
+
+#### Scenario: Distinct run ids pass
+- **WHEN** each structured run output has a different run_id
+- **THEN** the evidence remains valid
+- **TEST** `tests/test_check_dod.py::test_distinct_structured_run_ids_pass`
 
 ### Requirement: Definition-of-done evidence uses distinct run outputs
 Acceptance runs and parent confirmation MUST NOT reuse the same raw-output SHA-256. If any two such runs share a digest, the checker MUST fail with `the same raw output cannot serve as two runs`.

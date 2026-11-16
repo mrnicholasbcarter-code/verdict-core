@@ -22,6 +22,8 @@ Tests/verification: run both pinned OpenSpec validators and require exit 0.
 - [x] 3.2 Reject duplicate raw outputs across distinct evidence runs. Verification: focused pytest passes with the exact required error.
 - [x] 3.3 Validate structured parent confirmations without an exit-code field. Verification: focused pytest passes for BLOCKED and out-of-window confirmations.
 - [x] 3.4 Require command-keyed result JSON for `verdict orchestrate --json`. Verification: focused pytest passes for hand-built summaries, empty output, leading noise, and real-shaped output.
+- [x] 3.5 Fail closed on unusable structured timestamps and inverted intervals. Verification: focused pytest passes for wrong types, missing timezones, and reversed bounds.
+- [x] 3.6 Reject repeated structured run_id values across evidence runs. Verification: focused pytest passes for repeated and distinct ids.
 
 ## 4. Docs
 Tests/verification: inspect the exact AGENTS.md sentence and run the repository documentation checks.

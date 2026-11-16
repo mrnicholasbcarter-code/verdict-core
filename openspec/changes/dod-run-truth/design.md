@@ -34,5 +34,10 @@ No evidence migration is required. Existing non-structured artifacts continue to
 ## ADR impact
 No ADR is needed: this is a narrow fail-closed repository gate extension under the existing repository-tooling capability.
 
+## Limits
+The gate checks that a recorded run is internally consistent and matches its own result; it cannot prove the result JSON was produced by the command, because a hand-edited valid result would pass. Duplicate detection compares file digests, so two different files describing the same `run_id` require the separate run-id check.
+
+The gate keys on the recorded command text; an author who records a different command string is not covered, and reviewers must check that the recorded command is the acceptance command. Shell aliases and wrapper scripts that hide the command are out of scope.
+
 ## Risks / Trade-offs
 Structured output must be recognized conservatively to avoid changing historical transcript behavior. The five-minute tolerance accommodates clock and recording skew while still rejecting fabricated timestamps.
