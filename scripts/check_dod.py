@@ -36,13 +36,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from contextlib import suppress
 import hashlib
 import json
 import re
 import shlex
 import subprocess
 import sys
+from contextlib import suppress
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
