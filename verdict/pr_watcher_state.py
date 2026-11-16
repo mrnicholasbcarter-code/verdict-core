@@ -38,9 +38,10 @@ def _safe_key(key: str) -> str:
     # Reject absolute paths
     if os.path.isabs(key):
         raise ValueError(f"absolute path in state key: {key!r}")
-    # Reject null bytes and control chars
+    # Reject null bytes and control chars; spaces and punctuation are valid
+    # identifiers (check names commonly contain spaces and parentheses).
     for ch in key:
-        if ord(ch) < 0x21:
+        if ord(ch) < 0x20:
             raise ValueError(f"control character in state key: {key!r}")
     return key
 

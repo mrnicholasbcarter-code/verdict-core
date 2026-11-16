@@ -31,7 +31,7 @@ from verdict.pr_watcher_state import (
 # Adapter actions: maps classifier outputs to watcher behaviour
 _READY = frozenset({"GREEN", "PROCEED_MERGE"})
 _NO_ACTION = frozenset({"PENDING", "WAIT_CI"})
-_RETRY_ELIGIBLE = frozenset({"INFRA_FAILURE", "CANCELLED", "RETRY_CI"})
+_RETRY_ELIGIBLE = frozenset({"INFRA_FAILURE", "CANCELLED", "STALLED", "RETRY_CI"})
 _REPAIR_NEEDED = frozenset(
     {"CODE_FAILURE", "CORRECTIVE_IMPLEMENTATION", "CONFLICT", "BEHIND", "REBASE_AND_REPROOF"}
 )
@@ -86,9 +86,7 @@ def poll_open_prs(
             required_checks.append(c_with_required)
 
         # Stalled detection: >30 minutes in progress
-        if now is None:
-            now = time.time()
-        stalled = _detect_stalled(required_checks, head)
+        stalled = _detect_stalled(required_checks, head, now)
 
         # CI classification
         ci_class = classify_ci(required_checks)
@@ -103,7 +101,7 @@ def poll_open_prs(
         # Combined classification
         combined = _combine_classifications(ci_class, merge_class)
 
-        action = _adapter_action(combined, 0, 3)
+        action = _adapter_action(combined, 0, 1)
         obs = {
             "repo": repo,
             "pr_number": pr_num,
@@ -120,10 +118,27 @@ def poll_open_prs(
     return observations
 
 
-def _detect_stalled(checks: list[dict[str, Any]], head: str) -> bool:
-    """Return True if any required check has been in progress > 30 minutes."""
-    # Stalled detection requires completed_at / started_at timestamps
-    # For now, this checks the status field; real implementation uses timestamps
+def _detect_stalled(checks: list[dict[str, Any]], head: str, now: float | None = None) -> bool:
+    """Return True if any required check has been in progress for over 30 minutes."""
+    current = time.time() if now is None else now
+    threshold = 30 * 60
+    for check in checks:
+        if check.get("status") not in {"IN_PROGRESS", "QUEUED"}:
+            continue
+        started_at = check.get("started_at")
+        if started_at is None:
+            continue
+        try:
+            started = float(started_at)
+        except (TypeError, ValueError):
+            try:
+                from datetime import datetime
+
+                started = datetime.fromisoformat(str(started_at).replace("Z", "+00:00")).timestamp()
+            except (TypeError, ValueError):
+                continue
+        if current - started > threshold:
+            return True
     return False
 
 
@@ -206,7 +221,7 @@ def request_bounded_rerun(
     head: str,
     check_name: str,
     workflow_job_id: str,
-    max_attempts: int = 3,
+    max_attempts: int = 1,
 ) -> dict[str, Any]:
     """Request a bounded rerun with exact-head fencing.
 
@@ -267,8 +282,9 @@ def run_watcher(
     state: WatcherState,
     repos: list[str],
     linear: LinearClient | None = None,
-    max_attempts: int = 3,
+    max_attempts: int = 1,
     verdict_fail_receipts: dict[str, dict[str, Any]] | None = None,
+    now: float | None = None,
 ) -> dict[str, Any]:
     """Execute one watcher run: poll, classify, adapt, persist, notify.
 
@@ -295,7 +311,7 @@ def run_watcher(
 
         for repo in repos:
             # 1. Poll open PRs
-            obs = poll_open_prs(gh, state, repo)
+            obs = poll_open_prs(gh, state, repo, now=now)
             observations.extend(obs)
 
             for obs_item in obs:
@@ -308,7 +324,10 @@ def run_watcher(
                 if action == "RETRY":
                     # Find the failing check
                     for check in obs_item["checks"]:
-                        if check.get("conclusion") in ("FAILURE", "CANCELLED"):
+                        if (
+                            check.get("conclusion") in ("FAILURE", "CANCELLED")
+                            or obs_item["ci_classification"] == "STALLED"
+                        ):
                             rerun = request_bounded_rerun(
                                 gh,
                                 state,
@@ -420,17 +439,3 @@ def run_watcher(
     finally:
         state.release_lock()
 
-
-def assert_watcher_has_no_llm_calls() -> bool:
-    """Verify the watcher makes no LLM or model-routing calls.
-
-    This is a static assertion: the watcher code path has no imports or calls
-    to any model-routing, gateway, or LLM subsystem.
-    """
-    # The watcher imports only:
-    #   verdict.ci_policy  (pure classification)
-    #   verdict.pr_watcher_github  (GitHub API reads)
-    #   verdict.pr_watcher_notifications  (transition logic)
-    #   verdict.pr_watcher_state  (durable state)
-    # No verdict.gateway_adapter, verdict.router, verdict.intelligence, etc.
-    return True
