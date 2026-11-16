@@ -21,6 +21,11 @@ ROOT = Path(__file__).parents[1]
 
 ALLOWED_PACKAGE_SUFFIXES = {".py", ".json", ".typed", ".md"}
 
+# The ai-memory lifecycle client ships inside the root wheel as ``verdict_memory``
+# (force-included from packages/verdict-memory). It is the only source of that
+# import name; nothing in ``verdict/`` imports it yet.
+ALLOWED_VERDICT_MEMORY_ROOTS = {"verdict_memory"}
+
 # Exact non-suffix package data the runtime reads from the installed package.
 ALLOWED_PACKAGE_FILES = {
     # Hermes plugin manifest copied by verdict.harness_hermes_memory.install().
@@ -43,8 +48,10 @@ DENY_RULES: dict[str, Callable[[PurePosixPath], bool]] = {
     "ES module script (*.mjs)": lambda path: path.suffix == ".mjs",
     "tests/ directory": lambda path: "tests" in path.parts[:-1],
     "TypeScript client SDK (npm package)": lambda path: path.parts[:2] == ("verdict", "client-sdk"),
-    "Markdown outside verdict/data/": lambda path: (
-        path.suffix == ".md" and path.parts[:2] != ("verdict", "data")
+    "Markdown outside verdict/data/ and verdict_memory/vectors/": lambda path: (
+        path.suffix == ".md"
+        and path.parts[:2] != ("verdict", "data")
+        and path.parts[:2] != ("verdict_memory", "vectors")
     ),
 }
 
@@ -75,6 +82,7 @@ def test_wheel_entries_match_the_allowlist(wheel_entries: list[PurePosixPath]) -
         str(path)
         for path in wheel_entries
         if not fnmatch.fnmatch(path.parts[0], "verdict_core-*.dist-info")
+        and path.parts[0] not in ALLOWED_VERDICT_MEMORY_ROOTS
         and not (path.parts[0] == "verdict" and path.suffix in ALLOWED_PACKAGE_SUFFIXES)
         and str(path) not in ALLOWED_PACKAGE_FILES
     ]
@@ -179,3 +187,75 @@ def test_wheel_demo_modules_are_documented_entry_points(wheel_entries: list[Pure
         "a *_demo*.py module ships without being a documented entry point; move test-only "
         "fixtures under tests/, or update ALLOWED_DEMO_MODULES with the documented command"
     )
+
+
+def test_installed_wheel_imports_verdict_memory_without_a_checkout(
+    built_wheel: Path, tmp_path: Path
+) -> None:
+    """The ai-memory client must import from the installed wheel alone.
+
+    ``verdict_memory`` is force-included from ``packages/verdict-memory``; a
+    missing or partial include would leave the mandatory memory backend
+    unreachable on an installed control plane. This test extracts the wheel to
+    a temp site-packages and imports every public module from it with a clean
+    interpreter (no PYTHONPATH, no source checkout on sys.path).
+    """
+    import json
+    import os
+    import sys
+
+    site = tmp_path / "site-packages"
+    with zipfile.ZipFile(built_wheel) as archive:
+        archive.extractall(site)
+
+    env = {
+        key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}
+    }
+    script = f"""
+import sys, json
+sys.path.insert(0, {str(site)!r})
+import verdict_memory
+import verdict_memory.client
+import verdict_memory.contracts
+import verdict_memory.fake
+import verdict_memory.mirror
+import verdict_memory.outbox
+import verdict_memory.policy
+import verdict_memory.provider
+print(json.dumps({{
+    "module": verdict_memory.__file__,
+    "client": verdict_memory.client.AiMemoryClient.__name__,
+    "contracts": verdict_memory.contracts.LifecycleEvent.__name__,
+}}))
+"""
+    run = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert run.returncode == 0, run.stderr
+    seen = json.loads(run.stdout.splitlines()[-1])
+    assert Path(seen["module"]).is_relative_to(site)
+    assert seen["client"] == "AiMemoryClient"
+    assert seen["contracts"] == "LifecycleEvent"
+
+
+def test_wheel_ships_verdict_memory_parity_vectors(wheel_entries: list[PurePosixPath]) -> None:
+    """The same-byte golden vectors and generator must ship for parity consumers."""
+    names = {str(path) for path in wheel_entries}
+    required = {
+        "verdict_memory/vectors/golden/lifecycle-event-v1/manifest.json",
+        "verdict_memory/vectors/golden/lifecycle-event-v1/SHA256SUMS",
+        "verdict_memory/vectors/golden/lifecycle-event-v1/README.md",
+        "verdict_memory/scripts/gen_golden_vectors.py",
+        "verdict_memory/vectors/lifecycle_event_v1_minimal.json",
+        "verdict_memory/vectors/lifecycle_event_v1_numeric.json",
+        "verdict_memory/vectors/lifecycle_event_v1_unicode_optional.json",
+        "verdict_memory/py.typed",
+    }
+    missing = required - names
+    assert not missing, f"wheel missing verdict_memory parity data: {sorted(missing)}"
