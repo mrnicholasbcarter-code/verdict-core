@@ -1,0 +1,29 @@
+{
+ "node_id": "t1",
+ "attempt": 1,
+ "route_id": "groq/openai/gpt-oss-120b",
+ "ok": true,
+ "reported_model": "openai/gpt-oss-120b",
+ "stop_reason": "end_turn",
+ "status_code": null,
+ "error": "",
+ "output_tail": "FILE: ok.txt\n```\nok\n```\n\nRESULT: DONE",
+ "duration_seconds": 8.686255951994099,
+ "session_ref": "direct-gateway:chatcmpl-aead4bd9-dad1-4728-9f31-bdd7ac6d2b54",
+ "usage": {
+  "input_tokens": 687,
+  "output_tokens": 71,
+  "cost_usd": null,
+  "tokens_source": "http_response",
+  "turns": 1
+ },
+ "served_check": {
+  "status": "unknown",
+  "selected_route": "groq/openai/gpt-oss-120b",
+  "served_route": null,
+  "served": null,
+  "reasons": [
+   "no_served_identity_headers"
+  ]
+ }
+}
