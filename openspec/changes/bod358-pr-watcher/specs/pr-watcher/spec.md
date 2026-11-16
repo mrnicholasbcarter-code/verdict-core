@@ -136,3 +136,31 @@ Log excerpts stored in repair records SHALL be bounded to at most 4096 character
 #### Scenario: Large log with secrets
 - **WHEN** a failing check produces a log exceeding 4096 characters and containing a GitHub token in a URL
 - **THEN** the stored excerpt is truncated to 4096 characters and the token is replaced with `[REDACTED]`
+
+### Requirement: Durable state is written before side effects
+
+Attempt counters, the merged-PR cursor, the last classification, transitions, and repair/block/regression records SHALL be persisted atomically BEFORE the watcher performs any GitHub or Linear side effect such as a rerun request or a notification comment. If the state write fails, the run SHALL report the error and SHALL NOT request a rerun or send a notification.
+
+#### Scenario: State write fails
+- **WHEN** the atomic state write fails before the watcher requests a rerun or sends a notification
+- **THEN** no rerun is requested, no notification is sent, and the run reports the error
+
+#### Scenario: Process dies between state write and rerun
+- **WHEN** the process dies or is killed after the durable state write and before the GitHub rerun call
+- **THEN** the next run reads the persisted attempt counter and does not exceed the one-rerun bound for that key
+
+### Requirement: Disagreeing review evidence is recorded and treated as fail
+
+When the GitHub review state and a recorded Verdict/ocr review receipt for the same PR head disagree, the watcher SHALL record the fail evidence with its provenance (source, PR, head SHA) and SHALL treat the PR as failed-review for regression detection. The evidence SHALL NOT authorize a merge or any source mutation.
+
+#### Scenario: APPROVED review with keyed Verdict/ocr fail
+- **WHEN** GitHub shows an APPROVED review but a keyed Verdict/ocr receipt for the same head records a fail, and the PR is merged
+- **THEN** a regression record is written naming both sources (GitHub review and Verdict/ocr receipt), and no merge or source mutation is triggered by the watcher
+
+### Requirement: Idle runs make no model call
+
+The watcher SHALL make no LLM call and no model-routing call on any run; it consumes only GitHub and Linear facts and the existing CI policy.
+
+#### Scenario: No-state-change run
+- **WHEN** a run completes with no PRs changing state
+- **THEN** zero model or gateway requests are made and no notification is emitted
