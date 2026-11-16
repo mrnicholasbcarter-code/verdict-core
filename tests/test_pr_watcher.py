@@ -7,6 +7,9 @@ Covers all 17 requirements from openspec/changes/bod358-pr-watcher/specs/pr-watc
 from __future__ import annotations
 
 import json
+import socket
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -1062,29 +1065,75 @@ class TestDisagreeingEvidence:
 # ============================================================================
 
 
+WATCHER_MODULES = (
+    "verdict.ci_policy",
+    "verdict.pr_watcher",
+    "verdict.pr_watcher_state",
+    "verdict.pr_watcher_github",
+    "verdict.pr_watcher_notifications",
+)
+MODEL_PATH_MODULES = (
+    "verdict.router",
+    "verdict.intelligence",
+    "verdict.relay",
+    "verdict.proxy",
+    "verdict.api",
+    "httpx",
+    "requests",
+    "openai",
+    "anthropic",
+)
+
+
+def refuse(*args: Any, **kwargs: Any) -> Any:
+    raise AssertionError("the watcher opened a network or process channel")
+
+
 class TestNoModelCall:
     """Requirement: Idle runs make no model call."""
 
-    def test_no_state_change_run_zero_model_requests(
-        self, gh: FakeGitHubClient, ws: WatcherState
-    ) -> None:
-        """A run with no PRs changing state makes zero model or gateway requests."""
-        repo = "org/repo"
-        head = "g" * 40
-        gh.set_open_prs(
-            repo,
-            [{"number": 1, "head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"}],
+    def test_watcher_import_closure_has_no_model_or_gateway_module(self) -> None:
+        """Catches a routing, relay, gateway or provider-SDK import reaching the watcher."""
+        script = (
+            "import json, sys\n"
+            + "".join(f"import {name}\n" for name in WATCHER_MODULES)
+            + "print(json.dumps(sorted(sys.modules)))\n"
         )
-        gh.set_pr(repo, 1, {"head_sha": head, "mergeable": True, "merge_state_status": "CLEAN"})
-        gh.set_checks(
-            repo,
-            head,
-            [{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "required": True}],
+        done = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=True,
         )
+        loaded = set(json.loads(done.stdout))
 
-        result = run_watcher(gh, ws, [repo], linear=None)
-        # No model calls - the watcher never imports or uses any routing/gateway
-        assert "gateway" not in json.dumps(result)
+        assert set(WATCHER_MODULES) <= loaded
+        reached = {
+            name
+            for name in loaded
+            if name in MODEL_PATH_MODULES
+            or name.startswith("verdict.gateway")
+            or any(name.startswith(f"{banned}.") for banned in MODEL_PATH_MODULES)
+        }
+        assert reached == set()
+
+    def test_idle_run_opens_no_socket_or_process_and_emits_nothing(
+        self, gh: FakeGitHubClient, ws: WatcherState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Catches an idle run that reaches a gateway, a provider, or the gh CLI."""
+        open_pr(gh, 1, "9" * 40, [check("proof-full"), check("lint")])
+        run_watcher(gh, ws, [REPO], now=T0)
+
+        monkeypatch.setattr(socket, "socket", refuse)
+        monkeypatch.setattr(subprocess, "Popen", refuse)
+        result = run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
+
+        assert [o["action"] for o in result["observations"]] == ["READY"]
+        assert result["notifications"] == []
+        assert result["reruns"] == []
+        assert result["records"] == []
 
 
 # ============================================================================
