@@ -7,8 +7,7 @@ notifications only.  No LLM or model-routing calls.
 
 from __future__ import annotations
 
-import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from verdict.ci_policy import classify_ci, classify_merge_state
@@ -176,7 +175,9 @@ def reconcile_merged_prs(
     lookback = cursor
     if cursor is not None:
         try:
-            lookback = (datetime.fromisoformat(cursor.replace("Z", "+00:00")) - __import__("datetime").timedelta(minutes=5)).isoformat()
+            lookback = (
+                datetime.fromisoformat(cursor.replace("Z", "+00:00")) - timedelta(minutes=5)
+            ).isoformat()
         except ValueError:
             lookback = cursor
     merged_prs = gh.list_merged_prs(repo, lookback)
@@ -349,12 +350,21 @@ def run_watcher(
                 if action == "RETRY":
                     # Once the persisted budget is spent, record one stable block.
                     if any(
-                        state.get_rerun_attempt(data, f"{repo}:pr{obs_item['pr_number']}:{obs_item['head']}:{c['name']}:{c.get('check_run_id', '')}") >= max_attempts
+                        state.get_rerun_attempt(
+                            data,
+                            f"{repo}:pr{obs_item['pr_number']}:{obs_item['head']}:{c['name']}:{c.get('check_run_id', '')}",
+                        )
+                        >= max_attempts
                         for c in obs_item["checks"]
                         if c.get("conclusion") in ("FAILURE", "CANCELLED")
                         or obs_item["ci_classification"] == "STALLED"
                     ):
-                        blk = BlockRecord(repo, obs_item["pr_number"], obs_item["head"], f"attempts exhausted for {new_class}")
+                        blk = BlockRecord(
+                            repo,
+                            obs_item["pr_number"],
+                            obs_item["head"],
+                            f"attempts exhausted for {new_class}",
+                        )
                         record = blk.to_dict()
                         if not state.has_record(data, record["idempotency_key"]):
                             data = state.add_record(data, record)
@@ -482,4 +492,3 @@ def run_watcher(
 
     finally:
         state.release_lock()
-
