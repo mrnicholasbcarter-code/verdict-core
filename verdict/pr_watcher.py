@@ -491,8 +491,11 @@ def run_watcher(
         assert_github_no_mutation(gh)
         if linear is not None:
             assert_linear_no_mutation(linear)
+    except TypeError as exc:
+        return {"error": str(exc), "type": "client_refused"}
+    try:
         state.acquire_lock()
-    except (TypeError, LockAcquisitionError, OSError) as exc:
+    except (LockAcquisitionError, OSError) as exc:
         return {"error": str(exc), "type": "lock_failure"}
 
     try:

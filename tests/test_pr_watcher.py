@@ -783,7 +783,7 @@ class TestCapabilityRestriction:
 
         result = run_watcher(gh, ws, [REPO], now=T0)
 
-        assert set(result) == {"error", "type"}
+        assert result["type"] == "client_refused"
         assert method in result["error"]
         assert gh.rerun_calls == []
         assert gh.checks_calls == []
@@ -800,7 +800,7 @@ class TestCapabilityRestriction:
 
         result = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
 
-        assert set(result) == {"error", "type"}
+        assert result["type"] == "client_refused"
         assert method in result["error"]
         assert linear.attempts == []
         assert not ws.state_file.exists()
