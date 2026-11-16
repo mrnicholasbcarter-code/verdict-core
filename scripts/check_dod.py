@@ -112,13 +112,19 @@ def _structured_result(text: str) -> dict[str, Any] | None:
     return result if required <= result.keys() else None
 
 
-def _check_run_truth(run: dict[str, Any], text: str, where: str, errors: list[str], *, required: bool = False) -> None:
+def _check_run_truth(
+    run: dict[str, Any], text: str, where: str, errors: list[str], *, required: bool = False
+) -> None:
     result = _structured_result(text.rstrip()) if text == text.lstrip() else None
     if result is None:
         if required:
             try:
                 parsed = json.loads(text)
-                missing = [key for key in STRUCTURED_KEYS if not isinstance(parsed, dict) or key not in parsed]
+                missing = [
+                    key
+                    for key in STRUCTURED_KEYS
+                    if not isinstance(parsed, dict) or key not in parsed
+                ]
             except json.JSONDecodeError:
                 missing = list(STRUCTURED_KEYS)
             errors.append(
@@ -300,7 +306,9 @@ def check_evidence(root: Path, path: Path) -> list[str]:
             if run["exit_code"] != want:
                 errors.append(f"{where}: exit code {run['exit_code']}, expected {want}")
             if text is not None:
-                _check_run_truth(run, text, where, errors, required=_is_orchestrate_json_command(run["command"]))
+                _check_run_truth(
+                    run, text, where, errors, required=_is_orchestrate_json_command(run["command"])
+                )
         if _time(first["at"]) < merged_at:
             errors.append(f"acceptance[{index}].first_run: ran before the merge")
         if fresh["command"] != first["command"]:
@@ -314,9 +322,11 @@ def check_evidence(root: Path, path: Path) -> list[str]:
         _no_openspec_change(root, evidence["story"], merged, errors)
 
     run_artifacts = [
-        (f"acceptance[{index}].first_run", item["first_run"]) for index, item in enumerate(evidence["acceptance"])
+        (f"acceptance[{index}].first_run", item["first_run"])
+        for index, item in enumerate(evidence["acceptance"])
     ] + [
-        (f"acceptance[{index}].fresh_run", item["fresh_run"]) for index, item in enumerate(evidence["acceptance"])
+        (f"acceptance[{index}].fresh_run", item["fresh_run"])
+        for index, item in enumerate(evidence["acceptance"])
     ]
     confirmation = evidence["parent_confirmation"]
     run_artifacts.append(("parent_confirmation", confirmation))
@@ -334,7 +344,13 @@ def check_evidence(root: Path, path: Path) -> list[str]:
         errors.append("parent_confirmation: confirmed before the merge")
     text = _artifact(root, confirmation["raw_output"], "parent_confirmation", errors)
     if text is not None:
-        _check_run_truth(confirmation, text, "parent_confirmation", errors, required=_is_orchestrate_json_command(confirmation["command"]))
+        _check_run_truth(
+            confirmation,
+            text,
+            "parent_confirmation",
+            errors,
+            required=_is_orchestrate_json_command(confirmation["command"]),
+        )
     if text is not None and expected.get(confirmation["command"], "\0") not in text:
         errors.append("parent_confirmation: expected text is not in the raw output")
     return errors
