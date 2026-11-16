@@ -39,6 +39,7 @@ import argparse
 import hashlib
 import json
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -79,6 +80,28 @@ def _time(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+STRUCTURED_KEYS = ("outcome", "run_id", "started_at", "finished_at", "events_digest")
+
+
+def _is_orchestrate_json_command(command: str) -> bool:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    has_verdict = any(Path(token).name == "verdict" for token in tokens)
+    if "python" in tokens and "-m" in tokens:
+        try:
+            has_verdict = has_verdict or tokens[tokens.index("-m") + 1] == "verdict"
+        except IndexError:
+            pass
+    try:
+        verdict_index = next(i for i, token in enumerate(tokens) if Path(token).name == "verdict")
+        has_orchestrate = "orchestrate" in tokens[verdict_index + 1 :]
+    except StopIteration:
+        has_orchestrate = "orchestrate" in tokens
+    return has_verdict and has_orchestrate and "--json" in tokens
+
+
 def _structured_result(text: str) -> dict[str, Any] | None:
     try:
         result = json.loads(text)
@@ -86,18 +109,31 @@ def _structured_result(text: str) -> dict[str, Any] | None:
         return None
     if not isinstance(result, dict):
         return None
-    required = {"outcome", "run_id", "started_at", "finished_at", "events_digest"}
+    required = set(STRUCTURED_KEYS)
     return result if required <= result.keys() else None
 
 
-def _check_run_truth(run: dict[str, Any], text: str, where: str, errors: list[str]) -> None:
-    result = _structured_result(text)
+def _check_run_truth(run: dict[str, Any], text: str, where: str, errors: list[str], *, required: bool = False) -> None:
+    result = _structured_result(text.rstrip()) if text == text.lstrip() else None
     if result is None:
+        if required:
+            try:
+                parsed = json.loads(text)
+                missing = [key for key in STRUCTURED_KEYS if not isinstance(parsed, dict) or key not in parsed]
+            except json.JSONDecodeError:
+                missing = list(STRUCTURED_KEYS)
+            errors.append(
+                f"{where}: command is {run['command']!r} but the raw output is not the run's result JSON "
+                f"(missing: {', '.join(missing) or 'stdout only'}; stdout only)"
+            )
         return
     outcome = result["outcome"]
-    exit_code = run["exit_code"]
+    if "exit_code" not in run:
+        exit_code = None
+    else:
+        exit_code = run["exit_code"]
     complete = outcome == "COMPLETE"
-    if (exit_code == 0) != complete:
+    if exit_code is not None and (exit_code == 0) != complete:
         errors.append(f"{where}: exit_code {exit_code} disagrees with outcome {outcome}")
     try:
         started = _time(result["started_at"])
@@ -112,6 +148,14 @@ def _check_run_truth(run: dict[str, Any], text: str, where: str, errors: list[st
                 f"{where}: at {run['at']} is outside result window "
                 f"started_at {result['started_at']} to finished_at {result['finished_at']} (5 minute tolerance)"
             )
+    if "exit_code" not in run:
+        if outcome != "COMPLETE":
+            errors.append(f"{where}: outcome {outcome} is not COMPLETE (COMPLETE required)")
+        review = result.get("review")
+        status = review.get("status") if isinstance(review, dict) else None
+        if status != "PASS":
+            errors.append(f"{where}: review status {status} is not PASS (PASS required)")
+        return
     if exit_code == 0:
         review = result.get("review")
         status = review.get("status") if isinstance(review, dict) else None
@@ -260,7 +304,7 @@ def check_evidence(root: Path, path: Path) -> list[str]:
             if run["exit_code"] != want:
                 errors.append(f"{where}: exit code {run['exit_code']}, expected {want}")
             if text is not None:
-                _check_run_truth(run, text, where, errors)
+                _check_run_truth(run, text, where, errors, required=_is_orchestrate_json_command(run["command"]))
         if _time(first["at"]) < merged_at:
             errors.append(f"acceptance[{index}].first_run: ran before the merge")
         if fresh["command"] != first["command"]:
@@ -293,6 +337,8 @@ def check_evidence(root: Path, path: Path) -> list[str]:
     if _time(confirmation["at"]) < merged_at:
         errors.append("parent_confirmation: confirmed before the merge")
     text = _artifact(root, confirmation["raw_output"], "parent_confirmation", errors)
+    if text is not None:
+        _check_run_truth(confirmation, text, "parent_confirmation", errors, required=_is_orchestrate_json_command(confirmation["command"]))
     if text is not None and expected.get(confirmation["command"], "\0") not in text:
         errors.append("parent_confirmation: expected text is not in the raw output")
     return errors
