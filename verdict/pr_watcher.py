@@ -12,15 +12,15 @@ from typing import Any
 
 from verdict.ci_policy import classify_ci, classify_merge_state
 from verdict.pr_watcher_github import WatcherGitHubClient
+from verdict.pr_watcher_github import assert_no_mutation as assert_github_no_mutation
 from verdict.pr_watcher_notifications import (
     LinearClient,
-    assert_no_mutation as assert_linear_no_mutation,
     build_digest_event,
     build_linear_event,
     retry_failed_notifications,
     should_notify,
 )
-from verdict.pr_watcher_github import assert_no_mutation as assert_github_no_mutation
+from verdict.pr_watcher_notifications import assert_no_mutation as assert_linear_no_mutation
 from verdict.pr_watcher_state import (
     BlockRecord,
     MalformedStateError,
@@ -314,6 +314,13 @@ def run_watcher(
         reruns: list[dict[str, Any]] = []
         records: list[dict[str, Any]] = []
         notifications: list[dict[str, Any]] = []
+
+        # Retry durable Linear events before creating new side effects.
+        if linear is not None:
+            pending = state.get_pending_events(data)
+            if pending:
+                still_pending, _ = retry_failed_notifications(pending, linear)
+                data = {**data, "pending_events": still_pending}
 
         for repo in repos:
             # 1. Poll open PRs

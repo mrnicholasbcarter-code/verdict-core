@@ -93,6 +93,7 @@ def should_notify(previous_classification: str | None, new_classification: str) 
         "CODE_FAILURE",
         "INFRA_FAILURE",
         "CANCELLED",
+        "STALLED",
         "CONFLICT",
         "EMPTY",
         "MISSING_REQUIRED",

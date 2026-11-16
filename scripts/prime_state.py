@@ -5,17 +5,17 @@ from __future__ import annotations
 
 import datetime
 import json
-import time
 import sys
+import time
 from pathlib import Path
+from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from typing import Any
 
 # Import CI policy from importable production module
-from verdict.ci_policy import (  # noqa: F401
+from verdict.ci_policy import (  # noqa: E402, F401
     INFRA_PATTERNS,
     ci_recovery_action,
     classify_ci,
