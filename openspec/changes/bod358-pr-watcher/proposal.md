@@ -30,7 +30,7 @@ Open pull requests created by the swarm can remain red, stalled, conflicting, or
 - Infrastructure/cancelled/stalled failures receive only bounded reruns; code failures and conflicts produce durable repair records; exhausted attempts become blocked with a reason.
 - Stable rerun keys fence changed heads and duplicate/concurrent timer invocations.
 - Merged PRs with a fail review verdict are found despite open-PR disappearance, recorded, and notify the linked Linear story once per transition.
-- GREEN maps to READY with no side effect; recovery actions map only to durable controller repair records.
+- The watcher follows the normative adapter table in the capability specification, including no side effect for GREEN / PROCEED_MERGE and bounded handling for pending, retryable, repair, empty, and blocked states. A green PR produces no repair record, rerun, GitHub write, or Linear write.
 - The watcher client has no merge, push, branch, or source-edit capability.
 - Idle runs produce no notification; new failures, blocked states, and regressions notify once per transition. flock serializes writers.
 - Hermetic fixtures cover classifications, transitions, pagination, zero checks, pending, stalled jobs, merged regression, multiple checks, changed head, duplicate timer, concurrent requests, and opt-in live smoke.

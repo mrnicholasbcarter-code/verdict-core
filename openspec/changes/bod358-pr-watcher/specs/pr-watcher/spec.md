@@ -10,35 +10,76 @@ Provide deterministic ownership for swarm-opened pull requests until they are gr
 
 ### Requirement: Exact-head polling classifies every open configured pull request
 
-The watcher SHALL paginate open pull requests across the configured allowlisted repositories, retrieve checks and merge state for the observed head SHA, and classify each PR using the existing CI and merge classifiers. A PR with zero checks SHALL NOT be green; pending checks SHALL remain pending; a check in progress for more than 30 minutes SHALL be stalled.
+The watcher SHALL paginate open pull requests across configured allowlisted repositories, retrieve checks and merge state for the observed head SHA, and classify each PR using the existing CI and merge classifiers. Zero checks SHALL NOT be green; pending checks SHALL remain pending; a check in progress for more than 30 minutes SHALL be stalled.
 
 #### Scenario: Paginated exact-head observation
 - **WHEN** two pages contain open PRs and the second page includes a PR whose head changes before checks are consumed
-- **THEN** the watcher evaluates all stable PRs and records the changed-head observation without retrying or routing stale data.
+- **THEN** the watcher evaluates all stable PRs and records the changed-head observation without retrying or routing stale data
 
-### Requirement: Retryable failures have bounded reruns
+### Requirement: Merged PR discovery reconciles the open poll
 
-For infrastructure failure, cancelled checks, or a stalled job, the watcher SHALL request at most one bounded rerun per available attempt budget. When the budget is exhausted it SHALL record BLOCKED with a reason.
+The watcher SHALL list or search closed and merged PRs since a durable cursor with a bounded lookback. A merged fail review SHALL be identified by a GitHub `CHANGES_REQUESTED` review on the merged head or a recorded Verdict/ocr fail receipt keyed by repository, PR number, and merged head SHA.
 
-#### Scenario: Stalled check
-- **WHEN** a check has been in progress for more than 30 minutes
-- **THEN** the watcher classifies it as retryable stalled infrastructure and requests one rerun unless the bounded budget is exhausted.
+#### Scenario: PR merges between polls
+- **WHEN** a PR is open on run N and merges with a fail review before run N+1
+- **THEN** the closed+merged reconciliation discovers it despite open-PR listing no longer returning it, records one regression for that head, and emits the linked transition notification once
+
+### Requirement: Stable rerun identity and fencing
+
+Each rerun SHALL use the stable key repository + PR number + exact head SHA + check name + workflow/job id. The per-key attempt counter SHALL update atomically. Immediately before requesting a rerun, the watcher SHALL reread and fence the exact PR head and check identity; a mismatch SHALL abort without rerunning or consuming a stale attempt.
+
+#### Scenario: Changed head before rerun
+- **WHEN** the head or check identity differs on the immediate pre-rerun reread
+- **THEN** no rerun is requested and the old key is not advanced
+
+### Requirement: Bounded recovery adapter is normative
+
+The watcher SHALL apply this adapter table identically for every observation:
+
+| Classification or action | Adapter result |
+|---|---|
+| GREEN / PROCEED_MERGE | READY, no side effect |
+| PENDING / WAIT_CI | No action |
+| INFRA_FAILURE / CANCELLED / stalled (>30m) / RETRY_CI | One bounded rerun per key |
+| CODE_FAILURE / CORRECTIVE_IMPLEMENTATION; CONFLICT / BEHIND / REBASE_AND_REPROOF | Durable controller repair record |
+| EMPTY / MISSING_REQUIRED | Not green, durable repair record with reason |
+| Attempts exhausted / BLOCKED | BLOCKED with reason |
+
+#### Scenario: Green has no side effect
+- **WHEN** a PR is GREEN and mergeable at its exact head
+- **THEN** the watcher marks READY and creates no repair record, requests no rerun, and performs no GitHub or Linear write
+
+#### Scenario: Exhausted retry
+- **WHEN** a retryable check has exhausted its per-key attempt budget
+- **THEN** the watcher records BLOCKED with a stable reason and does not request another rerun
+
+### Requirement: Watcher capability excludes mutations
+
+The client exposed to the watcher SHALL provide only reads, bounded check reruns, and notification operations. It SHALL expose no merge, push, branch creation, or source-edit method. The watcher SHALL never merge, push, create a branch, or edit source.
+
+#### Scenario: Mutation methods absent
+- **WHEN** the watcher receives its GitHub client
+- **THEN** capability inspection finds no merge, push, branch, or source-edit operation
+
+### Requirement: Single writer and idempotent events
+
+The watcher SHALL take a non-blocking single-writer `flock` under the common verdict-prime state directory; an overlapping invocation SHALL exit without writing. Durable idempotency keys SHALL suppress duplicates for repair, block, regression, digest, and Linear events.
+
+#### Scenario: Duplicate timer invocation
+- **WHEN** the same exact-head timer invocation runs twice
+- **THEN** only one rerun and one event per idempotency key are persisted
+
+#### Scenario: Concurrent invocation
+- **WHEN** two watcher invocations overlap
+- **THEN** one obtains the lock and the other exits non-blocking without duplicate state or provider writes
 
 ### Requirement: Code and merge failures route to durable repair
 
-For code failure, conflict, or behind merge state, the watcher SHALL write a durable controller repair record containing repository, PR number, exact head SHA, failing checks, bounded log excerpt path, classification, and reason. It SHALL never edit source, force-push, or merge.
+For code failure, conflict, behind, empty, or missing required state, the watcher SHALL write a durable controller repair record containing repository, PR number, exact head SHA, failing checks, bounded log excerpt path, classification, and reason. It SHALL never edit source, force-push, or merge.
 
 #### Scenario: Conflict
 - **WHEN** a PR head is classified CONFLICT or BEHIND
-- **THEN** a repair record is written for controller dispatch and the PR is not mutated by the watcher.
-
-### Requirement: Green state and attempt exhaustion are explicit
-
-A PR SHALL be marked ready only when checks are green and merge state is mergeable/clean. Empty, unknown, pending, or stale observations SHALL NOT be marked ready. Exhausted recovery SHALL be BLOCKED with a stable reason.
-
-#### Scenario: Zero checks
-- **WHEN** an open PR has no check runs
-- **THEN** its state is not GREEN and no ready notification is emitted.
+- **THEN** a repair record is written for controller dispatch and the PR is not mutated by the watcher
 
 ### Requirement: Notifications occur only on transitions
 
@@ -46,15 +87,7 @@ The watcher SHALL emit a digest event and, when a Linear story is linked, a Line
 
 #### Scenario: Idle healthy run
 - **WHEN** a previously ready PR remains ready at the same head
-- **THEN** the watcher emits no message.
-
-### Requirement: Merged fail-review regressions are recorded
-
-When a watched PR is merged and its review verdict is fail, the watcher SHALL record a regression and notify the linked owning Linear story once per regression transition.
-
-#### Scenario: Merged failing review
-- **WHEN** a merged PR has a fail review verdict
-- **THEN** the regression is durable and the owning story receives a transition comment when linked.
+- **THEN** the watcher emits no message
 
 ### Requirement: Setup and doctor manage the watcher timer
 
@@ -62,7 +95,7 @@ When a watched PR is merged and its review verdict is fail, the watcher SHALL re
 
 #### Scenario: Missing timer
 - **WHEN** the watcher timer is absent or inactive
-- **THEN** doctor reports a failing diagnostic with the corrective setup action.
+- **THEN** doctor reports a failing diagnostic with the corrective setup action
 
 ### Requirement: Live smoke is opt-in
 
@@ -70,4 +103,4 @@ Default tests SHALL use fixtures and fake clients. Any fixture-free live smoke S
 
 #### Scenario: Default test isolation
 - **WHEN** `VERDICT_LIVE_SMOKE` is unset
-- **THEN** no live GitHub, Linear, or paid-provider call is made.
+- **THEN** no live GitHub, Linear, or paid-provider call is made
