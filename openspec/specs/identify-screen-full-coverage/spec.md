@@ -1,6 +1,10 @@
-# Spec Delta
+# identify-screen-full-coverage Specification
 
-## ADDED Requirements
+## Purpose
+
+Scheduled screening runs every six hours with larger bounded caps for stale free and subscription routes, improving coverage over the prior daily sample.
+
+## Requirements
 
 ### Requirement: Scheduled screening runs every six hours with larger bounded caps
 

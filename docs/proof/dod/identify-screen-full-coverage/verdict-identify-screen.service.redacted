@@ -1,0 +1,9 @@
+[Unit]
+Description=Verdict bounded missing-proof screening
+After=network-online.target
+[Service]
+Type=oneshot
+UMask=0077
+WorkingDirectory=/operator/.local/share/verdict/<installed-main>
+ExecStart="/operator/.local/share/verdict/<installed-main>/.venv/bin/python" -m verdict identify --screen --allow-live-probe --capacity free,subscription --max-per-provider 16 --max-routes 40 --json
+TimeoutStartSec=30min

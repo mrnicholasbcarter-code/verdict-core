@@ -1,0 +1,27 @@
+=== verdict-identify-screen.service ===
+[Unit]
+Description=Verdict bounded missing-proof screening
+After=network-online.target
+[Service]
+Type=oneshot
+UMask=0077
+WorkingDirectory=/operator/.local/share/verdict/<installed-main>
+ExecStart="/operator/.local/share/verdict/<installed-main>/.venv/bin/python" -m verdict identify --screen --allow-live-probe --capacity free,subscription --max-per-provider 16 --max-routes 40 --json
+TimeoutStartSec=30min
+
+=== verdict-identify-screen.timer ===
+[Unit]
+Description=Verdict six-hourly bounded screening timer
+[Timer]
+OnCalendar=*-*-* 00/6:00:00
+Persistent=true
+Unit=verdict-identify-screen.service
+[Install]
+WantedBy=timers.target
+
+=== systemctl --user list-timers verdict-identify-screen.timer ===
+NEXT                        LEFT          LAST                        PASSED    UNIT                          ACTIVATES
+Tue 2026-11-17 12:00:00 UTC 5h 43min left Tue 2026-11-17 06:00:04 UTC 16min ago verdict-identify-screen.timer verdict-identify-screen.service
+
+1 timers listed.
+Pass --all to see loaded but inactive timers, too.
