@@ -593,6 +593,27 @@ class TestMergedPRReconciliation:
 
         assert [r["review_sources"] for r in regs] == [["github_changes_requested"]]
 
+    def test_change_request_on_a_commit_github_no_longer_has_is_treated_as_an_older_commit(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a force-pushed-away review commit being read as the merged head."""
+        head = "e" * 40
+        gh.set_merged_prs(REPO, [{"number": 42, "head_sha": head, "merged_at": MERGED_AT}])
+        request = {
+            "state": "CHANGES_REQUESTED",
+            "commit_oid": None,
+            "submitted_at": "2026-03-02T10:01:00Z",
+        }
+        approval = {"state": "APPROVED", "commit_oid": head, "submitted_at": "2026-03-02T10:30:00Z"}
+
+        gh.set_reviews(REPO, 42, [request, approval])
+        cleared = reconcile_merged_prs(gh, ws, REPO, now=T0)
+        gh.set_reviews(REPO, 42, [request])
+        standing = reconcile_merged_prs(gh, ws, REPO, now=T0)
+
+        assert cleared == []
+        assert [r["review_sources"] for r in standing] == [["github_changes_requested"]]
+
     def test_fail_receipt_counts_only_for_the_merged_head(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
