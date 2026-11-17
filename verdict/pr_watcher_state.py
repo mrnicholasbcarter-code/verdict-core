@@ -220,7 +220,10 @@ class RepairRecord:
         self.failing_check_details = failing_check_details or []
         self.classification = classification
         self.reason = reason
-        self.idempotency_key = _idempotency_key("repair", repo, pr_number, head)
+        # One record per classification on a head: a later, different failure
+        # on the same head is not a duplicate of the first one.
+        base = _idempotency_key("repair", repo, pr_number, head)
+        self.idempotency_key = _safe_key(f"{base}:{classification}") if classification else base
 
     def to_dict(self, created_at: str) -> dict[str, Any]:
         return {

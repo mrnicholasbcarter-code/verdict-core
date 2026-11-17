@@ -1469,7 +1469,7 @@ class TestCodeAndMergeFailures:
                 "failing_check_details": [],
                 "classification": classification,
                 "reason": f"PR classified as {classification}",
-                "idempotency_key": f"repair:{REPO}:pr1:{head}",
+                "idempotency_key": f"repair:{REPO}:pr1:{head}:{classification}",
                 "created_at": iso(T0),
             }
         ]
@@ -1505,6 +1505,32 @@ class TestCodeAndMergeFailures:
             },
         ]
         assert "log_excerpt" not in record
+
+    def test_later_different_failure_on_the_same_head_gets_its_own_repair_record(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches the first record for a head hiding what actually went wrong on it later.
+
+        A PR polled before its checks register is EMPTY; the lint failure that
+        follows on the same head must not be suppressed as a duplicate of that.
+        """
+        head = "c" * 40
+        open_pr(gh, 1, head, [])
+        first = run_watcher(gh, ws, [REPO], now=T0)
+
+        gh.set_checks(REPO, head, [check("lint", "FAILURE", job_id=22)])
+        later = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in (1, 2)]
+
+        assert [(r["classification"], r["failing_checks"]) for r in first["records"]] == [
+            ("EMPTY", [])
+        ]
+        assert [
+            [(r["classification"], r["failing_checks"]) for r in run["records"]] for run in later
+        ] == [[("CODE_FAILURE", ["lint"])], []]
+        assert [r["idempotency_key"] for r in disk(ws)["records"]["repair"]] == [
+            f"repair:{REPO}:pr1:{head}:EMPTY",
+            f"repair:{REPO}:pr1:{head}:CODE_FAILURE",
+        ]
 
     def test_code_failure_writes_one_repair_record_across_three_runs(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -2901,7 +2927,7 @@ class TestGhClientEndToEnd:
                 ],
                 "classification": "CODE_FAILURE",
                 "reason": "PR classified as CODE_FAILURE",
-                "idempotency_key": f"repair:{REPO}:pr7:{HEAD_7}",
+                "idempotency_key": f"repair:{REPO}:pr7:{HEAD_7}:CODE_FAILURE",
                 "created_at": iso(T0),
             }
         ]
