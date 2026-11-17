@@ -24,6 +24,7 @@ Add a read-only `_now` property to `IntelligenceService`:
 @property
 def _now(self) -> datetime:
     from datetime import datetime, timezone
+
     return self.admit_now if self.admit_now is not None else datetime.now(timezone.utc)
 ```
 
