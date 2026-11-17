@@ -4,7 +4,7 @@ Ownership is disjoint. Core owns policy and watcher modules/tests; host owns com
 
 ## 1. Research - wave 1
 
-- [ ] 1.1 (research-pr-watcher-boundaries; depends_on: []; owned_files: []) Trace policy, GitHub/Linear clients, common state, command registry/parsers, setup plan, doctor collector, tests, and forbidden architecture terms. Return exact symbols and ownership boundaries.
+- [x] 1.1 (research-pr-watcher-boundaries; depends_on: []; owned_files: []) Trace policy, GitHub/Linear clients, common state, command registry/parsers, setup plan, doctor collector, tests, and forbidden architecture terms. Return exact symbols and ownership boundaries.
 
 ## 2. Core - wave 2
 
@@ -21,3 +21,4 @@ Ownership is disjoint. Core owns policy and watcher modules/tests; host owns com
 ## 4. Verification - wave 4
 
 - [ ] 4.1 (verify-pr-watcher-release-gates; depends_on: 3.1, 3.2; owned_files: tests/test_pr_watcher_live_smoke.py, docs/proof/dod/bod358-pr-watcher.json) Add fixture-free live smoke gated by VERDICT_LIVE_SMOKE=1 and run focused tests, ruff, strict mypy, reachability, forbidden-architecture scan, doc links, both OpenSpec validators, proof matrix, and git diff --check. Record raw evidence and confirm every new symbol has a production caller.
+- [ ] (post-merge) 4.2 Install with verdict setup from merged main, run one read-only watcher pass on the live repositories and record the DoD evidence.

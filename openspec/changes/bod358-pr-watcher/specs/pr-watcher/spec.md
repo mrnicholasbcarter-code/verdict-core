@@ -18,7 +18,7 @@ The watcher SHALL paginate open pull requests across configured allowlisted repo
 
 ### Requirement: Merged PR discovery reconciles the open poll
 
-The watcher SHALL list or search closed and merged PRs since a durable cursor with a bounded lookback. A merged fail review SHALL be identified by a GitHub `CHANGES_REQUESTED` review on the merged head or a recorded Verdict/ocr fail receipt keyed by repository, PR number, and merged head SHA.
+The watcher SHALL list or search closed and merged PRs since a durable cursor with a bounded lookback. A merged fail review SHALL be identified by a GitHub `CHANGES_REQUESTED` review on the merged head.
 
 #### Scenario: PR merges between polls
 - **WHEN** a PR is open on run N and merges with a fail review before run N+1
@@ -40,7 +40,8 @@ The watcher SHALL apply this adapter table identically for every observation:
 |---|---|
 | GREEN / PROCEED_MERGE | READY, no side effect |
 | PENDING / WAIT_CI | No action |
-| INFRA_FAILURE / CANCELLED / stalled (>30m) / RETRY_CI | One bounded rerun per key |
+| INFRA_FAILURE / CANCELLED / RETRY_CI | One bounded rerun per key |
+| stalled (>30m) | Durable repair record with reason `stalled: required check running past threshold; cannot rerun while running` |
 | CODE_FAILURE / CORRECTIVE_IMPLEMENTATION; CONFLICT / BEHIND / REBASE_AND_REPROOF | Durable controller repair record |
 | EMPTY / MISSING_REQUIRED | Not green, durable repair record with reason |
 | Attempts exhausted / BLOCKED | BLOCKED with reason |
@@ -75,7 +76,7 @@ The watcher SHALL take a non-blocking single-writer `flock` under the common ver
 
 ### Requirement: Code and merge failures route to durable repair
 
-For code failure, conflict, behind, empty, or missing required state, the watcher SHALL write a durable controller repair record containing repository, PR number, exact head SHA, failing checks, bounded log excerpt path, classification, and reason. It SHALL never edit source, force-push, or merge.
+For code failure, conflict, behind, empty, or missing required state, the watcher SHALL write a durable controller repair record containing repository, PR number, exact head SHA, failing checks, classification, and reason. It SHALL never edit source, force-push, or merge.
 
 #### Scenario: Conflict
 - **WHEN** a PR head is classified CONFLICT or BEHIND
@@ -128,14 +129,6 @@ All durable state keys SHALL be validated to contain no path traversal sequences
 #### Scenario: Path traversal in state key
 - **WHEN** a state key containing `..` or an absolute path is constructed
 - **THEN** the write is rejected, the run reports the error, and no state is persisted
-
-### Requirement: Repair record log excerpts are bounded and redacted
-
-Log excerpts stored in repair records SHALL be bounded to at most 4096 characters. The excerpt SHALL be secret-redacted: token-bearing URLs, authorization headers, and any field matching known secret patterns SHALL be replaced with `[REDACTED]` before persistence.
-
-#### Scenario: Large log with secrets
-- **WHEN** a failing check produces a log exceeding 4096 characters and containing a GitHub token in a URL
-- **THEN** the stored excerpt is truncated to 4096 characters and the token is replaced with `[REDACTED]`
 
 ### Requirement: Durable state is written before side effects
 

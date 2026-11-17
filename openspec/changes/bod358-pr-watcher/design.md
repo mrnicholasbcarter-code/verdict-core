@@ -22,7 +22,7 @@ The repository already centralizes CI classification and bounded recovery decisi
 
 ## Data flow
 
-`verdict pr-watcher` acquires the non-blocking lock -> loads configured repositories and durable cursor -> paginates open PRs -> fetches exact-head checks, merge state, and reviews -> rejects stale/mismatched observations -> classifies -> applies bounded rerun or writes repair/block records -> lists closed+merged PRs since cursor and evaluates fail reviews -> writes transition digest and linked Linear event by idempotency key -> atomically persists state and advances cursor.
+`verdict pr-watch` acquires the non-blocking lock -> loads configured repositories and durable cursor -> paginates open PRs -> fetches exact-head checks, merge state, and reviews -> rejects stale/mismatched observations -> classifies -> applies bounded rerun or writes repair/block records -> lists closed+merged PRs since cursor and evaluates fail reviews -> writes transition digest and linked Linear event by idempotency key -> atomically persists state and advances cursor.
 
 ## Test strategy
 
@@ -55,4 +55,8 @@ The watcher uses no LLM or model routing on idle runs. It consumes only GitHub/L
 
 - GitHub client: GraphQL for reads (MERGEABLE/CLEAN/COMPLETED/SUCCESS, per-check isRequired, databaseId, startedAt, pagination at PR and context level; merged search returns headRefOid and review commit oid), one REST POST for rerun (`/actions/jobs/{job_id}/rerun`). REST status is lowercase and lacks required flag; the list call uses a flag gh does not have.
 - Digest: append-only `pr_watcher_digest.jsonl` in the common verdict-prime state dir.
-- Log excerpts: out of scope for this slice; repair records carry check names, job ids, and details URL. Spec requirement "Repair record log excerpts are bounded and redacted" to be amended in a docs task if the helper is removed.
+- Repair records carry check names, job ids, and details URL; log excerpts are out of scope.
+
+## Deferred
+
+Linear comments and Verdict/ocr fail receipts are not wired in production. They remain supported through injected clients and are deferred to a follow-up change.
