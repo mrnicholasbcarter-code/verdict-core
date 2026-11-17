@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "story": "identify-screen-full-coverage",
+  "kind": "product",
+  "author": "gem-devops (omniroute worker/free-first)",
+  "merged_sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+  "pr": 1044,
+  "on_main": {
+    "at": "2026-11-17T06:15:00Z",
+    "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+    "environment": "operator-host",
+    "command": "gh pr checks 1044 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44025470411",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/identify-screen-full-coverage/pr_checks_1044.txt",
+      "sha256": "b48696ba14fb0e995838b5d231c14117d20548a4afa000ec916f51a7227a4e1e"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "Scheduled screen runs every six hours with caps max-per-provider 16, max-routes 40, reports bounded skips, and systemd timer fires on calendar",
+      "expect": "\"routes_checked\": ",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-17T06:10:37Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "verdict-identify-screen.service (scheduled by verdict-identify-screen.timer, OnCalendar=*-*-* 00/6:00:00)",
+        "real_state_marker": "\"model_calls\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/identify-screen-full-coverage/scheduled-run-20261117T060004Z.journal.txt",
+          "sha256": "ec79cdecca12d72785919098727b78ce26946f722f55cdc618d87b1933fa1dd6"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T18:10:23Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "verdict-identify-screen.service (scheduled by verdict-identify-screen.timer, OnCalendar=*-*-* 00/6:00:00)",
+        "real_state_marker": "\"model_calls\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/identify-screen-full-coverage/scheduled-run-20261117T180012Z.journal.txt",
+          "sha256": "0c75f7ceab36f0fd4b55d32a41dbdef50740d4726d63a1c028551c28531acc41"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 6,
+  "stays_true_job": "verdict-identify-screen.timer (every 6 hours)",
+  "setup_doctor": {
+    "status": "green",
+    "command": "cd /operator/.local/share/verdict/installed-main && .venv/bin/verdict doctor --json",
+    "at": "2026-11-17T18:30:00Z",
+    "raw_output": {
+      "path": "docs/proof/dod/identify-screen-full-coverage/doctor-20261117T183000Z.json",
+      "sha256": "1637e40667be321de10b3550aa8ae42deb7c0d6a32dece00efb25332f982bfb0"
+    }
+  },
+  "openspec": {
+    "change": "identify-screen-full-coverage"
+  },
+  "parent_confirmation": {
+    "by": "gem-implementer on omniroute nemotron-3-ultra",
+    "at": "2026-11-17T18:28:33Z",
+    "command": "verdict-identify-screen.service (scheduled by verdict-identify-screen.timer, OnCalendar=*-*-* 00/6:00:00)",
+    "raw_output": {
+      "path": "docs/proof/dod/identify-screen-full-coverage/parent_confirmation_20261117T181951Z.journal.txt",
+      "sha256": "4743c41a1ccc10d5470584d5372fd887f0378b41906ba5656768b2c039b50c74"
+    }
+  }
+}
