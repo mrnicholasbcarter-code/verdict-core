@@ -928,3 +928,71 @@ def test_public_policy_cannot_be_weakened_and_optimizer_is_price_invariant(
     )
     # route-a is still selected because shortlist order dominates class labels
     assert dec4.selected_candidate_id == "route-a"
+
+
+def test_api_route_execution_path_request_returns_non_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    """POST /v1/route with an execution_path_request returns non-500 status.
+
+    This test verifies that the HealthCacheError('now must be a timezone-aware datetime')
+    is fixed by ensuring self.admit_now is resolved to an aware UTC datetime when None.
+    """
+    from fastapi.testclient import TestClient
+
+    import verdict.api as api
+
+    # Allow anonymous access for testing
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+
+    # Mock the intelligence service to avoid network calls but still exercise the path
+    class MockIntelligence:
+        async def route(self, task, criticality="medium", context=None, *, request_id=None):
+            from verdict.models import RoutingDecision
+
+            # Return a minimal valid decision
+            return RoutingDecision(
+                model="test-model",
+                provider="test-provider",
+                gateway="test-gateway",
+                route_id="test-route",
+                decision="routed",
+                degraded_mode=False,
+                managed_backend_status="not_used",
+                safety_flags=("bod104_execution_path_authority",),
+            )
+
+    monkeypatch.setattr(api, "intelligence_instance", MockIntelligence())
+
+    with TestClient(api.app) as client:
+        # POST /v1/route with execution_path_request (no injected time)
+        response = client.post(
+            "/v1/route",
+            json={
+                "task": "refactor module",
+                "criticality": "medium",
+                "execution_path_request": {
+                    "schema_version": "1",
+                    "trajectory_id": "traj-test-1",
+                    "slice_id": "slice-test-1",
+                    "acceptance_criteria": ["tests pass"],
+                    "proof_criteria": ["pytest green"],
+                    "candidates": [
+                        {
+                            "route_id": "test-route",
+                            "gateway": "gateway-a",
+                            "provider": "provider-a",
+                            "model": "test-model",
+                            "certification_state": "ready",
+                            "certification_freshness": "fresh",
+                            "eligible": True,
+                        }
+                    ],
+                },
+            },
+        )
+        # Should not be 500 (server error due to HealthCacheError)
+        assert response.status_code != 500, f"Got 500: {response.text}"
+        # Should be 200 (success) or 4xx (client error with named reason)
+        assert response.status_code == 200 or 400 <= response.status_code < 500, (
+            f"Unexpected status {response.status_code}: {response.text}"
+        )

@@ -476,6 +476,17 @@ class IntelligenceService:
         self.managed_backend_status = "offline" if allow_offline else "not_used"
         self._policy_version = "policy-2026-07-13.1"
 
+    @property
+    def _now(self) -> "datetime":
+        """Return a timezone-aware datetime for admission decisions.
+
+        Uses the injected admit_now if provided, otherwise the current UTC time.
+        This ensures a server error is never the result of a missing clock.
+        """
+        from datetime import datetime, timezone
+
+        return self.admit_now if self.admit_now is not None else datetime.now(timezone.utc)
+
     async def rank(self, eligible: list[ModelInfo], task_spec: Any) -> IntelligenceRanking:
         """Return a deterministic advisory ordering for already-eligible rows."""
         ranked = [
@@ -1029,7 +1040,7 @@ class IntelligenceService:
             context_window = DEFAULT_CHEAP_PATH_TOKEN_BUDGET
             if metadata is not None:
                 lookup = lookup_omniroute_id(
-                    metadata, candidate_id, identity_map=identity_map, now=self.admit_now
+                    metadata, candidate_id, identity_map=identity_map, now=self._now
                 )
                 field = None if lookup.record is None else lookup.record.caps.context
                 if field is not None and isinstance(field.value, (int, float)):
@@ -1209,7 +1220,7 @@ class IntelligenceService:
                 roots=self.outcome_shadow_roots,
                 task_family=profile.task_family,
                 fingerprint_digest=profile.digest,
-                as_of=self.admit_now,
+                as_of=self._now,
                 sink=self.outcome_shadow_sink,
             )
         return (
@@ -1268,7 +1279,7 @@ class IntelligenceService:
         )
         policy_admitted = receipt.admitted
         receipt = gate_capability(
-            receipt, requirements, snapshot=metadata, identity_map=identity_map, now=self.admit_now
+            receipt, requirements, snapshot=metadata, identity_map=identity_map, now=self._now
         )
         raw_offered = tuple(dict.fromkeys(offer.route.route_id for offer in request.offers))
         from verdict.free_tier_admit import normalize_omniroute_origin
@@ -1298,11 +1309,11 @@ class IntelligenceService:
                 prefer="",
                 required_capabilities=orch_reqs.required_capabilities,
                 min_context_tokens=orch_reqs.min_context_tokens,
-                now=self.admit_now,
+                now=self._now,
                 task_category=orch_reqs.task_category,
                 visibility_executor="direct-gateway",
             )
-            _, candidates = selector._assess_all(orch_reqs, self.admit_now)
+            _, candidates = selector._assess_all(orch_reqs, self._now)
             offered_universe = tuple(
                 c.route_id for c in candidates if c.route_id in set(raw_offered)
             )
@@ -1367,7 +1378,7 @@ class IntelligenceService:
             passive_health=snapshot.passive_health,
             passport_store_path=self.passport_store_path,
             confirm_transport=confirm_transport,
-            now=self.admit_now,
+            now=self._now,
             live=confirm_live,
             consented=confirm_live or self.confirm_transport is not None,
             max_confirm_candidates=self.candidate_top_k,
@@ -1641,7 +1652,7 @@ class IntelligenceService:
             requirements,
             snapshot=metadata_for_gate,
             identity_map=identity_map if use_candidate_pool else None,
-            now=self.admit_now,
+            now=self._now,
         )
         if metadata_for_gate is not None:
             receipt, _pool = self._apply_candidate_pool(
@@ -1671,7 +1682,7 @@ class IntelligenceService:
             passive_health=snapshot.passive_health,
             passport_store_path=self.passport_store_path,
             confirm_transport=confirm_transport,
-            now=self.admit_now,
+            now=self._now,
             live=confirm_live,
             consented=confirm_live or self.confirm_transport is not None,
             max_confirm_candidates=self.candidate_top_k,
@@ -1730,7 +1741,7 @@ class IntelligenceService:
             eligibility = gated
         if receipt.admitted:
             receipt = apply_best_of_admitted(
-                receipt, now=self.admit_now, task_class=classification.protected_ranker_class
+                receipt, now=self._now, task_class=classification.protected_ranker_class
             )
         # Advisory reordering is NOT applied on the live-admit path because
         # the admitted set here contains string IDs, not ModelInfo objects, and the
