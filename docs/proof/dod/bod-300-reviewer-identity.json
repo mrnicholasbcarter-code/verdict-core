@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "story": "bod-300-reviewer-identity",
+  "kind": "product",
+  "author": "gem-devops (omniroute worker/free-first)",
+  "merged_sha": "d57c02288811010475f7e2a4c672c4ebafd267ac",
+  "pr": 998,
+  "on_main": {
+    "at": "2026-11-13T13:53:28Z",
+    "sha": "d57c02288811010475f7e2a4c672c4ebafd267ac",
+    "environment": "operator-host",
+    "command": "gh pr checks 998 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/43331192843",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod-300-reviewer-identity/pr_checks_998.txt",
+      "sha256": "60a448a2c3dd28005f20821ada98479a8489f5ecb242b11943545a73f1de5b02"
+    }
+  },
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "No dedicated scheduled job re-runs this exact orchestrate path; verdict-acceptance.timer runs acceptance gate hourly but on different stories. This evidence is fresh for 0.25 hours only.",
+  "setup_doctor": {
+    "status": "green",
+    "command": "verdict doctor --json",
+    "at": "2026-11-17T15:24:33Z",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-300-reviewer-identity/doctor_green.json",
+      "sha256": "45b9b618453a894ed6c9fd5037ee3e179813f9be8ecc2caedd7e4b6672034d5d"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "The reviewer recorded its identity in the receipt: reviewer version open-code-review v1.12.9 and route_id. The events.jsonl review event also carries observed_model kilocode/nvidia/nemotron-3.5-super-vl:free (first run), opencode-go/hy4-flash-free (parent confirmation).",
+      "expect": "\"reviewer\": \"open-code-review v1.12.9\"",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-17T15:09:40Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "verdict orchestrate --repo <scratch-repo> --graph <graph> --runs-dir <scratch-runs> --executor direct-gateway --capacity free,subscription --max-parallel 1 --attempt-timeout 300 --run-deadline 1500 --json",
+        "real_state_marker": "http://127.0.0.1:20128",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-300-reviewer-identity/orchestrate-first-20261117T150815Z.json",
+          "sha256": "76154eec85a852acd6942d71ac59be07e63a9055ec61e80cda4bd171e4773133"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T15:36:03Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "verdict orchestrate --repo <scratch-repo> --graph <graph> --runs-dir <scratch-runs> --executor direct-gateway --capacity free,subscription --max-parallel 1 --attempt-timeout 300 --run-deadline 1500 --json",
+        "real_state_marker": "http://127.0.0.1:20128",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-300-reviewer-identity/orchestrate-fresh-20261117T153355Z.json",
+          "sha256": "6e40ae54ddcdaf360feb340994abe0867ad165b46617dbd1665d8d255f037f0b"
+        }
+      }
+    }
+  ],
+  "openspec": {
+    "change": "reviewer-observed-identity"
+  },
+  "parent_confirmation": {
+    "by": "gem-devops (omniroute worker/free-first) session 20261117; fresh run executed by this session, parent confirmation from the third run",
+    "at": "2026-11-17T15:40:19Z",
+    "command": "verdict orchestrate --repo <scratch-repo> --graph <graph> --runs-dir <scratch-runs> --executor direct-gateway --capacity free,subscription --max-parallel 1 --attempt-timeout 300 --run-deadline 1500 --json",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-300-reviewer-identity/orchestrate-parent-confirmation-20261117T153908Z.json",
+      "sha256": "c9f565b80dd0518d8e448c6070f3dfec6721f7f46dafb18ad0516c394843ae0f"
+    }
+  }
+}

@@ -1,10 +1,12 @@
+# Spec Delta: reviewer observed identity
+
 ## Purpose
 
 Require a usable OCR-reported reviewer identity before a review can pass or an
 independence claim can be verified. The reported model is not a verified
 gateway-served identity.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Positive coverage without a usable reported model is not a pass
 When an OCR payload has positive coverage and `manifest.execution.model` is missing,
