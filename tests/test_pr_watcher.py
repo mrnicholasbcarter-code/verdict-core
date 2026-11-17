@@ -334,6 +334,40 @@ class TestExactHeadPolling:
         assert gh.rerun_calls == [{"job_id": 987654321, "repo": REPO}]
         assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr1:{head}:lint:987654321": 1}
 
+    def test_head_that_moved_before_its_checks_were_read_is_reported_and_not_acted_on(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches checks of a newer commit being recorded against the head that was listed."""
+        old_head, new_head = "b" * 40, "c" * 40
+        open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")])
+        open_pr(gh, 2, old_head, [check("lint")])
+        gh.set_pr(REPO, 2, {"number": 2, "head_sha": new_head})
+        gh.set_checks(REPO, new_head, [check("proof-full", "CANCELLED", job_id="job-2")])
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert outcomes(result) == [(1, "CODE_FAILURE", "REPAIR"), (2, "HEAD_CHANGED", "NO_ACTION")]
+        assert result["observations"][1]["head"] == old_head
+        assert [r["pr_number"] for r in result["records"]] == [1]
+        assert [e["pr_number"] for e in result["notifications"]] == [1]
+        assert gh.rerun_calls == []
+        assert [k for k in disk(ws)["pr_states"] if ":pr2:" in k] == []
+
+    def test_checks_belonging_to_another_commit_than_the_head_are_not_acted_on(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a rollup for an older commit being classified as the head's result."""
+        head = "b" * 40
+        open_pr(gh, 3, head, [check("lint", "FAILURE")])
+        gh.set_pr(REPO, 3, {"number": 3, "head_sha": head, "commit_oid": "9" * 40})
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert outcomes(result) == [(3, "HEAD_CHANGED", "NO_ACTION")]
+        assert result["records"] == []
+        assert result["notifications"] == []
+        assert disk(ws)["pr_states"] == {}
+
     def test_optional_failed_check_never_decides_the_result(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:

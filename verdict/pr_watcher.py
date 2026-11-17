@@ -101,12 +101,35 @@ def poll_open_prs(
     observations: list[dict[str, Any]] = []
     prs = gh.list_open_prs(repo)
 
-    for pr in prs:
-        head = pr["head_sha"]
-        pr_num = pr["number"]
+    for listed in prs:
+        head = listed["head_sha"]
+        pr_num = listed["number"]
 
-        # Fetch checks at exact head
-        checks = gh.get_pr(repo, pr_num)["checks"]
+        # One read returns the PR head, the commit its checks belong to and
+        # the checks themselves, so the three cannot drift apart.
+        pr = {**listed, **gh.get_pr(repo, pr_num)}
+        checks = pr["checks"]
+
+        # Exact head: the checks are acted on only if they belong to the head
+        # that was listed. Otherwise the PR is reported and left for the next
+        # run, with no record, rerun or notification.
+        if pr["head_sha"] != head or pr.get("commit_oid") != head:
+            observations.append(
+                {
+                    "repo": repo,
+                    "pr_number": pr_num,
+                    "head": head,
+                    "ci_classification": "HEAD_CHANGED",
+                    "merge_classification": "UNKNOWN",
+                    "classification": "HEAD_CHANGED",
+                    "action": "NO_ACTION",
+                    "checks": [],
+                    "rerun_targets": [],
+                    "merge_state": pr.get("merge_state_status", ""),
+                    "linear_issue": pr.get("linear_issue"),
+                }
+            )
+            continue
 
         # Only the checks branch protection requires decide the result; the
         # client reports that flag per check.
@@ -354,6 +377,9 @@ def _plan_observation(
     """Turn one open-PR observation into records, a transition and planned reruns."""
     repo, pr_number, head = obs["repo"], obs["pr_number"], obs["head"]
     classification = obs["classification"]
+    if classification == "HEAD_CHANGED":
+        # Nothing is known about the listed head, so nothing is stored for it.
+        return
     previous = state.get_pr_state(plan.data, repo, pr_number, head)
     action = obs["action"]
 
