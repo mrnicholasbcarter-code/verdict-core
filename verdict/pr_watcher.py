@@ -475,6 +475,15 @@ def _plan_observation(
             if c.get("required") is True and c.get("conclusion") in _FAILING_CONCLUSIONS
         ]
         failing = [c["name"] for c in failed]
+        details = [
+            {
+                "name": c["name"],
+                "conclusion": c["conclusion"],
+                "job_id": c.get("job_id"),
+                "details_url": c.get("details_url"),
+            }
+            for c in failed
+        ]
         # Name the conclusion when it is not a plain failure, so the repair
         # worker can tell "needs a person" from "the code is wrong".
         named = sorted({str(c["conclusion"]) for c in failed} & REPAIR_CONCLUSIONS)
@@ -490,6 +499,7 @@ def _plan_observation(
                 pr_number=pr_number,
                 head=head,
                 failing_checks=failing,
+                failing_check_details=details,
                 classification=classification,
                 reason=reason,
             ).to_dict(plan.stamp),

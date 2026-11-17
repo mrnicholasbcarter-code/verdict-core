@@ -10,16 +10,12 @@ import contextlib
 import fcntl
 import json
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from verdict.security import CREDENTIAL_SHAPES
-
 SCHEMA_VERSION = 1
 RECORD_KINDS = ("repair", "block", "regression")
-MAX_LOG_EXCERPT = 4096
 MAX_LINEAR_RETRY = 5
 STALLED_THRESHOLD_MINUTES = 30
 
@@ -199,36 +195,6 @@ def _idempotency_key(kind: str, repo: str, pr_number: int, head: str) -> str:
     return _safe_key(f"{kind}:{repo}:pr{pr_number}:{head}")
 
 
-# --- Secret redaction -------------------------------------------------------------
-
-_REDACTED = "[REDACTED]"
-# Credentials in a URL's userinfo, e.g. https://x-access-token:<token>@github.com/...
-_URL_USERINFO = re.compile(r"(?i)(https?://)[^/\s@]+@")
-# The whole value of an Authorization header, whatever the scheme.
-_AUTH_HEADER = re.compile(r"(?i)(authorization\s*:\s*)[^\r\n]+")
-# key=value / key: value fields whose name marks the value as a secret.
-_SECRET_FIELD = re.compile(
-    r"(?i)((?:token|password|passwd|secret|api[_-]?key)[\"']?\s*[=:]\s*)[^\s&,;]+"
-)
-
-
-def redact_secrets(text: str) -> str:
-    """Replace token-bearing URLs, authorization headers and secret fields."""
-    text = _URL_USERINFO.sub(rf"\g<1>{_REDACTED}@", text)
-    for pattern in (_AUTH_HEADER, *CREDENTIAL_SHAPES, _SECRET_FIELD):
-        text = pattern.sub(rf"\g<1>{_REDACTED}", text)
-    return text
-
-
-def truncate_log(text: str, limit: int = MAX_LOG_EXCERPT) -> str:
-    """Redact, then bound, a log excerpt.
-
-    Redaction runs first: cutting first could split a secret at the limit and
-    leave a prefix of it that no pattern recognises.
-    """
-    return redact_secrets(text)[:limit]
-
-
 # --- Repair / block / regression record builders ----------------------------------
 
 
@@ -241,7 +207,7 @@ class RepairRecord:
         pr_number: int,
         head: str,
         failing_checks: list[str],
-        log_excerpt: str = "",
+        failing_check_details: list[dict[str, Any]] | None = None,
         classification: str = "",
         reason: str = "",
     ) -> None:
@@ -249,7 +215,9 @@ class RepairRecord:
         self.pr_number = pr_number
         self.head = head
         self.failing_checks = failing_checks
-        self.log_excerpt = truncate_log(log_excerpt)
+        # Name, conclusion, job id and details URL per failing check: what a
+        # repair worker needs to fetch the log itself. No log text is stored.
+        self.failing_check_details = failing_check_details or []
         self.classification = classification
         self.reason = reason
         self.idempotency_key = _idempotency_key("repair", repo, pr_number, head)
@@ -261,7 +229,7 @@ class RepairRecord:
             "pr_number": self.pr_number,
             "head": self.head,
             "failing_checks": self.failing_checks,
-            "log_excerpt": self.log_excerpt,
+            "failing_check_details": self.failing_check_details,
             "classification": self.classification,
             "reason": self.reason,
             "idempotency_key": self.idempotency_key,

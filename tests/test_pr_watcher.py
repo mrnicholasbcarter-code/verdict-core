@@ -39,8 +39,6 @@ from verdict.pr_watcher_state import (
     UnsafeKeyError,
     WatcherState,
     _safe_key,
-    redact_secrets,
-    truncate_log,
 )
 
 # ============================================================================
@@ -178,9 +176,6 @@ REAL_CHECK_NAMES = (
 # pattern, and no real check name here does. This single synthetic name exists
 # to reach that branch.
 INFRA_NAMED_CHECK = "runner timeout"
-# Shaped like a GitHub token so the redactor sees a realistic value; assembled
-# here so that no token-shaped literal is stored in the repository.
-FAKE_TOKEN = "ghp_" + "Ab1" * 12
 
 
 def iso(moment: datetime) -> str:
@@ -1304,13 +1299,45 @@ class TestCodeAndMergeFailures:
                 "pr_number": 1,
                 "head": head,
                 "failing_checks": [],
-                "log_excerpt": "",
+                "failing_check_details": [],
                 "classification": classification,
                 "reason": f"PR classified as {classification}",
                 "idempotency_key": f"repair:{REPO}:pr1:{head}",
                 "created_at": iso(T0),
             }
         ]
+
+    def test_repair_record_names_each_failing_check_with_its_job_and_details_url(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a repair record that leaves the worker unable to find the failing job's log."""
+        url = "https://github.com/org/repo/actions/runs/11/job/22"
+        open_pr(
+            gh,
+            1,
+            "c" * 40,
+            [
+                check("lint", "FAILURE", job_id=22, details_url=url),
+                check("proof-full", "ACTION_REQUIRED", job_id=None, details_url=None),
+                check("test (3.11)"),
+                {**check("Analyze (python)", "FAILURE", job_id=33), "required": False},
+            ],
+        )
+
+        run_watcher(gh, ws, [REPO], now=T0)
+
+        record = disk(ws)["records"]["repair"][0]
+        assert record["failing_checks"] == ["lint", "proof-full"]
+        assert record["failing_check_details"] == [
+            {"name": "lint", "conclusion": "FAILURE", "job_id": 22, "details_url": url},
+            {
+                "name": "proof-full",
+                "conclusion": "ACTION_REQUIRED",
+                "job_id": None,
+                "details_url": None,
+            },
+        ]
+        assert "log_excerpt" not in record
 
     def test_code_failure_writes_one_repair_record_across_three_runs(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -1821,59 +1848,6 @@ class TestPathSafeKeys:
             ws.add_record(data, {"type": "repair", "idempotency_key": "repair:../x"})
         with pytest.raises(UnsafeKeyError):
             RepairRecord(repo="../x", pr_number=1, head="a" * 40, failing_checks=[])
-
-
-# ============================================================================
-# Requirement 12: Repair record log excerpts are bounded and redacted
-# ============================================================================
-
-
-class TestLogExcerptBounds:
-    """Requirement: Repair record log excerpts are bounded and redacted."""
-
-    def test_excerpt_is_cut_to_exactly_4096_characters(self) -> None:
-        """Catches an unbounded excerpt, and one cut to nothing."""
-        assert truncate_log("x" * 8000) == "x" * 4096
-
-    def test_short_ordinary_log_is_left_alone(self) -> None:
-        """Catches over-redaction eating check names and ordinary output."""
-        log = "test (3.11) failed: tests/test_router.py::test_token_bucket_refill - assert 3 == 4"
-        assert truncate_log(log) == log
-
-    def test_token_in_a_url_is_redacted(self) -> None:
-        """Catches a token-bearing clone URL being stored as-is."""
-        log = f"fatal: unable to access 'https://x-access-token:{FAKE_TOKEN}@github.com/org/repo/'"
-        assert redact_secrets(log) == (
-            "fatal: unable to access 'https://[REDACTED]@github.com/org/repo/'"
-        )
-
-    @pytest.mark.parametrize(
-        ("line", "expected"),
-        [
-            (f"> Authorization: Bearer {FAKE_TOKEN}", "> Authorization: [REDACTED]"),
-            ("authorization: Basic dXNlcjpwYXNzd29yZA==", "authorization: [REDACTED]"),
-            (f"GH_TOKEN={FAKE_TOKEN}", "GH_TOKEN=[REDACTED]"),
-            (f"using {FAKE_TOKEN} for checkout", "using [REDACTED] for checkout"),
-            ("password: hunter2-not-real", "password: [REDACTED]"),
-        ],
-        ids=["bearer header", "basic header", "token field", "bare token", "password field"],
-    )
-    def test_authorization_headers_and_secret_fields_are_redacted(
-        self, line: str, expected: str
-    ) -> None:
-        """Catches a secret that is not shaped like a GitHub token slipping through."""
-        assert redact_secrets(line) == expected
-
-    def test_repair_record_redacts_a_secret_that_straddles_the_4096_limit(self) -> None:
-        """Catches cutting before redacting, which leaves the front of a token in the record."""
-        log = "x" * 4050 + f" https://x-access-token:{FAKE_TOKEN}@github.com/o/r " + "y" * 8000
-        record = RepairRecord(
-            repo=REPO, pr_number=1, head="a" * 40, failing_checks=["lint"], log_excerpt=log
-        ).to_dict(iso(T0))
-
-        assert len(record["log_excerpt"]) == 4096
-        assert FAKE_TOKEN[:12] not in record["log_excerpt"]
-        assert record["log_excerpt"].count("[REDACTED]") == 1
 
 
 # ============================================================================
