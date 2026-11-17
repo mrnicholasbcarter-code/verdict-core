@@ -1213,9 +1213,7 @@ class EligibilityLadder:
         probe_order = self._probe_order(candidates)
         # BOD-297: selection confirmation joins the shared coordinator lease;
         # never probe while another producer owns the job.
-        # FIX: keep probe_order but skip probe dispatch when lease is held.
-        # Routes that are already healthy, launchable, and have fresh proof
-        # will still be chosen because they don't enter the probe-sending branch.
+        # While another producer holds the refresh lease, skip probes and confirmations but still choose routes with fresh proof.
         health_cache = getattr(self, "_health_cache", None)
         lease_held = False
         if health_cache is not None:

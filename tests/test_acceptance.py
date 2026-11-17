@@ -1032,3 +1032,8 @@ def test_judge_choose_skips_outcome_history_lines() -> None:
     ok, reason, _detail = acceptance.judge_choose(1, "", "")
     assert ok is False
     assert "not implemented: exit 1" in reason
+
+    # Case 5: nonzero exit code with stdout selected - MUST fail (exit != 0 always fails)
+    ok, reason, _detail = acceptance.judge_choose(1, '{"selected": "cc/claude-sonnet-5"}', "")
+    assert ok is False, "nonzero exit must always fail even with selected in stdout"
+    assert "no route selected" in reason or "not implemented" in reason

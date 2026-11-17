@@ -6,29 +6,28 @@ While the six-hourly screen (`verdict identify --screen`) holds `verified-refres
 
 Cause (verified in source on `origin/main`): `verdict/orchestration/eligibility.py` `EligibilityLadder.select`, around lines 1214-1222: `if _JobLock(_lock_path).live(): probe_order = []`. That loop (around 1223-1290) is also the only place `chosen` is assigned, so emptying it removes every candidate, including routes already proven healthy that need no probe. The intent (BOD-297 comment) was only "never probe while another producer owns the job".
 
-Same pattern in `verdict/admit_prove_confirm.py` around 605-632: lease live -> every shortlisted id `confirm_unavailable` and `admitted=()`.
+Same pattern was already handled in `verdict/admit_prove_confirm.py` around 605-632: lease live -> `confirm_unavailable` for stale/no-passport identities and `admitted=()` when no fresh passports exist. That path already skips confirmations while the lease is held (BOD-297). No production change is needed there in this PR.
 
-Fix it so a held lease skips probes only; routes that are already proven (healthy, launchable, fresh proof) are still selected and admitted.
+Fix it so a held lease skips probes only; routes that are already proven (healthy, launchable, fresh proof) are still selected.
 
 ## What Changes
 
 - `EligibilityLadder.select`: when the coordinator lease is held, do not empty `probe_order`. Instead, set a `lease_held` flag. In the probe loop, where a probe would be sent, if `lease_held` is true, set the candidate's reason to `lease_held` and continue without probing. Routes that are already healthy, launchable, and have fresh proof will still be chosen because they don't enter the probe-sending branch.
-- `gate_admit_prove_confirm`: when the lease is held, admit routes with fresh passports (already qualified) and mark only stale/no-passport routes as `confirm_unavailable`. Do not empty the admitted set entirely.
-- `verdict/acceptance.py` `judge_choose`: take the failure reason from stdout JSON when present, else the last stderr line that does not start with `outcome history:`.
+- `verdict/admit_prove_confirm.py` `gate_admit_prove_confirm`: already skips confirmations while the lease is held (BOD-297). No production change in this PR; the two removed tests for this path passed on `origin/main` without modification.
+- `verdict/acceptance.py` `judge_choose`: nonzero exit code always fails; only exit 0 with valid `selected` passes. Extracts failure reason from stdout JSON first, else last non-`outcome history:` stderr line.
 
 ## Capabilities
 
 ### Modified Capabilities
 
 - `shared-selection`: Selection still picks the same first route across surfaces when a lease is held, because proven routes are still admitted and chosen.
-- `shared-qualification`: The coordinator lease no longer blocks admission of routes with fresh proof; only probes and confirmations are skipped.
+- `shared-qualification`: The coordinator lease no longer blocks admission of routes with fresh proof; only probes and confirmations are skipped. (Admission path already had this behavior on `origin/main`.)
 
 ## Impact
 
 - `verdict/orchestration/eligibility.py` `EligibilityLadder.select`
-- `verdict/admit_prove_confirm.py` `gate_admit_prove_confirm`
 - `verdict/acceptance.py` `judge_choose`
-- New behavioral tests in existing test files for eligibility and admit_prove_confirm
+- New behavioral tests in `tests/test_orch_eligibility.py` and `tests/test_acceptance.py`
 - No API, gate, dependency, or install change.
 
 ## Evidence boundary

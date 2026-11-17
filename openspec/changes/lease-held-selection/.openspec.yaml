@@ -3,4 +3,3 @@ change: "lease-held-selection"
 title: "A held coordinator lease skips probes but still selects proven routes"
 specs:
   - shared-selection
-  - shared-qualification

@@ -2,19 +2,18 @@
 
 ## Context
 
-The six-hourly screen (`verdict identify --screen`) acquires a cross-process flock lock (`verified-refresh.lock`) for about 10 minutes while it refreshes the verified model cache. During this window, the hourly acceptance run (00/06/12/18 UTC) also runs and calls into selection. Two code paths check `_JobLock(_lock_path).live()` and, when true, disable all candidate evaluation:
+The six-hourly screen (`verdict identify --screen`) acquires a cross-process flock lock (`verified-refresh.lock`) for about 10 minutes while it refreshes the verified model cache. During this window, the hourly acceptance run (00/06/12/18 UTC) also runs and calls into selection. One code path checks `_JobLock(_lock_path).live()` and, when true, disables all candidate evaluation:
 
 1. `EligibilityLadder.select` (eligibility.py ~1214-1222): `probe_order = []` — this empties the only loop where `chosen` gets assigned, so even healthy, launchable, fresh-proof routes are never selected.
-2. `gate_admit_prove_confirm` (admit_prove_confirm.py ~605-632): when the lease is live, every shortlisted identity gets `confirm_unavailable` and `admitted=()` is returned.
 
-The BOD-297 comment at both sites says the intent was only "never probe while another producer owns the job". The fix must preserve that intent while allowing already-proven routes to be selected/admitted.
+The BOD-297 comment at this site says the intent was only "never probe while another producer owns the job". The fix must preserve that intent while allowing already-proven routes to be selected.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- When the lease is held, skip probe dispatch and confirmation calls only.
+- When the lease is held, skip probe dispatch only. Confirmation calls are already skipped by the existing BOD-297 path in `admit_prove_confirm.py`.
 - Routes that are already healthy, launchable (admitted), and have fresh agentic proof are still chosen/admitted.
-- Routes that would need a probe or confirmation get reason `lease_held` (eligibility) or `confirm_unavailable` with "coordinator lease held by another producer" (admission).
+- Routes that would need a probe get reason `lease_held` (eligibility).
 - `judge_choose` extracts failure reason from stdout JSON first, then last non-"outcome history:" stderr line.
 
 **Non-Goals:**
@@ -33,16 +32,6 @@ The BOD-297 comment at both sites says the intent was only "never probe while an
    - Healthy + launchable + fresh proof: never enters the probe branch, gets chosen as before.
    - Unhealthy / not launchable / stale proof: enters probe branch, sees `lease_held`, gets `reason="lease_held"`, continues to next candidate without probing.
    - If all candidates need a probe, `chosen` remains `None`, selection fails closed with `lease_held` reasons.
-
-### gate_admit_prove_confirm
-
-1. When `_JobLock(_confirm_lock_path).live()` is true, do not return `admitted=()` immediately.
-2. Instead, partition the `shortlist` into:
-   - `fresh_ids`: those with a fresh passport (in `confirmation["admitted"]` and `qualified_at` within `PERMIT_PROOF_MAX_VALIDITY_SECONDS`).
-   - `stale_ids`: the rest.
-3. Admit `fresh_ids` (add to `admitted`, no confirm rows needed).
-4. For `stale_ids`, append `NamedDrop` with `REASON_CONFIRM_UNAVAILABLE` and "coordinator lease held by another producer", and `ConfirmEvidence` with `confirmed=False`, `status=REASON_CONFIRM_UNAVAILABLE`.
-5. Return `_finalize` with `admitted=fresh_ids`.
 
 ### judge_choose
 
@@ -69,7 +58,7 @@ The BOD-297 comment at both sites says the intent was only "never probe while an
 
 ## Migration / rollback
 
-- Revert the three files to restore the previous behavior (empty probe_order, empty admitted set).
+- Revert the two files (`eligibility.py`, `acceptance.py`) to restore the previous behavior (empty `probe_order`).
 - No data migration needed.
 
 ## ADR impact
