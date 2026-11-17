@@ -222,6 +222,35 @@ def _merged_since(cursor: datetime | None, now: datetime) -> str:
     return format_timestamp(cursor - MERGED_LOOKBACK)
 
 
+def _has_standing_change_request(reviews: list[dict[str, Any]], head: str) -> bool:
+    """True if a CHANGES_REQUESTED review is a fail on the merged head.
+
+    It is when it was made on the merged head itself, or when no later
+    APPROVED review of that head exists.  A review that does not say which
+    commit it was made on cannot be shown to be older, so it counts.
+    """
+    # Oldest first: by submission time when the client reports one, otherwise
+    # in the order the client returned them.
+    ordered = [
+        review
+        for _, review in sorted(
+            enumerate(reviews), key=lambda item: (item[1].get("submitted_at") or "", item[0])
+        )
+    ]
+    for position, review in enumerate(ordered):
+        if review["state"] != "CHANGES_REQUESTED":
+            continue
+        if review.get("commit_oid", head) == head:
+            return True
+        approved_later = any(
+            later["state"] == "APPROVED" and later.get("commit_oid") == head
+            for later in ordered[position + 1 :]
+        )
+        if not approved_later:
+            return True
+    return False
+
+
 def reconcile_merged_prs(
     gh: WatcherGitHubClient,
     state: WatcherState,
@@ -248,8 +277,7 @@ def reconcile_merged_prs(
         head = pr["head_sha"]
         reviews = pr["reviews"]
 
-        # Check for CHANGES_REQUESTED
-        has_changes_requested = any(r["state"] == "CHANGES_REQUESTED" for r in reviews)
+        has_changes_requested = _has_standing_change_request(reviews, head)
 
         # Check for Verdict/ocr fail receipt
         fail_key = f"{repo}:{pr_num}:{head}"

@@ -469,6 +469,73 @@ class TestMergedPRReconciliation:
         assert [(r["record"]["pr_number"], r["record"]["head"]) for r in regs] == [(42, "e" * 40)]
         assert regs[0]["review_sources"] == ["github_changes_requested"]
 
+    def reviewed(self, gh: FakeGitHubClient, head: str, *reviews: tuple[str, str, int]) -> None:
+        """Merged PR 42 at ``head`` with (state, commit, minute submitted) reviews."""
+        gh.set_merged_prs(REPO, [{"number": 42, "head_sha": head, "merged_at": MERGED_AT}])
+        gh.set_reviews(
+            REPO,
+            42,
+            [
+                {"state": s, "commit_oid": c, "submitted_at": f"2026-03-02T10:{m:02d}:00Z"}
+                for s, c, m in reviews
+            ],
+        )
+
+    def test_changes_requested_on_an_older_commit_is_cleared_by_a_later_approval_of_the_head(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a review that was addressed and then approved being reported as a fail."""
+        old, head = "0" * 40, "e" * 40
+        self.reviewed(gh, head, ("CHANGES_REQUESTED", old, 1), ("APPROVED", head, 30))
+
+        assert reconcile_merged_prs(gh, ws, REPO, now=T0) == []
+
+    @pytest.mark.parametrize(
+        "later",
+        [
+            [],
+            [("APPROVED", "0" * 40, 30)],
+            [("COMMENTED", "e" * 40, 30)],
+            [("DISMISSED", "e" * 40, 30)],
+        ],
+        ids=["nothing later", "approval of the old commit", "comment on head", "dismissed on head"],
+    )
+    def test_changes_requested_on_an_older_commit_stands_without_a_later_approval_of_the_head(
+        self, gh: FakeGitHubClient, ws: WatcherState, later: list[tuple[str, str, int]]
+    ) -> None:
+        """Catches an outstanding change request being dropped because the head moved on."""
+        self.reviewed(gh, "e" * 40, ("CHANGES_REQUESTED", "0" * 40, 1), *later)
+
+        regs = reconcile_merged_prs(gh, ws, REPO, now=T0)
+
+        assert [r["review_sources"] for r in regs] == [["github_changes_requested"]]
+
+    def test_approval_of_the_head_before_the_change_request_does_not_clear_it(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches 'later' being ignored, so that any approval of the head clears a request."""
+        head = "e" * 40
+        self.reviewed(gh, head, ("APPROVED", head, 1), ("CHANGES_REQUESTED", "0" * 40, 30))
+
+        regs = reconcile_merged_prs(gh, ws, REPO, now=T0)
+
+        assert [r["review_sources"] for r in regs] == [["github_changes_requested"]]
+
+    def test_changes_requested_on_the_merged_head_counts_even_after_an_approval_of_it(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a change request made on the merged commit itself being cleared.
+
+        This is the one case where the two readings of the rule differ; it follows
+        "counts if on the merged head, or if no later approval of that head exists".
+        """
+        head = "e" * 40
+        self.reviewed(gh, head, ("CHANGES_REQUESTED", head, 1), ("APPROVED", head, 30))
+
+        regs = reconcile_merged_prs(gh, ws, REPO, now=T0)
+
+        assert [r["review_sources"] for r in regs] == [["github_changes_requested"]]
+
     def test_fail_receipt_counts_only_for_the_merged_head(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
