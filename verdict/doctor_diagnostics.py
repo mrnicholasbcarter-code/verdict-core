@@ -1018,6 +1018,7 @@ def installed_service_rows(
     rows.append(_acceptance_timer_row(timer_state))
     rows.append(_ref_docs_timer_row(injected_timer_state))
     rows.append(_docs_refresh_timer_row(injected_timer_state))
+    rows.append(_pr_watcher_timer_row(injected_timer_state))
     rows.extend(_ref_docs_rows(ref_docs_status))
     rows.append(report_row(now=now))
     rows.append(omniroute_webhook_row(now=now))
@@ -1212,6 +1213,30 @@ def _docs_refresh_timer_row(timer_state: Callable[[str], dict[str, Any]] | None)
         detail += (
             "; repair: verdict memory docs --fix; "
             f"logs: journalctl --user -u {docs_refresh_service.SERVICE}"
+        )
+    return {"label": label, "status": "failed", "detail": detail}
+
+
+def _pr_watcher_timer_row(timer_state: Callable[[str], dict[str, Any]] | None) -> dict[str, str]:
+    """The 5-minute PR watcher timer is active and its last run succeeded."""
+    from verdict import pr_watcher_service
+    from verdict.setup_host import PR_WATCHER, setup_repair
+
+    unit = pr_watcher_service.TIMER
+    state = (timer_state or pr_watcher_service.timer_state)(unit)
+    name, result = str(state.get("state", "unknown")), str(state.get("result", "unknown"))
+    detail = f"{unit} is {name}; last result {result}"
+    label = "PR watcher timer"
+    if name == "active" and result == "success":
+        return {"label": label, "status": "ok", "detail": detail}
+    if name == "missing":
+        detail += f"; repair: {setup_repair(PR_WATCHER)}"
+    elif name == "inactive":
+        detail += f"; repair: systemctl --user enable --now {unit}"
+    else:
+        detail += (
+            "; repair: verdict pr-watch --json; "
+            f"logs: journalctl --user -u {pr_watcher_service.SERVICE}"
         )
     return {"label": label, "status": "failed", "detail": detail}
 
