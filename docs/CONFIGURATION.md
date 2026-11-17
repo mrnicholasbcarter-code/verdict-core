@@ -420,6 +420,9 @@ Each entry is validated as `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$` without `..`.
 `verdict setup` installs and enables a user timer (`verdict-pr-watch.timer`) that runs
 the watcher every five minutes. `verdict doctor` reports the timer state, runtime
 provenance, configured repositories, and state scope with secrets redacted.
+The watcher is opt-in: until `pr-watch.env` exists, a missing timer is a doctor
+warning ("not configured"), not a failure. Once `pr-watch.env` exists, a missing,
+inactive or failed timer fails doctor.
 
 ## Passive health refresh
 
