@@ -149,7 +149,7 @@ def is_opaque(route_id: str) -> bool:
         return False
 
     # Split provider and model path
-    _, model_path = lowered.split("/", 1)
+    provider, model_path = lowered.split("/", 1)
 
     # Strip tier suffix from the last segment (e.g., ":free", ":small")
     segments = model_path.split("/")
@@ -173,10 +173,15 @@ def is_opaque(route_id: str) -> bool:
     if first_seg.endswith("-auto"):
         return True
 
-    # Check for "free" preceded by known router (e.g., openrouter/free)
+    # Check for "free" preceded by known router (e.g., openrouter/free).
+    # When "free" is the first model segment (i == 0), the provider segment
+    # itself is the preceding router (e.g., openrouter/free).
     for i, seg in enumerate(segments):
-        if seg == "free" and i > 0 and segments[i - 1] in _OPAQUE_ROUTER_NAMES:
-            return True
+        if seg == "free":
+            if i > 0 and segments[i - 1] in _OPAQUE_ROUTER_NAMES:
+                return True
+            if i == 0 and provider in _OPAQUE_ROUTER_NAMES:
+                return True
 
     return False
 

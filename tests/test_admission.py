@@ -147,6 +147,9 @@ def test_opaque_routes_are_never_admitted() -> None:
         # Opaque: free preceded by known router (openrouter)
         ("kilocode/openrouter/free", True),
         ("openrouter/openrouter/free", True),
+        ("openrouter/free", True),
+        ("omniroute/openrouter/free", True),
+        ("openrouter/free:free", True),
         # Opaque: exact opaque IDs after provider
         ("openrouter/auto", True),
         ("x/auto", True),
@@ -154,6 +157,8 @@ def test_opaque_routes_are_never_admitted() -> None:
         ("x/combo/y", True),
         # Concrete: tier suffix :free, not path segment
         ("kilocode/nvidia/nemotron-3-ultra-550b-a55b:free", False),
+        # Concrete: openrouter model with :free tier suffix stays concrete
+        ("openrouter/meta-llama/llama-3-8b:free", False),
         # Concrete: model name contains "auto" but doesn't end in -auto
         ("x/autocoder-7b", False),
         ("x/gpt-auto-instruct", False),

@@ -22,6 +22,9 @@ The following SHALL be opaque:
 - `kilocode/kilo-auto/small` (vendor auto-router `kilo-auto`)
 - `kilocode/openrouter/free` (`free` preceded by router `openrouter`)
 - `openrouter/openrouter/free` (`free` preceded by router `openrouter`)
+- `openrouter/free` (`free` with provider `openrouter` as preceding router)
+- `omniroute/openrouter/free` (gateway prefix + `openrouter/free`)
+- `openrouter/free:free` (`free` preceded by router `openrouter`, tier suffix `:free` stripped)
 - `openrouter/auto` (exact opaque ID)
 - `x/auto` (exact opaque ID)
 - `x/combo/y` (opaque prefix `combo/`)
@@ -31,6 +34,7 @@ The following SHALL remain concrete:
 - `x/autocoder-7b` (model `autocoder-7b` does not end in `-auto`)
 - `x/gpt-auto-instruct` (model `gpt-auto-instruct` does not end in `-auto`)
 - `ovhfree/Qwen3.6-27B` (provider `ovhfree`, model `Qwen3.6-27B`)
+- `openrouter/meta-llama/llama-3-8b:free` (model path `meta-llama/llama-3-8b`, tier suffix `:free`; neither segment ends in `-auto`, `free` not preceded by router)
 
 #### Scenario: Kilo auto-router aliases are dropped
 
@@ -44,6 +48,13 @@ The following SHALL remain concrete:
 - **GIVEN** live inventory contains `kilocode/openrouter/free`
 - **WHEN** admission runs
 - **THEN** it is dropped at DISCOVERED stage with reason `opaque_route`
+
+#### Scenario: Bare router free alias is dropped
+
+- **GIVEN** live inventory contains `openrouter/free` and `omniroute/openrouter/free`
+- **WHEN** admission runs
+- **THEN** both are dropped at DISCOVERED stage with reason `opaque_route`
+- **TEST** `tests/test_admission.py::test_is_opaque_nested_routes[openrouter/free-True]` and `[omniroute/openrouter/free-True]`
 
 #### Scenario: Real models containing "auto" stay concrete
 
