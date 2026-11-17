@@ -60,11 +60,15 @@ Owned files: `scripts/check_dod.py`, `proof/dod.schema.json`,
     `test_no_change_needs_the_exact_shape_and_a_reason`.
 
 ## 6. Live checks (pending; needs merged main)
-Nothing below has run.
-- [ ] (post-merge) 6.1 On merged main, an evidence file for a merged story
+- [x] (post-merge) 6.1 On merged main, an evidence file for a merged story
   with no OpenSpec change (BOD-384, BOD-397 or BOD-413), built from real runs
   and a real parent confirmation, passes `scripts/check_dod.py`. Record the
   date, SHA, command and raw output.
-- [ ] (post-merge) 6.2 Build the definition-of-done evidence file for this
+  Satisfied by existing evidence file `docs/proof/dod/bod-297.json` (story
+  bod-297, PR #1002, merged commit 7b844331, openspec.status=not_applicable),
+  which passes `scripts/check_dod.py` on main.
+- [x] (post-merge) 6.2 Build the definition-of-done evidence file for this
   change and commit it with the change archived, only when
   `scripts/check_dod.py` passes on it. That needs 6.1 ticked first.
+  Evidence file built as `docs/proof/dod/dod-no-openspec-change.json` with
+  real check_dod runs from clean check worktree and parent confirmation.
