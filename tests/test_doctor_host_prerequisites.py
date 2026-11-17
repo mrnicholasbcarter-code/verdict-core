@@ -304,6 +304,16 @@ def test_docs_refresh_timer_row_is_ok_when_active_and_last_run_succeeded() -> No
     assert row["status"] == "ok" and row["label"] == "Documentation refresh timer"
 
 
+@pytest.fixture
+def _pr_watch_opted_in(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The operator wrote pr-watch.env, so the watcher timer is expected."""
+    config = tmp_path / ".config" / "verdict"
+    config.mkdir(parents=True)
+    (config / "pr-watch.env").write_text("VERDICT_PR_WATCH_REPOS=org/repo\n")
+    (config / "pr-watch.env").chmod(0o600)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+
+
 @pytest.mark.parametrize(
     ("state", "result", "repair"),
     [
@@ -313,6 +323,7 @@ def test_docs_refresh_timer_row_is_ok_when_active_and_last_run_succeeded() -> No
         ("active", "failed", "verdict pr-watch --json"),
     ],
 )
+@pytest.mark.usefixtures("_pr_watch_opted_in")
 def test_pr_watcher_timer_row_names_its_repair(state: str, result: str, repair: str) -> None:
     row = dd._pr_watcher_timer_row(lambda unit: {"state": state, "result": result})
     assert row["status"] == "failed"
@@ -395,6 +406,51 @@ def test_pr_watcher_timer_row_parses_real_systemctl_format_with_repos() -> None:
     assert "state dir=" in row["detail"]
 
 
+def test_pr_watcher_row_is_a_warning_not_a_failure_before_the_operator_opts_in(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches doctor failing on a host where the watcher was never enabled.
+
+    spec.md:97 makes pr-watch.env the repository configuration, and setup
+    refuses to install the timer without it, so a missing timer with no
+    pr-watch.env is "not configured", not a broken install.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+
+    row = dd._pr_watcher_timer_row(lambda unit: {"state": "missing", "result": "unknown"})
+
+    assert row["status"] == "warning"
+    assert "not configured" in row["detail"]
+    assert "pr-watch.env" in row["detail"]
+    assert repair_command(row["detail"]) == "verdict setup --apply --allow host.pr-watcher-timer"
+
+
+def test_pr_watcher_timer_without_config_is_read_from_the_fake_systemd_not_the_host(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches the default (uninjected) row reading the real host's user units."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+
+    row = dd._pr_watcher_timer_row()
+
+    assert row["status"] == "warning"
+    assert "verdict-pr-watch.timer is missing" in row["detail"]
+
+
+@pytest.mark.usefixtures("_pr_watch_opted_in")
+def test_pr_watcher_timer_missing_after_opt_in_still_fails() -> None:
+    """Catches the opt-in warning hiding a timer that is gone once pr-watch.env exists.
+
+    spec.md:99-101: an absent or inactive timer is a failing diagnostic.
+    """
+
+    row = dd._pr_watcher_timer_row(lambda unit: {"state": "missing", "result": "unknown"})
+
+    assert row["status"] == "failed"
+    assert repair_command(row["detail"]) == "verdict setup --apply --allow host.pr-watcher-timer"
+
+
+@pytest.mark.usefixtures("_pr_watch_opted_in")
 def test_pr_watcher_timer_row_omits_fields_when_unit_missing() -> None:
     """Test that fields are omitted when the unit is missing."""
 

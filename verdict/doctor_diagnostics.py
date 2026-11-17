@@ -1232,7 +1232,20 @@ def _pr_watcher_timer_row(
     label = "PR watcher timer"
 
     if name == "missing":
+        from verdict.setup_host import _pr_watch_config_path
+
+        config = _pr_watch_config_path()
         detail += f"; repair: {setup_repair(PR_WATCHER)}"
+        if not config.exists():
+            # The watcher is opt-in: setup installs the timer only once
+            # pr-watch.env names repositories (spec.md:97), so a host that
+            # never opted in is not configured rather than broken.
+            return {
+                "label": label,
+                "status": "warning",
+                "detail": f"{unit} is missing; not configured: write VERDICT_PR_WATCH_REPOS "
+                f"to {config} to opt in; repair: {setup_repair(PR_WATCHER)}",
+            }
         return {"label": label, "status": "failed", "detail": detail}
 
     # Unit exists; parse systemctl properties
