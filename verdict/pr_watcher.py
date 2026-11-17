@@ -288,6 +288,21 @@ def reconcile_merged_prs(
 # --- Bounded rerun with fencing --------------------------------------------------
 
 
+def _still_rerunnable(
+    checks: list[dict[str, Any]], check_name: str, workflow_job_id: object, stalled: bool
+) -> bool:
+    """True if the same required check, by name and job id, still warrants the rerun."""
+    for check in checks:
+        if check.get("name") != check_name or check.get("job_id") != workflow_job_id:
+            continue
+        if check.get("required") is not True:
+            return False
+        if stalled:
+            return check.get("status") in {"IN_PROGRESS", "QUEUED"}
+        return check.get("conclusion") in _RERUNNABLE_CONCLUSIONS
+    return False
+
+
 def request_bounded_rerun(
     gh: WatcherGitHubClient,
     state: WatcherState,
@@ -295,26 +310,36 @@ def request_bounded_rerun(
     pr_number: int,
     head: str,
     check_name: str,
-    workflow_job_id: str,
+    workflow_job_id: int | str,
     max_attempts: int = 1,
     data: dict[str, Any] | None = None,
+    stalled: bool = False,
 ) -> dict[str, Any]:
-    """Request one bounded rerun, fenced on the exact head.
+    """Request one bounded rerun, fenced on the exact head and check identity.
 
-    Order: reread the PR head, check the per-key budget, persist the raised
-    attempt counter, and only then call GitHub.  ``data``, when given, is
-    updated in place so the caller keeps the state that is now on disk.  A
-    failed state write raises ``StateWriteError`` and no rerun is requested.
+    Order: reread the PR, confirm the head and that the same check (name and
+    job id) is still failed or, for ``stalled``, still unfinished; check the
+    per-key budget; persist the raised attempt counter; only then call GitHub.
+    A fence mismatch consumes no attempt.  ``data``, when given, is updated in
+    place so the caller keeps the state that is now on disk.  A failed state
+    write raises ``StateWriteError`` and no rerun is requested.
     """
     if data is None:
         data = state.load()
     key = rerun_key(repo, pr_number, head, check_name, workflow_job_id)
 
-    current_head = gh.get_pr(repo, pr_number)["head_sha"]
-    if current_head != head:
+    reread = gh.get_pr(repo, pr_number)
+    current_head = reread["head_sha"]
+    if current_head != head or reread.get("commit_oid") != head:
         return {
             "rerun": False,
             "reason": f"head changed: expected {head[:12]}, got {current_head[:12]}",
+            "type": "fence_mismatch",
+        }
+    if not _still_rerunnable(reread["checks"], check_name, workflow_job_id, stalled):
+        return {
+            "rerun": False,
+            "reason": f"check {check_name!r} (job {workflow_job_id}) is no longer rerunnable",
             "type": "fence_mismatch",
         }
 
@@ -350,7 +375,7 @@ class _Plan:
     stamp: str
     records: list[dict[str, Any]] = field(default_factory=list)
     notifications: list[dict[str, Any]] = field(default_factory=list)
-    reruns: list[tuple[str, int, str, str, Any]] = field(default_factory=list)
+    reruns: list[tuple[str, int, str, str, Any, bool]] = field(default_factory=list)
 
     def add_record(self, state: WatcherState, record: dict[str, Any]) -> None:
         if not state.has_record(self.data, record["idempotency_key"]):
@@ -396,8 +421,9 @@ def _plan_observation(
         ]
         action = _adapter_action(classification, 0 if within_budget else max_attempts, max_attempts)
         obs["action"] = action
+        stalled = obs["ci_classification"] == "STALLED"
         plan.reruns.extend(
-            (repo, pr_number, head, c["name"], c.get("job_id", "")) for c in within_budget
+            (repo, pr_number, head, c["name"], c.get("job_id", ""), stalled) for c in within_budget
         )
 
     if action == "REPAIR":
@@ -498,7 +524,8 @@ def _run_locked(
 
     # 3. Act. Each rerun persists its own attempt counter before its call.
     reruns = [
-        request_bounded_rerun(gh, state, *planned, max_attempts, data) for planned in plan.reruns
+        request_bounded_rerun(gh, state, *planned[:5], max_attempts, data, planned[5])
+        for planned in plan.reruns
     ]
 
     # Linear comments are sent only from the durable queue, so a failed or

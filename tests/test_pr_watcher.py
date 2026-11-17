@@ -585,11 +585,16 @@ class TestMergedCursor:
 class TestStableRerunFencing:
     """Requirement: Stable rerun identity and fencing."""
 
+    def fenced(self, gh: FakeGitHubClient, *checks: dict[str, Any], head: str = "a" * 40) -> None:
+        """What the immediate pre-rerun reread will see for PR 42."""
+        gh.set_pr(REPO, 42, {"number": 42, "head_sha": head})
+        gh.set_checks(REPO, head, list(checks))
+
     def test_changed_head_aborts_without_a_rerun_or_a_spent_attempt(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
         """Catches a rerun against a head that moved, or the old key being advanced."""
-        gh.set_pr(REPO, 42, {"head_sha": "b" * 40})
+        self.fenced(gh, check("lint", "CANCELLED", job_id="job-1"), head="b" * 40)
 
         result = request_bounded_rerun(gh, ws, REPO, 42, "a" * 40, "lint", "job-1", max_attempts=3)
 
@@ -597,12 +602,81 @@ class TestStableRerunFencing:
         assert gh.rerun_calls == []
         assert not ws.state_file.exists()
 
+    @pytest.mark.parametrize(
+        "reread",
+        [
+            [],
+            [check("lint", "CANCELLED", job_id="job-2")],
+            [check("proof-full", "CANCELLED", job_id="job-1")],
+            [check("lint", "SUCCESS", job_id="job-1")],
+            [check("lint", None, "IN_PROGRESS", job_id="job-1")],
+            [{**check("lint", "CANCELLED", job_id="job-1"), "required": False}],
+        ],
+        ids=[
+            "check gone",
+            "new job id",
+            "other name",
+            "now passing",
+            "now running",
+            "not required",
+        ],
+    )
+    def test_changed_check_identity_aborts_without_a_rerun_or_a_spent_attempt(
+        self, gh: FakeGitHubClient, ws: WatcherState, reread: list[dict[str, Any]]
+    ) -> None:
+        """Catches a rerun of a check that was replaced, restarted or fixed since it was read."""
+        self.fenced(gh, *reread)
+
+        result = request_bounded_rerun(gh, ws, REPO, 42, "a" * 40, "lint", "job-1", max_attempts=3)
+
+        assert (result["rerun"], result["type"]) == (False, "fence_mismatch")
+        assert gh.rerun_calls == []
+        assert not ws.state_file.exists()
+
+    def test_stalled_rerun_is_fenced_on_the_check_still_being_unfinished(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a hung check that finished in the meantime being rerun anyway."""
+        head = "a" * 40
+        self.fenced(gh, check("lint", None, "IN_PROGRESS", job_id="job-1"))
+        still = request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-1", stalled=True)
+        self.fenced(gh, check("lint", "SUCCESS", job_id="job-2"))
+        done = request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-2", stalled=True)
+
+        assert still["rerun"] is True
+        assert (done["rerun"], done["type"]) == (False, "fence_mismatch")
+        assert gh.rerun_calls == [{"job_id": "job-1", "repo": REPO}]
+
+    def test_check_that_recovers_between_the_poll_and_the_rerun_is_not_rerun(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches the run-level path skipping the check-identity fence."""
+        head = "a" * 40
+        open_pr(gh, 1, head, [check("lint", "CANCELLED", job_id="job-1")])
+        reads = 0
+        original = gh.get_pr
+
+        def get_pr(repo: str, pr_number: int) -> dict[str, Any]:
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                gh.set_checks(REPO, head, [check("lint", "SUCCESS", job_id="job-1")])
+            return original(repo, pr_number)
+
+        gh.get_pr = get_pr
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert [r["type"] for r in result["reruns"]] == ["fence_mismatch"]
+        assert gh.rerun_calls == []
+        assert disk(ws)["rerun_attempts"] == {}
+
     def test_attempt_is_on_disk_before_github_is_called(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
         """Catches the counter being written after, not before, the rerun request."""
         head = "a" * 40
-        gh.set_pr(REPO, 42, {"head_sha": head})
+        self.fenced(gh, check("Analyze (python)", "CANCELLED", job_id="job-1"))
         seen: list[dict[str, int]] = []
         gh.before_rerun = lambda: seen.append(disk(ws)["rerun_attempts"])
 
@@ -616,7 +690,7 @@ class TestStableRerunFencing:
     ) -> None:
         """Catches the bound being off by one, or not being enforced at all."""
         head = "a" * 40
-        gh.set_pr(REPO, 42, {"head_sha": head})
+        self.fenced(gh, check("lint", "CANCELLED", job_id="job-1"))
 
         results = [
             request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-1", max_attempts=3)
@@ -633,8 +707,14 @@ class TestStableRerunFencing:
     ) -> None:
         """Catches two different reruns sharing one budget."""
         head = "a" * 40
-        gh.set_pr(REPO, 42, {"head_sha": head})
-        gh.set_pr(REPO, 43, {"head_sha": "b" * 40})
+        self.fenced(
+            gh,
+            check("lint", "CANCELLED", job_id="job-1"),
+            check("lint", "CANCELLED", job_id="job-2"),
+            check("test (3.11)", "CANCELLED", job_id="job-1"),
+        )
+        gh.set_pr(REPO, 43, {"number": 43, "head_sha": "b" * 40})
+        gh.set_checks(REPO, "b" * 40, [check("lint", "CANCELLED", job_id="job-1")])
 
         request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-1")
         request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-2")
