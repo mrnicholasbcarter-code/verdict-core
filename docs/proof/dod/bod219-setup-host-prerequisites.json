@@ -30,7 +30,7 @@
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/bod219-setup-host-prerequisites/doctor-first-2026-11-17T19_08_38Z.json",
-          "sha256": "395b6d93f65671721d6489066e7ab0c289e4d635e0c4c2d30ca318d0f7c25809"
+          "sha256": "8de1b8b8648303422ef3515d8c80375983ead460fc923b6f47d39a754c6935e4"
         }
       },
       "fresh_run": {
@@ -42,7 +42,7 @@
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/bod219-setup-host-prerequisites/doctor-fresh-run-2026-11-17T19_27_53Z.json",
-          "sha256": "fab405af21d6ee8ab51b60a49bfccd3f1aad7c3cdea653bf9b51cfdaf86f1897"
+          "sha256": "3844cbc76ce53660c9432f415a52715f3d5b9c7d6521824c5ca93f76d6fd9ec3"
         }
       }
     }
@@ -55,7 +55,7 @@
     "at": "2026-11-17T19:08:38Z",
     "raw_output": {
       "path": "docs/proof/dod/bod219-setup-host-prerequisites/doctor-first-2026-11-17T19_08_38Z.json",
-      "sha256": "395b6d93f65671721d6489066e7ab0c289e4d635e0c4c2d30ca318d0f7c25809"
+      "sha256": "8de1b8b8648303422ef3515d8c80375983ead460fc923b6f47d39a754c6935e4"
     }
   },
   "openspec": {
@@ -63,11 +63,11 @@
   },
   "parent_confirmation": {
     "by": "gem-devops on omniroute/worker/free-first",
+    "at": "2026-11-17T19:52:47Z",
     "command": "verdict doctor --json",
     "raw_output": {
       "path": "docs/proof/dod/bod219-setup-host-prerequisites/doctor-confirm-2026-11-17T19_52_47Z.json",
-      "sha256": "e911d2e397a34d3b55af7a07b751d7971a89fb38c02bd249ee55b421fdd410d7"
-    },
-    "at": "2026-11-17T20:30:12Z"
+      "sha256": "1a6463880b105b26f36d686de35e57083a1b7e29f03dabed4eda71dc6627b8e3"
+    }
   }
 }

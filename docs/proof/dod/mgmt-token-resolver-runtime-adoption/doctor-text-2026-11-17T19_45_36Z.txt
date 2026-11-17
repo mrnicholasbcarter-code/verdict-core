@@ -49,7 +49,7 @@ reference.
   + Connected to OmniRoute  OK
     Found 0 configured node endpoints
   + Live acceptance  OK
-    green: /home/nick/.verdict/acceptance/20261117T190015Z.json, 42 min old
+    green: /operator/.verdict/acceptance/20261117T190015Z.json, 42 min old
 
 VERDICT  /  Credentials
 autonomous control plane  ·  plan · select · recover · verify · prove
@@ -128,7 +128,7 @@ last attempt Tue 2026-11-17 18:00:12 UTC; last completion Tue 2026-11-17
     tag v3.8.53 (installed v3.8.53), last sync 2026-11-17T19:05:16+00:00, 1436 
 pages
   + Identify passive report  OK
-    /home/nick/.verdict/identify-latest.json age 2962s; source errors none; 
+    /operator/.verdict/identify-latest.json age 2962s; source errors none; 
 model calls 0; health refresh recorded 51, newest evidence age 2965s; 
 implementation pool eligible 32 (free 17), fallback 886; supply complete false, 
 46 unknowns
@@ -146,32 +146,32 @@ openrouter.artificial_analysis=21324s
 0; probes 11 (newest age 4695s)
   + Prime-sync code path  OK
     verdict-prime-sync.service: cwd 
-/home/nick/.local/share/verdict/installed-main, package 
-/home/nick/.local/share/verdict/installed-main/verdict
+<installed-main>, package 
+<installed-main>/verdict
   + Runtime identify  OK
     verdict-identify.service: package 
-/home/nick/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, 
-gateway default, state /home/nick/.verdict
+<installed-main>/verdict, build git ac623aecbf10, 
+gateway default, state /operator/.verdict
   + Runtime identify-screen  OK
     verdict-identify-screen.service: package 
-/home/nick/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, 
-gateway default, state /home/nick/.verdict
+<installed-main>/verdict, build git ac623aecbf10, 
+gateway default, state /operator/.verdict
   + Runtime acceptance  OK
     verdict-acceptance.service: package 
-/home/nick/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, 
-gateway default, state /home/nick/.verdict
+<installed-main>/verdict, build git ac623aecbf10, 
+gateway default, state /operator/.verdict
   + Runtime prime-sync  OK
     verdict-prime-sync.service: package 
-/home/nick/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, 
-gateway default, state /home/nick/.verdict
+<installed-main>/verdict, build git ac623aecbf10, 
+gateway default, state /operator/.verdict
   + Runtime metadata-refresh  OK
     verdict-metadata-refresh.service: package 
-/home/nick/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, 
-gateway default, state /home/nick/.verdict
+<installed-main>/verdict, build git ac623aecbf10, 
+gateway default, state /operator/.verdict
   + Runtime serve  OK
     verdict-serve.service: package 
-/home/nick/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, 
-gateway default, state /home/nick/.verdict
+<installed-main>/verdict, build git ac623aecbf10, 
+gateway default, state /operator/.verdict
 
 VERDICT  /  Host prerequisites
 autonomous control plane  ·  plan · select · recover · verify · prove
