@@ -5,7 +5,10 @@ Owned files: `scripts/check_dod.py`, `tests/test_check_dod.py`, `AGENTS.md`; thi
 ## 1. Spec
 Tests/verification: run both pinned OpenSpec validators and require exit 0.
 - [x] 1.1 Proposal, design and the `repository-tooling` spec delta are written. Verification: both pinned validators exit 0.
-- [ ] (post-merge) Validate with both repository and pinned OpenSpec validators on merged main. Verification: command exit codes and output are recorded.
+- [x] (post-merge) Validate with both repository and pinned OpenSpec validators on merged main. Verification: command exit codes and output are recorded.
+  - Merged main sha: d228f574
+  - `uv run python verdict/openspec_vendor/validate_openspec_change.py openspec/changes/dod-run-truth` (exit 0)
+  - `npx --yes @fission-ai/openspec@1.13.2 validate dod-run-truth --strict --no-interactive` (exit 0)
 
 ## 2. Tests first
 - [x] 2.1 Add failing and passing tests for outcome and exit-code agreement. Verification: focused pytest shows red before implementation and green after.
@@ -43,4 +46,11 @@ Tests/verification: each test is written first and fails before its fix; focused
 ## 6. Verification
 Tests/verification: execute every acceptance command from the worktree root and record each exit code.
 - [x] 6.1 Focused and repository gates pass on the current branch. Verification: the focused tests, ruff, format, mypy, DoD, doc links, reachability, diff, and both OpenSpec validators exit 0.
-- [ ] (post-merge) Run the full definition-of-done and repository gates on merged main. Verification: all acceptance commands exit 0 and raw summaries are recorded.
+- [x] (post-merge) Run the full definition-of-done and repository gates on merged main. Verification: all acceptance commands exit 0 and raw summaries are recorded.
+  - Merged main sha: d228f574
+  - `uv run python scripts/check_dod.py --all` (exit 0)
+  - `uv run python -m pytest -q tests/test_check_dod.py` (exit 0)
+  - `uv run ruff check .` (exit 0)
+  - `uv run ruff format --check .` (exit 0)
+  - `uv run mypy verdict --strict` (exit 0)
+  - `uv run python scripts/check_doc_links.py` (exit 0)
