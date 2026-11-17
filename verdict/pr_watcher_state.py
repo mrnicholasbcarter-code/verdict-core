@@ -431,10 +431,6 @@ class WatcherState:
             events.append(event)
         return {**data, "pending_events": events}
 
-    def clear_pending_event(self, data: dict[str, Any], key: str) -> dict[str, Any]:
-        events = [e for e in data.get("pending_events", []) if e.get("idempotency_key") != key]
-        return {**data, "pending_events": events}
-
     def get_pr_state(
         self, data: dict[str, Any], repo: str, pr_number: int, head: str
     ) -> dict[str, Any] | None:

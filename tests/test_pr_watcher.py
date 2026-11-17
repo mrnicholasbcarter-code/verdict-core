@@ -398,7 +398,7 @@ class TestExactHeadPolling:
         assert gh.rerun_calls == [{"job_id": "job-slow", "repo": REPO}]
         assert [r["observations"][0]["action"] for r in runs] == ["RETRY", "BLOCKED", "BLOCKED"]
 
-    def test_check_run_id_reaches_github_exactly_as_the_client_reported_it(
+    def test_job_id_reaches_github_exactly_as_the_client_reported_it(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
         """Catches the numeric id GitHub reports being rewritten on its way to the rerun."""
@@ -2691,15 +2691,17 @@ class TestGhClientProcess:
         seen: list[tuple[list[str], dict[str, Any]]] = []
 
         def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            assert_read_or_job_rerun(argv[2:])
             seen.append((argv, kwargs))
             return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
 
         monkeypatch.setattr("verdict.pr_watcher_github.subprocess.run", run)
+        query = f"query={OPEN_PULLS_QUERY}"
 
-        assert _GhApiClient()._call("graphql", "-f", "query=x") == "{}"
+        assert _GhApiClient()._call("graphql", "-f", query) == "{}"
         assert seen == [
             (
-                ["gh", "api", "graphql", "-f", "query=x"],
+                ["gh", "api", "graphql", "-f", query],
                 {"capture_output": True, "text": True, "check": True, "timeout": 30},
             )
         ]
@@ -2724,6 +2726,8 @@ class TestGhClientProcess:
         """Catches a gh failure escaping as an exception the watcher does not isolate."""
 
         def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            assert argv[:2] == ["gh", "api"]
+            assert_read_or_job_rerun(argv[2:])
             raise failure
 
         monkeypatch.setattr("verdict.pr_watcher_github.subprocess.run", run)
