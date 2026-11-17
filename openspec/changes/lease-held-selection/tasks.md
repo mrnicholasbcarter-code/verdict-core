@@ -21,4 +21,4 @@
 - [x] 1.16 Tick implementation tasks in tasks.md
 - [x] 1.17 Commit changes
 - [x] 1.18 Push branch and create PR
-- [ ] 1.19 (post-merge) Install from merged main, restart verdict-serve, and confirm the next hourly acceptance run that starts with the six-hourly screen (00/06/12/18 UTC) is green
+- [ ] (post-merge) 1.19 Install from merged main, restart verdict-serve, and confirm the next hourly acceptance run that starts with the six-hourly screen (00/06/12/18 UTC) is green
