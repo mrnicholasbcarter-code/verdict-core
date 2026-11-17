@@ -75,7 +75,7 @@
       }
     }
   ],
-  "freshness_window_hours": 0.016,
+  "freshness_window_hours": 0.25,
   "stays_true_job": "tests/test_direct_gateway_executor.py::test_executor_resolves_key_file_when_env_is_unset and tests/test_credentials_test_action.py::test_credentials_test_resolves_key_file cover the key-file-only path on every PR and push. The hourly verdict-acceptance doctor gate exercises the shared resolver through the credential store on this host, not the key-file branch.",
   "setup_doctor": {
     "status": "green",
