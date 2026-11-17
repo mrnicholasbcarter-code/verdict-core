@@ -1,0 +1,15 @@
+build	pass	34s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126450308714	
+client-package-smoke	pass	12s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126448064403	
+install-smoke (3.10)	pass	1m36s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126447933324	
+install-smoke (3.11)	pass	2m8s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126447933232	
+install-smoke (3.12)	pass	2m18s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126447933329	
+install-smoke (3.13)	pass	1m52s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126447933036	
+lint	pass	1m22s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126447933081	
+osv-security / osv-scan	pass	27s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206825/job/126447934890	
+security	pass	39s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126447932739	
+test (3.10)	pass	5m12s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126447933989	
+test (3.11)	pass	4m53s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126447933212	
+test (3.12)	pass	5m52s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126447933171	
+test (3.13)	pass	6m26s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126447933268	
+type-check	pass	46s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126447933256	
+typescript-contract-parity	pass	18s	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246/job/126447933108	

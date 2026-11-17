@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "story": "bod-314-quota-truth",
+  "kind": "product",
+  "author": "gem-devops",
+  "merged_sha": "7199f00085add10954d1ccecc3c0520946589a58",
+  "pr": 805,
+  "on_main": {
+    "at": "2026-11-17T18:27:28Z",
+    "sha": "7199f00085add10954d1ccecc3c0520946589a58",
+    "environment": "operator-host",
+    "command": "gh pr checks 805 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/38042157589",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod-314-quota-truth/bod-314-quota-truth-pr805-checks.txt",
+      "sha256": "2152972d19205d88fa150e5efd1a2269748e3ceec070d2f4e0232db010831f2e"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "Connection limits show quota UNKNOWN (null) instead of 100% when usage is not reported",
+      "expect": "\"remaining_percent\": null",
+      "first_run": {
+        "at": "2026-11-17T18:32:02Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict identify --passive --json",
+        "real_state_marker": "\"remaining_percent\": null",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-314-quota-truth/bod-314-quota-truth-first-20261117T183202Z.json",
+          "sha256": "7b84900b7385c5d6e0a6719c0f364a97aaa57c60cef3cdcbc5d9f11095ebf6f8"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T18:52:56Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict identify --passive --json",
+        "real_state_marker": "\"remaining_percent\": null",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-314-quota-truth/bod-314-quota-truth-fresh-20261117T185256Z.json",
+          "sha256": "e5e96e4b438da99d8653fe6b78b9ed0693e7a7b387be571e1fc43bcc0498a78e"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "tests covering bod-314-quota-truth run on every PR and push. The hourly verify_refresh gate exercises the selector on this host.",
+  "setup_doctor": {
+    "status": "green",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
+    "at": "2026-11-17T18:32:00Z",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-314-quota-truth/doctor-green-20261117T1832Z.json",
+      "sha256": "1d7fb637323de9b6ad8e38eebf63190e8f496f1466c6a0f500f7d0ef2466dfaa"
+    }
+  },
+  "openspec": {
+    "change": "bod-314-quota-truth"
+  },
+  "parent_confirmation": {
+    "by": "gem-devops (this agent)",
+    "at": "2026-11-17T18:54:38Z",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict identify --passive --json",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-314-quota-truth/identify-passive-confirm-20261117T1854Z.json",
+      "sha256": "d17bac2fc7ee3b990fce7847fd299e4d7d052876df6bd994a8f65e5bb7be9266"
+    }
+  }
+}

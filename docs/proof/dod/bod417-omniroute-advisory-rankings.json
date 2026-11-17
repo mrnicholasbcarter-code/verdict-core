@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "story": "bod417-omniroute-advisory-rankings",
+  "kind": "product",
+  "author": "gem-devops",
+  "merged_sha": "db860234a0a8be0c5c515cd9a9164cb243752da4",
+  "pr": 947,
+  "on_main": {
+    "at": "2026-11-17T18:27:28Z",
+    "sha": "db860234a0a8be0c5c515cd9a9164cb243752da4",
+    "environment": "operator-host",
+    "command": "gh pr checks 947 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/41792206246",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod417-omniroute-advisory-rankings/bod417-omniroute-advisory-rankings-pr947-checks.txt",
+      "sha256": "46d607bc701f4a990a7bd3bede8e4103875d64025655caaf7be34c4937384fb6"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "Route selection rank_components include advisory_rank, advisory_category, advisory_omission fields for OmniRoute advisory overlay",
+      "expect": "\"capacity_class\": \"free\"",
+      "first_run": {
+        "at": "2026-11-17T18:32:02Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict route --json '{\"task\": \"write a python function\"}'",
+        "real_state_marker": "\"capacity_class\": \"free\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod417-omniroute-advisory-rankings/cheapest-proven-selection-s2-first-20261117T183202Z.json",
+          "sha256": "ec398a2665e815186c26ec63c31400c18fa1ece6808eb70034ed5d177a669186"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T18:52:41Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict route --json '{\"task\": \"write a python function\"}'",
+        "real_state_marker": "\"capacity_class\": \"free\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod417-omniroute-advisory-rankings/cheapest-proven-selection-s2-fresh-20261117T185241Z.json",
+          "sha256": "3abb78639b2abfa49ee30137ba5f3fbccefb241492e09ac7f7191f09931c02af"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "tests covering bod417-omniroute-advisory-rankings run on every PR and push. The hourly verify_refresh gate exercises the selector on this host.",
+  "setup_doctor": {
+    "status": "green",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
+    "at": "2026-11-17T18:32:00Z",
+    "raw_output": {
+      "path": "docs/proof/dod/bod417-omniroute-advisory-rankings/doctor-green-20261117T1832Z.json",
+      "sha256": "1d7fb637323de9b6ad8e38eebf63190e8f496f1466c6a0f500f7d0ef2466dfaa"
+    }
+  },
+  "openspec": {
+    "change": "bod417-omniroute-advisory-rankings"
+  },
+  "parent_confirmation": {
+    "by": "gem-devops (this agent)",
+    "at": "2026-11-17T18:54:38Z",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict route --json '{\"task\": \"write a python function\"}'",
+    "raw_output": {
+      "path": "docs/proof/dod/bod417-omniroute-advisory-rankings/route-free-confirm-20261117T1854Z.json",
+      "sha256": "3ad9cd3d8b8c44f07be5a8225a0a7a5244f080b9ced6cf15328b460dc7c9f250"
+    }
+  }
+}

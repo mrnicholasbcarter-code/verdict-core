@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "story": "bod-331-capacity-group-consent",
+  "kind": "product",
+  "author": "gem-devops",
+  "merged_sha": "ff8b4016d57ae51104eaa9831851fbdd17b8698d",
+  "pr": 816,
+  "on_main": {
+    "at": "2026-11-17T18:27:28Z",
+    "sha": "ff8b4016d57ae51104eaa9831851fbdd17b8698d",
+    "environment": "operator-host",
+    "command": "gh pr checks 816 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/38348535640",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod-331-capacity-group-consent/bod-331-capacity-group-consent-pr816-checks.txt",
+      "sha256": "55c02f143c71f50c8de961b58fde2c5cefb4a3ee3a383b6980da228eaa765514"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "The identify supply output groups routes by capacity class (free, subscription, unknown, metered) with counts",
+      "expect": "\"remaining_percent\": null",
+      "first_run": {
+        "at": "2026-11-17T18:32:02Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict identify --passive --json",
+        "real_state_marker": "\"remaining_percent\": null",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-331-capacity-group-consent/bod-314-quota-truth-first-20261117T183202Z.json",
+          "sha256": "7b84900b7385c5d6e0a6719c0f364a97aaa57c60cef3cdcbc5d9f11095ebf6f8"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T18:52:56Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict identify --passive --json",
+        "real_state_marker": "\"remaining_percent\": null",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-331-capacity-group-consent/bod-314-quota-truth-fresh-20261117T185256Z.json",
+          "sha256": "e5e96e4b438da99d8653fe6b78b9ed0693e7a7b387be571e1fc43bcc0498a78e"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "tests covering bod-331-capacity-group-consent run on every PR and push. The hourly verify_refresh gate exercises the selector on this host.",
+  "setup_doctor": {
+    "status": "green",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
+    "at": "2026-11-17T18:32:00Z",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-331-capacity-group-consent/doctor-green-20261117T1832Z.json",
+      "sha256": "1d7fb637323de9b6ad8e38eebf63190e8f496f1466c6a0f500f7d0ef2466dfaa"
+    }
+  },
+  "openspec": {
+    "change": "bod-331-capacity-group-consent"
+  },
+  "parent_confirmation": {
+    "by": "gem-devops (this agent)",
+    "at": "2026-11-17T18:54:38Z",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict identify --passive --json",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-331-capacity-group-consent/identify-passive-confirm-20261117T1854Z.json",
+      "sha256": "d17bac2fc7ee3b990fce7847fd299e4d7d052876df6bd994a8f65e5bb7be9266"
+    }
+  }
+}
