@@ -24,6 +24,7 @@ from verdict.admission import (
     evidence_from_health_cache,
     evidence_from_ladder_state,
     evidence_from_quota_rows,
+    is_opaque,
 )
 
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
@@ -132,6 +133,57 @@ def test_opaque_routes_are_never_admitted() -> None:
         [row("auto/best-coding"), row("combo/x")], [conn("auto")], RuntimeEvidence(), now=NOW
     )
     assert admitted.ids == frozenset()
+
+
+# --- opaque nested routes (auto-routers behind provider prefix) ---
+
+
+@pytest.mark.parametrize(
+    "route_id,expected",
+    [
+        # Opaque: vendor auto-router segment ending in -auto
+        ("kilocode/kilo-auto/free", True),
+        ("kilocode/kilo-auto/small", True),
+        # Opaque: free preceded by known router (openrouter)
+        ("kilocode/openrouter/free", True),
+        ("openrouter/openrouter/free", True),
+        # Opaque: exact opaque IDs after provider
+        ("openrouter/auto", True),
+        ("x/auto", True),
+        # Opaque: opaque prefix after provider
+        ("x/combo/y", True),
+        # Concrete: tier suffix :free, not path segment
+        ("kilocode/nvidia/nemotron-3-ultra-550b-a55b:free", False),
+        # Concrete: model name contains "auto" but doesn't end in -auto
+        ("x/autocoder-7b", False),
+        ("x/gpt-auto-instruct", False),
+        # Concrete: provider name contains "free" but model is concrete
+        ("ovhfree/Qwen3.6-27B", False),
+        # Concrete: regular models
+        ("kr/claude-opus-4", False),
+        ("gc/gpt-4o", False),
+    ],
+)
+def test_is_opaque_nested_routes(route_id: str, expected: bool) -> None:
+    assert is_opaque(route_id) is expected
+
+
+def test_opaque_nested_routes_dropped_at_discovered() -> None:
+    # kilocode/kilo-auto/free in inventory should be dropped at DISCOVERED with reason opaque_route
+    admitted = admit(
+        [row("kilocode/kilo-auto/free"), row("kr/claude-opus-4")],
+        [conn("kilocode"), conn("kr")],
+        RuntimeEvidence(),
+        now=NOW,
+    )
+    # kilocode/kilo-auto/free should be dropped
+    assert "kilocode/kilo-auto/free" not in admitted
+    record = admitted.first_failure("kilocode/kilo-auto/free")
+    assert record is not None
+    assert record.first_failed_stage is AdmissionStage.DISCOVERED
+    assert record.reason == "opaque_route"
+    # kr/claude-opus-4 should be admitted
+    assert "kr/claude-opus-4" in admitted
 
 
 def test_admitted_set_cannot_be_constructed_or_replaced_directly() -> None:

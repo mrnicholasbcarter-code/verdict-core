@@ -2,11 +2,11 @@
 
 ## 1. Local implementation
 
-- [ ] 1.1 Add parametrized test in `tests/test_admission.py` covering all opaque and concrete cases.
-- [ ] 1.2 Add admission test that `kilocode/kilo-auto/free` in inventory is dropped at DISCOVERED with reason `opaque_route`.
-- [ ] 1.3 Update `is_opaque` in `verdict/admission.py` to recognize opaque model segments after provider prefix.
-- [ ] 1.4 Ensure `test_opaque_routes_are_never_admitted` stays green.
-- [ ] 1.5 Run all gates: pytest, ruff, mypy, doc links, reachability, OpenSpec validators, git diff check.
+- [x] 1.1 Add parametrized test in `tests/test_admission.py` covering all opaque and concrete cases.
+- [x] 1.2 Add admission test that `kilocode/kilo-auto/free` in inventory is dropped at DISCOVERED with reason `opaque_route`.
+- [x] 1.3 Update `is_opaque` in `verdict/admission.py` to recognize opaque model segments after provider prefix.
+- [x] 1.4 Ensure `test_opaque_routes_are_never_admitted` stays green.
+- [x] 1.5 Run all gates: pytest, ruff, mypy, doc links, reachability, OpenSpec validators, git diff check.
 
 ## 2. Post-merge verification (operator)
 
