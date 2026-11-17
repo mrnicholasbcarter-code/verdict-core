@@ -159,6 +159,9 @@ def test_opaque_routes_are_never_admitted() -> None:
         ("kilocode/nvidia/nemotron-3-ultra-550b-a55b:free", False),
         # Concrete: openrouter model with :free tier suffix stays concrete
         ("openrouter/meta-llama/llama-3-8b:free", False),
+        # Concrete: bare "best" after a provider is not an opaque alias
+        ("a/best", False),
+        ("kr/best", False),
         # Concrete: model name contains "auto" but doesn't end in -auto
         ("x/autocoder-7b", False),
         ("x/gpt-auto-instruct", False),
