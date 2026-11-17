@@ -724,6 +724,24 @@ def _run_locked(
         plan.adopt(trial)
         observations.extend(polled)
 
+    # An unsafe key fails the whole run closed (spec: "State keys are path-safe
+    # and reject traversal"): nothing is saved, rerun, appended or notified,
+    # including for the repositories that were safe.
+    unsafe = [e for e in repo_errors if e["kind"] == "unsafe_state_key"]
+    if unsafe:
+        return {
+            "ok": False,
+            "error": unsafe[0]["error"],
+            "type": "unsafe_state_key",
+            "repo_errors": repo_errors,
+            "observations": [],
+            "reruns": [],
+            "records": [],
+            "notifications": [],
+            "linear_sent": [],
+            "pending_events": [],
+        }
+
     # 2. Persist. Classifications, records, transitions, queued Linear events
     # and the cursors are durable before the first side effect.
     data = state.set_last_run(plan.data, current)

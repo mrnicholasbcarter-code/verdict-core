@@ -2125,10 +2125,8 @@ class TestPathSafeKeys:
         assert result["type"] == "unsafe_state_key"
         assert repo in result["error"]
         assert gh.rerun_calls == []
-        # State is saved (last_run_at) but no records/cursors for the unsafe repo.
-        state = disk(ws)
-        assert "last_run_at" in state
-        assert state["merged_cursors"] == {}
+        # spec.md "State keys are path-safe": no state is persisted.
+        assert not ws.state_file.exists()
 
     def test_unsafe_check_name_from_github_fails_the_run_closed(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -2140,67 +2138,42 @@ class TestPathSafeKeys:
 
         assert result["type"] == "unsafe_state_key"
         assert gh.rerun_calls == []
-        # State is saved (last_run_at) but no records/cursors for the unsafe repo.
-        state = disk(ws)
-        assert "last_run_at" in state
-        assert state["merged_cursors"] == {}
+        # spec.md "State keys are path-safe": no state is persisted.
+        assert not ws.state_file.exists()
 
-    def test_unsafe_repo_isolation_other_repo_still_handled_and_state_saved(
-        self, gh: FakeGitHubClient, ws: WatcherState
+    @pytest.mark.parametrize("unsafe", ["repository name", "check name"])
+    def test_unsafe_key_beside_a_healthy_repo_fails_the_whole_run_closed(
+        self, gh: FakeGitHubClient, ws: WatcherState, unsafe: str
     ) -> None:
-        """Unsafe key in one repo drops only that repo; the other is processed and state saved."""
-        # Unsafe repo name
-        unsafe_repo = "../evil"
-        # Healthy repo with a failing check
-        open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")], repo=REPO)
+        """Catches an unsafe key being skipped while the run still saves state and acts.
 
-        result = run_watcher(gh, ws, [unsafe_repo, REPO], now=T0)
+        spec.md "State keys are path-safe and reject traversal": the operation
+        fails closed and no state is persisted, so the healthy repository's
+        rerun, records and notifications must not happen either.
+        """
+        if unsafe == "repository name":
+            bad_repo = "../evil"
+        else:
+            bad_repo = "org/unsafe-check"
+            open_pr(
+                gh, 1, "a" * 40, [check("lint/../../x", "CANCELLED", job_id="job-1")], repo=bad_repo
+            )
+        open_pr(gh, 2, "b" * 40, [check("lint", "CANCELLED", job_id="job-2")], repo=REPO)
+        ws.save(ws.set_last_run(ws.load(), T0 - RUN_INTERVAL))
+        before = ws.state_file.read_bytes()
+
+        result = run_watcher(gh, ws, [bad_repo, REPO], now=T0)
 
         assert result["ok"] is False
         assert result["type"] == "unsafe_state_key"
-        assert len(result["repo_errors"]) == 1
-        assert result["repo_errors"][0]["repo"] == unsafe_repo
-        assert result["repo_errors"][0]["kind"] == "unsafe_state_key"
-        # Healthy repo should have a repair record
-        assert outcomes(result) == [(1, "CODE_FAILURE", "REPAIR")]
-        assert [(r["repo"], r["pr_number"]) for r in result["records"]] == [(REPO, 1)]
-        # State should be saved with healthy repo's cursor
-        state = disk(ws)
-        assert "last_run_at" in state
-        assert state["merged_cursors"] == {REPO: iso(T0)}
-        assert [r["repo"] for r in state["records"]["repair"]] == [REPO]
-
-    def test_unsafe_check_name_isolation_other_repo_still_handled_and_state_saved(
-        self, gh: FakeGitHubClient, ws: WatcherState
-    ) -> None:
-        """Unsafe check name in one repo drops only that repo; the other is processed and state saved."""
-        # Repo with unsafe check name
-        unsafe_check_repo = "org/unsafe-check"
-        open_pr(
-            gh,
-            1,
-            "a" * 40,
-            [check("lint/../../x", "CANCELLED", job_id="job-1")],
-            repo=unsafe_check_repo,
-        )
-        # Healthy repo with a failing check
-        open_pr(gh, 2, "b" * 40, [check("lint", "FAILURE")], repo=REPO)
-
-        result = run_watcher(gh, ws, [unsafe_check_repo, REPO], now=T0)
-
-        assert result["ok"] is False
-        assert result["type"] == "unsafe_state_key"
-        assert len(result["repo_errors"]) == 1
-        assert result["repo_errors"][0]["repo"] == unsafe_check_repo
-        assert result["repo_errors"][0]["kind"] == "unsafe_state_key"
-        # Healthy repo should have a repair record
-        assert outcomes(result) == [(2, "CODE_FAILURE", "REPAIR")]
-        assert [(r["repo"], r["pr_number"]) for r in result["records"]] == [(REPO, 2)]
-        # State should be saved with healthy repo's cursor
-        state = disk(ws)
-        assert "last_run_at" in state
-        assert state["merged_cursors"] == {REPO: iso(T0)}
-        assert [r["repo"] for r in state["records"]["repair"]] == [REPO]
+        assert bad_repo in result["error"]
+        assert [e["kind"] for e in result["repo_errors"]] == ["unsafe_state_key"]
+        assert result["reruns"] == []
+        assert result["records"] == []
+        assert result["notifications"] == []
+        assert gh.rerun_calls == []
+        assert ws.state_file.read_bytes() == before
+        assert not ws.digest_file.exists()
 
     def test_state_writers_reject_an_unsafe_key(self, ws: WatcherState) -> None:
         """Catches a writer that stores a key without validating it."""
