@@ -1,8 +1,10 @@
 """Tests for the PR watcher core and its concrete ``gh`` client.
 
 The core is driven through injected fake clients.  The concrete client is
-driven through recorded GraphQL payloads under tests/fixtures/pr_watcher, with
-only its process call replaced.  Each test names the failure it catches.  The
+driven through GraphQL payload fixtures under tests/fixtures/pr_watcher, with
+only its process call replaced.  The fixtures are synthetic: built by hand in
+the shape of the client's queries, not captured from GitHub, so they show that
+the client and the core agree with each other, not that GitHub agrees.  Each test names the failure it catches.  The
 setup/doctor timer and the live smoke are outside this file.
 """
 
@@ -2305,7 +2307,7 @@ class TestNotificationBuild:
 
 
 # ============================================================================
-# The concrete gh client, against recorded GraphQL payloads
+# The concrete gh client, against synthetic GraphQL payload fixtures
 # ============================================================================
 
 FIXTURES = Path(__file__).parent / "fixtures" / "pr_watcher"
@@ -2358,7 +2360,7 @@ def assert_read_or_job_rerun(argv: list[str]) -> None:
 
 
 class FixtureGh(_GhApiClient):
-    """The real client; only the process call is replaced, by recorded payloads."""
+    """The real client; only the process call is replaced, by payload fixtures."""
 
     def __init__(self, routes: Any, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -2866,7 +2868,7 @@ class TestGhClientCapability:
 
 
 class TestGhClientEndToEnd:
-    """Recorded GitHub payloads through the real client and the whole watcher run."""
+    """Payload fixtures through the real client and the whole watcher run."""
 
     def test_failed_required_lint_check_becomes_one_repair_record_and_one_digest_line(
         self, ws: WatcherState

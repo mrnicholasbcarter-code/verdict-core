@@ -224,7 +224,7 @@ class _GhApiClient:
     """Real client that shells out to ``gh api``.
 
     This class is **not** part of the public API.  Tests replace ``_call`` with
-    recorded payloads; nothing else is faked.
+    payload fixtures; nothing else is faked.
     """
 
     def __init__(self, linear_team_keys: Sequence[str] | None = None) -> None:
