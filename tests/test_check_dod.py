@@ -510,7 +510,10 @@ def test_same_raw_output_cannot_serve_as_two_runs(repo):
     first = evidence["acceptance"][0]["first_run"]["raw_output"]
     evidence["acceptance"][0]["fresh_run"]["raw_output"] = first
     errors = _check(root, evidence)
-    assert "the same raw output cannot serve as two runs" in errors, errors
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
 
 
 def test_distinct_raw_outputs_are_valid(repo):
@@ -730,13 +733,16 @@ def test_same_run_id_cannot_serve_as_two_structured_runs(repo):
     data = (root / first["path"]).read_text() + "\n"
     evidence["acceptance"][0]["fresh_run"]["raw_output"] = _artifact(root, "same-run-id.json", data)
     errors = _check(root, evidence)
-    assert "the same run_id cannot serve as two runs" in errors, errors
+    assert (
+        "the same run_id cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
 
 
 def test_distinct_structured_run_ids_pass(repo):
     root, evidence = repo
     _structured_evidence(root, evidence)
-    assert "the same run_id cannot serve as two runs" not in _check(root, evidence)
+    assert not any("cannot serve as two runs" in e for e in _check(root, evidence))
 
 
 @pytest.mark.parametrize(
@@ -983,3 +989,53 @@ def test_expected_exit_zero_confirmation_still_needs_complete_and_pass(repo):
     errors = _check(root, evidence)
     assert "parent_confirmation: outcome BLOCKED is not COMPLETE (COMPLETE required)" in errors
     assert "parent_confirmation: review status MISSING is not PASS (PASS required)" in errors
+
+
+def _second_criterion_citing_the_same_runs(evidence):
+    item = copy.deepcopy(evidence["acceptance"][0])
+    item["criterion"] = "the drill names the orphan module"
+    item["expect"] = "orphan module"
+    evidence["acceptance"].append(item)
+
+
+def test_two_criteria_may_cite_the_same_plain_text_runs(repo):
+    root, evidence = repo
+    _second_criterion_citing_the_same_runs(evidence)
+    assert _check(root, evidence) == []
+
+
+def test_two_criteria_may_cite_the_same_structured_runs(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    _second_criterion_citing_the_same_runs(evidence)
+    assert _check(root, evidence) == []
+
+
+def test_one_artifact_recorded_as_runs_at_two_times_is_still_reuse(repo):
+    root, evidence = repo
+    _second_criterion_citing_the_same_runs(evidence)
+    evidence["acceptance"][1]["first_run"]["at"] = "2099-01-01T00:00:01Z"
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[1].first_run"
+    ) in errors, errors
+
+
+def test_reuse_messages_name_both_run_locations(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    item = evidence["acceptance"][0]
+    item["fresh_run"]["raw_output"] = item["first_run"]["raw_output"]
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
+    data = (root / item["first_run"]["raw_output"]["path"]).read_text() + "\n"
+    item["fresh_run"]["raw_output"] = _artifact(root, "same-run-id-2.json", data)
+    errors = _check(root, evidence)
+    assert (
+        "the same run_id cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors

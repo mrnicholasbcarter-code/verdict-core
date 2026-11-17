@@ -380,14 +380,23 @@ def check_evidence(root: Path, path: Path) -> list[str]:
     ]
     confirmation = evidence["parent_confirmation"]
     run_artifacts.append(("parent_confirmation", confirmation))
-    seen: set[str] = set()
-    run_ids: set[str] = set()
-    for _where, run in run_artifacts:
+    cited: set[tuple[str, str, str, str]] = set()
+    seen: dict[str, str] = {}
+    run_ids: dict[str, str] = {}
+    for where, run in run_artifacts:
         digest = run["raw_output"]["sha256"]
+        if run is not confirmation:
+            # Two acceptance criteria may cite one run; that is one run, not two.
+            citation = (run["at"], run["command"], run["raw_output"]["path"], digest)
+            if citation in cited:
+                continue
+            cited.add(citation)
         if digest in seen:
-            errors.append("the same raw output cannot serve as two runs")
-        seen.add(digest)
-        text = _artifact(root, run["raw_output"], _where, errors)
+            errors.append(
+                f"the same raw output cannot serve as two runs: {seen[digest]} and {where}"
+            )
+        seen.setdefault(digest, where)
+        text = _artifact(root, run["raw_output"], where, errors)
         if text is not None:
             result = _structured_result(text.rstrip()) if text == text.lstrip() else None
             if result is not None:
@@ -395,8 +404,10 @@ def check_evidence(root: Path, path: Path) -> list[str]:
                 if not isinstance(run_id, str) or not run_id:
                     continue  # reported by _check_run_truth
                 if run_id in run_ids:
-                    errors.append("the same run_id cannot serve as two runs")
-                run_ids.add(run_id)
+                    errors.append(
+                        f"the same run_id cannot serve as two runs: {run_ids[run_id]} and {where}"
+                    )
+                run_ids.setdefault(run_id, where)
     if confirmation["by"] == evidence["author"]:
         errors.append("parent_confirmation: the author cannot confirm their own story")
     if confirmation["command"] not in expected:
