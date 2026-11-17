@@ -20,7 +20,7 @@
   "acceptance": [
     {
       "criterion": "Connection limits show quota UNKNOWN (null) instead of 100% when usage is not reported",
-      "expect": "\"remaining_percent\": null",
+      "expect": "\"quota_state\": \"unknown\"",
       "first_run": {
         "at": "2026-11-17T18:32:02Z",
         "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
@@ -52,17 +52,17 @@
   "setup_doctor": {
     "status": "green",
     "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
-    "at": "2026-11-17T18:32:00Z",
+    "at": "2026-11-17T19:57:00Z",
     "raw_output": {
-      "path": "docs/proof/dod/bod-314-quota-truth/doctor-green-20261117T1832Z.json",
-      "sha256": "1d7fb637323de9b6ad8e38eebf63190e8f496f1466c6a0f500f7d0ef2466dfaa"
+      "path": "docs/proof/dod/bod-314-quota-truth/doctor-ok-2026-11-17T19-57Z.json",
+      "sha256": "4320aa64ab21d6bb53b688696ded1c82ca1faa2312dfb5a50f90d6db26196ccd"
     }
   },
   "openspec": {
     "change": "bod-314-quota-truth"
   },
   "parent_confirmation": {
-    "by": "gem-devops (this agent)",
+    "by": "gem-devops (worker/free-first, ses_...) [Confirmation Pending]",
     "at": "2026-11-17T18:54:38Z",
     "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict identify --passive --json",
     "raw_output": {

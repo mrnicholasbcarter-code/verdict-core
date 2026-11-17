@@ -1,14 +1,10 @@
 {
   "acceptance": {
-    "age_seconds": 2188,
-    "eligible_free": 18,
-    "failed": [
-      "choose",
-      "route",
-      "serve"
-    ],
-    "path": "/operator/.verdict/acceptance/20261117T180013Z.json",
-    "state": "red"
+    "age_seconds": 3217,
+    "eligible_free": 21,
+    "failed": [],
+    "path": "/operator/.verdict/acceptance/20261117T190015Z.json",
+    "state": "green"
   },
   "capability_bootstrap": {
     "capabilities": [
@@ -1168,21 +1164,27 @@
   },
   "gateway_lifecycle": {
     "attempts": 1,
-    "detail": "inventory reachable",
-    "diagnostic": null,
+    "detail": "ReadTimeout: timed out",
+    "diagnostic": {
+      "class": "gateway_health",
+      "code": "gateway_unreachable",
+      "detail": "gateway at http://127.0.0.1:20128 did not answer: ReadTimeout: timed out",
+      "fatal": true,
+      "field": "gateway_url",
+      "remediation": "start the gateway at http://127.0.0.1:20128, or run 'verdict doctor'",
+      "source": "environment"
+    },
     "gateway_url": "http://127.0.0.1:20128",
     "launched": false,
-    "ready": true,
-    "state": "already_ready",
+    "ready": false,
+    "state": "unhealthy",
     "waited_for_owner": false
   },
-  "issues": [
-    "Live acceptance is red (20261117T180013Z.json): choose (not implemented: exit 1 outcome history: skipped indexed run /operator/.hermes/profiles/worker/cache/scratch/t_ed3d23d3-review/work/drills/retrieval-runs/retrieval-run (not_a_director), route (no route (exit 1): no_eligible_route), serve (HTTP 503: {\"error\":{\"message\":\"fail_closed \u2014 empty active \u2229 fresh-passport \u2229 confirmed intersection\",\"type\":\"api_error\"},\"decision\":{\"model\":\"no_eligible_target\",\"provide)"
-  ],
+  "issues": [],
   "repaired": [],
   "runtime_health": {
     "errors": [],
-    "generated_at": "2026-11-17T18:38:45.104498Z",
+    "generated_at": "2026-11-17T19:57:18.651513Z",
     "observations": [],
     "passed": true,
     "schema_version": "1",
@@ -1221,9 +1223,14 @@
       "state": "ok"
     },
     {
-      "detail": "gateway already_ready url=http://127.0.0.1:20128: inventory reachable",
+      "detail": "gateway unhealthy url=http://127.0.0.1:20128: ReadTimeout: timed out",
       "label": "Gateway lifecycle",
-      "state": "ok"
+      "state": "warn"
+    },
+    {
+      "detail": "start the gateway at http://127.0.0.1:20128, or run 'verdict doctor'",
+      "label": "Gateway remediation",
+      "state": "note"
     },
     {
       "detail": "active: gateway_kind=omniroute (verdict.yaml gateway_kind); 8 ranked providers (coding) at http://127.0.0.1:20128",
@@ -1251,9 +1258,9 @@
       "state": "ok"
     },
     {
-      "detail": "red: /operator/.verdict/acceptance/20261117T180013Z.json, 36 min old",
+      "detail": "green: /operator/.verdict/acceptance/20261117T190015Z.json, 54 min old",
       "label": "Live acceptance",
-      "state": "failed"
+      "state": "ok"
     },
     {
       "detail": "",
@@ -1391,7 +1398,7 @@
       "state": "header"
     },
     {
-      "detail": "verdict-identify.timer is active; command verdict identify --passive --json --save-report --refresh-health-cache; last attempt Tue 2026-11-17 15:56:09 UTC; last completion Tue 2026-11-17 15:56:16 UTC; result success; next run unknown",
+      "detail": "verdict-identify.timer is active; command verdict identify --passive --json --save-report --refresh-health-cache; last attempt Tue 2026-11-17 18:56:29 UTC; last completion Tue 2026-11-17 18:56:32 UTC; result success; next run unknown",
       "label": "Identify timer",
       "state": "ok"
     },
@@ -1421,12 +1428,12 @@
       "state": "ok"
     },
     {
-      "detail": "tag v3.8.53 (installed v3.8.53), last sync 2026-11-17T18:02:13+00:00, 1436 pages",
+      "detail": "tag v3.8.53 (installed v3.8.53), last sync 2026-11-17T19:05:16+00:00, 1436 pages",
       "label": "Reference docs default/ref-omniroute",
       "state": "ok"
     },
     {
-      "detail": "/operator/.verdict/identify-latest.json age 9749s; source errors none; model calls 0; health refresh recorded 26, newest evidence age 9787s; implementation pool eligible 29 (free 16), fallback 909; supply complete false, 46 unknowns",
+      "detail": "/operator/.verdict/identify-latest.json age 3646s; source errors none; model calls 0; health refresh recorded 51, newest evidence age 3649s; implementation pool eligible 32 (free 17), fallback 886; supply complete false, 46 unknowns",
       "label": "Identify passive report",
       "state": "ok"
     },
@@ -1436,12 +1443,12 @@
       "state": "warning"
     },
     {
-      "detail": "verdict-metadata-refresh.timer active; arena_elo=skipped, artificial_analysis=skipped, bfcl=skipped, litellm=17294s, models.dev=17294s, models.dev.models=17294s, open_llm_leaderboard=skipped, openrouter.artificial_analysis=17294s",
+      "detail": "verdict-metadata-refresh.timer active; arena_elo=skipped, artificial_analysis=skipped, bfcl=skipped, litellm=357s, models.dev=357s, models.dev.models=357s, open_llm_leaderboard=skipped, openrouter.artificial_analysis=357s",
       "label": "Metadata refresh timer",
       "state": "ok"
     },
     {
-      "detail": "32 fresh, 9 stale route(s); passive traffic 26 (newest age 9788s); webhook 0; probes 15 (newest age 665s)",
+      "detail": "69 fresh, 0 stale route(s); passive traffic 58 (newest age 3650s); webhook 0; probes 11 (newest age 5379s)",
       "label": "Health cache",
       "state": "ok"
     },
@@ -1501,7 +1508,7 @@
       "state": "ok"
     },
     {
-      "detail": "/operator/.prime/agent/models.json: providers.omniroute has 4269 model(s)",
+      "detail": "/operator/.prime/agent/models.json: providers.omniroute has 4273 model(s)",
       "label": "Prime registry",
       "state": "ok"
     },
@@ -1522,7 +1529,7 @@
     "state": "not-installed",
     "token_env": "VERDICT_SHARED_MEMORY_TOKEN"
   },
-  "status": "issues_found",
+  "status": "ok",
   "warnings": [
     "missing_mcp_config"
   ]
