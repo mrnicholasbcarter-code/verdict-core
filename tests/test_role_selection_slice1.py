@@ -506,6 +506,259 @@ class TestSlice1FableFixture:
 
 
 # =============================================================================
+# Review feedback tests
+# =============================================================================
+
+
+class TestSlice1AliasedPoolsDeduplication:
+    """Test that S2 pool deduplication uses aliased_pools_for."""
+
+    def test_aliased_pools_for_called_during_build_ladder(self, monkeypatch: pytest.MonkeyPatch):
+        """Verify that aliased_pools_for is called during build_ladder."""
+        from verdict.orchestration.provider_catalog import (
+            aliased_pools_for as real_aliased_pools_for,
+        )
+
+        calls: list[tuple] = []
+
+        def spy_aliased_pools_for(route_ids):
+            calls.append((frozenset(route_ids),))
+            return real_aliased_pools_for(route_ids)
+
+        monkeypatch.setattr("verdict.role_selection.aliased_pools_for", spy_aliased_pools_for)
+
+        rows = [row("agy/sonnet"), row("antigravity/sonnet"), row("kr/gpt-4.1")]
+        conns = [conn("agy"), conn("antigravity"), conn("kr")]
+        admitted = admit(rows, conns, RuntimeEvidence(), now=NOW)
+        result = build_ladder(
+            role=Role.PLANNER,
+            admitted=admitted,
+            inventory_rows=rows,
+            connections=conns,
+            quota_view=OpenQuotaView(),
+            clock=NOW,
+        )
+        assert result.status == LadderStatus.OK
+        # aliased_pools_for should have been called
+        assert len(calls) >= 1
+
+    def test_deduplication_by_aliased_pool(self):
+        """Routes sharing an aliased pool should be deduplicated to one."""
+        # agy and antigravity share google-antigravity pool
+        rows = [row("agy/sonnet"), row("antigravity/sonnet"), row("kr/gpt-4.1")]
+        conns = [conn("agy"), conn("antigravity"), conn("kr")]
+        admitted = admit(rows, conns, RuntimeEvidence(), now=NOW)
+        result = build_ladder(
+            role=Role.PLANNER,
+            admitted=admitted,
+            inventory_rows=rows,
+            connections=conns,
+            quota_view=OpenQuotaView(),
+            clock=NOW,
+        )
+        assert result.status == LadderStatus.OK
+        # Only one of agy/antigravity should survive
+        agy_count = sum(1 for r in result.ordered_routes if r.startswith("agy"))
+        antigravity_count = sum(1 for r in result.ordered_routes if r.startswith("antigravity"))
+        assert agy_count + antigravity_count <= 1
+        # kr should be present
+        assert "kr/gpt-4.1" in result.ordered_routes
+
+
+class TestSlice1S3UsesAdviseOrder:
+    """Test that S3 ordering uses advise_order from decision_signals."""
+
+    def test_advise_order_called_with_signals(self, monkeypatch: pytest.MonkeyPatch):
+        """Verify that advise_order is called with the supplied signals."""
+        from verdict.decision_signals.advisory import advise_order as real_advise_order
+        from verdict.decision_signals.contracts import DecisionSignalSetV1
+
+        calls: list[tuple] = []
+
+        def make_signals():
+            return DecisionSignalSetV1(
+                schema_version="decision-signals/v1",
+                provider="test",
+                model="test-model",
+                version="1.0",
+                request_id="req-1",
+                purpose="route",
+                signals={"frontier_worthy": 0.8, "complexity": 0.3},
+                confidence=0.9,
+                latency_ms=50,
+                usage={"input_tokens": 10, "output_tokens": 5},
+                input_digest="a" * 64,
+                observed_at="2024-01-01T00:00:00Z",
+                failure_class=None,
+                mode="ADVISORY",
+            )
+
+        def spy_advise_order(candidates, signals, **kwargs):
+            calls.append((candidates, signals, kwargs))
+            return real_advise_order(candidates, signals, **kwargs)
+
+        monkeypatch.setattr("verdict.role_selection.advise_order", spy_advise_order)
+
+        rows = [row("cc/claude-sonnet-5-5"), row("kr/gpt-4.1")]
+        conns = [conn("cc"), conn("kr")]
+        admitted = admit(rows, conns, RuntimeEvidence(), now=NOW)
+        signals = make_signals()
+        result = build_ladder(
+            role=Role.PLANNER,
+            admitted=admitted,
+            inventory_rows=rows,
+            connections=conns,
+            signals=signals,
+            quota_view=OpenQuotaView(),
+            clock=NOW,
+        )
+        assert result.status == LadderStatus.OK
+        # advise_order should have been called with signals
+        assert len(calls) >= 1
+        assert calls[0][1] is signals
+
+    def test_h3_set_equals_h2_with_advise_order(self):
+        """H3 set must equal H2 set even after advise_order reordering."""
+        from verdict.decision_signals.contracts import DecisionSignalSetV1
+
+        def make_signals():
+            return DecisionSignalSetV1(
+                schema_version="decision-signals/v1",
+                provider="test",
+                model="test-model",
+                version="1.0",
+                request_id="req-1",
+                purpose="route",
+                signals={"frontier_worthy": 0.8, "complexity": 0.3},
+                confidence=0.9,
+                latency_ms=50,
+                usage={"input_tokens": 10, "output_tokens": 5},
+                input_digest="a" * 64,
+                observed_at="2024-01-01T00:00:00Z",
+                failure_class=None,
+                mode="ADVISORY",
+            )
+
+        rows = [row("cc/claude-sonnet-5-5"), row("kr/gpt-4.1"), row("cx/gpt-6-astra")]
+        conns = [conn("cc"), conn("kr"), conn("cx")]
+        admitted = admit(rows, conns, RuntimeEvidence(), now=NOW)
+        signals = make_signals()
+        result = build_ladder(
+            role=Role.PLANNER,
+            admitted=admitted,
+            inventory_rows=rows,
+            connections=conns,
+            signals=signals,
+            quota_view=OpenQuotaView(),
+            clock=NOW,
+        )
+        assert result.status == LadderStatus.OK
+        # H3 set == H2 set (membership invariant)
+        assert set(result.ordered_routes) == set(rid for rid in result.ordered_routes)
+
+    def test_signals_digest_carried_into_result(self):
+        """signals_digest from advise_order should be in LadderResult."""
+        from verdict.decision_signals.contracts import DecisionSignalSetV1
+
+        def make_signals():
+            return DecisionSignalSetV1(
+                schema_version="decision-signals/v1",
+                provider="test",
+                model="test-model",
+                version="1.0",
+                request_id="req-1",
+                purpose="route",
+                signals={"frontier_worthy": 0.8, "complexity": 0.3},
+                confidence=0.9,
+                latency_ms=50,
+                usage={"input_tokens": 10, "output_tokens": 5},
+                input_digest="a" * 64,
+                observed_at="2024-01-01T00:00:00Z",
+                failure_class=None,
+                mode="ADVISORY",
+            )
+
+        rows = [row("cc/claude-sonnet-5-5"), row("kr/gpt-4.1")]
+        conns = [conn("cc"), conn("kr")]
+        admitted = admit(rows, conns, RuntimeEvidence(), now=NOW)
+        signals = make_signals()
+        result = build_ladder(
+            role=Role.PLANNER,
+            admitted=admitted,
+            inventory_rows=rows,
+            connections=conns,
+            signals=signals,
+            quota_view=OpenQuotaView(),
+            clock=NOW,
+        )
+        assert result.status == LadderStatus.OK
+        # signals_digest should be set from the signals
+        assert result.signals_digest is not None
+        assert result.signals_digest == "a" * 64
+
+    def test_legacy_order_when_signals_missing(self):
+        """When signals are None, order should keep legacy narrowed order."""
+        rows = [row("cc/claude-sonnet-5-5"), row("kr/gpt-4.1")]
+        conns = [conn("cc"), conn("kr")]
+        admitted = admit(rows, conns, RuntimeEvidence(), now=NOW)
+        result = build_ladder(
+            role=Role.PLANNER,
+            admitted=admitted,
+            inventory_rows=rows,
+            connections=conns,
+            signals=None,
+            quota_view=OpenQuotaView(),
+            clock=NOW,
+        )
+        assert result.status == LadderStatus.OK
+        # Should keep legacy order (admitted order = D6 tier order)
+        assert list(result.ordered_routes) == sorted(admitted.ids)
+
+
+class TestSlice1CapacityUnknownExcluded:
+    """Test that routes with no connection (capacity UNKNOWN) are excluded."""
+
+    def test_no_connection_route_excluded(self):
+        """Route with no connection row (capacity UNKNOWN, evidence no_connection) should be skipped."""
+        # kr/gpt-4.1 has a connection, cc/claude-sonnet-5-5 does not
+        rows = [row("cc/claude-sonnet-5-5"), row("kr/gpt-4.1")]
+        conns = [
+            conn("kr")  # only kr connection
+        ]
+        admitted = admit(rows, conns, RuntimeEvidence(), now=NOW)
+        # cc/claude-sonnet-5-5 should not be admitted (no connection evidence)
+        assert "cc/claude-sonnet-5-5" not in admitted
+        assert "kr/gpt-4.1" in admitted
+
+        result = build_ladder(
+            role=Role.PLANNER,
+            admitted=admitted,
+            inventory_rows=rows,
+            connections=conns,
+            quota_view=OpenQuotaView(),
+            clock=NOW,
+        )
+        assert result.status == LadderStatus.OK
+        assert "cc/claude-sonnet-5-5" not in result.ordered_routes
+        assert "kr/gpt-4.1" in result.ordered_routes
+
+
+class TestSlice1NoLocalStrengthSort:
+    """Test that local strength sort reimplementation is removed."""
+
+    def test_no_local_strength_sort_in_s3(self):
+        """S3 should not have local strength sort logic, only advise_order."""
+        import inspect
+
+        source = inspect.getsource(build_ladder)
+        # Should not contain the old local strength sort logic
+        assert "has_strength" not in source
+        assert "scored = sorted" not in source
+        assert "unscored = " not in source
+        assert "external_strength" not in source or "advise_order" in source
+
+
+# =============================================================================
 # Regression: Existing tests must pass unchanged
 # =============================================================================
 

@@ -201,12 +201,12 @@ def _cmd_ladder(parser: argparse.ArgumentParser, args: argparse.Namespace) -> No
     Read-only ladder builder for the planner role. Prints LadderResult
     and shadow event. Exits non-zero on FAIL_CLOSED.
     """
+    import json
     import sys
 
     from verdict.admission import admit, default_runtime_evidence
     from verdict.metadata.mapping import load_identity_map
     from verdict.metadata.store import load_store
-    from verdict.orchestration.run import fetch_connections, fetch_inventory
     from verdict.role_ladder_event import build_shadow_event
     from verdict.role_selection import LadderStatus, OpenQuotaView, Role, build_ladder
 
@@ -216,17 +216,16 @@ def _cmd_ladder(parser: argparse.ArgumentParser, args: argparse.Namespace) -> No
 
     # Load inventory fixture or live
     if args.inventory_fixture:
-        import json
-
         with open(args.inventory_fixture) as f:
             fixture = json.load(f)
         inventory_rows = fixture.get("inventory", [])
         connections = fixture.get("connections", [])
     else:
-        # Live mode - read from gateway (requires gateway config)
-        # For T3, we'll use a simple approach with environment
-        gateway = os.environ.get("VERDICT_GATEWAY", "http://localhost:8080")
-        api_key = os.environ.get("VERDICT_API_KEY")
+        # Live mode - use existing resolver and fetch path
+        from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
+
+        gateway = os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128")
+        api_key = resolve_api_key()
         try:
             inventory_rows = fetch_inventory(gateway, api_key=api_key, timeout=30)
             connections = fetch_connections(gateway, api_key=api_key, timeout=30)

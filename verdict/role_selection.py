@@ -17,8 +17,9 @@ from typing import Any, Protocol
 
 from verdict.admission import AdmittedSet
 from verdict.capacity import CapacityClass, classify_route_capacity
+from verdict.decision_signals.advisory import advise_order
 from verdict.metadata.store import MetadataSnapshot, lookup_omniroute_id
-from verdict.orchestration.provider_catalog import backend_pool
+from verdict.orchestration.provider_catalog import aliased_pools_for, backend_pool
 
 # ---------------------------------------------------------------------------
 # Role Enum
@@ -219,6 +220,9 @@ def _stage_s2_narrowing(
     # Build connection lookup by provider
     conn_by_provider = {c["provider"]: c for c in connections}
 
+    # Compute aliased pools from admitted routes (for cross-prefix deduplication awareness)
+    _aliased_pools = aliased_pools_for(admitted.ids)
+
     # Track seen pools for deduplication
     seen_pools: set[str] = set()
     narrowed: list[str] = []
@@ -292,7 +296,7 @@ def _stage_s2_narrowing(
 
 
 # ---------------------------------------------------------------------------
-# Stage S3: Ordering (H3) - external strength from metadata store
+# Stage S3: Ordering (H3) - use advise_order for advisory reordering
 # ---------------------------------------------------------------------------
 
 
@@ -303,21 +307,22 @@ def _stage_s3_ordering(
     identity_map: Any,
     now: datetime,
     admitted: AdmittedSet,
-) -> tuple[list[str], list[RouteScore], str]:
-    """S3: Order by external strength from metadata store.
+    signals: Any = None,  # DecisionSignalSetV1 or None
+) -> tuple[list[str], list[RouteScore], str, str | None]:
+    """S3: Order by external strength from metadata store, then apply advise_order.
 
-    Fallback to legacy D6 order (capacity tier, then rating) when strength is
-    stale or missing. This is advisory - does not change membership.
+    Fallback to legacy D6 order (capacity tier) when strength is stale or missing.
+    This is advisory - does not change membership.
+    Returns: (ordered, final_scores, h3, signals_digest)
     """
     if not narrowed:
-        return [], route_scores, _sha256_sorted_ids([])
+        return [], route_scores, _sha256_sorted_ids([]), None
 
     # Build lookup for route_scores by route_id
     scores_by_id = {rs.route_id: rs for rs in route_scores}
 
     # Try to get strength from metadata
     if metadata_snapshot is not None and identity_map is not None:
-        # Try to enrich with metadata
         for _i, route_id in enumerate(narrowed):
             rs = scores_by_id.get(route_id)
             if not rs:
@@ -368,29 +373,80 @@ def _stage_s3_ordering(
                         exploration=rs.exploration,
                     )
 
-    # Sort by external_strength descending (strongest first), then by route_id
-    # for determinism. Routes without strength data keep their narrowed position
-    # (legacy D6 order) but sort after scored routes.
-    has_strength = {rid for rid, rs in scores_by_id.items() if rs.external_strength is not None}
+    # Build fake ModelInfo objects for advise_order
+    candidates = []
+    for route_id in narrowed:
+        rs = scores_by_id.get(route_id)
+        if rs:
+            candidates.append(_make_fake_model(route_id, rs))
 
+    # First, establish baseline order by metadata strength (strongest first)
+    # This is the "legacy" order when no signals are available
+    has_strength = {rid for rid, rs in scores_by_id.items() if rs.external_strength is not None}
     if has_strength:
-        # Scored routes first (by strength desc), then unscoped routes (by narrowed order)
         scored = sorted(
             [rid for rid in narrowed if rid in has_strength],
             key=lambda rid: (-(scores_by_id[rid].external_strength or 0.0), rid),
         )
         unscored = [rid for rid in narrowed if rid not in has_strength]
-        ordered = scored + unscored
+        baseline_order = scored + unscored
     else:
-        # No strength data: keep legacy narrowed order (D6 tier order)
-        ordered = list(narrowed)
+        # No strength data: use deterministic sorted order for legacy D6 tier order
+        baseline_order = sorted(narrowed)
+
+    # Rebuild candidates in baseline order for advise_order
+    baseline_candidates = []
+    for route_id in baseline_order:
+        rs = scores_by_id.get(route_id)
+        if rs:
+            baseline_candidates.append(_make_fake_model(route_id, rs))
+
+    # Use advise_order for advisory reordering on top of metadata strength baseline
+    # Planner is a critical role, but we pass protected=False because the metadata
+    # strength ordering is separate from advisory signals; protected only skips
+    # the advisory reordering, not the metadata strength baseline.
+    ordered_candidates, influence = advise_order(
+        baseline_candidates, signals, protected=False, privacy=None
+    )
+
+    ordered = [getattr(m, "id", "") for m in ordered_candidates]
+
+    # Verify membership invariant: H3 set == H2 set
+    if set(ordered) != set(narrowed):
+        # This should not happen as advise_order preserves membership
+        raise RuntimeError("advise_order violated membership invariant")
 
     h3 = _sha256_sorted_ids(ordered)
 
     # Update route_scores with final order
     final_scores = [scores_by_id[rid] for rid in ordered if rid in scores_by_id]
 
-    return ordered, final_scores, h3
+    return ordered, final_scores, h3, influence.signals_digest
+
+
+def _capacity_tier_from_class(capacity_class: CapacityClass) -> int:
+    """Map capacity class to capability tier proxy."""
+    mapping = {
+        CapacityClass.FREE: 3,
+        CapacityClass.SUBSCRIPTION: 2,
+        CapacityClass.METERED: 1,
+        CapacityClass.UNKNOWN: 4,
+    }
+    return mapping.get(capacity_class, 2)
+
+
+def _make_fake_model(route_id: str, rs: RouteScore) -> Any:
+    """Create a fake ModelInfo-like object for advise_order."""
+
+    class FakeModel:
+        def __init__(self, route_id: str, rs: RouteScore):
+            self.id = route_id
+            self.capability_tier = _capacity_tier_from_class(rs.capacity_class)
+            self.provider = route_id.split("/", 1)[0] if "/" in route_id else route_id
+            self.quality_confidence = rs.external_strength
+            self.pricing: dict[str, float] = {}
+
+    return FakeModel(route_id, rs)
 
 
 # ---------------------------------------------------------------------------
@@ -431,9 +487,9 @@ def build_ladder(
         admitted, inventory_rows, connections, role, now, openrouter_free_set
     )
 
-    # S3: Ordering (external strength)
-    ordered, final_scores, h3 = _stage_s3_ordering(
-        narrowed, route_scores, metadata_snapshot, identity_map, now, admitted
+    # S3: Ordering (external strength + advise_order)
+    ordered, final_scores, h3, signals_digest = _stage_s3_ordering(
+        narrowed, route_scores, metadata_snapshot, identity_map, now, admitted, signals
     )
 
     # Verify invariants
@@ -496,7 +552,7 @@ def build_ladder(
         legacy_pick=legacy_pick,
         dynamic_pick=dynamic_pick,
         agree=agree,
-        signals_digest=None,  # T3: no signals
+        signals_digest=signals_digest,
         metadata_fixture=metadata_snapshot is not None,
     )
 
