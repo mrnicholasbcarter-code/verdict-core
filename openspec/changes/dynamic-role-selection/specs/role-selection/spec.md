@@ -63,7 +63,7 @@ Capacity class SHALL be evaluated per route, highest precedence first. Scope is 
 
 **P6**: OAuth with no paid evidence → SUBSCRIPTION, confidence `assumed` (`assumed_subscription_oauth`).
 
-**P7**: No evidence at all → FREE, confidence `assumed` (`assumed_free_no_paid_evidence`, D7 unchanged).
+**P7**: No evidence at all → FREE, confidence `assumed` (`assumed_free_no_paid_evidence`). D7 unchanged for legacy callers.
 
 **P8**: Connection blocked (auth/verification failure) → class unchanged, but availability UNAVAILABLE with reason. Never healthy, never a candidate until a fresh success.
 
@@ -80,7 +80,7 @@ Missing connection row → UNKNOWN. It fails entitlement.
 
 **Single Enforcement Point**: `capacity_policy.role_capacity_allowed(role, capacity_class, capacity_confidence)` is the sole function that determines whether a capacity class is permitted for a role.
 
-**D7 Rule (Pending Operator Confirmation)**: For critical roles (planner, reviewer, controller, escalation), an `assumed-free_no_paid_evidence` status SHALL be treated as UNKNOWN, regardless of `VERDICT_ALLOW_UNKNOWN_CAPACITY`. It ranks last and never makes a ladder non-empty on its own.
+**D7 Rule (Decided, operator, 2026-11-17)**: For critical roles (planner, reviewer, controller, escalation), an `assumed_free_no_paid_evidence` status SHALL be treated as UNKNOWN, enforced only in `capacity_policy.role_capacity_allowed`. The legacy `capacity.classify()` result (absence of paid evidence is FREE) is kept for existing callers. It ranks last and never makes a ladder non-empty on its own. Regardless of `VERDICT_ALLOW_UNKNOWN_CAPACITY`.
 
 #### Scenario: METERED wins over SUBSCRIPTION
 - **WHEN** a connection has both a 402 (P1) and OAuth subscription evidence (P6)
@@ -148,7 +148,7 @@ The system SHALL implement the `QuotaView` protocol (frozen in T3): `state(pool,
 
 **Cooldown Expiry**: `until = max(existing until, now + max(Retry-After, local cooldown))`. It only moves forward until it expires. `Retry-After` is honoured when present and larger. Local cooldown defaults to 60s, doubling per repeat event within 15 min, capped at 30 min.
 
-**Hysteresis**: 
+**Hysteresis**:
 - `open` → `pressure` at `>= 2 x 429 in 15 min`
 - `pressure` → `cooldown` on an explicit cooldown message or `Retry-After`
 - `cooldown` → `pressure` on expiry
@@ -168,7 +168,7 @@ The system SHALL implement the `QuotaView` protocol (frozen in T3): `state(pool,
 
 (Retry-After wins when larger; no option lets a local value shorten a provider Retry-After.)
 
-**Reserve (by role priority under pressure/cooldown)**: 
+**Reserve (by role priority under pressure/cooldown)**:
 - Implementer and reviewer drop the pool first
 - Then escalation
 - Controller last

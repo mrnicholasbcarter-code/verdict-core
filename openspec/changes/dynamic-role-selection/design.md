@@ -25,6 +25,8 @@ The pipeline is implemented as a sequence of filters. S2 (Narrowing) is strictly
 ### Capacity Policy
 The `capacity_policy.role_capacity_allowed` is the single point of truth for whether a capacity class (Free, Subscription, Metered, Unknown) is permitted for a given role.
 
+**D7 Rule (Decided, operator, 2026-11-17)**: For critical roles (planner, reviewer, controller, escalation), an `assumed-FREE` status (absence of evidence) SHALL be treated as UNKNOWN. This is enforced only in `capacity_policy.role_capacity_allowed`. The legacy `capacity.classify()` result (absence of paid evidence is FREE) is kept for existing callers. This ensures critical roles are not populated by unverified free routes, regardless of `VERDICT_ALLOW_UNKNOWN_CAPACITY`.
+
 ### Reliability and Quota
 Reliability is tracked via `ReliabilityObservation` derived from call logs. Quota is managed via a `QuotaView` that handles cooldowns and reserves.
 

@@ -1,6 +1,6 @@
 # ADR-042: Dynamic Role-Based Model Selection
 
-**Status:** Proposed
+**Status:** Accepted (operator, 2026-11-17)
 **Date:** 2026-11-17
 **Deciders:** Operator
 **Amends:** ADR-036 (Planner and Reviewer selection)
@@ -46,7 +46,7 @@ Evaluated per route, highest precedence first. Scope is connection unless stated
 | P4 | OpenRouter outside public free set | METERED | declared | Inside free set → FREE (declared); Anthropic API key → METERED |
 | P5 | `:free` suffix / connection free signal / all-zero pricing | FREE | declared | Non-OpenRouter |
 | P6 | OAuth with no paid evidence | SUBSCRIPTION | assumed (`assumed_subscription_oauth`) | |
-| P7 | No evidence at all | FREE | assumed (`assumed_free_no_paid_evidence`) | D7 unchanged |
+| P7 | No evidence at all | FREE | assumed (`assumed_free_no_paid_evidence`) | D7 unchanged for legacy callers |
 | P8 | Connection blocked (auth/verification failure) | unchanged | — | Availability UNAVAILABLE; never healthy until fresh success |
 
 Missing connection row → UNKNOWN (fails entitlement).
@@ -56,7 +56,7 @@ Missing connection row → UNKNOWN (fails entitlement).
 - Billing expired vs pricing positive: METERED (P3).
 - Pricing zero vs observed 402: METERED (P1/P2 outrank P5).
 - OAuth assumed SUBSCRIPTION: eligible for all roles once a fresh agentic passport or success exists. Without one: implementer low-risk only, ranked after observed/declared subscription.
-- Assumed FREE (P7): implementer low-risk with fresh passport only. For **planner, reviewer, controller, and escalation** it is treated as **UNKNOWN**, ranked last, and never makes a ladder non-empty on its own (**pending operator confirmation** — D7).
+- Assumed FREE (P7): implementer low-risk with fresh passport only. For **planner, reviewer, controller, and escalation** it is treated as **UNKNOWN**, ranked last, and never makes a ladder non-empty on its own (**Decided, operator, 2026-11-17** — D7).
 
 **Freshness:** Evidence older than its TTL drops one confidence level (observed → assumed). Billing evidence expires only through explicit 402 expiry. Name or vendor literals are not inputs.
 
