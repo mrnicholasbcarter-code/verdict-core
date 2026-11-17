@@ -2,16 +2,13 @@
 
 ## 1. Local implementation
 
-- [x] 1.1 Add `_now` property to `IntelligenceService` returning timezone-aware datetime.
-- [x] 1.2 Update nine call sites in `verdict/intelligence.py` to use `self._now` instead of `self.admit_now`.
-- [x] 1.3 Add unit test `test_prepare_execution_path_request_uses_aware_utc_clock_when_admit_now_is_none` in `tests/test_intelligence_service.py` to verify the fix.
-- [x] 1.4 Add unit test `test_prepare_execution_path_request_uses_injected_admit_now` in `tests/test_intelligence_service.py` to verify test-injected time is used.
-- [x] 1.5 Add unit test `test_prepare_execution_path_request_single_clock_per_request` in `tests/test_intelligence_service.py` to verify single clock per request.
-- [x] 1.6 Add API test `test_api_route_execution_path_request_returns_non_500` in `tests/test_serve_path_cutover.py` to verify the endpoint returns non-500.
-- [x] 1.7 Run all affected tests, ruff, mypy, doc-links, reachability, and vgate to verify no regressions.
+- [x] 1.1 Reproduce: the `verdict-serve` journal shows `POST /v1/route` 500 with `HealthCacheError: now must be a timezone-aware datetime` from `selector._assess_all(orch_reqs, self.admit_now)`; the new tests fail on origin/main's `verdict/intelligence.py`.
+- [x] 1.2 Add `_now` and the request-local `_request_clock` to `IntelligenceService`; bind it in `route()` and `_prepare_execution_path_request()`.
+- [x] 1.3 Use `_now` at every route-path time check, including `_route_capacity`, `_apply_candidate_pool`, the legacy admit cooling check and the dispatch cooling check.
+- [x] 1.4 Make `admit_now` a validated property: a naive `datetime` raises `ValueError`.
+- [x] 1.5 Replace the mocked tests with tests that drive the real service and the real FastAPI app down the serve branch (`tests/helpers/live_execution_path.py`).
+- [x] 1.6 Run the focused tests, the full suite, ruff, mypy --strict, doc links, reachability, `check_openspec_tasks.py` and strict OpenSpec validation.
 
 ## 2. Post-merge verification
-
-Post-merge test: operator installs from merged main, restarts verdict-serve, then POSTs an execution-path request to 127.0.0.1:8000/v1/route and records a non-500 response in the evidence file.
 
 - [ ] (post-merge) Install from merged main, restart nothing by hand (operator restarts verdict-serve), then POST the same execution-path request to 127.0.0.1:8000/v1/route and record a non-500 response.
