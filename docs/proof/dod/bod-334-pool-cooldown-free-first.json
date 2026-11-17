@@ -1,73 +1,73 @@
 {
-  "schema_version": 1,
-  "story": "bod-334-pool-cooldown-free-first",
-  "kind": "product",
-  "author": "gem-devops",
-  "merged_sha": "0ebab3f56eeff8efd3ed61e94c09e5c9703f62bd",
-  "pr": 802,
-  "on_main": {
-    "at": "2026-11-17T18:27:28Z",
-    "sha": "0ebab3f56eeff8efd3ed61e94c09e5c9703f62bd",
+ "schema_version": 1,
+ "story": "bod-334-pool-cooldown-free-first",
+ "kind": "product",
+ "author": "gem-devops",
+ "merged_sha": "0ebab3f56eeff8efd3ed61e94c09e5c9703f62bd",
+ "pr": 802,
+ "on_main": {
+  "at": "2026-11-17T18:27:28Z",
+  "sha": "0ebab3f56eeff8efd3ed61e94c09e5c9703f62bd",
+  "environment": "operator-host",
+  "command": "gh pr checks 802 --required",
+  "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/38032874863",
+  "exit_code": 0,
+  "raw_output": {
+   "path": "docs/proof/dod/bod-334-pool-cooldown-free-first/bod-334-pool-cooldown-free-first-pr802-checks.txt",
+   "sha256": "4eea0ec8cbe871e92ddcdcffdd4e3925ebd31c1a5327731387ffbd136072b1b9"
+  }
+ },
+ "acceptance": [
+  {
+   "criterion": "Pool-based cooldowns are exposed in identify supply, and free routes rank before subscription",
+   "expect": "\"remaining_percent\": null",
+   "first_run": {
+    "at": "2026-11-17T18:32:02Z",
+    "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
     "environment": "operator-host",
-    "command": "gh pr checks 802 --required",
-    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/38032874863",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict identify --passive --json",
+    "real_state_marker": "\"remaining_percent\": null",
     "exit_code": 0,
     "raw_output": {
-      "path": "docs/proof/dod/bod-334-pool-cooldown-free-first/bod-334-pool-cooldown-free-first-pr802-checks.txt",
-      "sha256": "4eea0ec8cbe871e92ddcdcffdd4e3925ebd31c1a5327731387ffbd136072b1b9"
+     "path": "docs/proof/dod/bod-334-pool-cooldown-free-first/bod-314-quota-truth-first-20261117T183202Z.json",
+     "sha256": "7b84900b7385c5d6e0a6719c0f364a97aaa57c60cef3cdcbc5d9f11095ebf6f8"
     }
-  },
-  "acceptance": [
-    {
-      "criterion": "Pool-based cooldowns are exposed in identify supply, and free routes rank before subscription",
-      "expect": "\"remaining_percent\": null",
-      "first_run": {
-        "at": "2026-11-17T18:32:02Z",
-        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
-        "environment": "operator-host",
-        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict identify --passive --json",
-        "real_state_marker": "\"remaining_percent\": null",
-        "exit_code": 0,
-        "raw_output": {
-          "path": "docs/proof/dod/bod-334-pool-cooldown-free-first/bod-314-quota-truth-first-20261117T183202Z.json",
-          "sha256": "7b84900b7385c5d6e0a6719c0f364a97aaa57c60cef3cdcbc5d9f11095ebf6f8"
-        }
-      },
-      "fresh_run": {
-        "at": "2026-11-17T18:52:56Z",
-        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
-        "environment": "operator-host",
-        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict identify --passive --json",
-        "real_state_marker": "\"remaining_percent\": null",
-        "exit_code": 0,
-        "raw_output": {
-          "path": "docs/proof/dod/bod-334-pool-cooldown-free-first/bod-314-quota-truth-fresh-20261117T185256Z.json",
-          "sha256": "e5e96e4b438da99d8653fe6b78b9ed0693e7a7b387be571e1fc43bcc0498a78e"
-        }
-      }
-    }
-  ],
-  "freshness_window_hours": 0.25,
-  "stays_true_job": "tests covering bod-334-pool-cooldown-free-first run on every PR and push. The hourly verify_refresh gate exercises the selector on this host.",
-  "setup_doctor": {
-    "status": "green",
-    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
-    "at": "2026-11-17T19:57:00Z",
-    "raw_output": {
-      "path": "docs/proof/dod/bod-334-pool-cooldown-free-first/doctor-ok-2026-11-17T19-57Z.json",
-      "sha256": "4320aa64ab21d6bb53b688696ded1c82ca1faa2312dfb5a50f90d6db26196ccd"
-    }
-  },
-  "openspec": {
-    "change": "bod-334-pool-cooldown-free-first"
-  },
-  "parent_confirmation": {
-    "by": "gem-devops (worker/free-first, ses_...) [Confirmation Pending]",
-    "at": "2026-11-17T18:54:38Z",
+   },
+   "fresh_run": {
+    "at": "2026-11-17T18:52:56Z",
+    "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+    "environment": "operator-host",
     "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict identify --passive --json",
+    "real_state_marker": "\"remaining_percent\": null",
+    "exit_code": 0,
     "raw_output": {
-      "path": "docs/proof/dod/bod-334-pool-cooldown-free-first/identify-passive-confirm-20261117T1854Z.json",
-      "sha256": "d17bac2fc7ee3b990fce7847fd299e4d7d052876df6bd994a8f65e5bb7be9266"
+     "path": "docs/proof/dod/bod-334-pool-cooldown-free-first/bod-314-quota-truth-fresh-20261117T185256Z.json",
+     "sha256": "e5e96e4b438da99d8653fe6b78b9ed0693e7a7b387be571e1fc43bcc0498a78e"
     }
+   }
   }
+ ],
+ "freshness_window_hours": 0.25,
+ "stays_true_job": "tests covering bod-334-pool-cooldown-free-first run on every PR and push. The hourly verify_refresh gate exercises the selector on this host.",
+ "setup_doctor": {
+  "status": "green",
+  "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
+  "at": "2026-11-17T19:57:00Z",
+  "raw_output": {
+   "path": "docs/proof/dod/bod-334-pool-cooldown-free-first/doctor-ok-2026-11-17T19-57Z.json",
+   "sha256": "4320aa64ab21d6bb53b688696ded1c82ca1faa2312dfb5a50f90d6db26196ccd"
+  }
+ },
+ "openspec": {
+  "change": "bod-334-pool-cooldown-free-first"
+ },
+ "parent_confirmation": {
+  "by": "gem-implementer (omniroute/cc/claude-opus-5-5), the batch-3 escalation implementer; placeholder until a separate confirmer re-runs it",
+  "at": "2026-11-17T18:54:38Z",
+  "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict identify --passive --json",
+  "raw_output": {
+   "path": "docs/proof/dod/bod-334-pool-cooldown-free-first/identify-passive-confirm-20261117T1854Z.json",
+   "sha256": "d17bac2fc7ee3b990fce7847fd299e4d7d052876df6bd994a8f65e5bb7be9266"
+  }
+ }
 }

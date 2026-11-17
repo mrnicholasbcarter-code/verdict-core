@@ -1,73 +1,73 @@
 {
-  "schema_version": 1,
-  "story": "cheapest-proven-selection-s1",
-  "kind": "product",
-  "author": "gem-devops",
-  "merged_sha": "c99aa5d44cc42f31fe8765bc4eca93b2e5401c13",
-  "pr": 938,
-  "on_main": {
-    "at": "2026-11-17T18:27:28Z",
-    "sha": "c99aa5d44cc42f31fe8765bc4eca93b2e5401c13",
+ "schema_version": 1,
+ "story": "cheapest-proven-selection-s1",
+ "kind": "product",
+ "author": "gem-devops",
+ "merged_sha": "c99aa5d44cc42f31fe8765bc4eca93b2e5401c13",
+ "pr": 938,
+ "on_main": {
+  "at": "2026-11-17T18:27:28Z",
+  "sha": "c99aa5d44cc42f31fe8765bc4eca93b2e5401c13",
+  "environment": "operator-host",
+  "command": "gh pr checks 938 --required",
+  "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/39678844351",
+  "exit_code": 0,
+  "raw_output": {
+   "path": "docs/proof/dod/cheapest-proven-selection-s1/cheapest-proven-selection-s1-pr938-checks.txt",
+   "sha256": "b57d76b86a23ce545f5b59c0d26ed508acb6229241b29f403d5d2edc17e65179"
+  }
+ },
+ "acceptance": [
+  {
+   "criterion": "A connected route with no paid or subscription evidence is FREE under the assumed_free_no_paid_evidence rule",
+   "expect": "\"capacity_evidence\": \"assumed_free_no_paid_evidence\"",
+   "first_run": {
+    "at": "2026-11-17T18:31:26Z",
+    "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
     "environment": "operator-host",
-    "command": "gh pr checks 938 --required",
-    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/39678844351",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --json",
+    "real_state_marker": "\"health_cache\"",
     "exit_code": 0,
     "raw_output": {
-      "path": "docs/proof/dod/cheapest-proven-selection-s1/cheapest-proven-selection-s1-pr938-checks.txt",
-      "sha256": "b57d76b86a23ce545f5b59c0d26ed508acb6229241b29f403d5d2edc17e65179"
+     "path": "docs/proof/dod/cheapest-proven-selection-s1/cheapest-proven-selection-s1-first-20261117T183126Z.json",
+     "sha256": "188a58baafdbbd3d1fca91ccc0d9860265870d20840bfd2950264f373c88dc37"
     }
-  },
-  "acceptance": [
-    {
-      "criterion": "Free routes are ranked before subscription and metered routes in the eligibility ladder",
-      "expect": "\"capacity_class\": \"free\"",
-      "first_run": {
-        "at": "2026-11-17T18:31:26Z",
-        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
-        "environment": "operator-host",
-        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --json",
-        "real_state_marker": "\"health_cache\"",
-        "exit_code": 0,
-        "raw_output": {
-          "path": "docs/proof/dod/cheapest-proven-selection-s1/cheapest-proven-selection-s1-first-20261117T183126Z.json",
-          "sha256": "188a58baafdbbd3d1fca91ccc0d9860265870d20840bfd2950264f373c88dc37"
-        }
-      },
-      "fresh_run": {
-        "at": "2026-11-17T18:52:09Z",
-        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
-        "environment": "operator-host",
-        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --json",
-        "real_state_marker": "\"health_cache\"",
-        "exit_code": 0,
-        "raw_output": {
-          "path": "docs/proof/dod/cheapest-proven-selection-s1/cheapest-proven-selection-s1-fresh-20261117T185209Z.json",
-          "sha256": "907a47198c9ac2301cb4404f3642f32d5305a87932a7004686d3a31aeeed8eb5"
-        }
-      }
-    }
-  ],
-  "freshness_window_hours": 0.25,
-  "stays_true_job": "tests covering cheapest-proven-selection-s1 run on every PR and push. The hourly verify_refresh gate exercises the selector on this host.",
-  "setup_doctor": {
-    "status": "green",
-    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
-    "at": "2026-11-17T19:57:00Z",
-    "raw_output": {
-      "path": "docs/proof/dod/cheapest-proven-selection-s1/doctor-ok-2026-11-17T19-57Z.json",
-      "sha256": "4320aa64ab21d6bb53b688696ded1c82ca1faa2312dfb5a50f90d6db26196ccd"
-    }
-  },
-  "openspec": {
-    "change": "cheapest-proven-selection-s1"
-  },
-  "parent_confirmation": {
-    "by": "gem-devops (worker/free-first, ses_...) [Confirmation Pending]",
-    "at": "2026-11-17T18:54:38Z",
+   },
+   "fresh_run": {
+    "at": "2026-11-17T18:52:09Z",
+    "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+    "environment": "operator-host",
     "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --json",
+    "real_state_marker": "\"health_cache\"",
+    "exit_code": 0,
     "raw_output": {
-      "path": "docs/proof/dod/cheapest-proven-selection-s1/eligibility-confirm-20261117T1853Z.json",
-      "sha256": "525a9a3c2c39f2040277d2a799b55da0000f1487a479e5cf3c9a7ee1c76a89be"
+     "path": "docs/proof/dod/cheapest-proven-selection-s1/cheapest-proven-selection-s1-fresh-20261117T185209Z.json",
+     "sha256": "907a47198c9ac2301cb4404f3642f32d5305a87932a7004686d3a31aeeed8eb5"
     }
+   }
   }
+ ],
+ "freshness_window_hours": 0.25,
+ "stays_true_job": "tests covering cheapest-proven-selection-s1 run on every PR and push. The hourly verify_refresh gate exercises the selector on this host.",
+ "setup_doctor": {
+  "status": "green",
+  "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
+  "at": "2026-11-17T19:57:00Z",
+  "raw_output": {
+   "path": "docs/proof/dod/cheapest-proven-selection-s1/doctor-ok-2026-11-17T19-57Z.json",
+   "sha256": "4320aa64ab21d6bb53b688696ded1c82ca1faa2312dfb5a50f90d6db26196ccd"
+  }
+ },
+ "openspec": {
+  "change": "cheapest-proven-selection-s1"
+ },
+ "parent_confirmation": {
+  "by": "gem-implementer (omniroute/cc/claude-opus-5-5), the batch-3 escalation implementer; placeholder until a separate confirmer re-runs it",
+  "at": "2026-11-17T18:54:38Z",
+  "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --json",
+  "raw_output": {
+   "path": "docs/proof/dod/cheapest-proven-selection-s1/eligibility-confirm-20261117T1853Z.json",
+   "sha256": "525a9a3c2c39f2040277d2a799b55da0000f1487a479e5cf3c9a7ee1c76a89be"
+  }
+ }
 }
