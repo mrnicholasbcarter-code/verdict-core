@@ -6,15 +6,15 @@
   "merged_sha": "4f642962894da7ac4c84615eac3bcc4b35f6d1f3",
   "pr": 918,
   "on_main": {
-    "at": "2026-11-12T16:20:00Z",
+    "at": "2026-11-17T15:28:51Z",
     "sha": "4f642962894da7ac4c84615eac3bcc4b35f6d1f3",
     "environment": "operator-host",
     "command": "gh pr checks 918 --required",
     "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/39246075752",
     "exit_code": 0,
     "raw_output": {
-      "path": "docs/proof/dod/bod-432/on-main-gh-pr-checks-918.txt",
-      "sha256": "e951d15786f7bc9d768994b63331682e351cf93da46fcc63b78eb75c37e4f545"
+      "path": "docs/proof/dod/bod-432/on-main-gh-pr-checks-918-20261117.txt",
+      "sha256": "c471f09ff14cbfb2d416244612afaf4b9a84c8efc72a8c479216666e857e3bd2"
     }
   },
   "acceptance": [
@@ -23,51 +23,51 @@
       "expect": "reserved control field 'allow_legacy_selector' is not accepted",
       "expect_exit_code": 0,
       "first_run": {
-        "at": "2026-11-12T16:20:30Z",
-        "sha": "a12e5dda59c9632fe83c6d726b3c58ce5bac9cf2",
+        "at": "2026-11-17T15:10:42Z",
+        "sha": "4f642962894da7ac4c84615eac3bcc4b35f6d1f3",
         "environment": "operator-host",
         "command": "curl -sS -H \"Authorization: Bearer ${VERDICT_AUTH_TOKEN}\" -H \"Content-Type: application/json\" -d '{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16,\"allow_legacy_selector\":true}' http://127.0.0.1:8000/v1/chat/completions",
         "real_state_marker": "reserved control field 'allow_legacy_selector' is not accepted",
         "exit_code": 0,
         "raw_output": {
-          "path": "docs/proof/dod/bod-432/a07-first.txt",
+          "path": "docs/proof/dod/bod-432/a07-first-20261117.txt",
           "sha256": "1d809176ad1a698364690fa837fe1134718aa84bc11246679813610fb6597186"
         }
       },
       "fresh_run": {
-        "at": "2026-11-12T22:27:01Z",
-        "sha": "df1f61930fff7cc80188cb4f97293ef1e98919bd",
+        "at": "2026-11-17T15:26:20Z",
+        "sha": "4f642962894da7ac4c84615eac3bcc4b35f6d1f3",
         "environment": "operator-host",
         "command": "curl -sS -H \"Authorization: Bearer ${VERDICT_AUTH_TOKEN}\" -H \"Content-Type: application/json\" -d '{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16,\"allow_legacy_selector\":true}' http://127.0.0.1:8000/v1/chat/completions",
         "real_state_marker": "reserved control field 'allow_legacy_selector' is not accepted",
         "exit_code": 0,
         "raw_output": {
-          "path": "docs/proof/dod/bod-432/a07-fresh.txt",
+          "path": "docs/proof/dod/bod-432/a07-fresh-20261117.txt",
           "sha256": "1d809176ad1a698364690fa837fe1134718aa84bc11246679813610fb6597186"
         }
       }
     }
   ],
-  "freshness_window_hours": 6,
+  "freshness_window_hours": 0.25,
   "stays_true_job": "verdict-acceptance.timer",
   "setup_doctor": {
     "status": "green",
-    "command": "env -i HOME=$HOME PATH=/home/nick/.local/bin:/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/$(id -u) .venv/bin/python -m verdict doctor --json",
-    "at": "2026-11-13T03:05:00Z",
+    "command": "env -i HOME=$HOME PATH=/operator/.local/bin:/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/$(id -u) <installed-main>/.venv/bin/verdict doctor --json",
+    "at": "2026-11-17T15:28:46Z",
     "raw_output": {
-      "path": "docs/proof/dod/bod-432/doctor-20261113T030500Z.json",
-      "sha256": "a13a390b247e632da654ff6ebd86796fd22a9f11daf0d0ecaaa3fa8a91347a81"
+      "path": "docs/proof/dod/bod-432/doctor-20261117T152800Z.json",
+      "sha256": "84e66414b71d5d90ea3614484666ced35ba6ad5b80417adb32cc6ceb342d8445"
     }
   },
   "openspec": {
     "change": "v1-authority-inventory"
   },
   "parent_confirmation": {
-    "by": "t_c5827c78 (confirmer, cx/gpt-6.1-sol)",
-    "at": "2026-11-12T22:44:20Z",
+    "by": "operator (human)",
+    "at": "2026-11-17T15:27:43Z",
     "command": "curl -sS -H \"Authorization: Bearer ${VERDICT_AUTH_TOKEN}\" -H \"Content-Type: application/json\" -d '{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16,\"allow_legacy_selector\":true}' http://127.0.0.1:8000/v1/chat/completions",
     "raw_output": {
-      "path": "docs/proof/dod/bod-432/confirm-a07.txt",
+      "path": "docs/proof/dod/bod-432/confirm-a07-20261117.txt",
       "sha256": "1d809176ad1a698364690fa837fe1134718aa84bc11246679813610fb6597186"
     }
   }
