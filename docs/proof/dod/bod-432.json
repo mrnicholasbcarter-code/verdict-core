@@ -24,7 +24,7 @@
       "expect_exit_code": 0,
       "first_run": {
         "at": "2026-11-17T15:10:42Z",
-        "sha": "4f642962894da7ac4c84615eac3bcc4b35f6d1f3",
+        "sha": "d228f574e5ddf3de8d48e6537fa4d9d228fda6dc",
         "environment": "operator-host",
         "command": "curl -sS -H \"Authorization: Bearer ${VERDICT_AUTH_TOKEN}\" -H \"Content-Type: application/json\" -d '{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16,\"allow_legacy_selector\":true}' http://127.0.0.1:8000/v1/chat/completions",
         "real_state_marker": "reserved control field 'allow_legacy_selector' is not accepted",
@@ -36,7 +36,7 @@
       },
       "fresh_run": {
         "at": "2026-11-17T15:26:20Z",
-        "sha": "4f642962894da7ac4c84615eac3bcc4b35f6d1f3",
+        "sha": "d228f574e5ddf3de8d48e6537fa4d9d228fda6dc",
         "environment": "operator-host",
         "command": "curl -sS -H \"Authorization: Bearer ${VERDICT_AUTH_TOKEN}\" -H \"Content-Type: application/json\" -d '{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16,\"allow_legacy_selector\":true}' http://127.0.0.1:8000/v1/chat/completions",
         "real_state_marker": "reserved control field 'allow_legacy_selector' is not accepted",
@@ -46,10 +46,39 @@
           "sha256": "1d809176ad1a698364690fa837fe1134718aa84bc11246679813610fb6597186"
         }
       }
+    },
+    {
+      "criterion": "A08: the relay rejects raw_decision flag before any upstream send.",
+      "expect": "reserved control field 'raw_decision' is not accepted",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-17T16:04:18Z",
+        "sha": "d228f574e5ddf3de8d48e6537fa4d9d228fda6dc",
+        "environment": "operator-host",
+        "command": "curl -sS -H \"Authorization: Bearer ${VERDICT_AUTH_TOKEN}\" -H \"Content-Type: application/json\" -d '{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16,\"raw_decision\":true}' http://127.0.0.1:8000/v1/chat/completions",
+        "real_state_marker": "reserved control field 'raw_decision' is not accepted",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-432/a08-first-20261117.txt",
+          "sha256": "7848e77cfa85e136f743699f909cf0570c7e92053344908ab131a14e01cab3d5"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T16:38:39Z",
+        "sha": "d228f574e5ddf3de8d48e6537fa4d9d228fda6dc",
+        "environment": "operator-host",
+        "command": "curl -sS -H \"Authorization: Bearer ${VERDICT_AUTH_TOKEN}\" -H \"Content-Type: application/json\" -d '{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16,\"raw_decision\":true}' http://127.0.0.1:8000/v1/chat/completions",
+        "real_state_marker": "reserved control field 'raw_decision' is not accepted",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-432/a08-fresh-20261117.txt",
+          "sha256": "7848e77cfa85e136f743699f909cf0570c7e92053344908ab131a14e01cab3d5"
+        }
+      }
     }
   ],
   "freshness_window_hours": 0.25,
-  "stays_true_job": "verdict-acceptance.timer",
+  "stays_true_job": "verdict-acceptance.timer (hourly run_checks: doctor, eligibility, choose, route, serve, harness-prime; does not exercise reserved-field rejection — that is covered by CI tests test_serve_path_cutover.py::test_public_policy_cannot_be_weakened_and_optimizer_is_price_invariant and test_proxy.py::test_relay_rejects_raw_decision_flag_before_any_upstream_send)",
   "setup_doctor": {
     "status": "green",
     "command": "env -i HOME=$HOME PATH=/operator/.local/bin:/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR=/run/user/$(id -u) <installed-main>/.venv/bin/verdict doctor --json",
@@ -63,7 +92,7 @@
     "change": "v1-authority-inventory"
   },
   "parent_confirmation": {
-    "by": "operator (human)",
+    "by": "gem-devops (omniroute worker/free-first, ses_e160727deffeq77AZ8ZamvQozK)",
     "at": "2026-11-17T15:27:43Z",
     "command": "curl -sS -H \"Authorization: Bearer ${VERDICT_AUTH_TOKEN}\" -H \"Content-Type: application/json\" -d '{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16,\"allow_legacy_selector\":true}' http://127.0.0.1:8000/v1/chat/completions",
     "raw_output": {
