@@ -1,17 +1,13 @@
 import asyncio
-import contextlib
 import subprocess
 from datetime import datetime, timezone
 
 import pytest
 
-from verdict.execution_path import ExecutionPathOffer, ExecutionPathRequest
 from verdict.intelligence import IntelligenceService
 
 
-def _service(
-    *, profile: str = "development", admit_now: datetime | None = None
-) -> IntelligenceService:
+def _service(*, profile: str = "development") -> IntelligenceService:
     return IntelligenceService(
         primary_model="anthropic/claude-3-opus",
         providers={},
@@ -19,84 +15,6 @@ def _service(
         log_path="",
         log_full_task=False,
         discovery_ttl=60,
-        admit_now=admit_now,
-    )
-
-
-def _fake_execution_path_request() -> ExecutionPathRequest:
-    """Create a minimal ExecutionPathRequest for testing."""
-    from verdict.cost_ledger import PriceEvidenceInput
-    from verdict.effective_capability import AssistanceCost, AssistancePlan, TaskSlice
-    from verdict.expected_cost import build_strategy_from_assistance
-    from verdict.runtime_certification import CertificationState
-    from verdict.session_economics import ConcreteRoute
-
-    now = datetime(2026, 9, 19, 12, 0, tzinfo=timezone.utc)
-    price: PriceEvidenceInput = {"input_usd_per_mtok": "1.00", "evidence_id": "price-1"}
-
-    slice_ = TaskSlice(
-        slice_id="slice-1",
-        objective="refactor module",
-        acceptance_criteria=("tests pass",),
-        proof_criteria=("pytest green",),
-    )
-    route = ConcreteRoute(
-        route_id="test-route",
-        gateway="gateway-a",
-        provider="provider-a",
-        model="cheap-model",
-        credential_pool="pool-a",
-        capability_tier=1,
-        eligible=True,
-        excluded=False,
-    )
-    cost = AssistanceCost(
-        context_tokens=0, tool_tokens=0, planning_tokens=0, verification_tokens=50
-    )
-    plan = AssistancePlan(
-        plan_id="plan-test-route",
-        candidate_id="test-route",
-        task_slice=slice_,
-        required_intrinsic_capabilities=("tools",),
-        required_context_slots=("evidence",),
-        required_context_evidence=("proof",),
-        required_tool_capabilities=("pytest",),
-        selected_tool_surface=("pytest",),
-        decomposition=None,
-        verification=None,
-        assistance_cost=cost,
-        result="sufficient",
-        reasons=("intrinsic_ok",),
-        intrinsic_sufficient=True,
-        assisted_sufficient=True,
-        assistance_delta=(),
-        provenance=(),
-        evidence_digest="sha256:plan",
-    )
-    expected_cost = build_strategy_from_assistance(
-        strategy_id="direct_cheap:test-route",
-        trajectory_id="traj-test",
-        assistance=cost,
-        execution_tokens=8_000,
-        price=price,
-        is_free=True,
-        now=now,
-    )
-    offer = ExecutionPathOffer(
-        strategy="direct_cheap",
-        route=route,
-        assistance_plan=plan,
-        expected_cost=expected_cost,
-        certification_state=CertificationState.READY,
-        certification_freshness="fresh",
-        is_cheap=True,
-    )
-    return ExecutionPathRequest(
-        task_slice=slice_,
-        trajectory_id="traj-test",
-        offers=(offer,),
-        pool_receipt=None,
-        now=None,  # No injected time
     )
 
 
@@ -175,155 +93,119 @@ def test_default_profile_is_development_and_fail_closed_does_not_depend_on_it(mo
     assert result.admitted == []
 
 
-def test_prepare_execution_path_request_uses_aware_utc_clock_when_admit_now_is_none(
-    monkeypatch,
+# --- Execution-path route clock (route-execution-path-aware-clock) ---------------
+# These drive the real IntelligenceService down the serve branch: no fixture
+# admit snapshot, a configured OmniRoute endpoint, build_selector, the real
+# eligibility ladder and the real health cache. Only external reads are faked
+# (tests/helpers/live_execution_path.py).
+
+
+def _route_live(svc: IntelligenceService):
+    import verdict.api as api
+    from tests.helpers.live_execution_path import public_request_body
+
+    body = public_request_body()
+    context = api._authority_context(dict(body), task=body["task"])
+    return asyncio.run(svc.route(body["task"], criticality="low", context=context))
+
+
+def test_live_execution_path_route_without_admit_now_reaches_a_decision(
+    monkeypatch, tmp_path, no_gateway_network
 ) -> None:
-    """_prepare_execution_path_request with admit_now=None does not raise HealthCacheError
-    and uses an aware UTC time."""
-    from unittest.mock import patch
+    """Catches the live 500: admit_now=None reached HealthCache.lookup as ``now``.
 
-    from verdict.orchestration.health_cache import HealthCacheError
+    On the unfixed service this raises HealthCacheError("now must be a
+    timezone-aware datetime") from selector._assess_all.
+    """
+    from tests.helpers.live_execution_path import ROUTE, install_live_fakes, live_service
 
-    svc = _service(admit_now=None)
-    ep_request = _fake_execution_path_request()
+    install_live_fakes(monkeypatch, tmp_path)
+    decision = _route_live(live_service(admit_now=None))
 
-    # Mock the external dependencies that would require network/gateway
-    with (
-        patch.object(svc, "_load_admit_snapshot", return_value=(None, None, False, None)),
-        patch.object(svc, "_load_metadata", return_value=(None, None)),
-    ):
-        # This should not raise HealthCacheError
-        try:
-            result = svc._prepare_execution_path_request("test task", "medium", {}, ep_request)
-            # The request should be returned (possibly modified)
-            assert result is not None
-        except HealthCacheError as e:
-            pytest.fail(f"HealthCacheError raised unexpectedly: {e}")
-        except Exception as e:
-            # Other exceptions (like missing metadata) are expected in this mocked setup
-            # The key assertion is that HealthCacheError is NOT raised
-            if "HealthCacheError" in type(e).__name__:
-                pytest.fail(f"HealthCacheError raised unexpectedly: {e}")
+    assert decision.decision == "selected"
+    assert f"{decision.provider}/{decision.model}" == ROUTE
 
 
-def test_prepare_execution_path_request_uses_injected_admit_now(monkeypatch) -> None:
-    """Test-injected time is preserved and used for all admission decisions."""
-    from unittest.mock import MagicMock, patch
+def test_live_execution_path_route_reads_one_instant_for_every_health_check(
+    monkeypatch, tmp_path, no_gateway_network
+) -> None:
+    """Catches a second clock: every health-cache time check in one request sees one instant.
 
-    injected_time = datetime(2026, 1, 15, 10, 30, tzinfo=timezone.utc)
-    svc = _service(admit_now=injected_time)
-    ep_request = _fake_execution_path_request()
+    Spies on the ladder's HealthCache.lookup (selector._assess_all) and on the
+    candidate-pool billing check in _route_capacity. A call site that reads
+    datetime.now() for itself shows up as a second, later instant.
+    """
+    import verdict.intelligence as intelligence
+    from tests.helpers.live_execution_path import install_live_fakes, live_service
+    from verdict.orchestration.health_cache import HealthCache
 
-    captured_now = {}
+    install_live_fakes(monkeypatch, tmp_path)
+    seen: dict[str, list[datetime]] = {"lookup": [], "billing": []}
+    real_lookup = HealthCache.lookup
+    real_billing = intelligence.billing_capacity_override
 
-    def mock_gate_capability(receipt, requirements, *, snapshot, identity_map, now, **kwargs):
-        captured_now["gate_capability"] = now
-        return receipt, None
+    def lookup(self, route, now):
+        seen["lookup"].append(now)
+        return real_lookup(self, route, now)
 
-    def mock_build_selector(*args, now, **kwargs):
-        captured_now["build_selector"] = now
-        selector = MagicMock()
+    def billing(cache, route_id, now):
+        seen["billing"].append(now)
+        return real_billing(cache, route_id, now)
 
-        def mock_assess_all(reqs, n):
-            captured_now["selector_assess_all"] = n
-            return [], []
+    monkeypatch.setattr(HealthCache, "lookup", lookup)
+    monkeypatch.setattr(intelligence, "billing_capacity_override", billing)
 
-        selector._assess_all = mock_assess_all
-        return selector
+    assert _route_live(live_service(admit_now=None)).decision == "selected"
 
-    def mock_gate_admit_prove_confirm(receipt, *, now, **kwargs):
-        captured_now["gate_admit_prove_confirm"] = now
-        from verdict.admission import AdmissionReceipt
-
-        return AdmissionReceipt(admitted=(), chosen=None, free_admitted=(), paid_admitted=())
-
-    def mock_apply_best_of_admitted(receipt, *, now, task_class):
-        captured_now["apply_best_of_admitted"] = now
-        return receipt
-
-    with (
-        patch.object(svc, "_load_admit_snapshot", return_value=(None, None, False, None)),
-        patch.object(svc, "_load_metadata", return_value=(None, None)),
-        patch("verdict.capability_gate.gate_capability", side_effect=mock_gate_capability),
-        patch(
-            "verdict.orchestration.eligibility_report.build_selector",
-            side_effect=mock_build_selector,
-        ),
-        patch(
-            "verdict.admit_prove_confirm.gate_admit_prove_confirm",
-            side_effect=mock_gate_admit_prove_confirm,
-        ),
-        patch("verdict.chooser.apply_best_of_admitted", side_effect=mock_apply_best_of_admitted),
-        contextlib.suppress(Exception),
-    ):
-        svc._prepare_execution_path_request("test task", "medium", {}, ep_request)
-
-    # Verify all calls received the injected time
-    for key, value in captured_now.items():
-        assert value == injected_time, f"{key} received {value}, expected {injected_time}"
+    assert seen["lookup"], "the ladder never read the health cache"
+    assert seen["billing"], "_route_capacity never ran"
+    instants = {*seen["lookup"], *seen["billing"]}
+    assert len(instants) == 1, f"one request read {len(instants)} clocks: {sorted(instants)}"
+    (instant,) = instants
+    assert instant.tzinfo is not None
 
 
-def test_prepare_execution_path_request_single_clock_per_request(monkeypatch) -> None:
-    """All admission gates in one request see the same instant."""
-    from unittest.mock import MagicMock, patch
+def test_live_execution_path_route_uses_injected_admit_now(
+    monkeypatch, tmp_path, no_gateway_network
+) -> None:
+    """Catches a call site that ignores the injected clock on the serve branch."""
+    from datetime import timedelta
 
-    svc = _service(admit_now=None)  # No injected time, should use UTC now
-    ep_request = _fake_execution_path_request()
+    from tests.helpers.live_execution_path import install_live_fakes, live_service
+    from verdict.orchestration.health_cache import HealthCache
 
-    captured_now = {}
+    install_live_fakes(monkeypatch, tmp_path)
+    injected = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=5)
+    seen: list[datetime] = []
+    real_lookup = HealthCache.lookup
 
-    def mock_gate_capability(receipt, requirements, *, snapshot, identity_map, now, **kwargs):
-        captured_now.setdefault("gate_capability", []).append(now)
-        return receipt, None
+    def lookup(self, route, now):
+        seen.append(now)
+        return real_lookup(self, route, now)
 
-    def mock_build_selector(*args, now, **kwargs):
-        captured_now.setdefault("build_selector", []).append(now)
-        selector = MagicMock()
+    monkeypatch.setattr(HealthCache, "lookup", lookup)
 
-        def mock_assess_all(reqs, n):
-            captured_now.setdefault("selector_assess_all", []).append(n)
-            return [], []
+    assert _route_live(live_service(admit_now=injected)).decision == "selected"
+    assert seen and set(seen) == {injected}
 
-        selector._assess_all = mock_assess_all
-        return selector
 
-    def mock_gate_admit_prove_confirm(receipt, *, now, **kwargs):
-        captured_now.setdefault("gate_admit_prove_confirm", []).append(now)
-        from verdict.admission import AdmissionReceipt
-
-        return AdmissionReceipt(admitted=(), chosen=None, free_admitted=(), paid_admitted=())
-
-    def mock_apply_best_of_admitted(receipt, *, now, task_class):
-        captured_now.setdefault("apply_best_of_admitted", []).append(now)
-        return receipt
-
-    with (
-        patch.object(svc, "_load_admit_snapshot", return_value=(None, None, False, None)),
-        patch.object(svc, "_load_metadata", return_value=(None, None)),
-        patch("verdict.capability_gate.gate_capability", side_effect=mock_gate_capability),
-        patch(
-            "verdict.orchestration.eligibility_report.build_selector",
-            side_effect=mock_build_selector,
-        ),
-        patch(
-            "verdict.admit_prove_confirm.gate_admit_prove_confirm",
-            side_effect=mock_gate_admit_prove_confirm,
-        ),
-        patch("verdict.chooser.apply_best_of_admitted", side_effect=mock_apply_best_of_admitted),
-        contextlib.suppress(Exception),
-    ):
-        svc._prepare_execution_path_request("test task", "medium", {}, ep_request)
-
-    # All captured times should be the same (within the same request)
-    all_times = []
-    for _key, values in captured_now.items():
-        if isinstance(values, list):
-            all_times.extend(values)
-        else:
-            all_times.append(values)
-
-    # All times should be equal (same clock reference)
-    if all_times:
-        first_time = all_times[0]
-        for t in all_times[1:]:
-            assert t == first_time, f"Clock drift detected: {t} != {first_time}"
+@pytest.mark.parametrize("assign", [False, True])
+def test_naive_admit_now_is_rejected(assign: bool) -> None:
+    """Catches a naive injected clock that would fail later, inside a request, as a 500."""
+    naive = datetime(2026, 11, 17, 12, 0)
+    if assign:
+        svc = _service()
+        with pytest.raises(ValueError, match="timezone-aware"):
+            svc.admit_now = naive
+        assert svc.admit_now is None
+        return
+    with pytest.raises(ValueError, match="timezone-aware"):
+        IntelligenceService(
+            primary_model="anthropic/claude-3-opus",
+            providers={},
+            profile="development",
+            log_path="",
+            log_full_task=False,
+            discovery_ttl=60,
+            admit_now=naive,
+        )

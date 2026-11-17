@@ -2,63 +2,43 @@
 
 ## Context
 
-`IntelligenceService._prepare_execution_path_request` evaluates execution-path candidates by calling several admission functions: `gate_capability`, `build_selector` + `selector._assess_all`, `gate_admit_prove_confirm`, `apply_best_of_admitted`, and `lookup_omniroute_id`. Each of these validates that the `now` parameter is a timezone-aware `datetime` via `health_cache._aware`. The service's `admit_now` field defaults to `None` and was passed directly without a fallback, unlike other call sites in the same file that use `self.admit_now or datetime.now(timezone.utc)`.
+On the serve branch (no fixture `admit_snapshot`, a configured OmniRoute endpoint), `IntelligenceService._prepare_execution_path_request` builds the eligibility ladder and calls `selector._assess_all(orch_reqs, self.admit_now)`. `admit_now` is `None` unless a test injects it. The ladder passes it to `HealthCache.lookup` and `agentic_capability`, which need an aware `datetime`, so the request failed with `HealthCacheError` (or `TypeError` once a route has an agentic entry) and the app answered 500. Other sites on the route path read `datetime.now(timezone.utc)` for themselves: `_route_capacity`, `_apply_candidate_pool`, the legacy admit cooling check and the dispatch cooling check.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- Resolve a single timezone-aware `now` per request and reuse it at every call site in the execution-path preparation flow.
-- Preserve an explicit test-injected `admit_now` when provided.
-- Ensure `POST /v1/route` with `execution_path_request` returns a non-500 status (200 or 4xx).
+- One aware instant per request, read through one accessor at every admission and health-cache time check on the route path.
+- An injected aware `admit_now` stays authoritative.
+- A naive injected clock fails when it is set, not inside a request.
 
 **Non-Goals:**
-- Change the execution-path optimizer (`optimize_execution_path`) — it already uses a timezone-aware fallback.
-- Change any API contract, gate, dependency, or install behavior.
-- Add a new configuration option.
+- Change `optimize_execution_path`; it already falls back to an aware UTC time.
+- Change any API contract, gate, dependency, or install behaviour.
+- Thread the instant through modules outside `verdict/intelligence.py`.
 
 ## Decisions
 
-Add a read-only `_now` property to `IntelligenceService`:
-
-```python
-@property
-def _now(self) -> datetime:
-    from datetime import datetime, timezone
-
-    return self.admit_now if self.admit_now is not None else datetime.now(timezone.utc)
-```
-
-Update all nine call sites in `intelligence.py` to use `self._now` instead of `self.admit_now`:
-
-1. `lookup_omniroute_id(..., now=self._now)` — line ~1042
-2. `build_outcome_shadow_index(..., as_of=self._now)` — line ~1222
-3. `gate_capability(..., now=self._now)` — line ~1281
-4. `build_selector(..., now=self._now)` — line ~1311
-5. `selector._assess_all(orch_reqs, self._now)` — line ~1315
-6. `gate_admit_prove_confirm(..., now=self._now)` — line ~1380 (two call sites)
-7. `gate_capability(..., now=self._now)` — line ~1654 (legacy admit path)
-8. `gate_admit_prove_confirm(..., now=self._now)` — line ~1684 (legacy admit path)
-9. `apply_best_of_admitted(..., now=self._now)` — line ~1743
-
-The property is evaluated at each access, but within a single request the wall-clock drift is negligible and acceptable. A cached `_resolved_admit_now` was considered but rejected to keep the implementation simple and avoid stale-time concerns if the service instance is reused across requests.
+- `_now` returns `admit_now`, else the instant in the module `ContextVar` `_REQUEST_NOW`, else `datetime.now(timezone.utc)`. Reason: every call site reads one accessor, so none can pick its own clock.
+- `_request_clock()` binds `_REQUEST_NOW` once per `route()` and per `_prepare_execution_path_request()` call. A nested call reuses the outer instant. Reason: the service is shared across concurrent requests, so the instant must be request-local. A `ContextVar` is per asyncio task and per thread; an instance attribute would leak one request's instant into another.
+- `admit_now` is a property whose setter raises `ValueError` for a naive `datetime`. Reason: treating naive as UTC would hide a caller bug, and the failure belongs where the value is set. Existing callers already pass aware values.
 
 ## Risks / Trade-offs
 
-- Re-evaluating `datetime.now(timezone.utc)` at each call site could theoretically produce different values within one request. The drift is microseconds and does not affect admission decisions. A cached value would add state and complexity for no practical benefit.
-- The legacy admit path (lines 1654, 1684, 1743) also uses `self._now`, which is correct because it shares the same service instance and the same request.
+- Code outside `route()` or `_prepare_execution_path_request()` that reads `_now` gets a fresh wall-clock time on each read. That matches the old behaviour for those paths.
+- The setter rejects a naive value assigned by any caller. A repository search finds only aware values passed or assigned.
 
 ## Security / trust implications
 
-A missing clock must never cause a server error that could be confused with a route rejection. The fix ensures a clear 4xx with a named reason when admission fails, and 500 only for genuine server errors.
+A clock bug no longer turns an admission into a server error. Admission outcomes are unchanged: unknown stays unknown, and a stale proof is still stale.
 
 ## Routing / context / memory implications
 
-No routing policy, context pipeline, or memory store changes. The `_now` property is advisory for time-dependent admission only.
+No routing policy, context pipeline, or memory store change.
 
 ## Migration / rollback
 
-No data migration. Reverting the nine call sites to `self.admit_now` restores the previous behavior (500 on execution-path requests without injected time).
+No data migration. Reverting the change restores the 500 on execution-path requests without an injected time.
 
 ## ADR impact
 
-ADR-0001 (control plane invariants) remains governing: unknown is never healthy, opaque routes are never candidates, attempts are bounded. ADR-035 (execution-path authority) remains governing: the optimizer is the sole strategy authority. No ADR file changes.
+ADR 0001 (control plane invariants) and ADR-035 (authorized selected-route dispatch) remain governing. No ADR file changes.

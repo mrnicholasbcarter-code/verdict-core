@@ -2,38 +2,36 @@
 
 ## Why
 
-`POST /v1/route` with an `execution_path_request` returned HTTP 500 with `HealthCacheError('now must be a timezone-aware datetime')`. The cause was `IntelligenceService.admit_now` being `None` (the default) and passed directly to admission functions that require a timezone-aware `datetime` via `health_cache._aware`. Every other call site in `intelligence.py` fell back to `datetime.now(timezone.utc)` but the execution-path preparation path did not.
+`POST /v1/route` with an `execution_path_request` returned HTTP 500 on the installed service. The `verdict-serve` journal shows the traceback: `IntelligenceService._prepare_execution_path_request` called `selector._assess_all(orch_reqs, self.admit_now)`; `admit_now` is `None` unless a test injects it; the eligibility ladder passed it to `HealthCache.lookup`, which raised `HealthCacheError: now must be a timezone-aware datetime`. Other sites on the same route path (`_route_capacity`, `_apply_candidate_pool`, the legacy free-tier admit path and the dispatch cooling check) each read `datetime.now(timezone.utc)` for themselves, so one request could see more than one instant.
 
 ## What Changes
 
-- `IntelligenceService` gains a `_now` property that returns `self.admit_now` when set, otherwise `datetime.now(timezone.utc)` (UTC, timezone-aware).
-- All nine call sites in `_prepare_execution_path_request` and the legacy admit path now use `self._now` instead of `self.admit_now`.
-- The single resolved clock per request ensures all admission gates see the same instant.
-- An explicit `admit_now` injected by tests is preserved and used.
-- The execution-path optimizer (`optimize_execution_path`) already uses a timezone-aware fallback and needs no change.
+- `IntelligenceService._now` is the only clock on the route path. It returns the injected `admit_now`, else the instant bound for the current request, else the current UTC time.
+- `route()` and `_prepare_execution_path_request()` bind one wall-clock instant per call (a `ContextVar`, so concurrent requests on the shared service stay apart). Every admission and health-cache time check in that call reads it through `_now`.
+- The four sites that read their own clock (`_route_capacity`, `_apply_candidate_pool`, the legacy admit cooling check, the dispatch cooling check) now use `_now`.
+- `admit_now` is validated: a naive `datetime` raises `ValueError` at construction or assignment. It is never silently treated as UTC.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `execution-path-aware-clock`: Execution-path route requests are assessed with a timezone-aware clock; a request without an injected time uses the current UTC time; a server error is never the result of a missing clock.
+- `execution-path-aware-clock`: Execution-path route requests are assessed with one timezone-aware instant per request. A request without an injected time uses the current UTC time. A naive injected clock is refused when it is set, not inside a request.
 
 ### Modified Capabilities
 
 ## Impact
 
-- `verdict/intelligence.py`: `_now` property and nine call-site updates.
-- Unit tests in `tests/test_intelligence_service.py` verify the fix.
-- API test in `tests/test_serve_path_cutover.py` verifies `POST /v1/route` with `execution_path_request` returns non-500.
+- `verdict/intelligence.py`: `_now`, `_request_clock`, the `admit_now` property, and the route-path call sites.
+- Tests drive the real `IntelligenceService` and the real FastAPI app down the serve branch, faking only the gateway reads (`tests/helpers/live_execution_path.py`).
 - No API, gate, dependency, or install change.
 
 ## Evidence boundary
 
-KNOWN: a live `/v1/route` request with `execution_path_request` and no injected `now` raised `HealthCacheError` and returned 500 on installed main. KNOWN: all other admission call sites in `intelligence.py` already fell back to `datetime.now(timezone.utc)`. INFERRED: resolving one aware clock per request and reusing it at every call site eliminates the 500 for the execution-path preparation path. NOT AVAILABLE: installed PyPI proof of the full MVP; local test output is not that proof.
+KNOWN: the `verdict-serve` journal on this host records three `POST /v1/route` 500s with the `HealthCacheError` traceback above. KNOWN: the new tests fail on origin/main's `verdict/intelligence.py` and pass on this branch. NOT KNOWN until after merge and install: the live service answering the same request without a 500; that is the post-merge task.
 
 ## Acceptance criteria
 
-- `POST /v1/route` with an `execution_path_request` and no injected time returns 200 (accepted) or 4xx (rejected with a named reason), never 500.
-- A test-injected `admit_now` is preserved and used for all admission decisions in the execution path.
-- All admission gates in one request see the same instant (single resolved clock).
-- Both validators exit 0: `scripts/check_openspec_tasks.py --base origin/main` and `validate_openspec_change.py`.
+- `POST /v1/route` with an `execution_path_request` and no injected time returns a decision, never 500.
+- A test-injected aware `admit_now` is the instant every health-cache check sees.
+- Every health-cache time check in one request sees one instant.
+- A naive `admit_now` raises `ValueError` when it is set.
