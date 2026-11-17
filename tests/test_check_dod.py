@@ -1089,3 +1089,110 @@ def test_structured_results_with_identical_bytes_in_two_files_fail(repo):
         "the same raw output cannot serve as two runs: "
         "acceptance[0].first_run and acceptance[0].fresh_run"
     ) in errors, errors
+
+
+def test_zero_exit_with_a_blocked_outcome_fails_even_with_a_passing_review(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "blocked-zero-exit.json", _structured_result(outcome="BLOCKED", run_id="run-0")
+    )
+    errors = _check(root, evidence)
+    assert errors == ["acceptance[0].first_run: exit_code 0 disagrees with outcome BLOCKED"]
+
+
+@pytest.mark.parametrize(
+    ("at", "in_window"),
+    [
+        ("2098-12-31T23:54:59Z", False),
+        ("2098-12-31T23:55:00Z", True),
+        ("2099-01-01T00:15:00Z", True),
+        ("2099-01-01T00:15:01Z", False),
+    ],
+    ids=["start-minus-5:01", "start-minus-5:00", "finish-plus-5:00", "finish-plus-5:01"],
+)
+def test_result_window_tolerance_is_exactly_five_minutes(repo, at, in_window):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    # Keep the fresh run (00:05 the next day) outside the freshness window at every "at".
+    evidence["freshness_window_hours"] = 12
+    evidence["acceptance"][0]["first_run"]["at"] = at
+    errors = _check(root, evidence)
+    expected = (
+        []
+        if in_window
+        else [
+            f"acceptance[0].first_run: at {at} is outside result window started_at "
+            "2099-01-01T00:00:00Z to finished_at 2099-01-01T00:10:00Z (5 minute tolerance)"
+        ]
+    )
+    assert errors == expected
+
+
+def test_structured_confirmation_cannot_point_at_the_fresh_run_artifact(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    fresh = evidence["acceptance"][0]["fresh_run"]
+    evidence["parent_confirmation"]["raw_output"] = fresh["raw_output"]
+    evidence["parent_confirmation"]["at"] = fresh["at"]
+    errors = _check(root, evidence)
+    assert errors == [
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].fresh_run and parent_confirmation",
+        "the same run_id cannot serve as two runs: acceptance[0].fresh_run and parent_confirmation",
+    ]
+
+
+def test_structured_confirmation_cannot_carry_the_fresh_run_id_in_other_bytes(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    fresh = evidence["acceptance"][0]["fresh_run"]
+    data = (root / fresh["raw_output"]["path"]).read_text() + "\n"
+    evidence["parent_confirmation"]["raw_output"] = _artifact(root, "confirm-reuse.json", data)
+    evidence["parent_confirmation"]["at"] = fresh["at"]
+    errors = _check(root, evidence)
+    assert errors == [
+        "the same run_id cannot serve as two runs: acceptance[0].fresh_run and parent_confirmation"
+    ]
+
+
+def test_orchestrate_command_rejects_leading_whitespace_before_the_result(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _structured_result() + "\n")
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "leading-space.json", " " + _structured_result(run_id="leading-space")
+    )
+    errors = _check(root, evidence)
+    assert any(
+        e.startswith("acceptance[0].first_run:") and "is not the run's result JSON" in e
+        for e in errors
+    ), errors
+
+
+@pytest.mark.parametrize("status", ["pass", "Pass", "PASS ", "PASSED"])
+def test_review_status_must_be_exactly_pass(repo, status):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "review-case.json", _structured_result(review_status=status, run_id="run-0")
+    )
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root,
+        "review-case-confirm.json",
+        _structured_result(review_status=status, run_id="run-confirm"),
+    )
+    errors = _check(root, evidence)
+    assert errors == [
+        f"acceptance[0].first_run: review status {status} is not PASS (PASS required)",
+        f"parent_confirmation: review status {status} is not PASS (PASS required)",
+    ]
+
+
+@pytest.mark.parametrize("key", ["outcome", "run_id", "started_at", "finished_at", "events_digest"])
+def test_orchestrate_result_missing_one_key_names_that_key(repo, key):
+    root, evidence = repo
+    result = _result_with()
+    del result[key]
+    _orchestrate_evidence(root, evidence, json.dumps(result))
+    errors = [e for e in _check(root, evidence) if "is not the run's result JSON" in e]
+    assert len(errors) == 3 and all(f"(missing: {key}; stdout only)" in e for e in errors), errors
