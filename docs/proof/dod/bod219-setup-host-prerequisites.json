@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "story": "bod219-setup-host-prerequisites",
+  "kind": "product",
+  "author": "Nick Carter",
+  "merged_sha": "2c24103bd82ab215ceac7eaa5f56e7472aa8aae6",
+  "pr": 963,
+  "on_main": {
+    "at": "2026-11-17T19:10:00Z",
+    "sha": "2c24103bd82ab215ceac7eaa5f56e7472aa8aae6",
+    "environment": "operator-host",
+    "command": "gh pr checks 963 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod219-setup-host-prerequisites/on_main.txt",
+      "sha256": "ad56804ac3f039756b84bb324c926b1b751354ed08e1d63415ea73c6f3f328c8"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "Host prerequisites are reported as OK",
+      "expect": "Review tool (ocr)",
+      "first_run": {
+        "at": "2026-11-17T19:08:38Z",
+        "sha": "2c24103bd82ab215ceac7eaa5f56e7472aa8aae6",
+        "environment": "operator-host",
+        "command": "verdict doctor --json",
+        "real_state_marker": "\"status\": \"ok\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod219-setup-host-prerequisites/doctor-first-2026-11-17T19_08_38Z.json",
+          "sha256": "8de1b8b8648303422ef3515d8c80375983ead460fc923b6f47d39a754c6935e4"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T19:27:53Z",
+        "sha": "2c24103bd82ab215ceac7eaa5f56e7472aa8aae6",
+        "environment": "operator-host",
+        "command": "verdict doctor --json",
+        "real_state_marker": "\"status\": \"ok\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod219-setup-host-prerequisites/doctor-fresh-run-2026-11-17T19_27_53Z.json",
+          "sha256": "3844cbc76ce53660c9432f415a52715f3d5b9c7d6521824c5ca93f76d6fd9ec3"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "verdict-acceptance.timer",
+  "setup_doctor": {
+    "status": "green",
+    "command": "verdict doctor --json",
+    "at": "2026-11-17T19:08:38Z",
+    "raw_output": {
+      "path": "docs/proof/dod/bod219-setup-host-prerequisites/doctor-first-2026-11-17T19_08_38Z.json",
+      "sha256": "8de1b8b8648303422ef3515d8c80375983ead460fc923b6f47d39a754c6935e4"
+    }
+  },
+  "openspec": {
+    "change": "bod219-setup-host-prerequisites"
+  },
+  "parent_confirmation": {
+    "by": "gem-devops on omniroute/worker/free-first",
+    "at": "2026-11-17T19:52:47Z",
+    "command": "verdict doctor --json",
+    "raw_output": {
+      "path": "docs/proof/dod/bod219-setup-host-prerequisites/doctor-confirm-2026-11-17T19_52_47Z.json",
+      "sha256": "1a6463880b105b26f36d686de35e57083a1b7e29f03dabed4eda71dc6627b8e3"
+    }
+  }
+}
