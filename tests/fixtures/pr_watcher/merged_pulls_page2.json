@@ -1,0 +1,36 @@
+{
+  "data": {
+    "search": {
+      "issueCount": 2,
+      "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": null
+      },
+      "nodes": [
+        {
+          "number": 6,
+          "mergedAt": "2026-03-02T11:59:00Z",
+          "headRefOid": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+          "headRefName": "dependabot/pip/pytest-cov-gte-7.1.0",
+          "body": "Bumps pytest-cov. Digest is SHA-256.",
+          "reviews": {
+            "nodes": [
+              {
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-03-02T09:00:00Z",
+                "commit": null
+              },
+              {
+                "state": "APPROVED",
+                "submittedAt": "2026-03-02T11:00:00Z",
+                "commit": {
+                  "oid": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

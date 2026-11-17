@@ -3420,6 +3420,7 @@ def main() -> None:
         parsers_models,
         parsers_openspec,
         parsers_outcome,
+        parsers_pr_watcher,
         parsers_routing,
         parsers_runtime,
         parsers_setup,
@@ -3442,6 +3443,7 @@ def main() -> None:
     parsers_census.register(subparsers)
     parsers_identify.register(subparsers)
     parsers_outcome.register(subparsers)
+    parsers_pr_watcher.register(subparsers)
 
     from verdict.commands.dispatch import dispatch
 

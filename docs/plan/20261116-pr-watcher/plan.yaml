@@ -1,0 +1,136 @@
+plan_id: 20261116-pr-watcher
+status: pending
+tldr: |
+  Deliver the BOD-358 PR watcher as a deterministic exact-head controller handoff:
+  move reusable CI policy into verdict/ci_policy.py, reconcile open and recently
+  merged PRs, fence bounded reruns by stable check identity, persist idempotent
+  repair/block/regression records, and install a <=5 minute setup/doctor timer.
+created_at: '2026-11-16T00:00:00Z'
+created_by: gem-planner
+revision: 2
+replan_count: 0
+planner_revision_used: false
+decisions:
+  - 'Scope is limited to the PR-watcher slice; broader BOD-358 watchers remain excluded.'
+  - 'Move classify_ci, classify_merge_state, ci_recovery_action, and INFRA_PATTERNS to verdict/ci_policy.py; scripts/prime_state.py re-exports them for compatibility because production code must not import scripts.'
+  - 'Use GitHub closed+merged PR search/list with a durable bounded lookback cursor to reconcile merged regressions in addition to open-PR polling.'
+  - 'Stable rerun identity is repo + PR number + exact head SHA + check name + workflow/job identity; counter updates are atomic and fenced by an immediate exact-head/check reread.'
+  - 'The watcher client is capability-restricted: it exposes read, rerun, and notification operations only, never merge, push, branch, or source-edit operations.'
+  - 'All watcher invocations use a non-blocking flock single-writer lock under the common verdict-prime state directory; durable idempotency keys cover repair, block, regression, digest, and Linear events.'
+  - 'Core, host, tests, and OpenSpec ownership are disjoint; host edits are limited to exact files and are sequenced after core interfaces exist.'
+  - 'Action mapping: the adapter table in specs/pr-watcher/spec.md is normative; this file does not restate it.'
+  - 'Agent labels are capability hints; tasks that write application or test code are dispatched to gem-implementer.'
+assumptions:
+  - 'Existing GitHub and Linear authentication/client patterns can be reused without new dependencies.'
+  - 'The common verdict-prime state directory is available to the watcher and controller.'
+  - 'Configured repositories are allowlisted under github.com/mrnicholasbcarter-code.'
+  - 'Existing setup and doctor abstractions remain the host integration boundary.'
+  - 'The implementation branch is /home/nick/dev/verdict-core-worktrees/pr-watcher at the requested base commit.'
+shared_context:
+  watcher_contract:
+    - 'OpenSpec: openspec/changes/bod358-pr-watcher/{proposal.md,design.md,tasks.md,specs/pr-watcher/spec.md}'
+    - 'Policy boundary: verdict/ci_policy.py is importable production authority; scripts/prime_state.py is a compatibility re-export.'
+    - 'Regression source: closed+merged GitHub PRs since durable cursor with bounded lookback; fail review is CHANGES_REQUESTED or recorded Verdict/ocr fail receipt keyed by repo, PR, and head.'
+    - 'Safety: no merge, push, branch mutation, or source edit; default tests fixture-only; live smoke requires VERDICT_LIVE_SMOKE=1.'
+    - 'Concurrency: non-blocking flock and atomic durable state; duplicate events are suppressed by stable idempotency keys.'
+    - 'Timer boundary: verdict setup installs/enables user timer; verdict doctor reports state and redacted provenance.'
+    - 'Action mapping: the adapter table in specs/pr-watcher/spec.md is normative; this file does not restate it.'
+tasks:
+  - id: research-pr-watcher-boundaries
+    title: Research watcher integration boundaries
+    description: '[reuse] Trace policy, GitHub/Linear clients, state, setup, doctor, command registration, and tests; identify exact symbols and shared-file sequencing. Read-only; check forbidden architecture terms and cited-path coverage.'
+    wave: 1
+    depends_on: []
+    agent: gem-researcher
+    status: pending
+    retries_used: 0
+    exploration_mode: trace
+    context_cluster: watcher_contract
+    owned_files: []
+    acceptance_criteria:
+      - 'Return exact symbol/path references and disjoint ownership recommendations for policy, watcher, host, tests, docs, command registry/parsers, setup plan, and doctor collector.'
+      - 'Confirm scripts/prime_state.py import boundary and identify compatibility tests/callers.'
+      - 'Confirm existing OpenSpec and forbidden-term validation status; report blockers exactly.'
+    handoff:
+      constraints: ['Read-only discovery; no implementation or unrelated edits.', 'Use graph-first code intelligence and coverage checks.']
+      relevant_context: ['AGENTS.md requires codebase-memory and Serena for controller facts.']
+      high_risk_signals: ['Shared state and cross-repository GitHub scope.']
+      critic_signals: []
+  - id: implement-pr-watcher-core
+    title: Implement policy boundary and exact-head watcher core
+    description: '[reuse] Add verdict/ci_policy.py and compatibility re-exports, then implement watcher state, polling, merged-PR reconciliation, capability-restricted GitHub adapter, stable rerun fencing, flock serialization, durable records, and core fixture tests. No host files or OpenSpec files.'
+    wave: 2
+    depends_on: [research-pr-watcher-boundaries]
+    agent: gem-implementer
+    status: pending
+    retries_used: 0
+    context_cluster: watcher_contract
+    owned_files: ['verdict/ci_policy.py', 'scripts/prime_state.py', 'verdict/pr_watcher.py', 'verdict/pr_watcher_state.py', 'verdict/pr_watcher_github.py', 'verdict/pr_watcher_notifications.py', 'tests/test_ci_policy.py', 'tests/test_pr_watcher.py', 'tests/fixtures/pr_watcher/**']
+    acceptance_criteria:
+      - 'Production imports policy only from verdict/ci_policy.py; scripts/prime_state.py re-exports all four named symbols and existing callers/tests remain compatible; mypy --strict and reachability pass for new symbols.'
+      - 'Open PR polling uses exact-head checks and merge state; zero, unknown, pending, cancelled, and >30 minute stalled checks are never green.'
+      - 'Merged reconciliation reads closed+merged PRs since a durable cursor with bounded lookback and identifies fail review via CHANGES_REQUESTED or a keyed Verdict/ocr fail receipt; fixture covers open at run N and merged fail before N+1.'
+      - 'Rerun key is repo + PR number + head SHA + check name + workflow/job identity; counters update atomically, immediate reread fences head/check, duplicate timers and concurrent requests do not duplicate reruns, and changed heads are rejected.'
+      - 'Action mapping: the adapter table in specs/pr-watcher/spec.md is normative; this file does not restate it.'
+      - 'Non-blocking flock serializes writers; repair, block, regression, digest, and Linear events have stable idempotency keys and atomic persistence.'
+      - 'Fixtures cover multiple checks, changed head, duplicate timer, concurrent invocation, retry exhaustion, regression, and negative capability.'
+    handoff:
+      constraints: ['No setup, doctor, command registry, docs, or OpenSpec edits.', 'No live provider calls in default tests.']
+      relevant_context: ['OpenSpec exact-head, bounded recovery, and transition requirements.']
+      high_risk_signals: ['State integrity, merged-PR visibility, and package boundary.']
+      critic_signals: []
+  - id: integrate-pr-watcher-host-runtime
+    title: Install and diagnose watcher timer
+    description: '[platform/stdlib] After core interfaces are fixed, integrate command registration/parsers, setup plan/service/timer, and doctor collector/runtime provenance. This task owns shared host files so no other task edits them.'
+    wave: 3
+    depends_on: [implement-pr-watcher-core]
+    agent: gem-devops
+    status: pending
+    retries_used: 0
+    context_cluster: watcher_contract
+    owned_files: ['verdict/commands/dispatch.py', 'verdict/commands/parsers_pr_watcher.py', 'verdict/cli.py', 'verdict/setup_host.py', 'verdict/doctor_diagnostics.py', 'verdict/pr_watcher_service.py', 'tests/test_setup_host.py', 'tests/test_doctor_host_prerequisites.py', 'tests/test_pr_watcher_service.py']
+    acceptance_criteria:
+      - '`verdict pr-watcher` is registered and setup dry-run/apply/rollback installs a user service/timer at <=5 minute interval with isolated VERDICT_HOME/common state.'
+      - '`verdict doctor` reports timer/service state, runtime provenance, configured repositories, and state scope with redacted secrets; missing/inactive/failed states are actionable.'
+      - 'Command registry/parsers, setup plan, and doctor collector are changed only here and tests pass without operator-state mutation.'
+    handoff:
+      constraints: ['Do not edit watcher core, policy, or OpenSpec files.', 'Do not edit operator-owned vgate hooks.']
+      relevant_context: ['Existing timer patterns and setup/doctor abstractions are the host boundary.']
+      high_risk_signals: ['Shared host files are serialized after core interfaces.']
+      critic_signals: []
+  - id: update-pr-watcher-openspec
+    title: Align OpenSpec contract and task ownership
+    description: '[reuse] Update the BOD-358 proposal, design, spec, and tasks to encode merged-PR reconciliation, stable rerun identity/fencing, action mapping, negative capability, flock/idempotency, and the exact wave/dependency/owned-file plan.'
+    wave: 3
+    depends_on: [implement-pr-watcher-core]
+    agent: gem-documentation-writer
+    status: pending
+    retries_used: 0
+    owned_files: ['openspec/changes/bod358-pr-watcher/proposal.md', 'openspec/changes/bod358-pr-watcher/design.md', 'openspec/changes/bod358-pr-watcher/tasks.md', 'openspec/changes/bod358-pr-watcher/specs/pr-watcher/spec.md']
+    acceptance_criteria:
+      - 'OpenSpec explicitly defines regression source/identity, rerun key/fencing, action adapter mapping, no-write capability boundary, flock, idempotency, and fixture scenarios.'
+      - 'tasks.md mirrors this plan waves, dependencies, and disjoint owned_files, including shared-file sequencing.'
+      - 'Both OpenSpec validators pass in strict/non-interactive mode.'
+    handoff:
+      constraints: ['Docs/spec only; do not modify production or test files.']
+      relevant_context: ['The plan is the source for task ownership and ordering.']
+      high_risk_signals: ['Spec drift would invalidate implementation acceptance.']
+      critic_signals: []
+  - id: verify-pr-watcher-release-gates
+    title: Verify watcher gates and live boundary
+    description: '[stdlib] Add only verification-owned live-smoke coverage and independently run focused tests, static checks, reachability, forbidden-architecture scan, OpenSpec validators, proof matrix, and diff checks.'
+    wave: 4
+    depends_on: [integrate-pr-watcher-host-runtime, update-pr-watcher-openspec]
+    agent: gem-reviewer
+    status: pending
+    retries_used: 0
+    owned_files: ['tests/test_pr_watcher_live_smoke.py', 'docs/proof/dod/bod358-pr-watcher.json']
+    acceptance_criteria:
+      - 'Live smoke is skipped unless VERDICT_LIVE_SMOKE=1 and default tests make no live calls.'
+      - 'Focused watcher/setup/doctor tests, ruff, strict mypy, reachability, forbidden-architecture scan, doc links, both OpenSpec validators, proof matrix, and git diff --check pass or report raw failures.'
+      - 'Independent review confirms disjoint ownership, production reachability, negative capability, exact-head fencing, bounded retries, and no merge/push/source-edit path.'
+    handoff:
+      constraints: ['Read the final diff and tests; do not weaken acceptance criteria or edit worker-owned files.']
+      relevant_context: ['Definition of done requires evidence and exact command output.']
+      high_risk_signals: ['Cross-repo behavior and shared state can hide integration gaps.']
+      critic_signals: []
