@@ -53,7 +53,14 @@ def _atomic_write_json(path: Path, value: dict[str, Any]) -> Path:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
+        with tmp.open("rb") as handle:
+            os.fsync(handle.fileno())
         os.replace(str(tmp), str(path))
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     except OSError as exc:
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)

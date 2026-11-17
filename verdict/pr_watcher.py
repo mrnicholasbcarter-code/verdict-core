@@ -200,6 +200,8 @@ def poll_open_prs(
         combined = _combine_classifications(ci_class, merge_class, can_merge)
 
         action = _adapter_action(combined, 0, 1)
+        if stalled:
+            action = "REPAIR"
         obs = {
             "repo": repo,
             "pr_number": pr_num,
@@ -503,7 +505,15 @@ def _plan_observation(
 
     repair_checks: list[dict[str, Any]] = []
     repair_reason = f"PR classified as {classification}"
+    if obs.get("ci_classification") == "STALLED":
+        repair_reason = "stalled: required check running past threshold; cannot rerun while running"
 
+    if action == "RETRY" and obs.get("ci_classification") == "STALLED":
+        action = "REPAIR"
+        repair_checks = [
+            c for c in obs["checks"] if c.get("required") is True and c.get("status") in {"IN_PROGRESS", "QUEUED"}
+        ]
+        obs["action"] = action
     if action == "RETRY":
         targets = obs["rerun_targets"]
         unrunnable = [c for c in targets if c.get("job_id") in (None, "")]
@@ -666,7 +676,7 @@ def _run_locked(
             polled = _plan_repository(
                 gh, state, trial, repo, max_attempts, verdict_fail_receipts, current
             )
-        except GitHubClientError as exc:
+        except (GitHubClientError, UnsafeKeyError) as exc:
             repo_errors.append({"repo": repo, "error": str(exc)})
             continue
         plan.adopt(trial)
