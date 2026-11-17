@@ -1,11 +1,11 @@
-DONE: /docs/proof/dod/bod-286.json
-DONE: /docs/proof/dod/bod-297.json
-DONE: /docs/proof/dod/bod-410.json
-DONE: /docs/proof/dod/bod-413.json
-DONE: /docs/proof/dod/bod-416-doctor-gateway-key.json
-DONE: /docs/proof/dod/bod-416-route-key-file.json
-DONE: /docs/proof/dod/bod-417.json
-DONE: /docs/proof/dod/bod-434.json
-DONE: /docs/proof/dod/bod-437.json
-DONE: /docs/proof/dod/dod-run-truth.json
+DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-286.json
+DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-297.json
+DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-410.json
+DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-413.json
+DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-416-doctor-gateway-key.json
+DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-416-route-key-file.json
+DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-417.json
+DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-434.json
+DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-437.json
+DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/dod-run-truth.json
 check_dod: 10 evidence file(s) checked

@@ -26,30 +26,30 @@
   "acceptance": [
     {
       "criterion": "The definition-of-done gate passes on merged main with all required CI checks green (repo-tooling DoD part 1).",
-      "expect": "check_dod: 10 evidence file(s) checked",
+      "expect": "DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-286.json",
       "expect_exit_code": 0,
       "first_run": {
-        "at": "2026-11-17T18:19:48Z",
+        "at": "2026-11-17T19:36:45Z",
         "sha": "8e640a9d1df0dd23f57bcd36974df6dbf6447edb",
         "environment": "operator-host",
         "command": "uv run python scripts/check_dod.py --all",
-        "real_state_marker": "check_dod: 10 evidence file(s) checked",
+        "real_state_marker": "DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-286.json",
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/m1-stop-false-done/first_run.txt",
-          "sha256": "b69844cc76d1ba03baac697f3cff993a9f31c15ef82a1f469dfbcd67eeae88b8"
+          "sha256": "d24fd8c21067c61cca4b84647e702ceeac9f8bfef7aa29366d489ec667e1408f"
         }
       },
       "fresh_run": {
-        "at": "2026-11-17T18:39:18Z",
+        "at": "2026-11-17T19:51:45Z",
         "sha": "8e640a9d1df0dd23f57bcd36974df6dbf6447edb",
         "environment": "operator-host",
         "command": "uv run python scripts/check_dod.py --all",
-        "real_state_marker": "check_dod: 10 evidence file(s) checked",
+        "real_state_marker": "DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-286.json",
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/m1-stop-false-done/fresh_run.txt",
-          "sha256": "b69844cc76d1ba03baac697f3cff993a9f31c15ef82a1f469dfbcd67eeae88b8"
+          "sha256": "d24fd8c21067c61cca4b84647e702ceeac9f8bfef7aa29366d489ec667e1408f"
         }
       }
     }
@@ -58,12 +58,12 @@
     "change": "m1-stop-false-done"
   },
   "parent_confirmation": {
-    "by": "gem-orchestrator on omniroute/cc/claude-opus-5-5",
-    "at": "2026-11-17T18:40:54Z",
+    "by": "gem-implementer on omniroute/cc/claude-opus-5-5 (subagent session)",
+    "at": "2026-11-17T19:37:45Z",
     "command": "uv run python scripts/check_dod.py --all",
     "raw_output": {
       "path": "docs/proof/dod/m1-stop-false-done/parent.txt",
-      "sha256": "b69844cc76d1ba03baac697f3cff993a9f31c15ef82a1f469dfbcd67eeae88b8"
+      "sha256": "d24fd8c21067c61cca4b84647e702ceeac9f8bfef7aa29366d489ec667e1408f"
     }
   }
 }
