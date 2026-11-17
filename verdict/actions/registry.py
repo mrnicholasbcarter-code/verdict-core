@@ -133,6 +133,15 @@ LAUNCH: dict[str, LaunchSpec] = {
         entry="verdict.acceptance:run_acceptance",
         section="Health",
     ),
+    "pr-watch": LaunchSpec(
+        reason=(
+            "_cmd_pr_watch (run_watcher): one pass over the configured repositories that "
+            "reads GitHub, requests bounded CI reruns and writes watcher state, run every "
+            "five minutes by verdict-pr-watch.timer; long-running scheduled job"
+        ),
+        entry="verdict.pr_watcher:run_watcher",
+        section="Health",
+    ),
     "orchestrate": LaunchSpec(
         reason=(
             "_orchestrate (run_golden_path): plans a WorkGraph, dispatches "
