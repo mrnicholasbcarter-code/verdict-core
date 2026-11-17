@@ -1529,6 +1529,28 @@ class TestRepositoryIsolation:
 
         assert not ws.state_file.exists()
 
+    def test_all_repos_down_with_github_error_saves_state_and_types_github_error(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches an all-repos-down run skipping persistence, or moving a failed repo's cursor."""
+        earlier = T0 - RUN_INTERVAL
+        seeded = ws.set_merged_cursor(ws.load(), REPO, earlier)
+        ws.save(ws.set_merged_cursor(seeded, OTHER, earlier))
+        error = GitHubClientError("HTTP 502 from GitHub")
+        gh.fail_open[REPO] = error
+        gh.fail_open[OTHER] = error
+
+        result = run_watcher(gh, ws, [REPO, OTHER], now=T0)
+
+        assert result["ok"] is False
+        assert result["type"] == "github_error"
+        assert [e["repo"] for e in result["repo_errors"]] == [REPO, OTHER]
+        assert all(e["kind"] == "github_error" for e in result["repo_errors"])
+        state = disk(ws)
+        assert state["last_run_at"] == iso(T0)
+        # Neither failed repository's cursor moves, so the next run covers the same ground.
+        assert state["merged_cursors"] == {REPO: iso(earlier), OTHER: iso(earlier)}
+
     def test_healthy_run_reports_ok(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
         """Catches the success flag being absent or false on a run with nothing wrong."""
         open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")])
