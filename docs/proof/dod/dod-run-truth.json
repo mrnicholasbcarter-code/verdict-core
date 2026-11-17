@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "story": "dod-run-truth",
+  "kind": "repo-tooling",
+  "author": "gem-devops (worker/free-first)",
+  "merged_sha": "d228f574e5ddf3de8d48e6537fa4d9d228fda6dc",
+  "pr": 1042,
+  "on_main": {
+    "at": "2026-11-17T02:25:28Z",
+    "sha": "d228f574e5ddf3de8d48e6537fa4d9d228fda6dc",
+    "environment": "github-actions",
+    "command": "gh pr checks 1042 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/43990847136/job/133730715888",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/dod-run-truth/pr_checks_1042.txt",
+      "sha256": "547e6081f0bf21ba36a87a72c49dedb3b37fe7f2b6f5280f69759df1f06dbc47"
+    }
+  },
+  "freshness_window_hours": 1,
+  "stays_true_job": "lint (Definition of done step runs python scripts/check_dod.py --all on every PR and push)",
+  "setup_doctor": {
+    "status": "not_applicable",
+    "reason": "repo-tooling story; no installed services or doctor gate; acceptance runs on GitHub"
+  },
+  "acceptance": [
+    {
+      "criterion": "The definition-of-done gate passes on merged main with all required CI checks green (repo-tooling DoD part 1).",
+      "expect": "check_dod: ",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-17T15:45:35.036523+00:00",
+        "sha": "32d1ad3eb1a1988557e6bfdca441db4f7f0306ba",
+        "environment": "operator-host",
+        "command": "uv run python scripts/check_dod.py --all",
+        "real_state_marker": "check_dod: 9 evidence file(s) checked",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/dod-run-truth/first_run.txt",
+          "sha256": "e5fab0ae47c78102ca346120d53237a7f92f0eb78b0672ec3f3503ae8325e14e"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T16:45:49.913219+00:00",
+        "sha": "32d1ad3eb1a1988557e6bfdca441db4f7f0306ba",
+        "environment": "operator-host",
+        "command": "uv run python scripts/check_dod.py --all",
+        "real_state_marker": "check_dod: 9 evidence file(s) checked",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/dod-run-truth/fresh_run.txt",
+          "sha256": "e5fab0ae47c78102ca346120d53237a7f92f0eb78b0672ec3f3503ae8325e14e"
+        }
+      }
+    }
+  ],
+  "openspec": {
+    "change": "dod-run-truth"
+  },
+  "parent_confirmation": {
+    "by": "operator (human review of merged main evidence)",
+    "at": "2026-11-17T16:47:30.333499+00:00",
+    "command": "uv run python scripts/check_dod.py --all",
+    "raw_output": {
+      "path": "docs/proof/dod/dod-run-truth/parent.txt",
+      "sha256": "e5fab0ae47c78102ca346120d53237a7f92f0eb78b0672ec3f3503ae8325e14e"
+    }
+  }
+}
