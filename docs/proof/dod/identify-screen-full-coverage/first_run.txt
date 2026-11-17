@@ -1,7 +1,0 @@
-Result=success
-ExecMainStartTimestamp=Tue 2026-11-17 06:00:04 UTC
-ExecMainExitTimestamp=Tue 2026-11-17 06:10:37 UTC
-ExecMainStatus=0
-/operator/.config/systemd/user/verdict-identify-screen.timer:OnCalendar=*-*-* 00/6:00:00
-/operator/.config/systemd/user/verdict-identify-screen.service:ExecStart="/operator/.local/share/verdict/<installed-main>/.venv/bin/python" -m verdict identify --screen --allow-live-probe --capacity free,subscription --max-per-provider 16 --max-routes 40 --json
-# first_run marker: 2026-11-17T06:15:00Z
