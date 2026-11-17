@@ -444,6 +444,45 @@ class TestExactHeadPolling:
         assert result["notifications"] == []
         assert disk(ws)["pr_states"] == {}
 
+    def test_head_that_moved_while_the_latest_commit_still_reads_as_the_old_one_is_not_acted_on(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches the head comparison trusting the checks' commit alone."""
+        listed = "b" * 40
+        open_pr(gh, 4, listed, [check("lint", "FAILURE")])
+        gh.set_pr(REPO, 4, {"number": 4, "head_sha": "c" * 40, "commit_oid": listed})
+        gh.set_checks(REPO, "c" * 40, [check("lint", "FAILURE")])
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert outcomes(result) == [(4, "HEAD_CHANGED", "NO_ACTION")]
+        assert result["records"] == []
+
+    def test_optional_hung_check_does_not_make_the_pr_stalled(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a check nobody requires being rerun because it has run for a long time."""
+        started = iso(T0 - timedelta(minutes=95))
+        hung = check("Analyze (python)", None, "IN_PROGRESS", started_at=started, job_id="job-9")
+        open_pr(gh, 1, "a" * 40, [check("lint"), {**hung, "required": False}])
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert outcomes(result) == [(1, "GREEN", "READY")]
+        assert gh.rerun_calls == []
+
+    def test_only_the_required_failed_check_is_rerun_when_an_optional_one_failed_too(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches an optional check being rerun alongside the required one that warranted it."""
+        optional = {**check("Analyze (python)", "CANCELLED", job_id="job-9"), "required": False}
+        open_pr(gh, 1, "a" * 40, [optional, check("lint", "CANCELLED", job_id="job-1")])
+
+        run_watcher(gh, ws, [REPO], now=T0)
+
+        assert gh.rerun_calls == [{"job_id": "job-1", "repo": REPO}]
+        assert list(disk(ws)["rerun_attempts"]) == [f"{REPO}:pr1:{'a' * 40}:lint:job-1"]
+
     def test_optional_failed_check_never_decides_the_result(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
@@ -793,6 +832,20 @@ class TestStableRerunFencing:
         self.fenced(gh, *reread)
 
         result = request_bounded_rerun(gh, ws, REPO, 42, "a" * 40, "lint", "job-1", max_attempts=3)
+
+        assert (result["rerun"], result["type"]) == (False, "fence_mismatch")
+        assert gh.rerun_calls == []
+        assert not ws.state_file.exists()
+
+    def test_checks_reread_for_another_commit_abort_without_a_rerun_or_a_spent_attempt(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches the fence accepting a same-named check that belongs to a different commit."""
+        head = "a" * 40
+        self.fenced(gh, check("lint", "CANCELLED", job_id="job-1"))
+        gh.set_pr(REPO, 42, {"number": 42, "head_sha": head, "commit_oid": "9" * 40})
+
+        result = request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-1", max_attempts=3)
 
         assert (result["rerun"], result["type"]) == (False, "fence_mismatch")
         assert gh.rerun_calls == []
