@@ -1,0 +1,73 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 7,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "BLOCKED",
+        "headRefOid": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "headRefName": "chore/bod-195-security-deps",
+        "body": "Bumps the pinned digest.\n\nRelates to ENG-9.",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                "statusCheckRollup": {
+                  "state": "FAILURE",
+                  "contexts": {
+                    "totalCount": 4,
+                    "pageInfo": {
+                      "hasNextPage": true,
+                      "endCursor": "Y3Vyc29yOnYyOpHOAAAAAg=="
+                    },
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "databaseId": 9001,
+                        "name": "lint",
+                        "status": "COMPLETED",
+                        "conclusion": "FAILURE",
+                        "startedAt": "2026-03-02T11:40:00Z",
+                        "completedAt": "2026-03-02T11:45:00Z",
+                        "detailsUrl": "https://github.com/org/repo/actions/runs/501/job/9001",
+                        "isRequired": true,
+                        "checkSuite": {
+                          "workflowRun": {
+                            "databaseId": 501,
+                            "workflow": {
+                              "name": "CI"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "databaseId": 9002,
+                        "name": "test (3.11)",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "startedAt": "2026-03-02T11:40:00Z",
+                        "completedAt": "2026-03-02T11:45:00Z",
+                        "detailsUrl": "https://github.com/org/repo/actions/runs/501/job/9002",
+                        "isRequired": true,
+                        "checkSuite": {
+                          "workflowRun": {
+                            "databaseId": 501,
+                            "workflow": {
+                              "name": "CI"
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

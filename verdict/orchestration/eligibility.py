@@ -1213,13 +1213,15 @@ class EligibilityLadder:
         probe_order = self._probe_order(candidates)
         # BOD-297: selection confirmation joins the shared coordinator lease;
         # never probe while another producer owns the job.
+        # While another producer holds the refresh lease, skip probes and confirmations but still choose routes with fresh proof.
         health_cache = getattr(self, "_health_cache", None)
+        lease_held = False
         if health_cache is not None:
             from verdict.orchestration.verified_refresh import _JobLock
 
             _lock_path = health_cache.path.parent / "verified-refresh.lock"
             if _JobLock(_lock_path).live():
-                probe_order = []
+                lease_held = True
         for a in probe_order:
             if a.failed_stage is not None:
                 continue  # refresh reported failed/unavailable: never confirm
@@ -1243,6 +1245,10 @@ class EligibilityLadder:
                 or (now - qualified).total_seconds() >= PERMIT_PROOF_MAX_VALIDITY_SECONDS
             )
             if a.health != "healthy" or confirming or proof_stale:
+                if lease_held:
+                    a.reason = "lease_held"
+                    a.failed_stage = EligibilityStage.AVAILABLE
+                    continue
                 if probes_used >= self._max_probes:
                     a.reason = "probe_budget_exhausted"
                     continue

@@ -1,0 +1,560 @@
+plan_id: 20261117-dynamic-model-selection
+status: pending
+tldr: |
+  Replace hardcoded model choices in Verdict's goal -> plan -> DAG -> workers -> review -> receipt loop
+  and the operator's swarm scripts with one role-aware ladder:
+    inventory -> hard eligibility/admission (canonical admitted set, unchanged)
+      -> role narrowing (capacity, quota, pool, family; may only remove)
+      -> advisory ordering (external strength x measured reliability; may only reorder)
+  with an immutable candidate-set hash at every boundary. Roles: planner, implementer, reviewer,
+  escalation, controller. The strength source reuses verdict/metadata (OpenRouter /api/v1/models
+  benchmarks.artificial_analysis, the Artificial Analysis free API, models.dev).
+  First slice (wave 2): a read-only, fail-closed ladder library plus
+  `verdict ladder --role planner --json` and a deterministic shadow record. It changes no defaults,
+  dispatch, reviewer/controller wiring, quota handling or operator files.
+  Later waves add: all roles and reliability, then capacity evidence, then quota sharing, then
+  dispatch behind VERDICT_DYNAMIC_SELECTION=on, then swarm wiring and live checks.
+  Pass conditions are about provenance and policy, never a named model. cc/claude-fable-5-2 is the
+  expected top planner today; it is not the test.
+created_at: "2026-11-17"
+created_by: gem-planner
+revision: 3
+replan_count: 0
+planner_revision_used: true
+
+decisions:
+  - "Pipeline and hashes: four stages with a sha256 over the sorted canonical route ids leaving each stage (H0 inventory, H1 admitted, H2 narrowed, H3 ordered). Invariant: set(H3) == set(H2) and set(H2) is a subset of set(H1). Any violation fails closed with reason candidate_set_violation. Enforced in T3 and re-tested by every later task."
+  - "Strength and reliability are advisory: consumed only through verdict/decision_signals advise_order/AdvisoryRanker. They never admit, never re-admit, never change membership (ADR 0001; tests/test_decision_signals_advisory.py TestAdvisoryRanker)."
+  - "Smallest first slice ships first (critic item 11): T3 is read-only. It uses the canonical admitted set, the existing capacity.classify() output, the existing provider_catalog pools and the existing metadata strength. Nothing it does changes dispatch."
+  - "Controller is a first-class role (critic item 5). Its ladder decides which route the harness root should run. It is also the fence: worker, reviewer and escalation ladders exclude the controller's served route and, under quota pressure, give way to it. CONTROLLER_MODEL(S) constants become legacy-only."
+  - "Flag VERDICT_DYNAMIC_SELECTION=off|shadow|on, default off. off = strict legacy compatibility (identical selection algorithm and defaults), with one declared exception: the BOD-342 D22 lift (operator 2026-11-17), which is a policy change in every mode. shadow = legacy dispatch plus a side-effect-free dynamic computation recorded as a versioned event. on = dynamic, failing closed on a missing or empty ladder. off is permanent: it is the emergency fail-safe and the T11 rollback, and it is never removed. T12 may delete a legacy constant only when off no longer reads it."
+  - "Entry points: POST /v1/route, /v1/chat/completions and /v1/responses relay, and the `verdict route` CLI Gate are out of scope and unchanged in all modes (they keep execution-path authority and catalog truth). In scope: `verdict orchestrate` (planner, implementer, reviewer, escalation per node), `verdict autodev` (planner via decomposer, executor), worker spawns through subagent_selection/worker_runtime (implementer, controller fence), and the new `verdict ladder` CLI (read-only in all modes)."
+  - "Capacity: classify() keeps its D7 output (operator ruling, cheapest-proven-selection-s1). The plan adds capacity_confidence (observed | declared | assumed). The ladder treats assumed FREE as free only for implementer nodes of low risk with a fresh agentic passport. For planner, reviewer, controller and escalation, assumed FREE counts as UNKNOWN, which ranks last and is never healthy. A first 402 flips it to METERED (existing billing_402_metered). This keeps D7 for legacy callers without letting absence of evidence carry critical roles."
+  - "One route per quota pool in every ladder (backend_pool/aliased_pools_for). Two models on one subscription are never two rungs: they fail together under one usage limit."
+  - "Reviewer independence: hard for protected or high-risk work. If no route from a distinct family and a distinct pool exists, the review fails closed with reviewer_independence_unavailable. For low/medium risk it falls back to a distinct pool of the same family, with receipt reason reviewer_same_family_fallback. A same-pool reviewer is never allowed."
+  - "Measured demotion replaces name exclusions (Mistral/Codestral, devstral, Qwen3.8-27B). Until measured demotion covers a model, the operator's list moves to a logged override file read by `verdict ladder` (operator override disposition). It is never a regex in code."
+  - "File ownership never overlaps inside a wave. T6 (quota) waits for T5 and implements the QuotaView protocol frozen by T3, so it adds verdict/quota_share.py without editing role_selection.py."
+  - "Agents: code tasks start on gem-implementer, which the orchestrator pins to kilocode/nvidia/nemotron-3-ultra-550b-a55b:free. On failure they escalate to Opus (omniroute/cc/claude-opus-5-5), then gem-implementer-fable (escalation/fable-first). Never Mistral or Codestral. Research, docs and devops run on the free tier. gem-reviewer tasks must be served by a family different from the served author model (checked from call logs)."
+  - "Swarm files (~/bin/freescan-ladder, ~/.config/opencode/opencode.json, instructions/model-ladder.md) are operator-owned. Verdict never writes them. T11 changes them only with operator approval, consuming `verdict ladder --json`."
+
+assumptions:
+  - "OmniRoute GET /v1/models, connection/provider rows with plan/pricing/auth fields, and GET /api/usage/call-logs (status, requested model, served model, connection, error, timestamps) exist as freescan-ladder already uses. T1 confirms the exact fields and lookback limit."
+  - "OpenRouter /api/v1/models keeps benchmarks.artificial_analysis unauthenticated (parsed in verdict/metadata/sources.py). The AA free API is reachable without a paid key; if it is not, the OpenRouter-mirrored AA fields are the only external score."
+  - "The research agent's capacity facts (OpenCode Go METERED via apikey_positive_pricing; Kilo Code oauth SUBSCRIPTION with 2 x HTTP 402; Gemini Pro g1-pro-tier blocked by Google sign-in verification; ovhfree/kilofree keyless and absent from verdict eligibility) are unconfirmed until T1."
+  - "health_cache.py's fcntl-locked JSON store (writers take LOCK_EX) is the model for atomic shared quota state."
+  - "There is no repo pre-commit hook (only .git/hooks/pre-push -> vgate). Commits of plan files run vgate only on push."
+
+pipeline_contract: |
+  Stage S0 inventory: live /v1/models rows (or a fixture labelled fixture=true). Output H0.
+  Stage S1 admission: the existing admission ladder and eligibility floors (verdict/admission.py,
+    eligibility.py, orchestration/eligibility.py). Opaque auto/* and combo/* are removed here,
+    unknown runtime is never healthy. Output canonical AdmittedSet, H1. Dynamic selection never calls
+    anything that adds to this set.
+  Stage S2 role narrowing (remove-only, each removal carries a skip reason):
+    capacity (role policy over capacity class + confidence), quota (QuotaView: cooldown/reserve),
+    pool (keep the best-ordered route per backend pool), family (reviewer independence, controller
+    fence, implementer exclusion), measured demotion (role-scoped non-completion), operator override
+    file. Output H2 plus skip list [{route_id, stage, reason}].
+  Stage S3 advisory order: role_strength signal through advise_order. Low confidence (stale or
+    missing) leaves the legacy order. Output H3 ordered ladder.
+  Assertions: H3 set == H2 set, H2 subset of H1, every route in H3 present in AdmittedSet. An empty H3
+    gives LadderResult(status=FAIL_CLOSED, reason=...), never a silent default and never a hang.
+
+capacity_precedence: |
+  Evaluated per route, highest precedence first. Scope is connection unless stated. A lower row can
+  never downgrade the class set by a higher row.
+  P1 route-scoped billing evidence: current billing_402_metered health entry (entry.until > now)
+     -> METERED, confidence observed. Expiry: 24h after the last 402 (configurable); refreshed by
+     every new 402. Never cleared by auth type or pricing.
+  P2 connection-scoped billing evidence: >= 1 HTTP 402 on any route of the connection within 24h
+     (call logs, T1 fields) -> METERED for every route of the connection, confidence observed.
+     Example: Kilo Code oauth with 2 x 402. Same expiry rule as P1.
+  P3 explicit positive pricing (any price > 0) -> METERED, confidence declared. Never FREE.
+     Example: OpenCode Go (apikey_positive_pricing).
+  P4 openrouter-family route outside the public free set -> METERED (existing); inside the free set
+     -> FREE, declared. Anthropic api key -> METERED (existing).
+  P5 :free suffix (non-openrouter) or connection-level free signal or all-zero explicit pricing
+     -> FREE, declared.
+  P6 oauth with no paid evidence -> SUBSCRIPTION, confidence assumed (assumed_subscription_oauth).
+  P7 no evidence at all -> FREE, confidence assumed (assumed_free_no_paid_evidence, D7 unchanged).
+     Example: keyless ovhfree/kilofree nodes.
+  P8 connection blocked (auth/verification failure, e.g. Gemini sign-in) -> class unchanged, but
+     availability UNAVAILABLE with reason. Never healthy, never a candidate until a fresh success.
+  Missing connection row -> UNKNOWN (existing). It fails entitlement.
+  Conflicts and the eligibility result per role:
+    billing vs oauth: METERED wins. Excluded from every role unless existing metered consent applies.
+      Pay-per-token is never used by default.
+    billing expired vs pricing positive: METERED (P3).
+    pricing zero vs observed 402: METERED (P1/P2 outrank P5).
+    oauth assumed SUBSCRIPTION: eligible for all roles once a fresh agentic passport or success
+      exists. Without one: implementer low-risk only, ranked after observed/declared subscription.
+    assumed FREE (P7): implementer low-risk with fresh passport only. For planner, reviewer,
+      controller and escalation it is treated as UNKNOWN, ranked last, and never makes a ladder
+      non-empty on its own.
+  Freshness: evidence older than its TTL drops one confidence level (observed -> assumed). Billing
+  evidence expires only through the explicit 402 expiry. Name or vendor literals are not inputs.
+
+reliability_contract: |
+  One observation schema, ReliabilityObservation v1, mapped onto strength_profiles.StrengthObservation:
+    route_id (canonical, alias-collapsed), served_model (from the call log or response headers),
+    pool, attempt_id (Verdict attempt id or gateway call-log id), source (verdict_attempt |
+    gateway_call_log), role (planner|implementer|reviewer|escalation|controller|unknown),
+    outcome (success | task_failure | health_failure), failure_class (StrengthFailureClass;
+    auth/identity/config/transport/timeout/quota_429/billing_402 are health_failure),
+    started_at, finished_at, observed_at, dedup_key = sha256(source_family + attempt_id).
+    A gateway log matching a Verdict attempt by request id is merged, never counted twice.
+  Denominator: success + task_failure only. task_failure = completed HTTP response that the role
+  checker rejects (no tool call, invalid plan, empty or skipped review, tests failed, worker gave
+  up). Health failures go to health_cache only and never reduce strength (strength_profiles contract).
+  Served-identity validation: if served_model != requested route_id (after alias collapse), the
+  observation is credited to the served identity, and the requested route records
+  identity_mismatch as a health failure. Unknown served identity -> role=unknown, excluded from the
+  denominator.
+  Score: reliability = Wilson lower bound (z=1.96) of success/(success+task_failure) per (identity,
+  role) over 14 days of attempts and the 24h call-log window. Fewer than n_min=5 observations ->
+  reliability unknown (confidence penalty, not zero).
+  Demotion: >= 20 role attempts with Wilson upper bound < 0.5 -> skip reason measured_non_completion
+  at S2 for that role only.
+  Cold start: unknown-reliability admitted routes get bounded exploration. Implementer low-risk nodes
+  only, at most 1 exploratory node in 10 and at most 3 per run per route. Never planner, reviewer,
+  controller, escalation or high-risk nodes. Never ahead of a known-good route (reliability lower
+  bound >= 0.8) on a critical node. Every exploration is labelled exploration=true in the ladder event.
+
+quota_contract: |
+  QuotaView protocol frozen in T3: state(pool, now) -> {status: open|pressure|cooldown|exhausted,
+  until, reason}. In T3, T4 and T5 it is a no-op that always returns open.
+  T6 implementation, verdict/quota_share.py:
+    Store: one JSON file under VERDICT_HOME, fcntl LOCK_EX read-modify-write, atomic os.replace,
+      the same pattern as orchestration/health_cache.py. Every update is atomic across processes
+      (orchestrator, escalation and worker harnesses share it).
+    Events: 429, 'credentials cooling down', Retry-After, quota headers from call logs or attempts.
+      Dedup by dedup_key, so a repeated event never extends state twice.
+    Cooldown expiry: until = max(existing until, now + max(Retry-After, local cooldown)). It only
+      moves forward until it expires. Retry-After is honoured when present and larger. Local cooldown
+      defaults to 60s, doubling per repeat event within 15 min, capped at 30 min.
+    Hysteresis: open -> pressure at >= 2 x 429 in 15 min; pressure -> cooldown on an explicit
+      cooldown message or Retry-After; cooldown -> pressure on expiry; pressure -> open only after a
+      minimum hold of 10 min with 0 new events. All thresholds come from config (below).
+    Config (precedence env > ~/.config/verdict/verdict.yaml key under quota_share: > default; read
+      once per ladder build; an out-of-bounds or non-integer value fails closed at load with
+      reason quota_config_invalid, never clamped silently):
+      env VERDICT_QUOTA_PRESSURE_429_COUNT  / yaml quota_share.pressure_429_count   default 2    bounds 1..100
+      env VERDICT_QUOTA_PRESSURE_WINDOW_S   / yaml quota_share.pressure_window_s    default 900  bounds 60..86400
+      env VERDICT_QUOTA_MIN_HOLD_S          / yaml quota_share.min_hold_s           default 600  bounds 0..86400
+      env VERDICT_QUOTA_COOLDOWN_BASE_S     / yaml quota_share.cooldown_base_s      default 60   bounds 1..3600
+      env VERDICT_QUOTA_COOLDOWN_MULTIPLIER / yaml quota_share.cooldown_multiplier  default 2    bounds 1..10
+      env VERDICT_QUOTA_COOLDOWN_MAX_S      / yaml quota_share.cooldown_max_s       default 1800 bounds cooldown_base_s..86400
+      env VERDICT_QUOTA_RETRY_AFTER_POLICY  / yaml quota_share.retry_after_policy   default max  allowed {max}
+        (Retry-After wins when larger; no option lets a local value shorten a provider Retry-After.)
+    Reserve, by role priority under pressure/cooldown: implementer and reviewer drop the pool first,
+      then escalation, and the controller last. During cooldown the controller and escalation try the
+      pool only after its until time. Escalation during cooldown takes the next pool in its ladder
+      (one per vendor). It does not wait.
+    All pools exhausted for a role -> LadderResult FAIL_CLOSED (reason quota_exhausted_all_pools) and
+      the runtime ends BLOCKED, per tests/test_orch_runtime.py::test_pool_exhaustion_fails_closed_explicitly
+      and tests/test_orch_recovery.py TestRecoveryBudget. Never a wait loop.
+
+shadow_event_contract: |
+  events.jsonl record type role_ladder.shadow, schema_version 1: role, node_id, run_id,
+  correlation_id (joins the later dispatch outcome), mode, H0, H1, H2, H3, admitted_set (full sorted
+  list), dynamic_candidates (full ordered list with per-route score parts: external_strength,
+  strength_source, strength_age_s, reliability_lb, n, confidence, capacity_class,
+  capacity_confidence, capacity_evidence, pool, quota_status, exploration), skips
+  [{route_id, stage, reason}], legacy_pick, dynamic_pick, agree (bool), signals_digest,
+  metadata_fixture (bool).
+  Side-effect free: no HTTP calls beyond the reads already made for dispatch, no health_cache or
+  quota writes, no change to the dispatched route, attempts or permits. Deterministic for fixed
+  inputs (sorted keys, injected clock).
+
+hardcoded_inventory: |
+  Verified on origin/main 8e640a9d. Disposition key: DR = dynamically replaced (by the named task;
+  legacy value kept for the permanent off fail-safe), RS = retained sentinel, RT = retained
+  capability taxonomy (advisory/eligibility input, re-scoped), FX = fixture-only (labelled, never
+  live proof), OO = operator override (host file, operator-owned), DO = display-only example.
+  - verdict/decomposer.py:35 DEFAULT_ORCHESTRATOR_MODEL='mistral/codestral-latest'; :98 PlannerConfig.model default; :424 export -> DR planner ladder (T7). In on mode no ladder = FAIL_CLOSED.
+  - verdict/cli.py:1476-1479 autodev fallback to DEFAULT_ORCHESTRATOR_MODEL and patch_executor DEFAULT_BASE_URL -> DR planner ladder (T7); base URL retained.
+  - verdict/decomposer.py:161-165 cc/* planner refusal (D22) -> removed in all modes (T7; D22 lifted).
+  - verdict/autodev_run.py:2262 _PLANNER_EXCLUDED_POOLS={'claude','codex'} (uses :2313,:2332,:2387,:2438) -> removed in all modes; capacity policy replaces it (T7).
+  - verdict/autodev_run.py:2294 _live_planner_models -> DR, becomes the legacy branch of the planner ladder (T7).
+  - verdict/autodev_run.py:75 DEFAULT_EXECUTOR_MODEL='unresolved/executor' -> RS.
+  - verdict/contracts.py:25 DEFAULT_PRIMARY_MODEL='anthropic/claude-opus-5', consumed by actions/helpers.py:33-35, api.py:41,:747 (LLMGATE_PRIMARY default), cli.py:22,:469,:476,:642 (setup prompts), gate.py:6,:92,:151,:164, provider_bootstrap.py:35,:731, provider_detection.py:24,:750,:784,:790, subagent_models.py:28,:217 -> DR for setup/bootstrap suggestions (T8: suggest the controller ladder top when the gateway is reachable, else keep the value as an RS setup placeholder labelled unverified). api.py/gate.py primary_model on /v1/route stays unchanged (entry point out of scope).
+  - verdict/workers.py:22-27 _AUTO_MODEL_ALIASES (auto/best-coding, auto/best-free, auto/fast ...), :93 WorkerRequest.model='auto/best-free', :298 alias fallback -> DR implementer ladder (T8). Opaque auto/* stay non-candidates. In on mode the request resolves to H3[0], never an auto/* id.
+  - verdict/subagent_selection.py:32-33 CONTROLLER_MODEL='cx/gpt-5.6-sol', CONTROLLER_MODELS (+cx/gpt-6-astra), used at :321 -> DR controller role (T8). The fence becomes the served controller identity from the controller ladder/harness.
+  - verdict/subagent_selection.py:380-388 controller_excluded recognition by excluded_route_ids -> retained mechanism, fed by the controller role (T8).
+  - verdict/subagent_selection.py:367 coding marker tokens ('code','coder','codex','devstral','codestral') -> DR role_strength coding score (T8); kept as RT fallback when no score exists, advisory only.
+  - verdict/worker_runtime.py:164 VERDICT_CONTROLLER_MODEL env fallback -> retained as the operator/harness declaration of the controller identity (RS input); controller ladder used when unset (T8).
+  - verdict/classifier.py CAPABILITY_PATTERNS (:10) and family/tier regex tables incl. :88 codestral -> RT. Tier floor input only (BOD-271 sufficiency). Never a ranking or exclusion by name. Measured demotion supersedes name-based outcome judgments.
+  - verdict/harness_hermes.py:32, verdict/harness_opencode.py:36 DEFAULT_MODEL='verdict/default' -> RS (Verdict selects; the harness never runs a literal).
+  - scripts/selection_report.py:30 IMPLEMENTER_FOR_REVIEW='kr/claude-sonnet-5' -> FX (report fixture; T8 labels it fixture).
+  - scripts/live_savings_bench.py:51-52 BASELINE_MODEL, VERDICT_CANDIDATES; verdict/savings_bench.py:112 _CatalogIdentity rows; verdict/routing_demo_mock.py; scripts/demo_orchestrate.py (incl. :103 auto/best-coding opaque row); verdict/orchestration/demo_scenario.py:43-47 ROUTE_A..ROUTE_WEAK; scripts/_record_verified_demo_child.py:86 -> FX.
+  - verdict/orchestration/contracts.py:8,:651, orchestration/harness.py:62, orchestration/tui.py:690, verdict/mcp_server.py:127, orchestration/credential_pools.py:25, prove_at_rest.py:628 docstring/description examples -> DO.
+  - specs/339-cli-setup-dx/contracts/config-schema.yaml:20 example -> DO (frozen historical specs/).
+  - ~/bin/freescan-ladder:23 SUBSCRIPTION_TAIL, :28 EXCLUDE regex, :29 CODING keys -> OO now; DR by `verdict ladder` (T11); EXCLUDE moves to the override file.
+  - ~/.config/opencode/opencode.json gem-* model pins (worker/free-first, auto/pro-coding opaque, escalation/fable-first combo) -> OO; combos regenerated from role ladders (T11); no agent on an opaque auto/* router.
+  - ~/.config/opencode/instructions/model-ladder.md rung names -> OO; rewritten to reference ladders (T11).
+  - .prime/agent/skills/verdict-dispatch/scripts/runtime_bridge.py:20 LEGACY_CONTROLLER_MODELS=frozenset({'cx/gpt-5.6-sol','cx/gpt-6-astra'}), membership check at :138 ('controller cannot be a worker'); also :19 DEFAULT_ALLOWED_ROUTE_PREFIXES=('cc/','kr/') -> DR (T9): the fence reads the served controller identity from the controller role (same source as subagent_selection) in shadow/on; the literal set stays for off mode only. The prefix default is reconciled by T1 (RS policy scope or DR).
+  T1 re-runs the full greps over verdict/, scripts/, .prime/ and the other in-repo dirs that hold workflow or runtime code (packages/, benchmarks/, config/, deploy/, examples/, contracts/), and records any additions.
+
+tasks:
+  - id: T1
+    title: Research - inventory greps, identity coverage, capacity and call-log evidence
+    description: |
+      Rung: reuse, read-only. (a) With SCOPE='verdict scripts .prime packages benchmarks config deploy examples contracts'
+      (every in-repo dir holding workflow or runtime code; .prime/ is Verdict workflow code), run and
+      record the raw output, with line counts, of:
+        git grep -nE "['\"](auto|combo)/[A-Za-z0-9._:-]+['\"]" -- $SCOPE
+        git grep -nE "DEFAULT_[A-Z_]*MODEL|CONTROLLER_MODEL|VERDICT_CONTROLLER_MODEL" -- $SCOPE
+        git grep -nE "model *[:=] *['\"][a-z0-9-]+/[A-Za-z0-9._:-]+['\"]" -- $SCOPE
+        git grep -nE "['\"](cc|cx|kr|mistral|anthropic|openai|gemini|kimi|qwen|deepseek|nvidia|kilocode|ovhfree|kilofree)/" -- $SCOPE
+        git grep -nE "codestral|devstral|coder|_PATTERNS|family" -- verdict/classifier.py verdict/subagent_selection.py verdict/orchestration/provider_catalog.py .prime/agent/skills/verdict-dispatch/scripts
+      and reconcile each hit against hardcoded_inventory with a disposition.
+      (b) Identity-join coverage of the live inventory via verdict/metadata/mapping.py: mapped and
+      unmapped counts per vendor/alias family, and the join rule used for each.
+      (c) Capacity evidence for OpenCode Go, Kilo Code oauth (402s: credits or plan?), Gemini Pro
+      g1-pro-tier, and ovhfree/kilofree (why absent from `verdict eligibility`): the raw OmniRoute
+      field names and a redacted sample per case, mapped to capacity_precedence rows.
+      (d) Call-log fields for ReliabilityObservation (request id, requested vs served model,
+      connection, status, error text, timestamps), the maximum page/lookback, and Retry-After/quota
+      header availability.
+    wave: 1
+    depends_on: []
+    agent: gem-researcher
+    exploration_mode: audit
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - "docs/plan/20261117-dynamic-model-selection/research.md contains the five grep commands with raw output, and every hit has a disposition (DR/RS/RT/FX/OO/DO). Hits not in hardcoded_inventory are listed under 'additions'."
+      - "research.md reports mapped/unmapped counts per vendor family and the join rule per mapped id."
+      - "research.md maps each of the four capacity cases to a capacity_precedence row with raw field names and a redacted sample."
+      - "research.md lists call-log fields per ReliabilityObservation field (or 'absent'), the lookback limit, and whether Retry-After is visible."
+      - "No secrets, tokens, account ids or /home paths in research.md (vgate host-path guard)."
+    handoff:
+      constraints:
+        - "Read-only: GET only, no chat/completions, no POST/PUT to OmniRoute. Write only research.md."
+        - "Free-tier researcher."
+      high_risk_signals: [cross_domain_impact]
+
+  - id: T2
+    title: ADR-042 and OpenSpec change dynamic-role-selection
+    description: |
+      Rung: reuse (docs). docs/adr/ADR-042-dynamic-role-model-selection.md, amending ADR-036 planner
+      and reviewer selection and citing ADR 0001 invariants unchanged. openspec/changes/
+      dynamic-role-selection/{proposal.md,tasks.md,specs/role-selection/spec.md} with requirements
+      for: pipeline_contract, capacity_precedence, reliability_contract, quota_contract,
+      shadow_event_contract, flag modes per entry point, reviewer independence, the controller role,
+      the inventory dispositions, the permanent off fail-safe and the T12 cleanup limits, and post-merge checks L1-L5 as `- [ ] (post-merge)`
+      tasks. Update the EVIDENCE_INDEX link only when evidence exists (not here).
+    wave: 2
+    depends_on: [T1]
+    agent: gem-documentation-writer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - "`openspec validate dynamic-role-selection --strict` passes."
+      - "uv run python scripts/check_doc_links.py passes."
+      - "ADR and spec each state: strength never admits; narrowing only removes; H3 subset H2 subset H1; unknown never healthy; opaque never candidates; fixture metadata never live proof; pay-per-token never default."
+      - "tasks.md has L1-L5 with the exact `- [ ] (post-merge)` marker and passes scripts/check_openspec_tasks.py."
+    handoff:
+      constraints:
+        - "Owned files: docs/adr/ADR-042-dynamic-role-model-selection.md, openspec/changes/dynamic-role-selection/**."
+        - "No line-number citations; no savings or benchmark numbers."
+
+  - id: T3
+    title: Slice 1 - read-only fail-closed ladder library and `verdict ladder --role planner --json`
+    description: |
+      Rung: reuse admission, capacity.classify, provider_catalog pools, metadata store, and
+      decision_signals advise_order; new code is only the stage composer. New
+      verdict/role_selection.py: Role enum (all five declared; only planner enabled, the others raise
+      RoleNotEnabled), LadderResult (status ok|FAIL_CLOSED, reason, ordered routes, skips, H0-H3),
+      the frozen QuotaView protocol with a no-op OpenQuotaView, and build_ladder(role, admitted,
+      inventory, signals, quota_view, clock). S2 in this slice is pool dedup plus the existing
+      capacity classes only (pay-per-token removed, the existing D6 tier order). S3 uses external
+      strength from the metadata store. New verdict/role_ladder_event.py builds the deterministic
+      role_ladder.shadow record (schema v1) without writing it anywhere except stdout for the CLI.
+      CLI: `verdict ladder --role planner --json [--inventory-fixture PATH]` in a new
+      verdict/commands/parsers_ladder.py and a dispatch entry. It is read-only and prints
+      LadderResult plus the event. It exits non-zero on FAIL_CLOSED. Fixture input sets
+      metadata_fixture=true and live_proof=false. No defaults removed, no dispatch, no reviewer or
+      controller wiring, no quota, no operator files.
+    wave: 2
+    depends_on: [T1]
+    agent: gem-implementer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - "Tests first, tests/test_role_selection_slice1.py: (a) parametrised over S2 capacity, S2 pool, S3 strength, the shadow builder and the CLI path, a route absent from the canonical AdmittedSet never appears in the output; (b) H3 set == H2 set and H2 subset H1, checked by hash recomputation; (c) the ladder never holds two routes of one backend pool, alias pairs (agy/antigravity) included; (d) opaque auto/* and combo/* never appear even when present in inventory and metadata; (e) an empty narrowed set gives FAIL_CLOSED with a reason and exit code != 0; (f) a pay-per-token route never appears; (g) a stale or missing strength leaves the legacy (D6 tier, rating) order unchanged; (h) the same inputs give a byte-identical event; (i) a fixture inventory sets live_proof=false."
+      - "Fixture where the strongest admitted subscription route is cc/claude-fable-5-2: it ranks first with score parts. With it removed, the next rung is from a different pool, not another cc/* route."
+      - "tests/test_admission.py, tests/test_decision_signals_advisory.py, tests/test_routing_demo.py::test_fixture_catalog_cannot_pass pass unchanged."
+      - "`git diff origin/main --stat` touches only owned files; no change to decomposer.py, cli.py autodev, autodev_run.py, subagent_selection.py, review.py, capacity.py."
+      - "uv run mypy verdict --strict, ruff check/format, scripts/check_reachability.py --ratchet-base origin/main (CLI is the production caller), scripts/check_doc_links.py clean."
+    handoff:
+      constraints:
+        - "Owned files: verdict/role_selection.py, verdict/role_ladder_event.py, verdict/commands/parsers_ladder.py, the dispatch entry in verdict/commands/dispatch.py, tests/test_role_selection_slice1.py, tests/fixtures/role_ladder/*."
+        - "Pinned model: gem-implementer on kilocode/nvidia/nemotron-3-ultra-550b-a55b:free; escalate Opus then gem-implementer-fable; never Mistral/Codestral."
+        - "No live HTTP in tests; clock and fetchers injected."
+      high_risk_signals: [architecture, contract_change]
+      critic_signals: [architecture]
+
+  - id: T4
+    title: Independent review of slice 1
+    description: A different-family reviewer reads the T3 diff against pipeline_contract and ADR 0001.
+    wave: 3
+    depends_on: [T3]
+    agent: gem-reviewer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - "The report lists each ADR 0001 invariant, its enforcing test, and pass/fail on the T3 branch."
+      - "Explicit findings on admission bypass, hash correctness, pool alias handling, and determinism; blocking findings resolved before T5 starts."
+      - "Reviewer served family differs from T3's served author family (call logs)."
+    handoff:
+      critic_signals: [architecture]
+
+  - id: T5
+    title: All roles, reliability observations and reviewer independence in the ladder
+    description: |
+      Rung: reuse strength_profiles and review.py exclusion semantics. Enable implementer, reviewer,
+      escalation and controller roles in role_selection.py. Add verdict/reliability_observations.py
+      (ReliabilityObservation v1, gateway call-log and Verdict-attempt adapters, dedup,
+      served-identity validation, mapping onto strength_profiles.StrengthObservation). Add
+      verdict/decision_signals/role_strength.py (role-specific external index x Wilson reliability,
+      confidence, freshness TTL 24h, measured_non_completion demotion, bounded cold-start
+      exploration). Reviewer: exclude implementer routes and pools; hard independence for protected or
+      high-risk work, fail closed otherwise; reasoned same-family fallback for low risk. Controller:
+      ladder plus fence output (served controller identity) consumed by the other roles. Extend the CLI
+      to all roles (--risk, --implementer-route, --controller-route). Read-only; no dispatch.
+    wave: 4
+    depends_on: [T4]
+    agent: gem-implementer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - "Tests first, tests/test_reliability_observations.py: a gateway log and a Verdict attempt for the same request merge to one observation; 429/auth/transport/timeout/402 never enter the denominator; served != requested credits the served identity and records identity_mismatch on the requested one; unknown served identity is excluded; n < 5 gives unknown reliability, not zero."
+      - "Tests first, tests/test_role_strength.py: 216/217 outranks 2/139 even with a lower external coding score; >= 20 attempts with Wilson upper bound < 0.5 is skipped for that role only, with measured_non_completion; stale scores leave the order unchanged; unscored routes rank after scored ones in the same capacity tier; cold-start exploration is capped (1/10 nodes, 3/run/route), never on planner/reviewer/controller/escalation/high-risk, and never ahead of a known-good (lb >= 0.8) route."
+      - "Tests first, tests/test_role_selection_roles.py: (1) protected/high-risk review with no distinct family+pool -> FAIL_CLOSED reviewer_independence_unavailable; (2) low-risk with only the same family -> a distinct-pool reviewer with reason reviewer_same_family_fallback; (3) a reviewer never shares a pool or route with the implementer; the controller's served route is absent from implementer, reviewer and escalation ladders; the slice-1 absent-route test is extended to every role."
+      - "tests/test_orch_runtime.py::test_reviewer_excludes_implementer_routes, tests/test_orch_review.py::test_skipped_or_empty_review_fails_closed_without_provider_reselection, tests/test_strength_profiles.py pass unchanged."
+      - "mypy --strict, ruff, reachability ratchet clean."
+    handoff:
+      constraints:
+        - "Owned files: verdict/role_selection.py, verdict/reliability_observations.py, verdict/decision_signals/role_strength.py, verdict/commands/parsers_ladder.py, tests/test_reliability_observations.py, tests/test_role_strength.py, tests/test_role_selection_roles.py."
+        - "No vendor or model literals in ranking logic. Pinned free implementer; escalation ladder as in T3."
+      high_risk_signals: [architecture, data_flow_change]
+      critic_signals: [architecture]
+
+  - id: T6
+    title: Evidence-based capacity confidence and connection-scoped billing
+    description: |
+      Rung: extend verdict/capacity.py and the existing billing_402_metered path. Implement
+      capacity_precedence: a capacity_confidence field, the P2 connection-scoped 402 rule with 24h
+      expiry, P8 blocked-connection availability, and evidence strings on every result. classify()
+      class output for P1-P7 is unchanged for legacy callers. The ladder role policy in
+      role_selection.py reads class plus confidence through a new CapacityPolicy table supplied by
+      verdict/capacity_policy.py (role -> allowed (class, confidence) pairs). Single enforcement
+      point: capacity_policy.role_capacity_allowed(role, capacity_result, *, risk, passport_fresh) -> (bool, reason).
+      It is the only function that decides capacity membership for a role ladder; role_selection.py S2
+      calls it and nothing else. For roles planner, reviewer, controller and escalation it returns
+      (False, 'assumed_free_is_unknown_for_role') for any result whose evidence is
+      assumed_free_no_paid_evidence. The check is unconditional: it reads no env, config or consent
+      input, and VERDICT_ALLOW_UNKNOWN_CAPACITY (orchestration/eligibility.py ENV_ALLOW_UNKNOWN) does
+      not reach it. Keyless zero-price
+      nodes (ovhfree/kilofree) appear in `verdict eligibility` with evidence (cause from T1).
+    wave: 5
+    depends_on: [T5]
+    agent: gem-implementer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - "Tests first, tests/test_capacity_evidence.py, one test per conflict row: billing vs oauth -> METERED; billing never downgraded by zero pricing or oauth; positive pricing never FREE; a connection with a 402 makes all its routes METERED until 24h after the last 402, refreshed by a new 402; expired billing plus no pricing -> assumed; assumed FREE is excluded from planner/reviewer/controller/escalation ladders and allowed for low-risk implementer only with a fresh passport; blocked connection never healthy; keyless zero-price node present in eligibility output with evidence."
+      - "Invariant test tests/test_capacity_evidence.py::test_assumed_free_never_populates_critical_role_ladders: for each of planner, reviewer, controller and escalation, an inventory whose only admitted route has evidence assumed_free_no_paid_evidence gives build_ladder() FAIL_CLOSED. It is parametrised over VERDICT_ALLOW_UNKNOWN_CAPACITY unset/0/1, every VERDICT_DYNAMIC_SELECTION mode, operator consent present, a fresh passport, and risk low/high. A second assertion checks that role_selection.py has no capacity decision outside role_capacity_allowed (AST check: no CapacityClass comparison in role_selection.py)."
+      - "A test asserts capacity.py and capacity_policy.py contain no new vendor or route literals beyond the existing openrouter/anthropic special cases."
+      - "tests/test_admission_subscription.py and existing tests/test_capacity*.py pass unchanged (D7 class output preserved)."
+      - "mypy --strict, ruff, reachability ratchet clean."
+    handoff:
+      constraints:
+        - "Owned files: verdict/capacity.py, verdict/capacity_policy.py, the minimal policy hook in verdict/role_selection.py, verdict/orchestration/eligibility.py (only the eligibility-listing cause from T1), tests/test_capacity_evidence.py."
+        - "Do not change admission order or unknown-never-healthy."
+      high_risk_signals: [contract_change, data_flow_change]
+
+  - id: T7
+    title: Quota sharing across orchestrator, escalation and workers
+    description: |
+      Rung: reuse the health_cache locking pattern, bod-314 availability_evidence and bod-334 pool
+      cooldown. Implement quota_contract in a new verdict/quota_share.py as a QuotaView
+      (FileQuotaView). Wire it into the CLI and ladder construction by passing it as the quota_view
+      argument (protocol frozen in T3; role_selection.py is not edited). Event ingestion from call
+      logs and attempt results through reliability_observations' adapter (read-only import).
+    wave: 6
+    depends_on: [T6]
+    agent: gem-implementer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - "Tests first, tests/test_quota_share.py: state transitions open->pressure->cooldown->pressure->open, with the 10-minute minimum hold; until never moves backward; Retry-After larger than the local cooldown wins and smaller does not shorten it; repeated identical events (same dedup_key) do not extend state; under pressure implementer and reviewer drop the pool, escalation then controller keep it longer; escalation during cooldown takes the next pool, not a wait; all pools exhausted -> FAIL_CLOSED quota_exhausted_all_pools; a 429 never changes strength."
+      - "Config tests, tests/test_quota_share.py::TestQuotaConfig: with defaults the transitions match the contract; with non-default values (pressure_429_count=3, pressure_window_s=300, min_hold_s=120, cooldown_base_s=10, cooldown_multiplier=3, cooldown_max_s=90) set through env and, separately, through a temp verdict.yaml, the same event sequence changes state at the new thresholds (2 x 429 stays open; the third enters pressure; cooldowns are 10, 30, 90, 90 s; open again after 120 s) with no code edit; env overrides yaml; each bound violation (0, negative, above max, cooldown_max_s < cooldown_base_s, non-integer, unknown retry_after_policy) fails closed with quota_config_invalid."
+      - "Concurrency test: 8 processes appending events to one store produce the same final state as serial application (fcntl LOCK_EX, os.replace), with no lost update."
+      - "tests/test_orch_runtime.py::test_pool_exhaustion_fails_closed_explicitly and tests/test_orch_recovery.py TestRecoveryBudget pass."
+      - "Controller quota test: with the claude pool in pressure, the controller ladder still lists it first while the implementer ladder excludes it."
+      - "mypy --strict, ruff, reachability ratchet clean."
+    handoff:
+      constraints:
+        - "Owned files: verdict/quota_share.py (config loader included), the quota_view wiring in verdict/commands/parsers_ladder.py, tests/test_quota_share.py. No edits to role_selection.py."
+        - "State under VERDICT_HOME; tests use a temp VERDICT_HOME."
+      high_risk_signals: [shared_state]
+
+  - id: T8
+    title: Dispatch behind the flag - planner and autodev
+    description: |
+      Rung: reuse _live_planner_models as the off branch. Add the VERDICT_DYNAMIC_SELECTION reader in
+      verdict/selection_mode.py (off|shadow|on, default off; invalid value fails closed at startup).
+      Planner in decomposer.py and cli.py autodev, plus orchestrate planning in orchestration/run.py:
+        off = legacy (DEFAULT_ORCHESTRATOR_MODEL, _live_planner_models) minus D22;
+        shadow = legacy dispatch plus a role_ladder.shadow event in events.jsonl with correlation_id;
+        on = planner ladder H3, FAIL_CLOSED on empty or missing.
+      Remove the cc/* refusal (decomposer.py:161-165) and _PLANNER_EXCLUDED_POOLS in all modes; the
+      capacity policy excludes pay-per-token.
+    wave: 7
+    depends_on: [T7]
+    agent: gem-implementer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - "Tests first, tests/test_selection_mode_planner.py: off picks exactly what origin/main picks for the same inputs except an admitted cc/* planner is no longer refused; shadow dispatches the same model and attempts as off, writes one role_ladder.shadow v1 event with both candidate sets, hashes, legacy and dynamic picks, and does not change the receipt verification result (tests/test_orch_receipt.py passes); on uses H3[0] and fails closed with a reason when the ladder is empty; an invalid flag value fails at startup."
+      - "Shadow side-effect test: health_cache and the quota store are byte-identical before and after a shadow computation."
+      - "A metered planner is refused in every mode."
+      - "/v1/route, relay and `verdict route` tests unchanged and passing."
+      - "Negative integration test tests/test_selection_mode_out_of_scope.py (planner side): for each VERDICT_DYNAMIC_SELECTION mode (off, shadow, on), POST /v1/route (with execution_path_request), POST /v1/chat/completions and POST /v1/responses through the FastAPI test client, and `verdict route` via the CLI entry, emit no role_ladder event (events sink empty), make no call to role_selection.build_ladder or quota_share (spied; zero calls), and select exactly the route origin/main selects for the same inputs."
+      - "mypy --strict, ruff, reachability ratchet, doc links clean."
+    handoff:
+      constraints:
+        - "Owned files: verdict/selection_mode.py, verdict/decomposer.py, verdict/cli.py (autodev block only; sole cli.py owner in wave 7), verdict/autodev_run.py, verdict/orchestration/run.py (planner call site only), tests/test_selection_mode_planner.py, tests/test_selection_mode_out_of_scope.py."
+      high_risk_signals: [contract_change, cross_domain_impact]
+
+  - id: T9
+    title: Dispatch behind the flag - implementer, controller and reviewer
+    description: |
+      Rung: reuse subagent_selection, worker_runtime, review.py. Implementer: workers.py
+      _AUTO_MODEL_ALIASES/'auto/best-free' resolution and subagent_selection candidate order use the
+      implementer ladder in shadow/on; the :367 name tokens become an RT fallback used only when no
+      score exists. Controller: CONTROLLER_MODEL(S) replaced in shadow/on by the controller role's
+      served identity (VERDICT_CONTROLLER_MODEL, if set, is the declaration; otherwise the controller
+      ladder top). The fence semantics are unchanged. Reviewer: review.py _select_bounded consumes the
+      reviewer ladder with the hard/soft independence rules in shadow/on. Setup/bootstrap
+      DEFAULT_PRIMARY_MODEL suggestions use the controller ladder when the gateway is reachable,
+      otherwise stay a placeholder labelled unverified. selection_report.py
+      IMPLEMENTER_FOR_REVIEW labelled fixture.
+    wave: 7
+    depends_on: [T7]
+    agent: gem-implementer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - "Tests first, tests/test_selection_mode_roles.py, per role (implementer, controller, reviewer) x mode (off, shadow, on): off is identical to origin/main; shadow gives identical dispatch plus one v1 event; on follows H3 and fails closed when it is empty; in on mode no auto/* id is ever dispatched; the controller's served route is fenced from workers in every mode; a protected review with no independent route fails closed in on mode."
+      - "tests/test_orch_runtime.py::test_reviewer_excludes_implementer_routes, tests/test_orch_review.py, tests/test_subagent_models.py, tests/test_live_smoke_opt_in.py pass."
+      - "New tests/test_selection_mode_out_of_scope_helpers.py (same harness as T8's out-of-scope test, separate file so wave 7 has no shared ownership) after the shared helpers change (actions/helpers.py, provider_bootstrap.py, provider_detection.py, subagent_models.py DEFAULT_PRIMARY_MODEL consumers): under every mode, /v1/route, /v1/chat/completions, /v1/responses and `verdict route` resolve primary_model exactly as on origin/main, emit no role_ladder event, perform no ladder lookup (build_ladder and the controller-suggestion helper spied: zero calls) and no dynamic dispatch. The suggestion helper runs only in setup/bootstrap paths."
+      - "mypy --strict, ruff, reachability ratchet clean."
+    handoff:
+      constraints:
+        - "Owned files: .prime/agent/skills/verdict-dispatch/scripts/runtime_bridge.py, verdict/workers.py, verdict/subagent_selection.py, verdict/worker_runtime.py, verdict/orchestration/review.py, verdict/provider_bootstrap.py, verdict/provider_detection.py, verdict/subagent_models.py, verdict/actions/helpers.py. The cli.py setup prompts (DEFAULT_PRIMARY_MODEL at cli.py:469,:476,:642) stay unchanged until T12, which switches them to the provider_bootstrap suggestion helper added here, scripts/selection_report.py, tests/test_selection_mode_roles.py, tests/test_selection_mode_out_of_scope_helpers.py. Do not edit api.py or gate.py."
+      high_risk_signals: [contract_change, cross_domain_impact]
+      critic_signals: [cross_domain_impact]
+
+  - id: T10
+    title: Independent review of the integration branch
+    description: A different-family reviewer reads the full T5-T9 integration diff against ADR-042 and ADR 0001.
+    wave: 8
+    depends_on: [T8, T9]
+    agent: gem-reviewer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - "The report covers every ADR 0001 invariant with its test and a pass/fail result on the integration branch head SHA."
+      - "Findings on admission bypass across capacity, quota, strength, shadow and CLI; vendor literals in ranking/capacity code; quota concurrency; reviewer independence; off-mode parity; flag defaults. Every blocking finding resolved or ticketed."
+      - "Full suite, vgate (run by hand) and scripts/verify_proof_matrix.py green on the integration branch; reviewer family differs from the served author families."
+    handoff:
+      critic_signals: [architecture, cross_domain_impact]
+
+  - id: T11
+    title: Swarm wiring, doctor, timer and post-merge live checks
+    description: |
+      After squash-merge to main and `verdict setup`: add a `verdict doctor` ladder check (strength
+      source age, call-log reachability, per-role ladder non-empty or explained FAIL_CLOSED, flag
+      mode) and reuse the identify six-hourly timer for the strength refresh. With operator approval
+      and backups: replace freescan-ladder SUBSCRIPTION_TAIL/EXCLUDE with `verdict ladder --role
+      implementer --json`, plus an override file read for EXCLUDE; regenerate the worker/free-first,
+      escalation/fable-first and a new planner/reviewer combo from role ladders; point the gem-planner,
+      gem-reviewer and gem-debugger pins away from opaque auto/pro-coding; update model-ladder.md.
+      Post-merge live checks, which validate provenance and policy, not a model name:
+        L1 on the real gateway, `verdict ladder --role R --json` for each role: every route is in H1,
+           no two share a pool, no pay-per-token, score parts carry live sources with age under TTL,
+           and the top route's rank follows from the recorded scores. Record which model came first
+           (expected cc/claude-fable-5-2 for planner; any result consistent with the evidence passes).
+        L2 stale source (strength cache older than TTL, simulated by cache age): order equals legacy,
+           confidence below the threshold, and doctor reports it stale.
+        L3 unavailable provider (one pool in cooldown, or a blocked connection): it is absent from the
+           worker/reviewer ladders, the controller still lists it per reserve, and FAIL_CLOSED appears
+           when every pool is gone (simulated store).
+        L4 changed identity (served != requested in the call logs): identity_mismatch recorded and
+           credit goes to the served model.
+        L5 shadow-mode orchestrate low-risk slice: one v1 event per node, receipt verifies, dispatch
+           identical to off. Then an on-mode slice: free implementer, reviewer from a different family
+           and pool. Repeat after the freshness window with no manual action.
+      Rollback: set VERDICT_DYNAMIC_SELECTION=off (doctor shows mode=off, legacy parity) and restore
+      the swarm file backups; documented in ADR-042 and checked once.
+    wave: 9
+    depends_on: [T10]
+    agent: gem-devops
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - "verdict doctor green with the ladder check; the timer is installed by verdict setup."
+      - "~/bin/freescan-ladder contains no model-name list; EXCLUDE is read from the override file with a log line; no gem agent pins an opaque auto/* router."
+      - "docs/proof/dod/dynamic-role-selection.json holds the raw L1-L5 output (date, SHA, command), the rollback check, and a parent re-run of L1, and passes scripts/check_dod.py."
+      - "OpenSpec post-merge tasks ticked; change archived only after check_dod passes."
+    handoff:
+      constraints:
+        - "Operator approval before editing ~/bin or ~/.config/opencode; back up the originals."
+        - "Live calls only with VERDICT_LIVE_SMOKE=1 and a consented budget; never pay-per-token."
+        - "Free-tier devops agent."
+      high_risk_signals: [cross_domain_impact]
+
+  - id: T12
+    title: Clean up legacy constants that off mode no longer reads (off stays)
+    description: |
+      After L1-L5 have passed on main for 14 consecutive days with no rollback: a new OpenSpec change
+      dynamic-role-selection-legacy-cleanup. VERDICT_DYNAMIC_SELECTION=off is kept permanently as the
+      emergency fail-safe and the T11 rollback, and its legacy selection path keeps working. The change
+      removes only constants and branches that no path still reads, including off: for example the
+      unused DEFAULT_ORCHESTRATOR_MODEL export and duplicate controller literals. It switches the
+      cli.py setup prompts to the T9 suggestion helper. Any constant that off needs stays. This task
+      may be cut if nothing qualifies.
+    wave: 10
+    depends_on: [T11]
+    agent: gem-implementer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - "Every off-mode test from T8/T9 (tests/test_selection_mode_planner.py, tests/test_selection_mode_roles.py) passes unchanged: off still gives origin/main parity."
+      - "Each removed constant has a recorded grep showing no remaining reader in any mode; the full suite and vgate are green."
+      - "DoD evidence for the cleanup story passes scripts/check_dod.py; if the task is cut, the plan records the reason."
+    handoff:
+      constraints:
+        - "Owned files: the files listed in T8/T9 that hold legacy constants, and verdict/cli.py setup prompts. verdict/selection_mode.py must keep accepting off."
+        - "Never remove flag value off or its legacy selection path."
+
+open_questions:
+  - q: "Change capacity.classify() so absence of evidence yields UNKNOWN instead of FREE (D7)?"
+    recommended: "No. Keep D7 output and add capacity_confidence. The ladder treats assumed FREE as UNKNOWN for critical roles and as free only for low-risk implementer work with a fresh passport. This needs your confirmation because it narrows D7 for critical roles."
+  - q: "Role weights for external strength?"
+    recommended: "Planner, escalation, reviewer and controller: AA intelligence index. Implementer: mean of the AA and fcm coding indices. Multiplied by the reliability lower bound."
+  - q: "Demotion and cold-start bounds?"
+    recommended: "Demote at >= 20 role attempts with Wilson upper bound < 0.5. Explore at most 1 in 10 low-risk implementer nodes and 3 per route per run."
+  - q: "Quota thresholds on the Claude subscription?"
+    recommended: "Pressure at >= 2 x 429 in 15 min; 10-minute minimum hold; local cooldown 60 s doubling to a 30 min cap; Retry-After wins when larger."
+  - q: "Kilo Code with HTTP 402s?"
+    recommended: "Pay-per-token (METERED) for the whole connection until 24h after the last 402. Confirm with T1's plan fields."
+  - q: "Low-risk reviewer fallback to the same family on a distinct pool?"
+    recommended: "Allow it with receipt reason reviewer_same_family_fallback. Forbid it for protected or high-risk work."
+  - q: "Keep the Mistral/Codestral exclusion?"
+    recommended: "Move it to the operator override file now. Remove it once measured demotion covers those models for the implementer role."
+  - q: "When may T12 remove legacy constants?"
+    recommended: "After 14 consecutive days of passing L1-L5 on main with no rollback, and only constants no mode reads. Flag value off is permanent (emergency fail-safe)."

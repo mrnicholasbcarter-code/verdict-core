@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "story": "m1-stop-false-done",
+  "kind": "repo-tooling",
+  "author": "gem-devops on omniroute/worker/free-first",
+  "merged_sha": "ea4c7afd2e3e8e752b5a4da9333dc96c1309641b",
+  "pr": 817,
+  "on_main": {
+    "at": "2026-11-17T18:19:00Z",
+    "sha": "ea4c7afd2e3e8e752b5a4da9333dc96c1309641b",
+    "environment": "github-actions",
+    "command": "gh pr checks 817 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/38419720497",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/m1-stop-false-done-pr817-checks.txt",
+      "sha256": "7df4f0511995328ce045b13c97fba9bbede32cae7a1e731c77b0ac5f330568af"
+    }
+  },
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "ci.yml lint job, step 'Definition of done (docs/proof/dod evidence; AGENTS.md)', runs python scripts/check_dod.py --all on every push to main and every PR",
+  "setup_doctor": {
+    "status": "not_applicable",
+    "reason": "repo-tooling story; no installed services or doctor gate; acceptance runs on GitHub"
+  },
+  "acceptance": [
+    {
+      "criterion": "The lint job on main runs the definition-of-done gate that this change added (scripts/check_dod.py --all) and it passes.",
+      "expect": "evidence file(s) checked",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-17T05:45:10Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "github-actions",
+        "command": "python scripts/check_dod.py --all",
+        "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44026281103",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/m1-stop-false-done/first_run.txt",
+          "sha256": "b52ecd3001916ce34c3f615a03caab2ef4a93a87ec58b0c090286584480446fb"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T12:00:24Z",
+        "sha": "32d1ad3eb1a1988557e6bfdca441db4f7f0306ba",
+        "environment": "github-actions",
+        "command": "python scripts/check_dod.py --all",
+        "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44079088801",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/m1-stop-false-done/fresh_run.txt",
+          "sha256": "6a24893c2c9532cb6eba7da577a484f981ea257657f7a65ac2cca54e34320e95"
+        }
+      }
+    }
+  ],
+  "openspec": {
+    "change": "m1-stop-false-done"
+  },
+  "parent_confirmation": {
+    "by": "gem-implementer confirmer on omniroute/worker/free-verified",
+    "at": "2026-11-17T22:05:33Z",
+    "command": "python scripts/check_dod.py --all",
+    "raw_output": {
+      "path": "docs/proof/dod/m1-stop-false-done/confirm-44186541940.txt",
+      "sha256": "c95d4f0119738137743f379d8926009da610938f8db49e7b153d71969981b664"
+    }
+  }
+}

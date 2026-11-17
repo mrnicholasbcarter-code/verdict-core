@@ -1,0 +1,24 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 9,
+        "mergeable": "UNKNOWN",
+        "mergeStateStatus": "UNKNOWN",
+        "headRefOid": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "headRefName": "docs/readme",
+        "body": "",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+                "statusCheckRollup": null
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

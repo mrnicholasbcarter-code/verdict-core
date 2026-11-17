@@ -186,6 +186,7 @@ def test_reason_starts_with_handler_name() -> None:
     Format: '<handler_name>: <what it does>; <why bucket>'.
     """
     from verdict import cli as legacy
+    from verdict.commands.dispatch import _cmd_pr_watch
     from verdict.orchestration import cli as orch_cli
     from verdict.orchestration import supervisor
 
@@ -208,6 +209,7 @@ def test_reason_starts_with_handler_name() -> None:
         "benchmark": legacy.cmd_benchmark,
         "autodev-golden-path": legacy.cmd_autodev_golden_path,
         "autodev.packet.execute": legacy.cmd_autodev_packet_execute,
+        "pr-watch": _cmd_pr_watch,
     }
 
     failures: list[str] = []

@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "story": "mgmt-token-resolver-runtime-adoption",
+  "kind": "product",
+  "author": "Nick Carter",
+  "merged_sha": "2ab6ed752835421e79817c92a3fa1ce0babbfbf0",
+  "pr": 962,
+  "on_main": {
+    "at": "2026-11-17T19:10:00Z",
+    "sha": "2ab6ed752835421e79817c92a3fa1ce0babbfbf0",
+    "environment": "operator-host",
+    "command": "gh pr checks 962 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/mgmt-token-resolver-runtime-adoption/on_main.txt",
+      "sha256": "ad56804ac3f039756b84bb324c926b1b751354ed08e1d63415ea73c6f3f328c8"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "Credential listing names the store as the source of a token load_into_env copied from the credential store (get_credential_source uses the injection record)",
+      "expect": "OMNIROUTE_MANAGEMENT_TOKEN  STORE",
+      "first_run": {
+        "at": "2026-11-17T21:52:23Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd ~/.local/share/verdict/installed-main && env -u OMNIROUTE_MANAGEMENT_TOKEN .venv/bin/verdict credentials list",
+        "real_state_marker": "set (len=35)",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/mgmt-token-resolver-runtime-adoption/credentials-list-first-2026-11-17T21_52_23Z.txt",
+          "sha256": "5c4a5f7076ae3b9dcb84e1c84191ea0a7301001862b96889c4423dfff7a50734"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T22:07:46Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd ~/.local/share/verdict/installed-main && env -u OMNIROUTE_MANAGEMENT_TOKEN .venv/bin/verdict credentials list",
+        "real_state_marker": "set (len=35)",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/mgmt-token-resolver-runtime-adoption/credentials-list-fresh-run-2026-11-17T22_07_46Z.txt",
+          "sha256": "5c4a5f7076ae3b9dcb84e1c84191ea0a7301001862b96889c4423dfff7a50734"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "verdict-acceptance.timer",
+  "setup_doctor": {
+    "status": "green",
+    "command": "verdict doctor --json",
+    "at": "2026-11-17T19:08:38Z",
+    "raw_output": {
+      "path": "docs/proof/dod/mgmt-token-resolver-runtime-adoption/doctor-first-2026-11-17T19_08_38Z.json",
+      "sha256": "8de1b8b8648303422ef3515d8c80375983ead460fc923b6f47d39a754c6935e4"
+    }
+  },
+  "openspec": {
+    "change": "mgmt-token-resolver-runtime-adoption"
+  },
+  "parent_confirmation": {
+    "by": "gem-implementer confirmer on omniroute/worker/free-verified",
+    "at": "2026-11-17T22:22:25Z",
+    "command": "cd ~/.local/share/verdict/installed-main && env -u OMNIROUTE_MANAGEMENT_TOKEN .venv/bin/verdict credentials list",
+    "raw_output": {
+      "path": "docs/proof/dod/mgmt-token-resolver-runtime-adoption/credentials-list-confirm-2026-11-17T22_22_25Z.txt",
+      "sha256": "5c4a5f7076ae3b9dcb84e1c84191ea0a7301001862b96889c4423dfff7a50734"
+    }
+  }
+}
