@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+from verdict.commands.parsers_pr_watcher import _default_state_dir, _repos_from_env
 from verdict.harness_claude import DEFAULT_BASE_URL as CLAUDE_HARNESS_DEFAULT_BASE_URL
 from verdict.harness_claude import DEFAULT_TOKEN_ENV as CLAUDE_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.harness_cline import DEFAULT_BASE_URL as CLINE_HARNESS_DEFAULT_BASE_URL
@@ -122,6 +123,71 @@ def _cmd_trace(args: argparse.Namespace) -> None:
         print(json.dumps(result.data, indent=2, default=str))
     if not result.ok:
         sys.exit(result.exit_code or 1)
+
+
+def _cmd_pr_watch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Handle ``verdict pr-watch`` CLI command."""
+    import json
+    import sys
+
+    from verdict.pr_watcher import run_watcher
+    from verdict.pr_watcher_github import create_github_client
+    from verdict.pr_watcher_state import WatcherState
+
+    # Collect repos from args and env
+    repos = list(args.repo)
+    if not repos:
+        repos = _repos_from_env()
+
+    if not repos:
+        parser.error("no repositories to watch: use --repo or set VERDICT_PR_WATCH_REPOS")
+
+    # Determine state directory
+    state_dir = args.state_dir or _default_state_dir()
+    if not state_dir:
+        parser.error("not in a git repository and --state-dir not provided")
+
+    # Create GitHub client
+    linear_team_keys = (
+        list(args.linear_team_keys) if getattr(args, "linear_team_keys", None) else []
+    )
+    gh = create_github_client(linear_team_keys=linear_team_keys)
+
+    # Create state
+    state = WatcherState(Path(state_dir))
+
+    # Run the watcher
+    try:
+        result = run_watcher(
+            gh=gh, state=state, repos=repos, linear=None, max_attempts=args.max_attempts
+        )
+    except ValueError as exc:
+        # Naive clock or other validation error
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:
+        # Any other exception - report and exit 1, never traceback
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Output
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        for repo in repos:
+            repo_errors = [e for e in result.get("repo_errors", []) if e.get("repo") == repo]
+            if repo_errors:
+                for err in repo_errors:
+                    print(f"{repo}: ERROR {err.get('error', 'unknown')}")
+            else:
+                print(
+                    f"{repo}: PRs seen={len(result.get('observations', []))}, "
+                    f"actions={len(result.get('reruns', [])) + len(result.get('notifications', []))}, "
+                    f"errors={len(repo_errors)}"
+                )
+
+    # Exit 0 only when ok is True
+    sys.exit(0 if result.get("ok") else 1)
 
 
 def _cmd_demo(args: argparse.Namespace) -> None:
@@ -799,6 +865,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             repo=Path(args.repo),
             create_if_missing=bool(getattr(args, "create", False)),
         )
+    elif args.command == "pr-watch":
+        _cmd_pr_watch(parser, args)
     elif args.command == "openspec":
         # OpenSpec lifecycle commands use func-based dispatch
         if hasattr(args, "func"):
