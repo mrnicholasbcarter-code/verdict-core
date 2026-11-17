@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "story": "m1-stop-false-done",
+  "kind": "repo-tooling",
+  "author": "gem-devops on omniroute/worker/free-first",
+  "merged_sha": "ea4c7afd2e3e8e752b5a4da9333dc96c1309641b",
+  "pr": 817,
+  "on_main": {
+    "at": "2026-11-17T18:19:00Z",
+    "sha": "ea4c7afd2e3e8e752b5a4da9333dc96c1309641b",
+    "environment": "github-actions",
+    "command": "gh pr checks 817 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/38419720497",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/m1-stop-false-done-pr817-checks.txt",
+      "sha256": "7df4f0511995328ce045b13c97fba9bbede32cae7a1e731c77b0ac5f330568af"
+    }
+  },
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "lint (Definition of done step runs python scripts/check_dod.py --all on every PR and push)",
+  "setup_doctor": {
+    "status": "not_applicable",
+    "reason": "repo-tooling story; no installed services or doctor gate; acceptance runs on GitHub"
+  },
+  "acceptance": [
+    {
+      "criterion": "The definition-of-done gate passes on merged main with all required CI checks green (repo-tooling DoD part 1).",
+      "expect": "check_dod: 10 evidence file(s) checked",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-17T18:19:48Z",
+        "sha": "8e640a9d1df0dd23f57bcd36974df6dbf6447edb",
+        "environment": "operator-host",
+        "command": "uv run python scripts/check_dod.py --all",
+        "real_state_marker": "check_dod: 10 evidence file(s) checked",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/m1-stop-false-done/first_run.txt",
+          "sha256": "b69844cc76d1ba03baac697f3cff993a9f31c15ef82a1f469dfbcd67eeae88b8"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T18:39:18Z",
+        "sha": "8e640a9d1df0dd23f57bcd36974df6dbf6447edb",
+        "environment": "operator-host",
+        "command": "uv run python scripts/check_dod.py --all",
+        "real_state_marker": "check_dod: 10 evidence file(s) checked",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/m1-stop-false-done/fresh_run.txt",
+          "sha256": "b69844cc76d1ba03baac697f3cff993a9f31c15ef82a1f469dfbcd67eeae88b8"
+        }
+      }
+    }
+  ],
+  "openspec": {
+    "change": "m1-stop-false-done"
+  },
+  "parent_confirmation": {
+    "by": "gem-orchestrator on omniroute/cc/claude-opus-5-5",
+    "at": "2026-11-17T18:40:54Z",
+    "command": "uv run python scripts/check_dod.py --all",
+    "raw_output": {
+      "path": "docs/proof/dod/m1-stop-false-done/parent.txt",
+      "sha256": "b69844cc76d1ba03baac697f3cff993a9f31c15ef82a1f469dfbcd67eeae88b8"
+    }
+  }
+}

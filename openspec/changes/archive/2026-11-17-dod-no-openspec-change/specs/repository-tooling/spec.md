@@ -5,7 +5,7 @@ CI gates for this repository that keep OpenSpec task state and the executable
 definition of done honest, so a change cannot merge, be called done or be
 archived on unfinished work.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: A story with no OpenSpec change can still be proven done
 The definition-of-done check MUST accept an evidence file that names no
