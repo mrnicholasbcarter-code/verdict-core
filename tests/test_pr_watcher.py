@@ -1027,6 +1027,55 @@ class TestBoundedRecoveryAdapter:
         """Catches any row of the normative adapter table mapping to the wrong result."""
         assert _adapter_action(classification, attempts, 1) == expected
 
+    def test_adapter_follows_ci_recovery_action(self) -> None:
+        """The watcher adapter's output matches the shared CI recovery policy.
+
+        For classifications where the shared policy uses the SAME attempt budget
+        semantics (GREEN, PENDING, INFRA_FAILURE, CANCELLED, CONFLICT), the
+        watcher's _adapter_action must map the recovery action to the watcher
+        action space:
+        PROCEED_MERGE -> READY, WAIT_CI -> NO_ACTION, RETRY_CI -> RETRY/BLOCKED,
+        REBASE_AND_REPROOF -> REPAIR, BLOCKED -> BLOCKED.
+
+        CODE_FAILURE is excluded: ci_recovery_action treats its 'attempts' as
+        corrective-implementation attempts, while the watcher treats them as
+        rerun attempts. The watcher's adapter table says CODE_FAILURE is always
+        REPAIR, never BLOCKED, regardless of attempt count.
+        """
+        from verdict.ci_policy import ci_recovery_action
+
+        # Classifications covered by ci_recovery_action with MATCHING budget semantics
+        covered = {"GREEN", "PENDING", "INFRA_FAILURE", "CANCELLED", "CONFLICT"}
+        for classification in covered:
+            for attempts in (0, 1, 5):
+                max_attempts = 1 if attempts == 0 else 3
+                recovery = ci_recovery_action(classification, attempts, max_attempts)
+                action = recovery["action"]
+                # Map ci_recovery_action's action to watcher's action space
+                if action == "PROCEED_MERGE":
+                    expected = "READY"
+                elif action == "WAIT_CI":
+                    expected = "NO_ACTION"
+                elif action == "RETRY_CI":
+                    expected = "RETRY" if attempts < max_attempts else "BLOCKED"
+                elif action == "REBASE_AND_REPROOF":
+                    expected = "REPAIR"
+                elif action == "BLOCKED":
+                    expected = "BLOCKED"
+                else:
+                    raise AssertionError(f"Unknown recovery action: {action}")
+                actual = _adapter_action(classification, attempts, max_attempts)
+                assert actual == expected, (
+                    f"classification={classification} attempts={attempts} max_attempts={max_attempts}: "
+                    f"ci_recovery_action gives {action} -> expected {expected}, "
+                    f"but _adapter_action returned {actual}"
+                )
+
+        # CODE_FAILURE is explicitly NOT delegated to ci_recovery_action because
+        # its attempt budget differs. The watcher's adapter table says it is
+        # always REPAIR, even with a spent rerun budget.
+        assert _adapter_action("CODE_FAILURE", 5, 1) == "REPAIR"
+
     def test_spent_budget_reports_blocked_and_requests_nothing(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:

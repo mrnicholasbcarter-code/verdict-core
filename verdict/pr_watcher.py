@@ -14,6 +14,7 @@ from typing import Any
 from verdict.ci_policy import (
     INFRA_CONCLUSIONS,
     REPAIR_CONCLUSIONS,
+    ci_recovery_action,
     classify_ci,
     classify_merge_state,
 )
@@ -62,11 +63,46 @@ _RERUNNABLE_CONCLUSIONS = frozenset({"FAILURE", "CANCELLED"}) | INFRA_CONCLUSION
 _FAILING_CONCLUSIONS = frozenset({"FAILURE"}) | REPAIR_CONCLUSIONS
 
 
+# Classifications that the shared CI recovery policy handles with the SAME
+# attempt budget semantics as the watcher (rerun budget, not repair budget).
+# CODE_FAILURE is excluded because ci_recovery_action treats its 'attempts'
+# as corrective-implementation attempts, while the watcher treats them as
+# rerun attempts. The watcher's adapter table says CODE_FAILURE is always
+# REPAIR, never BLOCKED, regardless of attempt count.
+_CI_RECOVERY_CLASSIFICATIONS = frozenset(
+    {"GREEN", "PENDING", "INFRA_FAILURE", "CANCELLED", "CONFLICT"}
+)
+
+
 def _adapter_action(classification: str, attempt: int, max_attempts: int) -> str:
     """Determine watcher action from CI classification.
 
-    This implements the adapter table from the PR watcher spec verbatim.
+    For classifications covered by the shared CI recovery policy with matching
+    budget semantics (GREEN, PENDING, INFRA_FAILURE, CANCELLED, CONFLICT),
+    delegate to ci_recovery_action and map its output to the watcher action space.
+    For watcher-specific classifications (STALLED, EMPTY, MISSING_REQUIRED,
+    BEHIND, RETRY_CI, PROCEED_MERGE, WAIT_CI, REBASE_AND_REPROOF,
+    CORRECTIVE_IMPLEMENTATION, BLOCKED, CODE_FAILURE), apply the existing
+    adapter table.
     """
+    # Use shared CI recovery policy where budget semantics match
+    if classification in _CI_RECOVERY_CLASSIFICATIONS:
+        recovery = ci_recovery_action(classification, attempt, max_attempts)
+        action = recovery["action"]
+        if action == "PROCEED_MERGE":
+            return "READY"
+        if action == "WAIT_CI":
+            return "NO_ACTION"
+        if action == "RETRY_CI":
+            return "RETRY" if attempt < max_attempts else "BLOCKED"
+        if action == "REBASE_AND_REPROOF":
+            return "REPAIR"
+        if action == "BLOCKED":
+            return "BLOCKED"
+        # Fall through for any unknown action
+        return "NO_ACTION"
+
+    # Watcher-specific classifications: use existing adapter table
     if classification in _READY:
         return "READY"
     if classification in _NO_ACTION:
