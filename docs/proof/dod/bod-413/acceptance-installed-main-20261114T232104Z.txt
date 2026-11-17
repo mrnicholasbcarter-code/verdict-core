@@ -1,0 +1,6 @@
+sha: 1ec86c7ec2c3717cb1243e52c1dc5a4f8053b56a
+cwd: <installed-main>
+executor_api_key_is_file_key: True
+executor_auth_is_bearer_file_key: True
+credentials_test_status_is_not_missing: True
+credentials_test_status_value: failed

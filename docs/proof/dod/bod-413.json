@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "story": "bod-413",
+  "kind": "product",
+  "author": "default (queen t_c631ae69, auto/reasoning:pro)",
+  "merged_sha": "1ec86c7ec2c3717cb1243e52c1dc5a4f8053b56a",
+  "pr": 1014,
+  "on_main": {
+    "at": "2026-11-14T23:30:00Z",
+    "sha": "1ec86c7ec2c3717cb1243e52c1dc5a4f8053b56a",
+    "environment": "operator-host",
+    "command": "gh pr checks 1014 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/43646551903",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod-413/pr1014-checks.txt",
+      "sha256": "8cc2aa87f15c6172c6f7940c4614a5da28dc64432fc1618ef3f5fea0830f5b97"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "DirectGatewayExecutor resolves the gateway key from the owner-only key file and credentials.test falls through to the resolver (not missing) when only the key file is present",
+      "expect": "executor_auth_is_bearer_file_key: True",
+      "first_run": {
+        "at": "2026-11-14T23:21:04Z",
+        "sha": "1ec86c7ec2c3717cb1243e52c1dc5a4f8053b56a",
+        "environment": "operator-host",
+        "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python <pack>/stories/BOD-413/evidence-draft/bod413_accept.py",
+        "real_state_marker": "sha: 1ec86c7e",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-413/acceptance-installed-main-20261114T232104Z.txt",
+          "sha256": "bbea3d83f0a4619f792397eff48afbbb1d3e1a40f778588c849d142660755d9b"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T04:59:57.191046Z",
+        "sha": "d228f574e5ddf3de8d48e6537fa4d9d228fda6dc",
+        "environment": "operator-host",
+        "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python <pack>/stories/BOD-413/evidence-draft/bod413_accept.py",
+        "real_state_marker": "sha: d228f574",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-413/fresh-run-20261117T044930Z.txt",
+          "sha256": "d768c28d57dedbed40970673962dcf815180937e6654ae1a6cf1a666dc602a48"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "The hourly verdict-acceptance.timer runs 'verdict acceptance run', whose doctor gate (line 722 in verdict/acceptance.py: \\\"(\\\"doctor\\\", cli(\\\"doctor\\\", [\\\"doctor\\\", \\\"--json\\\"], 600, judge_doctor)),\\\") includes a credential check that exercises the gateway key resolver (_gateway_key_candidates in credentials_store.py), verifying OMNIROUTE_API_KEY resolution via the owner-only key file when no env var is set. CI tests (tests/test_direct_gateway_executor.py, tests/test_credentials_test_action.py) also exercise the key-file-only path on every PR and push.",
+  "setup_doctor": {
+    "status": "green",
+    "command": "env -i HOME=$HOME PATH=<system-bin> XDG_RUNTIME_DIR=<run-user> .venv/bin/python -m verdict doctor --json",
+    "at": "2026-11-17T04:59:57.191046Z",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-413/doctor-green-20261117T045650Z.json",
+      "sha256": "aac2dd31a2a32644ed63663f5ede6d9d729a7711f079938744c27ef0323a5d7c"
+    }
+  },
+  "openspec": {
+    "change": "gateway-key-resolver-parity"
+  },
+  "parent_confirmation": {
+    "by": "gem-orchestrator session 20261117 (run executed by gem-devops on omniroute worker/free-first)",
+    "at": "2026-11-17T04:59:57.191046Z",
+    "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python <pack>/stories/BOD-413/evidence-draft/bod413_accept.py",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-413/parent-confirmation-20261117T044935Z.txt",
+      "sha256": "d768c28d57dedbed40970673962dcf815180937e6654ae1a6cf1a666dc602a48"
+    }
+  }
+}
