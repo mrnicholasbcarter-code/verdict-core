@@ -55,7 +55,7 @@ def _run(
         "real_state_marker": RUN_URL,
         "exit_code": 0,
         "raw_output": _artifact(
-            root, name, f"{RUN_URL}\ndrill: orphan module FAILED as intended\n{name}\n"
+            root, name, f"{RUN_URL}\ndrill: orphan module FAILED as intended\n"
         ),
     }
 
@@ -1037,5 +1037,55 @@ def test_reuse_messages_name_both_run_locations(repo):
     errors = _check(root, evidence)
     assert (
         "the same run_id cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
+
+
+def test_plain_text_runs_with_identical_bytes_in_two_files_pass(repo):
+    # A deterministic command prints the same bytes on every run.
+    root, evidence = repo
+    item = evidence["acceptance"][0]
+    first, fresh = item["first_run"]["raw_output"], item["fresh_run"]["raw_output"]
+    assert first["sha256"] == fresh["sha256"] and first["path"] != fresh["path"]
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root, "confirm-same-bytes.txt", (root / first["path"]).read_text()
+    )
+    assert evidence["parent_confirmation"]["raw_output"]["sha256"] == first["sha256"]
+    assert _check(root, evidence) == []
+
+
+def test_one_plain_text_file_under_two_path_spellings_is_still_reuse(repo):
+    root, evidence = repo
+    item = evidence["acceptance"][0]
+    alias = dict(item["first_run"]["raw_output"], path="docs/proof/dod/./first.txt")
+    item["fresh_run"]["raw_output"] = alias
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
+
+
+def test_plain_text_confirmation_cannot_reuse_an_acceptance_artifact(repo):
+    root, evidence = repo
+    evidence["parent_confirmation"]["raw_output"] = evidence["acceptance"][0]["fresh_run"][
+        "raw_output"
+    ]
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].fresh_run and parent_confirmation"
+    ) in errors, errors
+
+
+def test_structured_results_with_identical_bytes_in_two_files_fail(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    item = evidence["acceptance"][0]
+    data = (root / item["first_run"]["raw_output"]["path"]).read_text()
+    item["fresh_run"]["raw_output"] = _artifact(root, "copy-of-first.json", data)
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
         "acceptance[0].first_run and acceptance[0].fresh_run"
     ) in errors, errors

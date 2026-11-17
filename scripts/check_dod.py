@@ -381,7 +381,8 @@ def check_evidence(root: Path, path: Path) -> list[str]:
     confirmation = evidence["parent_confirmation"]
     run_artifacts.append(("parent_confirmation", confirmation))
     cited: set[tuple[str, str, str, str]] = set()
-    seen: dict[str, str] = {}
+    seen_files: dict[Path, str] = {}
+    seen_digests: dict[str, str] = {}
     run_ids: dict[str, str] = {}
     for where, run in run_artifacts:
         digest = run["raw_output"]["sha256"]
@@ -391,23 +392,29 @@ def check_evidence(root: Path, path: Path) -> list[str]:
             if citation in cited:
                 continue
             cited.add(citation)
-        if digest in seen:
-            errors.append(
-                f"the same raw output cannot serve as two runs: {seen[digest]} and {where}"
-            )
-        seen.setdefault(digest, where)
+        # One file is one run, however its path is spelled.
+        file = (root / run["raw_output"]["path"]).resolve()
+        reused = seen_files.get(file)
+        seen_files.setdefault(file, where)
         text = _artifact(root, run["raw_output"], where, errors)
-        if text is not None:
-            result = _structured_result(text.rstrip()) if text == text.lstrip() else None
-            if result is not None:
-                run_id = result["run_id"]
-                if not isinstance(run_id, str) or not run_id:
-                    continue  # reported by _check_run_truth
-                if run_id in run_ids:
-                    errors.append(
-                        f"the same run_id cannot serve as two runs: {run_ids[run_id]} and {where}"
-                    )
-                run_ids.setdefault(run_id, where)
+        result = None
+        if text is not None and text == text.lstrip():
+            result = _structured_result(text.rstrip())
+        if result is not None:
+            # A result carries its run's id and times, so two runs never share its
+            # bytes. A deterministic plain-text command may print the same bytes twice.
+            reused = reused or seen_digests.get(digest)
+            seen_digests.setdefault(digest, where)
+        if reused:
+            errors.append(f"the same raw output cannot serve as two runs: {reused} and {where}")
+        run_id = result["run_id"] if result is not None else None
+        if not isinstance(run_id, str) or not run_id:
+            continue  # not a structured result, or reported by _check_run_truth
+        if run_id in run_ids:
+            errors.append(
+                f"the same run_id cannot serve as two runs: {run_ids[run_id]} and {where}"
+            )
+        run_ids.setdefault(run_id, where)
     if confirmation["by"] == evidence["author"]:
         errors.append("parent_confirmation: the author cannot confirm their own story")
     if confirmation["command"] not in expected:
