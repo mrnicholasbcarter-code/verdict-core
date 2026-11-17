@@ -3,18 +3,18 @@
   "story": "bod219-setup-host-prerequisites",
   "kind": "product",
   "author": "Nick Carter",
-  "merged_sha": "2c24103bd82ab215ceac7eaa5f56e7472aa8aae6",
-  "pr": 963,
+  "merged_sha": "124a37e6762df32eceee72ea2e6e651870aaaa6c",
+  "pr": 961,
   "on_main": {
-    "at": "2026-11-17T19:10:00Z",
-    "sha": "2c24103bd82ab215ceac7eaa5f56e7472aa8aae6",
+    "at": "2026-11-17T21:53:10Z",
+    "sha": "124a37e6762df32eceee72ea2e6e651870aaaa6c",
     "environment": "operator-host",
-    "command": "gh pr checks 963 --required",
+    "command": "gh pr checks 961 --required",
     "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs",
     "exit_code": 0,
     "raw_output": {
-      "path": "docs/proof/dod/bod219-setup-host-prerequisites/on_main.txt",
-      "sha256": "ad56804ac3f039756b84bb324c926b1b751354ed08e1d63415ea73c6f3f328c8"
+      "path": "docs/proof/dod/bod219-setup-host-prerequisites/on_main-pr961-2026-11-17T21_53_10Z.txt",
+      "sha256": "d1c807e3af65e7cc0b70ef9914ddceed044dc03517bb978d8efeb0175b7a73b5"
     }
   },
   "acceptance": [
