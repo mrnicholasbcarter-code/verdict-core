@@ -1,0 +1,11 @@
+{
+  "status": "blocked",
+  "reason": "Doctor status is 'issues_found' (not green) at 19:05Z. harness.execute is missing, gateway.inventory and gateway.execute are degraded. Schema requires setup_doctor.status='green' but verdict doctor never emits 'green' — only 'ok' or 'issues_found'. Cannot falsely claim green per reviewer instruction.",
+  "changes": [],
+  "checks": [
+    {"cmd": "cd /home/nick/.local/share/verdict/installed-main && .venv/bin/verdict doctor --json (clean env)", "exit": 1}
+  ],
+  "blockers": [
+    "Doctor status 'issues_found' — harness.execute missing, gateway.inventory/execute degraded. Schema expects 'green' but tool doesn't produce it."
+  ]
+}

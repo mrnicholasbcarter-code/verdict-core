@@ -1,8 +1,0 @@
-[Unit]
-Description=Verdict six-hourly bounded screening timer
-[Timer]
-OnCalendar=*-*-* 00/6:00:00
-Persistent=true
-Unit=verdict-identify-screen.service
-[Install]
-WantedBy=timers.target
