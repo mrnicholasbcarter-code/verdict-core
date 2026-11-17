@@ -30,12 +30,30 @@ def test_selector_emits_accounting_without_claiming_a_dispatch(tmp_path):
         _ladder_row("free/no-tools", pricing={"input": 0}, tier=0),
     ]
     rows[-1]["capabilities"] = {}
+    # frontier_worthy=True with tools needs fresh agentic proof on FREE routes
+    # (BOD-299 AC2); seed the health cache so selection reaches ranking.
+    from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+    cache = HealthCache(tmp_path / "health-cache.json")
+    for route_id in ("free/good", "free/weak", "free/no-tools"):
+        cache.record(
+            route_id,
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            NOW,
+        )
     selector = EligibilityLadder(
         rows,
         [_conn("free", auth="apikey", free=True)],
         lambda _: HealthResult(True, "ok"),
         tmp_path / "state.json",
         metadata=_snapshot(),
+        health_cache=cache,
     )
     chosen, verdicts = selector.select(
         TaskRequirements(frontier_worthy=True, max_capability_tier=0), now=NOW

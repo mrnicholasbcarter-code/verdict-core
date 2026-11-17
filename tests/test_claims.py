@@ -648,8 +648,12 @@ def test_validation_later_failure_contradicted() -> None:
     assert _get("validation_passed", evs).status == CLAIM_STATUS_CONTRADICTED
 
 
-def _review(route: str, blocking: int = 0, status: str = "PASS") -> dict[str, Any]:
-    return _event(90, "review", {"status": status, "route_id": route, "blocking": blocking}, "")
+def _review(
+    route: str, blocking: int = 0, status: str = "PASS", observed_model: str | None = None
+) -> dict[str, Any]:
+    data: dict[str, Any] = {"status": status, "route_id": route, "blocking": blocking}
+    data["observed_model"] = route if observed_model is None else observed_model
+    return _event(90, "review", data, "")
 
 
 def test_review_same_worker_route_attempts_missing() -> None:
@@ -712,7 +716,15 @@ def test_review_missing_executed_identity_not_observed() -> None:
 def test_review_before_worker_terminal_not_verified() -> None:
     """A review recorded before the work it judges finished cannot certify that work."""
     review = _event(
-        1, "review", {"status": "PASS", "route_id": "kr/gpt-5.6-terra", "blocking": 0}, ""
+        1,
+        "review",
+        {
+            "status": "PASS",
+            "route_id": "kr/gpt-5.6-terra",
+            "blocking": 0,
+            "observed_model": "kr/gpt-5.6-terra",
+        },
+        "",
     )
     evs = [
         review,
@@ -853,7 +865,15 @@ def test_review_same_actual_worker_with_valid_receipt(tmp_path: Path) -> None:
             ),
             _event(4, "verify", {"ok": True, "exit_code": 0, "command": "test"}),
             _event(
-                5, "review", {"status": "PASS", "route_id": "kr/gpt-5.6-terra", "blocking": 0}, ""
+                5,
+                "review",
+                {
+                    "status": "PASS",
+                    "route_id": "kr/gpt-5.6-terra",
+                    "blocking": 0,
+                    "observed_model": "kr/gpt-5.6-terra",
+                },
+                "",
             ),
             _event(6, "run_finished", {"outcome": "BLOCKED"}, ""),
         ],

@@ -41,7 +41,11 @@ from verdict.subagent_selection import HealthResult
 
 NOW = datetime(2026, 9, 29, 12, 0, 0, tzinfo=timezone.utc)
 WORKER_REQ = TaskRequirements()  # frontier_worthy=False, coding=True
-FRONTIER_REQ = TaskRequirements(frontier_worthy=True, max_capability_tier=3)
+# Reasoning-only frontier work keeps single-call qualification; tool-requiring
+# frontier work on FREE routes needs fresh agentic proof (BOD-299 AC2).
+FRONTIER_REQ = TaskRequirements(
+    frontier_worthy=True, max_capability_tier=3, required_capabilities=frozenset({"reasoning"})
+)
 
 
 def _row(

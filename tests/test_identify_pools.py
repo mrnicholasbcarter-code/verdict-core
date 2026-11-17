@@ -114,7 +114,9 @@ def test_free_ranks_before_subscription_metered_and_unknown_regardless_of_score(
     metadata = scores(**{"p/m": (90, None), "p/s": (80, None), "p/f": (10, None)})
     report = pools(ev, metadata, proofs(*routes, "p/u"))
     pool = report["implementation"]
-    assert ids(pool["eligible"]) == ["p/f", "p/s", "p/m", "p/u"]
+    # Capacity class is a membership filter only; task rating strongest first.
+    # p/m has the highest score (90), so it must lead regardless of capacity.
+    assert ids(pool["eligible"]) == ["p/m", "p/s", "p/f", "p/u"]
     assert pool["eligible_by_capacity"] == {
         "free": 1,
         "subscription": 1,
@@ -123,7 +125,7 @@ def test_free_ranks_before_subscription_metered_and_unknown_regardless_of_score(
     }
     assert pool["fallback"] == [] and pool["fallback_count"] == 0
     assert report["dispatch_authorized"] is False
-    assert report["order"] == "capacity(free,subscription,metered,unknown)->task_rating->route_id"
+    assert report["order"] == "task_rating->route_id"
 
 
 def test_within_a_tier_stronger_fresh_score_first_and_unknown_last():
@@ -135,6 +137,15 @@ def test_within_a_tier_stronger_fresh_score_first_and_unknown_last():
     assert (rows[0]["basis"], rows[0]["score"], rows[0]["metric"]) == ("score", 70, "aa_coding")
     assert (rows[0]["source"], rows[0]["as_of"]) == ("openrouter_aa", NOW.isoformat())
     assert rows[-1]["basis"] == "unknown" and rows[-1]["score"] is None
+
+
+def test_capacity_class_never_orders_pools():
+    """A higher-rated subscription route outranks a lower-rated free route."""
+    routes = {"p/free": "free", "p/sub": "subscription"}
+    ev = evidence([live(r) for r in routes], capacities=routes)
+    metadata = scores(**{"p/free": (10, None), "p/sub": (90, None)})
+    pool = pools(ev, metadata, proofs(*routes))["implementation"]
+    assert ids(pool["eligible"]) == ["p/sub", "p/free"]
 
 
 def test_no_tool_proof_is_fallback_never_eligible():

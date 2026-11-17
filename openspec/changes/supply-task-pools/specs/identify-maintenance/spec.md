@@ -75,16 +75,21 @@ cooling down, and without a latest traffic status of 401, 403 or 404. An admitte
 fresh tool proof for itself or an alias of the same backend model SHALL be `eligible`. An
 admitted route without fresh tool proof SHALL be `fallback`, which is probation that needs
 bounded qualification and SHALL never be dispatch-authorized. Other routes SHALL be counted by
-blocking reason only. Eligible and fallback rows SHALL be ordered by capacity (free,
-subscription, metered, unknown), then task rating strongest first with unknown last, then route
-id. Rows sharing a backend model SHALL collapse to the first row, which lists the others as
+blocking reason only. Eligible and fallback rows SHALL be ordered by task rating
+strongest first with unknown last, then route id. Capacity class SHALL be a
+membership filter only (``--capacity``), never an order key. Rows sharing a
+backend model SHALL collapse to the first row, which lists the others as
 `aliases`. The report SHALL keep `dispatch_authorized` false. Passive identify SHALL read tool
 proof from the health cache without writing it; an unreadable cache SHALL be reported as
 `tool_proof_error: health_cache_unavailable`.
 
-#### Scenario: Free route before metered route
-- **WHEN** a free route and a metered route are both eligible for implementation
-- **THEN** the free route is listed first regardless of rating
+#### Scenario: Stronger rating outranks cheaper capacity
+- **WHEN** a subscription route and a free route are both eligible for implementation
+- **THEN** the higher task rating is listed first regardless of capacity class
+
+#### Scenario: Capacity filter still narrows membership
+- **WHEN** `--capacity free` is passed and a subscription route is eligible
+- **THEN** the subscription route is excluded from the pool entirely
 
 #### Scenario: No fresh tool proof is fallback only
 - **WHEN** an admitted route has missing, stale or negative tool proof

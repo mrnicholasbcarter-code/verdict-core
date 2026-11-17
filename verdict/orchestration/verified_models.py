@@ -29,6 +29,7 @@ from typing import Any
 
 from verdict.admission import canonical_route_id, is_opaque, route_provider_prefix
 from verdict.availability import QuotaEvidence, account_forms
+from verdict.openrouter_free_set import OpenRouterFreeSet, load_openrouter_free_set
 from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.eligibility import _classify_capacity, _marginal_price
 from verdict.orchestration.health_cache import (
@@ -1178,10 +1179,14 @@ def _negative_deadline(
 
 
 def _capacity_for_row(
-    row: Mapping[str, Any], connection: Mapping[str, Any] | None
+    row: Mapping[str, Any],
+    connection: Mapping[str, Any] | None,
+    openrouter_free_set: OpenRouterFreeSet | None = None,
 ) -> tuple[CapacityClass, str]:
+    if openrouter_free_set is None:
+        openrouter_free_set = load_openrouter_free_set(refresh=False)
     cls, _, evidence = _classify_capacity(
-        connection, row, route_id=str(row.get("id") or ""), openrouter_free_set=None
+        connection, row, route_id=str(row.get("id") or ""), openrouter_free_set=openrouter_free_set
     )
     return cls, evidence
 

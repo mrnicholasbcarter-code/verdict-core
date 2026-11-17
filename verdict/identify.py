@@ -13,14 +13,12 @@ from typing import Any
 from verdict.credentials_store import resolve_gateway_binding, resolve_management_token
 from verdict.free_tier_admit import normalize_omniroute_origin
 from verdict.identify_pools import build_supply, build_task_pools
-from verdict.identify_rank import RatedModel, rank_models, rating_key
+from verdict.identify_rank import RatedModel, rank_models
 from verdict.metadata.mapping import IdentityMap, load_identity_map
 from verdict.metadata.records import ModelMetadataError
 from verdict.metadata.store import MetadataSnapshot, load_store
 from verdict.omniroute_evidence import OmniRouteEvidence, fetch_omniroute_evidence
-from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.credential_pools import canonical_route, pool_of
-from verdict.orchestration.eligibility import _CAPACITY_ORDER
 from verdict.orchestration.health_cache import (
     STATE_NEGATIVE,
     USABLE_SECONDS,
@@ -205,7 +203,7 @@ def screen_models(
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
-    """Screen cheapest tier first, then strongest, with explicit consent and route caps."""
+    """Screen strongest task rating first; capacity class is a filter, not an order."""
     _screen_options(allow_live_probe, max_per_provider, max_routes)
     report = identify_models(
         evidence,
@@ -217,31 +215,13 @@ def screen_models(
     candidates = [row["route_id"] for row in report["available_routes"]]
     rated = rank_models(candidates, metadata=metadata, identity_map=identity_map, now=clock())
 
-    # Strongest task rating first, unknown ratings last: no economic
-    # membership or rank filtering (BOD-297). When the caller selects
-    # capacity classes explicitly, screen those classes in the canonical
-    # consent order instead, strongest rating first within each class.
+    # Task rating strongest first, unknown ratings last; rescreen-request
+    # hints only reorder routes. Capacity class never enters the sort key:
+    # price/capacity is excluded from selection ordering per the governing
+    # contract, and --capacity stays a membership filter only.
     cache.reload()
     requested = cache.rescreen_requests()
-    if capacities:
-        capacity_rank = {c: i for i, c in enumerate(_CAPACITY_ORDER)}
-        rated.sort(
-            key=lambda rating: (
-                capacity_rank.get(
-                    CapacityClass(evidence.route_capacities.get(rating.route_id, "unknown")),
-                    len(_CAPACITY_ORDER),
-                ),
-                rating.route_id not in requested,
-                *rating_key(rating),
-                rating.route_id,
-            )
-        )
-    else:
-        # No capacity filter: strongest task rating first, unknown ratings last
-        # (BOD-297). Equal scores prefer the lexicographically later route id so
-        # a canonical route screens before its alias siblings.
-        rated.sort(key=lambda rating: rating.route_id, reverse=True)
-        rated.sort(key=lambda rating: (rating.score is None, -(rating.score or 0.0)))
+    rated.sort(key=lambda rating: rating.route_id not in requested)
 
     # All configured, reachable supply is considered: inventory ids that are
     # live candidates but carry no traffic proof yet screen with an unknown

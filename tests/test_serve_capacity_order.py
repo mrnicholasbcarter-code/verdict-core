@@ -6,6 +6,8 @@ import asyncio
 from dataclasses import replace
 from datetime import timedelta
 
+import pytest
+
 from tests import test_live_candidate_shortlist as live
 from verdict.candidate_pool import build_candidate_pool
 from verdict.free_tier_admit import snapshot_from_payloads
@@ -223,3 +225,90 @@ def test_snapshot_preserves_specific_connection_capacity_evidence():
     assert rows[0].import_free_only is True
     assert rows[1].plan_label == "max"
     assert rows[1].import_free_only is False
+
+
+def test_free_only_admission_fails_closed_when_only_subscription_supply(monkeypatch, tmp_path):
+    """Prove an explicit free-only caller fails closed when only subscription supply exists."""
+    from verdict.orchestration.selection import select_route_for_task
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("TMPDIR", "/tmp")
+
+    # 1. Orchestration selection ladder path: capacity filter = ("free",) with only subscription routes
+    rows = [
+        {
+            "id": "sub/model-a",
+            "owned_by": "sub",
+            "pricing": {"input": 1.0, "output": 1.0},
+            "capabilities": {"tool_calling": True},
+            "context_length": 200_000,
+        },
+        {
+            "id": "sub/model-b",
+            "owned_by": "sub",
+            "pricing": {"input": 2.0, "output": 2.0},
+            "capabilities": {"tool_calling": True},
+            "context_length": 200_000,
+        },
+    ]
+    conns = [{"provider": "sub", "authType": "oauth", "isActive": True, "plan_label": "pro"}]
+    monkeypatch.setattr("verdict.orchestration.run.fetch_inventory", lambda *a, **k: rows)
+    monkeypatch.setattr("verdict.orchestration.run.fetch_connections", lambda *a, **k: conns)
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.prime_visibility",
+        lambda **k: type("Harness", (), {"__call__": lambda self, rid: True, "available": True})(),
+    )
+    probes_sent: list[str] = []
+    monkeypatch.setattr(
+        "verdict.subagent_selection.openai_health_probe",
+        lambda *a, **k: (
+            lambda c: (
+                probes_sent.append(c.route_id)
+                or type("HR", (), {"healthy": True, "category": "ok"})()
+            )
+        ),
+    )
+
+    from verdict.orchestration.contracts import TaskRequirements
+
+    result = select_route_for_task(
+        TaskRequirements(required_capabilities=frozenset({"tools"}), coding=True),
+        gateway="http://127.0.0.1:20128",
+        capacity=("free",),
+    )
+    assert result.route is None
+    assert result.reasons == ("no_eligible_route",) or any(
+        "outside_capacity_filter" in r for r in result.reasons
+    )
+    assert probes_sent == []
+
+    # 2. Serve execution-path path: spend_policy = "free_only" with only subscription supply
+    service = _service()
+    service.admit_snapshot = replace(
+        service.admit_snapshot,
+        catalog=tuple(
+            replace(row, price_known=True, input_cost=1.0, output_cost=1.0)
+            for row in service.admit_snapshot.catalog
+        ),
+        free_tier=(),  # no free-tier models in snapshot
+        connections=tuple(
+            replace(c, auth_type="oauth", import_free_only=False)
+            for c in service.admit_snapshot.connections
+        ),
+    )
+    offloaded: list[str] = []
+    service.offload_executor = lambda model, task: offloaded.append(model) or ("sent", "ok")
+
+    request = live._request(live.STRONG, live.NEW)
+    ctx = {**_context(request), "spend_policy": "free_only"}
+    prepared = service._prepare_execution_path_request("fix code", "low", ctx, request)
+    assert len(prepared.pool_receipt.shortlist) == 0
+    assert live.STRONG in prepared.hard_excluded_ids
+    assert live.NEW in prepared.hard_excluded_ids
+
+    from verdict.execution_path import ExecutionPathError
+
+    with pytest.raises(ExecutionPathError, match="BOD-104"):
+        asyncio.run(service.route("fix code", criticality="low", context=ctx))
+    assert offloaded == []

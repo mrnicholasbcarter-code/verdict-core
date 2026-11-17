@@ -258,6 +258,7 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
     commit: str | None = None
     pending_probe_fields: dict[str, str] = {}
     pending_route = ""
+    pending_effort: dict[str, Any] | None = None
     for event in events:
         data = event.data
         if event.type == "dispatch":
@@ -293,17 +294,27 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             for field in ("probe_class", "cache_checked_at", "cache_freshness", "evidence_level"):
                 if data.get(field):
                     row[field] = str(data[field])
-            # Apply buffered selection-event probe fields only to an attempt on
-            # the route that selection chose. A dispatch to any other route
-            # drops them, so a replaced selection can't leak its evidence.
-            if pending_probe_fields:
-                if pending_route and pending_route == route:
-                    row.update(pending_probe_fields)
+            # Apply buffered selection-event probe and effort fields only to an
+            # attempt on the route that selection chose. A dispatch to any other
+            # route drops them, so a replaced selection can't leak its evidence.
+            if pending_probe_fields or pending_effort is not None:
+                # Empty route matches only an effort bind (mechanical review).
+                # Probe evidence still requires the non-empty route it was chosen for.
+                matched = pending_route == route and (
+                    bool(pending_route) or pending_effort is not None
+                )
+                if matched:
+                    if pending_probe_fields and pending_route:
+                        row.update(pending_probe_fields)
+                    if pending_effort is not None:
+                        row.update(pending_effort)
                     pending_probe_fields = {}
                     pending_route = ""
+                    pending_effort = None
                 elif event.type == "dispatch":
                     pending_probe_fields = {}
                     pending_route = ""
+                    pending_effort = None
             row["fault_injected"] = bool(row["fault_injected"] or data.get("fault_injected"))
             if event.type == "terminal":
                 ok = data.get("ok") is True
@@ -352,12 +363,37 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             # before dispatch must not leak its evidence to the next route.
             pending_probe_fields = {}
             pending_route = str(data.get("route_id") or "")
+            pending_effort = None
             for field in ("probe_class", "cache_checked_at", "cache_freshness", "evidence_level"):
                 if data.get(field):
                     pending_probe_fields[field] = str(data[field])
             # UNKNOWN capacity opt-in flag.
             if data.get("unknown_capacity_opt_in"):
                 pending_probe_fields["unknown_capacity_opt_in"] = "true"
+            # Chosen effort is buffered with the route it was chosen for.
+            # A missing key is a legacy selection and must not invent a field.
+            # JSON null is preserved: reasoning disabled is an explicit omit.
+            if "chosen_effort" in data:
+                pending_effort = {
+                    "chosen_effort": data.get("chosen_effort"),
+                    "executed_effort": "unverified",
+                }
+                reason = data.get("effort_reason")
+                if isinstance(reason, Mapping):
+                    pending_effort["effort_reason"] = {
+                        str(key): value
+                        for key, value in reason.items()
+                        if key
+                        in {
+                            "task_kind",
+                            "default_effort",
+                            "clamp",
+                            "metadata_source",
+                            "route_id",
+                            "attempt",
+                            "row_unavailable",
+                        }
+                    }
         elif event.type == "node_state":
             claimed_state = str(data.get("state", ""))
             claimed_seq = event.seq

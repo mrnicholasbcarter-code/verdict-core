@@ -17,8 +17,15 @@ The check fails on any missing or mismatched field:
 * the OpenSpec change is archived and every task in it is ticked, including
   ``- [ ] (post-merge)`` tasks, which ``scripts/check_openspec_tasks.py`` lets
   stay open at merge time;
+* a story that changed no behaviour may name no change: ``"openspec":
+  {"status": "not_applicable", "reason": "..."}``. That fails when the merged
+  commit changed anything under ``openspec/`` or when a change, active or
+  archived, is named after the story's ticket;
 * the parent confirmation is by someone other than the author, re-runs one of
-  the acceptance commands and shows the expected output.
+  the acceptance commands and shows the expected output;
+* a ``verdict orchestrate --json`` run records the run's own result JSON, and
+  its exit code, time and review agree with that result; two runs never share
+  a raw-output file, a result digest or a ``run_id``.
 
 ``--all`` checks every evidence file, and fails when an OpenSpec change was
 archived after this gate (not in ``PRE_GATE_ARCHIVES``) without an evidence
@@ -35,6 +42,7 @@ import argparse
 import hashlib
 import json
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -58,6 +66,9 @@ PRE_GATE_ARCHIVES = frozenset(
     {"2026-10-08-bod-288-review-coverage-fail-closed", "2026-10-09-bod-198-codiv-candidate"}
 )
 ACTIONS_RUN_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/actions/runs/\d+")
+# The ticket at the start of a story name: "bod-384" in "bod-384-dead-code".
+TICKET = re.compile(r"([a-z]+)-(\d+)")
+ARCHIVE_DATE = re.compile(r"\d{4}-\d{2}-\d{2}-")
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -69,7 +80,142 @@ def _is_ancestor(root: Path, older: str, newer: str) -> bool:
 
 
 def _time(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if not isinstance(value, str):
+        raise ValueError(f"{value!r} must be an ISO-8601 time with a timezone")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError(f"{value!r} must be an ISO-8601 time with a timezone")
+    return parsed
+
+
+STRUCTURED_KEYS = ("outcome", "run_id", "started_at", "finished_at", "events_digest")
+# json.loads raises JSONDecodeError (a ValueError), plain ValueError for an integer
+# over the digit limit, and RecursionError for deep nesting.
+NOT_JSON = (ValueError, RecursionError)
+RESULT_TIME_TOLERANCE = timedelta(minutes=5)
+
+
+def _command_tokens(command: str) -> list[str]:
+    """Shell words of a recorded command, with ``;``, ``>``, ``(`` and the like split off."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        return list(lexer)
+    except ValueError:
+        # Recorded commands need not be valid shell (a stray apostrophe in a goal).
+        # A parse error must add the structured-stdout requirement, never remove it.
+        return [token.strip("'\"") for token in re.split(r"[\s()<>|&;]+", command)]
+
+
+def _is_orchestrate_json_command(command: str) -> bool:
+    tokens = _command_tokens(command)
+    starts = [
+        index
+        for index, token in enumerate(tokens)
+        if Path(token).name == "verdict"
+        or (token == "verdict.cli" and index > 0 and tokens[index - 1] == "-m")
+    ]
+    if not starts or "orchestrate" not in tokens[starts[0] + 1 :]:
+        return False
+    # argparse accepts any unambiguous prefix of a long option: --j, --js and --jso set json too.
+    return any(len(token) >= 3 and "--json".startswith(token) for token in tokens)
+
+
+def _structured_result(text: str) -> dict[str, Any] | None:
+    try:
+        result = json.loads(text)
+    except NOT_JSON:
+        return None
+    if not isinstance(result, dict):
+        return None
+    required = set(STRUCTURED_KEYS)
+    return result if required <= result.keys() else None
+
+
+def _requires_result_json(command: str, want: int) -> bool:
+    """Whether a run of ``command`` that should exit ``want`` must record result JSON.
+
+    ``verdict orchestrate --json`` prints its result when it exits 0 or 1. Any other
+    exit code is a startup block: one line on stderr and nothing on stdout.
+    """
+    return want in (0, 1) and _is_orchestrate_json_command(command)
+
+
+def _check_run_truth(
+    run: dict[str, Any], text: str, where: str, errors: list[str], *, want: int = 0
+) -> None:
+    """Check a run against its own structured result.
+
+    ``want`` is the exit code its acceptance item expects. An acceptance run records
+    its exit code; a parent confirmation records none and is judged by ``want``.
+    """
+    required = _requires_result_json(run["command"], want)
+    result = _structured_result(text.rstrip()) if text == text.lstrip() else None
+    if result is None:
+        if required:
+            try:
+                parsed = json.loads(text)
+                missing = [
+                    key
+                    for key in STRUCTURED_KEYS
+                    if not isinstance(parsed, dict) or key not in parsed
+                ]
+            except NOT_JSON:
+                missing = list(STRUCTURED_KEYS)
+            errors.append(
+                f"{where}: command is {run['command']!r} but the raw output is not the run's result JSON "
+                f"(missing: {', '.join(missing) or 'stdout only'}; stdout only)"
+            )
+        return
+    run_id = result["run_id"]
+    if not isinstance(run_id, str) or not run_id:
+        errors.append(f"{where}: run_id {run_id!r} is not a non-empty string")
+    outcome = result["outcome"]
+    exit_code = run.get("exit_code")
+    complete = outcome == "COMPLETE"
+    if exit_code is not None and (exit_code == 0) != complete:
+        errors.append(f"{where}: exit_code {exit_code} disagrees with outcome {outcome}")
+    try:
+        started = _time(result["started_at"])
+        finished = _time(result["finished_at"])
+        recorded = _time(run["at"])
+        # A time at the edge of the calendar overflows here, not in _time.
+        earliest = started - RESULT_TIME_TOLERANCE
+        latest = finished + RESULT_TIME_TOLERANCE
+    except (TypeError, ValueError, KeyError, OverflowError) as exc:
+        errors.append(f"{where}: structured result time is invalid: {exc}")
+    else:
+        if started > finished:
+            errors.append(
+                f"{where}: started_at {result['started_at']!r} is later than finished_at {result['finished_at']!r}"
+            )
+        if not (earliest <= recorded <= latest):
+            errors.append(
+                f"{where}: at {run['at']} is outside result window "
+                f"started_at {result['started_at']} to finished_at {result['finished_at']} (5 minute tolerance)"
+            )
+    if "exit_code" not in run:
+        if want != 0:
+            # A story that proves a blocked run: the confirmation must be blocked too.
+            if complete:
+                errors.append(
+                    f"{where}: outcome {outcome}, but the acceptance item expects exit code {want} "
+                    "(an outcome other than COMPLETE required)"
+                )
+            return
+        if not complete:
+            errors.append(f"{where}: outcome {outcome} is not COMPLETE (COMPLETE required)")
+        review = result.get("review")
+        status = review.get("status") if isinstance(review, dict) else None
+        if status != "PASS":
+            errors.append(f"{where}: review status {status} is not PASS (PASS required)")
+        return
+    if exit_code == 0:
+        review = result.get("review")
+        status = review.get("status") if isinstance(review, dict) else None
+        if status != "PASS":
+            errors.append(f"{where}: review status {status} is not PASS (PASS required)")
 
 
 def _artifact(root: Path, artifact: dict[str, str], where: str, errors: list[str]) -> str | None:
@@ -125,11 +271,46 @@ def _openspec(root: Path, change: str, errors: list[str]) -> None:
         errors.append(f"openspec change {change} has unticked tasks")
 
 
+def _merged_files(root: Path, merged: str) -> list[str]:
+    """Paths the merged commit changed against its first parent."""
+    return _git(
+        root, "diff-tree", "-m", "--first-parent", "--no-commit-id", "--name-only", "-r", merged
+    ).stdout.splitlines()
+
+
+def _no_openspec_change(root: Path, story: str, merged: str, errors: list[str]) -> None:
+    """Reasons the claim "this story has no OpenSpec change" is false."""
+    touched = [name for name in _merged_files(root, merged) if name.startswith("openspec/")]
+    if touched:
+        errors.append(
+            f"openspec: not_applicable, but the merged commit changed {', '.join(touched[:5])}"
+        )
+    ticket = TICKET.match(story)
+    # Changes are named "bod-384-..." or "bod384-..."; "bod-3840-..." is another ticket.
+    # Story names are lower case (schema); a change directory may not be.
+    owned = re.compile(
+        rf"{re.escape(ticket.group(1))}-?{ticket.group(2)}(?!\d)"
+        if ticket
+        else rf"{re.escape(story)}(-|$)",
+        re.IGNORECASE,
+    )
+    changes = root / "openspec/changes"
+    found = [p for p in (*changes.glob("*"), *(root / ARCHIVE_DIR).glob("*")) if p.is_dir()]
+    for directory in sorted(found):
+        name = directory.name
+        if directory.parent.name == "archive":
+            name = ARCHIVE_DATE.sub("", name, count=1)
+        elif name == "archive":
+            continue
+        if owned.match(name):
+            errors.append(f"openspec: not_applicable, but change {name} is named after this story")
+
+
 def check_evidence(root: Path, path: Path) -> list[str]:
     """Return every reason the evidence file at ``path`` does not prove DONE."""
     try:
         evidence = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, *NOT_JSON) as exc:
         return [f"cannot read {path}: {exc}"]
     schema = json.loads((ROOT / SCHEMA_PATH).read_text(encoding="utf-8"))
     schema_errors = sorted(
@@ -149,10 +330,7 @@ def check_evidence(root: Path, path: Path) -> list[str]:
     merged_at = _time(_git(root, "show", "-s", "--format=%cI", merged).stdout.strip())
 
     if evidence["kind"] == "repo-tooling":
-        changed = _git(
-            root, "diff-tree", "-m", "--first-parent", "--no-commit-id", "--name-only", "-r", merged
-        ).stdout
-        product = [name for name in changed.split() if name.startswith("verdict/")]
+        product = [name for name in _merged_files(root, merged) if name.startswith("verdict/")]
         if product:
             errors.append(f"repo-tooling story changed product code: {', '.join(product[:5])}")
     elif evidence["setup_doctor"]["status"] != "green":
@@ -169,17 +347,23 @@ def check_evidence(root: Path, path: Path) -> list[str]:
 
     window = timedelta(hours=evidence["freshness_window_hours"])
     expected: dict[str, str] = {}
+    wanted: dict[str, int] = {}
+    # Text of each run's raw output by location, read once and reused below.
+    texts: dict[str, str | None] = {}
     for index, item in enumerate(evidence["acceptance"]):
         want = item.get("expect_exit_code", 0)
         first, fresh = item["first_run"], item["fresh_run"]
         expected[first["command"]] = item["expect"]
+        wanted[first["command"]] = want
         for label, run in (("first_run", first), ("fresh_run", fresh)):
             where = f"acceptance[{index}].{label}"
-            text = _run(root, evidence, run, where, errors)
+            text = texts[where] = _run(root, evidence, run, where, errors)
             if text is not None and item["expect"] not in text:
                 errors.append(f"{where}: expected text is not in the raw output")
             if run["exit_code"] != want:
                 errors.append(f"{where}: exit code {run['exit_code']}, expected {want}")
+            if text is not None:
+                _check_run_truth(run, text, where, errors, want=want)
         if _time(first["at"]) < merged_at:
             errors.append(f"acceptance[{index}].first_run: ran before the merge")
         if fresh["command"] != first["command"]:
@@ -187,16 +371,72 @@ def check_evidence(root: Path, path: Path) -> list[str]:
         if _time(fresh["at"]) - _time(first["at"]) < window:
             errors.append(f"acceptance[{index}].fresh_run: not after the freshness window")
 
-    _openspec(root, evidence["openspec"]["change"], errors)
+    if "change" in evidence["openspec"]:
+        _openspec(root, evidence["openspec"]["change"], errors)
+    else:
+        _no_openspec_change(root, evidence["story"], merged, errors)
 
+    run_artifacts: list[tuple[str, dict[str, Any], int | None]] = [
+        (f"acceptance[{index}].{label}", item[label], index)
+        for label in ("first_run", "fresh_run")
+        for index, item in enumerate(evidence["acceptance"])
+    ]
     confirmation = evidence["parent_confirmation"]
+    run_artifacts.append(("parent_confirmation", confirmation, None))
+    texts["parent_confirmation"] = _artifact(
+        root, confirmation["raw_output"], "parent_confirmation", errors
+    )
+    cited: dict[tuple[str, str, str, str], int] = {}
+    seen_files: dict[Path, str] = {}
+    seen_digests: dict[str, str] = {}
+    run_ids: dict[str, str] = {}
+    for where, run, criterion in run_artifacts:
+        digest = run["raw_output"]["sha256"]
+        if criterion is not None:
+            # Two acceptance criteria may cite one run; that is one run, not two.
+            # Within one criterion the first and the fresh run are always two runs.
+            citation = (run["at"], run["command"], run["raw_output"]["path"], digest)
+            if cited.setdefault(citation, criterion) != criterion:
+                continue
+        # One file is one run, however its path is spelled.
+        file = (root / run["raw_output"]["path"]).resolve()
+        reused = seen_files.get(file)
+        seen_files.setdefault(file, where)
+        text = texts[where]
+        result = None
+        if text is not None and text == text.lstrip():
+            result = _structured_result(text.rstrip())
+        if result is not None:
+            # A result carries its run's id and times, so two runs never share its
+            # bytes. A deterministic plain-text command may print the same bytes twice.
+            reused = reused or seen_digests.get(digest)
+            seen_digests.setdefault(digest, where)
+        if reused:
+            errors.append(f"the same raw output cannot serve as two runs: {reused} and {where}")
+        run_id = result["run_id"] if result is not None else None
+        if not isinstance(run_id, str) or not run_id:
+            continue  # not a structured result, or reported by _check_run_truth
+        if run_id in run_ids:
+            errors.append(
+                f"the same run_id cannot serve as two runs: {run_ids[run_id]} and {where}"
+            )
+        run_ids.setdefault(run_id, where)
     if confirmation["by"] == evidence["author"]:
         errors.append("parent_confirmation: the author cannot confirm their own story")
     if confirmation["command"] not in expected:
         errors.append("parent_confirmation: command is not one of the acceptance commands")
     if _time(confirmation["at"]) < merged_at:
         errors.append("parent_confirmation: confirmed before the merge")
-    text = _artifact(root, confirmation["raw_output"], "parent_confirmation", errors)
+    text = texts["parent_confirmation"]
+    if text is not None:
+        # The confirmation re-runs one acceptance command and must end as that item expects.
+        _check_run_truth(
+            confirmation,
+            text,
+            "parent_confirmation",
+            errors,
+            want=wanted.get(confirmation["command"], 0),
+        )
     if text is not None and expected.get(confirmation["command"], "\0") not in text:
         errors.append("parent_confirmation: expected text is not in the raw output")
     return errors
@@ -208,7 +448,7 @@ def unproven_archives(root: Path, evidence_files: list[Path]) -> list[str]:
     for path in evidence_files:
         try:
             named.add(json.loads(path.read_text(encoding="utf-8"))["openspec"]["change"])
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, *NOT_JSON, KeyError, TypeError):
             continue
     missing = []
     for archived in sorted((root / ARCHIVE_DIR).glob("????-??-??-*")):
@@ -232,12 +472,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("name an evidence file or pass --all")
 
     failed = False
+    encoding = sys.stdout.encoding or "utf-8"
     for path in files:
         errors = check_evidence(root, path)
         failed |= bool(errors)
         print(f"{'NOT DONE' if errors else 'DONE'}: {path}")
         for error in errors:
-            print(f"  - {error}")
+            # An error can quote raw output, and JSON can decode to text stdout cannot encode.
+            print(f"  - {error}".encode(encoding, "backslashreplace").decode(encoding))
     if args.all:
         for change in unproven_archives(root, files):
             failed = True

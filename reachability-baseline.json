@@ -125,7 +125,7 @@
   },
   {
     "qualified_name": "verdict.context_inject.extract_envelope",
-    "reason": "UNTRIAGED: extract_envelope has only non-production references; Inject the compiled cheap-path context pack into the upstream request (verdict/context_inject.py)."
+    "reason": "KEEP: round-trip reader for the injected envelope, used by tests to verify the pack actually reached the forwarded payload for each relay surface (chat, responses, messages); the envelope digest is the receipt's ground truth, so the reader is the verification counterpart of inject_context_pack."
   },
   {
     "qualified_name": "verdict.context_lift.refuse_secret_write",
@@ -206,18 +206,6 @@
   {
     "qualified_name": "verdict.evaluation.build_evaluation_report",
     "reason": "UNTRIAGED: build_evaluation_report has only non-production references; Evidence-gated shadow, counterfactual, and promotion evaluation (verdict/evaluation.py)."
-  },
-  {
-    "qualified_name": "verdict.execution_hosts.build_execution_preview",
-    "reason": "UNTRIAGED: build_execution_preview has only non-production references; Typed, redacted contracts for safe execution-host integrations (verdict/execution_hosts.py)."
-  },
-  {
-    "qualified_name": "verdict.execution_hosts.canonical_preview_digest",
-    "reason": "UNTRIAGED: canonical_preview_digest has only non-production references; Typed, redacted contracts for safe execution-host integrations (verdict/execution_hosts.py)."
-  },
-  {
-    "qualified_name": "verdict.execution_hosts.validate_adapter_capabilities",
-    "reason": "UNTRIAGED: validate_adapter_capabilities has only non-production references; Typed, redacted contracts for safe execution-host integrations (verdict/execution_hosts.py)."
   },
   {
     "qualified_name": "verdict.execution_path.apply_bounded_recovery",
@@ -405,19 +393,19 @@
   },
   {
     "qualified_name": "verdict.orchestration.prime_settings.resolved_retry_policy",
-    "reason": "UNTRIAGED: resolved_retry_policy has only non-production references; Prime launch settings precedence — Verdict's one-shot retry policy floor (verdict/orchestration/prime_settings.py)."
+    "reason": "UNTRIAGED: resolved_retry_policy has only non-production references; Prime launch settings precedence \u2014 Verdict's one-shot retry policy floor (verdict/orchestration/prime_settings.py)."
   },
   {
     "qualified_name": "verdict.orchestration.provider_catalog.is_not_free_overridden",
-    "reason": "UNTRIAGED: is_not_free_overridden has only non-production references; Provider catalog: alias resolution, backend pool identity, and capacity helpers (verdict/orchestration/provider_catalog.py)."
+    "reason": "KEEP: check-side of the not-free override pair (record_not_free_override); BOD-418 gates its pool write via include_pool. No production caller yet \u2014 the FREE-tier ranking consumer from design \u00a7B item 3 was never wired; retained as the module's public contract and exercised by tests/test_catalog_truth.py."
   },
   {
     "qualified_name": "verdict.orchestration.provider_catalog.routes_share_pool",
-    "reason": "UNTRIAGED: routes_share_pool has only non-production references; Provider catalog: alias resolution, backend pool identity, and capacity helpers (verdict/orchestration/provider_catalog.py)."
+    "reason": "KEEP: public pool-identity helper documented for review/claims independence checks; production callers were planned but not wired. Exercised by tests/test_catalog_truth.py; retained as provider_catalog's public API alongside backend_pool/pool_aware_families."
   },
   {
     "qualified_name": "verdict.orchestration.supervisor_admission.acquire_integration_lock",
-    "reason": "UNTRIAGED: acquire_integration_lock has only non-production references; Supervisor admission pipeline — feature-flagged multi-story governor (BOD-157) (verdict/orchestration/supervisor_admission.py)."
+    "reason": "KEEP: cross-process fcntl integration lock serialising the merge step (ADR-037). The multi-story supervisor path is feature-flagged off, so only tests call it; retained as the admission pipeline public surface, not dead code."
   },
   {
     "qualified_name": "verdict.orchestration.verified_refresh.VerifiedRow",
@@ -493,11 +481,11 @@
   },
   {
     "qualified_name": "verdict.runtime_certification.register_detector",
-    "reason": "UNTRIAGED: register_detector has only non-production references; Runtime certification — evidence-only discovery→normalize→certify (passport) (verdict/runtime_certification.py)."
+    "reason": "UNTRIAGED: register_detector has only non-production references; Runtime certification \u2014 evidence-only discovery\u2192normalize\u2192certify (passport) (verdict/runtime_certification.py)."
   },
   {
     "qualified_name": "verdict.runtime_certification.reset_detectors",
-    "reason": "UNTRIAGED: reset_detectors has only non-production references; Runtime certification — evidence-only discovery→normalize→certify (passport) (verdict/runtime_certification.py)."
+    "reason": "UNTRIAGED: reset_detectors has only non-production references; Runtime certification \u2014 evidence-only discovery\u2192normalize\u2192certify (passport) (verdict/runtime_certification.py)."
   },
   {
     "qualified_name": "verdict.runtime_compatibility.build_runtime_compatibility_report",
@@ -553,15 +541,15 @@
   },
   {
     "qualified_name": "verdict.trusted_change_report.compute_report_digest",
-    "reason": "UNTRIAGED: compute_report_digest has only non-production references; Trusted Change Report — carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+    "reason": "UNTRIAGED: compute_report_digest has only non-production references; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
   },
   {
     "qualified_name": "verdict.trusted_change_report.reproduce_report",
-    "reason": "UNTRIAGED: reproduce_report has no resolved reference; Trusted Change Report — carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+    "reason": "UNTRIAGED: reproduce_report has no resolved reference; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
   },
   {
     "qualified_name": "verdict.trusted_change_report.verify_report",
-    "reason": "UNTRIAGED: verify_report has only non-production references; Trusted Change Report — carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+    "reason": "UNTRIAGED: verify_report has only non-production references; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
   },
   {
     "qualified_name": "verdict.tui_verified_controls.ProgressRecorder",
@@ -601,7 +589,7 @@
   },
   {
     "qualified_name": "verdict.commands.parsers_routing.register",
-    "reason": "UNTRIAGED: register has no resolved reference; Argument registration for Verdict routing command family (verdict/commands/parsers_routing.py)."
+    "reason": "KEEP: argparse registrar for the routing command family, called from verdict/cli.py main() registrar loop (verdict/cli.py, parsers_routing in the `for registrar in (...)` tuple); the static tracer does not resolve the tuple loop. Same precedent as parsers_harness/parsers_models/parsers_runtime."
   },
   {
     "qualified_name": "verdict.commands.parsers_runtime.register",
@@ -725,7 +713,7 @@
   },
   {
     "qualified_name": "verdict.orchestration.prime_settings.assert_one_shot_launch",
-    "reason": "UNTRIAGED: assert_one_shot_launch has only non-production references; Prime launch settings precedence — Verdict's one-shot retry policy floor (verdict/orchestration/prime_settings.py)."
+    "reason": "UNTRIAGED: assert_one_shot_launch has only non-production references; Prime launch settings precedence \u2014 Verdict's one-shot retry policy floor (verdict/orchestration/prime_settings.py)."
   },
   {
     "qualified_name": "verdict.present.reset",
@@ -737,6 +725,6 @@
   },
   {
     "qualified_name": "verdict.trusted_change_report.utc_now_iso",
-    "reason": "UNTRIAGED: utc_now_iso has no resolved reference; Trusted Change Report — carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
+    "reason": "UNTRIAGED: utc_now_iso has no resolved reference; Trusted Change Report \u2014 carrier pipeline (feature 002) (verdict/trusted_change_report.py)."
   }
 ]

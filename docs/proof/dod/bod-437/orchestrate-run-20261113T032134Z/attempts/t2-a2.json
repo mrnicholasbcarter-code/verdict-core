@@ -1,0 +1,29 @@
+{
+ "node_id": "t2",
+ "attempt": 2,
+ "route_id": "opencode-go/beam-free",
+ "ok": true,
+ "reported_model": "beam-free",
+ "stop_reason": "end_turn",
+ "status_code": null,
+ "error": "",
+ "output_tail": "FILE: ok.txt\n```text\nok\n```\n\nRESULT: DONE",
+ "duration_seconds": 7.475045862025581,
+ "session_ref": "direct-gateway:chatcmpl-4baac8b4-d038-4cde-b88c-f9c3c3304d0f",
+ "usage": {
+  "input_tokens": 814,
+  "output_tokens": 281,
+  "cost_usd": 0.0,
+  "tokens_source": "http_response",
+  "turns": 1
+ },
+ "served_check": {
+  "status": "unknown",
+  "selected_route": "opencode-go/beam-free",
+  "served_route": null,
+  "served": null,
+  "reasons": [
+   "no_served_identity_headers"
+  ]
+ }
+}

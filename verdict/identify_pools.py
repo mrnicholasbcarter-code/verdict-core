@@ -146,7 +146,9 @@ def _row(
         },
         "aliases": [],
     }
-    return (CAPACITY_ORDER[capacity], *rating_key(rated), route), row
+    # Capacity class is a membership filter only (``--capacity``); it never
+    # enters the ordering key. Task rating strongest first, then route id.
+    return (*rating_key(rated), route), row
 
 
 def _ordered(rows: list[tuple[tuple[Any, ...], dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -165,7 +167,7 @@ def build_task_pools(
     cache_routes: Mapping[str, HealthEntry] | None,
     now: datetime,
 ) -> dict[str, Any]:
-    """Eligible and fallback pools per task family, cheapest capacity then strongest."""
+    """Eligible and fallback pools per task family, strongest task rating first."""
     usable = {c.provider for c in evidence.connections if c.usable}
     admitted: list[str] = []
     blocked: Counter[str] = Counter()
@@ -205,7 +207,7 @@ def build_task_pools(
     report.update(
         blocked_by_reason=dict(sorted(blocked.items())),
         dispatch_authorized=False,
-        order="capacity(free,subscription,metered,unknown)->task_rating->route_id",
+        order="task_rating->route_id",
     )
     return report
 

@@ -613,7 +613,7 @@ Network probes require the explicit `--allow-live-probe` consent flag.
 verdict identify --passive --json                 # read-only; zero model calls
 verdict identify --passive --json --save-report   # also writes $VERDICT_HOME/identify-latest.json (0600)
 verdict identify --screen --allow-live-probe --max-per-provider 1 --max-routes 8 --json
-verdict identify install-service [--dry-run]      # passive and daily screen timers
+verdict identify install-service [--dry-run]      # passive and six-hourly screen timers
 ```
 
 Passive mode makes at most seven bounded GETs to OmniRoute and no POST, write or
@@ -645,9 +645,10 @@ traffic status must not be 401, 403 or 404. Admitted routes with fresh tool proo
 (for the route or an alias of the same backend model) are `eligible`. Admitted
 routes without it are `fallback`: probation that needs bounded qualification, never
 dispatch-authorized. Other routes are only counted in `blocked_by_reason`. Both
-lists are ordered free, subscription, metered, unknown, then task rating (strongest
-first, unknown last), then route id. Routes with the same backend model collapse to
-the first row, which lists the others in `aliases`.
+lists are ordered by task rating strongest first (unknown last), then route id.
+Capacity class is a membership filter only (`--capacity`), never an order key.
+Routes with the same backend model collapse to the first row, which lists the
+others in `aliases`.
 
 `verdict doctor` adds the pool summary to its "Identify passive report" row when the
 saved report has `task_pools` and `supply`:

@@ -57,7 +57,7 @@ def _ladder_row(
         "id": route_id,
         "owned_by": route_id.split("/", 1)[0],
         "context_length": 200_000,
-        "capabilities": {"tool_calling": True},
+        "capabilities": {"tool_calling": True, "reasoning": True},
         "pricing": pricing,
     }
     if tier is not None:
@@ -97,8 +97,11 @@ def _ladder(
     )
 
 
-# Frontier-worthy work skips the FREE agentic-proof gate, so both routes stay eligible.
-REQ = TaskRequirements(frontier_worthy=True, max_capability_tier=3)
+# Reasoning-only frontier work skips the FREE agentic-proof gate, so both
+# routes stay eligible (tool-requiring frontier work is gated, BOD-299 AC2).
+REQ = TaskRequirements(
+    frontier_worthy=True, max_capability_tier=3, required_capabilities=frozenset({"reasoning"})
+)
 
 
 class TestRankModels:
@@ -561,7 +564,12 @@ class TestActualSelectionRatingOrder:
             _record("acme/strong", "cc/strong", aa_coding=_score(90.0)),
         )
         ladder = _ladder(tmp_path, rows, [_conn("cc", auth="oauth")], meta)
-        selected, verdicts = ladder.select(REQ, now=NOW)
+        # Tool-requiring work keeps the hard capability floor; the shared REQ
+        # is reasoning-only (BOD-299 AC2), so this test asks for tools.
+        tools_req = TaskRequirements(
+            frontier_worthy=True, required_capabilities=frozenset({"tools"})
+        )
+        selected, verdicts = ladder.select(tools_req, now=NOW)
         assert selected is not None and selected.route_id == "cc/weak"
         rejected = next(v for v in verdicts if v.route_id == "cc/strong")
         assert rejected.rank is None and rejected.reason == "missing_capability:tools"
