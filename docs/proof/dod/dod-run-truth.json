@@ -26,10 +26,10 @@
   "acceptance": [
     {
       "criterion": "The definition-of-done gate passes on merged main with all required CI checks green (repo-tooling DoD part 1).",
-      "expect": "check_dod: ",
+      "expect": "DONE: /tmp/opencode/dod-run-truth-check/docs/proof/dod/bod-286.json",
       "expect_exit_code": 0,
       "first_run": {
-        "at": "2026-11-17T15:45:35.036523+00:00",
+        "at": "2026-11-17T16:53:29Z",
         "sha": "32d1ad3eb1a1988557e6bfdca441db4f7f0306ba",
         "environment": "operator-host",
         "command": "uv run python scripts/check_dod.py --all",
@@ -37,11 +37,11 @@
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/dod-run-truth/first_run.txt",
-          "sha256": "e5fab0ae47c78102ca346120d53237a7f92f0eb78b0672ec3f3503ae8325e14e"
+          "sha256": "86672d5f1d06b6e79307d3226bd3c3a951f0f21913d4dbae2894580201b2a315"
         }
       },
       "fresh_run": {
-        "at": "2026-11-17T16:45:49.913219+00:00",
+        "at": "2026-11-17T17:53:54Z",
         "sha": "32d1ad3eb1a1988557e6bfdca441db4f7f0306ba",
         "environment": "operator-host",
         "command": "uv run python scripts/check_dod.py --all",
@@ -49,7 +49,7 @@
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/dod-run-truth/fresh_run.txt",
-          "sha256": "e5fab0ae47c78102ca346120d53237a7f92f0eb78b0672ec3f3503ae8325e14e"
+          "sha256": "86672d5f1d06b6e79307d3226bd3c3a951f0f21913d4dbae2894580201b2a315"
         }
       }
     }
@@ -58,12 +58,12 @@
     "change": "dod-run-truth"
   },
   "parent_confirmation": {
-    "by": "operator (human review of merged main evidence)",
-    "at": "2026-11-17T16:47:30.333499+00:00",
+    "by": "gem-implementer on omniroute/cc/claude-opus-5-5 (subagent session, plan 20261117-swarm)",
+    "at": "2026-11-17T17:55:13Z",
     "command": "uv run python scripts/check_dod.py --all",
     "raw_output": {
       "path": "docs/proof/dod/dod-run-truth/parent.txt",
-      "sha256": "e5fab0ae47c78102ca346120d53237a7f92f0eb78b0672ec3f3503ae8325e14e"
+      "sha256": "86672d5f1d06b6e79307d3226bd3c3a951f0f21913d4dbae2894580201b2a315"
     }
   }
 }

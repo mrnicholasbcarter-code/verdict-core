@@ -1,10 +1,10 @@
-DONE: /tmp/opencode/dod-run-truth-evidence/docs/proof/dod/bod-286.json
-DONE: /tmp/opencode/dod-run-truth-evidence/docs/proof/dod/bod-297.json
-DONE: /tmp/opencode/dod-run-truth-evidence/docs/proof/dod/bod-410.json
-DONE: /tmp/opencode/dod-run-truth-evidence/docs/proof/dod/bod-413.json
-DONE: /tmp/opencode/dod-run-truth-evidence/docs/proof/dod/bod-416-doctor-gateway-key.json
-DONE: /tmp/opencode/dod-run-truth-evidence/docs/proof/dod/bod-416-route-key-file.json
-DONE: /tmp/opencode/dod-run-truth-evidence/docs/proof/dod/bod-417.json
-DONE: /tmp/opencode/dod-run-truth-evidence/docs/proof/dod/bod-434.json
-DONE: /tmp/opencode/dod-run-truth-evidence/docs/proof/dod/bod-437.json
+DONE: /tmp/opencode/dod-run-truth-check/docs/proof/dod/bod-286.json
+DONE: /tmp/opencode/dod-run-truth-check/docs/proof/dod/bod-297.json
+DONE: /tmp/opencode/dod-run-truth-check/docs/proof/dod/bod-410.json
+DONE: /tmp/opencode/dod-run-truth-check/docs/proof/dod/bod-413.json
+DONE: /tmp/opencode/dod-run-truth-check/docs/proof/dod/bod-416-doctor-gateway-key.json
+DONE: /tmp/opencode/dod-run-truth-check/docs/proof/dod/bod-416-route-key-file.json
+DONE: /tmp/opencode/dod-run-truth-check/docs/proof/dod/bod-417.json
+DONE: /tmp/opencode/dod-run-truth-check/docs/proof/dod/bod-434.json
+DONE: /tmp/opencode/dod-run-truth-check/docs/proof/dod/bod-437.json
 check_dod: 9 evidence file(s) checked
