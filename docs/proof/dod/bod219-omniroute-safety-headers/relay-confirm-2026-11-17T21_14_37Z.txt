@@ -12,7 +12,7 @@
 } [63 bytes data]
 * Mark bundle as not supporting multiuse
 < HTTP/1.1 200 OK
-< date: Tue, 17 Nov 2026 20:45:36 GMT
+< date: Tue, 17 Nov 2026 21:16:08 GMT
 < server: uvicorn
 < content-security-policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: ws: wss:; worker-src 'self' blob:; manifest-src 'self'
 < x-frame-options: DENY
@@ -25,28 +25,28 @@
 < access-control-allow-origin: *
 < vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
 < x-omniroute-route-class: CLIENT_API
-< x-request-id: 3ff5d28c-a0a9-46b0-8606-5f8dd36d0838
+< x-request-id: 1c13e2b0-b230-45e5-bd52-97b17b55838e
 < content-type: application/json
-< x-conversationid: conv_6afaed04-5080-4246-8860-9661e7b05d80
-< x-correlation-id: 0dba51dd-acad-43c1-a203-e199e069b68c
+< x-conversationid: conv_a56796f3-a7ed-45fd-a219-462e28a9344d
+< x-correlation-id: 886d07cf-caf5-4390-afa1-649ca0ace7ae
 < x-omniroute-cache: MISS
 < x-omniroute-cache-hit: false
 < x-omniroute-compression: off; source=off
-< x-omniroute-decision: strategy=single; provider=cc; latency_ms=2311
-< x-omniroute-latency-ms: 2311
-< x-omniroute-model: claude-opus-4-8
+< x-omniroute-decision: strategy=single; provider=cc; latency_ms=1374
+< x-omniroute-latency-ms: 1374
+< x-omniroute-model: claude-haiku-4-5-20251001
 < x-omniroute-provider: cc
-< x-omniroute-request-id: 9a96d4a3-e989-44c3-862e-75a2ebbffdfb
-< x-omniroute-response-cost: 0.0038750000
+< x-omniroute-request-id: e78d8bb4-7291-476a-99de-4cb9a77e5615
+< x-omniroute-response-cost: 0.0005770000
 < x-omniroute-selected-connection-id: 70870f4f-4ec7-4533-83ed-380fe0154748
-< x-omniroute-session-id: 967c3b676529382d
-< x-omniroute-tokens-in: 95
-< x-omniroute-tokens-out: 136
+< x-omniroute-session-id: a80082fe02488af4
+< x-omniroute-tokens-in: 57
+< x-omniroute-tokens-out: 104
 < x-omniroute-version: 3.8.53
-< date: Tue, 17 Nov 2026 20:45:47 GMT
-< x-verdict-model: cc/claude-opus-4-8
+< date: Tue, 17 Nov 2026 21:16:19 GMT
+< x-verdict-model: cc/claude-haiku-4-5-20251001
 < x-verdict-tier: 2
-< x-verdict-request-id: req-03123a2d40064f0e9c3803f1ec5ab5fa
+< x-verdict-request-id: req-cf256cafa0ea477380d473e5328ee786
 < x-verdict-decision: selected
 < x-verdict-transport-outcome: success
 < x-verdict-quality-outcome: unknown
@@ -54,12 +54,12 @@
 < x-verdict-pack-injected: true
 < x-verdict-pack-state: hydrated
 < x-verdict-pack-digest: sha256:841e73bebecaba33bed9b4fcbc46805a71c487ed19993ee6294651a1d1febb45
-< x-verdict-evidence-request-id: req-03123a2d40064f0e9c3803f1ec5ab5fa
-< x-verdict-correlation-id: corr-fa43a46acbb243499a67d2004fc9e7d5
-< x-verdict-evidence-id: evidence-c3debf57c64249d680cc43bc8f615eb8
-< content-length: 710
+< x-verdict-evidence-request-id: req-cf256cafa0ea477380d473e5328ee786
+< x-verdict-correlation-id: corr-cdd23370fec447e784e924d7372a7c6f
+< x-verdict-evidence-id: evidence-4db8532606984c62b50b22b5ed494f13
+< content-length: 683
 < cache-control: no-store
 < 
-{ [710 bytes data]
+{ [683 bytes data]
 * Connection #0 to host 127.0.0.1 left intact
-{"id":"chatcmpl-msg_011Ch99txFXZsjzBR1q3yV1M","object":"chat.completion","created":1794948347,"model":"claude-opus-4-8","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Hello! How can I help you today?\n\nI'm Claude Code, Anthropic's CLI for working with code. I can help you with:\n\n- **Writing and editing code** across many languages\n- **Debugging** issues and fixing errors\n- **Explaining** code or concepts\n- **Refactoring** and improving existing code\n- **Running commands** and working with your file system\n- **Git operations** and version control\n\nWhat would you like to work on?"}}],"usage":{"prompt_tokens":95,"completion_tokens":136,"total_tokens":231}}
+{"id":"chatcmpl-msg_011Ch9CE79L9gZ81DvMSLHsg","object":"chat.completion","created":1794950179,"model":"claude-haiku-4-5-20251001","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"# Hello! 👋\n\nI'm Claude, Anthropic's AI assistant. I'm here to help with a wide variety of tasks including:\n\n- **Answering questions** on virtually any topic\n- **Writing and editing** content\n- **Coding** and technical help\n- **Analysis and research**\n- **Creative projects**\n- **Problem-solving** and brainstorming\n- **Learning and explanations**\n\nHow can I assist you today?"}}],"usage":{"prompt_tokens":57,"completion_tokens":104,"total_tokens":161}}

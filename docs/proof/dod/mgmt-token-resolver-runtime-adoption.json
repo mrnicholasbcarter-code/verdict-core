@@ -62,12 +62,12 @@
     "change": "mgmt-token-resolver-runtime-adoption"
   },
   "parent_confirmation": {
-    "by": "gem-devops on omniroute/worker/free-first",
-    "at": "2026-11-17T19:52:47Z",
+    "by": "gem-implementer confirmer on omniroute/worker/free-verified",
+    "at": "2026-11-17T21:14:37Z",
     "command": "verdict doctor --json",
     "raw_output": {
-      "path": "docs/proof/dod/mgmt-token-resolver-runtime-adoption/doctor-confirm-2026-11-17T19_52_47Z.json",
-      "sha256": "1a6463880b105b26f36d686de35e57083a1b7e29f03dabed4eda71dc6627b8e3"
+      "path": "docs/proof/dod/mgmt-token-resolver-runtime-adoption/doctor-confirm-2026-11-17T21_14_37Z.json",
+      "sha256": "e401986543aea6d100196c286e9e1f2b7ffa7c2e21ef83536c51e97051477ada"
     }
   }
 }

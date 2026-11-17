@@ -1,10 +1,6 @@
 {
   "acceptance": {
-    "age_seconds": 2952,
-    "eligible_free": 21,
-    "failed": [],
-    "path": "/operator/.verdict/acceptance/20261117T190015Z.json",
-    "state": "green"
+    "state": "none"
   },
   "capability_bootstrap": {
     "capabilities": [
@@ -1164,19 +1160,38 @@
   },
   "gateway_lifecycle": {
     "attempts": 1,
-    "detail": "inventory reachable",
-    "diagnostic": null,
+    "detail": "ReadTimeout: timed out",
+    "diagnostic": {
+      "class": "gateway_health",
+      "code": "gateway_unreachable",
+      "detail": "gateway at http://127.0.0.1:20128 did not answer: ReadTimeout: timed out",
+      "fatal": true,
+      "field": "gateway_url",
+      "remediation": "start the gateway at http://127.0.0.1:20128, or run 'verdict doctor'",
+      "source": "environment"
+    },
     "gateway_url": "http://127.0.0.1:20128",
     "launched": false,
-    "ready": true,
-    "state": "already_ready",
+    "ready": false,
+    "state": "unhealthy",
     "waited_for_owner": false
   },
-  "issues": [],
+  "issues": [
+    "tag None (installed v3.8.53), last sync None, 0 pages; never synced (/tmp/opencode/confirm-home/ref-docs/default--ref-omniroute.json is missing); repair: verdict memory ref-docs sync",
+    "/tmp/opencode/confirm-home/identify-latest.json missing or unreadable; wait for verdict-identify.service",
+    "metadata snapshot missing or unreadable at /tmp/opencode/confirm-home/model-metadata.json; repair: verdict metadata refresh",
+    "/tmp/opencode/confirm-home/health-cache.json does not exist; no screening or passive evidence yet; passive source: verdict-identify.service (OmniRoute health matrix) last refreshed never; repair: systemctl --user start verdict-identify.service",
+    "verdict-identify.service: state scope /operator/.verdict, not /tmp/opencode/confirm-home (reviewed build git ac623aecbf10; package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict)",
+    "verdict-identify-screen.service: state scope /operator/.verdict, not /tmp/opencode/confirm-home (reviewed build git ac623aecbf10; package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict)",
+    "verdict-acceptance.service: state scope /operator/.verdict, not /tmp/opencode/confirm-home (reviewed build git ac623aecbf10; package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict)",
+    "verdict-prime-sync.service: state scope /operator/.verdict, not /tmp/opencode/confirm-home (reviewed build git ac623aecbf10; package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict)",
+    "verdict-metadata-refresh.service: state scope /operator/.verdict, not /tmp/opencode/confirm-home (reviewed build git ac623aecbf10; package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict)",
+    "verdict-serve.service: state scope /operator/.verdict, not /tmp/opencode/confirm-home (reviewed build git ac623aecbf10; package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict)"
+  ],
   "repaired": [],
   "runtime_health": {
     "errors": [],
-    "generated_at": "2026-11-17T19:52:54.054322Z",
+    "generated_at": "2026-11-17T21:14:48.549667Z",
     "observations": [],
     "passed": true,
     "schema_version": "1",
@@ -1215,9 +1230,14 @@
       "state": "ok"
     },
     {
-      "detail": "gateway already_ready url=http://127.0.0.1:20128: inventory reachable",
+      "detail": "gateway unhealthy url=http://127.0.0.1:20128: ReadTimeout: timed out",
       "label": "Gateway lifecycle",
-      "state": "ok"
+      "state": "warn"
+    },
+    {
+      "detail": "start the gateway at http://127.0.0.1:20128, or run 'verdict doctor'",
+      "label": "Gateway remediation",
+      "state": "note"
     },
     {
       "detail": "active: gateway_kind=omniroute (verdict.yaml gateway_kind); 8 ranked providers (coding) at http://127.0.0.1:20128",
@@ -1245,9 +1265,9 @@
       "state": "ok"
     },
     {
-      "detail": "green: /operator/.verdict/acceptance/20261117T190015Z.json, 49 min old",
+      "detail": "none: no result yet",
       "label": "Live acceptance",
-      "state": "ok"
+      "state": "warning"
     },
     {
       "detail": "",
@@ -1415,14 +1435,14 @@
       "state": "ok"
     },
     {
-      "detail": "tag v3.8.53 (installed v3.8.53), last sync 2026-11-17T19:05:16+00:00, 1436 pages",
+      "detail": "tag None (installed v3.8.53), last sync None, 0 pages; never synced (/tmp/opencode/confirm-home/ref-docs/default--ref-omniroute.json is missing); repair: verdict memory ref-docs sync",
       "label": "Reference docs default/ref-omniroute",
-      "state": "ok"
+      "state": "failed"
     },
     {
-      "detail": "/operator/.verdict/identify-latest.json age 3382s; source errors none; model calls 0; health refresh recorded 51, newest evidence age 3384s; implementation pool eligible 32 (free 17), fallback 886; supply complete false, 46 unknowns",
+      "detail": "/tmp/opencode/confirm-home/identify-latest.json missing or unreadable; wait for verdict-identify.service",
       "label": "Identify passive report",
-      "state": "ok"
+      "state": "failed"
     },
     {
       "detail": "not registered (never attempted); health matrix remains the passive source; repair: verdict identify register-webhook",
@@ -1430,14 +1450,14 @@
       "state": "warning"
     },
     {
-      "detail": "verdict-metadata-refresh.timer active; arena_elo=skipped, artificial_analysis=skipped, bfcl=skipped, litellm=92s, models.dev=92s, models.dev.models=92s, open_llm_leaderboard=skipped, openrouter.artificial_analysis=92s",
+      "detail": "metadata snapshot missing or unreadable at /tmp/opencode/confirm-home/model-metadata.json; repair: verdict metadata refresh",
       "label": "Metadata refresh timer",
-      "state": "ok"
+      "state": "failed"
     },
     {
-      "detail": "69 fresh, 0 stale route(s); passive traffic 58 (newest age 3385s); webhook 0; probes 11 (newest age 5114s)",
+      "detail": "/tmp/opencode/confirm-home/health-cache.json does not exist; no screening or passive evidence yet; passive source: verdict-identify.service (OmniRoute health matrix) last refreshed never; repair: systemctl --user start verdict-identify.service",
       "label": "Health cache",
-      "state": "ok"
+      "state": "failed"
     },
     {
       "detail": "verdict-prime-sync.service: cwd /operator/.local/share/verdict/installed-main, package /operator/.local/share/verdict/installed-main/verdict",
@@ -1445,34 +1465,34 @@
       "state": "ok"
     },
     {
-      "detail": "verdict-identify.service: package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict",
+      "detail": "verdict-identify.service: state scope /operator/.verdict, not /tmp/opencode/confirm-home (reviewed build git ac623aecbf10; package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict)",
       "label": "Runtime identify",
-      "state": "ok"
+      "state": "failed"
     },
     {
-      "detail": "verdict-identify-screen.service: package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict",
+      "detail": "verdict-identify-screen.service: state scope /operator/.verdict, not /tmp/opencode/confirm-home (reviewed build git ac623aecbf10; package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict)",
       "label": "Runtime identify-screen",
-      "state": "ok"
+      "state": "failed"
     },
     {
-      "detail": "verdict-acceptance.service: package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict",
+      "detail": "verdict-acceptance.service: state scope /operator/.verdict, not /tmp/opencode/confirm-home (reviewed build git ac623aecbf10; package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict)",
       "label": "Runtime acceptance",
-      "state": "ok"
+      "state": "failed"
     },
     {
-      "detail": "verdict-prime-sync.service: package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict",
+      "detail": "verdict-prime-sync.service: state scope /operator/.verdict, not /tmp/opencode/confirm-home (reviewed build git ac623aecbf10; package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict)",
       "label": "Runtime prime-sync",
-      "state": "ok"
+      "state": "failed"
     },
     {
-      "detail": "verdict-metadata-refresh.service: package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict",
+      "detail": "verdict-metadata-refresh.service: state scope /operator/.verdict, not /tmp/opencode/confirm-home (reviewed build git ac623aecbf10; package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict)",
       "label": "Runtime metadata-refresh",
-      "state": "ok"
+      "state": "failed"
     },
     {
-      "detail": "verdict-serve.service: package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict",
+      "detail": "verdict-serve.service: state scope /operator/.verdict, not /tmp/opencode/confirm-home (reviewed build git ac623aecbf10; package /operator/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, gateway default, state /operator/.verdict)",
       "label": "Runtime serve",
-      "state": "ok"
+      "state": "failed"
     },
     {
       "detail": "",
@@ -1495,7 +1515,7 @@
       "state": "ok"
     },
     {
-      "detail": "/operator/.prime/agent/models.json: providers.omniroute has 4273 model(s)",
+      "detail": "/operator/.prime/agent/models.json: providers.omniroute has 4267 model(s)",
       "label": "Prime registry",
       "state": "ok"
     },
@@ -1516,8 +1536,9 @@
     "state": "not-installed",
     "token_env": "VERDICT_SHARED_MEMORY_TOKEN"
   },
-  "status": "ok",
+  "status": "issues_found",
   "warnings": [
-    "missing_mcp_config"
+    "missing_mcp_config",
+    "Live acceptance has no result yet: run 'verdict acceptance run'"
   ]
 }

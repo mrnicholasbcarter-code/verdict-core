@@ -62,12 +62,12 @@
     "change": "bod219-omniroute-safety-headers"
   },
   "parent_confirmation": {
-    "by": "gem-devops on omniroute/worker/free-first",
-    "at": "2026-11-17T20:45:36Z",
+    "by": "gem-implementer confirmer on omniroute/worker/free-verified",
+    "at": "2026-11-17T21:14:37Z",
     "command": "curl -sS -v -X POST -H 'Authorization: Bearer [redacted]' -H 'Content-Type: application/json' -d '{\"model\":\"test\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}' http://127.0.0.1:8000/v1/chat/completions",
     "raw_output": {
-      "path": "docs/proof/dod/bod219-omniroute-safety-headers/relay-confirm-2026-11-17T20_45_36Z.txt",
-      "sha256": "abaab5b2aa58b0500d5552a52e03e3b1cbc75a3ca4dcf8449e8f6021bed00f65"
+      "path": "docs/proof/dod/bod219-omniroute-safety-headers/relay-confirm-2026-11-17T21_14_37Z.txt",
+      "sha256": "5b49831c79e361aac6f834a7a34826b7eb825b97bdb616336e70d2fbc1f741a2"
     }
   }
 }
