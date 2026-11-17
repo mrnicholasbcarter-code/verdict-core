@@ -221,14 +221,20 @@ def _pr_watch_repos() -> list[str]:
         return []
 
     lines = content.splitlines()
-    raw_value = next(
-        (line.split("=", 1)[1] for line in lines if line.startswith("VERDICT_PR_WATCH_REPOS=")), ""
-    )
+    raw_value = ""
+    for line in lines:
+        # Strip the line, remove export prefix, remove trailing comment
+        stripped = line.strip()
+        if stripped.startswith("export "):
+            stripped = stripped[len("export ") :].strip()
+        if " #" in stripped:
+            stripped = stripped.split(" #", 1)[0].rstrip()
+        if stripped.startswith("VERDICT_PR_WATCH_REPOS="):
+            raw_value = stripped.split("=", 1)[1]
+            break
 
-    # Strip surrounding quotes, export prefix, leading spaces
+    # Strip surrounding quotes, leading/trailing spaces
     value = raw_value.strip()
-    if value.startswith("export "):
-        value = value[len("export ") :].strip()
     if (value.startswith('"') and value.endswith('"')) or (
         value.startswith("'") and value.endswith("'")
     ):
