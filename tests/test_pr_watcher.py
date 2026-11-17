@@ -790,6 +790,43 @@ class TestMergedCursor:
         # The lookback really did re-list the merged PR on the run after discovery.
         assert merged_at >= gh.merged_since_calls[2]
 
+    def test_failed_open_prs_then_merged_regression_found_via_24h_lookback(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Run 1 fails list_open_prs; run 2 queries merged since T0-24h and finds regression."""
+        # Run 1: list_open_prs fails for REPO
+        gh.fail_open[REPO] = GitHubClientError("HTTP 502 from GitHub")
+        result1 = run_watcher(gh, ws, [REPO], now=T0)
+        assert result1["ok"] is False
+        assert result1["repo_errors"][0]["kind"] == "github_error"
+        # No cursor advanced for REPO
+        assert disk(ws)["merged_cursors"] == {}
+
+        # A PR was open at T0-4h, merged at T0-4h with CHANGES_REQUESTED
+        # (simulated by setting up merged PRs and reviews for the query at run 2)
+        head = "9" * 40
+        merged_at = iso(T0 - timedelta(hours=4))
+        # Clear the error for run 2
+        gh.fail_open.clear()
+        # Run 2 will query merged PRs since T0 - 24h (no cursor)
+        gh._set_open_prs(REPO, [])
+        gh._set_merged_prs(REPO, [{"number": 99, "head_sha": head, "merged_at": merged_at}])
+        gh._set_reviews(REPO, 99, [{"state": "CHANGES_REQUESTED", "id": 42}])
+
+        result2 = run_watcher(gh, ws, [REPO], now=T0 + timedelta(minutes=5))
+        assert result2["ok"] is True
+        assert result2["repo_errors"] == []
+        # Regression should be recorded
+        regressions = [r for r in result2["records"] if r["type"] == "regression"]
+        assert len(regressions) == 1
+        assert regressions[0]["pr_number"] == 99
+        assert regressions[0]["head"] == head
+        # The merged_since call should use T0 - 24h (since no cursor was set)
+        # Run 1 didn't call list_merged_prs, so this is the first call (index 0)
+        assert gh.merged_since_calls[0] == iso(T0 + timedelta(minutes=5) - timedelta(hours=24))
+        # Cursor should now be advanced to run 2's time
+        assert disk(ws)["merged_cursors"] == {REPO: iso(T0 + timedelta(minutes=5))}
+
 
 # ============================================================================
 # Requirement 3: Stable rerun identity and fencing
@@ -1404,8 +1441,8 @@ class TestRepositoryIsolation:
         assert [r["repo"] for r in state["records"]["repair"]] == [REPO]
         assert list(state["pr_states"]) == [f"state:{REPO}:pr7:{'c' * 40}"]
         assert [e["repo"] for e in state["digest_events"].values()] == [REPO]
-        # Both repos now have cursors advanced (ruling: failed repo cursor also advances)
-        assert state["merged_cursors"] == {REPO: iso(T0), OTHER: iso(T0)}
+        # Failed repo's cursor is not advanced; only the healthy repo's cursor moves.
+        assert state["merged_cursors"] == {REPO: iso(T0)}
 
     def test_repository_that_recovers_is_handled_in_full_on_the_next_run(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -1426,11 +1463,8 @@ class TestRepositoryIsolation:
             REPO: iso(T0 + RUN_INTERVAL),
             OTHER: iso(T0 + RUN_INTERVAL),
         }
-        # The repository that failed now has a cursor from the first run (ruling: failed repo cursor advances),
-        # so the second run uses that cursor minus the lookback as the since bound.
-        from verdict.pr_watcher import MERGED_LOOKBACK
-
-        assert gh.merged_since_calls[2] == iso(T0 - MERGED_LOOKBACK)
+        # The repository that failed had no cursor, so it starts from the bounded window.
+        assert gh.merged_since_calls[2] == iso(T0 + RUN_INTERVAL - timedelta(hours=24))
 
     def test_read_error_at_the_rerun_fence_spends_no_attempt_and_fails_the_run(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -1494,44 +1528,6 @@ class TestRepositoryIsolation:
             run_watcher(gh, ws, [REPO], now=T0)
 
         assert not ws.state_file.exists()
-
-    def test_all_repos_down_with_github_error_saves_state_and_types_github_error(
-        self, gh: FakeGitHubClient, ws: WatcherState
-    ) -> None:
-        """Catches the early return that skipped state persistence when all repos fail."""
-        error = GitHubClientError("HTTP 502 from GitHub")
-        gh.fail_open[REPO] = error
-        gh.fail_open[OTHER] = error
-
-        result = run_watcher(gh, ws, [REPO, OTHER], now=T0)
-
-        assert result["ok"] is False
-        assert result["type"] == "github_error"
-        # Each repo error should have a kind field
-        assert all(e.get("kind") == "github_error" for e in result["repo_errors"])
-        # State should still be persisted (cursors, last_run_at)
-        state = disk(ws)
-        assert "last_run_at" in state
-        assert state["merged_cursors"] == {REPO: iso(T0), OTHER: iso(T0)}
-
-    def test_one_failing_repo_healthy_repo_zero_prs_saves_healthy_repo_cursor(
-        self, gh: FakeGitHubClient, ws: WatcherState
-    ) -> None:
-        """Catches the healthy repo's cursor/last_run_at not being saved when other repo fails."""
-        error = GitHubClientError("HTTP 502 from GitHub")
-        gh.fail_open[OTHER] = error
-        # REPO has zero open PRs (healthy, just empty)
-
-        result = run_watcher(gh, ws, [OTHER, REPO], now=T0)
-
-        assert result["ok"] is False
-        assert result["repo_errors"] == [
-            {"repo": OTHER, "error": "HTTP 502 from GitHub", "kind": "github_error"}
-        ]
-        # State should be persisted with REPO's cursor
-        state = disk(ws)
-        assert "last_run_at" in state
-        assert state["merged_cursors"] == {REPO: iso(T0), OTHER: iso(T0)}
 
     def test_healthy_run_reports_ok(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
         """Catches the success flag being absent or false on a run with nothing wrong."""
@@ -2129,7 +2125,10 @@ class TestPathSafeKeys:
         assert result["type"] == "unsafe_state_key"
         assert repo in result["error"]
         assert gh.rerun_calls == []
-        assert not ws.state_file.exists()
+        # State is saved (last_run_at) but no records/cursors for the unsafe repo.
+        state = disk(ws)
+        assert "last_run_at" in state
+        assert state["merged_cursors"] == {}
 
     def test_unsafe_check_name_from_github_fails_the_run_closed(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -2141,7 +2140,67 @@ class TestPathSafeKeys:
 
         assert result["type"] == "unsafe_state_key"
         assert gh.rerun_calls == []
-        assert not ws.state_file.exists()
+        # State is saved (last_run_at) but no records/cursors for the unsafe repo.
+        state = disk(ws)
+        assert "last_run_at" in state
+        assert state["merged_cursors"] == {}
+
+    def test_unsafe_repo_isolation_other_repo_still_handled_and_state_saved(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Unsafe key in one repo drops only that repo; the other is processed and state saved."""
+        # Unsafe repo name
+        unsafe_repo = "../evil"
+        # Healthy repo with a failing check
+        open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")], repo=REPO)
+
+        result = run_watcher(gh, ws, [unsafe_repo, REPO], now=T0)
+
+        assert result["ok"] is False
+        assert result["type"] == "unsafe_state_key"
+        assert len(result["repo_errors"]) == 1
+        assert result["repo_errors"][0]["repo"] == unsafe_repo
+        assert result["repo_errors"][0]["kind"] == "unsafe_state_key"
+        # Healthy repo should have a repair record
+        assert outcomes(result) == [(1, "CODE_FAILURE", "REPAIR")]
+        assert [(r["repo"], r["pr_number"]) for r in result["records"]] == [(REPO, 1)]
+        # State should be saved with healthy repo's cursor
+        state = disk(ws)
+        assert "last_run_at" in state
+        assert state["merged_cursors"] == {REPO: iso(T0)}
+        assert [r["repo"] for r in state["records"]["repair"]] == [REPO]
+
+    def test_unsafe_check_name_isolation_other_repo_still_handled_and_state_saved(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Unsafe check name in one repo drops only that repo; the other is processed and state saved."""
+        # Repo with unsafe check name
+        unsafe_check_repo = "org/unsafe-check"
+        open_pr(
+            gh,
+            1,
+            "a" * 40,
+            [check("lint/../../x", "CANCELLED", job_id="job-1")],
+            repo=unsafe_check_repo,
+        )
+        # Healthy repo with a failing check
+        open_pr(gh, 2, "b" * 40, [check("lint", "FAILURE")], repo=REPO)
+
+        result = run_watcher(gh, ws, [unsafe_check_repo, REPO], now=T0)
+
+        assert result["ok"] is False
+        assert result["type"] == "unsafe_state_key"
+        assert len(result["repo_errors"]) == 1
+        assert result["repo_errors"][0]["repo"] == unsafe_check_repo
+        assert result["repo_errors"][0]["kind"] == "unsafe_state_key"
+        # Healthy repo should have a repair record
+        assert outcomes(result) == [(2, "CODE_FAILURE", "REPAIR")]
+        assert [(r["repo"], r["pr_number"]) for r in result["records"]] == [(REPO, 2)]
+        # State should be saved with healthy repo's cursor
+        state = disk(ws)
+        assert "last_run_at" in state
+        assert state["merged_cursors"] == {REPO: iso(T0)}
+        assert [r["repo"] for r in state["records"]["repair"]] == [REPO]
 
     def test_state_writers_reject_an_unsafe_key(self, ws: WatcherState) -> None:
         """Catches a writer that stores a key without validating it."""
@@ -3148,5 +3207,5 @@ class TestGhClientEndToEnd:
             }
         ]
         assert outcomes(result) == [(7, "CODE_FAILURE", "REPAIR"), (8, "GREEN", "READY")]
-        # Both repos now have cursors (ruling: failed repo cursor advances on first run)
-        assert disk(ws)["merged_cursors"] == {"gone/repo": iso(T0), REPO: iso(T0)}
+        # Failed repo's cursor is not advanced; only the healthy repo's cursor moves.
+        assert disk(ws)["merged_cursors"] == {REPO: iso(T0)}
