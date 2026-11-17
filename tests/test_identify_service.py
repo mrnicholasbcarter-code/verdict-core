@@ -219,13 +219,14 @@ def test_setup_installs_identify_not_legacy(monkeypatch):
         lambda **kwargs: pytest.fail("legacy installer called"),
     )
     monkeypatch.setattr(identify_service, "timer_state", lambda unit: {"state": "active"})
-    ui = TerminalUI(Console(file=io.StringIO()))
+    output = io.StringIO()
+    ui = TerminalUI(Console(file=output))
     answers = iter(["on", "y", "off", "y"])
     notes = []
     _warm_cache(ui, answers.__next__, "http://localhost:20128", notes)
     assert calls == [{"dry_run": False}]
     assert any("Identify" in note for note in notes)
-    assert any("every 6 hours" in note for note in notes)
+    assert "every 6 hours" in output.getvalue()
 
 
 def test_screen_capacity_comma_list_reaches_domain(monkeypatch, capsys):
