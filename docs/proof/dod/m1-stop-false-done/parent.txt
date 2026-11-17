@@ -1,11 +1,29 @@
-DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-286.json
-DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-297.json
-DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-410.json
-DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-413.json
-DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-416-doctor-gateway-key.json
-DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-416-route-key-file.json
-DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-417.json
-DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-434.json
-DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-437.json
-DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/dod-run-truth.json
-check_dod: 10 evidence file(s) checked
+$ gh api repos/mrnicholasbcarter-code/verdict-core/actions/runs/44174674286 --jq '[.id,.created_at,.head_sha,.event,.conclusion,.html_url]|@tsv'
+44174674286	2026-11-17T20:57:10Z	786a0cbc5b7cd0254b9a0be6ef8ad26282805018	push	success	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44174674286
+$ gh run view 44174674286 --repo mrnicholasbcarter-code/verdict-core --log  (lint job, Definition of done step)
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0465801Z ##[group]Run python scripts/check_dod.py --all
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0466121Z ^[[36;1mpython scripts/check_dod.py --all^[[0m
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0483768Z shell: /usr/bin/bash -e {0}
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0483966Z env:
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0484111Z   AUTOFIX: false
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0484276Z   OPENSPEC_TELEMETRY: 0
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0484492Z   pythonLocation: /opt/hostedtoolcache/Python/3.13.18/x64
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0484795Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.13.18/x64/lib/pkgconfig
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0485099Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.13.18/x64
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0485378Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.13.18/x64
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0485649Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.13.18/x64
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0485924Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.13.18/x64/lib
+lint	UNKNOWN STEP	2026-11-17T20:59:37.0486157Z ##[endgroup]
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8342719Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-286.json
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8343364Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-297.json
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8344025Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-300-effort-dispatch.json
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8344621Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-300-reviewer-identity.json
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8345079Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-410.json
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8345593Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-413.json
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8346074Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-416-doctor-gateway-key.json
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8346606Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-416-route-key-file.json
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8347052Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-417.json
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8347450Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-434.json
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8348372Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-437.json
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8348799Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/dod-run-truth.json
+lint	UNKNOWN STEP	2026-11-17T20:59:42.8349146Z check_dod: 12 evidence file(s) checked

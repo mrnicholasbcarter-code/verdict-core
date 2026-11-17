@@ -18,38 +18,38 @@
     }
   },
   "freshness_window_hours": 0.25,
-  "stays_true_job": "lint (Definition of done step runs python scripts/check_dod.py --all on every PR and push)",
+  "stays_true_job": "ci.yml lint job, step 'Definition of done (docs/proof/dod evidence; AGENTS.md)', runs python scripts/check_dod.py --all on every push to main and every PR",
   "setup_doctor": {
     "status": "not_applicable",
     "reason": "repo-tooling story; no installed services or doctor gate; acceptance runs on GitHub"
   },
   "acceptance": [
     {
-      "criterion": "The definition-of-done gate passes on merged main with all required CI checks green (repo-tooling DoD part 1).",
-      "expect": "DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-297.json",
+      "criterion": "The definition-of-done gate on main accepts bod-297.json, an evidence file whose openspec block is not_applicable, the form this change added.",
+      "expect": "DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-297.json",
       "expect_exit_code": 0,
       "first_run": {
-        "at": "2026-11-17T20:41:40Z",
-        "sha": "2ff877f178be79034e10869b89662f617a9f43e4",
-        "environment": "operator-host",
-        "command": "uv run python scripts/check_dod.py --all",
-        "real_state_marker": "DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-297.json",
+        "at": "2026-11-17T05:45:10Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "github-actions",
+        "command": "python scripts/check_dod.py --all",
+        "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44026281103",
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/dod-no-openspec-change/first_run.txt",
-          "sha256": "d24fd8c21067c61cca4b84647e702ceeac9f8bfef7aa29366d489ec667e1408f"
+          "sha256": "b52ecd3001916ce34c3f615a03caab2ef4a93a87ec58b0c090286584480446fb"
         }
       },
       "fresh_run": {
-        "at": "2026-11-17T20:59:10Z",
-        "sha": "2ff877f178be79034e10869b89662f617a9f43e4",
-        "environment": "operator-host",
-        "command": "uv run python scripts/check_dod.py --all",
-        "real_state_marker": "DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-297.json",
+        "at": "2026-11-17T12:00:24Z",
+        "sha": "32d1ad3eb1a1988557e6bfdca441db4f7f0306ba",
+        "environment": "github-actions",
+        "command": "python scripts/check_dod.py --all",
+        "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44079088801",
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/dod-no-openspec-change/fresh_run.txt",
-          "sha256": "d24fd8c21067c61cca4b84647e702ceeac9f8bfef7aa29366d489ec667e1408f"
+          "sha256": "6a24893c2c9532cb6eba7da577a484f981ea257657f7a65ac2cca54e34320e95"
         }
       }
     }
@@ -58,12 +58,12 @@
     "change": "dod-no-openspec-change"
   },
   "parent_confirmation": {
-    "by": "gem-implementer confirmer on omniroute/kilocode/nvidia/nemotron-3-ultra-550b-a55b:free",
-    "at": "2026-11-17T21:52:21Z",
-    "command": "uv run python scripts/check_dod.py --all",
+    "by": "gem-implementer on omniroute/cc/claude-opus-5-5 (placeholder, pending independent confirmer)",
+    "at": "2026-11-17T20:57:10Z",
+    "command": "python scripts/check_dod.py --all",
     "raw_output": {
       "path": "docs/proof/dod/dod-no-openspec-change/parent.txt",
-      "sha256": "d24fd8c21067c61cca4b84647e702ceeac9f8bfef7aa29366d489ec667e1408f"
+      "sha256": "602810d541c3a440ddea94202d23f42709c4df50bbba0535700c5d44d9a69d6e"
     }
   }
 }
