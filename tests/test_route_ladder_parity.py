@@ -52,7 +52,6 @@ def live_pool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict[str,
         {"id": "sub/strong", "owned_by": "sub", "pricing": {"input": 5, "output": 10}},
     ]
     now = datetime.now(timezone.utc)
-    monkeypatch.setenv("VERDICT_PLAIN", "1")
     records = []
     cache = HealthCache(tmp_path / "health-cache.json")
     for row, score in zip(rows, (30, 80), strict=True):
@@ -138,15 +137,6 @@ def test_choose_and_route_terse_parity(
     assert route_out == chosen_id
 
 
-def _extract_json(s: str) -> dict[str, Any]:
-    """Extract JSON from output that may contain ANSI spinner prefix."""
-    # Find the first '{' which starts the JSON object
-    idx = s.find("{")
-    if idx >= 0:
-        return json.loads(s[idx:])
-    return json.loads(s)
-
-
 def test_choose_and_route_json_parity(
     live_pool: list[dict[str, Any]],
     monkeypatch: pytest.MonkeyPatch,
@@ -172,14 +162,14 @@ def test_choose_and_route_json_parity(
     )
     cli.main()
     choose_out = capsys.readouterr().out
-    choose_payload = _extract_json(choose_out)
+    choose_payload = json.loads(choose_out)
     chosen_id = choose_payload["selected"]["route_id"]
 
     # Run route --json with the same task text
     monkeypatch.setattr("sys.argv", ["verdict", "route", "--task", task_text, "--json"])
     cli.main()
     route_out = capsys.readouterr().out
-    route_payload = _extract_json(route_out)
+    route_payload = json.loads(route_out)
     route_id = route_payload["selected"]["route_id"]
 
     assert route_id == chosen_id
