@@ -342,6 +342,38 @@ class TestExactHeadPolling:
         assert gh.rerun_calls == [{"check_run_id": 987654321, "repo": REPO}]
         assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr1:{head}:lint:987654321": 1}
 
+    def test_optional_failed_check_never_decides_the_result(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a check branch protection does not require causing a repair or a rerun."""
+        optional_failure = {**check("Analyze (python)", "FAILURE"), "required": False}
+        optional_cancel = {**check("osv-security / osv-scan", "CANCELLED", check_run_id="job-9")}
+        optional_cancel["required"] = False
+        open_pr(gh, 1, "a" * 40, [check("lint"), optional_failure, optional_cancel])
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert outcomes(result) == [(1, "GREEN", "READY")]
+        assert result["records"] == []
+        assert gh.rerun_calls == []
+
+    def test_no_required_check_is_missing_required_and_reported_once_per_head(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches an unprotected repository reading as green, or being reported every run."""
+        optional = {**check("lint"), "required": False}
+        open_pr(gh, 1, "a" * 40, [optional])
+
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(3)]
+
+        assert [outcomes(r) for r in runs] == [[(1, "MISSING_REQUIRED", "REPAIR")]] * 3
+        assert [[x["type"] for x in r["records"]] for r in runs] == [["repair"], [], []]
+        assert [kinds(r) for r in runs] == [["new_failure"], [], []]
+        repairs = disk(ws)["records"]["repair"]
+        assert [(r["classification"], r["reason"]) for r in repairs] == [
+            ("MISSING_REQUIRED", "PR classified as MISSING_REQUIRED")
+        ]
+
     def test_naive_clock_is_rejected_before_anything_is_read_or_written(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:

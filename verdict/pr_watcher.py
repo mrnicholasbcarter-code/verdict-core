@@ -99,18 +99,18 @@ def poll_open_prs(
         # Fetch checks at exact head
         checks = gh.get_checks(repo, head)
 
-        # Every check on the head is treated as required: the client does not
-        # report which checks branch protection requires.
-        required_checks = [{**c, "required": True} for c in checks]
+        # Only the checks branch protection requires decide the result; the
+        # client reports that flag per check.
+        required_checks = [c for c in checks if c.get("required") is True]
 
         # Stalled detection: >30 minutes in progress
         stalled = [c for c in required_checks if _is_stalled(c, current)]
 
-        # CI classification
-        ci_class = classify_ci(required_checks)
+        # CI classification (classify_ci itself ignores optional checks)
+        ci_class = classify_ci(checks)
         if stalled:
             ci_class = "STALLED"  # override to stalled when checks hang
-        # Only the checks that actually hung or failed are rerun candidates.
+        # Only the required checks that actually hung or failed are rerun candidates.
         rerun_targets = stalled or [
             c for c in required_checks if c.get("conclusion") in ("FAILURE", "CANCELLED")
         ]
@@ -132,7 +132,7 @@ def poll_open_prs(
             "merge_classification": merge_class,
             "classification": combined,
             "action": action,
-            "checks": required_checks,
+            "checks": checks,
             "rerun_targets": rerun_targets,
             "merge_state": pr.get("merge_state_status", ""),
             "linear_issue": pr.get("linear_issue"),
@@ -366,7 +366,11 @@ def _plan_observation(
         )
 
     if action == "REPAIR":
-        failing = [c["name"] for c in obs["checks"] if c.get("conclusion") == "FAILURE"]
+        failing = [
+            c["name"]
+            for c in obs["checks"]
+            if c.get("required") is True and c.get("conclusion") == "FAILURE"
+        ]
         plan.add_record(
             state,
             RepairRecord(
