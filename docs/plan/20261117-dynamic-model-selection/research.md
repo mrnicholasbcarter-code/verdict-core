@@ -102,7 +102,7 @@ All greps run using pattern files to eliminate shell quoting issues.
 
 ## B. Identity Coverage — Runtime Measurement
 
-**Script:** `/home/nick/dev/verdict-core/.git/verdict-prime/t1_identity_coverage.py` (read-only, outside repo)
+**Script:** `/operator/dev/verdict-core/.git/verdict-prime/t1_identity_coverage.py` (read-only, outside repo)
 **Live catalog:** `GET /v1/models` — 4,310 routes
 **Store:** `~/.verdict/model-metadata.json` — 6,739 models, refreshed 2026-11-17T13:50:29Z
 **Identity map:** `verdict/data/omniroute_models_dev_map.json` — 25 entries
