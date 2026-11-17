@@ -38,6 +38,7 @@ from verdict.pr_watcher_state import (
     StateWriteError,
     UnsafeKeyError,
     WatcherState,
+    _safe_key,
     format_timestamp,
     rerun_key,
 )
@@ -202,6 +203,7 @@ def poll_open_prs(
         action = _adapter_action(combined, 0, 1)
         if stalled:
             action = "REPAIR"
+            combined = "STALLED"
         obs = {
             "repo": repo,
             "pr_number": pr_num,
@@ -511,7 +513,9 @@ def _plan_observation(
     if action == "RETRY" and obs.get("ci_classification") == "STALLED":
         action = "REPAIR"
         repair_checks = [
-            c for c in obs["checks"] if c.get("required") is True and c.get("status") in {"IN_PROGRESS", "QUEUED"}
+            c
+            for c in obs["checks"]
+            if c.get("required") is True and c.get("status") in {"IN_PROGRESS", "QUEUED"}
         ]
         obs["action"] = action
     if action == "RETRY":
@@ -671,6 +675,11 @@ def _run_locked(
     # dropped as a whole: no record, transition or cursor move is kept for it,
     # so the next run covers the same ground. The others carry on.
     for repo in repos:
+        try:
+            _safe_key(repo)
+        except UnsafeKeyError as exc:
+            repo_errors.append({"repo": repo, "error": str(exc)})
+            continue
         trial = plan.fork()
         try:
             polled = _plan_repository(
@@ -681,6 +690,21 @@ def _run_locked(
             continue
         plan.adopt(trial)
         observations.extend(polled)
+
+    # A wholly rejected run must not create a durable state file.
+    if repo_errors and not observations and not plan.records:
+        return {
+            "ok": False,
+            "error": repo_errors[0]["error"],
+            "type": "unsafe_state_key",
+            "repo_errors": repo_errors,
+            "observations": [],
+            "reruns": [],
+            "records": [],
+            "notifications": [],
+            "linear_sent": [],
+            "pending_events": [],
+        }
 
     # 2. Persist. Classifications, records, transitions, queued Linear events
     # and the cursors are durable before the first side effect.
@@ -713,9 +737,14 @@ def _run_locked(
             data = {**data, "pending_events": remaining}
             state.save(data)
 
-    return {
+    result: dict[str, Any] = {
         "ok": not repo_errors,
         "repo_errors": repo_errors,
+        **(
+            {"error": repo_errors[0]["error"], "type": "unsafe_state_key"}
+            if repo_errors and not observations and not reruns and not plan.records
+            else {}
+        ),
         "observations": observations,
         "reruns": reruns,
         "records": plan.records,
@@ -723,6 +752,7 @@ def _run_locked(
         "linear_sent": sent,
         "pending_events": state.get_pending_events(data),
     }
+    return result
 
 
 def run_watcher(

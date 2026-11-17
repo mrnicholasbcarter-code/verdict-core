@@ -273,6 +273,9 @@ def test_bootstrap_plan_mode_includes_host_actions_and_stays_mutation_free(host:
 def test_apply_with_consent_installs_every_prerequisite_through_the_existing_installers(
     host: FakeHost,
 ) -> None:
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("VERDICT_PR_WATCH_REPOS=owner/a\n")
     report = host.apply()
     results = _results(report)
     assert {aid: r["status"] for aid, r in results.items()} == {
@@ -424,6 +427,9 @@ def test_drifted_prerequisites_are_planned_and_applied_again(host: FakeHost) -> 
 
 
 def test_rollback_names_manual_undo_for_host_actions(host: FakeHost) -> None:
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("VERDICT_PR_WATCH_REPOS=owner/a\n")
     host.apply()
     stage = rollback_bootstrap_actions(state_dir=host.root / "state").to_dict()
     assert stage["status"] == "partial"
@@ -479,6 +485,10 @@ def test_pr_watcher_timer_is_planned_until_installed_and_active(host: FakeHost) 
     def planned() -> list[str]:
         return [a.provider_id or "" for a in setup_host.plan_host_actions(host.env)]
 
+    (host.home / ".config" / "verdict").mkdir(parents=True, exist_ok=True)
+    (host.home / ".config" / "verdict" / "pr-watch.env").write_text(
+        "VERDICT_PR_WATCH_REPOS=owner/a, owner/b\n"
+    )
     assert "host.pr-watcher-timer" in planned()
     report = host.apply(allowlist=["host.pr-watcher-timer"], non_interactive=True)
     result = _results(report)["bootstrap:host:pr-watcher-timer"]
@@ -494,7 +504,42 @@ def test_pr_watcher_timer_is_planned_until_installed_and_active(host: FakeHost) 
         if a.provider_id == "host.pr-watcher-timer"
     ]
     assert action.reason == "verdict-pr-watch.timer is missing"
-    assert action.undo == "verdict pr-watch --install-service --uninstall"
+    assert (
+        action.undo
+        == "systemctl --user disable --now verdict-pr-watch.timer; remove verdict-pr-watch.service and verdict-pr-watch.timer"
+    )
+
+
+def test_pr_watcher_timer_install_contains_each_configured_repository(host: FakeHost) -> None:
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("VERDICT_PR_WATCH_REPOS=owner/a,owner/b\n")
+    host.apply(allowlist=["host.pr-watcher-timer"], non_interactive=True)
+    service = host.unit_dir / "verdict-pr-watch.service"
+    assert '--repo "owner/a"' in service.read_text()
+    assert '--repo "owner/b"' in service.read_text()
+
+
+def test_pr_watcher_timer_is_not_installed_without_repositories(host: FakeHost) -> None:
+    [action] = [
+        a for a in setup_host.plan_host_actions(host.env) if a.provider_id == setup_host.PR_WATCHER
+    ]
+    assert action.reason.startswith("no repositories configured: write VERDICT_PR_WATCH_REPOS")
+
+
+def test_pr_watcher_timer_observe_and_apply_render_identical_units(host: FakeHost) -> None:
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("VERDICT_PR_WATCH_REPOS=owner/a\n")
+    from verdict import pr_watcher_service
+
+    observed = pr_watcher_service.manage_service(
+        unit_dir=host.env.unit_dir, dry_run=True, repos=["owner/a"]
+    )
+    applied = pr_watcher_service.manage_service(
+        unit_dir=host.env.unit_dir, dry_run=True, repos=["owner/a"]
+    )
+    assert observed["files"] == applied["files"]
 
 
 # --- CLI wiring ------------------------------------------------------------------------

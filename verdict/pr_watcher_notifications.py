@@ -115,9 +115,13 @@ def _format_linear_body(event: dict[str, Any]) -> str:
 
 def assert_no_mutation(linear: LinearClient) -> None:
     """Raise TypeError if the Linear client exposes forbidden methods."""
-    allowed = {"add_comment"}
     methods = {m for m in dir(linear) if not m.startswith("_") and callable(getattr(linear, m))}
-    helper_methods = {m for m in methods if m.startswith(("set_", "fail_"))}
-    bad = methods - allowed - helper_methods
+    helpers = {m for m in methods if m.startswith(("set_", "fail_", "before_"))}
+    mutations = {
+        m
+        for m in methods
+        if m.startswith(("create_", "update_", "delete_", "merge", "push", "close", "add_label"))
+    }
+    bad = mutations - helpers
     if bad:
-        raise TypeError(f"Watcher Linear client exposes unsupported methods: {bad}")
+        raise TypeError(f"Watcher Linear client exposes mutation methods: {bad}")

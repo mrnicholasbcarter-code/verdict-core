@@ -76,7 +76,7 @@ def manage_service(
                 "[Unit]\nDescription=Poll PRs every 5 minutes\n"
                 f"[Timer]\nOnBootSec=10min\nOnUnitActiveSec={INTERVAL_MINUTES}min\n"
                 "Persistent=true\n"
-                f"Unit={SERVICE}\n"
+                f"Unit={SERVICE}\nAccuracySec=30s\n"
                 "[Install]\nWantedBy=timers.target\n"
             ),
         }

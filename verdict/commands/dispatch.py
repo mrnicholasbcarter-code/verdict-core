@@ -174,10 +174,7 @@ def _cmd_pr_watch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     if args.json:
         print(json.dumps(result, indent=2, default=str))
         if result.get("error") or result.get("type"):
-            print(
-                f"error={result.get('error', '')} type={result.get('type', '')}",
-                file=sys.stderr,
-            )
+            print(f"error={result.get('error', '')} type={result.get('type', '')}", file=sys.stderr)
     else:
         for repo in repos:
             repo_errors = [e for e in result.get("repo_errors", []) if e.get("repo") == repo]
@@ -186,8 +183,8 @@ def _cmd_pr_watch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
                     print(f"{repo}: ERROR {err.get('error', 'unknown')}")
             else:
                 print(
-                    f"{repo}: PRs seen={len(result.get('observations', []))}, "
-                    f"actions={len(result.get('reruns', [])) + len(result.get('notifications', []))}, "
+                    f"{repo}: PRs seen={len([o for o in result.get('observations', []) if o.get('repo') == repo])}, "
+                    f"actions={len([r for r in result.get('reruns', []) if r.get('repo') == repo]) + len([n for n in result.get('notifications', []) if n.get('repo') == repo])}, "
                     f"errors={len(repo_errors)}"
                 )
 

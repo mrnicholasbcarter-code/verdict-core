@@ -397,8 +397,9 @@ class TestExactHeadPolling:
 
         runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(3)]
 
-        assert gh.rerun_calls == [{"job_id": "job-slow", "repo": REPO}]
-        assert [r["observations"][0]["action"] for r in runs] == ["RETRY", "BLOCKED", "BLOCKED"]
+        assert gh.rerun_calls == []
+        assert [r["observations"][0]["action"] for r in runs] == ["REPAIR"] * 3
+        assert runs[0]["records"][0]["reason"].startswith("stalled:")
 
     def test_job_id_reaches_github_exactly_as_the_client_reported_it(
         self, gh: FakeGitHubClient, ws: WatcherState

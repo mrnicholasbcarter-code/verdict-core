@@ -16,6 +16,7 @@ def _default_state_dir() -> str | None:
             capture_output=True,
             text=True,
             check=False,
+            timeout=30,
         )
         if result.returncode == 0 and result.stdout.strip():
             git_common = result.stdout.strip()

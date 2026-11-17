@@ -181,7 +181,11 @@ def _timer_problems(env: HostEnvironment, rendered: Mapping[str, Any], *units: s
 
 
 def _pr_watch_config_path() -> Path:
-    return Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "verdict" / "pr-watch.env"
+    return (
+        Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+        / "verdict"
+        / "pr-watch.env"
+    )
 
 
 def _pr_watch_repos() -> list[str]:
@@ -190,7 +194,9 @@ def _pr_watch_repos() -> list[str]:
         lines = path.read_text().splitlines()
     except OSError:
         return []
-    value = next((line.split("=", 1)[1] for line in lines if line.startswith("VERDICT_PR_WATCH_REPOS=")), "")
+    value = next(
+        (line.split("=", 1)[1] for line in lines if line.startswith("VERDICT_PR_WATCH_REPOS=")), ""
+    )
     return [repo.strip() for repo in value.split(",") if repo.strip()]
 
 
@@ -236,7 +242,9 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
         repos = _pr_watch_repos()
         if not repos:
             return [_pr_watch_problem()]
-        rendered = pr_watcher_service.manage_service(unit_dir=env.unit_dir, dry_run=True, repos=repos)
+        rendered = pr_watcher_service.manage_service(
+            unit_dir=env.unit_dir, dry_run=True, repos=repos
+        )
         return _timer_problems(env, rendered, pr_watcher_service.TIMER)
     if provider_id == SERVE:
         from verdict import serve_service
@@ -541,8 +549,15 @@ def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[st
             repos = _pr_watch_repos()
             if not repos:
                 return {"status": "blocked", "note": _pr_watch_problem()}
-            result = pr_watcher_service.manage_service(unit_dir=env.unit_dir, run=env.systemctl, repos=repos)
-            return {"status": "applied", "note": f"{pr_watcher_service.TIMER} enabled", "plan": result.get("plan"), "changed": result.get("changed")}
+            result = pr_watcher_service.manage_service(
+                unit_dir=env.unit_dir, run=env.systemctl, repos=repos
+            )
+            return {
+                "status": "applied",
+                "note": f"{pr_watcher_service.TIMER} enabled",
+                "plan": result.get("plan"),
+                "changed": result.get("changed"),
+            }
         if provider_id == SERVE:
             return _install_serve(env)
         if provider_id == PRIME:

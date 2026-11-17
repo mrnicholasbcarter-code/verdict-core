@@ -389,10 +389,10 @@ class TestPrWatchOutput:
         lines = out.strip().split("\n")
         assert len(lines) == 2
         assert "owner/repo1" in lines[0]
-        assert "PRs seen=2" in lines[0]  # Both observations counted
-        assert "actions=2" in lines[0]  # 1 rerun + 1 notification (global counts)
+        assert "PRs seen=1" in lines[0]
+        assert "actions=1" in lines[0]
         assert "owner/repo2" in lines[1]
-        assert "actions=2" in lines[1]  # 1 rerun + 1 notification (global counts)
+        assert "actions=1" in lines[1]
 
     def test_summary_output_shows_repo_errors(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

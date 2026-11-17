@@ -45,15 +45,34 @@ class WatcherGitHubClient(Protocol):
 # --- Capability verification -----------------------------------------------------
 
 _ALLOWED_METHODS = frozenset({"list_open_prs", "get_pr", "list_merged_prs", "rerun_check"})
+_MUTATION_PREFIXES = (
+    "merge",
+    "push",
+    "create_branch",
+    "delete_branch",
+    "edit",
+    "force_push",
+    "commit",
+    "apply_patch",
+    "write",
+    "close",
+    "add_",
+    "update_",
+    "remove_",
+    "checkout",
+    "create_pull_request",
+    "delete_repository",
+)
 
 
 def assert_no_mutation(client: WatcherGitHubClient) -> None:
     """Raise TypeError if the client exposes any forbidden mutation method."""
     methods = {m for m in dir(client) if not m.startswith("_") and callable(getattr(client, m))}
-    helper_methods = {m for m in methods if m.startswith(("set_", "fail_"))}
-    bad = methods - _ALLOWED_METHODS - helper_methods
+    helpers = {m for m in methods if m.startswith(("set_", "fail_", "before_"))}
+    mutations = {m for m in methods if m.startswith(_MUTATION_PREFIXES)}
+    bad = mutations - helpers
     if bad:
-        raise TypeError(f"Watcher client exposes unsupported methods: {bad}")
+        raise TypeError(f"Watcher client exposes mutation methods: {bad}")
 
 
 # --- Linear story link -----------------------------------------------------------

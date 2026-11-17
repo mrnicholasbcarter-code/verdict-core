@@ -1226,6 +1226,13 @@ def _pr_watcher_timer_row(timer_state: Callable[[str], dict[str, Any]] | None) -
     state = (timer_state or pr_watcher_service.timer_state)(unit)
     name, result = str(state.get("state", "unknown")), str(state.get("result", "unknown"))
     detail = f"{unit} is {name}; last result {result}"
+    from verdict import pr_watcher_service
+
+    props = _systemctl_show_props(pr_watcher_service.SERVICE) if name != "missing" else {}
+    exec_start = str(props.get("ExecStart", ""))
+    repos = [arg.split("=", 1)[-1] for arg in exec_start.split() if arg.startswith("--repo=")]
+    state_dir = str(props.get("WorkingDirectory", ""))
+    detail += f"; interpreter={exec_start.split(' ', 1)[0]}; checkout={state_dir}; repos={','.join(repos) or 'none'}; state dir={state_dir}/verdict-prime/pr-watcher"
     label = "PR watcher timer"
     if name == "active" and result == "success":
         return {"label": label, "status": "ok", "detail": detail}
