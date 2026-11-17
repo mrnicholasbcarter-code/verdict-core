@@ -752,3 +752,93 @@ def test_confirm_budget_goes_to_passively_healthy_route_before_catalog_order() -
     named = {(d.model_id, d.reason) for d in result.exclusions}
     assert (failing[3], "confirm_budget_exhausted") in named
     assert (no_passport, "confirm_budget_exhausted") in named
+
+
+def _minimal_snapshot():
+    """A minimal snapshot with just one test identity and connection."""
+    return snapshot_from_payloads(
+        catalog={"data": [{"id": "test/model", "owned_by": "test"}]},
+        free_tier={"perModel": [{"modelId": "model", "provider": "test", "freeType": "keyless"}]},
+        providers={"connections": [{"provider": "test", "isActive": True, "testStatus": "active"}]},
+    )
+
+
+def test_lease_held_fresh_passport_admitted_no_confirm(tmp_path: Path) -> None:
+    """Lease held + fresh passport -> admitted not empty, no confirm sent."""
+    from verdict.free_tier_admit import admit_free_tier_active
+    from verdict.orchestration.verified_refresh import _JobLock
+
+    base = admit_free_tier_active(_minimal_snapshot())
+    identity = "test/model"
+    passport = _passport(identity)  # fresh by default
+
+    # Acquire the lease
+    lock = _JobLock(tmp_path / "verified-refresh.lock")
+    assert lock.acquire()
+    try:
+        calls: list[str] = []
+
+        def transport(model_id: str, payload: object, timeout: float) -> dict[str, object]:
+            calls.append(model_id)
+            return _ok_transport()(model_id, payload, timeout)
+
+        result = gate_admit_prove_confirm(
+            base,
+            passports={identity: passport},
+            confirm_transport=transport,
+            health_cache_path=tmp_path / "health.json",
+            passport_store_path=tmp_path / "passports.json",
+            now=NOW,
+            live=True,
+            consented=True,
+        )
+    finally:
+        lock.release()
+
+    assert calls == [], "no confirm calls should be made when lease is held and passport is fresh"
+    assert result.admitted == (identity,), f"expected admitted=(identity,), got {result.admitted}"
+    assert result.confirm == ()
+
+
+def test_lease_held_stale_passport_confirm_unavailable(tmp_path: Path) -> None:
+    """Lease held + stale passport -> confirm_unavailable."""
+    from verdict.free_tier_admit import admit_free_tier_active
+    from verdict.orchestration.verified_refresh import _JobLock
+
+    base = admit_free_tier_active(_minimal_snapshot())
+    identity = "test/model"
+
+    # Stale passport
+    expired = dict(qualified_at=NOW - timedelta(minutes=30), expires_at=NOW - timedelta(minutes=1))
+    passport = _passport(identity, **expired)
+
+    # Acquire the lease
+    lock = _JobLock(tmp_path / "verified-refresh.lock")
+    assert lock.acquire()
+    try:
+        calls: list[str] = []
+
+        def transport(model_id: str, payload: object, timeout: float) -> dict[str, object]:
+            calls.append(model_id)
+            return _ok_transport()(model_id, payload, timeout)
+
+        result = gate_admit_prove_confirm(
+            base,
+            passports={identity: passport},
+            confirm_transport=transport,
+            health_cache_path=tmp_path / "health.json",
+            passport_store_path=tmp_path / "passports.json",
+            now=NOW,
+            live=True,
+            consented=True,
+        )
+    finally:
+        lock.release()
+
+    assert calls == [], "no confirm calls should be made when lease is held"
+    assert result.admitted == (), f"expected admitted=(), got {result.admitted}"
+    # Find the exclusion for our identity
+    our_exclusions = [e for e in result.exclusions if e.model_id == identity]
+    assert len(our_exclusions) == 1
+    assert our_exclusions[0].reason == "confirm_unavailable"
+    assert "coordinator lease held by another producer" in our_exclusions[0].detail
