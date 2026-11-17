@@ -26,7 +26,6 @@ def isolated(tmp_path, monkeypatch):
 def test_units_install_idempotently_and_uninstall(tmp_path):
     from verdict.identify_service import (
         PASSIVE_INTERVAL_SECONDS,
-        SCREEN_CALENDAR,
         SCREEN_MAX_PER_PROVIDER,
         SCREEN_MAX_ROUTES,
         SCREEN_SERVICE,
