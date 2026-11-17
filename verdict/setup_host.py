@@ -180,6 +180,24 @@ def _timer_problems(env: HostEnvironment, rendered: Mapping[str, Any], *units: s
     return problems + _inactive(env, *units)
 
 
+def _pr_watch_config_path() -> Path:
+    return Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "verdict" / "pr-watch.env"
+
+
+def _pr_watch_repos() -> list[str]:
+    path = _pr_watch_config_path()
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
+    value = next((line.split("=", 1)[1] for line in lines if line.startswith("VERDICT_PR_WATCH_REPOS=")), "")
+    return [repo.strip() for repo in value.split(",") if repo.strip()]
+
+
+def _pr_watch_problem() -> str:
+    return f"no repositories configured: write VERDICT_PR_WATCH_REPOS to {_pr_watch_config_path()}"
+
+
 def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
     """What is wrong with one prerequisite; empty when it is satisfied."""
     if provider_id == OCR:
@@ -215,7 +233,10 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
     if provider_id == PR_WATCHER:
         from verdict import pr_watcher_service
 
-        rendered = pr_watcher_service.manage_service(unit_dir=env.unit_dir, dry_run=True)
+        repos = _pr_watch_repos()
+        if not repos:
+            return [_pr_watch_problem()]
+        rendered = pr_watcher_service.manage_service(unit_dir=env.unit_dir, dry_run=True, repos=repos)
         return _timer_problems(env, rendered, pr_watcher_service.TIMER)
     if provider_id == SERVE:
         from verdict import serve_service
@@ -307,13 +328,13 @@ _ACTIONS: dict[str, dict[str, str]] = {
             "and emits bounded reruns and Linear transitions."
         ),
         "security_impact": (
-            "Writes two systemd user units; every 5 minutes it runs verdict pr-watch --json "
-            "on this checkout. It reads GitHub via gh CLI and writes only the local state "
-            "database. No model calls."
+            "Reads GitHub through gh api graphql; its only write is a bounded rerun of a failed "
+            "required CI job (POST /repos/{owner}/{repo}/actions/jobs/{id}/rerun), fenced on the "
+            "exact head; writes local state under the git common dir."
         ),
         "postcondition": "verdict-pr-watch.timer is active.",
-        "undo": "verdict pr-watch --install-service --uninstall",
-        "install_command": "verdict pr-watch --install-service",
+        "undo": "systemctl --user disable --now verdict-pr-watch.timer; remove verdict-pr-watch.service and verdict-pr-watch.timer",
+        "install_command": "verdict setup --apply --allow host.pr-watcher-timer",
     },
     SERVE: {
         "description": (
@@ -517,8 +538,11 @@ def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[st
             steps = _install_timers(env, docs_refresh_service.manage_service)
             return {"status": "applied", "note": f"{docs_refresh_service.TIMER} enabled", **steps}
         if provider_id == PR_WATCHER:
-            steps = _install_timers(env, pr_watcher_service.manage_service)
-            return {"status": "applied", "note": f"{pr_watcher_service.TIMER} enabled", **steps}
+            repos = _pr_watch_repos()
+            if not repos:
+                return {"status": "blocked", "note": _pr_watch_problem()}
+            result = pr_watcher_service.manage_service(unit_dir=env.unit_dir, run=env.systemctl, repos=repos)
+            return {"status": "applied", "note": f"{pr_watcher_service.TIMER} enabled", "plan": result.get("plan"), "changed": result.get("changed")}
         if provider_id == SERVE:
             return _install_serve(env)
         if provider_id == PRIME:

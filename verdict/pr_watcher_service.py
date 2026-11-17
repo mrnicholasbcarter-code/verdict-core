@@ -58,9 +58,7 @@ def manage_service(
 
     # Build the repos list for the command
     repo_args = " ".join(f"--repo {_quote(repo)}" for repo in (repos or []))
-    command = (
-        f"{_quote(str(Path(sys.executable).absolute()))} -m verdict pr-watch --json {repo_args}"
-    )
+    command = f"{_quote(str(Path(sys.executable).absolute()))} -m verdict pr-watch --json{(' ' + repo_args) if repo_args else ''}"
 
     files = (
         {}
