@@ -1,0 +1,22 @@
+{
+  "inventory": [
+    {"id": "cc/claude-fable-5-2", "owned_by": "cc", "context_length": 200000, "capabilities": {"tool_calling": true}},
+    {"id": "kr/gpt-4.1", "owned_by": "kr", "context_length": 200000, "capabilities": {"tool_calling": true}},
+    {"id": "cx/gpt-6-astra", "owned_by": "cx", "context_length": 200000, "capabilities": {"tool_calling": true}},
+    {"id": "auto/best-coding", "owned_by": "auto", "context_length": 200000, "capabilities": {"tool_calling": true}},
+    {"id": "combo/fast", "owned_by": "combo", "context_length": 200000, "capabilities": {"tool_calling": true}}
+  ],
+  "connections": [
+    {"provider": "cc", "isActive": true, "testStatus": "ok", "authType": "oauth", "plan_label": "subscription"},
+    {"provider": "kr", "isActive": true, "testStatus": "ok", "authType": "oauth", "plan_label": "subscription"},
+    {"provider": "cx", "isActive": true, "testStatus": "ok", "authType": "oauth", "plan_label": "subscription"}
+  ],
+  "metadata": {
+    "cc/claude-fable-5-2": {
+      "id": "anthropic-claude-fable-5-2",
+      "scores": {
+        "aa_intelligence": {"value": 0.95, "provenance": {"source": "models_dev_api", "fetched_at": "2026-09-26T10:00:00Z"}}
+      }
+    }
+  }
+}
