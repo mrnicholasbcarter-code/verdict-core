@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Keep direct gateway execution and credential live checks aligned with the shared gateway key resolver.
+
+## Requirements
 
 ### Requirement: Direct-gateway executor resolves the gateway key through the shared resolver
 `DirectGatewayExecutor` SHALL take its gateway key from an explicit `api_key` argument when
