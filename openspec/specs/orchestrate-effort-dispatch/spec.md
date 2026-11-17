@@ -1,4 +1,4 @@
-# Spec Delta: orchestrate effort dispatch
+# orchestrate-effort-dispatch Specification
 
 ## Purpose
 

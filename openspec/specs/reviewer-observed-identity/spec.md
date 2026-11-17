@@ -1,4 +1,4 @@
-# Spec Delta: reviewer observed identity
+# reviewer-observed-identity Specification
 
 ## Purpose
 

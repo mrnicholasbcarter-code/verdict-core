@@ -3,26 +3,26 @@
   "story": "bod-300-reviewer-identity",
   "kind": "product",
   "author": "gem-devops (omniroute worker/free-first)",
-  "merged_sha": "d57c02288811010475f7e2a4c672c4ebafd267ac",
-  "pr": 998,
+  "merged_sha": "dd725d0ed24c97c0932438408704f9fa82bc8244",
+  "pr": 993,
   "on_main": {
-    "at": "2026-11-13T13:53:28Z",
-    "sha": "d57c02288811010475f7e2a4c672c4ebafd267ac",
+    "at": "2026-11-17T19:35:31Z",
+    "sha": "dd725d0ed24c97c0932438408704f9fa82bc8244",
     "environment": "operator-host",
-    "command": "gh pr checks 998 --required",
-    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/43331192843",
+    "command": "gh pr checks 993 --required -R mrnicholasbcarter-code/verdict-core",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/43330107834",
     "exit_code": 0,
     "raw_output": {
-      "path": "docs/proof/dod/bod-300-reviewer-identity/pr_checks_998.txt",
-      "sha256": "60a448a2c3dd28005f20821ada98479a8489f5ecb242b11943545a73f1de5b02"
+      "path": "docs/proof/dod/bod-300-reviewer-identity/pr_checks_993.txt",
+      "sha256": "2745813eef2b91e30a88f06825ca8d8fe2756b68102d270a748707c58bd5d983"
     }
   },
   "freshness_window_hours": 0.25,
-  "stays_true_job": "No dedicated scheduled job re-runs this exact orchestrate path; verdict-acceptance.timer runs acceptance gate hourly but on different stories. This evidence is fresh for 0.25 hours only.",
+  "stays_true_job": "No scheduled job re-runs this exact orchestrate path. CI tests exercise observed_model on every PR: test_cockpit_roles.py (reviewer identity tests at lines 123, 154, 177, 189, 224, 254, 284, 443, 586, 638, 676, 688, 737, 755, 763) and test_claims.py (observed_model in review events at lines 652, 655, 725, 874).",
   "setup_doctor": {
     "status": "green",
     "command": "verdict doctor --json",
-    "at": "2026-11-17T15:24:33Z",
+    "at": "2026-11-17T15:43:14Z",
     "raw_output": {
       "path": "docs/proof/dod/bod-300-reviewer-identity/doctor_green.json",
       "sha256": "45b9b618453a894ed6c9fd5037ee3e179813f9be8ecc2caedd7e4b6672034d5d"
@@ -30,15 +30,15 @@
   },
   "acceptance": [
     {
-      "criterion": "The reviewer observed identity is recorded in the review event. verdict watch --once --panel receipt on each run prints the reviewer observed model: kilocode/nvidia/nemotron-3.5-super-vl:free (first, fresh), opencode-go/hy4-flash-free (parent).",
+      "criterion": "The reviewer observed identity is recorded in the review event. orchestrate --json has no observed_model field; verdict watch --once --panel receipt renders the recorded review event for each run. First run (20261117T150815Z, 15:09:40Z): kilocode/nvidia/nemotron-3.5-super-vl:free. Fresh run (20261117T153355Z, 15:36:03Z): kilocode/nvidia/nemotron-3.5-super-vl:free. Parent (20261117T153908Z, 15:40:18Z): opencode-go/hy4-flash-free.",
       "expect": "reviewer observed: ",
       "expect_exit_code": 0,
       "first_run": {
-        "at": "2026-11-17T16:35:48Z",
+        "at": "2026-11-17T15:09:40Z",
         "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
         "environment": "operator-host",
         "command": "verdict watch <run dir> --once --panel receipt",
-        "real_state_marker": "reviewer observed: kilocode/nvidia/nemotron-3.5-super-vl:free",
+        "real_state_marker": "|  run: 20261117T150815Z  outcome: COMPLETE",
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/bod-300-reviewer-identity/watch-first-20261117T150815Z.txt",
@@ -46,11 +46,11 @@
         }
       },
       "fresh_run": {
-        "at": "2026-11-17T16:52:37Z",
+        "at": "2026-11-17T15:36:03Z",
         "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
         "environment": "operator-host",
         "command": "verdict watch <run dir> --once --panel receipt",
-        "real_state_marker": "reviewer observed: kilocode/nvidia/nemotron-3.5-super-vl:free",
+        "real_state_marker": "|  run: 20261117T153355Z  outcome: COMPLETE",
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/bod-300-reviewer-identity/watch-fresh-20261117T153355Z.txt",
@@ -63,8 +63,8 @@
     "change": "reviewer-observed-identity"
   },
   "parent_confirmation": {
-    "by": "gem-devops (omniroute worker/free-first) session 20261117; first/fresh runs executed by this session, parent confirmation from the third run",
-    "at": "2026-11-17T16:52:55Z",
+    "by": "gem-devops (omniroute worker/free-first) session 20261117; confirmation pending independent re-run",
+    "at": "2026-11-17T15:40:18Z",
     "command": "verdict watch <run dir> --once --panel receipt",
     "raw_output": {
       "path": "docs/proof/dod/bod-300-reviewer-identity/watch-parent-20261117T153908Z.txt",

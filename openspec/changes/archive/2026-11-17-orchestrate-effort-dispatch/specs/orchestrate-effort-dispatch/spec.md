@@ -1,10 +1,6 @@
 # Spec Delta: orchestrate effort dispatch
 
-## Purpose
-
-Record the chosen reasoning effort on each dispatched attempt so the receipt shows what was sent and what was actually executed.
-
-## Requirements
+## ADDED Requirements
 
 ### Requirement: Orchestrate SHALL record the chosen effort on the selection it dispatches
 For each implement, review, or research attempt, the runtime SHALL choose effort with the existing task policy before emitting the selection event. Implement and integrate map to `implement`. Review maps to `review`. Research maps to `plan`. The selection event SHALL include `chosen_effort` and `effort_reason`. When no model row is available, the effort SHALL be the task default and the reason SHALL say the row was unavailable. The runtime SHALL NOT invent a thinking-level map.
