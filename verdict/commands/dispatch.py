@@ -149,7 +149,7 @@ def _cmd_pr_watch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
 
     # Create GitHub client
     linear_team_keys = (
-        list(args.linear_team_keys) if getattr(args, "linear_team_keys", None) else []
+        list(args.linear_team_keys) if getattr(args, "linear_team_keys", None) else None
     )
     gh = create_github_client(linear_team_keys=linear_team_keys)
 
@@ -173,6 +173,11 @@ def _cmd_pr_watch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     # Output
     if args.json:
         print(json.dumps(result, indent=2, default=str))
+        if result.get("error") or result.get("type"):
+            print(
+                f"error={result.get('error', '')} type={result.get('type', '')}",
+                file=sys.stderr,
+            )
     else:
         for repo in repos:
             repo_errors = [e for e in result.get("repo_errors", []) if e.get("repo") == repo]
