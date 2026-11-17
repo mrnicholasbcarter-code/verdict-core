@@ -1,6 +1,0 @@
-{
- "model": "antigravity/gemini-3-flash",
- "max_tokens": 6000,
- "input_bytes": 10095,
- "input_sha256": "2c60a38f76632b77db4a784bc066e8a2ef6cd2bed9b132583db71f176f00eb43"
-}
