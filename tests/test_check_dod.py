@@ -737,3 +737,56 @@ def test_distinct_structured_run_ids_pass(repo):
     root, evidence = repo
     _structured_evidence(root, evidence)
     assert "the same run_id cannot serve as two runs" not in _check(root, evidence)
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        # argparse accepts any unambiguous prefix of --json; orchestrate sets json=True for each.
+        ("verdict orchestrate goal --j", True),
+        ("verdict orchestrate goal --js", True),
+        ("verdict orchestrate goal --jso", True),
+        ("verdict orchestrate goal --json", True),
+        ("python -m verdict.cli orchestrate goal --json", True),
+        (".venv/bin/python -m verdict.cli orchestrate goal --js", True),
+        # shlex cannot parse these; the fallback split must keep the requirement.
+        ('verdict orchestrate --graph "unterminated --json', True),
+        ("verdict orchestrate fix the user's bug --json", True),
+        # Shell punctuation glued to the flag or the command.
+        ("verdict orchestrate goal --json>out.json", True),
+        ("verdict orchestrate goal --json;", True),
+        ("(verdict orchestrate goal --json)", True),
+        ("verdict orchestrate -j", False),
+        ("verdict orchestrate goal --", False),
+        ("verdict orchestrate goal --jsonl", False),
+        ("verdict orchestrate --json=true", False),
+        ("verdict route --json", False),
+        ("v orchestrate --json", False),
+        ("verdict orchestrate", False),
+        ("python -m verdict.client orchestrate --json", False),
+        ('verdict orchestrate --graph "unterminated', False),
+    ],
+)
+def test_orchestrate_command_matcher_forms(command, expected):
+    assert check_dod._is_orchestrate_json_command(command) is expected
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "verdict orchestrate goal --js",
+        "python -m verdict.cli orchestrate goal --json",
+        'verdict orchestrate --graph "unterminated --json',
+    ],
+)
+def test_hand_built_summary_fails_under_every_orchestrate_json_form(repo, command):
+    root, evidence = repo
+    summary = json.dumps(
+        {"story": "x", "integrate": {}, "marker": RUN_URL, "drill": "FAILED as intended"}
+    )
+    _orchestrate_evidence(root, evidence, summary)
+    item = evidence["acceptance"][0]
+    for run in (item["first_run"], item["fresh_run"], evidence["parent_confirmation"]):
+        run["command"] = command
+    errors = _check(root, evidence)
+    assert len([e for e in errors if "is not the run's result JSON" in e]) == 3, errors

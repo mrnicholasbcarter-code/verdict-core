@@ -42,7 +42,6 @@ import re
 import shlex
 import subprocess
 import sys
-from contextlib import suppress
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -89,21 +88,31 @@ def _time(value: str) -> datetime:
 STRUCTURED_KEYS = ("outcome", "run_id", "started_at", "finished_at", "events_digest")
 
 
-def _is_orchestrate_json_command(command: str) -> bool:
+def _command_tokens(command: str) -> list[str]:
+    """Shell words of a recorded command, with ``;``, ``>``, ``(`` and the like split off."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
-        tokens = shlex.split(command)
+        return list(lexer)
     except ValueError:
+        # Recorded commands need not be valid shell (a stray apostrophe in a goal).
+        # A parse error must add the structured-stdout requirement, never remove it.
+        return [token.strip("'\"") for token in re.split(r"[\s()<>|&;]+", command)]
+
+
+def _is_orchestrate_json_command(command: str) -> bool:
+    tokens = _command_tokens(command)
+    starts = [
+        index
+        for index, token in enumerate(tokens)
+        if Path(token).name == "verdict"
+        or (token == "verdict.cli" and index > 0 and tokens[index - 1] == "-m")
+    ]
+    if not starts or "orchestrate" not in tokens[starts[0] + 1 :]:
         return False
-    has_verdict = any(Path(token).name == "verdict" for token in tokens)
-    if "python" in tokens and "-m" in tokens:
-        with suppress(IndexError):
-            has_verdict = has_verdict or tokens[tokens.index("-m") + 1] == "verdict"
-    try:
-        verdict_index = next(i for i, token in enumerate(tokens) if Path(token).name == "verdict")
-        has_orchestrate = "orchestrate" in tokens[verdict_index + 1 :]
-    except StopIteration:
-        has_orchestrate = "orchestrate" in tokens
-    return has_verdict and has_orchestrate and "--json" in tokens
+    # argparse accepts any unambiguous prefix of a long option: --j, --js and --jso set json too.
+    return any(len(token) >= 3 and "--json".startswith(token) for token in tokens)
 
 
 def _structured_result(text: str) -> dict[str, Any] | None:
