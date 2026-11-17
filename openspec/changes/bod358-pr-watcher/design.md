@@ -43,7 +43,7 @@ No new ADR is required. The watcher preserves the existing authority boundaries:
 
 ## Security / trust implications
 
-GitHub, Linear, and worker payloads are untrusted. Validate repository allowlists and exact-head identity, reject path traversal in state keys, bound log excerpts, redact secrets and token-bearing URLs, isolate `VERDICT_HOME` in tests, and never treat check text as executable instructions. The watcher capability interface has no source-write, force-push, branch, or merge operation.
+GitHub, Linear, and worker payloads are untrusted. Validate repository allowlists and exact-head identity, reject path traversal in state keys, redact secrets and token-bearing URLs, isolate `VERDICT_HOME` in tests, and never treat check text as executable instructions. The watcher capability interface has no source-write, force-push, branch, or merge operation.
 
 ## Routing / context / memory implications
 

@@ -138,7 +138,7 @@ Attempt counters, the merged-PR cursor, the last classification, transitions, an
 
 ### Requirement: Idle runs make no model call
 
-The watcher SHALL make no LLM call and no model-routing call on any run; it consumes only GitHub and Linear facts and the existing CI policy.
+The watcher SHALL make no LLM call and no model-routing call on any run; it consumes only GitHub facts and the existing CI policy.
 
 #### Scenario: No-state-change run
 - **WHEN** a run completes with no PRs changing state
@@ -147,5 +147,5 @@ The watcher SHALL make no LLM call and no model-routing call on any run; it cons
 ## Deferred
 
 - Linear comments on transition events (digest-only in this change)
-- Failed Linear notification retry with idempotency key (durable queue exists, retry logic deferred)
+- Failed Linear notification retry with idempotency key (durable queue exists, retry logic deferred; Linear delivery code exists via `deliver_linear_events` and `MAX_LINEAR_RETRY` but is unwired)
 - Disagreeing Verdict/ocr fail receipt vs. GitHub review evidence (GitHub CHANGES_REQUESTED only in this change)
