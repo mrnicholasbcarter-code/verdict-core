@@ -106,14 +106,43 @@ class TestClassifyCI:
         }
         assert classify_ci([cancelled]) == "CANCELLED"
 
-    def test_unknown_conclusion_is_pending(self) -> None:
-        unknown = {
-            "name": "test",
-            "status": "COMPLETED",
-            "conclusion": "ACTION_REQUIRED",
-            "required": True,
-        }
-        assert classify_ci([unknown]) == "PENDING"
+    def test_unrecognised_conclusion_is_pending(self) -> None:
+        """Catches a conclusion nobody has classified being read as green or as a failure."""
+        assert classify_ci([required("lint", "SOMETHING_NEW")]) == "PENDING"
+
+    @pytest.mark.parametrize("conclusion", ["TIMED_OUT", "STARTUP_FAILURE"])
+    def test_timed_out_and_startup_failure_are_infrastructure(self, conclusion: str) -> None:
+        """Catches a job the runner never finished waiting at PENDING for ever."""
+        assert classify_ci([required("test (3.11)", conclusion)]) == "INFRA_FAILURE"
+        assert classify_ci([required("lint", "SUCCESS"), required("proof-full", conclusion)]) == (
+            "INFRA_FAILURE"
+        )
+        assert ci_recovery_action(classify_ci([required("lint", conclusion)]), 0, 1)["action"] == (
+            "RETRY_CI"
+        )
+
+    @pytest.mark.parametrize("conclusion", ["ACTION_REQUIRED", "STALE"])
+    def test_action_required_and_stale_need_repair_not_a_rerun(self, conclusion: str) -> None:
+        """Catches a check that needs a person being waited on, or retried, for ever."""
+        assert classify_ci([required("lint", conclusion)]) == "CODE_FAILURE"
+        assert classify_ci([required("lint", conclusion), required("proof-full", "TIMED_OUT")]) == (
+            "CODE_FAILURE"
+        )
+        assert classify_ci([required("lint", conclusion), required("proof-full", "CANCELLED")]) == (
+            "CODE_FAILURE"
+        )
+
+    @pytest.mark.parametrize("conclusion", ["TIMED_OUT", "STARTUP_FAILURE"])
+    def test_code_failure_outranks_an_infrastructure_conclusion(self, conclusion: str) -> None:
+        """Catches a real code failure being retried away because a sibling job timed out."""
+        checks = [required("proof-full", conclusion), required("lint", "FAILURE")]
+        assert classify_ci(checks) == "CODE_FAILURE"
+
+    def test_unfinished_check_outranks_the_new_conclusions(self) -> None:
+        """Catches a verdict on TIMED_OUT or STALE while another required check still runs."""
+        running = {"name": "lint", "status": "IN_PROGRESS", "conclusion": None, "required": True}
+        assert classify_ci([required("proof-full", "TIMED_OUT"), running]) == "PENDING"
+        assert classify_ci([required("proof-full", "STALE"), running]) == "PENDING"
 
     def test_skipped_and_neutral_are_not_failures(self) -> None:
         ok = {"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "required": True}

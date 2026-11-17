@@ -11,7 +11,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from verdict.ci_policy import classify_ci, classify_merge_state
+from verdict.ci_policy import (
+    INFRA_CONCLUSIONS,
+    REPAIR_CONCLUSIONS,
+    classify_ci,
+    classify_merge_state,
+)
 from verdict.pr_watcher_github import WatcherGitHubClient
 from verdict.pr_watcher_github import assert_no_mutation as assert_github_no_mutation
 from verdict.pr_watcher_notifications import (
@@ -47,6 +52,10 @@ _REPAIR_NEEDED = frozenset(
 )
 _NOT_GREEN = frozenset({"EMPTY", "MISSING_REQUIRED"})
 _BLOCKED = frozenset({"BLOCKED"})
+
+# Required-check conclusions a bounded rerun may clear, and those a repair names.
+_RERUNNABLE_CONCLUSIONS = frozenset({"FAILURE", "CANCELLED"}) | INFRA_CONCLUSIONS
+_FAILING_CONCLUSIONS = frozenset({"FAILURE"}) | REPAIR_CONCLUSIONS
 
 
 def _adapter_action(classification: str, attempt: int, max_attempts: int) -> str:
@@ -112,7 +121,7 @@ def poll_open_prs(
             ci_class = "STALLED"  # override to stalled when checks hang
         # Only the required checks that actually hung or failed are rerun candidates.
         rerun_targets = stalled or [
-            c for c in required_checks if c.get("conclusion") in ("FAILURE", "CANCELLED")
+            c for c in required_checks if c.get("conclusion") in _RERUNNABLE_CONCLUSIONS
         ]
 
         # Merge state
@@ -366,11 +375,20 @@ def _plan_observation(
         )
 
     if action == "REPAIR":
-        failing = [
-            c["name"]
+        failed = [
+            c
             for c in obs["checks"]
-            if c.get("required") is True and c.get("conclusion") == "FAILURE"
+            if c.get("required") is True and c.get("conclusion") in _FAILING_CONCLUSIONS
         ]
+        failing = [c["name"] for c in failed]
+        # Name the conclusion when it is not a plain failure, so the repair
+        # worker can tell "needs a person" from "the code is wrong".
+        named = sorted({str(c["conclusion"]) for c in failed} & REPAIR_CONCLUSIONS)
+        reason = (
+            f"required check concluded {', '.join(named)}"
+            if named
+            else f"PR classified as {classification}"
+        )
         plan.add_record(
             state,
             RepairRecord(
@@ -379,7 +397,7 @@ def _plan_observation(
                 head=head,
                 failing_checks=failing,
                 classification=classification,
-                reason=f"PR classified as {classification}",
+                reason=reason,
             ).to_dict(plan.stamp),
         )
     elif action == "BLOCKED":

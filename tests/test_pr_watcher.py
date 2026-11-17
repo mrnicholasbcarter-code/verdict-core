@@ -374,6 +374,41 @@ class TestExactHeadPolling:
             ("MISSING_REQUIRED", "PR classified as MISSING_REQUIRED")
         ]
 
+    @pytest.mark.parametrize("conclusion", ["TIMED_OUT", "STARTUP_FAILURE"])
+    def test_timed_out_or_startup_failure_is_rerun_once_then_blocked(
+        self, gh: FakeGitHubClient, ws: WatcherState, conclusion: str
+    ) -> None:
+        """Catches an infrastructure conclusion sitting at PENDING with no action."""
+        open_pr(gh, 1, "a" * 40, [check("test (3.11)", conclusion, check_run_id="job-1")])
+
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(3)]
+
+        assert [outcomes(r) for r in runs] == [
+            [(1, "INFRA_FAILURE", "RETRY")],
+            [(1, "INFRA_FAILURE", "BLOCKED")],
+            [(1, "INFRA_FAILURE", "BLOCKED")],
+        ]
+        assert gh.rerun_calls == [{"check_run_id": "job-1", "repo": REPO}]
+        assert len(disk(ws)["records"]["block"]) == 1
+
+    @pytest.mark.parametrize("conclusion", ["ACTION_REQUIRED", "STALE"])
+    def test_action_required_or_stale_gets_one_repair_record_naming_the_conclusion(
+        self, gh: FakeGitHubClient, ws: WatcherState, conclusion: str
+    ) -> None:
+        """Catches these conclusions being waited on, or the record hiding why it was written."""
+        open_pr(
+            gh, 1, "a" * 40, [check("lint", conclusion, check_run_id="job-1"), check("proof-full")]
+        )
+
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(2)]
+
+        assert [outcomes(r) for r in runs] == [[(1, "CODE_FAILURE", "REPAIR")]] * 2
+        assert gh.rerun_calls == []
+        repairs = disk(ws)["records"]["repair"]
+        assert [(r["failing_checks"], r["reason"]) for r in repairs] == [
+            (["lint"], f"required check concluded {conclusion}")
+        ]
+
     def test_naive_clock_is_rejected_before_anything_is_read_or_written(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:

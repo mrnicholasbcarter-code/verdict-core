@@ -22,6 +22,12 @@ INFRA_PATTERNS: tuple[str, ...] = (
 )
 
 
+# Conclusions of a job the runner never properly ran: retry, do not repair.
+INFRA_CONCLUSIONS: frozenset[str] = frozenset({"TIMED_OUT", "STARTUP_FAILURE"})
+# Conclusions that need a person or a new commit; a rerun cannot clear them.
+REPAIR_CONCLUSIONS: frozenset[str] = frozenset({"ACTION_REQUIRED", "STALE"})
+
+
 def classify_ci(checks: list[dict[str, Any]]) -> str:
     """Deterministic classification of GitHub check results for the exact PR head."""
     if not checks:
@@ -32,12 +38,14 @@ def classify_ci(checks: list[dict[str, Any]]) -> str:
     for check in required:
         if check.get("status") != "COMPLETED" or check.get("conclusion") is None:
             return "PENDING"
+    if any(c.get("conclusion") in REPAIR_CONCLUSIONS for c in required):
+        return "CODE_FAILURE"
     failures = [c for c in required if c.get("conclusion") == "FAILURE"]
-    if failures:
-        for check in failures:
-            name = str(check.get("name", "")).lower()
-            if not any(pattern in name for pattern in INFRA_PATTERNS):
-                return "CODE_FAILURE"
+    for check in failures:
+        name = str(check.get("name", "")).lower()
+        if not any(pattern in name for pattern in INFRA_PATTERNS):
+            return "CODE_FAILURE"
+    if failures or any(c.get("conclusion") in INFRA_CONCLUSIONS for c in required):
         return "INFRA_FAILURE"
     if any(c.get("conclusion") == "CANCELLED" for c in required):
         return "CANCELLED"
