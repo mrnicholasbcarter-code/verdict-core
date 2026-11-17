@@ -29,8 +29,8 @@
       "expect": "DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-286.json",
       "expect_exit_code": 0,
       "first_run": {
-        "at": "2026-11-17T19:36:45Z",
-        "sha": "8e640a9d1df0dd23f57bcd36974df6dbf6447edb",
+        "at": "2026-11-17T20:41:40Z",
+        "sha": "2ff877f178be79034e10869b89662f617a9f43e4",
         "environment": "operator-host",
         "command": "uv run python scripts/check_dod.py --all",
         "real_state_marker": "DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-286.json",
@@ -41,8 +41,8 @@
         }
       },
       "fresh_run": {
-        "at": "2026-11-17T19:51:45Z",
-        "sha": "8e640a9d1df0dd23f57bcd36974df6dbf6447edb",
+        "at": "2026-11-17T20:59:10Z",
+        "sha": "2ff877f178be79034e10869b89662f617a9f43e4",
         "environment": "operator-host",
         "command": "uv run python scripts/check_dod.py --all",
         "real_state_marker": "DONE: /operator/dev/verdict-core-worktrees/closeout-batch-1-check/docs/proof/dod/bod-286.json",
@@ -58,8 +58,8 @@
     "change": "m1-stop-false-done"
   },
   "parent_confirmation": {
-    "by": "gem-implementer on omniroute/cc/claude-opus-5-5 (subagent session)",
-    "at": "2026-11-17T19:37:45Z",
+    "by": "gem-implementer confirmer on omniroute/kilocode/nvidia/nemotron-3-ultra-550b-a55b:free",
+    "at": "2026-11-17T21:52:21Z",
     "command": "uv run python scripts/check_dod.py --all",
     "raw_output": {
       "path": "docs/proof/dod/m1-stop-false-done/parent.txt",
