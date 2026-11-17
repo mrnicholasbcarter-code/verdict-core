@@ -365,3 +365,53 @@ def test_unknown_ref_docs_state_is_never_healthy() -> None:
     row = rows["Reference docs default/ref-omniroute"]
     assert row["status"] == "failed"
     assert "installed version unknown" in row["detail"] and "never synced" in row["detail"]
+
+
+def test_pr_watcher_timer_row_parses_real_systemctl_format_with_repos() -> None:
+    """Test parsing real systemctl ExecStart format with argv[] and multiple repos."""
+    # Real systemctl format: ExecStart={ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -m verdict pr-watch --json --repo "org/repo1" --repo "org/repo2" ; ... }
+    real_exec_start = '{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -m verdict pr-watch --json --repo "org/repo1" --repo "org/repo2" ; ignore=this }'
+
+    def timer_state(unit: str) -> dict[str, str]:
+        return {"state": "active", "result": "success"}
+
+    def systemctl_show_props(unit: str) -> dict[str, str]:
+        return {
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "ExecStart": real_exec_start,
+            "WorkingDirectory": "/home/user/checkout",
+        }
+
+    row = dd._pr_watcher_timer_row(
+        timer_state=timer_state, systemctl_show_props=systemctl_show_props
+    )
+
+    assert row["status"] == "ok"
+    assert "interpreter=/usr/bin/python3" in row["detail"]
+    assert "repos=org/repo1,org/repo2" in row["detail"]
+    assert "checkout=/home/user/checkout" in row["detail"]
+    # State dir should be computed from git common dir
+    assert "state dir=" in row["detail"]
+
+
+def test_pr_watcher_timer_row_omits_fields_when_unit_missing() -> None:
+    """Test that fields are omitted when the unit is missing."""
+
+    def timer_state(unit: str) -> dict[str, str]:
+        return {"state": "missing", "result": "unknown"}
+
+    def systemctl_show_props(unit: str) -> dict[str, str]:
+        return {}
+
+    row = dd._pr_watcher_timer_row(
+        timer_state=timer_state, systemctl_show_props=systemctl_show_props
+    )
+
+    assert row["status"] == "failed"
+    # When unit is missing, the detail should not contain interpreter, checkout, repos, state dir
+    assert "interpreter=" not in row["detail"]
+    assert "checkout=" not in row["detail"]
+    assert "repos=" not in row["detail"]
+    assert "state dir=" not in row["detail"]
+    assert "repair:" in row["detail"]

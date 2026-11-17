@@ -5,13 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def test_pr_watcher_service_renders_exact_unit_files() -> None:
+def test_pr_watcher_service_renders_exact_unit_files(tmp_path: Path) -> None:
     """The rendered service and timer units match the expected text exactly."""
     from verdict import pr_watcher_service
 
     # Use a fixed root for deterministic output
     result = pr_watcher_service.manage_service(
-        unit_dir=Path("/tmp/test-units"),
+        unit_dir=tmp_path / "test-units",
         dry_run=True,
         repos=["mrnicholasbcarter-code/verdict-core"],
     )
@@ -106,7 +106,7 @@ def test_pr_watcher_service_timer_state_failed() -> None:
         metadata_service._show = original_show
 
 
-def test_pr_watcher_service_manage_service_dry_run() -> None:
+def test_pr_watcher_service_manage_service_dry_run(tmp_path: Path) -> None:
     """Dry run never writes files or runs systemctl."""
     from verdict import pr_watcher_service
 
@@ -116,7 +116,7 @@ def test_pr_watcher_service_manage_service_dry_run() -> None:
         calls.append(args)
 
     result = pr_watcher_service.manage_service(
-        unit_dir=Path("/tmp/test-units-dry"),
+        unit_dir=tmp_path / "test-units-dry",
         dry_run=True,
         repos=["owner/repo1", "owner/repo2"],
         run=recording_systemctl,
@@ -129,12 +129,12 @@ def test_pr_watcher_service_manage_service_dry_run() -> None:
     assert "owner/repo2" in result["files"][pr_watcher_service.SERVICE]
 
 
-def test_pr_watcher_service_manage_service_uninstall() -> None:
+def test_pr_watcher_service_manage_service_uninstall(tmp_path: Path) -> None:
     """Uninstall plan removes units and returns disable commands."""
     from verdict import pr_watcher_service
 
     # Create the unit files first so they can be "removed" (not "absent")
-    unit_dir = Path("/tmp/test-units-uninstall")
+    unit_dir = tmp_path / "test-units-uninstall"
     unit_dir.mkdir(parents=True, exist_ok=True)
     (unit_dir / pr_watcher_service.SERVICE).write_text("[Unit]\nDescription=Test\n")
     (unit_dir / pr_watcher_service.TIMER).write_text("[Unit]\nDescription=Test\n")
@@ -159,12 +159,12 @@ def test_pr_watcher_service_manage_service_uninstall() -> None:
     ]
 
 
-def test_pr_watcher_service_manage_service_multiple_repos() -> None:
+def test_pr_watcher_service_manage_service_multiple_repos(tmp_path: Path) -> None:
     """Multiple repos are joined with --repo flags in ExecStart."""
     from verdict import pr_watcher_service
 
     result = pr_watcher_service.manage_service(
-        unit_dir=Path("/tmp/test-units-multi"),
+        unit_dir=tmp_path / "test-units-multi",
         dry_run=True,
         repos=["owner/repo1", "owner/repo2", "owner/repo3"],
     )

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,17 +20,6 @@ class MockArgumentParser:
     def error(self, message: str) -> None:
         self.errors.append(message)
         raise SystemExit(2)
-
-
-def _run_pr_watch(
-    argv: list[str], env: dict[str, str] | None = None, cwd: str | None = None
-) -> subprocess.CompletedProcess:
-    """Run verdict pr-watch with the given arguments."""
-    cmd = [sys.executable, "-m", "verdict", "pr-watch", *argv]
-    merged_env = os.environ.copy()
-    if env:
-        merged_env.update(env)
-    return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, env=merged_env)
 
 
 class TestPrWatchExitCodes:

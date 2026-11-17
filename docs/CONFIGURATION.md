@@ -396,6 +396,31 @@ installed, inactive timers, failed or never-completed refreshes, and stale sourc
 ages fail the check. Completion or source evidence older than twelve hours fails;
 missing, invalid, or future source timestamps remain explicit failures.
 
+## PR watcher
+
+The PR watcher polls open pull requests across configured repositories, classifies
+CI status, and emits bounded reruns and transition events.
+
+### Repository configuration
+
+Repositories are configured via `pr-watch.env` at `<XDG_CONFIG_HOME or ~/.config>/verdict/pr-watch.env`
+with a single line:
+
+```
+VERDICT_PR_WATCH_REPOS=owner/a,owner/b
+```
+
+Owner-only names are allowed (e.g., `mrnicholasbcarter-code/verdict-core,mrnicholasbcarter-code/verdict-node`).
+The file must be owned by the user and not group/world-writable (mode 0600 recommended).
+Surrounding quotes, an `export ` prefix, and leading spaces are stripped.
+Each entry is validated as `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$` without `..`.
+
+### Timer
+
+`verdict setup` installs and enables a user timer (`verdict-pr-watch.timer`) that runs
+the watcher every five minutes. `verdict doctor` reports the timer state, runtime
+provenance, configured repositories, and state scope with secrets redacted.
+
 ## Passive health refresh
 
 The passive identify unit (`verdict-identify.service`, every three hours) runs

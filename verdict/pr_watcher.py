@@ -48,9 +48,16 @@ from verdict.pr_watcher_state import (
 # Adapter actions: maps classifier outputs to watcher behaviour
 _READY = frozenset({"GREEN", "PROCEED_MERGE"})
 _NO_ACTION = frozenset({"PENDING", "WAIT_CI"})
-_RETRY_ELIGIBLE = frozenset({"INFRA_FAILURE", "CANCELLED", "STALLED", "RETRY_CI"})
+_RETRY_ELIGIBLE = frozenset({"INFRA_FAILURE", "CANCELLED", "RETRY_CI"})
 _REPAIR_NEEDED = frozenset(
-    {"CODE_FAILURE", "CORRECTIVE_IMPLEMENTATION", "CONFLICT", "BEHIND", "REBASE_AND_REPROOF"}
+    {
+        "CODE_FAILURE",
+        "CORRECTIVE_IMPLEMENTATION",
+        "CONFLICT",
+        "BEHIND",
+        "REBASE_AND_REPROOF",
+        "STALLED",
+    }
 )
 _NOT_GREEN = frozenset({"EMPTY", "MISSING_REQUIRED"})
 _BLOCKED = frozenset({"BLOCKED"})
@@ -81,9 +88,9 @@ def _adapter_action(classification: str, attempt: int, max_attempts: int) -> str
     For classifications covered by the shared CI recovery policy with matching
     budget semantics (GREEN, PENDING, INFRA_FAILURE, CANCELLED, CONFLICT),
     delegate to ci_recovery_action and map its output to the watcher action space.
-    For watcher-specific classifications (STALLED, EMPTY, MISSING_REQUIRED,
+    For watcher-specific classifications (EMPTY, MISSING_REQUIRED,
     BEHIND, RETRY_CI, PROCEED_MERGE, WAIT_CI, REBASE_AND_REPROOF,
-    CORRECTIVE_IMPLEMENTATION, BLOCKED, CODE_FAILURE), apply the existing
+    CORRECTIVE_IMPLEMENTATION, BLOCKED, CODE_FAILURE, STALLED), apply the existing
     adapter table.
     """
     # Use shared CI recovery policy where budget semantics match
@@ -365,7 +372,7 @@ def reconcile_merged_prs(
 
 
 def _still_rerunnable(
-    checks: list[dict[str, Any]], check_name: str, workflow_job_id: object, stalled: bool
+    checks: list[dict[str, Any]], check_name: str, workflow_job_id: object
 ) -> bool:
     """True if the same required check, by name and job id, still warrants the rerun."""
     for check in checks:
@@ -373,8 +380,6 @@ def _still_rerunnable(
             continue
         if check.get("required") is not True:
             return False
-        if stalled:
-            return check.get("status") in {"IN_PROGRESS", "QUEUED"}
         return check.get("conclusion") in _RERUNNABLE_CONCLUSIONS
     return False
 
@@ -389,17 +394,16 @@ def request_bounded_rerun(
     workflow_job_id: int | str,
     max_attempts: int = 1,
     data: dict[str, Any] | None = None,
-    stalled: bool = False,
     budget_id: int | str | None = None,
 ) -> dict[str, Any]:
     """Request one bounded rerun, fenced on the exact head and check identity.
 
     Order: reread the PR, confirm the head and that the same check (name and
-    job id) is still failed or, for ``stalled``, still unfinished; check the
-    per-key budget; persist the raised attempt counter; only then call GitHub.
-    A fence mismatch consumes no attempt.  ``data``, when given, is updated in
-    place so the caller keeps the state that is now on disk.  A failed state
-    write raises ``StateWriteError`` and no rerun is requested.
+    job id) is still failed; check the per-key budget; persist the raised
+    attempt counter; only then call GitHub. A fence mismatch consumes no
+    attempt.  ``data``, when given, is updated in place so the caller keeps
+    the state that is now on disk.  A failed state write raises
+    ``StateWriteError`` and no rerun is requested.
 
     ``budget_id`` is the workflow/job identity the attempt is counted under;
     it defaults to the job id.  The run passes the workflow run id, which a
@@ -415,19 +419,32 @@ def request_bounded_rerun(
         reread = gh.get_pr(repo, pr_number)
     except GitHubClientError as exc:
         # Unfenced means not rerun: nothing is spent and the next run retries.
-        return {"rerun": False, "reason": str(exc), "type": "read_error"}
+        return {
+            "rerun": False,
+            "reason": str(exc),
+            "type": "read_error",
+            "repo": repo,
+            "pr_number": pr_number,
+            "check_name": check_name,
+        }
     current_head = reread["head_sha"]
     if current_head != head or reread.get("commit_oid") != head:
         return {
             "rerun": False,
             "reason": f"head changed: expected {head[:12]}, got {current_head[:12]}",
             "type": "fence_mismatch",
+            "repo": repo,
+            "pr_number": pr_number,
+            "check_name": check_name,
         }
-    if not _still_rerunnable(reread["checks"], check_name, workflow_job_id, stalled):
+    if not _still_rerunnable(reread["checks"], check_name, workflow_job_id):
         return {
             "rerun": False,
             "reason": f"check {check_name!r} (job {workflow_job_id}) is no longer rerunnable",
             "type": "fence_mismatch",
+            "repo": repo,
+            "pr_number": pr_number,
+            "check_name": check_name,
         }
 
     attempt = state.get_rerun_attempt(data, key)
@@ -436,6 +453,9 @@ def request_bounded_rerun(
             "rerun": False,
             "reason": f"max attempts ({max_attempts}) exhausted for {key}",
             "type": "exhausted",
+            "repo": repo,
+            "pr_number": pr_number,
+            "check_name": check_name,
         }
 
     data.update(state.set_rerun_attempt(data, key, attempt + 1))
@@ -446,8 +466,21 @@ def request_bounded_rerun(
     try:
         result = gh.rerun_check(workflow_job_id, repo)
     except Exception as exc:
-        return {"rerun": False, "reason": str(exc), "type": "api_error"}
-    return {"rerun": True, "result": result}
+        return {
+            "rerun": False,
+            "reason": str(exc),
+            "type": "api_error",
+            "repo": repo,
+            "pr_number": pr_number,
+            "check_name": check_name,
+        }
+    return {
+        "rerun": True,
+        "result": result,
+        "repo": repo,
+        "pr_number": pr_number,
+        "check_name": check_name,
+    }
 
 
 # --- Run coordinator -------------------------------------------------------------
@@ -507,17 +540,15 @@ def _plan_observation(
 
     repair_checks: list[dict[str, Any]] = []
     repair_reason = f"PR classified as {classification}"
-    if obs.get("ci_classification") == "STALLED":
+    if obs.get("classification") == "STALLED":
         repair_reason = "stalled: required check running past threshold; cannot rerun while running"
-
-    if action == "RETRY" and obs.get("ci_classification") == "STALLED":
-        action = "REPAIR"
+        # Populate repair_checks with the stalled checks
         repair_checks = [
             c
             for c in obs["checks"]
             if c.get("required") is True and c.get("status") in {"IN_PROGRESS", "QUEUED"}
         ]
-        obs["action"] = action
+
     if action == "RETRY":
         targets = obs["rerun_targets"]
         unrunnable = [c for c in targets if c.get("job_id") in (None, "")]
@@ -557,17 +588,18 @@ def _plan_observation(
                     "check_name": c["name"],
                     "workflow_job_id": c["job_id"],
                     "budget_id": budget_id,
-                    "stalled": obs["ci_classification"] == "STALLED",
                 }
                 for budget_id, c in within_budget
             )
         obs["action"] = action
     elif action == "REPAIR":
-        repair_checks = [
-            c
-            for c in obs["checks"]
-            if c.get("required") is True and c.get("conclusion") in _FAILING_CONCLUSIONS
-        ]
+        # For STALLED classification, repair_checks was already populated above
+        if obs.get("classification") != "STALLED":
+            repair_checks = [
+                c
+                for c in obs["checks"]
+                if c.get("required") is True and c.get("conclusion") in _FAILING_CONCLUSIONS
+            ]
         # Name the conclusion when it is not a plain failure, so the repair
         # worker can tell "needs a person" from "the code is wrong".
         named = sorted({str(c["conclusion"]) for c in repair_checks} & REPAIR_CONCLUSIONS)
@@ -674,11 +706,13 @@ def _run_locked(
     # 1. Decide, one repository at a time. A repository whose reads fail is
     # dropped as a whole: no record, transition or cursor move is kept for it,
     # so the next run covers the same ground. The others carry on.
+    has_unsafe_state_key = False
     for repo in repos:
         try:
             _safe_key(repo)
         except UnsafeKeyError as exc:
-            repo_errors.append({"repo": repo, "error": str(exc)})
+            repo_errors.append({"repo": repo, "error": str(exc), "kind": "unsafe_state_key"})
+            has_unsafe_state_key = True
             continue
         trial = plan.fork()
         try:
@@ -686,13 +720,22 @@ def _run_locked(
                 gh, state, trial, repo, max_attempts, verdict_fail_receipts, current
             )
         except (GitHubClientError, UnsafeKeyError) as exc:
-            repo_errors.append({"repo": repo, "error": str(exc)})
+            kind = "unsafe_state_key" if isinstance(exc, UnsafeKeyError) else "github_error"
+            repo_errors.append({"repo": repo, "error": str(exc), "kind": kind})
+            if kind == "unsafe_state_key":
+                has_unsafe_state_key = True
+            else:
+                # Advance the merged cursor for this repo on github_error failure
+                # only if it has no cursor yet (first run for this repo).
+                if state.get_merged_cursor(plan.data, repo) is None:
+                    plan.data = state.set_merged_cursor(plan.data, repo, current)
             continue
         plan.adopt(trial)
         observations.extend(polled)
 
-    # A wholly rejected run must not create a durable state file.
-    if repo_errors and not observations and not plan.records:
+    # If any unsafe_state_key error occurred, fail closed without saving state.
+    # This prevents unsafe keys from reaching the state file.
+    if has_unsafe_state_key:
         return {
             "ok": False,
             "error": repo_errors[0]["error"],
@@ -705,6 +748,11 @@ def _run_locked(
             "linear_sent": [],
             "pending_events": [],
         }
+
+    # 2. Persist. Classifications, records, transitions, queued Linear events
+    # and the cursors are durable before the first side effect.
+    data = state.set_last_run(plan.data, current)
+    state.save(data)
 
     # 2. Persist. Classifications, records, transitions, queued Linear events
     # and the cursors are durable before the first side effect.
@@ -725,7 +773,9 @@ def _run_locked(
         outcome = request_bounded_rerun(gh, state, max_attempts=max_attempts, data=data, **planned)
         reruns.append(outcome)
         if outcome.get("type") in {"read_error", "api_error"}:
-            repo_errors.append({"repo": planned["repo"], "error": outcome["reason"]})
+            repo_errors.append(
+                {"repo": planned["repo"], "error": outcome["reason"], "kind": "github_error"}
+            )
 
     # Linear comments are sent only from the durable queue, so a failed or
     # interrupted send is retried by the next run.
@@ -737,14 +787,16 @@ def _run_locked(
             data = {**data, "pending_events": remaining}
             state.save(data)
 
+    # Determine top-level type: only when every error has the same kind
+    top_level_type = None
+    if repo_errors:
+        kinds = {e.get("kind") for e in repo_errors}
+        if len(kinds) == 1:
+            top_level_type = kinds.pop()
+
     result: dict[str, Any] = {
         "ok": not repo_errors,
         "repo_errors": repo_errors,
-        **(
-            {"error": repo_errors[0]["error"], "type": "unsafe_state_key"}
-            if repo_errors and not observations and not reruns and not plan.records
-            else {}
-        ),
         "observations": observations,
         "reruns": reruns,
         "records": plan.records,
@@ -752,6 +804,9 @@ def _run_locked(
         "linear_sent": sent,
         "pending_events": state.get_pending_events(data),
     }
+    if top_level_type:
+        result["type"] = top_level_type
+        result["error"] = repo_errors[0]["error"]
     return result
 
 

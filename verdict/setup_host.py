@@ -189,15 +189,60 @@ def _pr_watch_config_path() -> Path:
 
 
 def _pr_watch_repos() -> list[str]:
+    """Read and validate repositories from pr-watch.env.
+
+    Returns empty list if file missing. Raises ValueError with reason if file
+    exists but is invalid (permissions, format, or invalid repo names).
+    """
+    import re
+    import stat
+
     path = _pr_watch_config_path()
     try:
-        lines = path.read_text().splitlines()
+        st = path.stat()
     except OSError:
         return []
-    value = next(
+
+    # Check file permissions: must not be group/world-writable
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise ValueError(
+            f"pr-watch.env has unsafe permissions (mode {oct(st.st_mode & 0o777)}): "
+            "must not be group or world writable"
+        )
+    # Check ownership: must be owned by current user
+    if st.st_uid != os.getuid():
+        raise ValueError(
+            f"pr-watch.env is owned by uid {st.st_uid}, not current user {os.getuid()}"
+        )
+
+    try:
+        content = path.read_text()
+    except OSError:
+        return []
+
+    lines = content.splitlines()
+    raw_value = next(
         (line.split("=", 1)[1] for line in lines if line.startswith("VERDICT_PR_WATCH_REPOS=")), ""
     )
-    return [repo.strip() for repo in value.split(",") if repo.strip()]
+
+    # Strip surrounding quotes, export prefix, leading spaces
+    value = raw_value.strip()
+    if value.startswith("export "):
+        value = value[len("export ") :].strip()
+    if (value.startswith('"') and value.endswith('"')) or (
+        value.startswith("'") and value.endswith("'")
+    ):
+        value = value[1:-1]
+
+    repos = [repo.strip() for repo in value.split(",") if repo.strip()]
+
+    # Validate each repo: ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ without ..
+    repo_pattern = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+    for repo in repos:
+        if ".." in repo or not repo_pattern.match(repo):
+            raise ValueError(f"invalid repository name in pr-watch.env: {repo!r}")
+
+    return repos
 
 
 def _pr_watch_problem() -> str:
@@ -239,7 +284,10 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
     if provider_id == PR_WATCHER:
         from verdict import pr_watcher_service
 
-        repos = _pr_watch_repos()
+        try:
+            repos = _pr_watch_repos()
+        except ValueError as exc:
+            return [str(exc)]
         if not repos:
             return [_pr_watch_problem()]
         rendered = pr_watcher_service.manage_service(
@@ -333,7 +381,7 @@ _ACTIONS: dict[str, dict[str, str]] = {
     PR_WATCHER: {
         "description": (
             "Install the 5-minute PR watcher timer that polls repositories, classifies CI, "
-            "and emits bounded reruns and Linear transitions."
+            "and emits bounded reruns."
         ),
         "security_impact": (
             "Reads GitHub through gh api graphql; its only write is a bounded rerun of a failed "
@@ -546,7 +594,10 @@ def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[st
             steps = _install_timers(env, docs_refresh_service.manage_service)
             return {"status": "applied", "note": f"{docs_refresh_service.TIMER} enabled", **steps}
         if provider_id == PR_WATCHER:
-            repos = _pr_watch_repos()
+            try:
+                repos = _pr_watch_repos()
+            except ValueError as exc:
+                return {"status": "blocked", "note": str(exc)}
             if not repos:
                 return {"status": "blocked", "note": _pr_watch_problem()}
             result = pr_watcher_service.manage_service(

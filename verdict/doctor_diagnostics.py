@@ -1217,7 +1217,10 @@ def _docs_refresh_timer_row(timer_state: Callable[[str], dict[str, Any]] | None)
     return {"label": label, "status": "failed", "detail": detail}
 
 
-def _pr_watcher_timer_row(timer_state: Callable[[str], dict[str, Any]] | None) -> dict[str, str]:
+def _pr_watcher_timer_row(
+    timer_state: Callable[[str], dict[str, Any]] | None = None,
+    systemctl_show_props: Callable[[str], dict[str, str]] | None = None,
+) -> dict[str, str]:
     """The 5-minute PR watcher timer is active and its last run succeeded."""
     from verdict import pr_watcher_service
     from verdict.setup_host import PR_WATCHER, setup_repair
@@ -1226,19 +1229,33 @@ def _pr_watcher_timer_row(timer_state: Callable[[str], dict[str, Any]] | None) -
     state = (timer_state or pr_watcher_service.timer_state)(unit)
     name, result = str(state.get("state", "unknown")), str(state.get("result", "unknown"))
     detail = f"{unit} is {name}; last result {result}"
-    from verdict import pr_watcher_service
-
-    props = _systemctl_show_props(pr_watcher_service.SERVICE) if name != "missing" else {}
-    exec_start = str(props.get("ExecStart", ""))
-    repos = [arg.split("=", 1)[-1] for arg in exec_start.split() if arg.startswith("--repo=")]
-    state_dir = str(props.get("WorkingDirectory", ""))
-    detail += f"; interpreter={exec_start.split(' ', 1)[0]}; checkout={state_dir}; repos={','.join(repos) or 'none'}; state dir={state_dir}/verdict-prime/pr-watcher"
     label = "PR watcher timer"
-    if name == "active" and result == "success":
-        return {"label": label, "status": "ok", "detail": detail}
+
     if name == "missing":
         detail += f"; repair: {setup_repair(PR_WATCHER)}"
-    elif name == "inactive":
+        return {"label": label, "status": "failed", "detail": detail}
+
+    # Unit exists; parse systemctl properties
+    show_props = systemctl_show_props or _systemctl_show_props
+    props = show_props(pr_watcher_service.SERVICE)
+
+    # Parse ExecStart in modern systemd format: { path=... ; argv[]=... ; ... }
+    exec_start = str(props.get("ExecStart", ""))
+    interpreter = _parse_execstart_interpreter(exec_start) or "unknown"
+
+    # Parse argv[] for --repo arguments
+    repos = _parse_repos_from_argv(exec_start)
+
+    checkout = str(props.get("WorkingDirectory", ""))
+
+    # Compute state dir: git common dir + /verdict-prime/pr-watcher, or --state-dir arg
+    state_dir = _compute_pr_watcher_state_dir(checkout, exec_start, show_props)
+
+    detail += f"; interpreter={interpreter}; checkout={checkout}; repos={','.join(repos) or 'none'}; state dir={state_dir}"
+
+    if name == "active" and result == "success":
+        return {"label": label, "status": "ok", "detail": detail}
+    if name == "inactive":
         detail += f"; repair: systemctl --user enable --now {unit}"
     else:
         detail += (
@@ -1246,6 +1263,51 @@ def _pr_watcher_timer_row(timer_state: Callable[[str], dict[str, Any]] | None) -
             f"logs: journalctl --user -u {pr_watcher_service.SERVICE}"
         )
     return {"label": label, "status": "failed", "detail": detail}
+
+
+def _parse_repos_from_argv(exec_start: str) -> list[str]:
+    """Extract --repo arguments from systemd ExecStart argv[] format."""
+    import re
+
+    # Match argv[]=... content
+    argv_match = re.search(r"argv\[\]=([^;]+)", exec_start)
+    if not argv_match:
+        return []
+    argv_text = argv_match.group(1)
+    # Find all --repo "owner/repo" or --repo owner/repo patterns
+    repos = re.findall(r'--repo\s+"?([^"\s]+)"?', argv_text)
+    return repos
+
+
+def _compute_pr_watcher_state_dir(
+    checkout: str, exec_start: str, show_props: Callable[[str], dict[str, str]]
+) -> str:
+    """Compute the PR watcher state directory."""
+    import subprocess
+    from pathlib import Path
+
+    # Check for --state-dir arg in exec_start
+    state_dir_match = re.search(r'--state-dir\s+"?([^"\s]+)"?', exec_start)
+    if state_dir_match:
+        return state_dir_match.group(1)
+
+    if not checkout:
+        return "unknown"
+
+    try:
+        # Get git common dir
+        result = subprocess.run(
+            ["git", "-C", checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            git_common_dir = result.stdout.strip()
+            return str(Path(git_common_dir) / "verdict-prime" / "pr-watcher")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "unknown"
 
 
 def _ref_docs_rows(status: Callable[[], list[dict[str, Any]]] | None) -> list[dict[str, str]]:

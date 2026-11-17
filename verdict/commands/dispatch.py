@@ -173,18 +173,24 @@ def _cmd_pr_watch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     # Output
     if args.json:
         print(json.dumps(result, indent=2, default=str))
-        if result.get("error") or result.get("type"):
-            print(f"error={result.get('error', '')} type={result.get('type', '')}", file=sys.stderr)
-    else:
+    # Print error and type to stderr in BOTH modes
+    if result.get("error") or result.get("type"):
+        print(f"error={result.get('error', '')} type={result.get('type', '')}", file=sys.stderr)
+    if not args.json:
         for repo in repos:
             repo_errors = [e for e in result.get("repo_errors", []) if e.get("repo") == repo]
             if repo_errors:
                 for err in repo_errors:
                     print(f"{repo}: ERROR {err.get('error', 'unknown')}")
             else:
+                # Count reruns per repo using the repo field in rerun outcomes
+                repo_reruns = [r for r in result.get("reruns", []) if r.get("repo") == repo]
+                repo_notifications = [
+                    n for n in result.get("notifications", []) if n.get("repo") == repo
+                ]
                 print(
                     f"{repo}: PRs seen={len([o for o in result.get('observations', []) if o.get('repo') == repo])}, "
-                    f"actions={len([r for r in result.get('reruns', []) if r.get('repo') == repo]) + len([n for n in result.get('notifications', []) if n.get('repo') == repo])}, "
+                    f"actions={len(repo_reruns) + len(repo_notifications)}, "
                     f"errors={len(repo_errors)}"
                 )
 

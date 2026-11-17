@@ -84,7 +84,7 @@ For code failure, conflict, behind, empty, or missing required state, the watche
 
 ### Requirement: Notifications occur only on transitions
 
-The watcher SHALL emit a digest event and, when a Linear story is linked, a Linear comment only for a new failure, blocked transition, or regression. Repeated unchanged observations SHALL produce no notification.
+The watcher SHALL emit a digest event only for a new failure, blocked transition, or regression. Repeated unchanged observations SHALL produce no notification. Linear comments are deferred.
 
 #### Scenario: Idle healthy run
 - **WHEN** a previously ready PR remains ready at the same head
@@ -93,6 +93,8 @@ The watcher SHALL emit a digest event and, when a Linear story is linked, a Line
 ### Requirement: Setup and doctor manage the watcher timer
 
 `verdict setup` SHALL install and enable a user service/timer that runs the watcher at least every five minutes, and `verdict doctor` SHALL report timer state, runtime provenance, configured repositories, and state scope with secrets redacted.
+
+Repositories are configured via `pr-watch.env` at `<XDG_CONFIG_HOME or ~/.config>/verdict/pr-watch.env` with a single line `VERDICT_PR_WATCH_REPOS=owner/a,owner/b` (owner-only names allowed). Example: `mrnicholasbcarter-code/verdict-core,mrnicholasbcarter-code/verdict-node`.
 
 #### Scenario: Missing timer
 - **WHEN** the watcher timer is absent or inactive
@@ -114,14 +116,6 @@ The watcher SHALL treat any malformed or unreadable durable state as a fatal err
 - **WHEN** the durable state file exists but cannot be parsed or is missing required fields
 - **THEN** the watcher exits immediately with a non-zero status, writes no state, requests no rerun, and emits no notification
 
-### Requirement: Failed Linear notification is durable and retried
-
-When a Linear notification fails, the event SHALL remain durably recorded and SHALL be retried on the next watcher run within a bounded window of five consecutive runs. The event SHALL never be silently dropped.
-
-#### Scenario: Linear notification failure
-- **WHEN** a Linear comment request returns an error or times out
-- **THEN** the idempotency key persists the event, the watcher does not advance past the failed notification, and the next run within five attempts retries the same event
-
 ### Requirement: State keys are path-safe and reject traversal
 
 All durable state keys SHALL be validated to contain no path traversal sequences. A key containing `..`, absolute paths, or other traversal patterns SHALL be rejected at write time and the operation SHALL fail closed.
@@ -142,14 +136,6 @@ Attempt counters, the merged-PR cursor, the last classification, transitions, an
 - **WHEN** the process dies or is killed after the durable state write and before the GitHub rerun call
 - **THEN** the next run reads the persisted attempt counter and does not exceed the one-rerun bound for that key
 
-### Requirement: Disagreeing review evidence is recorded and treated as fail
-
-When the GitHub review state and a recorded Verdict/ocr review receipt for the same PR head disagree, the watcher SHALL record the fail evidence with its provenance (source, PR, head SHA) and SHALL treat the PR as failed-review for regression detection. The evidence SHALL NOT authorize a merge or any source mutation.
-
-#### Scenario: APPROVED review with keyed Verdict/ocr fail
-- **WHEN** GitHub shows an APPROVED review but a keyed Verdict/ocr receipt for the same head records a fail, and the PR is merged
-- **THEN** a regression record is written naming both sources (GitHub review and Verdict/ocr receipt), and no merge or source mutation is triggered by the watcher
-
 ### Requirement: Idle runs make no model call
 
 The watcher SHALL make no LLM call and no model-routing call on any run; it consumes only GitHub and Linear facts and the existing CI policy.
@@ -157,3 +143,9 @@ The watcher SHALL make no LLM call and no model-routing call on any run; it cons
 #### Scenario: No-state-change run
 - **WHEN** a run completes with no PRs changing state
 - **THEN** zero model or gateway requests are made and no notification is emitted
+
+## Deferred
+
+- Linear comments on transition events (digest-only in this change)
+- Failed Linear notification retry with idempotency key (durable queue exists, retry logic deferred)
+- Disagreeing Verdict/ocr fail receipt vs. GitHub review evidence (GitHub CHANGES_REQUESTED only in this change)

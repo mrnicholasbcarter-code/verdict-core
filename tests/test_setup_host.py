@@ -276,6 +276,7 @@ def test_apply_with_consent_installs_every_prerequisite_through_the_existing_ins
     config = host.home / ".config" / "verdict" / "pr-watch.env"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("VERDICT_PR_WATCH_REPOS=owner/a\n")
+    config.chmod(0o600)
     report = host.apply()
     results = _results(report)
     assert {aid: r["status"] for aid, r in results.items()} == {
@@ -430,6 +431,7 @@ def test_rollback_names_manual_undo_for_host_actions(host: FakeHost) -> None:
     config = host.home / ".config" / "verdict" / "pr-watch.env"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("VERDICT_PR_WATCH_REPOS=owner/a\n")
+    config.chmod(0o600)
     host.apply()
     stage = rollback_bootstrap_actions(state_dir=host.root / "state").to_dict()
     assert stage["status"] == "partial"
@@ -486,9 +488,9 @@ def test_pr_watcher_timer_is_planned_until_installed_and_active(host: FakeHost) 
         return [a.provider_id or "" for a in setup_host.plan_host_actions(host.env)]
 
     (host.home / ".config" / "verdict").mkdir(parents=True, exist_ok=True)
-    (host.home / ".config" / "verdict" / "pr-watch.env").write_text(
-        "VERDICT_PR_WATCH_REPOS=owner/a, owner/b\n"
-    )
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.write_text("VERDICT_PR_WATCH_REPOS=owner/a,owner/b\n")
+    config.chmod(0o600)
     assert "host.pr-watcher-timer" in planned()
     report = host.apply(allowlist=["host.pr-watcher-timer"], non_interactive=True)
     result = _results(report)["bootstrap:host:pr-watcher-timer"]
@@ -514,6 +516,7 @@ def test_pr_watcher_timer_install_contains_each_configured_repository(host: Fake
     config = host.home / ".config" / "verdict" / "pr-watch.env"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("VERDICT_PR_WATCH_REPOS=owner/a,owner/b\n")
+    config.chmod(0o600)
     host.apply(allowlist=["host.pr-watcher-timer"], non_interactive=True)
     service = host.unit_dir / "verdict-pr-watch.service"
     assert '--repo "owner/a"' in service.read_text()
@@ -531,6 +534,7 @@ def test_pr_watcher_timer_observe_and_apply_render_identical_units(host: FakeHos
     config = host.home / ".config" / "verdict" / "pr-watch.env"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("VERDICT_PR_WATCH_REPOS=owner/a\n")
+    config.chmod(0o600)
     from verdict import pr_watcher_service
 
     observed = pr_watcher_service.manage_service(

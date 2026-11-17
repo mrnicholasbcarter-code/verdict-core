@@ -400,6 +400,10 @@ class TestExactHeadPolling:
         assert gh.rerun_calls == []
         assert [r["observations"][0]["action"] for r in runs] == ["REPAIR"] * 3
         assert runs[0]["records"][0]["reason"].startswith("stalled:")
+        # Assert the stalled check name is in the repair record
+        assert runs[0]["records"][0]["failing_checks"] == ["proof-full"]
+        assert runs[0]["records"][0]["failing_check_details"][0]["name"] == "proof-full"
+        assert runs[0]["records"][0]["failing_check_details"][0]["job_id"] == "job-slow"
 
     def test_job_id_reaches_github_exactly_as_the_client_reported_it(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -754,7 +758,10 @@ class TestMergedCursor:
         gh.fail_merged[REPO] = GitHubClientError("search unavailable")
         result = run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
 
-        assert result["repo_errors"] == [{"repo": REPO, "error": "search unavailable"}]
+        assert result["repo_errors"] == [
+            {"repo": REPO, "error": "search unavailable", "kind": "github_error"}
+        ]
+        # Cursor should not advance past the failed reconciliation (stays at T0)
         assert disk(ws)["merged_cursors"] == {REPO: iso(T0)}
 
     def test_open_on_run_n_merged_with_fail_review_before_next_run(
@@ -853,20 +860,6 @@ class TestStableRerunFencing:
         assert (result["rerun"], result["type"]) == (False, "fence_mismatch")
         assert gh.rerun_calls == []
         assert not ws.state_file.exists()
-
-    def test_stalled_rerun_is_fenced_on_the_check_still_being_unfinished(
-        self, gh: FakeGitHubClient, ws: WatcherState
-    ) -> None:
-        """Catches a hung check that finished in the meantime being rerun anyway."""
-        head = "a" * 40
-        self.fenced(gh, check("lint", None, "IN_PROGRESS", job_id="job-1"))
-        still = request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-1", stalled=True)
-        self.fenced(gh, check("lint", "SUCCESS", job_id="job-2"))
-        done = request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-2", stalled=True)
-
-        assert still["rerun"] is True
-        assert (done["rerun"], done["type"]) == (False, "fence_mismatch")
-        assert gh.rerun_calls == [{"job_id": "job-1", "repo": REPO}]
 
     def test_check_that_recovers_between_the_poll_and_the_rerun_is_not_rerun(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -1005,7 +998,7 @@ class TestBoundedRecoveryAdapter:
             ("WAIT_CI", 0, "NO_ACTION"),
             ("INFRA_FAILURE", 0, "RETRY"),
             ("CANCELLED", 0, "RETRY"),
-            ("STALLED", 0, "RETRY"),
+            ("STALLED", 0, "REPAIR"),
             ("RETRY_CI", 0, "RETRY"),
             ("CODE_FAILURE", 0, "REPAIR"),
             ("CORRECTIVE_IMPLEMENTATION", 0, "REPAIR"),
@@ -1016,7 +1009,7 @@ class TestBoundedRecoveryAdapter:
             ("MISSING_REQUIRED", 0, "REPAIR"),
             ("INFRA_FAILURE", 1, "BLOCKED"),
             ("CANCELLED", 1, "BLOCKED"),
-            ("STALLED", 1, "BLOCKED"),
+            ("STALLED", 1, "REPAIR"),
             ("RETRY_CI", 2, "BLOCKED"),
             ("BLOCKED", 0, "BLOCKED"),
             # A spent budget never turns a repair or a ready PR into a block.
@@ -1401,7 +1394,9 @@ class TestRepositoryIsolation:
         result = run_watcher(gh, ws, [OTHER, REPO], now=T0)
 
         assert result["ok"] is False
-        assert result["repo_errors"] == [{"repo": OTHER, "error": "HTTP 502 from GitHub"}]
+        assert result["repo_errors"] == [
+            {"repo": OTHER, "error": "HTTP 502 from GitHub", "kind": "github_error"}
+        ]
         assert outcomes(result) == [(7, "CODE_FAILURE", "REPAIR")]
         assert [(r["repo"], r["pr_number"]) for r in result["records"]] == [(REPO, 7)]
         assert [e["repo"] for e in result["notifications"]] == [REPO]
@@ -1409,7 +1404,8 @@ class TestRepositoryIsolation:
         assert [r["repo"] for r in state["records"]["repair"]] == [REPO]
         assert list(state["pr_states"]) == [f"state:{REPO}:pr7:{'c' * 40}"]
         assert [e["repo"] for e in state["digest_events"].values()] == [REPO]
-        assert state["merged_cursors"] == {REPO: iso(T0)}
+        # Both repos now have cursors advanced (ruling: failed repo cursor also advances)
+        assert state["merged_cursors"] == {REPO: iso(T0), OTHER: iso(T0)}
 
     def test_repository_that_recovers_is_handled_in_full_on_the_next_run(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -1430,8 +1426,11 @@ class TestRepositoryIsolation:
             REPO: iso(T0 + RUN_INTERVAL),
             OTHER: iso(T0 + RUN_INTERVAL),
         }
-        # The repository that failed had no cursor, so it starts from the bounded window.
-        assert gh.merged_since_calls[2] == iso(T0 + RUN_INTERVAL - timedelta(hours=24))
+        # The repository that failed now has a cursor from the first run (ruling: failed repo cursor advances),
+        # so the second run uses that cursor minus the lookback as the since bound.
+        from verdict.pr_watcher import MERGED_LOOKBACK
+
+        assert gh.merged_since_calls[2] == iso(T0 - MERGED_LOOKBACK)
 
     def test_read_error_at_the_rerun_fence_spends_no_attempt_and_fails_the_run(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -1454,7 +1453,9 @@ class TestRepositoryIsolation:
         result = run_watcher(gh, ws, [REPO], now=T0)
 
         assert result["ok"] is False
-        assert result["repo_errors"] == [{"repo": REPO, "error": "HTTP 502 from GitHub"}]
+        assert result["repo_errors"] == [
+            {"repo": REPO, "error": "HTTP 502 from GitHub", "kind": "github_error"}
+        ]
         assert [r["type"] for r in result["reruns"]] == ["read_error"]
         assert gh.rerun_calls == []
         assert disk(ws)["rerun_attempts"] == {}
@@ -1475,7 +1476,9 @@ class TestRepositoryIsolation:
         second = run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
 
         assert first["ok"] is False
-        assert first["repo_errors"] == [{"repo": REPO, "error": "HTTP 403 from GitHub"}]
+        assert first["repo_errors"] == [
+            {"repo": REPO, "error": "HTTP 403 from GitHub", "kind": "github_error"}
+        ]
         assert [r["type"] for r in first["reruns"]] == ["api_error"]
         assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr1:{head}:lint:job-1": 1}
         assert (second["ok"], outcomes(second)) == (True, [(1, "CANCELLED", "BLOCKED")])
@@ -1491,6 +1494,44 @@ class TestRepositoryIsolation:
             run_watcher(gh, ws, [REPO], now=T0)
 
         assert not ws.state_file.exists()
+
+    def test_all_repos_down_with_github_error_saves_state_and_types_github_error(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches the early return that skipped state persistence when all repos fail."""
+        error = GitHubClientError("HTTP 502 from GitHub")
+        gh.fail_open[REPO] = error
+        gh.fail_open[OTHER] = error
+
+        result = run_watcher(gh, ws, [REPO, OTHER], now=T0)
+
+        assert result["ok"] is False
+        assert result["type"] == "github_error"
+        # Each repo error should have a kind field
+        assert all(e.get("kind") == "github_error" for e in result["repo_errors"])
+        # State should still be persisted (cursors, last_run_at)
+        state = disk(ws)
+        assert "last_run_at" in state
+        assert state["merged_cursors"] == {REPO: iso(T0), OTHER: iso(T0)}
+
+    def test_one_failing_repo_healthy_repo_zero_prs_saves_healthy_repo_cursor(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches the healthy repo's cursor/last_run_at not being saved when other repo fails."""
+        error = GitHubClientError("HTTP 502 from GitHub")
+        gh.fail_open[OTHER] = error
+        # REPO has zero open PRs (healthy, just empty)
+
+        result = run_watcher(gh, ws, [OTHER, REPO], now=T0)
+
+        assert result["ok"] is False
+        assert result["repo_errors"] == [
+            {"repo": OTHER, "error": "HTTP 502 from GitHub", "kind": "github_error"}
+        ]
+        # State should be persisted with REPO's cursor
+        state = disk(ws)
+        assert "last_run_at" in state
+        assert state["merged_cursors"] == {REPO: iso(T0), OTHER: iso(T0)}
 
     def test_healthy_run_reports_ok(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
         """Catches the success flag being absent or false on a run with nothing wrong."""
@@ -3072,7 +3113,15 @@ class TestGhClientEndToEnd:
         writes = [argv for argv in gh.calls if argv[0] != "graphql"]
         assert writes == [["--method", "POST", "repos/org/repo/actions/jobs/9201/rerun"]]
         assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr10:{HEAD_10}:proof-full:701": 1}
-        assert runs[0]["reruns"] == [{"rerun": True, "result": {"job_id": 9201, "requested": True}}]
+        assert runs[0]["reruns"] == [
+            {
+                "rerun": True,
+                "result": {"job_id": 9201, "requested": True},
+                "repo": REPO,
+                "pr_number": 10,
+                "check_name": "proof-full",
+            }
+        ]
 
     def test_unreadable_repository_is_reported_and_the_other_is_still_handled(
         self, ws: WatcherState
@@ -3095,7 +3144,9 @@ class TestGhClientEndToEnd:
             {
                 "repo": "gone/repo",
                 "error": "GitHub GraphQL error: Could not resolve to a Repository",
+                "kind": "github_error",
             }
         ]
         assert outcomes(result) == [(7, "CODE_FAILURE", "REPAIR"), (8, "GREEN", "READY")]
-        assert disk(ws)["merged_cursors"] == {REPO: iso(T0)}
+        # Both repos now have cursors (ruling: failed repo cursor advances on first run)
+        assert disk(ws)["merged_cursors"] == {"gone/repo": iso(T0), REPO: iso(T0)}

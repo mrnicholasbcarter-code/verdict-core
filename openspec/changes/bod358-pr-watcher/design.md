@@ -32,8 +32,6 @@ A green PR produces no repair record, no rerun, and no GitHub or Linear write. U
 
 - Cross-repository polling increases API pagination and rate-limit exposure; bounded pages, lookback, timeouts, and explicit configuration keep idle runs deterministic.
 - Shared state can be concurrently written by a timer and controller; flock, atomic writes, stable keys, and fail-closed malformed-state handling are required.
-- Linear notification failure can leave an unnotified durable event; the event remains durable for the next bounded retry and is never silently dropped.
-- GitHub review state and recorded Verdict/ocr receipts can disagree; the keyed fail evidence is recorded with provenance and does not authorize merge or source mutation.
 
 ## Migration / rollback
 
@@ -49,7 +47,7 @@ GitHub, Linear, and worker payloads are untrusted. Validate repository allowlist
 
 ## Routing / context / memory implications
 
-The watcher uses no LLM or model routing on idle runs. It consumes only GitHub/Linear facts and existing policy, writes bounded controller repair records in the common verdict-prime state directory, and emits transition events through existing digest/Linear channels. No new memory subsystem or cross-project context store is introduced.
+The watcher uses no LLM or model routing on idle runs. It consumes only GitHub facts and existing policy, writes bounded controller repair records in the common verdict-prime state directory, and emits transition events through the existing digest channel. No new memory subsystem or cross-project context store is introduced.
 
 ## Decisions recorded during core implementation
 
@@ -59,4 +57,7 @@ The watcher uses no LLM or model routing on idle runs. It consumes only GitHub/L
 
 ## Deferred
 
-Linear comments and Verdict/ocr fail receipts are not wired in production. They remain supported through injected clients and are deferred to a follow-up change.
+- Linear comments on transition events (digest-only in this change)
+- Failed Linear notification retry with idempotency key (durable queue exists, retry logic deferred)
+- Disagreeing Verdict/ocr fail receipt vs. GitHub review evidence (GitHub CHANGES_REQUESTED only in this change)
+- Stalled job reruns (infrastructure/cancelled only in this change)
