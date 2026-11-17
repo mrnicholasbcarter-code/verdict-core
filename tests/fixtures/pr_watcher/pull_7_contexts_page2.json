@@ -1,0 +1,55 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 7,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "BLOCKED",
+        "headRefOid": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "headRefName": "chore/bod-195-security-deps",
+        "body": "Bumps the pinned digest.\n\nRelates to ENG-9.",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                "statusCheckRollup": {
+                  "state": "FAILURE",
+                  "contexts": {
+                    "totalCount": 4,
+                    "pageInfo": {
+                      "hasNextPage": false,
+                      "endCursor": null
+                    },
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "databaseId": 9003,
+                        "name": "Analyze (python)",
+                        "status": "COMPLETED",
+                        "conclusion": "CANCELLED",
+                        "startedAt": "2026-03-02T11:40:00Z",
+                        "completedAt": "2026-03-02T11:45:00Z",
+                        "detailsUrl": "https://github.com/org/repo/actions/runs/0/job/9003",
+                        "isRequired": false,
+                        "checkSuite": {
+                          "workflowRun": null
+                        }
+                      },
+                      {
+                        "__typename": "StatusContext",
+                        "context": "license/cla",
+                        "state": "PENDING",
+                        "isRequired": false
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

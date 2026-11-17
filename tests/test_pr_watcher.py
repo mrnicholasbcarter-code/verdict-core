@@ -1,12 +1,16 @@
-"""Tests for the PR watcher core, driven through injected fake clients.
+"""Tests for the PR watcher core and its concrete ``gh`` client.
 
-Each test names the failure it catches.  The concrete ``gh`` client, the
+The core is driven through injected fake clients.  The concrete client is
+driven through recorded GraphQL payloads under tests/fixtures/pr_watcher, with
+only its process call replaced.  Each test names the failure it catches.  The
 setup/doctor timer and the live smoke are outside this file.
 """
 
 from __future__ import annotations
 
+import collections
 import json
+import re
 import socket
 import subprocess
 import sys
@@ -23,7 +27,22 @@ from verdict.pr_watcher import (
     request_bounded_rerun,
     run_watcher,
 )
-from verdict.pr_watcher_github import GitHubClientError, WatcherGitHubClient
+from verdict.pr_watcher_github import (
+    CALL_TIMEOUT_SECONDS,
+    CONTEXTS_PAGE_SIZE,
+    MAX_PAGES,
+    MERGED_PULLS_PAGE_SIZE,
+    MERGED_PULLS_QUERY,
+    OPEN_PULLS_PAGE_SIZE,
+    OPEN_PULLS_QUERY,
+    PULL_QUERY,
+    GitHubClientError,
+    WatcherGitHubClient,
+    _GhApiClient,
+    create_github_client,
+    linear_issue_for,
+)
+from verdict.pr_watcher_github import assert_no_mutation as assert_github_no_mutation
 from verdict.pr_watcher_notifications import (
     build_digest_event,
     build_linear_event,
@@ -2230,3 +2249,698 @@ class TestNotificationBuild:
         assert event["idempotency_key"] == "linear:" + digest["idempotency_key"][len("digest:") :]
         assert event["retry_count"] == 0
         assert (event["repo"], event["pr_number"], event["head"]) == (REPO, 42, "a" * 40)
+
+
+# ============================================================================
+# The concrete gh client, against recorded GraphQL payloads
+# ============================================================================
+
+FIXTURES = Path(__file__).parent / "fixtures" / "pr_watcher"
+HEAD_5, HEAD_6, HEAD_7, HEAD_8, HEAD_10 = "c3" * 20, "d4" * 20, "a1" * 20, "b2" * 20, "f6" * 20
+CURSOR_OPEN = "Y3Vyc29yOnYyOpHOAAAAAQ=="
+CURSOR_CONTEXTS = "Y3Vyc29yOnYyOpHOAAAAAg=="
+CURSOR_MERGED = "Y3Vyc29yOjE="
+QUERY_KINDS = {OPEN_PULLS_QUERY: "open", PULL_QUERY: "pull", MERGED_PULLS_QUERY: "merged"}
+Route = tuple[str, str | None, str | None]
+
+TWO_PAGE_ROUTES: dict[Route, Any] = {
+    ("open", None, None): "open_pulls_page1.json",
+    ("open", None, CURSOR_OPEN): "open_pulls_page2.json",
+    ("pull", "7", None): "pull_7_contexts_page1.json",
+    ("pull", "7", CURSOR_CONTEXTS): "pull_7_contexts_page2.json",
+    ("pull", "8", None): "pull_8.json",
+    ("merged", None, None): "merged_pulls_page1.json",
+    ("merged", None, CURSOR_MERGED): "merged_pulls_page2.json",
+}
+CANCELLED_ROUTES: dict[Route, Any] = {
+    ("open", None, None): "open_pulls_single.json",
+    ("pull", "10", None): "pull_10_cancelled.json",
+    ("merged", None, None): "merged_pulls_empty.json",
+}
+
+
+def fixture(name: str) -> dict[str, Any]:
+    loaded: dict[str, Any] = json.loads((FIXTURES / name).read_text())
+    return loaded
+
+
+JOB_RERUN_PATH = re.compile(r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/jobs/[0-9]+/rerun")
+
+
+def assert_read_or_job_rerun(argv: list[str]) -> None:
+    """Fail unless a ``gh api`` argv is a GraphQL read or the one Actions job rerun.
+
+    Every call the concrete client makes in this file passes through here.
+    """
+    if argv[0] == "graphql":
+        flags, items = argv[1::2], argv[2::2]
+        assert len(flags) == len(items) and set(flags) <= {"-f", "-F"}, argv
+        assert all("=" in item for item in items), argv
+        fields = dict(item.split("=", 1) for item in items)
+        assert fields["query"].startswith("query("), argv
+        assert "mutation" not in fields["query"], argv
+        return
+    assert argv[:2] == ["--method", "POST"] and len(argv) == 3, argv
+    assert JOB_RERUN_PATH.fullmatch(argv[2]), argv
+
+
+class FixtureGh(_GhApiClient):
+    """The real client; only the process call is replaced, by recorded payloads."""
+
+    def __init__(self, routes: Any, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.routes = routes
+        self.calls: list[list[str]] = []
+
+    def _call(self, *args: str) -> str:
+        assert_read_or_job_rerun(list(args))
+        self.calls.append(list(args))
+        if args[0] != "graphql":
+            return ""
+        fields = dict(a.split("=", 1) for a in args[1:] if a not in ("-f", "-F"))
+        kind = QUERY_KINDS[fields["query"]]
+        payload = self.routes[(kind, fields.get("number"), fields.get("after"))]
+        if isinstance(payload, dict):
+            return json.dumps(payload)
+        # A string is a fixture file name, or a raw response body to return as-is.
+        return (FIXTURES / payload).read_text() if payload.endswith(".json") else str(payload)
+
+
+def graphql_argv(query: str, *fields: str) -> list[str]:
+    """The argv after ``gh api`` for one read: -f for strings, -F for the integers."""
+    argv = ["graphql", "-f", f"query={query}"]
+    for item in fields:
+        name = item.split("=", 1)[0]
+        argv += ["-F" if name in ("first", "number") else "-f", item]
+    return argv
+
+
+def actions_check(
+    name: str, conclusion: str | None, job: int, run: int, required: bool
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "status": "COMPLETED",
+        "conclusion": conclusion,
+        "required": required,
+        "job_id": job,
+        "workflow_run_id": run,
+        "details_url": f"https://github.com/org/repo/actions/runs/{run}/job/{job}",
+        "started_at": "2026-03-02T11:40:00Z",
+    }
+
+
+class TestGhClientReads:
+    """The client turns GitHub's GraphQL payloads into the dicts the core consumes."""
+
+    def test_open_pull_requests_are_read_across_both_pages(self) -> None:
+        """Catches the second page of open PRs being dropped, or a wrong gh invocation."""
+        gh = FixtureGh(TWO_PAGE_ROUTES)
+
+        assert gh.list_open_prs(REPO) == [
+            {
+                "number": 7,
+                "head_sha": HEAD_7,
+                "mergeable": "MERGEABLE",
+                "merge_state_status": "BLOCKED",
+            },
+            {
+                "number": 8,
+                "head_sha": HEAD_8,
+                "mergeable": "MERGEABLE",
+                "merge_state_status": "CLEAN",
+            },
+        ]
+        first = f"first={OPEN_PULLS_PAGE_SIZE}"
+        assert gh.calls == [
+            graphql_argv(OPEN_PULLS_QUERY, "owner=org", "name=repo", first),
+            graphql_argv(OPEN_PULLS_QUERY, "owner=org", "name=repo", first, f"after={CURSOR_OPEN}"),
+        ]
+
+    def test_pull_request_checks_are_read_across_both_context_pages(self) -> None:
+        """Catches checks past the first page being lost, or GitHub's fields being misread."""
+        gh = FixtureGh(TWO_PAGE_ROUTES)
+
+        assert gh.get_pr(REPO, 7) == {
+            "number": 7,
+            "head_sha": HEAD_7,
+            "commit_oid": HEAD_7,
+            "mergeable": "MERGEABLE",
+            "merge_state_status": "BLOCKED",
+            "linear_issue": "BOD-195",
+            "checks": [
+                actions_check("lint", "FAILURE", 9001, 501, True),
+                actions_check("test (3.11)", "SUCCESS", 9002, 501, True),
+                {
+                    "name": "Analyze (python)",
+                    "status": "COMPLETED",
+                    "conclusion": "CANCELLED",
+                    "required": False,
+                    "job_id": None,
+                    "workflow_run_id": None,
+                    "details_url": "https://github.com/org/repo/actions/runs/0/job/9003",
+                    "started_at": "2026-03-02T11:40:00Z",
+                },
+                {
+                    "name": "license/cla",
+                    "status": "IN_PROGRESS",
+                    "conclusion": None,
+                    "required": False,
+                    "job_id": None,
+                    "workflow_run_id": None,
+                    "details_url": None,
+                    "started_at": None,
+                },
+            ],
+        }
+        first = f"first={CONTEXTS_PAGE_SIZE}"
+        base = ("owner=org", "name=repo", "number=7", first)
+        assert gh.calls == [
+            graphql_argv(PULL_QUERY, *base),
+            graphql_argv(PULL_QUERY, *base, f"after={CURSOR_CONTEXTS}"),
+        ]
+
+    def test_pull_request_with_no_check_rollup_has_no_checks(self) -> None:
+        """Catches a PR with no checks at all crashing the client instead of reading as empty."""
+        gh = FixtureGh({("pull", "9", None): "pull_9_no_checks.json"})
+
+        pr = gh.get_pr(REPO, 9)
+
+        assert (pr["checks"], pr["mergeable"], pr["merge_state_status"]) == (
+            [],
+            "UNKNOWN",
+            "UNKNOWN",
+        )
+        assert (pr["head_sha"], pr["commit_oid"], pr["linear_issue"]) == (HEAD_8, HEAD_8, None)
+
+    @pytest.mark.parametrize("moved", ["headRefOid", "commit"])
+    def test_head_that_moves_between_context_pages_yields_no_checks_and_no_commit(
+        self, moved: str
+    ) -> None:
+        """Catches checks of two different commits being merged into one list."""
+        second = fixture("pull_7_contexts_page2.json")
+        node = second["data"]["repository"]["pullRequest"]
+        if moved == "headRefOid":
+            node["headRefOid"] = "99" * 20
+        node["commits"]["nodes"][0]["commit"]["oid"] = "99" * 20
+        gh = FixtureGh({**TWO_PAGE_ROUTES, ("pull", "7", CURSOR_CONTEXTS): second})
+
+        pr = gh.get_pr(REPO, 7)
+
+        assert (pr["commit_oid"], pr["checks"]) == ("", [])
+        assert pr["head_sha"] == ("99" * 20 if moved == "headRefOid" else HEAD_7)
+
+    def test_commit_that_differs_from_the_head_is_reported_as_such(self) -> None:
+        """Catches the checks' commit being assumed to be the head instead of being read."""
+        first = fixture("pull_8.json")
+        first["data"]["repository"]["pullRequest"]["commits"]["nodes"][0]["commit"]["oid"] = (
+            "77" * 20
+        )
+        gh = FixtureGh({("pull", "8", None): first})
+
+        pr = gh.get_pr(REPO, 8)
+
+        assert (pr["head_sha"], pr["commit_oid"]) == (HEAD_8, "77" * 20)
+
+    @pytest.mark.parametrize(
+        ("state", "expected"),
+        [
+            ("SUCCESS", ("COMPLETED", "SUCCESS")),
+            ("FAILURE", ("COMPLETED", "FAILURE")),
+            ("ERROR", ("COMPLETED", "FAILURE")),
+            ("PENDING", ("IN_PROGRESS", None)),
+            ("EXPECTED", ("IN_PROGRESS", None)),
+            ("SOMETHING_NEW", ("IN_PROGRESS", None)),
+        ],
+    )
+    def test_commit_status_state_maps_to_a_check_status_and_conclusion(
+        self, state: str, expected: tuple[str, str | None]
+    ) -> None:
+        """Catches a commit status that failed, or is unknown, reading as passed."""
+        page = fixture("pull_7_contexts_page2.json")
+        contexts = page["data"]["repository"]["pullRequest"]["commits"]["nodes"][0]["commit"]
+        contexts["statusCheckRollup"]["contexts"]["nodes"][1]["state"] = state
+        gh = FixtureGh({("pull", "7", None): page})
+
+        status = gh.get_pr(REPO, 7)["checks"][1]
+
+        assert (status["name"], status["status"], status["conclusion"]) == (
+            "license/cla",
+            *expected,
+        )
+
+    def test_merged_pull_requests_are_searched_across_both_pages_with_their_reviews(self) -> None:
+        """Catches merged PRs past the first page being missed, or a review losing its commit."""
+        gh = FixtureGh(TWO_PAGE_ROUTES)
+        since = "2026-03-01T12:00:00Z"
+
+        assert gh.list_merged_prs(REPO, since) == [
+            {
+                "number": 5,
+                "head_sha": HEAD_5,
+                "merged_at": "2026-03-02T11:58:00Z",
+                "linear_issue": "BOD-286",
+                "reviews": [
+                    {
+                        "state": "COMMENTED",
+                        "submitted_at": "2026-03-02T10:00:00Z",
+                        "commit_oid": "e5" * 20,
+                    },
+                    {
+                        "state": "CHANGES_REQUESTED",
+                        "submitted_at": "2026-03-02T10:30:00Z",
+                        "commit_oid": HEAD_5,
+                    },
+                ],
+            },
+            {
+                "number": 6,
+                "head_sha": HEAD_6,
+                "merged_at": "2026-03-02T11:59:00Z",
+                "linear_issue": "SHA-256",
+                "reviews": [
+                    {
+                        "state": "CHANGES_REQUESTED",
+                        "submitted_at": "2026-03-02T09:00:00Z",
+                        "commit_oid": None,
+                    },
+                    {
+                        "state": "APPROVED",
+                        "submitted_at": "2026-03-02T11:00:00Z",
+                        "commit_oid": HEAD_6,
+                    },
+                ],
+            },
+        ]
+        q = f"q=repo:org/repo is:pr is:merged merged:>={since}"
+        first = f"first={MERGED_PULLS_PAGE_SIZE}"
+        assert gh.calls == [
+            graphql_argv(MERGED_PULLS_QUERY, q, first),
+            graphql_argv(MERGED_PULLS_QUERY, q, first, f"after={CURSOR_MERGED}"),
+        ]
+
+    def test_search_node_that_is_not_a_pull_request_is_skipped(self) -> None:
+        """Catches an empty node, which GitHub returns for a non-PR hit, crashing the listing."""
+        page = fixture("merged_pulls_page2.json")
+        page["data"]["search"]["nodes"].insert(0, {})
+        gh = FixtureGh({("merged", None, None): page})
+
+        assert [p["number"] for p in gh.list_merged_prs(REPO, "2026-03-01T12:00:00Z")] == [6]
+
+
+class TestGhClientLimitsAndErrors:
+    """The client is bounded, and anything it cannot trust is a GitHubClientError."""
+
+    @pytest.mark.parametrize("call", ["open", "pull", "merged"])
+    def test_listing_longer_than_the_page_cap_is_refused_not_truncated(self, call: str) -> None:
+        """Catches an endless or oversized listing looping for ever, or being silently cut."""
+        endless = {
+            "open": fixture("open_pulls_page1.json"),
+            "pull": fixture("pull_7_contexts_page1.json"),
+            "merged": fixture("merged_pulls_page1.json"),
+        }[call]
+        gh = FixtureGh(collections.defaultdict(lambda: endless))
+
+        with pytest.raises(GitHubClientError, match=f"more than {MAX_PAGES} pages"):
+            if call == "open":
+                gh.list_open_prs(REPO)
+            elif call == "pull":
+                gh.get_pr(REPO, 7)
+            else:
+                gh.list_merged_prs(REPO, "2026-03-01T12:00:00Z")
+
+        assert (MAX_PAGES, len(gh.calls)) == (20, 20)
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "<html>502 Bad Gateway</html>",
+            json.dumps([]),
+            json.dumps({"errors": [{"message": "API rate limit exceeded"}], "data": None}),
+            json.dumps({"data": {"repository": None}}),
+            json.dumps({"data": {"repository": {"pullRequests": {"nodes": [{"number": 1}]}}}}),
+        ],
+        ids=["not json", "not an object", "graphql errors", "no repository", "missing fields"],
+    )
+    def test_untrustworthy_response_is_a_client_error(self, payload: str) -> None:
+        """Catches a broken response being read as 'no open pull requests'."""
+        gh = FixtureGh(collections.defaultdict(lambda: payload))
+
+        with pytest.raises(GitHubClientError):
+            gh.list_open_prs(REPO)
+
+    def test_graphql_error_message_reaches_the_caller(self) -> None:
+        """Catches the reason for a failed read being lost."""
+        payload = json.dumps({"errors": [{"message": "API rate limit exceeded"}], "data": None})
+        gh = FixtureGh(collections.defaultdict(lambda: payload))
+
+        with pytest.raises(GitHubClientError, match="API rate limit exceeded"):
+            gh.get_pr(REPO, 7)
+
+    @pytest.mark.parametrize(
+        "repo", ["org", "org/repo/extra", "org/..", "../repo", "org/re po", "org/repo is:open", ""]
+    )
+    def test_malformed_repository_is_refused_before_any_call(self, repo: str) -> None:
+        """Catches a repository string reaching a search query or a REST path unchecked."""
+        gh = FixtureGh(TWO_PAGE_ROUTES)
+
+        for call in (
+            lambda: gh.list_open_prs(repo),
+            lambda: gh.get_pr(repo, 7),
+            lambda: gh.list_merged_prs(repo, "2026-03-01T12:00:00Z"),
+            lambda: gh.rerun_check(9001, repo),
+        ):
+            with pytest.raises(GitHubClientError, match="repository"):
+                call()
+
+        assert gh.calls == []
+
+    @pytest.mark.parametrize(
+        "since", ["", "yesterday", "2026-03-01", "2026-03-01T12:00:00Z is:open"]
+    )
+    def test_malformed_since_is_refused_before_any_call(self, since: str) -> None:
+        """Catches a bad lower bound turning the merged search into an unbounded one."""
+        gh = FixtureGh(TWO_PAGE_ROUTES)
+
+        with pytest.raises(GitHubClientError, match="since"):
+            gh.list_merged_prs(REPO, since)
+
+        assert gh.calls == []
+
+
+class TestGhClientProcess:
+    """How the client runs gh: argv, timeout and failures."""
+
+    def test_gh_is_run_with_a_timeout_and_without_a_shell(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Catches a call that can hang the watcher, or one built as a shell string."""
+        seen: list[tuple[list[str], dict[str, Any]]] = []
+
+        def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            seen.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+
+        monkeypatch.setattr("verdict.pr_watcher_github.subprocess.run", run)
+
+        assert _GhApiClient()._call("graphql", "-f", "query=x") == "{}"
+        assert seen == [
+            (
+                ["gh", "api", "graphql", "-f", "query=x"],
+                {"capture_output": True, "text": True, "check": True, "timeout": 30},
+            )
+        ]
+        assert CALL_TIMEOUT_SECONDS == 30
+
+    @pytest.mark.parametrize(
+        ("failure", "message"),
+        [
+            (
+                subprocess.CalledProcessError(1, ["gh"], stderr="gh: Not Found (HTTP 404)\nusage"),
+                "gh: Not Found \\(HTTP 404\\)$",
+            ),
+            (subprocess.CalledProcessError(4, ["gh"], stderr=""), "exit 4"),
+            (subprocess.TimeoutExpired(["gh"], 30), "timed out after 30s"),
+            (FileNotFoundError(2, "No such file or directory", "gh"), "could not be run"),
+        ],
+        ids=["http error", "silent failure", "timeout", "gh missing"],
+    )
+    def test_failed_gh_call_is_a_client_error(
+        self, monkeypatch: pytest.MonkeyPatch, failure: Exception, message: str
+    ) -> None:
+        """Catches a gh failure escaping as an exception the watcher does not isolate."""
+
+        def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            raise failure
+
+        monkeypatch.setattr("verdict.pr_watcher_github.subprocess.run", run)
+
+        with pytest.raises(GitHubClientError, match=message):
+            _GhApiClient().list_open_prs(REPO)
+
+
+class TestLinearIssueLink:
+    """A PR's Linear story is read from its branch name, else from its body."""
+
+    @pytest.mark.parametrize(
+        ("branch", "body", "expected"),
+        [
+            ("chore/bod-195-security-deps", "", "BOD-195"),
+            ("bod-102-evidence", "", "BOD-102"),
+            ("fix/BOD-286", "", "BOD-286"),
+            ("chore/bod-195-security-deps", "Relates to ENG-9.", "BOD-195"),
+            ("feat/pr-watcher", "Fixes ENG-9 and ENG-10.", "ENG-9"),
+            ("feat/pr-watcher", "Adds the watcher core.", None),
+            ("feat/pr-watcher", "", None),
+            ("dependabot/pip/pytest-cov-gte-7.1.0", "", None),
+            ("dependabot/pip/opentelemetry-exporter-otlp-1.45.2", "", None),
+            ("checkpoint/337-eligibility-filtering-20260905", "", None),
+            ("cursor/cloud-agent-1793584466375-l0k5u", "", None),
+            ("bod275/boundary", "", None),
+            ("feat/pr-watcher", "see eng-9 (lower case is not an identifier in prose)", None),
+            ("feat/pr-watcher", "Tracks CVE-2026-1234.", None),
+        ],
+    )
+    def test_issue_is_taken_from_the_branch_first_then_the_body(
+        self, branch: str, body: str, expected: str | None
+    ) -> None:
+        """Catches a story being missed, or a version number in a branch being read as one."""
+        assert linear_issue_for(branch, body) == expected
+
+    @pytest.mark.parametrize("body", ["Digest is SHA-256.", "Encoded as UTF-8.", "See ADR-036."])
+    def test_any_upper_case_identifier_in_the_body_is_taken_unless_team_keys_are_given(
+        self, body: str
+    ) -> None:
+        """Catches the team-key restriction failing to stop a comment on a non-story.
+
+        Without team keys the pattern cannot tell 'SHA-256' from a story, so it is
+        taken; this pins that hazard as well as the restriction that removes it.
+        """
+        assert linear_issue_for("feat/pr-watcher", body) is not None
+        assert linear_issue_for("feat/pr-watcher", body, ("BOD", "eng")) is None
+        assert (
+            linear_issue_for("feat/pr-watcher", f"{body} Fixes ENG-9.", ("BOD", "eng")) == "ENG-9"
+        )
+
+    def test_client_applies_its_team_keys_to_open_and_merged_pull_requests(self) -> None:
+        """Catches the configured team keys being ignored by one of the two read paths."""
+        gh = FixtureGh(TWO_PAGE_ROUTES, linear_team_keys=("ENG",))
+
+        assert gh.get_pr(REPO, 7)["linear_issue"] == "ENG-9"
+        assert [p["linear_issue"] for p in gh.list_merged_prs(REPO, "2026-03-01T12:00:00Z")] == [
+            None,
+            None,
+        ]
+
+
+class TestGhClientCapability:
+    """The concrete client can read, and can rerun one Actions job. Nothing else."""
+
+    def test_real_client_exposes_exactly_the_protocol_and_passes_the_capability_check(self) -> None:
+        """Catches a merge, push or edit method being added to the client that ships."""
+        client = create_github_client()
+
+        assert type(client) is _GhApiClient
+        assert {name for name in dir(client) if not name.startswith("_")} == {
+            "list_open_prs",
+            "get_pr",
+            "list_merged_prs",
+            "rerun_check",
+        }
+        assert_github_no_mutation(client)
+
+    def test_every_read_is_a_graphql_query_and_the_only_write_is_the_job_rerun(self) -> None:
+        """Catches any method issuing a mutation, a REST write, or a rerun by GET."""
+        gh = FixtureGh(TWO_PAGE_ROUTES)
+
+        gh.list_open_prs(REPO)
+        gh.get_pr(REPO, 7)
+        gh.list_merged_prs(REPO, "2026-03-01T12:00:00Z")
+        assert gh.rerun_check(9001, REPO) == {"job_id": 9001, "requested": True}
+
+        writes = [argv for argv in gh.calls if argv[0] != "graphql"]
+        assert writes == [["--method", "POST", "repos/org/repo/actions/jobs/9001/rerun"]]
+        assert len(gh.calls) == 7
+        assert all("-s" not in argv and "-X" not in argv for argv in gh.calls)
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["graphql", "-f", "query=mutation($id: ID!) { mergePullRequest(input: {}) { x } }"],
+            ["graphql", "-f", "query=query($q: String!) { a } mutation { b }"],
+            ["graphql", "--method", "DELETE", "-f", "query=query($q: String!) { a }"],
+            ["repos/org/repo/pulls", "-s", "open"],
+            ["repos/org/repo/actions/jobs/9001/rerun"],
+            ["--method", "POST", "repos/org/repo/pulls/7/merge"],
+            ["--method", "POST", "repos/org/repo/check-runs/9001/rerequest"],
+            ["--method", "PUT", "repos/org/repo/actions/jobs/9001/rerun"],
+            ["--method", "DELETE", "repos/org/repo/git/refs/heads/main"],
+            ["--method", "POST", "repos/org/repo/actions/jobs/9001/rerun", "-f", "ref=main"],
+            ["--method", "POST", "repos/org/repo/actions/jobs/9001/rerun/../../../merges"],
+        ],
+        ids=[
+            "graphql mutation",
+            "mutation after a query",
+            "graphql with a method",
+            "rest read with -s",
+            "rerun by GET",
+            "merge",
+            "rerequest",
+            "rerun by PUT",
+            "delete a ref",
+            "rerun with a body",
+            "path escape",
+        ],
+    )
+    def test_the_argv_scan_rejects_every_other_kind_of_call(self, argv: list[str]) -> None:
+        """Catches the scan that guards every client call in this file being a no-op."""
+        with pytest.raises(AssertionError):
+            assert_read_or_job_rerun(argv)
+
+    @pytest.mark.parametrize("job_id", [None, "", "9001/../../pulls/7/merge", "abc", True, -1, 1.5])
+    def test_rerun_of_anything_but_a_numeric_job_id_makes_no_call(self, job_id: Any) -> None:
+        """Catches a crafted job id turning the one permitted write into another endpoint."""
+        gh = FixtureGh(TWO_PAGE_ROUTES)
+
+        with pytest.raises(GitHubClientError, match="job id"):
+            gh.rerun_check(job_id, REPO)
+
+        assert gh.calls == []
+
+
+class TestGhClientEndToEnd:
+    """Recorded GitHub payloads through the real client and the whole watcher run."""
+
+    def test_failed_required_lint_check_becomes_one_repair_record_and_one_digest_line(
+        self, ws: WatcherState
+    ) -> None:
+        """Catches the client and the classifiers disagreeing about GitHub's field values.
+
+        This is the path that silently did nothing with the earlier REST client.
+        """
+        gh = FixtureGh(TWO_PAGE_ROUTES)
+
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(2)]
+
+        assert [r["ok"] for r in runs] == [True, True]
+        assert outcomes(runs[0]) == [(7, "CODE_FAILURE", "REPAIR"), (8, "GREEN", "READY")]
+        state = disk(ws)
+        assert state["records"]["repair"] == [
+            {
+                "type": "repair",
+                "repo": REPO,
+                "pr_number": 7,
+                "head": HEAD_7,
+                "failing_checks": ["lint"],
+                "failing_check_details": [
+                    {
+                        "name": "lint",
+                        "conclusion": "FAILURE",
+                        "job_id": 9001,
+                        "details_url": "https://github.com/org/repo/actions/runs/501/job/9001",
+                    }
+                ],
+                "classification": "CODE_FAILURE",
+                "reason": "PR classified as CODE_FAILURE",
+                "idempotency_key": f"repair:{REPO}:pr7:{HEAD_7}",
+                "created_at": iso(T0),
+            }
+        ]
+        assert [(r["pr_number"], r["review_sources"]) for r in state["records"]["regression"]] == [
+            (5, ["github_changes_requested"])
+        ]
+        assert [(e["type"], e["pr_number"], e["classification"]) for e in digest_lines(ws)] == [
+            ("new_failure", 7, "CODE_FAILURE"),
+            ("regression", 5, "REGRESSION"),
+        ]
+        assert [kinds(r) for r in runs] == [["new_failure", "regression"], []]
+        assert all(argv[0] == "graphql" for argv in gh.calls)
+        merged_queries = [a for a in gh.calls if a[2] == f"query={MERGED_PULLS_QUERY}"]
+        assert [a[4] for a in merged_queries] == [
+            "q=repo:org/repo is:pr is:merged merged:>=2026-03-01T12:00:00Z",
+            "q=repo:org/repo is:pr is:merged merged:>=2026-03-01T12:00:00Z",
+            "q=repo:org/repo is:pr is:merged merged:>=2026-03-02T11:55:00Z",
+            "q=repo:org/repo is:pr is:merged merged:>=2026-03-02T11:55:00Z",
+        ]
+
+    @pytest.mark.parametrize("moved", ["headRefOid", "commit"])
+    def test_paginated_exact_head_observation(self, ws: WatcherState, moved: str) -> None:
+        """Catches stale checks being acted on when a head moves after its page was listed.
+
+        Spec scenario: two pages of open PRs; the PR on the second page gets a
+        new head before its checks are consumed.  The stable PR is evaluated,
+        the moved one is reported and left alone.
+        """
+        new_head = "99" * 20
+        pull_8 = fixture("pull_8.json")
+        node = pull_8["data"]["repository"]["pullRequest"]
+        if moved == "headRefOid":
+            node["headRefOid"] = new_head
+        node["commits"]["nodes"][0]["commit"]["oid"] = new_head
+        failing = node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"][0]
+        failing["conclusion"] = "CANCELLED"
+        gh = FixtureGh({**TWO_PAGE_ROUTES, ("pull", "8", None): pull_8})
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert outcomes(result) == [(7, "CODE_FAILURE", "REPAIR"), (8, "HEAD_CHANGED", "NO_ACTION")]
+        assert result["observations"][1]["head"] == HEAD_8
+        assert [r["pr_number"] for r in result["records"] if r["type"] == "repair"] == [7]
+        assert result["reruns"] == []
+        assert all(argv[0] == "graphql" for argv in gh.calls)
+        assert [k for k in disk(ws)["pr_states"] if ":pr8:" in k] == []
+        assert disk(ws)["rerun_attempts"] == {}
+
+    def test_linked_story_from_the_branch_gets_the_linear_comment(
+        self, ws: WatcherState, linear: FakeLinearClient
+    ) -> None:
+        """Catches the story parsed by the client never reaching the Linear comment."""
+        gh = FixtureGh(TWO_PAGE_ROUTES, linear_team_keys=("BOD",))
+
+        run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+
+        assert sorted(c["issue_id"] for c in linear.comments) == ["BOD-195", "BOD-286"]
+
+    def test_cancelled_required_actions_job_is_rerun_once_by_post_then_blocked(
+        self, ws: WatcherState
+    ) -> None:
+        """Catches the rerun using the wrong id, verb or endpoint, or repeating."""
+        gh = FixtureGh(CANCELLED_ROUTES)
+
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(3)]
+
+        assert [outcomes(r) for r in runs] == [
+            [(10, "CANCELLED", "RETRY")],
+            [(10, "CANCELLED", "BLOCKED")],
+            [(10, "CANCELLED", "BLOCKED")],
+        ]
+        writes = [argv for argv in gh.calls if argv[0] != "graphql"]
+        assert writes == [["--method", "POST", "repos/org/repo/actions/jobs/9201/rerun"]]
+        assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr10:{HEAD_10}:proof-full:701": 1}
+        assert runs[0]["reruns"] == [{"rerun": True, "result": {"job_id": 9201, "requested": True}}]
+
+    def test_unreadable_repository_is_reported_and_the_other_is_still_handled(
+        self, ws: WatcherState
+    ) -> None:
+        """Catches a real client failure escaping as something the run does not isolate."""
+        broken = json.dumps({"errors": [{"message": "Could not resolve to a Repository"}]})
+
+        class TwoRepos(FixtureGh):
+            def _call(self, *args: str) -> str:
+                if "owner=gone" in args:
+                    return broken
+                return super()._call(*args)
+
+        gh = TwoRepos(TWO_PAGE_ROUTES)
+
+        result = run_watcher(gh, ws, ["gone/repo", REPO], now=T0)
+
+        assert result["ok"] is False
+        assert result["repo_errors"] == [
+            {
+                "repo": "gone/repo",
+                "error": "GitHub GraphQL error: Could not resolve to a Repository",
+            }
+        ]
+        assert outcomes(result) == [(7, "CODE_FAILURE", "REPAIR"), (8, "GREEN", "READY")]
+        assert disk(ws)["merged_cursors"] == {REPO: iso(T0)}

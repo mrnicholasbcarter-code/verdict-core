@@ -1,0 +1,73 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 8,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "headRefOid": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "headRefName": "feat/pr-watcher",
+        "body": "Adds the watcher core.",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "totalCount": 2,
+                    "pageInfo": {
+                      "hasNextPage": false,
+                      "endCursor": null
+                    },
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "databaseId": 9101,
+                        "name": "lint",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "startedAt": "2026-03-02T11:40:00Z",
+                        "completedAt": "2026-03-02T11:45:00Z",
+                        "detailsUrl": "https://github.com/org/repo/actions/runs/601/job/9101",
+                        "isRequired": true,
+                        "checkSuite": {
+                          "workflowRun": {
+                            "databaseId": 601,
+                            "workflow": {
+                              "name": "CI"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "databaseId": 9102,
+                        "name": "proof-full",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "startedAt": "2026-03-02T11:40:00Z",
+                        "completedAt": "2026-03-02T11:45:00Z",
+                        "detailsUrl": "https://github.com/org/repo/actions/runs/601/job/9102",
+                        "isRequired": true,
+                        "checkSuite": {
+                          "workflowRun": {
+                            "databaseId": 601,
+                            "workflow": {
+                              "name": "CI"
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

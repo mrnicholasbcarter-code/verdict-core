@@ -1,0 +1,20 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "number": 10,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "BLOCKED",
+            "headRefOid": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"
+          }
+        ]
+      }
+    }
+  }
+}
