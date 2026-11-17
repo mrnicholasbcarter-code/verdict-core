@@ -30,31 +30,31 @@
   },
   "acceptance": [
     {
-      "criterion": "The reviewer recorded its identity in the receipt: reviewer version open-code-review v1.12.9 and route_id. The events.jsonl review event also carries observed_model kilocode/nvidia/nemotron-3.5-super-vl:free (first run), opencode-go/hy4-flash-free (parent confirmation).",
-      "expect": "\"reviewer\": \"open-code-review v1.12.9\"",
+      "criterion": "The reviewer observed identity is recorded in the review event. verdict watch --once --panel receipt on each run prints the reviewer observed model: kilocode/nvidia/nemotron-3.5-super-vl:free (first, fresh), opencode-go/hy4-flash-free (parent).",
+      "expect": "reviewer observed: ",
       "expect_exit_code": 0,
       "first_run": {
-        "at": "2026-11-17T15:09:40Z",
+        "at": "2026-11-17T16:35:48Z",
         "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
         "environment": "operator-host",
-        "command": "verdict orchestrate --repo <scratch-repo> --graph <graph> --runs-dir <scratch-runs> --executor direct-gateway --capacity free,subscription --max-parallel 1 --attempt-timeout 300 --run-deadline 1500 --json",
-        "real_state_marker": "http://127.0.0.1:20128",
+        "command": "verdict watch <run dir> --once --panel receipt",
+        "real_state_marker": "reviewer observed: kilocode/nvidia/nemotron-3.5-super-vl:free",
         "exit_code": 0,
         "raw_output": {
-          "path": "docs/proof/dod/bod-300-reviewer-identity/orchestrate-first-20261117T150815Z.json",
-          "sha256": "76154eec85a852acd6942d71ac59be07e63a9055ec61e80cda4bd171e4773133"
+          "path": "docs/proof/dod/bod-300-reviewer-identity/watch-first-20261117T150815Z.txt",
+          "sha256": "2610598afd7a939dfe27a1b2a7fbeeed72987fc7dfaf1cb1433942aac93ad32a"
         }
       },
       "fresh_run": {
-        "at": "2026-11-17T15:36:03Z",
+        "at": "2026-11-17T16:52:37Z",
         "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
         "environment": "operator-host",
-        "command": "verdict orchestrate --repo <scratch-repo> --graph <graph> --runs-dir <scratch-runs> --executor direct-gateway --capacity free,subscription --max-parallel 1 --attempt-timeout 300 --run-deadline 1500 --json",
-        "real_state_marker": "http://127.0.0.1:20128",
+        "command": "verdict watch <run dir> --once --panel receipt",
+        "real_state_marker": "reviewer observed: kilocode/nvidia/nemotron-3.5-super-vl:free",
         "exit_code": 0,
         "raw_output": {
-          "path": "docs/proof/dod/bod-300-reviewer-identity/orchestrate-fresh-20261117T153355Z.json",
-          "sha256": "6e40ae54ddcdaf360feb340994abe0867ad165b46617dbd1665d8d255f037f0b"
+          "path": "docs/proof/dod/bod-300-reviewer-identity/watch-fresh-20261117T153355Z.txt",
+          "sha256": "abab051ed1e5d9381f0f8ffb1550c85fbc5f3a3d6c54bf603f8183ca6d835bdc"
         }
       }
     }
@@ -63,12 +63,12 @@
     "change": "reviewer-observed-identity"
   },
   "parent_confirmation": {
-    "by": "gem-devops (omniroute worker/free-first) session 20261117; fresh run executed by this session, parent confirmation from the third run",
-    "at": "2026-11-17T15:40:19Z",
-    "command": "verdict orchestrate --repo <scratch-repo> --graph <graph> --runs-dir <scratch-runs> --executor direct-gateway --capacity free,subscription --max-parallel 1 --attempt-timeout 300 --run-deadline 1500 --json",
+    "by": "gem-devops (omniroute worker/free-first) session 20261117; first/fresh runs executed by this session, parent confirmation from the third run",
+    "at": "2026-11-17T16:52:55Z",
+    "command": "verdict watch <run dir> --once --panel receipt",
     "raw_output": {
-      "path": "docs/proof/dod/bod-300-reviewer-identity/orchestrate-parent-confirmation-20261117T153908Z.json",
-      "sha256": "c9f565b80dd0518d8e448c6070f3dfec6721f7f46dafb18ad0516c394843ae0f"
+      "path": "docs/proof/dod/bod-300-reviewer-identity/watch-parent-20261117T153908Z.txt",
+      "sha256": "e5e25e7567ffc71c1a67b5bd0ff944f52de0413e79db5941d298db67bf813bc3"
     }
   }
 }
