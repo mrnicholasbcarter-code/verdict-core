@@ -17,7 +17,7 @@ from verdict.ci_policy import (
     classify_ci,
     classify_merge_state,
 )
-from verdict.pr_watcher_github import WatcherGitHubClient
+from verdict.pr_watcher_github import GitHubClientError, WatcherGitHubClient
 from verdict.pr_watcher_github import assert_no_mutation as assert_github_no_mutation
 from verdict.pr_watcher_notifications import (
     LinearClient,
@@ -266,7 +266,7 @@ def reconcile_merged_prs(
     """
     current_data = state.load() if data is None else data
     clock = _resolve_clock(now)
-    since = _merged_since(state.get_merged_cursor(current_data), clock)
+    since = _merged_since(state.get_merged_cursor(current_data, repo), clock)
     merged_prs = gh.list_merged_prs(repo, since)
 
     regressions: list[dict[str, Any]] = []
@@ -356,7 +356,11 @@ def request_bounded_rerun(
         data = state.load()
     key = rerun_key(repo, pr_number, head, check_name, workflow_job_id)
 
-    reread = gh.get_pr(repo, pr_number)
+    try:
+        reread = gh.get_pr(repo, pr_number)
+    except GitHubClientError as exc:
+        # Unfenced means not rerun: nothing is spent and the next run retries.
+        return {"rerun": False, "reason": str(exc), "type": "read_error"}
     current_head = reread["head_sha"]
     if current_head != head or reread.get("commit_oid") != head:
         return {
@@ -404,6 +408,16 @@ class _Plan:
     records: list[dict[str, Any]] = field(default_factory=list)
     notifications: list[dict[str, Any]] = field(default_factory=list)
     reruns: list[tuple[str, int, str, str, Any, bool]] = field(default_factory=list)
+
+    def fork(self) -> _Plan:
+        """A plan that starts from this one's state and can be thrown away."""
+        return _Plan(data=self.data, linear_enabled=self.linear_enabled, stamp=self.stamp)
+
+    def adopt(self, other: _Plan) -> None:
+        self.data = other.data
+        self.records.extend(other.records)
+        self.notifications.extend(other.notifications)
+        self.reruns.extend(other.reruns)
 
     def add_record(self, state: WatcherState, record: dict[str, Any]) -> None:
         if not state.has_record(self.data, record["idempotency_key"]):
@@ -505,6 +519,43 @@ def _plan_observation(
     )
 
 
+def _plan_repository(
+    gh: WatcherGitHubClient,
+    state: WatcherState,
+    plan: _Plan,
+    repo: str,
+    max_attempts: int,
+    verdict_fail_receipts: dict[str, dict[str, Any]] | None,
+    current: datetime,
+) -> list[dict[str, Any]]:
+    """Decide everything for one repository. Only reads happen here."""
+    polled = poll_open_prs(gh, state, repo, now=current)
+    for obs in polled:
+        _plan_observation(state, plan, obs, max_attempts)
+
+    for reg in reconcile_merged_prs(gh, state, repo, verdict_fail_receipts, plan.data, current):
+        plan.add_record(state, reg["record"])
+        sources = ", ".join(reg["review_sources"])
+        plan.emit(
+            state,
+            build_digest_event(
+                "regression",
+                repo,
+                reg["pr"]["number"],
+                reg["pr"]["head_sha"],
+                "REGRESSION",
+                f"merged with fail review: {sources}",
+                plan.stamp,
+            ),
+            reg["pr"].get("linear_issue"),
+        )
+
+    # Open and merged PRs were both read in full, so this repository's cursor
+    # may move.
+    plan.data = state.set_merged_cursor(plan.data, repo, current)
+    return polled
+
+
 def _run_locked(
     gh: WatcherGitHubClient,
     state: WatcherState,
@@ -517,44 +568,35 @@ def _run_locked(
 ) -> dict[str, Any]:
     plan = _Plan(data=data, linear_enabled=linear is not None, stamp=format_timestamp(current))
     observations: list[dict[str, Any]] = []
+    repo_errors: list[dict[str, str]] = []
 
-    # 1. Decide. Only reads happen here; nothing is written or sent.
+    # 1. Decide, one repository at a time. A repository whose reads fail is
+    # dropped as a whole: no record, transition or cursor move is kept for it,
+    # so the next run covers the same ground. The others carry on.
     for repo in repos:
-        polled = poll_open_prs(gh, state, repo, now=current)
-        observations.extend(polled)
-        for obs in polled:
-            _plan_observation(state, plan, obs, max_attempts)
-
-        for reg in reconcile_merged_prs(gh, state, repo, verdict_fail_receipts, plan.data, current):
-            plan.add_record(state, reg["record"])
-            sources = ", ".join(reg["review_sources"])
-            plan.emit(
-                state,
-                build_digest_event(
-                    "regression",
-                    repo,
-                    reg["pr"]["number"],
-                    reg["pr"]["head_sha"],
-                    "REGRESSION",
-                    f"merged with fail review: {sources}",
-                    plan.stamp,
-                ),
-                reg["pr"].get("linear_issue"),
+        trial = plan.fork()
+        try:
+            polled = _plan_repository(
+                gh, state, trial, repo, max_attempts, verdict_fail_receipts, current
             )
-
-    # Every repository reconciled, so the cursor may move; a run that raised
-    # above keeps the old cursor and re-covers the same window.
-    data = state.set_merged_cursor(plan.data, current)
+        except GitHubClientError as exc:
+            repo_errors.append({"repo": repo, "error": str(exc)})
+            continue
+        plan.adopt(trial)
+        observations.extend(polled)
 
     # 2. Persist. Classifications, records, transitions, queued Linear events
-    # and the cursor are durable before the first side effect.
+    # and the cursors are durable before the first side effect.
+    data = state.set_last_run(plan.data, current)
     state.save(data)
 
     # 3. Act. Each rerun persists its own attempt counter before its call.
-    reruns = [
-        request_bounded_rerun(gh, state, *planned[:5], max_attempts, data, planned[5])
-        for planned in plan.reruns
-    ]
+    reruns = []
+    for planned in plan.reruns:
+        outcome = request_bounded_rerun(gh, state, *planned[:5], max_attempts, data, planned[5])
+        reruns.append(outcome)
+        if outcome.get("type") in {"read_error", "api_error"}:
+            repo_errors.append({"repo": planned[0], "error": outcome["reason"]})
 
     # Linear comments are sent only from the durable queue, so a failed or
     # interrupted send is retried by the next run.
@@ -567,6 +609,8 @@ def _run_locked(
             state.save(data)
 
     return {
+        "ok": not repo_errors,
+        "repo_errors": repo_errors,
         "observations": observations,
         "reruns": reruns,
         "records": plan.records,
@@ -588,9 +632,12 @@ def run_watcher(
     """Execute one watcher run: poll, classify, adapt, persist, then act.
 
     Durable state is written before any GitHub or Linear side effect.  A run
-    that cannot take the lock, read its state, build a safe key or write its
-    state returns an ``error`` result and causes no side effect.  No LLM or
-    model-routing call is made.
+    that is given a client it must refuse, or cannot take the lock, read its
+    state, build a safe key or write its state, returns ``ok`` False with an
+    ``error`` and a ``type`` and causes no side effect.  A GitHub failure in
+    one repository is listed in ``repo_errors`` and also makes ``ok`` False,
+    while the other repositories are still handled.  No LLM or model-routing
+    call is made.
     """
     current = _resolve_clock(now)
     try:
@@ -598,24 +645,24 @@ def run_watcher(
         if linear is not None:
             assert_linear_no_mutation(linear)
     except TypeError as exc:
-        return {"error": str(exc), "type": "client_refused"}
+        return {"ok": False, "error": str(exc), "type": "client_refused"}
     try:
         state.acquire_lock()
     except (LockAcquisitionError, OSError) as exc:
-        return {"error": str(exc), "type": "lock_failure"}
+        return {"ok": False, "error": str(exc), "type": "lock_failure"}
 
     try:
         try:
             data = state.load()
         except MalformedStateError as exc:
-            return {"error": str(exc), "type": "malformed_state"}
+            return {"ok": False, "error": str(exc), "type": "malformed_state"}
         try:
             return _run_locked(
                 gh, state, data, repos, linear, max_attempts, verdict_fail_receipts, current
             )
         except UnsafeKeyError as exc:
-            return {"error": str(exc), "type": "unsafe_state_key"}
+            return {"ok": False, "error": str(exc), "type": "unsafe_state_key"}
         except StateWriteError as exc:
-            return {"error": str(exc), "type": "state_write_failed"}
+            return {"ok": False, "error": str(exc), "type": "state_write_failed"}
     finally:
         state.release_lock()

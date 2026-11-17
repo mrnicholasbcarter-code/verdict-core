@@ -108,6 +108,7 @@ def parse_timestamp(value: object) -> datetime:
 # --- State shape ------------------------------------------------------------------
 
 _STATE_CONTAINERS: dict[str, type] = {
+    "merged_cursors": dict,
     "pr_states": dict,
     "rerun_attempts": dict,
     "records": dict,
@@ -134,14 +135,17 @@ def _validate_state(data: dict[str, Any], path: Path) -> dict[str, Any]:
         # A negative or non-integer count would hand back a spent rerun budget.
         if type(count) is not int or count < 0:
             raise malformed(f"rerun attempt count for {key!r} is not a non-negative integer")
-    for field in ("merged_cursor", "last_run_at"):
-        if field not in data:
-            raise malformed(f"field {field!r} is missing")
-        if data[field] is not None:
-            try:
-                parse_timestamp(data[field])
-            except MalformedStateError as exc:
-                raise malformed(f"field {field!r}: {exc}") from exc
+    if "last_run_at" not in data:
+        raise malformed("field 'last_run_at' is missing")
+    stamps = {"last_run_at": data["last_run_at"]}
+    stamps.update({f"merged_cursors[{repo!r}]": at for repo, at in data["merged_cursors"].items()})
+    for name, stamp in stamps.items():
+        if stamp is None and name == "last_run_at":
+            continue
+        try:
+            parse_timestamp(stamp)
+        except MalformedStateError as exc:
+            raise malformed(f"{name}: {exc}") from exc
     return data
 
 
@@ -350,7 +354,7 @@ class WatcherState:
     def _empty() -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
-            "merged_cursor": None,
+            "merged_cursors": {},
             "pr_states": {},
             "rerun_attempts": {},
             "records": {"repair": [], "block": [], "regression": []},
@@ -383,11 +387,12 @@ class WatcherState:
         _safe_key(record["idempotency_key"])
         kind = record["type"]
         records = dict(data.get("records", {}))
-        records.setdefault(kind, [])
-        # Skip if duplicate
-        if any(r.get("idempotency_key") == record["idempotency_key"] for r in records[kind]):
+        existing = records.get(kind, [])
+        if any(r.get("idempotency_key") == record["idempotency_key"] for r in existing):
             return data
-        records[kind].append(record)
+        # A new list, never an append: the caller's ``data`` must stay as it
+        # was so that a repository's work can be discarded as a whole.
+        records[kind] = [*existing, record]
         return {**data, "records": records}
 
     def has_digest_event(self, data: dict[str, Any], idempotency_key: str) -> bool:
@@ -443,11 +448,16 @@ class WatcherState:
         }
         return {**data, "pr_states": pr_states}
 
-    def set_merged_cursor(self, data: dict[str, Any], cursor: datetime) -> dict[str, Any]:
-        """Advance the merged-PR cursor; it doubles as the last-run stamp."""
-        stamp = format_timestamp(cursor)
-        return {**data, "merged_cursor": stamp, "last_run_at": stamp}
+    def set_merged_cursor(
+        self, data: dict[str, Any], repo: str, cursor: datetime
+    ) -> dict[str, Any]:
+        """Advance one repository's merged-PR cursor."""
+        cursors = {**data.get("merged_cursors", {}), _safe_key(repo): format_timestamp(cursor)}
+        return {**data, "merged_cursors": cursors}
 
-    def get_merged_cursor(self, data: dict[str, Any]) -> datetime | None:
-        raw = data.get("merged_cursor")
+    def get_merged_cursor(self, data: dict[str, Any], repo: str) -> datetime | None:
+        raw = data.get("merged_cursors", {}).get(repo)
         return None if raw is None else parse_timestamp(raw)
+
+    def set_last_run(self, data: dict[str, Any], moment: datetime) -> dict[str, Any]:
+        return {**data, "last_run_at": format_timestamp(moment)}

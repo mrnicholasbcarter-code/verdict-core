@@ -10,6 +10,10 @@ import subprocess
 from typing import Any, Protocol
 
 
+class GitHubClientError(Exception):
+    """A GitHub read or write failed; the watcher skips that repository this run."""
+
+
 class WatcherGitHubClient(Protocol):
     """Read-only plus bounded rerun GitHub client.
 
