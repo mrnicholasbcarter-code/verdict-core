@@ -62,12 +62,12 @@
     "change": "mgmt-token-resolver-runtime-adoption"
   },
   "parent_confirmation": {
-    "by": "PENDING separate-agent confirmation; evidence prepared by gem-implementer on omniroute/cc/claude-opus-5-5 (plan 20261117-openspec-closeout, task batch-2-expects)",
-    "at": "2026-11-17T22:07:46Z",
+    "by": "gem-implementer confirmer on omniroute/worker/free-verified",
+    "at": "2026-11-17T22:22:25Z",
     "command": "cd ~/.local/share/verdict/installed-main && env -u OMNIROUTE_MANAGEMENT_TOKEN .venv/bin/verdict credentials list",
     "raw_output": {
-      "path": "docs/proof/dod/mgmt-token-resolver-runtime-adoption/credentials-list-confirm.txt",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "path": "docs/proof/dod/mgmt-token-resolver-runtime-adoption/credentials-list-confirm-2026-11-17T22_22_25Z.txt",
+      "sha256": "5c4a5f7076ae3b9dcb84e1c84191ea0a7301001862b96889c4423dfff7a50734"
     }
   }
 }
