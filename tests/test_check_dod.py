@@ -1221,3 +1221,25 @@ def test_each_run_citation_reads_its_artifact_once(repo, monkeypatch):
     assert _check(root, evidence) == []
     # on_main, then four acceptance citations of two runs, then the confirmation.
     assert len(read) == 6 and len(set(read)) == 4, read
+
+
+def test_fresh_run_copied_from_first_run_is_reuse_not_one_run_cited_twice(repo):
+    root, evidence = repo
+    item = evidence["acceptance"][0]
+    item["fresh_run"] = copy.deepcopy(item["first_run"])
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
+
+
+def test_fresh_run_of_one_criterion_may_be_the_first_run_of_another(repo):
+    root, evidence = repo
+    first = evidence["acceptance"][0]
+    second = copy.deepcopy(first)
+    second["criterion"] = "the drill still fails a day later"
+    second["first_run"] = copy.deepcopy(first["fresh_run"])
+    second["fresh_run"] = _run(root, first["first_run"]["sha"], "2099-01-03T02:00:00Z", "third.txt")
+    evidence["acceptance"].append(second)
+    assert _check(root, evidence) == []

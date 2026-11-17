@@ -373,30 +373,28 @@ def check_evidence(root: Path, path: Path) -> list[str]:
     else:
         _no_openspec_change(root, evidence["story"], merged, errors)
 
-    run_artifacts = [
-        (f"acceptance[{index}].first_run", item["first_run"])
-        for index, item in enumerate(evidence["acceptance"])
-    ] + [
-        (f"acceptance[{index}].fresh_run", item["fresh_run"])
+    run_artifacts: list[tuple[str, dict[str, Any], int | None]] = [
+        (f"acceptance[{index}].{label}", item[label], index)
+        for label in ("first_run", "fresh_run")
         for index, item in enumerate(evidence["acceptance"])
     ]
     confirmation = evidence["parent_confirmation"]
-    run_artifacts.append(("parent_confirmation", confirmation))
+    run_artifacts.append(("parent_confirmation", confirmation, None))
     texts["parent_confirmation"] = _artifact(
         root, confirmation["raw_output"], "parent_confirmation", errors
     )
-    cited: set[tuple[str, str, str, str]] = set()
+    cited: dict[tuple[str, str, str, str], int] = {}
     seen_files: dict[Path, str] = {}
     seen_digests: dict[str, str] = {}
     run_ids: dict[str, str] = {}
-    for where, run in run_artifacts:
+    for where, run, criterion in run_artifacts:
         digest = run["raw_output"]["sha256"]
-        if run is not confirmation:
+        if criterion is not None:
             # Two acceptance criteria may cite one run; that is one run, not two.
+            # Within one criterion the first and the fresh run are always two runs.
             citation = (run["at"], run["command"], run["raw_output"]["path"], digest)
-            if citation in cited:
+            if cited.setdefault(citation, criterion) != criterion:
                 continue
-            cited.add(citation)
         # One file is one run, however its path is spelled.
         file = (root / run["raw_output"]["path"]).resolve()
         reused = seen_files.get(file)
