@@ -1330,6 +1330,146 @@ class TestCodeAndMergeFailures:
 # ============================================================================
 
 
+def digest_lines(ws: WatcherState) -> list[dict[str, Any]]:
+    """The digest file as written: one JSON object per line."""
+    if not ws.digest_file.exists():
+        return []
+    return [json.loads(line) for line in ws.digest_file.read_text().splitlines()]
+
+
+class TestDigestFile:
+    """Digest events are appended to pr_watcher_digest.jsonl in the run that finds them."""
+
+    def test_each_transition_is_one_line_and_repeated_runs_add_nothing(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches the digest staying in memory only, or a line per poll instead of per transition."""
+        open_pr(gh, 2, "b" * 40, [check("proof-full", "CANCELLED", job_id="job-2")])
+
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(4)]
+
+        assert ws.digest_file.name == "pr_watcher_digest.jsonl"
+        assert ws.digest_file.parent == ws.state_dir
+        assert digest_lines(ws) == [runs[0]["notifications"][0], runs[1]["notifications"][0]]
+        assert [line["type"] for line in digest_lines(ws)] == ["new_failure", "blocked"]
+        assert disk(ws)["digest_unwritten"] == []
+
+    def test_healthy_run_creates_no_digest_file(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches an idle run touching the digest file."""
+        open_pr(gh, 1, "a" * 40, [check("lint")])
+
+        run_watcher(gh, ws, [REPO], now=T0)
+        run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
+
+        assert not ws.digest_file.exists()
+
+    def test_event_is_in_the_durable_state_before_its_line_is_appended(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches a digest line for an event the state does not know, which a rerun would repeat."""
+        open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")])
+        seen: list[dict[str, Any]] = []
+        append = ws.append_digest
+
+        def recording(events: list[dict[str, Any]]) -> None:
+            seen.append(disk(ws))
+            append(events)
+
+        ws.append_digest = recording
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        key = result["notifications"][0]["idempotency_key"]
+        assert [list(s["digest_events"]) for s in seen] == [[key]]
+        assert seen[0]["digest_unwritten"] == [key]
+
+    def test_death_before_the_line_is_appended_does_not_lose_the_event(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches an event recorded in state and never written to the digest file."""
+        open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")])
+        append = ws.append_digest
+
+        def die(events: list[dict[str, Any]]) -> None:
+            raise Killed
+
+        ws.append_digest = die
+        with pytest.raises(Killed):
+            run_watcher(gh, ws, [REPO], now=T0)
+        assert digest_lines(ws) == []
+
+        ws.append_digest = append
+        later = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in (1, 2)]
+
+        assert [kinds(r) for r in later] == [[], []]
+        assert [(e["type"], e["pr_number"]) for e in digest_lines(ws)] == [("new_failure", 1)]
+
+    def test_death_after_the_line_is_appended_does_not_write_it_twice(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches the next run repeating a line whose append it could not confirm."""
+        open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")])
+        append = ws.append_digest
+
+        def append_then_die(events: list[dict[str, Any]]) -> None:
+            append(events)
+            raise Killed
+
+        ws.append_digest = append_then_die
+        with pytest.raises(Killed):
+            run_watcher(gh, ws, [REPO], now=T0)
+        assert len(disk(ws)["digest_unwritten"]) == 1
+
+        ws.append_digest = append
+        run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
+
+        assert [(e["type"], e["pr_number"]) for e in digest_lines(ws)] == [("new_failure", 1)]
+        assert disk(ws)["digest_unwritten"] == []
+
+    def test_torn_last_line_is_kept_apart_from_the_next_event(self, ws: WatcherState) -> None:
+        """Catches a new event being glued onto a half-written line and lost to every reader."""
+        ws.digest_file.write_text('{"idempotency_key": "digest:old"}\n{"idempotency_key": "dig')
+        event = {"idempotency_key": "digest:new", "type": "new_failure"}
+
+        ws.append_digest([event])
+
+        assert ws.digest_file.read_text().splitlines()[-1] == json.dumps(event, sort_keys=True)
+        assert len(ws.digest_file.read_text().splitlines()) == 3
+
+    def test_failed_digest_write_reports_the_error_and_causes_no_side_effect(
+        self,
+        gh: FakeGitHubClient,
+        ws: WatcherState,
+        linear: FakeLinearClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Catches a rerun or a Linear comment going out when the digest could not be written."""
+        open_pr(
+            gh,
+            1,
+            "a" * 40,
+            [check("proof-full", "CANCELLED", job_id="job-1")],
+            linear_issue="ENG-1",
+        )
+        ws.digest_file.mkdir()
+
+        result = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
+
+        assert (result["ok"], result["type"]) == (False, "state_write_failed")
+        assert "pr_watcher_digest.jsonl" in result["error"]
+        assert gh.rerun_calls == []
+        assert linear.attempts == []
+
+        ws.digest_file.rmdir()
+        retry = run_watcher(gh, ws, [REPO], linear=linear, now=T0 + RUN_INTERVAL)
+
+        assert retry["ok"] is True
+        assert [e["type"] for e in digest_lines(ws)] == ["new_failure"]
+        assert gh.rerun_calls == [{"job_id": "job-1", "repo": REPO}]
+        assert linear.attempts == ["ENG-1"]
+
+
 def kinds(result: dict[str, Any]) -> list[str]:
     return [event["type"] for event in result["notifications"]]
 
@@ -1485,6 +1625,7 @@ def valid_state(**overrides: Any) -> str:
         "records": {"repair": [], "block": [], "regression": []},
         "pending_events": [],
         "digest_events": {},
+        "digest_unwritten": [],
     }
     state.update(overrides)
     return json.dumps(state)
@@ -1503,6 +1644,7 @@ MALFORMED_STATES = {
     "cursor without a timezone": valid_state(merged_cursors={"org/repo": "2026-03-02T12:00:00"}),
     "cursors not a mapping": valid_state(merged_cursors="2026-03-02T12:00:00Z"),
     "last run not a timestamp": valid_state(last_run_at="yesterday"),
+    "unwritten digest key unknown": valid_state(digest_unwritten=["digest:gone"]),
 }
 
 

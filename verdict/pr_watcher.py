@@ -590,6 +590,14 @@ def _run_locked(
     data = state.set_last_run(plan.data, current)
     state.save(data)
 
+    # The digest file is appended from that durable state, so a line lost to
+    # an interrupted run is written by the next one, and never twice.
+    owed = state.unwritten_digest_events(data)
+    if owed:
+        state.append_digest(owed)
+        data = {**data, "digest_unwritten": []}
+        state.save(data)
+
     # 3. Act. Each rerun persists its own attempt counter before its call.
     reruns = []
     for planned in plan.reruns:

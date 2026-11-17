@@ -114,6 +114,7 @@ _STATE_CONTAINERS: dict[str, type] = {
     "records": dict,
     "pending_events": list,
     "digest_events": dict,
+    "digest_unwritten": list,
 }
 
 
@@ -135,6 +136,9 @@ def _validate_state(data: dict[str, Any], path: Path) -> dict[str, Any]:
         # A negative or non-integer count would hand back a spent rerun budget.
         if type(count) is not int or count < 0:
             raise malformed(f"rerun attempt count for {key!r} is not a non-negative integer")
+    for key in data["digest_unwritten"]:
+        if key not in data["digest_events"]:
+            raise malformed(f"unwritten digest event {key!r} is not a recorded event")
     if "last_run_at" not in data:
         raise malformed("field 'last_run_at' is missing")
     stamps = {"last_run_at": data["last_run_at"]}
@@ -323,6 +327,7 @@ class WatcherState:
         self.state_dir = state_dir
         self.state_file = state_dir / "pr_watcher_state.json"
         self.lock_file = state_dir / "pr_watcher.lock"
+        self.digest_file = state_dir / "pr_watcher_digest.jsonl"
         self._lock: _NonBlockingLock | None = None
 
     # -- lock --------------------------------------------------------------------
@@ -360,6 +365,7 @@ class WatcherState:
             "records": {"repair": [], "block": [], "regression": []},
             "pending_events": [],
             "digest_events": {},
+            "digest_unwritten": [],
             "last_run_at": None,
         }
 
@@ -399,11 +405,51 @@ class WatcherState:
         return idempotency_key in data.get("digest_events", {})
 
     def add_digest_event(self, data: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
-        """Record an emitted digest event under its idempotency key."""
-        _safe_key(event["idempotency_key"])
+        """Record a digest event under its key and mark it as owed to the digest file."""
+        key = _safe_key(event["idempotency_key"])
         events = dict(data.get("digest_events", {}))
-        events.setdefault(event["idempotency_key"], event)
-        return {**data, "digest_events": events}
+        if key in events:
+            return data
+        events[key] = event
+        unwritten = [*data.get("digest_unwritten", []), key]
+        return {**data, "digest_events": events, "digest_unwritten": unwritten}
+
+    def unwritten_digest_events(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Recorded events whose digest line is not yet known to be on disk."""
+        events = data.get("digest_events", {})
+        return [events[key] for key in data.get("digest_unwritten", [])]
+
+    def append_digest(self, events: list[dict[str, Any]]) -> None:
+        """Append one JSON line per event to the digest file, skipping lines already there.
+
+        A run can die after appending and before the state records it, so the
+        same event may be offered again; its key is looked up in the file first.
+        """
+        if not events:
+            return
+        try:
+            existing = self.digest_file.read_text() if self.digest_file.exists() else ""
+            written = set()
+            for line in existing.splitlines():
+                # A torn last line from an interrupted write is not a written event.
+                with contextlib.suppress(ValueError, AttributeError):
+                    written.add(json.loads(line).get("idempotency_key"))
+            lines = [
+                json.dumps(event, sort_keys=True)
+                for event in events
+                if event["idempotency_key"] not in written
+            ]
+            if not lines:
+                return
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            with self.digest_file.open("a") as handle:
+                if existing and not existing.endswith("\n"):
+                    handle.write("\n")
+                handle.write("\n".join(lines) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            raise StateWriteError(f"cannot write digest {self.digest_file}: {exc}") from exc
 
     def get_pending_events(self, data: dict[str, Any]) -> list[dict[str, Any]]:
         raw = data.get("pending_events", [])
