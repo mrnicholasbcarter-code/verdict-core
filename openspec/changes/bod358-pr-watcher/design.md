@@ -50,3 +50,9 @@ GitHub, Linear, and worker payloads are untrusted. Validate repository allowlist
 ## Routing / context / memory implications
 
 The watcher uses no LLM or model routing on idle runs. It consumes only GitHub/Linear facts and existing policy, writes bounded controller repair records in the common verdict-prime state directory, and emits transition events through existing digest/Linear channels. No new memory subsystem or cross-project context store is introduced.
+
+## Decisions recorded during core implementation
+
+- GitHub client: GraphQL for reads (MERGEABLE/CLEAN/COMPLETED/SUCCESS, per-check isRequired, databaseId, startedAt, pagination at PR and context level; merged search returns headRefOid and review commit oid), one REST POST for rerun (`/actions/jobs/{job_id}/rerun`). REST status is lowercase and lacks required flag; the list call uses a flag gh does not have.
+- Digest: append-only `pr_watcher_digest.jsonl` in the common verdict-prime state dir.
+- Log excerpts: out of scope for this slice; repair records carry check names, job ids, and details URL. Spec requirement "Repair record log excerpts are bounded and redacted" to be amended in a docs task if the helper is removed.
