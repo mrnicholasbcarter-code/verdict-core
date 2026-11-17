@@ -29,7 +29,18 @@ Tests/verification: run both pinned OpenSpec validators and require exit 0.
 Tests/verification: inspect the exact AGENTS.md sentence and run the repository documentation checks.
 - [x] 4.1 Document orchestration run-truth validation in AGENTS.md. Verification: doc-link and diff checks pass.
 
-## 5. Verification
+## 5. Break-test fixes
+Tests/verification: each test is written first and fails before its fix; focused pytest passes after.
+- [x] 5.1 Match every orchestrate JSON command form: `--json` prefixes, `python -m verdict.cli`, shell punctuation, and a whitespace fallback when the command cannot be parsed. Verification: `test_orchestrate_command_matcher_forms` and `test_hand_built_summary_fails_under_every_orchestrate_json_form` pass.
+- [x] 5.2 Never raise on raw output: oversized integers, deep nesting, time overflow, a `run_id` that is not a non-empty string, text stdout cannot encode. Verification: one test per cause passes, and unparseable output of another command stays plain text.
+- [x] 5.3 Let the acceptance item's expected exit code govern the parent confirmation and the structured-stdout requirement. Verification: honest blocked stories pass for expected exit codes 1 and 2; expected exit code 0 is unchanged.
+- [x] 5.4 Count one run cited by two acceptance criteria once, and name both run locations in the reuse messages. Verification: the two-criteria tests pass for plain text and structured results; the reuse tests still fail.
+- [x] 5.5 Apply digest uniqueness only to structured results and restore the shared test fixture to its `origin/main` form. Verification: the unmodified `origin/main` test file passes against this checker.
+- [x] 5.6 Add tests for both directions of each run-truth rule. Verification: each of the seven surviving mutations fails at least one test.
+- [x] 5.7 Read each run artifact once. Verification: `test_missing_artifact_is_reported_once` and `test_each_run_citation_reads_its_artifact_once` pass.
+- [x] 5.8 Update the spec delta, design and proposal to match. Verification: both pinned OpenSpec validators exit 0.
+
+## 6. Verification
 Tests/verification: execute every acceptance command from the worktree root and record each exit code.
-- [x] 5.1 Focused and repository gates pass on the current branch. Verification: 84 tests, ruff, format, mypy, DoD, doc links, reachability, diff, and both OpenSpec validators exit 0.
+- [x] 6.1 Focused and repository gates pass on the current branch. Verification: the focused tests, ruff, format, mypy, DoD, doc links, reachability, diff, and both OpenSpec validators exit 0.
 - [ ] (post-merge) Run the full definition-of-done and repository gates on merged main. Verification: all acceptance commands exit 0 and raw summaries are recorded.

@@ -22,7 +22,10 @@ The check fails on any missing or mismatched field:
   commit changed anything under ``openspec/`` or when a change, active or
   archived, is named after the story's ticket;
 * the parent confirmation is by someone other than the author, re-runs one of
-  the acceptance commands and shows the expected output.
+  the acceptance commands and shows the expected output;
+* a ``verdict orchestrate --json`` run records the run's own result JSON, and
+  its exit code, time and review agree with that result; two runs never share
+  a raw-output file, a result digest or a ``run_id``.
 
 ``--all`` checks every evidence file, and fails when an OpenSpec change was
 archived after this gate (not in ``PRE_GATE_ARCHIVES``) without an evidence
