@@ -178,13 +178,13 @@ VERDICT  /  Host prerequisites
 autonomous control plane  ·  plan · select · recover · verify · prove
 
   + Review tool (ocr)  OK
-    /home/nick/.local/bin/ocr is v1.12.9, sha256 matches verdict.ocr_release
+    /operator/.local/bin/ocr is v1.12.9, sha256 matches verdict.ocr_release
   + Verdict serve unit  OK
     verdict-serve.service is active
   + Verdict serve health  OK
     http://127.0.0.1:8000/health answers
   + Prime registry  OK
-    /home/nick/.prime/agent/models.json: providers.omniroute has 4273 model(s)
+    /operator/.prime/agent/models.json: providers.omniroute has 4273 model(s)
   + Prime-sync service  OK
     verdict-prime-sync.service last result success
   - WARNING  WARNING
