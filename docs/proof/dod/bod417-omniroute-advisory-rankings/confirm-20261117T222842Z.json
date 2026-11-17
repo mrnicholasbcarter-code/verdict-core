@@ -1,0 +1,70 @@
+{
+  "confirm": "skipped_no_confirm",
+  "funnel": {
+    "AVAILABLE": 45,
+    "DISCOVERED": 4279,
+    "ENTITLED": 3000,
+    "HEALTHY": 45,
+    "SELECTED": 0,
+    "TASK_ELIGIBLE": 41
+  },
+  "gateway": "http://127.0.0.1:20128",
+  "no_confirm": true,
+  "provenance": {},
+  "reason": "no_eligible_route",
+  "reasons": [
+    "admission:authentication",
+    "admission:catalog_stale",
+    "admission:connection_status:error",
+    "admission:connection_status:expired",
+    "admission:connection_status:unavailable",
+    "admission:cooldown:authentication",
+    "admission:cooldown:payment_required",
+    "admission:cooldown:permission",
+    "admission:exhausted:rate_limited",
+    "admission:insufficient_context",
+    "admission:missing_capability:tools",
+    "admission:no_connection_evidence",
+    "admission:not_found",
+    "admission:payment_required",
+    "admission:permission",
+    "admission:provider_rate_limited",
+    "effort_duplicate",
+    "no_agentic_probe",
+    "probe_budget_exhausted",
+    "session_evidence_insufficient"
+  ],
+  "rejections": {
+    "AVAILABLE": {
+      "admission:cooldown:authentication": 127,
+      "admission:cooldown:payment_required": 1194,
+      "admission:cooldown:permission": 8,
+      "admission:exhausted:rate_limited": 8,
+      "admission:provider_rate_limited": 87
+    },
+    "ENTITLED": {
+      "admission:authentication": 8,
+      "admission:connection_status:error": 16,
+      "admission:connection_status:expired": 34,
+      "admission:connection_status:unavailable": 831,
+      "admission:no_connection_evidence": 156,
+      "admission:payment_required": 228,
+      "admission:permission": 6
+    },
+    "HEALTHY": {
+      "admission:catalog_stale": 26,
+      "admission:not_found": 3
+    },
+    "TASK_ELIGIBLE": {
+      "admission:insufficient_context": 34,
+      "admission:missing_capability:tools": 270,
+      "effort_duplicate": 8,
+      "no_agentic_probe": 1162,
+      "session_evidence_insufficient": 1
+    }
+  },
+  "runner_up": null,
+  "selected": null,
+  "selected_because": "selected because admission:authentication; admission:catalog_stale; admission:connection_status:error; admission:connection_status:expired; admission:connection_status:unavailable; admission:cooldown:authentication; admission:cooldown:payment_required; admission:cooldown:permission; admission:exhausted:rate_limited; admission:insufficient_context; admission:missing_capability:tools; admission:no_connection_evidence; admission:not_found; admission:payment_required; admission:permission; admission:provider_rate_limited; effort_duplicate; no_agentic_probe; probe_budget_exhausted; session_evidence_insufficient",
+  "task_class": "implementation"
+}

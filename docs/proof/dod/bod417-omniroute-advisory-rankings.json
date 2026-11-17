@@ -63,11 +63,11 @@
   },
   "parent_confirmation": {
     "by": "gem-implementer confirmer on omniroute/worker/free-verified",
-    "at": "2026-11-17T21:47:27Z",
+    "at": "2026-11-17T22:28:42Z",
     "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict choose --task-class implementation --no-confirm --json",
     "raw_output": {
-      "path": "docs/proof/dod/bod417-omniroute-advisory-rankings/confirm-20261117T214727Z.json",
-      "sha256": "30941316eda3ac008fd0514e9705a22614bc1ce6a1385c7710b885daf217d613"
+      "path": "docs/proof/dod/bod417-omniroute-advisory-rankings/confirm-20261117T222842Z.json",
+      "sha256": "8f2a81568dba1fb7b5331591a951345339e0797e86bdcc7c6ec997ae4202bc76"
     }
   }
 }

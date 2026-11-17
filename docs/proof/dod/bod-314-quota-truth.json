@@ -63,11 +63,11 @@
   },
   "parent_confirmation": {
     "by": "gem-implementer confirmer on omniroute/worker/free-verified",
-    "at": "2026-11-17T21:52:00Z",
+    "at": "2026-11-17T22:27:30Z",
     "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --verified --no-refresh --json",
     "raw_output": {
-      "path": "docs/proof/dod/bod-314-quota-truth/confirm-20261117T2152Z.json",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      "path": "docs/proof/dod/bod-314-quota-truth/confirm-20261117T222730Z.json",
+      "sha256": "a6fb8d9af0275709753ea65fae12ab0a9200b682e3ff8a4142c85a04aaf6f2f2"
     }
   }
 }
