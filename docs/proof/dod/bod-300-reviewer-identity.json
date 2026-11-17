@@ -63,12 +63,12 @@
     "change": "reviewer-observed-identity"
   },
   "parent_confirmation": {
-    "by": "gem-devops (omniroute worker/free-first) session 20261117; confirmation pending independent re-run",
-    "at": "2026-11-17T15:40:18Z",
+    "by": "gem-implementer confirmer on omniroute/kilocode/nvidia/nemotron-3-ultra-550b-a55b:free",
+    "at": "2026-11-17T20:45:26Z",
     "command": "verdict watch <run dir> --once --panel receipt",
     "raw_output": {
-      "path": "docs/proof/dod/bod-300-reviewer-identity/watch-parent-20261117T153908Z.txt",
-      "sha256": "e5e25e7567ffc71c1a67b5bd0ff944f52de0413e79db5941d298db67bf813bc3"
+      "path": "docs/proof/dod/bod-300-reviewer-identity/watch-confirm-20261117T204157Z.txt",
+      "sha256": "32afd9f37597bcb34f36864e8922bcf2c4d92a57e67acabc404c81e35686858e"
     }
   }
 }

@@ -92,12 +92,12 @@
     "change": "orchestrate-effort-dispatch"
   },
   "parent_confirmation": {
-    "by": "gem-devops (omniroute worker/free-first) session 20261117; confirmation pending independent re-run",
-    "at": "2026-11-17T15:40:18Z",
+    "by": "gem-implementer confirmer on omniroute/kilocode/nvidia/nemotron-3-ultra-550b-a55b:free",
+    "at": "2026-11-17T20:45:26Z",
     "command": "verdict orchestrate --repo <scratch-repo> --graph <graph> --runs-dir <scratch-runs> --executor direct-gateway --capacity free,subscription --max-parallel 1 --attempt-timeout 300 --run-deadline 1500 --json",
     "raw_output": {
-      "path": "docs/proof/dod/bod-300-effort-dispatch/orchestrate-parent-confirmation-20261117T153908Z.json",
-      "sha256": "c9f565b80dd0518d8e448c6070f3dfec6721f7f46dafb18ad0516c394843ae0f"
+      "path": "docs/proof/dod/bod-300-effort-dispatch/orchestrate-confirm-20261117T204157Z.json",
+      "sha256": "d4580f967356d2d7e55848fe40b0204fe727874ac65a1386beaccee7708d887b"
     }
   }
 }

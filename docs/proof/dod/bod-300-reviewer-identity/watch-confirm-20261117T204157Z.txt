@@ -10,14 +10,14 @@ Fix word_count in textutil.py so it counts words separated by any whitespace run
 UNDERSTAND
 goal_chars: 80
 risk: low
-scope: repo: repo-3
+scope: repo: repo
 proof requirements: node verification, integration barrier, independent review
 
 CONTROLLER
-frontier controller: kilocode/nvidia/nemotron-3.5-super-vl:free [UNKNOWN]
-planner selected: kilocode/nvidia/nemotron-3.5-super-vl:free
+frontier controller: nvidia/google/gemma-4-31b-it [UNKNOWN]
+planner selected: nvidia/google/gemma-4-31b-it
 planner observed: not reported yet
-[kilocode/nvidia/nemotron-3.5-super-vl:free]
+[nvidia/google/gemma-4-31b-it]
 
 PLAN / DAG
 topology: PARALLEL_WORK_UNITS
@@ -25,19 +25,19 @@ max parallel: 1
 L0: fix-word-count
 
 SELECT
-ladder: DISCOVERED 4257 > ENTITLED 3553 > HEALTHY 74 > AVAILABLE 69 > ELIGIBLE 
-43
-fix-word-count -> kilocode/nvidia/nemotron-3.5-super-vl:free  [free #12]
+ladder: DISCOVERED 4261 > ENTITLED 3800 > HEALTHY 80 > AVAILABLE 75 > ELIGIBLE 
+51
+fix-word-count -> nvidia/google/gemma-4-31b-it  [free #0]
 candidates:
-kilocode/nvidia/nemotron-3.5-super-vl:free  selected > ok
+nvidia/google/gemma-4-31b-it  selected > ok
 
 HYDRATE
 fix-word-count: 6.2KB prompt, 2 context file(s) [truncated]
 
 WORKERS
 node        state      route      provider  att  elapsed  harness    history    
-fix-word-c  +          nemotron-  kilocode  1    2s       direct-ga  nemotron-3.
-ount        VALIDATED  3.5-super                          teway      5-super+   
+fix-word-c  +          gemma-4-3  nvidia    1    47s      direct-ga  gemma-4-31b
+ount        VALIDATED  1b-it                              teway      -it+       
 
 QUOTA/COOLDOWN
 no active cooldowns
@@ -50,22 +50,22 @@ VERIFY
 PASS fix-word-count python3 -m unittest test_textutil (exit 0)
 
 REVIEW
-PASS by open-code-review v1.12.9 on opencode-go/hy4-flash-free (0 blocking / 0 
-findings)
-reviewer selected: opencode-go/hy4-flash-free
-reviewer observed: opencode-go/hy4-flash-free
-independence: family-level; excluded implementers: 
-kilocode/nvidia/nemotron-3.5-super-vl:free; reviewer opencode-go/hy4-flash-free
+PASS by open-code-review v1.12.9 on kc/nvidia/nemotron-3-ultra-550b-a55b:free (0
+blocking / 0 findings)
+reviewer selected: kc/nvidia/nemotron-3-ultra-550b-a55b:free
+reviewer observed: kc/nvidia/nemotron-3-ultra-550b-a55b:free
+independence: family-level; excluded implementers: nvidia/google/gemma-4-31b-it;
+reviewer kc/nvidia/nemotron-3-ultra-550b-a55b:free
 
 COMPLETE all nodes validated, integrated and reviewed
 
 +- receipt summary ------------------------------------------------------------+
 |                                                                              |
-|  run: 20261117T153908Z  outcome: COMPLETE                                    |
+|  run: 20261117T204157Z  outcome: COMPLETE                                    |
 |  reason: all implement/integrate nodes validated, barrier ok, review PASS    |
 |  digest/proof checks: no verification problems recorded                      |
 |  events: 24  digest:                                                         |
-|  sha256:e4822f30a75e044d05d4000ed742c224befe202969fbf10d62a8247e3a040026     |
+|  sha256:b77718be12e6606a76a4afb51cb84d405cd8314e163e1913cc1e873e1883c4fa     |
 |  worker __controller__: no receipt evidence                                  |
 |                                                                              |
 +------------------------------------------------------------------------------+
@@ -77,5 +77,3 @@ COMPLETE all nodes validated, integrated and reviewed
 |                                                                              |
 +------------------------------------------------------------------------------+
 ? help  c context  r routing  p receipt  h health  q quit
-exit=0
-2026-11-17T16:52:55Z

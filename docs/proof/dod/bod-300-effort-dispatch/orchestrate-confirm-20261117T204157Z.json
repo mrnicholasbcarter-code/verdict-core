@@ -2,27 +2,27 @@
   "claimed_outcome": "COMPLETE",
   "controller_events": [
     {
-      "at": "2026-11-17T15:39:55.700501Z",
-      "attempt_id": "20261117T153908Z:f7db6ee8e4b9934b:fix-word-count-a1",
+      "at": "2026-11-17T20:43:46.821625Z",
+      "attempt_id": "20261117T204157Z:01da00d7c5c65fe0:fix-word-count-a1",
       "epoch": 0,
       "gateway_origin": "http://127.0.0.1:20128",
       "node_id": "fix-word-count",
-      "permit_id": "42edb6e503254625aa642806647e937f",
+      "permit_id": "a2df67047077442a99bf77fd9ff88ce7",
       "phase": "dispatch_permit",
-      "route_id": "kilocode/nvidia/nemotron-3.5-super-vl:free",
+      "route_id": "nvidia/google/gemma-4-31b-it",
       "seq": 12
     },
     {
-      "at": "2026-11-17T15:40:18.786877Z",
+      "at": "2026-11-17T20:45:26.390186Z",
       "excluded_families": [
-        "nemotron"
+        "gemma"
       ],
       "excluded_routes": [
-        "kilocode/nvidia/nemotron-3.5-super-vl:free"
+        "nvidia/google/gemma-4-31b-it"
       ],
       "level": "family",
       "node_id": "",
-      "reviewer_route": "opencode-go/hy4-flash-free",
+      "reviewer_route": "kc/nvidia/nemotron-3-ultra-550b-a55b:free",
       "seq": 21,
       "state": "REVIEW_INDEPENDENCE"
     }
@@ -30,8 +30,8 @@
   "cooldowns": [],
   "decision_signals": null,
   "event_count": 24,
-  "events_digest": "sha256:e4822f30a75e044d05d4000ed742c224befe202969fbf10d62a8247e3a040026",
-  "finished_at": "2026-11-17T15:40:18.798526Z",
+  "events_digest": "sha256:b77718be12e6606a76a4afb51cb84d405cd8314e163e1913cc1e873e1883c4fa",
+  "finished_at": "2026-11-17T20:45:26.402791Z",
   "goal": "Fix word_count in textutil.py so it counts words separated by any whitespace run",
   "graph_digest": "sha256:eaaab0bd4973b196bcb969061113f8ac3790f318f1f27bf794b0ced79630e98e",
   "integration": {
@@ -55,30 +55,30 @@
       "attempts": [
         {
           "attempt": 1,
-          "cache_checked_at": "2026-11-17T12:00:35.392001+00:00",
-          "cache_freshness": "fresh",
+          "cache_checked_at": "2026-11-17T19:01:22.967089+00:00",
+          "cache_freshness": "unprobed",
           "capacity_class": "free",
           "chosen_effort": "medium",
-          "duration_seconds": 1.87,
+          "duration_seconds": 46.97,
           "effort_reason": {
             "attempt": 1,
             "clamp": null,
             "default_effort": "medium",
             "metadata_source": "model_rows",
-            "route_id": "kilocode/nvidia/nemotron-3.5-super-vl:free",
+            "route_id": "nvidia/google/gemma-4-31b-it",
             "task_kind": "implement"
           },
           "evidence_level": "probation",
           "executed_effort": "unverified",
-          "executed_model": "nvidia/nemotron-3.5-super-vl:free",
+          "executed_model": "google/gemma-4-31b-it",
           "executor_kind": "live",
           "fault_injected": false,
           "harness": "direct-gateway",
-          "intended_route": "kilocode/nvidia/nemotron-3.5-super-vl:free",
+          "intended_route": "nvidia/google/gemma-4-31b-it",
           "outcome": "success",
           "probe_class": "agentic",
-          "provider": "kilocode",
-          "route_id": "kilocode/nvidia/nemotron-3.5-super-vl:free",
+          "provider": "nvidia",
+          "route_id": "nvidia/google/gemma-4-31b-it",
           "route_identity": "unattested",
           "served_identity": {
             "connection_id": null,
@@ -92,9 +92,9 @@
             "status": "unknown"
           },
           "usage": {
-            "cost_usd": 0.0,
-            "input_tokens": 2697,
-            "output_tokens": 118,
+            "cost_usd": null,
+            "input_tokens": 2815,
+            "output_tokens": 716,
             "tokens_source": "http_response",
             "turns": 1
           }
@@ -105,7 +105,7 @@
       "node_id": "fix-word-count",
       "selection_accounting": {
         "eligible_free_attempted": [
-          "kilocode/nvidia/nemotron-3.5-super-vl:free"
+          "nvidia/google/gemma-4-31b-it"
         ],
         "eligible_unattempted_authority_expired": [],
         "known_unavailable": [
@@ -119,6 +119,10 @@
           "agy/gemini-3.8-flash-low",
           "agy/gemini-3.8-flash-medium",
           "agy/gemini-3.8-flash-tiered",
+          "agy/gemini-4-argon-disabled",
+          "agy/gemini-4-carbon-disabled",
+          "agy/gemini-4-hydrogen-disabled",
+          "agy/gemini-4-hydrogen-sonar",
           "agy/gemini-pro-agent",
           "agy/gpt-oss-120b-medium",
           "antigravity/claude-opus-4-6-thinking",
@@ -964,32 +968,32 @@
           "hf/CohereLabs/c4ai-command-a-03-2025",
           "hf/CohereLabs/c4ai-command-r-08-2024",
           "hf/CohereLabs/c4ai-command-r7b-arabic-02-2025",
+          "hf/CohereLabs/command-a-plus-05-2026-w4a4",
           "hf/CohereLabs/command-a-reasoning-08-2025",
-          "hf/CohereLabs/command-a-vision-07-2025",
           "hf/CohereLabs/tiny-aya-water",
+          "hf/MiniMaxAI/MiniMax-M1-80k",
           "hf/MiniMaxAI/MiniMax-M2.5",
           "hf/MiniMaxAI/MiniMax-M2.7",
           "hf/MiniMaxAI/MiniMax-M3",
-          "hf/NousResearch/Hermes-4-405B",
+          "hf/NousResearch/Hermes-3-Llama-3.1-70B",
           "hf/Qwen/Qwen2.5-72B-Instruct",
-          "hf/Qwen/Qwen3-Coder-30B-A3B-Instruct",
+          "hf/Qwen/Qwen3.5-9B",
           "hf/Qwen/Qwen3.6-27B",
-          "hf/XiaomiMiMo/MiMo-V2.5-Pro",
-          "hf/XiaomiMiMo/MiMo-V2.6-Flash-RL",
+          "hf/Qwen/Qwen3.8-2.4T-A95B",
+          "hf/Qwen/Qwen3.8-Flash-Next-FP8",
           "hf/aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
           "hf/deepseek-ai/DeepSeek-R1-0528",
           "hf/deepseek-ai/DeepSeek-V3",
-          "hf/deepseek-ai/DeepSeek-V3-0324",
+          "hf/deepseek-ai/DeepSeek-V4-Flash-0731",
+          "hf/google/gemma-3-12b-it",
           "hf/google/gemma-3-4b-it",
-          "hf/google/gemma-4-26B-A4B-it",
           "hf/inclusionAI/Ling-3.0-flash-VL",
-          "hf/meta-llama/Llama-3.1-70B-Instruct",
           "hf/meta-llama/Llama-3.1-8B-Instruct",
           "hf/microsoft/phi-4",
+          "hf/moonshotai/Kimi-K2-Thinking",
           "hf/moonshotai/Kimi-K2.6",
-          "hf/openai/gpt-oss-safeguard-20b",
           "hf/stepfun-ai/Step-3.7-Flash",
-          "hf/zai-org/GLM-4.6-FP8",
+          "hf/thinkingmachines/Inkling-Small",
           "hf/zai-org/GLM-4.6V",
           "hf/zai-org/GLM-4.7-Flash",
           "hf/zai-org/GLM-5",
@@ -997,35 +1001,36 @@
           "hf/zai-org/GLM-5.1-FP8",
           "hf/zai-org/GLM-5.3-Flash",
           "huggingface/BSC-LT/ALIA-40b-instruct-2606",
+          "huggingface/ByteDance-Seed/UI-TARS-1.5-7B",
           "huggingface/CohereLabs/c4ai-command-a-03-2025",
           "huggingface/CohereLabs/c4ai-command-r-08-2024",
           "huggingface/CohereLabs/c4ai-command-r7b-arabic-02-2025",
+          "huggingface/CohereLabs/command-a-plus-05-2026-w4a4",
           "huggingface/CohereLabs/command-a-reasoning-08-2025",
-          "huggingface/CohereLabs/command-a-vision-07-2025",
           "huggingface/CohereLabs/tiny-aya-water",
+          "huggingface/MiniMaxAI/MiniMax-M1-80k",
           "huggingface/MiniMaxAI/MiniMax-M2.5",
           "huggingface/MiniMaxAI/MiniMax-M2.7",
           "huggingface/MiniMaxAI/MiniMax-M3",
-          "huggingface/NousResearch/Hermes-4-405B",
+          "huggingface/NousResearch/Hermes-3-Llama-3.1-70B",
           "huggingface/Qwen/Qwen2.5-72B-Instruct",
-          "huggingface/Qwen/Qwen3-Coder-30B-A3B-Instruct",
+          "huggingface/Qwen/Qwen3.5-9B",
           "huggingface/Qwen/Qwen3.6-27B",
-          "huggingface/XiaomiMiMo/MiMo-V2.5-Pro",
-          "huggingface/XiaomiMiMo/MiMo-V2.6-Flash-RL",
+          "huggingface/Qwen/Qwen3.8-2.4T-A95B",
+          "huggingface/Qwen/Qwen3.8-Flash-Next-FP8",
           "huggingface/aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
           "huggingface/deepseek-ai/DeepSeek-R1-0528",
           "huggingface/deepseek-ai/DeepSeek-V3",
-          "huggingface/deepseek-ai/DeepSeek-V3-0324",
+          "huggingface/deepseek-ai/DeepSeek-V4-Flash-0731",
+          "huggingface/google/gemma-3-12b-it",
           "huggingface/google/gemma-3-4b-it",
-          "huggingface/google/gemma-4-26B-A4B-it",
           "huggingface/inclusionAI/Ling-3.0-flash-VL",
-          "huggingface/meta-llama/Llama-3.1-70B-Instruct",
           "huggingface/meta-llama/Llama-3.1-8B-Instruct",
           "huggingface/microsoft/phi-4",
+          "huggingface/moonshotai/Kimi-K2-Thinking",
           "huggingface/moonshotai/Kimi-K2.6",
-          "huggingface/openai/gpt-oss-safeguard-20b",
           "huggingface/stepfun-ai/Step-3.7-Flash",
-          "huggingface/zai-org/GLM-4.6-FP8",
+          "huggingface/thinkingmachines/Inkling-Small",
           "huggingface/zai-org/GLM-4.6V",
           "huggingface/zai-org/GLM-4.7-Flash",
           "huggingface/zai-org/GLM-5",
@@ -1036,360 +1041,86 @@
           "kc/aion-labs/aion-3.0",
           "kc/aion-labs/aion-3.0-mini",
           "kc/aion-labs/aion-3.5",
-          "kc/aion-labs/aion-3.5-mini",
-          "kc/aion-labs/aion-rp-llama-3.1-8b",
-          "kc/amazon/nova-2-lite-v1",
-          "kc/amazon/nova-lite",
-          "kc/anthropic/claude-fable-5.1",
-          "kc/cohere/command-r-plus-08-2024",
           "kc/deepseek/deepseek-chat",
-          "kc/deepseek/deepseek-chat-v3-0324",
-          "kc/deepseek/deepseek-v3.1-terminus",
-          "kc/deepseek/deepseek-v3.2",
-          "kc/deepseek/deepseek-v3.2-exp",
           "kc/deepseek/deepseek-v3.2-thinking",
           "kc/deepseek/deepseek-v4-flash-0731",
-          "kc/deepseek/deepseek-v4-flash-vision-exp",
           "kc/deepseek/deepseek-v4-pro",
-          "kc/deepseek/deepseek-v4.1-flash-1017-fast",
-          "kc/deepseek/deepseek-v4.1-flash-1017-ultrafast",
           "kc/google/gemini-2.5-pro",
-          "kc/google/gemini-2.5-pro-preview",
           "kc/google/gemini-3-pro-image",
-          "kc/google/gemini-3-pro-image-preview",
-          "kc/google/gemini-3.1-flash-image",
-          "kc/google/gemini-3.1-flash-image-preview",
-          "kc/google/gemini-3.1-flash-lite",
-          "kc/google/gemini-3.1-flash-lite-image",
-          "kc/google/gemini-3.1-flash-lite-preview",
           "kc/google/gemini-3.1-pro-preview",
           "kc/google/gemini-3.1-pro-preview-customtools",
-          "kc/google/gemini-3.5-flash",
-          "kc/google/gemini-3.5-flash-lite",
-          "kc/google/gemini-3.6-flash",
-          "kc/google/gemini-3.7-flash",
-          "kc/google/gemini-3.8-flash",
-          "kc/google/gemini-4-argon",
-          "kc/google/gemini-4-carbon",
-          "kc/google/gemini-4-hydrogen",
-          "kc/google/gemini-nano-banana-2.1",
-          "kc/google/gemini-omni-1.1-flash",
-          "kc/google/gemini-omni-1.2-flash",
-          "kc/google/gemini-omni-flash-preview",
-          "kc/google/gemma-2-27b-it",
-          "kc/google/gemma-3-12b-it",
-          "kc/google/gemma-3-27b-it",
-          "kc/google/gemma-3-4b-it",
-          "kc/google/gemma-4-31b-it",
           "kc/google/lyria-3-clip-preview",
           "kc/google/lyria-3-pro-preview",
-          "kc/gryphe/mythomax-l2-13b",
           "kc/humansand/ampersand-v0.1",
-          "kc/ibm-granite/granite-4.2-8b",
           "kc/inception/mercury-3",
-          "kc/inclusionai/ling-3.0-flash",
           "kc/inclusionai/ling-3.0-flash-fin",
           "kc/inclusionai/ling-3.0-flash-sante",
-          "kc/inclusionai/ling-3.0-flash-vl",
-          "kc/inclusionai/ling-3.0-tiny",
-          "kc/inclusionai/ling-3.1-flash",
           "kc/inclusionai/ling-3.1-flash-1019",
-          "kc/inference-net/schematron-v2-small",
-          "kc/inference-net/schematron-v2-turbo",
-          "kc/interfaze/interfaze-beta",
-          "kc/kilo-auto/balanced",
           "kc/kilo-auto/efficient",
-          "kc/kilo-auto/frontier",
-          "kc/kt/midm-k-3.0-pro",
-          "kc/liquid/lfm-2.5-24b-a2b",
-          "kc/liquid/lfm-3-1.7b",
-          "kc/mancer/weaver",
-          "kc/meituan/longcat-2.0",
           "kc/meituan/longcat-2.5",
-          "kc/meta-llama/llama-3.1-70b-instruct",
-          "kc/meta-llama/llama-3.1-8b-instruct",
-          "kc/meta-llama/llama-3.2-1b-instruct",
-          "kc/meta-llama/llama-3.2-3b-instruct",
-          "kc/meta-llama/llama-3.3-70b-instruct",
-          "kc/meta-llama/llama-4-maverick",
-          "kc/meta-llama/llama-4-scout",
-          "kc/meta-llama/llama-guard-4-12b",
-          "kc/meta/muse-ember",
-          "kc/meta/muse-glimmer-30b",
-          "kc/meta/muse-spark-1.1",
-          "kc/meta/muse-spark-1.2",
-          "kc/meta/muse-spark-1.2-contributor",
-          "kc/meta/muse-spark-1.3",
-          "kc/mistralai/mistral-large-2512",
-          "kc/mistralai/mistral-large-4-0",
-          "kc/mistralai/mistral-medium-3",
-          "kc/mistralai/mistral-medium-3-5",
-          "kc/mistralai/mistral-medium-3.1",
-          "kc/mistralai/mistral-nemo",
-          "kc/mistralai/mistral-saba",
-          "kc/mistralai/mistral-small",
-          "kc/mistralai/mistral-small-24b-instruct-2501",
-          "kc/mistralai/mistral-small-2603",
-          "kc/mistralai/mistral-small-3.2-24b-instruct",
-          "kc/mistralai/mixtral-8x22b-instruct",
-          "kc/mistralai/voxtral-small-24b-2507",
-          "kc/mixedbread/toast-1",
-          "kc/moondream/moondream3-preview",
-          "kc/moondream/moondream3.1-9b-a2b",
-          "kc/moonshotai/kimi-k2",
-          "kc/moonshotai/kimi-k2-0905",
           "kc/moonshotai/kimi-k2-thinking",
-          "kc/moonshotai/kimi-k2.5",
-          "kc/moonshotai/kimi-k2.7-code-highspeed",
-          "kc/moonshotai/kimi-k3-fast",
-          "kc/moonshotai/kimi-k3.1-pro",
-          "kc/moonshotai/kimi-k3.1-pro-highspeed",
-          "kc/morph/morph-v3-fast",
-          "kc/morph/morph-v3-large",
-          "kc/motif-technologies/motif-3",
-          "kc/nex-agi/nex-n2.5-mini",
-          "kc/nex-agi/nex-n2.5-pro",
-          "kc/nex-agi/nex-n2.6",
-          "kc/nousresearch/hermes-4-405b",
-          "kc/nvidia/nemotron-3-nano-30b-a3b",
           "kc/nvidia/nemotron-3-super-120b-a12b",
           "kc/nvidia/nemotron-3-ultra-550b-a55b",
-          "kc/nvidia/nemotron-3.5-content-safety",
-          "kc/nvidia/nemotron-3.5-lightning",
-          "kc/nvidia/nemotron-3.5-super-vl",
           "kc/nvidia/nemotron-nano-12b-v2-vl",
           "kc/nvidia/nemotron-nano-9b-v2",
           "kc/nvidia/switchyard",
-          "kc/openai/gpt-3.5-turbo-16k",
-          "kc/openai/gpt-4",
-          "kc/openai/gpt-4.1",
-          "kc/openai/gpt-4.1-fast",
-          "kc/openai/gpt-4.1-mini",
-          "kc/openai/gpt-4.1-mini-fast",
-          "kc/openai/gpt-4.1-nano",
-          "kc/openai/gpt-4o-2024-05-13",
-          "kc/openai/gpt-5.6-luna-fast",
           "kc/openai/gpt-5.6-sol",
-          "kc/openai/gpt-5.6-sol-pro",
-          "kc/openai/gpt-6-astra-fast",
-          "kc/openai/gpt-6-astra-pro",
-          "kc/openai/gpt-6-luna",
           "kc/openai/gpt-6-luna-fast",
-          "kc/openai/gpt-6-luna-pro",
-          "kc/openai/gpt-6-sol",
-          "kc/openai/gpt-6-sol-fast",
-          "kc/openai/gpt-6-sol-pro",
-          "kc/openai/gpt-6.1-sol-fast",
-          "kc/openai/gpt-6.1-sol-pro",
-          "kc/openai/gpt-6.1-terra",
-          "kc/openai/gpt-6.1-terra-fast",
-          "kc/openai/gpt-6.1-terra-pro",
-          "kc/openai/gpt-audio",
-          "kc/openai/gpt-audio-mini",
-          "kc/openai/gpt-chat-latest",
           "kc/openai/gpt-oss-safeguard-120b",
-          "kc/openai/o1",
           "kc/openai/o3",
-          "kc/openai/o3-fast",
-          "kc/openai/o3-mini",
           "kc/openai/o3-pro",
-          "kc/openai/o4-mini",
           "kc/openrouter/auto",
           "kc/openrouter/auto-beta",
           "kc/openrouter/auto-code",
           "kc/openrouter/bodybuilder",
           "kc/openrouter/fusion",
           "kc/openrouter/pareto-code",
-          "kc/paperinstruments/ultramarine-1-flash",
-          "kc/particle-ai/particle-1",
           "kc/particle/particle-1",
-          "kc/perceptron/perceptron-mk1",
-          "kc/perceptron/perceptron-mk1.5",
-          "kc/perplexity/sonar",
-          "kc/perplexity/sonar-deep-research",
           "kc/qwen/qwen3.8-27b",
-          "kc/~deepseek/deepseek-v4-flash-latest",
+          "kc/x-ai/grok-4.6",
           "kilocode/aion-labs/aion-2.0",
           "kilocode/aion-labs/aion-3.0",
           "kilocode/aion-labs/aion-3.0-mini",
           "kilocode/aion-labs/aion-3.5",
-          "kilocode/aion-labs/aion-3.5-mini",
-          "kilocode/aion-labs/aion-rp-llama-3.1-8b",
-          "kilocode/amazon/nova-2-lite-v1",
-          "kilocode/amazon/nova-lite",
-          "kilocode/anthropic/claude-fable-5.1",
-          "kilocode/cohere/command-r-plus-08-2024",
           "kilocode/deepseek/deepseek-chat",
-          "kilocode/deepseek/deepseek-chat-v3-0324",
-          "kilocode/deepseek/deepseek-v3.1-terminus",
-          "kilocode/deepseek/deepseek-v3.2",
-          "kilocode/deepseek/deepseek-v3.2-exp",
           "kilocode/deepseek/deepseek-v3.2-thinking",
           "kilocode/deepseek/deepseek-v4-flash-0731",
-          "kilocode/deepseek/deepseek-v4-flash-vision-exp",
           "kilocode/deepseek/deepseek-v4-pro",
-          "kilocode/deepseek/deepseek-v4.1-flash-1017-fast",
-          "kilocode/deepseek/deepseek-v4.1-flash-1017-ultrafast",
           "kilocode/google/gemini-2.5-pro",
-          "kilocode/google/gemini-2.5-pro-preview",
           "kilocode/google/gemini-3-pro-image",
-          "kilocode/google/gemini-3-pro-image-preview",
-          "kilocode/google/gemini-3.1-flash-image",
-          "kilocode/google/gemini-3.1-flash-image-preview",
-          "kilocode/google/gemini-3.1-flash-lite",
-          "kilocode/google/gemini-3.1-flash-lite-image",
-          "kilocode/google/gemini-3.1-flash-lite-preview",
           "kilocode/google/gemini-3.1-pro-preview",
           "kilocode/google/gemini-3.1-pro-preview-customtools",
-          "kilocode/google/gemini-3.5-flash",
-          "kilocode/google/gemini-3.5-flash-lite",
-          "kilocode/google/gemini-3.6-flash",
-          "kilocode/google/gemini-3.7-flash",
-          "kilocode/google/gemini-3.8-flash",
-          "kilocode/google/gemini-4-argon",
-          "kilocode/google/gemini-4-carbon",
-          "kilocode/google/gemini-4-hydrogen",
-          "kilocode/google/gemini-nano-banana-2.1",
-          "kilocode/google/gemini-omni-1.1-flash",
-          "kilocode/google/gemini-omni-1.2-flash",
-          "kilocode/google/gemini-omni-flash-preview",
-          "kilocode/google/gemma-2-27b-it",
-          "kilocode/google/gemma-3-12b-it",
-          "kilocode/google/gemma-3-27b-it",
-          "kilocode/google/gemma-3-4b-it",
-          "kilocode/google/gemma-4-31b-it",
           "kilocode/google/lyria-3-clip-preview",
           "kilocode/google/lyria-3-pro-preview",
-          "kilocode/gryphe/mythomax-l2-13b",
           "kilocode/humansand/ampersand-v0.1",
-          "kilocode/ibm-granite/granite-4.2-8b",
           "kilocode/inception/mercury-3",
-          "kilocode/inclusionai/ling-3.0-flash",
           "kilocode/inclusionai/ling-3.0-flash-fin",
           "kilocode/inclusionai/ling-3.0-flash-sante",
-          "kilocode/inclusionai/ling-3.0-flash-vl",
-          "kilocode/inclusionai/ling-3.0-tiny",
-          "kilocode/inclusionai/ling-3.1-flash",
           "kilocode/inclusionai/ling-3.1-flash-1019",
-          "kilocode/inference-net/schematron-v2-small",
-          "kilocode/inference-net/schematron-v2-turbo",
-          "kilocode/interfaze/interfaze-beta",
-          "kilocode/kilo-auto/balanced",
           "kilocode/kilo-auto/efficient",
-          "kilocode/kilo-auto/frontier",
-          "kilocode/kt/midm-k-3.0-pro",
-          "kilocode/liquid/lfm-2.5-24b-a2b",
-          "kilocode/liquid/lfm-3-1.7b",
-          "kilocode/mancer/weaver",
-          "kilocode/meituan/longcat-2.0",
           "kilocode/meituan/longcat-2.5",
-          "kilocode/meta-llama/llama-3.1-70b-instruct",
-          "kilocode/meta-llama/llama-3.1-8b-instruct",
-          "kilocode/meta-llama/llama-3.2-1b-instruct",
-          "kilocode/meta-llama/llama-3.2-3b-instruct",
-          "kilocode/meta-llama/llama-3.3-70b-instruct",
-          "kilocode/meta-llama/llama-4-maverick",
-          "kilocode/meta-llama/llama-4-scout",
-          "kilocode/meta-llama/llama-guard-4-12b",
-          "kilocode/meta/muse-ember",
-          "kilocode/meta/muse-glimmer-30b",
-          "kilocode/meta/muse-spark-1.1",
-          "kilocode/meta/muse-spark-1.2",
-          "kilocode/meta/muse-spark-1.2-contributor",
-          "kilocode/meta/muse-spark-1.3",
-          "kilocode/mistralai/mistral-large-2512",
-          "kilocode/mistralai/mistral-large-4-0",
-          "kilocode/mistralai/mistral-medium-3",
-          "kilocode/mistralai/mistral-medium-3-5",
-          "kilocode/mistralai/mistral-medium-3.1",
-          "kilocode/mistralai/mistral-nemo",
-          "kilocode/mistralai/mistral-saba",
-          "kilocode/mistralai/mistral-small",
-          "kilocode/mistralai/mistral-small-24b-instruct-2501",
-          "kilocode/mistralai/mistral-small-2603",
-          "kilocode/mistralai/mistral-small-3.2-24b-instruct",
-          "kilocode/mistralai/mixtral-8x22b-instruct",
-          "kilocode/mistralai/voxtral-small-24b-2507",
-          "kilocode/mixedbread/toast-1",
-          "kilocode/moondream/moondream3-preview",
-          "kilocode/moondream/moondream3.1-9b-a2b",
-          "kilocode/moonshotai/kimi-k2",
-          "kilocode/moonshotai/kimi-k2-0905",
           "kilocode/moonshotai/kimi-k2-thinking",
-          "kilocode/moonshotai/kimi-k2.5",
-          "kilocode/moonshotai/kimi-k2.7-code-highspeed",
-          "kilocode/moonshotai/kimi-k3-fast",
-          "kilocode/moonshotai/kimi-k3.1-pro",
-          "kilocode/moonshotai/kimi-k3.1-pro-highspeed",
-          "kilocode/morph/morph-v3-fast",
-          "kilocode/morph/morph-v3-large",
-          "kilocode/motif-technologies/motif-3",
-          "kilocode/nex-agi/nex-n2.5-mini",
-          "kilocode/nex-agi/nex-n2.5-pro",
-          "kilocode/nex-agi/nex-n2.6",
-          "kilocode/nousresearch/hermes-4-405b",
-          "kilocode/nvidia/nemotron-3-nano-30b-a3b",
           "kilocode/nvidia/nemotron-3-super-120b-a12b",
           "kilocode/nvidia/nemotron-3-ultra-550b-a55b",
-          "kilocode/nvidia/nemotron-3.5-content-safety",
-          "kilocode/nvidia/nemotron-3.5-lightning",
-          "kilocode/nvidia/nemotron-3.5-super-vl",
           "kilocode/nvidia/nemotron-nano-12b-v2-vl",
           "kilocode/nvidia/nemotron-nano-9b-v2",
           "kilocode/nvidia/switchyard",
-          "kilocode/openai/gpt-3.5-turbo-16k",
-          "kilocode/openai/gpt-4",
-          "kilocode/openai/gpt-4.1",
-          "kilocode/openai/gpt-4.1-fast",
-          "kilocode/openai/gpt-4.1-mini",
-          "kilocode/openai/gpt-4.1-mini-fast",
-          "kilocode/openai/gpt-4.1-nano",
-          "kilocode/openai/gpt-4o-2024-05-13",
-          "kilocode/openai/gpt-5.6-luna-fast",
           "kilocode/openai/gpt-5.6-sol",
-          "kilocode/openai/gpt-5.6-sol-pro",
-          "kilocode/openai/gpt-6-astra-fast",
-          "kilocode/openai/gpt-6-astra-pro",
-          "kilocode/openai/gpt-6-luna",
           "kilocode/openai/gpt-6-luna-fast",
-          "kilocode/openai/gpt-6-luna-pro",
-          "kilocode/openai/gpt-6-sol",
-          "kilocode/openai/gpt-6-sol-fast",
-          "kilocode/openai/gpt-6-sol-pro",
-          "kilocode/openai/gpt-6.1-sol-fast",
-          "kilocode/openai/gpt-6.1-sol-pro",
-          "kilocode/openai/gpt-6.1-terra",
-          "kilocode/openai/gpt-6.1-terra-fast",
-          "kilocode/openai/gpt-6.1-terra-pro",
-          "kilocode/openai/gpt-audio",
-          "kilocode/openai/gpt-audio-mini",
-          "kilocode/openai/gpt-chat-latest",
           "kilocode/openai/gpt-oss-safeguard-120b",
-          "kilocode/openai/o1",
           "kilocode/openai/o3",
-          "kilocode/openai/o3-fast",
-          "kilocode/openai/o3-mini",
           "kilocode/openai/o3-pro",
-          "kilocode/openai/o4-mini",
           "kilocode/openrouter/auto",
           "kilocode/openrouter/auto-beta",
           "kilocode/openrouter/auto-code",
           "kilocode/openrouter/bodybuilder",
           "kilocode/openrouter/fusion",
           "kilocode/openrouter/pareto-code",
-          "kilocode/paperinstruments/ultramarine-1-flash",
-          "kilocode/particle-ai/particle-1",
           "kilocode/particle/particle-1",
-          "kilocode/perceptron/perceptron-mk1",
-          "kilocode/perceptron/perceptron-mk1.5",
-          "kilocode/perplexity/sonar",
-          "kilocode/perplexity/sonar-deep-research",
-          "kilocode/qwen/qwen3.8-27b",
-          "kilocode/~deepseek/deepseek-v4-flash-latest",
-          "llm7/Inkling-Small",
+          "kilocode/x-ai/grok-4.6",
           "llm7/claude-fable-5",
+          "llm7/claude-fable-5-2",
           "llm7/claude-opus-5",
-          "llm7/claude-opus-5-5",
           "llm7/claude-sonnet-4-6",
           "llm7/deepseek-v4-flash:0731",
           "llm7/glm-5.3",
@@ -1397,27 +1128,25 @@
           "llm7/gpt-5.6-terra",
           "llm7/gpt-6-astra",
           "llm7/kimi-k3",
-          "llm7/kimi-k3.1-pro",
           "llm7/llama-4-maverick",
           "llm7/minimax-m3",
-          "lma/mistral-small-2603",
+          "llm7/seed-2.0-mini",
           "lmarena/amazon.nova-pro-v1:0",
           "mistral/codestral-latest",
           "mistral/mistral-medium-3-5",
-          "mistral/mistral-small-latest",
           "ollama-cloud/gemma4:31b",
           "ollama-cloud/kimi-k2.6",
           "ollama-cloud/nemotron-3-super",
           "ollamacloud/gemma4:31b",
           "ollamacloud/kimi-k2.6",
           "ollamacloud/nemotron-3-super",
+          "opencode-zen/beam-free",
           "opencode-zen/deepseek-v4-pro",
           "opencode-zen/gemini-3.6-flash",
           "opencode-zen/gemini-3.8-flash",
           "opencode-zen/glm-5.3",
           "opencode-zen/kimi-k2.7-code",
-          "opencode-zen/kimi-k3",
-          "openrouter/thinkingmachines/inkling-2-small:free"
+          "unc/turboderp/Qwen3.8-27B-exl3"
         ],
         "known_unavailable_reasons": [
           {
@@ -1459,6 +1188,22 @@
           {
             "reason": "admission:cooldown:permission",
             "route_id": "agy/gemini-3.8-flash-tiered"
+          },
+          {
+            "reason": "admission:cooldown:permission",
+            "route_id": "agy/gemini-4-argon-disabled"
+          },
+          {
+            "reason": "admission:cooldown:permission",
+            "route_id": "agy/gemini-4-carbon-disabled"
+          },
+          {
+            "reason": "admission:cooldown:permission",
+            "route_id": "agy/gemini-4-hydrogen-disabled"
+          },
+          {
+            "reason": "admission:cooldown:permission",
+            "route_id": "agy/gemini-4-hydrogen-sonar"
           },
           {
             "reason": "admission:cooldown:permission",
@@ -4842,15 +4587,19 @@
           },
           {
             "reason": "admission:payment_required",
+            "route_id": "hf/CohereLabs/command-a-plus-05-2026-w4a4"
+          },
+          {
+            "reason": "admission:payment_required",
             "route_id": "hf/CohereLabs/command-a-reasoning-08-2025"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "hf/CohereLabs/command-a-vision-07-2025"
+            "route_id": "hf/CohereLabs/tiny-aya-water"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "hf/CohereLabs/tiny-aya-water"
+            "route_id": "hf/MiniMaxAI/MiniMax-M1-80k"
           },
           {
             "reason": "admission:payment_required",
@@ -4866,7 +4615,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "hf/NousResearch/Hermes-4-405B"
+            "route_id": "hf/NousResearch/Hermes-3-Llama-3.1-70B"
           },
           {
             "reason": "admission:payment_required",
@@ -4874,7 +4623,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "hf/Qwen/Qwen3-Coder-30B-A3B-Instruct"
+            "route_id": "hf/Qwen/Qwen3.5-9B"
           },
           {
             "reason": "admission:payment_required",
@@ -4882,11 +4631,11 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "hf/XiaomiMiMo/MiMo-V2.5-Pro"
+            "route_id": "hf/Qwen/Qwen3.8-2.4T-A95B"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "hf/XiaomiMiMo/MiMo-V2.6-Flash-RL"
+            "route_id": "hf/Qwen/Qwen3.8-Flash-Next-FP8"
           },
           {
             "reason": "admission:payment_required",
@@ -4902,7 +4651,11 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "hf/deepseek-ai/DeepSeek-V3-0324"
+            "route_id": "hf/deepseek-ai/DeepSeek-V4-Flash-0731"
+          },
+          {
+            "reason": "admission:payment_required",
+            "route_id": "hf/google/gemma-3-12b-it"
           },
           {
             "reason": "admission:payment_required",
@@ -4910,15 +4663,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "hf/google/gemma-4-26B-A4B-it"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "hf/inclusionAI/Ling-3.0-flash-VL"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "hf/meta-llama/Llama-3.1-70B-Instruct"
           },
           {
             "reason": "admission:payment_required",
@@ -4930,11 +4675,11 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "hf/moonshotai/Kimi-K2.6"
+            "route_id": "hf/moonshotai/Kimi-K2-Thinking"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "hf/openai/gpt-oss-safeguard-20b"
+            "route_id": "hf/moonshotai/Kimi-K2.6"
           },
           {
             "reason": "admission:payment_required",
@@ -4942,7 +4687,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "hf/zai-org/GLM-4.6-FP8"
+            "route_id": "hf/thinkingmachines/Inkling-Small"
           },
           {
             "reason": "admission:payment_required",
@@ -4974,6 +4719,10 @@
           },
           {
             "reason": "admission:payment_required",
+            "route_id": "huggingface/ByteDance-Seed/UI-TARS-1.5-7B"
+          },
+          {
+            "reason": "admission:payment_required",
             "route_id": "huggingface/CohereLabs/c4ai-command-a-03-2025"
           },
           {
@@ -4986,15 +4735,19 @@
           },
           {
             "reason": "admission:payment_required",
+            "route_id": "huggingface/CohereLabs/command-a-plus-05-2026-w4a4"
+          },
+          {
+            "reason": "admission:payment_required",
             "route_id": "huggingface/CohereLabs/command-a-reasoning-08-2025"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "huggingface/CohereLabs/command-a-vision-07-2025"
+            "route_id": "huggingface/CohereLabs/tiny-aya-water"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "huggingface/CohereLabs/tiny-aya-water"
+            "route_id": "huggingface/MiniMaxAI/MiniMax-M1-80k"
           },
           {
             "reason": "admission:payment_required",
@@ -5010,7 +4763,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "huggingface/NousResearch/Hermes-4-405B"
+            "route_id": "huggingface/NousResearch/Hermes-3-Llama-3.1-70B"
           },
           {
             "reason": "admission:payment_required",
@@ -5018,7 +4771,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "huggingface/Qwen/Qwen3-Coder-30B-A3B-Instruct"
+            "route_id": "huggingface/Qwen/Qwen3.5-9B"
           },
           {
             "reason": "admission:payment_required",
@@ -5026,11 +4779,11 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "huggingface/XiaomiMiMo/MiMo-V2.5-Pro"
+            "route_id": "huggingface/Qwen/Qwen3.8-2.4T-A95B"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "huggingface/XiaomiMiMo/MiMo-V2.6-Flash-RL"
+            "route_id": "huggingface/Qwen/Qwen3.8-Flash-Next-FP8"
           },
           {
             "reason": "admission:payment_required",
@@ -5046,7 +4799,11 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "huggingface/deepseek-ai/DeepSeek-V3-0324"
+            "route_id": "huggingface/deepseek-ai/DeepSeek-V4-Flash-0731"
+          },
+          {
+            "reason": "admission:payment_required",
+            "route_id": "huggingface/google/gemma-3-12b-it"
           },
           {
             "reason": "admission:payment_required",
@@ -5054,15 +4811,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "huggingface/google/gemma-4-26B-A4B-it"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "huggingface/inclusionAI/Ling-3.0-flash-VL"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "huggingface/meta-llama/Llama-3.1-70B-Instruct"
           },
           {
             "reason": "admission:payment_required",
@@ -5074,11 +4823,11 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "huggingface/moonshotai/Kimi-K2.6"
+            "route_id": "huggingface/moonshotai/Kimi-K2-Thinking"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "huggingface/openai/gpt-oss-safeguard-20b"
+            "route_id": "huggingface/moonshotai/Kimi-K2.6"
           },
           {
             "reason": "admission:payment_required",
@@ -5086,7 +4835,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "huggingface/zai-org/GLM-4.6-FP8"
+            "route_id": "huggingface/thinkingmachines/Inkling-Small"
           },
           {
             "reason": "admission:payment_required",
@@ -5130,47 +4879,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/aion-labs/aion-3.5-mini"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/aion-labs/aion-rp-llama-3.1-8b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/amazon/nova-2-lite-v1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/amazon/nova-lite"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/anthropic/claude-fable-5.1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/cohere/command-r-plus-08-2024"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/deepseek/deepseek-chat"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/deepseek/deepseek-chat-v3-0324"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/deepseek/deepseek-v3.1-terminus"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/deepseek/deepseek-v3.2"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/deepseek/deepseek-v3.2-exp"
           },
           {
             "reason": "admission:payment_required",
@@ -5182,19 +4891,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/deepseek/deepseek-v4-flash-vision-exp"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/deepseek/deepseek-v4-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/deepseek/deepseek-v4.1-flash-1017-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/deepseek/deepseek-v4.1-flash-1017-ultrafast"
           },
           {
             "reason": "admission:payment_required",
@@ -5202,35 +4899,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-2.5-pro-preview"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/google/gemini-3-pro-image"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-3-pro-image-preview"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-3.1-flash-image"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-3.1-flash-image-preview"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-3.1-flash-lite"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-3.1-flash-lite-image"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-3.1-flash-lite-preview"
           },
           {
             "reason": "admission:payment_required",
@@ -5242,74 +4911,6 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-3.5-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-3.5-flash-lite"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-3.6-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-3.7-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-3.8-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-4-argon"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-4-carbon"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-4-hydrogen"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-nano-banana-2.1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-omni-1.1-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-omni-1.2-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemini-omni-flash-preview"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemma-2-27b-it"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemma-3-12b-it"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemma-3-27b-it"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemma-3-4b-it"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/google/gemma-4-31b-it"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/google/lyria-3-clip-preview"
           },
           {
@@ -5318,23 +4919,11 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/gryphe/mythomax-l2-13b"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/humansand/ampersand-v0.1"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/ibm-granite/granite-4.2-8b"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/inception/mercury-3"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/inclusionai/ling-3.0-flash"
           },
           {
             "reason": "admission:payment_required",
@@ -5346,35 +4935,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/inclusionai/ling-3.0-flash-vl"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/inclusionai/ling-3.0-tiny"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/inclusionai/ling-3.1-flash"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/inclusionai/ling-3.1-flash-1019"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/inference-net/schematron-v2-small"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/inference-net/schematron-v2-turbo"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/interfaze/interfaze-beta"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/kilo-auto/balanced"
           },
           {
             "reason": "admission:payment_required",
@@ -5382,215 +4943,11 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/kilo-auto/frontier"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/kt/midm-k-3.0-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/liquid/lfm-2.5-24b-a2b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/liquid/lfm-3-1.7b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mancer/weaver"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meituan/longcat-2.0"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/meituan/longcat-2.5"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/meta-llama/llama-3.1-70b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta-llama/llama-3.1-8b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta-llama/llama-3.2-1b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta-llama/llama-3.2-3b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta-llama/llama-3.3-70b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta-llama/llama-4-maverick"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta-llama/llama-4-scout"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta-llama/llama-guard-4-12b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta/muse-ember"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta/muse-glimmer-30b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta/muse-spark-1.1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta/muse-spark-1.2"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta/muse-spark-1.2-contributor"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/meta/muse-spark-1.3"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/mistral-large-2512"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/mistral-large-4-0"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/mistral-medium-3"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/mistral-medium-3-5"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/mistral-medium-3.1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/mistral-nemo"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/mistral-saba"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/mistral-small"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/mistral-small-24b-instruct-2501"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/mistral-small-2603"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/mistral-small-3.2-24b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/mixtral-8x22b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mistralai/voxtral-small-24b-2507"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/mixedbread/toast-1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/moondream/moondream3-preview"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/moondream/moondream3.1-9b-a2b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/moonshotai/kimi-k2"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/moonshotai/kimi-k2-0905"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/moonshotai/kimi-k2-thinking"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/moonshotai/kimi-k2.5"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/moonshotai/kimi-k2.7-code-highspeed"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/moonshotai/kimi-k3-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/moonshotai/kimi-k3.1-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/moonshotai/kimi-k3.1-pro-highspeed"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/morph/morph-v3-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/morph/morph-v3-large"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/motif-technologies/motif-3"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/nex-agi/nex-n2.5-mini"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/nex-agi/nex-n2.5-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/nex-agi/nex-n2.6"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/nousresearch/hermes-4-405b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/nvidia/nemotron-3-nano-30b-a3b"
           },
           {
             "reason": "admission:payment_required",
@@ -5599,18 +4956,6 @@
           {
             "reason": "admission:payment_required",
             "route_id": "kc/nvidia/nemotron-3-ultra-550b-a55b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/nvidia/nemotron-3.5-content-safety"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/nvidia/nemotron-3.5-lightning"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/nvidia/nemotron-3.5-super-vl"
           },
           {
             "reason": "admission:payment_required",
@@ -5626,59 +4971,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-3.5-turbo-16k"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-4"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-4.1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-4.1-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-4.1-mini"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-4.1-mini-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-4.1-nano"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-4o-2024-05-13"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-5.6-luna-fast"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/openai/gpt-5.6-sol"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-5.6-sol-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-6-astra-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-6-astra-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-6-luna"
           },
           {
             "reason": "admission:payment_required",
@@ -5686,59 +4979,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-6-luna-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-6-sol"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-6-sol-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-6-sol-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-6.1-sol-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-6.1-sol-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-6.1-terra"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-6.1-terra-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-6.1-terra-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-audio"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-audio-mini"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/gpt-chat-latest"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/openai/gpt-oss-safeguard-120b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/o1"
           },
           {
             "reason": "admission:payment_required",
@@ -5746,19 +4987,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/openai/o3-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/o3-mini"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/openai/o3-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/openai/o4-mini"
           },
           {
             "reason": "admission:payment_required",
@@ -5786,31 +5015,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/paperinstruments/ultramarine-1-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/particle-ai/particle-1"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kc/particle/particle-1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/perceptron/perceptron-mk1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/perceptron/perceptron-mk1.5"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/perplexity/sonar"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kc/perplexity/sonar-deep-research"
           },
           {
             "reason": "admission:payment_required",
@@ -5818,7 +5023,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kc/~deepseek/deepseek-v4-flash-latest"
+            "route_id": "kc/x-ai/grok-4.6"
           },
           {
             "reason": "admission:payment_required",
@@ -5838,47 +5043,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/aion-labs/aion-3.5-mini"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/aion-labs/aion-rp-llama-3.1-8b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/amazon/nova-2-lite-v1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/amazon/nova-lite"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/anthropic/claude-fable-5.1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/cohere/command-r-plus-08-2024"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/deepseek/deepseek-chat"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/deepseek/deepseek-chat-v3-0324"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/deepseek/deepseek-v3.1-terminus"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/deepseek/deepseek-v3.2"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/deepseek/deepseek-v3.2-exp"
           },
           {
             "reason": "admission:payment_required",
@@ -5890,19 +5055,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/deepseek/deepseek-v4-flash-vision-exp"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/deepseek/deepseek-v4-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/deepseek/deepseek-v4.1-flash-1017-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/deepseek/deepseek-v4.1-flash-1017-ultrafast"
           },
           {
             "reason": "admission:payment_required",
@@ -5910,35 +5063,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-2.5-pro-preview"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/google/gemini-3-pro-image"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-3-pro-image-preview"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-3.1-flash-image"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-3.1-flash-image-preview"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-3.1-flash-lite"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-3.1-flash-lite-image"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-3.1-flash-lite-preview"
           },
           {
             "reason": "admission:payment_required",
@@ -5950,74 +5075,6 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-3.5-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-3.5-flash-lite"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-3.6-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-3.7-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-3.8-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-4-argon"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-4-carbon"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-4-hydrogen"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-nano-banana-2.1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-omni-1.1-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-omni-1.2-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemini-omni-flash-preview"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemma-2-27b-it"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemma-3-12b-it"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemma-3-27b-it"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemma-3-4b-it"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/google/gemma-4-31b-it"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/google/lyria-3-clip-preview"
           },
           {
@@ -6026,23 +5083,11 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/gryphe/mythomax-l2-13b"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/humansand/ampersand-v0.1"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/ibm-granite/granite-4.2-8b"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/inception/mercury-3"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/inclusionai/ling-3.0-flash"
           },
           {
             "reason": "admission:payment_required",
@@ -6054,35 +5099,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/inclusionai/ling-3.0-flash-vl"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/inclusionai/ling-3.0-tiny"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/inclusionai/ling-3.1-flash"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/inclusionai/ling-3.1-flash-1019"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/inference-net/schematron-v2-small"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/inference-net/schematron-v2-turbo"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/interfaze/interfaze-beta"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/kilo-auto/balanced"
           },
           {
             "reason": "admission:payment_required",
@@ -6090,215 +5107,11 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/kilo-auto/frontier"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/kt/midm-k-3.0-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/liquid/lfm-2.5-24b-a2b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/liquid/lfm-3-1.7b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mancer/weaver"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meituan/longcat-2.0"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/meituan/longcat-2.5"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/meta-llama/llama-3.1-70b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta-llama/llama-3.1-8b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta-llama/llama-3.2-1b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta-llama/llama-3.2-3b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta-llama/llama-3.3-70b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta-llama/llama-4-maverick"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta-llama/llama-4-scout"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta-llama/llama-guard-4-12b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta/muse-ember"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta/muse-glimmer-30b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta/muse-spark-1.1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta/muse-spark-1.2"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta/muse-spark-1.2-contributor"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/meta/muse-spark-1.3"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/mistral-large-2512"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/mistral-large-4-0"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/mistral-medium-3"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/mistral-medium-3-5"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/mistral-medium-3.1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/mistral-nemo"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/mistral-saba"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/mistral-small"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/mistral-small-24b-instruct-2501"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/mistral-small-2603"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/mistral-small-3.2-24b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/mixtral-8x22b-instruct"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mistralai/voxtral-small-24b-2507"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/mixedbread/toast-1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/moondream/moondream3-preview"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/moondream/moondream3.1-9b-a2b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/moonshotai/kimi-k2"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/moonshotai/kimi-k2-0905"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/moonshotai/kimi-k2-thinking"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/moonshotai/kimi-k2.5"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/moonshotai/kimi-k2.7-code-highspeed"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/moonshotai/kimi-k3-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/moonshotai/kimi-k3.1-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/moonshotai/kimi-k3.1-pro-highspeed"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/morph/morph-v3-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/morph/morph-v3-large"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/motif-technologies/motif-3"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/nex-agi/nex-n2.5-mini"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/nex-agi/nex-n2.5-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/nex-agi/nex-n2.6"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/nousresearch/hermes-4-405b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/nvidia/nemotron-3-nano-30b-a3b"
           },
           {
             "reason": "admission:payment_required",
@@ -6307,18 +5120,6 @@
           {
             "reason": "admission:payment_required",
             "route_id": "kilocode/nvidia/nemotron-3-ultra-550b-a55b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/nvidia/nemotron-3.5-content-safety"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/nvidia/nemotron-3.5-lightning"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/nvidia/nemotron-3.5-super-vl"
           },
           {
             "reason": "admission:payment_required",
@@ -6334,59 +5135,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-3.5-turbo-16k"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-4"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-4.1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-4.1-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-4.1-mini"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-4.1-mini-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-4.1-nano"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-4o-2024-05-13"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-5.6-luna-fast"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/openai/gpt-5.6-sol"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-5.6-sol-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-6-astra-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-6-astra-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-6-luna"
           },
           {
             "reason": "admission:payment_required",
@@ -6394,59 +5143,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-6-luna-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-6-sol"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-6-sol-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-6-sol-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-6.1-sol-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-6.1-sol-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-6.1-terra"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-6.1-terra-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-6.1-terra-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-audio"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-audio-mini"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/gpt-chat-latest"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/openai/gpt-oss-safeguard-120b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/o1"
           },
           {
             "reason": "admission:payment_required",
@@ -6454,19 +5151,7 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/o3-fast"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/o3-mini"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/openai/o3-pro"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/openai/o4-mini"
           },
           {
             "reason": "admission:payment_required",
@@ -6494,43 +5179,11 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/paperinstruments/ultramarine-1-flash"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/particle-ai/particle-1"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "kilocode/particle/particle-1"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "kilocode/perceptron/perceptron-mk1"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/perceptron/perceptron-mk1.5"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/perplexity/sonar"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/perplexity/sonar-deep-research"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/qwen/qwen3.8-27b"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "kilocode/~deepseek/deepseek-v4-flash-latest"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "llm7/Inkling-Small"
+            "route_id": "kilocode/x-ai/grok-4.6"
           },
           {
             "reason": "admission:payment_required",
@@ -6538,11 +5191,11 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "llm7/claude-opus-5"
+            "route_id": "llm7/claude-fable-5-2"
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "llm7/claude-opus-5-5"
+            "route_id": "llm7/claude-opus-5"
           },
           {
             "reason": "admission:payment_required",
@@ -6574,10 +5227,6 @@
           },
           {
             "reason": "admission:payment_required",
-            "route_id": "llm7/kimi-k3.1-pro"
-          },
-          {
-            "reason": "admission:payment_required",
             "route_id": "llm7/llama-4-maverick"
           },
           {
@@ -6585,8 +5234,8 @@
             "route_id": "llm7/minimax-m3"
           },
           {
-            "reason": "admission:authentication",
-            "route_id": "lma/mistral-small-2603"
+            "reason": "admission:payment_required",
+            "route_id": "llm7/seed-2.0-mini"
           },
           {
             "reason": "admission:authentication",
@@ -6599,10 +5248,6 @@
           {
             "reason": "admission:payment_required",
             "route_id": "mistral/mistral-medium-3-5"
-          },
-          {
-            "reason": "admission:payment_required",
-            "route_id": "mistral/mistral-small-latest"
           },
           {
             "reason": "admission:payment_required",
@@ -6629,6 +5274,10 @@
             "route_id": "ollamacloud/nemotron-3-super"
           },
           {
+            "reason": "admission:authentication",
+            "route_id": "opencode-zen/beam-free"
+          },
+          {
             "reason": "admission:payment_required",
             "route_id": "opencode-zen/deepseek-v4-pro"
           },
@@ -6649,12 +5298,8 @@
             "route_id": "opencode-zen/kimi-k2.7-code"
           },
           {
-            "reason": "admission:payment_required",
-            "route_id": "opencode-zen/kimi-k3"
-          },
-          {
-            "reason": "admission:permission",
-            "route_id": "openrouter/thinkingmachines/inkling-2-small:free"
+            "reason": "admission:authentication",
+            "route_id": "unc/turboderp/Qwen3.8-27B-exl3"
           }
         ],
         "unqualified_reasons": [
@@ -8308,10 +6953,6 @@
           },
           {
             "reason": "missing_capability:tools",
-            "route_id": "aihorde/Amanatsu (Illustrious)"
-          },
-          {
-            "reason": "missing_capability:tools",
             "route_id": "aihorde/Analog Diffusion"
           },
           {
@@ -8392,10 +7033,6 @@
           },
           {
             "reason": "missing_capability:tools",
-            "route_id": "aihorde/Bubble Hentai Illustrious"
-          },
-          {
-            "reason": "missing_capability:tools",
             "route_id": "aihorde/BweshMix"
           },
           {
@@ -8429,10 +7066,6 @@
           {
             "reason": "missing_capability:tools",
             "route_id": "aihorde/CyriousMix"
-          },
-          {
-            "reason": "missing_capability:tools",
-            "route_id": "aihorde/DaSiWa Illustrious | Anime"
           },
           {
             "reason": "missing_capability:tools",
@@ -8652,10 +7285,6 @@
           },
           {
             "reason": "missing_capability:tools",
-            "route_id": "aihorde/MeinaXL"
-          },
-          {
-            "reason": "missing_capability:tools",
             "route_id": "aihorde/Midjourney PaintArt"
           },
           {
@@ -8716,10 +7345,6 @@
           },
           {
             "reason": "missing_capability:tools",
-            "route_id": "aihorde/One obsession"
-          },
-          {
-            "reason": "missing_capability:tools",
             "route_id": "aihorde/PPP"
           },
           {
@@ -8760,10 +7385,6 @@
           },
           {
             "reason": "missing_capability:tools",
-            "route_id": "aihorde/Prefect illustrious XL"
-          },
-          {
-            "reason": "missing_capability:tools",
             "route_id": "aihorde/Pretty 2.5D"
           },
           {
@@ -8781,18 +7402,6 @@
           {
             "reason": "missing_capability:tools",
             "route_id": "aihorde/RPG"
-          },
-          {
-            "reason": "missing_capability:tools",
-            "route_id": "aihorde/Raehoshi illust XL"
-          },
-          {
-            "reason": "missing_capability:tools",
-            "route_id": "aihorde/Raemu XL"
-          },
-          {
-            "reason": "missing_capability:tools",
-            "route_id": "aihorde/Raena XL"
           },
           {
             "reason": "missing_capability:tools",
@@ -8852,10 +7461,6 @@
           },
           {
             "reason": "missing_capability:tools",
-            "route_id": "aihorde/Sudachi XL (Illustrious)"
-          },
-          {
-            "reason": "missing_capability:tools",
             "route_id": "aihorde/SwamPonyXL"
           },
           {
@@ -8880,10 +7485,6 @@
           },
           {
             "reason": "missing_capability:tools",
-            "route_id": "aihorde/Unholy Desire Mix - Sinister Aesthetic (Illustrious)"
-          },
-          {
-            "reason": "missing_capability:tools",
             "route_id": "aihorde/Unstable Diffusers XL"
           },
           {
@@ -8905,10 +7506,6 @@
           {
             "reason": "missing_capability:tools",
             "route_id": "aihorde/WAI-NSFW-illustrious-SDXL"
-          },
-          {
-            "reason": "missing_capability:tools",
-            "route_id": "aihorde/WAI-SHUFFLE-NOOB"
           },
           {
             "reason": "missing_capability:tools",
@@ -8975,7 +7572,7 @@
             "route_id": "aihorde/waifu_diffusion"
           },
           {
-            "reason": "admission:http_error",
+            "reason": "http_error",
             "route_id": "amazon-q/amazon-q"
           },
           {
@@ -10611,7 +9208,7 @@
             "route_id": "api-airforce/z-image-turbo"
           },
           {
-            "reason": "admission:http_error",
+            "reason": "http_error",
             "route_id": "aq/amazon-q"
           },
           {
@@ -11199,7 +9796,7 @@
             "route_id": "cc/claude-fable-5-2"
           },
           {
-            "reason": "admission:http_error",
+            "reason": "http_error",
             "route_id": "cc/claude-opus-4-5-20251101"
           },
           {
@@ -11361,10 +9958,6 @@
           {
             "reason": "admission:exhausted:rate_limited",
             "route_id": "claude/claude-fable-5-2"
-          },
-          {
-            "reason": "admission:http_error",
-            "route_id": "claude/claude-opus-4-5-20251101"
           },
           {
             "reason": "admission:connection_status:expired",
@@ -11959,12 +10552,16 @@
             "route_id": "freemodel-dev/gpt-6.1-terra"
           },
           {
-            "reason": "admission:http_error",
-            "route_id": "gh/claude-opus-4.8"
+            "reason": "http_error",
+            "route_id": "gh/claude-fable-5.1"
           },
           {
-            "reason": "admission:http_error",
-            "route_id": "github/claude-opus-4.8"
+            "reason": "http_error",
+            "route_id": "gh/claude-haiku-4.5"
+          },
+          {
+            "reason": "http_error",
+            "route_id": "gh/claude-opus-4.8"
           },
           {
             "reason": "missing_capability:tools",
@@ -12032,11 +10629,11 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "hf/CohereLabs/command-a-plus-05-2026-w4a4"
+            "route_id": "hf/CohereLabs/command-a-translate-08-2025"
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "hf/CohereLabs/command-a-translate-08-2025"
+            "route_id": "hf/CohereLabs/command-a-vision-07-2025"
           },
           {
             "reason": "no_agentic_probe",
@@ -12064,15 +10661,11 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "hf/MiniMaxAI/MiniMax-M1-80k"
-          },
-          {
-            "reason": "no_agentic_probe",
             "route_id": "hf/MiniMaxAI/MiniMax-M3.1-Flash"
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "hf/NousResearch/Hermes-3-Llama-3.1-70B"
+            "route_id": "hf/NousResearch/Hermes-4-405B"
           },
           {
             "reason": "no_agentic_probe",
@@ -12105,6 +10698,10 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "hf/Qwen/Qwen3-32B"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "hf/Qwen/Qwen3-Coder-30B-A3B-Instruct"
           },
           {
             "reason": "no_agentic_probe",
@@ -12148,23 +10745,11 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "hf/Qwen/Qwen3.5-9B"
-          },
-          {
-            "reason": "no_agentic_probe",
             "route_id": "hf/Qwen/Qwen3.6-35B-A3B"
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "hf/Qwen/Qwen3.8-2.4T-A95B"
-          },
-          {
-            "reason": "no_agentic_probe",
             "route_id": "hf/Qwen/Qwen3.8-27B"
-          },
-          {
-            "reason": "no_agentic_probe",
-            "route_id": "hf/Qwen/Qwen3.8-Flash-Next-FP8"
           },
           {
             "reason": "no_agentic_probe",
@@ -12185,6 +10770,14 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "hf/XiaomiMiMo/MiMo-V2.5"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "hf/XiaomiMiMo/MiMo-V2.5-Pro"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "hf/XiaomiMiMo/MiMo-V2.6-Flash-RL"
           },
           {
             "reason": "no_agentic_probe",
@@ -12216,6 +10809,10 @@
           },
           {
             "reason": "no_agentic_probe",
+            "route_id": "hf/deepseek-ai/DeepSeek-V3-0324"
+          },
+          {
+            "reason": "no_agentic_probe",
             "route_id": "hf/deepseek-ai/DeepSeek-V3.1"
           },
           {
@@ -12233,10 +10830,6 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "hf/deepseek-ai/DeepSeek-V4-Flash"
-          },
-          {
-            "reason": "no_agentic_probe",
-            "route_id": "hf/deepseek-ai/DeepSeek-V4-Flash-0731"
           },
           {
             "reason": "no_agentic_probe",
@@ -12268,11 +10861,11 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "hf/google/gemma-3-12b-it"
+            "route_id": "hf/google/gemma-3-27b-it"
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "hf/google/gemma-3-27b-it"
+            "route_id": "hf/google/gemma-4-26B-A4B-it"
           },
           {
             "reason": "no_agentic_probe",
@@ -12300,7 +10893,15 @@
           },
           {
             "reason": "no_agentic_probe",
+            "route_id": "hf/inclusionAI/Ling-3.0-tiny"
+          },
+          {
+            "reason": "no_agentic_probe",
             "route_id": "hf/inclusionAI/Ling-3.1-flash"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "hf/meta-llama/Llama-3.1-70B-Instruct"
           },
           {
             "reason": "no_agentic_probe",
@@ -12360,10 +10961,6 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "hf/moonshotai/Kimi-K2-Thinking"
-          },
-          {
-            "reason": "no_agentic_probe",
             "route_id": "hf/moonshotai/Kimi-K2.5"
           },
           {
@@ -12412,6 +11009,10 @@
           },
           {
             "reason": "no_agentic_probe",
+            "route_id": "hf/openai/gpt-oss-safeguard-20b"
+          },
+          {
+            "reason": "no_agentic_probe",
             "route_id": "hf/reflection/Beam-1.0-501B-A23B"
           },
           {
@@ -12451,10 +11052,6 @@
             "route_id": "hf/thinkingmachines/Inkling-2-Small"
           },
           {
-            "reason": "no_agentic_probe",
-            "route_id": "hf/thinkingmachines/Inkling-Small"
-          },
-          {
             "reason": "missing_capability:tools",
             "route_id": "hf/zai-org/AutoGLM-Phone-9B-Multilingual"
           },
@@ -12477,6 +11074,10 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "hf/zai-org/GLM-4.6"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "hf/zai-org/GLM-4.6-FP8"
           },
           {
             "reason": "no_agentic_probe",
@@ -12612,10 +11213,6 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "huggingface/ByteDance-Seed/UI-TARS-1.5-7B"
-          },
-          {
-            "reason": "no_agentic_probe",
             "route_id": "huggingface/CohereLabs/aya-expanse-32b"
           },
           {
@@ -12636,11 +11233,11 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "huggingface/CohereLabs/command-a-plus-05-2026-w4a4"
+            "route_id": "huggingface/CohereLabs/command-a-translate-08-2025"
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "huggingface/CohereLabs/command-a-translate-08-2025"
+            "route_id": "huggingface/CohereLabs/command-a-vision-07-2025"
           },
           {
             "reason": "no_agentic_probe",
@@ -12668,15 +11265,11 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "huggingface/MiniMaxAI/MiniMax-M1-80k"
-          },
-          {
-            "reason": "no_agentic_probe",
             "route_id": "huggingface/MiniMaxAI/MiniMax-M3.1-Flash"
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "huggingface/NousResearch/Hermes-3-Llama-3.1-70B"
+            "route_id": "huggingface/NousResearch/Hermes-4-405B"
           },
           {
             "reason": "no_agentic_probe",
@@ -12709,6 +11302,10 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "huggingface/Qwen/Qwen3-32B"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "huggingface/Qwen/Qwen3-Coder-30B-A3B-Instruct"
           },
           {
             "reason": "no_agentic_probe",
@@ -12752,23 +11349,11 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "huggingface/Qwen/Qwen3.5-9B"
-          },
-          {
-            "reason": "no_agentic_probe",
             "route_id": "huggingface/Qwen/Qwen3.6-35B-A3B"
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "huggingface/Qwen/Qwen3.8-2.4T-A95B"
-          },
-          {
-            "reason": "no_agentic_probe",
             "route_id": "huggingface/Qwen/Qwen3.8-27B"
-          },
-          {
-            "reason": "no_agentic_probe",
-            "route_id": "huggingface/Qwen/Qwen3.8-Flash-Next-FP8"
           },
           {
             "reason": "no_agentic_probe",
@@ -12793,6 +11378,14 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "huggingface/XiaomiMiMo/MiMo-V2.5"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "huggingface/XiaomiMiMo/MiMo-V2.5-Pro"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "huggingface/XiaomiMiMo/MiMo-V2.6-Flash-RL"
           },
           {
             "reason": "no_agentic_probe",
@@ -12836,6 +11429,10 @@
           },
           {
             "reason": "no_agentic_probe",
+            "route_id": "huggingface/deepseek-ai/DeepSeek-V3-0324"
+          },
+          {
+            "reason": "no_agentic_probe",
             "route_id": "huggingface/deepseek-ai/DeepSeek-V3.1"
           },
           {
@@ -12853,10 +11450,6 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "huggingface/deepseek-ai/DeepSeek-V4-Flash"
-          },
-          {
-            "reason": "no_agentic_probe",
-            "route_id": "huggingface/deepseek-ai/DeepSeek-V4-Flash-0731"
           },
           {
             "reason": "no_agentic_probe",
@@ -12888,11 +11481,11 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "huggingface/google/gemma-3-12b-it"
+            "route_id": "huggingface/google/gemma-3-27b-it"
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "huggingface/google/gemma-3-27b-it"
+            "route_id": "huggingface/google/gemma-4-26B-A4B-it"
           },
           {
             "reason": "no_agentic_probe",
@@ -12924,7 +11517,15 @@
           },
           {
             "reason": "no_agentic_probe",
+            "route_id": "huggingface/inclusionAI/Ling-3.0-tiny"
+          },
+          {
+            "reason": "no_agentic_probe",
             "route_id": "huggingface/inclusionAI/Ling-3.1-flash"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "huggingface/meta-llama/Llama-3.1-70B-Instruct"
           },
           {
             "reason": "no_agentic_probe",
@@ -12984,10 +11585,6 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "huggingface/moonshotai/Kimi-K2-Thinking"
-          },
-          {
-            "reason": "no_agentic_probe",
             "route_id": "huggingface/moonshotai/Kimi-K2.5"
           },
           {
@@ -13033,6 +11630,10 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "huggingface/openai/gpt-oss-20b"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "huggingface/openai/gpt-oss-safeguard-20b"
           },
           {
             "reason": "missing_capability:tools",
@@ -13087,10 +11688,6 @@
             "route_id": "huggingface/thinkingmachines/Inkling-2-Small"
           },
           {
-            "reason": "no_agentic_probe",
-            "route_id": "huggingface/thinkingmachines/Inkling-Small"
-          },
-          {
             "reason": "missing_capability:tools",
             "route_id": "huggingface/zai-org/AutoGLM-Phone-9B-Multilingual"
           },
@@ -13113,6 +11710,10 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "huggingface/zai-org/GLM-4.6"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "huggingface/zai-org/GLM-4.6-FP8"
           },
           {
             "reason": "no_agentic_probe",
@@ -13152,6 +11753,10 @@
           },
           {
             "reason": "missing_capability:tools",
+            "route_id": "kc/aion-labs/aion-rp-llama-3.1-8b"
+          },
+          {
+            "reason": "missing_capability:tools",
             "route_id": "kc/anthracite-org/magnum-v4-72b"
           },
           {
@@ -13172,15 +11777,119 @@
           },
           {
             "reason": "missing_capability:tools",
+            "route_id": "kc/google/gemini-3-pro-image-preview"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/google/gemini-3.1-flash-image"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/google/gemini-3.1-flash-image-preview"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/google/gemini-3.1-flash-lite-image"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/google/gemini-omni-1.1-flash"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/google/gemini-omni-1.2-flash"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/google/gemini-omni-flash-preview"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/google/gemma-2-27b-it"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/google/gemma-3-4b-it"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/gryphe/mythomax-l2-13b"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/inference-net/schematron-v2-small"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/inference-net/schematron-v2-turbo"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/mancer/weaver"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/meta-llama/llama-3.2-1b-instruct"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/meta-llama/llama-3.2-3b-instruct"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/meta-llama/llama-guard-4-12b"
+          },
+          {
+            "reason": "missing_capability:tools",
             "route_id": "kc/microsoft/phi-4"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/mistralai/mistral-small-24b-instruct-2501"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/moondream/moondream3-preview"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/moondream/moondream3.1-9b-a2b"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/morph/morph-v3-fast"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/morph/morph-v3-large"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/nex-agi/nex-n2.5-mini"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/nousresearch/hermes-4-405b"
           },
           {
             "reason": "no_agentic_probe",
             "route_id": "kc/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
           },
           {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/nvidia/nemotron-3.5-content-safety"
+          },
+          {
             "reason": "agentic_probe_stale",
             "route_id": "kc/nvidia/nemotron-3.5-super-vl:free"
+          },
+          {
+            "reason": "insufficient_context",
+            "route_id": "kc/openai/gpt-3.5-turbo-16k"
+          },
+          {
+            "reason": "insufficient_context",
+            "route_id": "kc/openai/gpt-4"
           },
           {
             "reason": "missing_capability:tools",
@@ -13197,6 +11906,18 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "kc/particle-ai/particle-1:free"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/perceptron/perceptron-mk1"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/perplexity/sonar"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kc/perplexity/sonar-deep-research"
           },
           {
             "reason": "missing_capability:tools",
@@ -13304,6 +12025,10 @@
           },
           {
             "reason": "missing_capability:tools",
+            "route_id": "kilocode/aion-labs/aion-rp-llama-3.1-8b"
+          },
+          {
+            "reason": "missing_capability:tools",
             "route_id": "kilocode/anthracite-org/magnum-v4-72b"
           },
           {
@@ -13331,12 +12056,104 @@
             "route_id": "kilocode/google/gemini-2.5-flash-image"
           },
           {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/google/gemini-3-pro-image-preview"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/google/gemini-3.1-flash-image"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/google/gemini-3.1-flash-image-preview"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/google/gemini-3.1-flash-lite-image"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/google/gemini-omni-1.1-flash"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/google/gemini-omni-1.2-flash"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/google/gemini-omni-flash-preview"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/google/gemma-2-27b-it"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/google/gemma-3-4b-it"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/gryphe/mythomax-l2-13b"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/inference-net/schematron-v2-small"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/inference-net/schematron-v2-turbo"
+          },
+          {
             "reason": "agentic_probe_stale",
             "route_id": "kilocode/liquid/lfm-3-1.7b:free"
           },
           {
             "reason": "missing_capability:tools",
+            "route_id": "kilocode/mancer/weaver"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/meta-llama/llama-3.2-1b-instruct"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/meta-llama/llama-3.2-3b-instruct"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/meta-llama/llama-guard-4-12b"
+          },
+          {
+            "reason": "missing_capability:tools",
             "route_id": "kilocode/microsoft/phi-4"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/mistralai/mistral-small-24b-instruct-2501"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/moondream/moondream3-preview"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/moondream/moondream3.1-9b-a2b"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/morph/morph-v3-fast"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/morph/morph-v3-large"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/nex-agi/nex-n2.5-mini"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/nousresearch/hermes-4-405b"
           },
           {
             "reason": "no_agentic_probe",
@@ -13347,8 +12164,20 @@
             "route_id": "kilocode/nvidia/nemotron-3-ultra-550b-a55b:free"
           },
           {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/nvidia/nemotron-3.5-content-safety"
+          },
+          {
             "reason": "no_agentic_probe",
             "route_id": "kilocode/nvidia/nemotron-3.5-lightning:free"
+          },
+          {
+            "reason": "insufficient_context",
+            "route_id": "kilocode/openai/gpt-3.5-turbo-16k"
+          },
+          {
+            "reason": "insufficient_context",
+            "route_id": "kilocode/openai/gpt-4"
           },
           {
             "reason": "missing_capability:tools",
@@ -13361,6 +12190,18 @@
           {
             "reason": "missing_capability:tools",
             "route_id": "kilocode/openai/gpt-5.4-image-2"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/perceptron/perceptron-mk1"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/perplexity/sonar"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "kilocode/perplexity/sonar-deep-research"
           },
           {
             "reason": "missing_capability:tools",
@@ -13472,6 +12313,10 @@
           },
           {
             "reason": "no_agentic_probe",
+            "route_id": "llm7/Inkling-Small"
+          },
+          {
+            "reason": "no_agentic_probe",
             "route_id": "llm7/L3-8B-Lunaris-v1-Turbo"
           },
           {
@@ -13516,10 +12361,6 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "llm7/claude-fable-5-2"
-          },
-          {
-            "reason": "no_agentic_probe",
             "route_id": "llm7/claude-haiku-4-5"
           },
           {
@@ -13529,6 +12370,10 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "llm7/claude-opus-4-8"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "llm7/claude-opus-5-5"
           },
           {
             "reason": "no_agentic_probe",
@@ -13544,11 +12389,19 @@
           },
           {
             "reason": "no_agentic_probe",
+            "route_id": "llm7/deepseek-v4-flash-0731-fast"
+          },
+          {
+            "reason": "no_agentic_probe",
             "route_id": "llm7/deepseek-v4-pro"
           },
           {
             "reason": "no_agentic_probe",
             "route_id": "llm7/deepseek-v4.1-flash"
+          },
+          {
+            "reason": "missing_capability:tools",
+            "route_id": "llm7/flux-2-pro"
           },
           {
             "reason": "no_agentic_probe",
@@ -13588,6 +12441,14 @@
           },
           {
             "reason": "no_agentic_probe",
+            "route_id": "llm7/gemma-3-27b"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "llm7/gemma-4-uncensored"
+          },
+          {
+            "reason": "no_agentic_probe",
             "route_id": "llm7/gemma4:31b"
           },
           {
@@ -13620,6 +12481,10 @@
           },
           {
             "reason": "insufficient_context",
+            "route_id": "llm7/gpt-image-2-6-flare"
+          },
+          {
+            "reason": "insufficient_context",
             "route_id": "llm7/gpt-image-2.5"
           },
           {
@@ -13640,6 +12505,10 @@
           },
           {
             "reason": "no_agentic_probe",
+            "route_id": "llm7/grok-imagine-image"
+          },
+          {
+            "reason": "no_agentic_probe",
             "route_id": "llm7/jev-latest"
           },
           {
@@ -13649,6 +12518,10 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "llm7/kimi-k2.7-code"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "llm7/kimi-k3.1-pro"
           },
           {
             "reason": "no_agentic_probe",
@@ -13668,6 +12541,10 @@
           },
           {
             "reason": "no_agentic_probe",
+            "route_id": "llm7/minimax-h3-image"
+          },
+          {
+            "reason": "no_agentic_probe",
             "route_id": "llm7/minimax-m2.7"
           },
           {
@@ -13684,7 +12561,11 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "llm7/seed-2.0-mini"
+            "route_id": "llm7/qwen-image-3"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "llm7/qwen-image-3-pro"
           },
           {
             "reason": "missing_capability:tools",
@@ -13705,6 +12586,10 @@
           {
             "reason": "missing_capability:tools",
             "route_id": "llm7/whisper-large-v3-turbo"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "llm7/z-image-turbo"
           },
           {
             "reason": "no_agentic_probe",
@@ -13845,6 +12730,10 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "lma/mistral-medium-3.5"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "lma/mistral-small-2603"
           },
           {
             "reason": "no_agentic_probe",
@@ -14324,6 +13213,10 @@
           },
           {
             "reason": "no_agentic_probe",
+            "route_id": "mistral/mistral-small-latest"
+          },
+          {
+            "reason": "no_agentic_probe",
             "route_id": "mistral/mistral-vibe-cli-fast"
           },
           {
@@ -14489,10 +13382,6 @@
           {
             "reason": "no_agentic_probe",
             "route_id": "nvidia/gemma-3-4b-it"
-          },
-          {
-            "reason": "timeout",
-            "route_id": "nvidia/google/gemma-4-31b-it"
           },
           {
             "reason": "no_agentic_probe",
@@ -14871,128 +13760,132 @@
             "route_id": "ollamacloud/nemotron-3-ultra"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
+            "route_id": "opencode-go/beam-free"
+          },
+          {
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/claude-haiku-5-5"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/deepseek-v4-pro"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/deepseek-v4.1-flash"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/gemini-4-argon"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/glm-5.2"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/glm-5.3"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/glm-5.3-flash"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/gpt-5.6-luna"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/gpt-6-luna"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/grok-4.7"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/hy3"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/hy4"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
+            "route_id": "opencode-go/hy4-flash-free"
+          },
+          {
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/hy4-preview"
           },
           {
-            "reason": "no_agentic_probe",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/iceman-contributor-free"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/kimi-k2.7-code"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/kimi-k3"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/kimi-k3.1-pro"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/longcat-2.0"
           },
           {
-            "reason": "no_agentic_probe",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/longcat-2.5-free"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/mimo-v2.6-flash"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/mimo-v2.6-pro"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/minimax-m3"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/minimax-m3.1-flash"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/muse-spark-1.2-contributor"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/muse-spark-1.3-contributor"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/qwen3.7-plus"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/qwen3.8-flash"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/qwen3.8-max"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/qwen4-max"
           },
           {
-            "reason": "admission:outside_capacity_filter",
+            "reason": "admission:connection_status:unavailable",
             "route_id": "opencode-go/step-5-preview"
-          },
-          {
-            "reason": "no_agentic_probe",
-            "route_id": "opencode-zen/beam-free"
           },
           {
             "reason": "no_agentic_probe",
@@ -15047,7 +13940,7 @@
             "route_id": "opencode-zen/claude-sonnet-4-5"
           },
           {
-            "reason": "admission:not_found",
+            "reason": "no_agentic_probe",
             "route_id": "opencode-zen/claude-sonnet-4-6"
           },
           {
@@ -15055,7 +13948,7 @@
             "route_id": "opencode-zen/claude-sonnet-5"
           },
           {
-            "reason": "admission:not_found",
+            "reason": "no_agentic_probe",
             "route_id": "opencode-zen/claude-sonnet-5-5"
           },
           {
@@ -15228,6 +14121,10 @@
           },
           {
             "reason": "no_agentic_probe",
+            "route_id": "opencode-zen/kimi-k3"
+          },
+          {
+            "reason": "no_agentic_probe",
             "route_id": "opencode-zen/longcat-2.5-free"
           },
           {
@@ -15379,7 +14276,7 @@
             "route_id": "openrouter/google/lyria-3-clip-preview"
           },
           {
-            "reason": "missing_capability:tools",
+            "reason": "admission:not_found",
             "route_id": "openrouter/google/lyria-3-pro-preview"
           },
           {
@@ -15393,10 +14290,6 @@
           {
             "reason": "missing_capability:tools",
             "route_id": "openrouter/google/veo-3.1-lite"
-          },
-          {
-            "reason": "no_agentic_probe",
-            "route_id": "openrouter/inclusionai/ling-3.2-flash:free"
           },
           {
             "reason": "insufficient_context",
@@ -15509,6 +14402,10 @@
           {
             "reason": "insufficient_context",
             "route_id": "openrouter/runway/gen-4.5"
+          },
+          {
+            "reason": "no_agentic_probe",
+            "route_id": "openrouter/thinkingmachines/inkling-2-small:free"
           },
           {
             "reason": "insufficient_context",
@@ -15876,14 +14773,6 @@
           },
           {
             "reason": "no_agentic_probe",
-            "route_id": "pollinations/community/CloudCompile/nvidia-nemotron-3-ultra-550b-a55b:free"
-          },
-          {
-            "reason": "no_agentic_probe",
-            "route_id": "pollinations/community/YoannDev90/nvidia-mistral-large-4-1t-a52b:free"
-          },
-          {
-            "reason": "no_agentic_probe",
             "route_id": "pollinations/community/YoannDev90/vercel-nemotron-3.5-lightning:free"
           },
           {
@@ -16149,10 +15038,6 @@
           {
             "reason": "insufficient_context",
             "route_id": "pollinations/zimage"
-          },
-          {
-            "reason": "no_agentic_probe",
-            "route_id": "unc/turboderp/Qwen3.8-27B-exl3"
           },
           {
             "reason": "admission:no_connection_evidence",
@@ -16640,7 +15525,6 @@
           "aihorde/AbyssOrangeMix-AfterDark",
           "aihorde/AlbedoBase XL (SDXL)",
           "aihorde/AlbedoBase XL 3.1",
-          "aihorde/Amanatsu (Illustrious)",
           "aihorde/Analog Diffusion",
           "aihorde/Analog Madness",
           "aihorde/Anima-Turbo-v1.1",
@@ -16661,7 +15545,6 @@
           "aihorde/BigASP",
           "aihorde/Blank Canvas XL",
           "aihorde/BlenderMix Pony",
-          "aihorde/Bubble Hentai Illustrious",
           "aihorde/BweshMix",
           "aihorde/CamelliaMix 2.5D",
           "aihorde/Cetus-Mix",
@@ -16671,7 +15554,6 @@
           "aihorde/Counterfeit",
           "aihorde/CyberRealistic Pony",
           "aihorde/CyriousMix",
-          "aihorde/DaSiWa Illustrious | Anime",
           "aihorde/Dan Mumford Style",
           "aihorde/Deliberate",
           "aihorde/Deliberate 3.0",
@@ -16726,7 +15608,6 @@
           "aihorde/MHXL - Aventis Horizon",
           "aihorde/MOSS-Image-SFT",
           "aihorde/MeinaMix",
-          "aihorde/MeinaXL",
           "aihorde/Midjourney PaintArt",
           "aihorde/Mistoon Anime",
           "aihorde/ModernArt Diffusion",
@@ -16742,7 +15623,6 @@
           "aihorde/Nova Flat XL",
           "aihorde/Nova Furry Pony",
           "aihorde/Nova Furry XL",
-          "aihorde/One obsession",
           "aihorde/PPP",
           "aihorde/Pastel Mix",
           "aihorde/Perfect World",
@@ -16753,15 +15633,11 @@
           "aihorde/Pony Diffusion XL",
           "aihorde/Pony Realism",
           "aihorde/Prefect Pony",
-          "aihorde/Prefect illustrious XL",
           "aihorde/Pretty 2.5D",
           "aihorde/Project Unreal Engine 5",
           "aihorde/Quiet Goodnight XL",
           "aihorde/Qwen-Image_fp8",
           "aihorde/RPG",
-          "aihorde/Raehoshi illust XL",
-          "aihorde/Raemu XL",
-          "aihorde/Raena XL",
           "aihorde/Rag Illustrious Mix",
           "aihorde/Real Dos Mix",
           "aihorde/RealBiter",
@@ -16776,21 +15652,18 @@
           "aihorde/Sci-Fi Diffusion",
           "aihorde/Something",
           "aihorde/Stable Cascade 1.0",
-          "aihorde/Sudachi XL (Illustrious)",
           "aihorde/SwamPonyXL",
           "aihorde/TUNIX Pony",
           "aihorde/ToonYou",
           "aihorde/URPM",
           "aihorde/Uhmami",
           "aihorde/Ultraspice",
-          "aihorde/Unholy Desire Mix - Sinister Aesthetic (Illustrious)",
           "aihorde/Unstable Diffusers XL",
           "aihorde/Unstable Ink Dream",
           "aihorde/Vector Art",
           "aihorde/WAI-ANI-NSFW-PONYXL",
           "aihorde/WAI-CUTE Pony",
           "aihorde/WAI-NSFW-illustrious-SDXL",
-          "aihorde/WAI-SHUFFLE-NOOB",
           "aihorde/Western Animation Diffusion",
           "aihorde/White Pony Diffusion 4",
           "aihorde/Woop-Woop Photo",
@@ -17404,7 +16277,6 @@
           "claude/claude-fable-5",
           "claude/claude-fable-5-1",
           "claude/claude-fable-5-2",
-          "claude/claude-opus-4-5-20251101",
           "cline/anthropic/claude-opus-4.8",
           "cline/cline-free/deepseek-v4.1-flash",
           "cline/cline-free/mimo-v2.6-flash",
@@ -17553,8 +16425,9 @@
           "freemodel-dev/gpt-6-sol",
           "freemodel-dev/gpt-6.1-sol",
           "freemodel-dev/gpt-6.1-terra",
+          "gh/claude-fable-5.1",
+          "gh/claude-haiku-4.5",
           "gh/claude-opus-4.8",
-          "github/claude-opus-4.8",
           "groq/allam-2-7b",
           "groq/distil-whisper-large-v3-en",
           "groq/llama-prompt-guard-2-22m",
@@ -17571,17 +16444,16 @@
           "hf/CohereLabs/c4ai-command-r7b-12-2024",
           "hf/CohereLabs/command-a-plus-05-2026-bf16",
           "hf/CohereLabs/command-a-plus-05-2026-fp8",
-          "hf/CohereLabs/command-a-plus-05-2026-w4a4",
           "hf/CohereLabs/command-a-translate-08-2025",
+          "hf/CohereLabs/command-a-vision-07-2025",
           "hf/CohereLabs/tiny-aya-earth",
           "hf/CohereLabs/tiny-aya-fire",
           "hf/CohereLabs/tiny-aya-global",
           "hf/Gryphe/MythoMax-L2-13b",
           "hf/LiquidAI/LFM2.5-24B-A2B",
           "hf/LiquidAI/LFM3-1.7B",
-          "hf/MiniMaxAI/MiniMax-M1-80k",
           "hf/MiniMaxAI/MiniMax-M3.1-Flash",
-          "hf/NousResearch/Hermes-3-Llama-3.1-70B",
+          "hf/NousResearch/Hermes-4-405B",
           "hf/Qwen/Qwen2.5-Coder-32B-Instruct",
           "hf/Qwen/Qwen2.5-VL-72B-Instruct",
           "hf/Qwen/Qwen3-14B",
@@ -17590,6 +16462,7 @@
           "hf/Qwen/Qwen3-30B-A3B",
           "hf/Qwen/Qwen3-30B-A3B-Instruct-2507",
           "hf/Qwen/Qwen3-32B",
+          "hf/Qwen/Qwen3-Coder-30B-A3B-Instruct",
           "hf/Qwen/Qwen3-Coder-480B-A35B-Instruct",
           "hf/Qwen/Qwen3-Coder-Next",
           "hf/Qwen/Qwen3-Next-80B-A3B-Instruct",
@@ -17600,16 +16473,15 @@
           "hf/Qwen/Qwen3.5-27B",
           "hf/Qwen/Qwen3.5-35B-A3B",
           "hf/Qwen/Qwen3.5-397B-A17B",
-          "hf/Qwen/Qwen3.5-9B",
           "hf/Qwen/Qwen3.6-35B-A3B",
-          "hf/Qwen/Qwen3.8-2.4T-A95B",
           "hf/Qwen/Qwen3.8-27B",
-          "hf/Qwen/Qwen3.8-Flash-Next-FP8",
           "hf/RekaAI/reka-edge-2603",
           "hf/Sao10K/L3-8B-Lunaris-v1",
           "hf/Sao10K/L3-8B-Stheno-v3.2",
           "hf/Undi95/ReMM-SLERP-L2-13B",
           "hf/XiaomiMiMo/MiMo-V2.5",
+          "hf/XiaomiMiMo/MiMo-V2.5-Pro",
+          "hf/XiaomiMiMo/MiMo-V2.6-Flash-RL",
           "hf/XiaomiMiMo/MiMo-V2.6-Pro-RL",
           "hf/aisingapore/Gemma-SEA-LION-v4-27B-IT",
           "hf/aisingapore/Nemotron-SEA-LION-v4.8-120B-A12B",
@@ -17617,12 +16489,12 @@
           "hf/alpindale/WizardLM-2-8x22B",
           "hf/anthracite-org/magnum-v4-72b",
           "hf/deepseek-ai/DeepSeek-R1",
+          "hf/deepseek-ai/DeepSeek-V3-0324",
           "hf/deepseek-ai/DeepSeek-V3.1",
           "hf/deepseek-ai/DeepSeek-V3.1-Terminus",
           "hf/deepseek-ai/DeepSeek-V3.2",
           "hf/deepseek-ai/DeepSeek-V3.2-Exp",
           "hf/deepseek-ai/DeepSeek-V4-Flash",
-          "hf/deepseek-ai/DeepSeek-V4-Flash-0731",
           "hf/deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
           "hf/deepseek-ai/DeepSeek-V4-Pro",
           "hf/deepseek-ai/DeepSeek-V4-Pro-0813",
@@ -17630,15 +16502,17 @@
           "hf/deepseek-ai/DeepSeek-V4.1-Flash-1017",
           "hf/dphn/Dolphin-Mistral-24B-Venice-Edition",
           "hf/google/gemma-2-27b-it",
-          "hf/google/gemma-3-12b-it",
           "hf/google/gemma-3-27b-it",
+          "hf/google/gemma-4-26B-A4B-it",
           "hf/google/gemma-4-31B-it",
           "hf/ibm-granite/granite-4.2-30b",
           "hf/ibm-granite/granite-4.2-3b",
           "hf/ibm-granite/granite-4.2-8b",
           "hf/inclusionAI/Ling-3.0-flash",
           "hf/inclusionAI/Ling-3.0-flash-Fin",
+          "hf/inclusionAI/Ling-3.0-tiny",
           "hf/inclusionAI/Ling-3.1-flash",
+          "hf/meta-llama/Llama-3.1-70B-Instruct",
           "hf/meta-llama/Llama-3.2-1B-Instruct",
           "hf/meta-llama/Llama-3.2-3B-Instruct",
           "hf/meta-llama/Llama-3.3-70B-Instruct",
@@ -17653,7 +16527,6 @@
           "hf/moondream/moondream3.1-9B-A2B",
           "hf/moonshotai/Kimi-K2-Instruct",
           "hf/moonshotai/Kimi-K2-Instruct-0905",
-          "hf/moonshotai/Kimi-K2-Thinking",
           "hf/moonshotai/Kimi-K2.5",
           "hf/moonshotai/Kimi-K2.7-Code",
           "hf/moonshotai/Kimi-K3",
@@ -17666,6 +16539,7 @@
           "hf/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
           "hf/openai/gpt-oss-120b",
           "hf/openai/gpt-oss-20b",
+          "hf/openai/gpt-oss-safeguard-20b",
           "hf/reflection/Beam-1.0-501B-A23B",
           "hf/speakleash/Bielik-11B-v3.0-Instruct",
           "hf/stepfun-ai/Step-3.5-Flash",
@@ -17676,13 +16550,13 @@
           "hf/tencent/Hy4-preview",
           "hf/thinkingmachines/Inkling",
           "hf/thinkingmachines/Inkling-2-Small",
-          "hf/thinkingmachines/Inkling-Small",
           "hf/zai-org/AutoGLM-Phone-9B-Multilingual",
           "hf/zai-org/GLM-4.5",
           "hf/zai-org/GLM-4.5-Air",
           "hf/zai-org/GLM-4.5V",
           "hf/zai-org/GLM-4.5V-FP8",
           "hf/zai-org/GLM-4.6",
+          "hf/zai-org/GLM-4.6-FP8",
           "hf/zai-org/GLM-4.6V-FP8",
           "hf/zai-org/GLM-4.6V-Flash",
           "hf/zai-org/GLM-4.7",
@@ -17716,23 +16590,21 @@
           "huggingchat/openai/gpt-oss-20b",
           "huggingchat/stepfun-ai/Step-3.7-Flash",
           "huggingchat/zai-org/GLM-5.2",
-          "huggingface/ByteDance-Seed/UI-TARS-1.5-7B",
           "huggingface/CohereLabs/aya-expanse-32b",
           "huggingface/CohereLabs/aya-vision-32b",
           "huggingface/CohereLabs/c4ai-command-r7b-12-2024",
           "huggingface/CohereLabs/command-a-plus-05-2026-bf16",
           "huggingface/CohereLabs/command-a-plus-05-2026-fp8",
-          "huggingface/CohereLabs/command-a-plus-05-2026-w4a4",
           "huggingface/CohereLabs/command-a-translate-08-2025",
+          "huggingface/CohereLabs/command-a-vision-07-2025",
           "huggingface/CohereLabs/tiny-aya-earth",
           "huggingface/CohereLabs/tiny-aya-fire",
           "huggingface/CohereLabs/tiny-aya-global",
           "huggingface/Gryphe/MythoMax-L2-13b",
           "huggingface/LiquidAI/LFM2.5-24B-A2B",
           "huggingface/LiquidAI/LFM3-1.7B",
-          "huggingface/MiniMaxAI/MiniMax-M1-80k",
           "huggingface/MiniMaxAI/MiniMax-M3.1-Flash",
-          "huggingface/NousResearch/Hermes-3-Llama-3.1-70B",
+          "huggingface/NousResearch/Hermes-4-405B",
           "huggingface/Qwen/Qwen2.5-Coder-32B-Instruct",
           "huggingface/Qwen/Qwen2.5-VL-72B-Instruct",
           "huggingface/Qwen/Qwen3-14B",
@@ -17741,6 +16613,7 @@
           "huggingface/Qwen/Qwen3-30B-A3B",
           "huggingface/Qwen/Qwen3-30B-A3B-Instruct-2507",
           "huggingface/Qwen/Qwen3-32B",
+          "huggingface/Qwen/Qwen3-Coder-30B-A3B-Instruct",
           "huggingface/Qwen/Qwen3-Coder-480B-A35B-Instruct",
           "huggingface/Qwen/Qwen3-Coder-Next",
           "huggingface/Qwen/Qwen3-Next-80B-A3B-Instruct",
@@ -17751,17 +16624,16 @@
           "huggingface/Qwen/Qwen3.5-27B",
           "huggingface/Qwen/Qwen3.5-35B-A3B",
           "huggingface/Qwen/Qwen3.5-397B-A17B",
-          "huggingface/Qwen/Qwen3.5-9B",
           "huggingface/Qwen/Qwen3.6-35B-A3B",
-          "huggingface/Qwen/Qwen3.8-2.4T-A95B",
           "huggingface/Qwen/Qwen3.8-27B",
-          "huggingface/Qwen/Qwen3.8-Flash-Next-FP8",
           "huggingface/RekaAI/reka-edge-2603",
           "huggingface/ResembleAI/chatterbox",
           "huggingface/Sao10K/L3-8B-Lunaris-v1",
           "huggingface/Sao10K/L3-8B-Stheno-v3.2",
           "huggingface/Undi95/ReMM-SLERP-L2-13B",
           "huggingface/XiaomiMiMo/MiMo-V2.5",
+          "huggingface/XiaomiMiMo/MiMo-V2.5-Pro",
+          "huggingface/XiaomiMiMo/MiMo-V2.6-Flash-RL",
           "huggingface/XiaomiMiMo/MiMo-V2.6-Pro-RL",
           "huggingface/aisingapore/Gemma-SEA-LION-v4-27B-IT",
           "huggingface/aisingapore/Nemotron-SEA-LION-v4.8-120B-A12B",
@@ -17772,12 +16644,12 @@
           "huggingface/black-forest-labs/FLUX.1-schnell",
           "huggingface/canopylabs/orpheus-3b-0.1-ft",
           "huggingface/deepseek-ai/DeepSeek-R1",
+          "huggingface/deepseek-ai/DeepSeek-V3-0324",
           "huggingface/deepseek-ai/DeepSeek-V3.1",
           "huggingface/deepseek-ai/DeepSeek-V3.1-Terminus",
           "huggingface/deepseek-ai/DeepSeek-V3.2",
           "huggingface/deepseek-ai/DeepSeek-V3.2-Exp",
           "huggingface/deepseek-ai/DeepSeek-V4-Flash",
-          "huggingface/deepseek-ai/DeepSeek-V4-Flash-0731",
           "huggingface/deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
           "huggingface/deepseek-ai/DeepSeek-V4-Pro",
           "huggingface/deepseek-ai/DeepSeek-V4-Pro-0813",
@@ -17785,8 +16657,8 @@
           "huggingface/deepseek-ai/DeepSeek-V4.1-Flash-1017",
           "huggingface/dphn/Dolphin-Mistral-24B-Venice-Edition",
           "huggingface/google/gemma-2-27b-it",
-          "huggingface/google/gemma-3-12b-it",
           "huggingface/google/gemma-3-27b-it",
+          "huggingface/google/gemma-4-26B-A4B-it",
           "huggingface/google/gemma-4-31B-it",
           "huggingface/hexgrad/Kokoro-82M",
           "huggingface/ibm-granite/granite-4.2-30b",
@@ -17794,7 +16666,9 @@
           "huggingface/ibm-granite/granite-4.2-8b",
           "huggingface/inclusionAI/Ling-3.0-flash",
           "huggingface/inclusionAI/Ling-3.0-flash-Fin",
+          "huggingface/inclusionAI/Ling-3.0-tiny",
           "huggingface/inclusionAI/Ling-3.1-flash",
+          "huggingface/meta-llama/Llama-3.1-70B-Instruct",
           "huggingface/meta-llama/Llama-3.2-1B-Instruct",
           "huggingface/meta-llama/Llama-3.2-3B-Instruct",
           "huggingface/meta-llama/Llama-3.3-70B-Instruct",
@@ -17809,7 +16683,6 @@
           "huggingface/moondream/moondream3.1-9B-A2B",
           "huggingface/moonshotai/Kimi-K2-Instruct",
           "huggingface/moonshotai/Kimi-K2-Instruct-0905",
-          "huggingface/moonshotai/Kimi-K2-Thinking",
           "huggingface/moonshotai/Kimi-K2.5",
           "huggingface/moonshotai/Kimi-K2.7-Code",
           "huggingface/moonshotai/Kimi-K3",
@@ -17822,6 +16695,7 @@
           "huggingface/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
           "huggingface/openai/gpt-oss-120b",
           "huggingface/openai/gpt-oss-20b",
+          "huggingface/openai/gpt-oss-safeguard-20b",
           "huggingface/openai/whisper-large-v3",
           "huggingface/openai/whisper-large-v3-turbo",
           "huggingface/reflection/Beam-1.0-501B-A23B",
@@ -17835,13 +16709,13 @@
           "huggingface/tencent/Hy4-preview",
           "huggingface/thinkingmachines/Inkling",
           "huggingface/thinkingmachines/Inkling-2-Small",
-          "huggingface/thinkingmachines/Inkling-Small",
           "huggingface/zai-org/AutoGLM-Phone-9B-Multilingual",
           "huggingface/zai-org/GLM-4.5",
           "huggingface/zai-org/GLM-4.5-Air",
           "huggingface/zai-org/GLM-4.5V",
           "huggingface/zai-org/GLM-4.5V-FP8",
           "huggingface/zai-org/GLM-4.6",
+          "huggingface/zai-org/GLM-4.6-FP8",
           "huggingface/zai-org/GLM-4.6V-FP8",
           "huggingface/zai-org/GLM-4.6V-Flash",
           "huggingface/zai-org/GLM-4.7",
@@ -17851,18 +16725,48 @@
           "huggingface/zai-org/GLM-5.3",
           "huggingface/zai-org/GLM-5.3-BF16",
           "huggingface/zai-org/GLM-5.3-Flash-BF16",
+          "kc/aion-labs/aion-rp-llama-3.1-8b",
           "kc/anthracite-org/magnum-v4-72b",
           "kc/bytedance/ui-tars-1.5-7b",
           "kc/cognitivecomputations/dolphin-mistral-24b-venice-edition",
           "kc/dots-studio/dots-3-note-preview:free",
           "kc/google/gemini-2.5-flash-image",
+          "kc/google/gemini-3-pro-image-preview",
+          "kc/google/gemini-3.1-flash-image",
+          "kc/google/gemini-3.1-flash-image-preview",
+          "kc/google/gemini-3.1-flash-lite-image",
+          "kc/google/gemini-omni-1.1-flash",
+          "kc/google/gemini-omni-1.2-flash",
+          "kc/google/gemini-omni-flash-preview",
+          "kc/google/gemma-2-27b-it",
+          "kc/google/gemma-3-4b-it",
+          "kc/gryphe/mythomax-l2-13b",
+          "kc/inference-net/schematron-v2-small",
+          "kc/inference-net/schematron-v2-turbo",
+          "kc/mancer/weaver",
+          "kc/meta-llama/llama-3.2-1b-instruct",
+          "kc/meta-llama/llama-3.2-3b-instruct",
+          "kc/meta-llama/llama-guard-4-12b",
           "kc/microsoft/phi-4",
+          "kc/mistralai/mistral-small-24b-instruct-2501",
+          "kc/moondream/moondream3-preview",
+          "kc/moondream/moondream3.1-9b-a2b",
+          "kc/morph/morph-v3-fast",
+          "kc/morph/morph-v3-large",
+          "kc/nex-agi/nex-n2.5-mini",
+          "kc/nousresearch/hermes-4-405b",
           "kc/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+          "kc/nvidia/nemotron-3.5-content-safety",
           "kc/nvidia/nemotron-3.5-super-vl:free",
+          "kc/openai/gpt-3.5-turbo-16k",
+          "kc/openai/gpt-4",
           "kc/openai/gpt-5-image",
           "kc/openai/gpt-5-image-mini",
           "kc/openai/gpt-5.4-image-2",
           "kc/particle-ai/particle-1:free",
+          "kc/perceptron/perceptron-mk1",
+          "kc/perplexity/sonar",
+          "kc/perplexity/sonar-deep-research",
           "kc/perplexity/sonar-pro",
           "kc/perplexity/sonar-pro-search",
           "kc/perplexity/sonar-reasoning-pro",
@@ -17889,6 +16793,7 @@
           "kc/undi95/remm-slerp-l2-13b",
           "kc/writer/palmyra-x5",
           "kc/x-ai/grok-4.20-multi-agent",
+          "kilocode/aion-labs/aion-rp-llama-3.1-8b",
           "kilocode/anthracite-org/magnum-v4-72b",
           "kilocode/baidu/ernie-5.5-flash-preview:free",
           "kilocode/bytedance/ui-tars-1.5-7b",
@@ -17896,14 +16801,43 @@
           "kilocode/cohere/north-mini-code:free",
           "kilocode/dots-studio/dots-3-note-preview:free",
           "kilocode/google/gemini-2.5-flash-image",
+          "kilocode/google/gemini-3-pro-image-preview",
+          "kilocode/google/gemini-3.1-flash-image",
+          "kilocode/google/gemini-3.1-flash-image-preview",
+          "kilocode/google/gemini-3.1-flash-lite-image",
+          "kilocode/google/gemini-omni-1.1-flash",
+          "kilocode/google/gemini-omni-1.2-flash",
+          "kilocode/google/gemini-omni-flash-preview",
+          "kilocode/google/gemma-2-27b-it",
+          "kilocode/google/gemma-3-4b-it",
+          "kilocode/gryphe/mythomax-l2-13b",
+          "kilocode/inference-net/schematron-v2-small",
+          "kilocode/inference-net/schematron-v2-turbo",
           "kilocode/liquid/lfm-3-1.7b:free",
+          "kilocode/mancer/weaver",
+          "kilocode/meta-llama/llama-3.2-1b-instruct",
+          "kilocode/meta-llama/llama-3.2-3b-instruct",
+          "kilocode/meta-llama/llama-guard-4-12b",
           "kilocode/microsoft/phi-4",
+          "kilocode/mistralai/mistral-small-24b-instruct-2501",
+          "kilocode/moondream/moondream3-preview",
+          "kilocode/moondream/moondream3.1-9b-a2b",
+          "kilocode/morph/morph-v3-fast",
+          "kilocode/morph/morph-v3-large",
+          "kilocode/nex-agi/nex-n2.5-mini",
+          "kilocode/nousresearch/hermes-4-405b",
           "kilocode/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
           "kilocode/nvidia/nemotron-3-ultra-550b-a55b:free",
+          "kilocode/nvidia/nemotron-3.5-content-safety",
           "kilocode/nvidia/nemotron-3.5-lightning:free",
+          "kilocode/openai/gpt-3.5-turbo-16k",
+          "kilocode/openai/gpt-4",
           "kilocode/openai/gpt-5-image",
           "kilocode/openai/gpt-5-image-mini",
           "kilocode/openai/gpt-5.4-image-2",
+          "kilocode/perceptron/perceptron-mk1",
+          "kilocode/perplexity/sonar",
+          "kilocode/perplexity/sonar-deep-research",
           "kilocode/perplexity/sonar-pro",
           "kilocode/perplexity/sonar-pro-search",
           "kilocode/perplexity/sonar-reasoning-pro",
@@ -17931,6 +16865,7 @@
           "kilocode/writer/palmyra-x5",
           "kilocode/x-ai/grok-4.20-multi-agent",
           "llm7/DeepSeek-V4-Flash-0731",
+          "llm7/Inkling-Small",
           "llm7/L3-8B-Lunaris-v1-Turbo",
           "llm7/Voxtral-Mini-3B-2507",
           "llm7/Voxtral-Small-24B-2507",
@@ -17942,15 +16877,17 @@
           "llm7/anthropic/claude-sonnet-5-5",
           "llm7/chroma-v.46-flash",
           "llm7/claude-fable-5-1",
-          "llm7/claude-fable-5-2",
           "llm7/claude-haiku-4-5",
           "llm7/claude-haiku-5-5",
           "llm7/claude-opus-4-8",
+          "llm7/claude-opus-5-5",
           "llm7/claude-sonnet-5",
           "llm7/codestral-latest",
           "llm7/dark-beast-krea2",
+          "llm7/deepseek-v4-flash-0731-fast",
           "llm7/deepseek-v4-pro",
           "llm7/deepseek-v4.1-flash",
+          "llm7/flux-2-pro",
           "llm7/gemini-3-flash",
           "llm7/gemini-3.0-pro-image",
           "llm7/gemini-3.1-flash-image",
@@ -17960,6 +16897,8 @@
           "llm7/gemini-4-argon",
           "llm7/gemini-nano-banana-2.1",
           "llm7/gemini-omni-flash",
+          "llm7/gemma-3-27b",
+          "llm7/gemma-4-uncensored",
           "llm7/gemma4:31b",
           "llm7/glm-5.2",
           "llm7/glm-5.3-flash",
@@ -17968,28 +16907,34 @@
           "llm7/gpt-6-sol",
           "llm7/gpt-6.1-sol",
           "llm7/gpt-image-2",
+          "llm7/gpt-image-2-6-flare",
           "llm7/gpt-image-2.5",
           "llm7/gpt-image-2.6",
           "llm7/gpt-oss:120b",
           "llm7/gpt-oss:20b",
           "llm7/grok-4.7",
+          "llm7/grok-imagine-image",
           "llm7/jev-latest",
           "llm7/kimi-k2.6",
           "llm7/kimi-k2.7-code",
+          "llm7/kimi-k3.1-pro",
           "llm7/kling-v3.0-pro",
           "llm7/kling-v3.0-turbo",
           "llm7/mimo-v2.6-flash",
           "llm7/mimo-v2.6-pro",
+          "llm7/minimax-h3-image",
           "llm7/minimax-m2.7",
           "llm7/mistral-Nemo-Instruct-2407",
           "llm7/mistral-Small-24B-Instruct-2501",
           "llm7/muse-spark-open",
-          "llm7/seed-2.0-mini",
+          "llm7/qwen-image-3",
+          "llm7/qwen-image-3-pro",
           "llm7/seedance-2.0",
           "llm7/seedance-2.0-fast",
           "llm7/seedance-2.0-mini",
           "llm7/whisper-large-v3",
           "llm7/whisper-large-v3-turbo",
+          "llm7/z-image-turbo",
           "lma/amazon.nova-pro-v1:0",
           "lma/claude-haiku-4-5-20251001",
           "lma/claude-sonnet-5",
@@ -18025,6 +16970,7 @@
           "lma/minimax-m3",
           "lma/mistral-large-3",
           "lma/mistral-medium-3.5",
+          "lma/mistral-small-2603",
           "lma/nova-2-lite",
           "lma/nvidia-nemotron-3-nano-30b-a3b-bf16",
           "lma/o3-2025-04-16",
@@ -18144,6 +17090,7 @@
           "mistral/mistral-ocr-4-1",
           "mistral/mistral-ocr-latest",
           "mistral/mistral-small-2603",
+          "mistral/mistral-small-latest",
           "mistral/mistral-vibe-cli-fast",
           "mistral/mistral-vibe-cli-latest",
           "mistral/mistral-vibe-cli-with-tools",
@@ -18186,7 +17133,6 @@
           "nvidia/gemma-2b",
           "nvidia/gemma-3-12b-it",
           "nvidia/gemma-3-4b-it",
-          "nvidia/google/gemma-4-31b-it",
           "nvidia/granite-3.0-3b-a800m-instruct",
           "nvidia/granite-3.0-8b-instruct",
           "nvidia/granite-34b-code-instruct",
@@ -18281,6 +17227,7 @@
           "ollamacloud/mistral-large-3:675b",
           "ollamacloud/nemotron-3-nano:30b",
           "ollamacloud/nemotron-3-ultra",
+          "opencode-go/beam-free",
           "opencode-go/claude-haiku-5-5",
           "opencode-go/deepseek-v4-pro",
           "opencode-go/deepseek-v4.1-flash",
@@ -18293,6 +17240,7 @@
           "opencode-go/grok-4.7",
           "opencode-go/hy3",
           "opencode-go/hy4",
+          "opencode-go/hy4-flash-free",
           "opencode-go/hy4-preview",
           "opencode-go/iceman-contributor-free",
           "opencode-go/kimi-k2.7-code",
@@ -18311,7 +17259,6 @@
           "opencode-go/qwen3.8-max",
           "opencode-go/qwen4-max",
           "opencode-go/step-5-preview",
-          "opencode-zen/beam-free",
           "opencode-zen/big-pickle",
           "opencode-zen/claude-fable-5",
           "opencode-zen/claude-fable-5-1",
@@ -18370,6 +17317,7 @@
           "opencode-zen/inkling-2-small-free",
           "opencode-zen/kimi-k2.5",
           "opencode-zen/kimi-k2.6",
+          "opencode-zen/kimi-k3",
           "opencode-zen/longcat-2.5-free",
           "opencode-zen/mimo-v2.6-flash-free",
           "opencode-zen/minimax-m2.5",
@@ -18412,7 +17360,6 @@
           "openrouter/google/veo-3.1",
           "openrouter/google/veo-3.1-fast",
           "openrouter/google/veo-3.1-lite",
-          "openrouter/inclusionai/ling-3.2-flash:free",
           "openrouter/kwaivgi/kling-v3.0-pro",
           "openrouter/kwaivgi/kling-v3.0-std",
           "openrouter/microsoft/mai-image-2.6",
@@ -18441,6 +17388,7 @@
           "openrouter/qwen/qwen3-embedding-4b",
           "openrouter/qwen/qwen3-embedding-8b",
           "openrouter/runway/gen-4.5",
+          "openrouter/thinkingmachines/inkling-2-small:free",
           "openrouter/x-ai/grok-imagine-video-1.5",
           "pol/Catniti/north-mini-code",
           "pol/Lorodn4x/ps5-beta",
@@ -18532,8 +17480,6 @@
           "pollinations/Saauf/gemini-embedding-1",
           "pollinations/Saauf/nemotron-3.5-bolt",
           "pollinations/Saauf/nemotron-3.5-lightning",
-          "pollinations/community/CloudCompile/nvidia-nemotron-3-ultra-550b-a55b:free",
-          "pollinations/community/YoannDev90/nvidia-mistral-large-4-1t-a52b:free",
           "pollinations/community/YoannDev90/vercel-nemotron-3.5-lightning:free",
           "pollinations/community/scriptsnsenses-sys/lucid-origin:free",
           "pollinations/d3",
@@ -18601,7 +17547,6 @@
           "pollinations/xiaotian1171/atrium-soundpost",
           "pollinations/xiaotian1171/atrium-tinyfactory",
           "pollinations/zimage",
-          "unc/turboderp/Qwen3.8-27B-exl3",
           "veo-free/seedance",
           "veo-free/veo",
           "veoaifree-web/seedance",
@@ -18643,7 +17588,7 @@
   "repo_gate_results": [],
   "repo_gates": [
     {
-      "at": "2026-11-17T15:39:57.725893Z",
+      "at": "2026-11-17T20:44:34.860728Z",
       "declared": false,
       "gates": [],
       "node_id": "fix-word-count",
@@ -18661,15 +17606,15 @@
       {
         "attempt": 1,
         "category": "",
-        "duration_seconds": 9.682,
-        "route_id": "opencode-go/hy4-flash-free",
+        "duration_seconds": 9.56,
+        "route_id": "kc/nvidia/nemotron-3-ultra-550b-a55b:free",
         "scope": "none",
         "status": "PASS"
       }
     ],
     "blocking": 0,
     "reviewer": "open-code-review v1.12.9",
-    "route_id": "opencode-go/hy4-flash-free",
+    "route_id": "kc/nvidia/nemotron-3-ultra-550b-a55b:free",
     "status": "PASS"
   },
   "route_identity_summary": {
@@ -18679,8 +17624,8 @@
     "mismatch": 0,
     "unattested": 1
   },
-  "run_id": "20261117T153908Z",
+  "run_id": "20261117T204157Z",
   "schema": "verdict.run-receipt/v1",
-  "started_at": "2026-11-17T15:39:12.205438Z",
+  "started_at": "2026-11-17T20:42:05.461909Z",
   "topology": "PARALLEL_WORK_UNITS"
 }
