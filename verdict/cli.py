@@ -1473,11 +1473,86 @@ def cmd_autodev(
             ],
         }
     else:
-        from verdict.decomposer import DEFAULT_ORCHESTRATOR_MODEL
+        from verdict.autodev_run import _ELIGIBLE_STAGES, _is_premium_reserved, _live_planner_models
+        from verdict.free_tier_admit import normalize_omniroute_origin
+        from verdict.orchestration.contracts import CapacityClass
+        from verdict.orchestration.eligibility_report import build_selector
         from verdict.patch_executor import DEFAULT_BASE_URL
 
-        orchestrator_model = orchestrator_model or DEFAULT_ORCHESTRATOR_MODEL
         base_url = base_url or DEFAULT_BASE_URL
+        gateway = normalize_omniroute_origin(base_url)
+        selector = build_selector(
+            gateway,
+            scope="",
+            prefer="",
+            required_capabilities=frozenset({"reasoning"}),
+            sync_visibility=False,
+        )
+        # No execution-path decision: select planner from live eligibility ladder,
+        # or validate explicit --orchestrator-model against admission.
+        if orchestrator_model is None:
+            try:
+                planners = _live_planner_models(selector, top_n=1)
+            except AutodevError as exc:
+                _report_autodev_failure(str(exc), output_json=output_json)
+                raise SystemExit(1) from exc
+            except Exception as exc:
+                _report_autodev_failure(
+                    f"autodev planner selection could not read the eligibility ladder: "
+                    f"{type(exc).__name__}: {exc}",
+                    output_json=output_json,
+                )
+                raise SystemExit(1) from exc
+            orchestrator_model = planners[0]
+        else:
+            # Validate explicit --orchestrator-model through admission:
+            # must be admitted, have FREE or SUBSCRIPTION capacity, and not be premium-reserved.
+            import datetime
+
+            from verdict.orchestration.contracts import TaskRequirements
+
+            try:
+                _chosen, verdicts = selector.select(
+                    TaskRequirements(
+                        required_capabilities=frozenset({"reasoning"}),
+                        coding=True,
+                        reasoning=True,
+                        frontier_worthy=True,
+                    ),
+                    now=datetime.datetime.now(datetime.timezone.utc),
+                )
+            except Exception as exc:
+                _report_autodev_failure(
+                    f"autodev orchestrator-model validation could not read the eligibility ladder: "
+                    f"{type(exc).__name__}: {exc}",
+                    output_json=output_json,
+                )
+                raise SystemExit(1) from exc
+            # Find the verdict for the requested model
+            model_verdict = None
+            for verdict in verdicts:
+                if str(verdict.route_id) == orchestrator_model:
+                    model_verdict = verdict
+                    break
+            if model_verdict is None:
+                _report_autodev_failure(
+                    f"explicit --orchestrator-model {orchestrator_model!r} not found in live catalog",
+                    output_json=output_json,
+                )
+                raise SystemExit(1)
+            if (
+                getattr(model_verdict.reached, "value", None) not in _ELIGIBLE_STAGES
+                or model_verdict.capacity_class
+                not in (CapacityClass.FREE, CapacityClass.SUBSCRIPTION)
+                or _is_premium_reserved(orchestrator_model)
+            ):
+                _report_autodev_failure(
+                    f"explicit --orchestrator-model {orchestrator_model!r} is not admissible: "
+                    f"stage={getattr(model_verdict.reached, 'value', None)}, "
+                    f"capacity={model_verdict.capacity_class.value}",
+                    output_json=output_json,
+                )
+                raise SystemExit(1)
     repo_path = Path(repo).resolve()
     if not allow_live and not dry_run:
         message = (

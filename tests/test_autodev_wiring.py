@@ -609,6 +609,7 @@ def test_cli_dry_run_plans_without_launch_authority(
 ) -> None:
     import verdict.autodev_run as autodev
     import verdict.cli as cli
+    from verdict.orchestration.contracts import CapacityClass
 
     planner = _decomposer(PLAN)
     monkeypatch.setattr("verdict.decomposer.Decomposer", lambda config: planner)
@@ -618,6 +619,26 @@ def test_cli_dry_run_plans_without_launch_authority(
 
     monkeypatch.setattr(autodev, "_require_launch_decision", forbid_execution)
     monkeypatch.setattr(autodev, "run_autodev", forbid_execution)
+
+    # Mock the eligibility ladder so explicit --orchestrator-model "cheap/model"
+    # passes admission (free capacity, task-eligible, not premium-reserved).
+    class _FakeRouteVerdict:
+        def __init__(self, route_id: str, capacity: CapacityClass) -> None:
+            self.route_id = route_id
+            self.capacity_class = capacity
+            from verdict.orchestration.eligibility import EligibilityStage
+
+            self.reached = EligibilityStage.SELECTED
+
+    class _FakeSelector:
+        def select(self, req: Any, *, now: Any) -> Any:
+            return None, (_FakeRouteVerdict("cheap/model", CapacityClass.FREE),)
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector",
+        lambda gateway, **kwargs: _FakeSelector(),
+    )
+
     cli.cmd_autodev(
         "fix ruff errors",
         str(repo),
@@ -638,6 +659,46 @@ def test_cli_dry_run_plans_without_launch_authority(
         assert "a.py" in output and "b.py" in output
     assert (repo / "a.py").read_text() == "import os\nx = 1\n"
     assert (repo / "b.py").read_text() == "import os\ny = 2\n"
+
+
+def test_cli_dry_run_explicit_orchestrator_model_paid_refused(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Explicit --orchestrator-model that is paid/inadmissible is refused with named error."""
+    import verdict.cli as cli
+    from verdict.orchestration.contracts import CapacityClass
+
+    class _FakeRouteVerdict:
+        def __init__(self, route_id: str, capacity: CapacityClass) -> None:
+            self.route_id = route_id
+            self.capacity_class = capacity
+            from verdict.orchestration.eligibility import EligibilityStage
+
+            self.reached = EligibilityStage.SELECTED
+
+    class _FakeSelector:
+        def select(self, req: Any, *, now: Any) -> Any:
+            # mistral/codestral-latest is metered (cost > 0), so inadmissible as planner
+            return None, (_FakeRouteVerdict("mistral/codestral-latest", CapacityClass.METERED),)
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector",
+        lambda gateway, **kwargs: _FakeSelector(),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.cmd_autodev(
+            "fix ruff errors",
+            str(repo),
+            orchestrator_model="mistral/codestral-latest",
+            executor_model=None,
+            base_url="http://127.0.0.1:20128/v1",
+            dry_run=True,
+            output_json=True,
+        )
+    assert excinfo.value.code == 1
+    output = capsys.readouterr().out
+    assert "not admissible" in output or "capacity" in output
 
 
 @pytest.mark.parametrize("probe_ok", [True, False])
@@ -836,6 +897,7 @@ def test_prepare_live_autodev_selected_probes_top_n_and_keeps_ladder_order(
     import verdict.autodev_run as autodev
 
     # Deliberately out of rank order: rank, not list order, is the ladder.
+    # cc/paid-model is now eligible (SUBSCRIPTION capacity, D22 lifted).
     verdicts = [
         _route_verdict(FREE_B, rank=1, reached=EligibilityStage.SELECTED, reason="selected"),
         _route_verdict("cc/paid-model", rank=2, capacity=CapacityClass.SUBSCRIPTION),
@@ -860,29 +922,33 @@ def test_prepare_live_autodev_selected_probes_top_n_and_keeps_ladder_order(
         "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
     )
 
-    # Only free, task-eligible routes are probed, in rank order.
-    assert probed == [FREE_A, FREE_B]
-    assert dropped == ()  # both probes answered correctly
+    # Free and subscription, task-eligible routes are probed, in rank order.
+    # cc/paid-model (rank 2, SUBSCRIPTION) is now eligible and probed.
+    assert probed == [FREE_A, FREE_B, "cc/paid-model"]
+    assert dropped == ()  # all probes answered correctly
     assert built["prefer"] == ""
     assert built["required_capabilities"] == frozenset({"tools"})
-    assert [item["route_id"] for item in candidates] == [FREE_A, FREE_B]
-    assert len({item["route_id"] for item in candidates}) == 2
+    # Candidates include cc/paid-model (one per family: FREE_A family, FREE_B family, cc family)
+    routes = [item["route_id"] for item in candidates]
+    assert len(routes) == 3
+    assert set(routes) == {FREE_A, FREE_B, "cc/paid-model"}
+    assert len({item["route_id"] for item in candidates}) == 3
     assert all(item["probe_headers"]["x-omniroute-response-cost"] == "0" for item in candidates)
-    assert decision.selected_route.model in {FREE_A, FREE_B}
-    loser = {FREE_A, FREE_B} - {decision.selected_route.model}
+    assert decision.selected_route.model in routes
+    loser = set(routes) - {decision.selected_route.model}
     assert {item.candidate_id for item in decision.rejected} == loser
     assert decision.why_selected.strip()
     assert headers["x-omniroute-response-cost"] == "0"
     assert len(plan.units) == 2
 
 
-def test_prepare_live_autodev_selected_fails_closed_without_free_route(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_live_planner_models_fails_closed_with_one_family(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_live_planner_models fails closed when fewer than two planner families are eligible."""
     import verdict.autodev_run as autodev
 
+    # Only one planner family (claude) is eligible
     verdicts = [
-        _route_verdict("cc/paid-model", rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("cc/claude-sonnet-5", rank=0, capacity=CapacityClass.SUBSCRIPTION),
         _route_verdict(
             "free/dead:free",
             rank=1,
@@ -891,26 +957,54 @@ def test_prepare_live_autodev_selected_fails_closed_without_free_route(
             reason="unhealthy",
         ),
     ]
+
+    class _Selector:
+        def select(self, req, *, now):
+            return None, tuple(verdicts)
+
+    def mock_build_selector(gateway, **kwargs):
+        return _Selector()
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", mock_build_selector
+    )
+
+    with pytest.raises(AutodevError) as excinfo:
+        autodev._live_planner_models(_Selector(), top_n=3)
+
+    message = str(excinfo.value)
+    assert "at least two model families" in message
+
+
+def test_prepare_live_autodev_selected_works_with_two_subscription_families(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With D22 lifted, two subscription routes from different families work as planners and executors."""
+    import verdict.autodev_run as autodev
+
+    # Use model names that map to different families (claude vs gpt)
+    verdicts = [
+        _route_verdict("cc/claude-sonnet-5", rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("cx/gpt-6", rank=1, capacity=CapacityClass.SUBSCRIPTION),
+    ]
     monkeypatch.setattr(
         "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
     )
     probed = _scripted_probe(monkeypatch)
 
-    def forbid_planning(config: Any) -> Any:
-        pytest.fail("without a free route there is nothing to plan")
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
 
-    monkeypatch.setattr(autodev, "Decomposer", forbid_planning)
+    _decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
 
-    with pytest.raises(AutodevError) as excinfo:
-        autodev.prepare_live_autodev_selected(
-            "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
-        )
-
-    message = str(excinfo.value)
-    assert "no paid or frontier fallback" in message
-    assert probed == []
-    assert "cc/" not in message
-    assert "anthropic/" not in message
+    # Both subscription routes from different families are eligible for both planner and executor
+    assert probed == ["cc/claude-sonnet-5", "cx/gpt-6"]
+    assert dropped == ()
+    routes = [item["route_id"] for item in candidates]
+    assert set(routes) == {"cc/claude-sonnet-5", "cx/gpt-6"}
+    assert _decision.selected_route.model in routes
 
 
 def test_prepare_live_autodev_selected_drops_route_that_fails_probe(
@@ -1802,7 +1896,7 @@ def test_run_autodev_failed_repair_still_runs_the_retry_ladder(repo: Path, tmp_p
 def test_prepare_live_autodev_selected_plans_on_live_free_families_only(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """BOD-393: planner candidates come from the live ladder, never cc/*, cx/* or paid."""
+    """BOD-393: planner candidates come from the live ladder; cc/* and cx/* are now eligible (D22 lifted)."""
     import verdict.autodev_run as autodev
 
     verdicts = [
@@ -1840,8 +1934,12 @@ def test_prepare_live_autodev_selected_plans_on_live_free_families_only(
         "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
     )
 
+    # With D22 lifted, cc/* and cx/* pools are eligible.
+    # top_n=3 (default), so we get first 3 from different families:
+    # FREE_A (free, family 1), cc/claude-haiku-5-5 (SUBSCRIPTION, claude family 2),
+    # cx/gpt-6 (SUBSCRIPTION, codex family 3)
     planners = configs[0].planner_models
-    assert planners == (FREE_A, "agy/gemini-x", FREE_B)
+    assert planners == (FREE_A, "cc/claude-haiku-5-5", "cx/gpt-6")
     assert configs[0].model == FREE_A
     assert any(req.reasoning and "reasoning" in req.required_capabilities for req in requirements)
 
@@ -2033,18 +2131,103 @@ def test_prepare_live_autodev_selected_ladder_spans_free_and_subscription_famili
         "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
     )
 
-    # One route per family; cc/*, cx/* (D22) and metered routes are never probed.
+    # One route per family; cc/* and cx/* pools are now eligible (D22 lifted, operator ruling 2026-11-17).
+    # mistral/codestral-latest is metered (cost > 0) so it's dropped.
+    # cc/claude-haiku-5-5 and cx/gpt-6 are SUBSCRIPTION capacity, so they are probed.
+    # With top_n=3 (default), we get 3 candidates: cc/claude-haiku-5-5, cx/gpt-6, antigravity/gemini-3.1-flash-lite
+    # gc/grok-4.5 (rank 6) is not probed because we hit top_n candidates first.
     assert probed == [
         "mistral/codestral-latest",
+        "cc/claude-haiku-5-5",
+        "cx/gpt-6",
         "antigravity/gemini-3.1-flash-lite",
-        "gc/grok-4.5",
     ]
     assert dropped == ({"route_id": "mistral/codestral-latest", "reason": "cost_0.0000051000"},)
     routes = [item["route_id"] for item in candidates]
-    assert routes == ["antigravity/gemini-3.1-flash-lite", "gc/grok-4.5"]
+    # Expected candidates (one per family, in ladder order):
+    # cc/claude-haiku-5-5 (claude family, rank 1), cx/gpt-6 (codex family, rank 2),
+    # antigravity/gemini-3.1-flash-lite (antigravity family, rank 3)
+    assert routes == ["cc/claude-haiku-5-5", "cx/gpt-6", "antigravity/gemini-3.1-flash-lite"]
     assert all(item["selection_reason"].strip() for item in candidates)
     assert all("capacity=subscription" in item["selection_reason"] for item in candidates)
     assert decision.selected_route.model in routes
+
+
+# --- New tests for autodev-live-planner-selection (BOD-342 D22 lifted) ---
+
+
+def _bod406_verdicts_with_cc_cx_eligible() -> list[RouteVerdict]:
+    """Verdicts where cc/* and cx/* pools are eligible (no D22 exclusion)."""
+    return [
+        _route_verdict("cc/claude-haiku-5-5", rank=0, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("cx/gpt-6", rank=1, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict(
+            "antigravity/gemini-3.1-flash-lite", rank=2, capacity=CapacityClass.SUBSCRIPTION
+        ),
+        _route_verdict("antigravity/gemini-3-flash", rank=3, capacity=CapacityClass.SUBSCRIPTION),
+        _route_verdict("gc/grok-4.5", rank=4, capacity=CapacityClass.SUBSCRIPTION),
+    ]
+
+
+def test_prepare_live_autodev_selected_cc_cx_pools_are_eligible(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After D22 lift, cc/* and cx/* pool routes are eligible for planner and executor."""
+    import verdict.autodev_run as autodev
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector",
+        _ladder(_bod406_verdicts_with_cc_cx_eligible()),
+    )
+    _scripted_probe(monkeypatch)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
+
+    _decision, _plan, _headers, candidates, dropped = autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+
+    # cc/* and cx/* routes should now be probed and eligible (not dropped for D22)
+    # They should appear in candidates if they pass probe
+    routes = [item["route_id"] for item in candidates]
+    # At least one of cc/claude-haiku-5-5 or cx/gpt-6 should be in candidates
+    assert any(r.startswith("cc/") or r.startswith("cx/") for r in routes), (
+        f"Expected cc/* or cx/* route in candidates, got {routes}"
+    )
+    # No route should be dropped for D22 exclusion
+    for drop in dropped:
+        assert drop["reason"] != "excluded_pool", f"Route dropped for excluded pool: {drop}"
+
+
+def test_live_planner_models_includes_cc_cx_pools(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_live_planner_models should return cc/* and cx/* routes when they are eligible."""
+    import verdict.autodev_run as autodev
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector",
+        _ladder(_bod406_verdicts_with_cc_cx_eligible()),
+    )
+    # Need to create a real selector for _live_planner_models
+    from verdict.free_tier_admit import normalize_omniroute_origin
+    from verdict.orchestration.eligibility_report import build_selector
+
+    gateway = normalize_omniroute_origin(GATEWAY)
+    selector = build_selector(
+        gateway,
+        scope="",
+        prefer="",
+        required_capabilities=frozenset({"reasoning"}),
+        sync_visibility=False,
+    )
+
+    planners = autodev._live_planner_models(selector, top_n=3)
+
+    # Should include cc/claude-haiku-5-5 and/or cx/gpt-6
+    assert any(p.startswith("cc/") or p.startswith("cx/") for p in planners), (
+        f"Expected cc/* or cx/* in planners, got {planners}"
+    )
+    assert len(planners) >= 2, f"Need at least 2 planners from different families, got {planners}"
 
 
 def test_prepare_live_autodev_selected_probe_bypasses_cache_and_drops_cache_hits(
@@ -2512,7 +2695,7 @@ def test_prepare_live_autodev_selected_stops_at_the_probe_budget(
 def test_prepare_live_autodev_selected_excludes_reserved_pools_in_the_executor_request(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """3.1 The executor ladder request excludes the claude and codex pools."""
+    """3.1 The executor ladder request no longer excludes claude and codex pools (D22 lifted)."""
     import verdict.autodev_run as autodev
 
     verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]
@@ -2531,11 +2714,12 @@ def test_prepare_live_autodev_selected_excludes_reserved_pools_in_the_executor_r
 
     assert len(requirements_seen) >= 1
     req = requirements_seen[0]
-    assert req.exclude_pools == frozenset({"claude", "codex"})
+    # After D22 lift (operator ruling 2026-11-17), no pools are excluded
+    assert req.exclude_pools == frozenset()
 
 
 def test_live_planner_models_excludes_reserved_pools_in_the_planner_request() -> None:
-    """3.2 The planner ladder request excludes the claude and codex pools."""
+    """3.2 The planner ladder request no longer excludes claude and codex pools (D22 lifted)."""
     import verdict.autodev_run as autodev
 
     verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict(FREE_B, rank=1)]
@@ -2550,7 +2734,8 @@ def test_live_planner_models_excludes_reserved_pools_in_the_planner_request() ->
 
     assert len(requirements_seen) == 1
     req = requirements_seen[0]
-    assert req.exclude_pools == frozenset({"claude", "codex"})
+    # After D22 lift (operator ruling 2026-11-17), no pools are excluded
+    assert req.exclude_pools == frozenset()
 
 
 # ── BOD-432: live-probe receipt freshness and named refusals ────────────────

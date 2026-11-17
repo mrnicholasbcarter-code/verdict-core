@@ -2257,10 +2257,6 @@ def prepare_live_autodev(
 #: ``routing_render`` uses for "admitted" (TASK_ELIGIBLE includes the winner).
 _ELIGIBLE_STAGES = frozenset({"TASK_ELIGIBLE", "SELECTED"})
 
-
-#: Credential pools the planner never uses (BOD-342 D22: no cc/* or cx/* work).
-_PLANNER_EXCLUDED_POOLS = frozenset({"claude", "codex"})
-
 #: Probe budget per unpinned selection. Mirrors the eligibility ladder's own
 #: ``max_probes_per_select=8`` in ``verdict/orchestration/eligibility_report.py``.
 _EXECUTOR_PROBE_BUDGET = 8
@@ -2298,19 +2294,16 @@ def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
     reasoning-capable route but not the agentic tool-use proof an executor
     needs (``frontier_worthy`` selects the single-call qualification; the
     capacity filter below still keeps it off paid routes). Only free or
-    prepaid subscription routes outside the D22-excluded pools qualify, and
-    at least two families are required so one provider's outage cannot end
-    planning.
+    prepaid subscription routes qualify, and at least two families are required
+    so one provider's outage cannot end planning.
     """
     from verdict.orchestration.contracts import CapacityClass, TaskRequirements, route_family
-    from verdict.orchestration.credential_pools import pool_of
 
     requirements = TaskRequirements(
         required_capabilities=frozenset({"reasoning"}),
         coding=True,
         reasoning=True,
         frontier_worthy=True,
-        exclude_pools=_PLANNER_EXCLUDED_POOLS,
     )
     try:
         _chosen, verdicts = selector.select(
@@ -2329,7 +2322,6 @@ def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
             getattr(verdict.reached, "value", None) not in _ELIGIBLE_STAGES
             or "/" not in route_id
             or verdict.capacity_class not in (CapacityClass.FREE, CapacityClass.SUBSCRIPTION)
-            or pool_of(route_id) in _PLANNER_EXCLUDED_POOLS
             or _is_premium_reserved(route_id)
             or route_family(route_id) in families
         ):
@@ -2372,7 +2364,6 @@ def prepare_live_autodev_selected(
     from verdict.free_tier_admit import normalize_omniroute_origin
     from verdict.http_safety import open_no_redirect
     from verdict.orchestration.contracts import CapacityClass, TaskRequirements, route_family
-    from verdict.orchestration.credential_pools import pool_of
     from verdict.orchestration.eligibility_report import build_selector
     from verdict.patch_executor import NO_CACHE_HEADERS, extract_content
     from verdict.probes import openai_probe_transport
@@ -2384,7 +2375,6 @@ def prepare_live_autodev_selected(
         coding=True,
         reasoning=False,
         frontier_worthy=False,
-        exclude_pools=_PLANNER_EXCLUDED_POOLS,
     )
     refresh_hook = selection_refresh_hook(gateway)
     extra: dict[str, Any] = {}
@@ -2412,7 +2402,7 @@ def prepare_live_autodev_selected(
     # rank it assigned (lower is better, ``None`` = never ranked).
     ordered = sorted(verdicts, key=lambda item: (item.rank is None, item.rank or 0))
     # BOD-406: free and prepaid subscription routes both cost no marginal cash, so
-    # both qualify; metered routes and the D22 pools never do. One route per model
+    # both qualify; metered routes never do. One route per model
     # family keeps the retry ladder from being two copies of the same model.
     candidates: list[dict[str, Any]] = []
     dropped: list[dict[str, str]] = []
@@ -2432,11 +2422,7 @@ def prepare_live_autodev_selected(
         else:
             continue
         # A concrete route is provider/model, exactly as the pinned path requires.
-        if (
-            reached not in _ELIGIBLE_STAGES
-            or "/" not in route_id
-            or pool_of(route_id) in _PLANNER_EXCLUDED_POOLS
-        ):
+        if reached not in _ELIGIBLE_STAGES or "/" not in route_id:
             continue
         # Before the family dedupe, so a premium route is always named in ``dropped``.
         if _is_premium_reserved(route_id):

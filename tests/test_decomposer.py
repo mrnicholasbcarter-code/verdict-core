@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from tests.test_autodev_wiring import _route_verdict
 from verdict.decomposer import (
     Decomposer,
     DecompositionConfig,
@@ -117,7 +118,9 @@ def test_transport_and_http_failures_surface_as_decomposition_errors() -> None:
         raise ConnectionError("gateway down")
 
     with pytest.raises(DecompositionError, match="transport error"):
-        Decomposer(DecompositionConfig(), transport=failing).decompose("x", repo_root=".")
+        Decomposer(DecompositionConfig(model="free/alpha:free"), transport=failing).decompose(
+            "x", repo_root="."
+        )
 
     with pytest.raises(DecompositionError, match="HTTP 500"):
         _decomposer(json.dumps(TWO_UNITS), status=500).decompose("x", repo_root=".")
@@ -131,7 +134,9 @@ def test_empty_objective_is_rejected_before_any_call() -> None:
         return {"status_code": 200, "body": {}}
 
     with pytest.raises(DecompositionError, match="non-empty string"):
-        Decomposer(DecompositionConfig(), transport=transport).decompose("  ", repo_root=".")
+        Decomposer(DecompositionConfig(model="free/alpha:free"), transport=transport).decompose(
+            "  ", repo_root="."
+        )
     assert calls == []
 
 
@@ -167,13 +172,18 @@ def test_invalid_code_plan_is_replanned_once() -> None:
         content = json.dumps([unit if len(calls) == 1 else valid])
         return {"status_code": 200, "body": {"choices": [{"message": {"content": content}}]}}
 
-    result = Decomposer(transport=transport).decompose("validation", repo_root=".")
-    assert calls == ["mistral/codestral-latest", "mistral/codestral-latest"]
+    config = DecompositionConfig(model="free/alpha:free")
+    result = Decomposer(config, transport=transport).decompose("validation", repo_root=".")
+    assert calls == ["free/alpha:free", "free/alpha:free"]
     assert result.units[0].owned_files == tuple(valid["owned_files"])
     assert result.to_dict()["attempts"][0]["error"]
 
 
-def test_cc_planner_is_refused_and_never_called() -> None:
+# --- New tests for autodev-live-planner-selection (BOD-342 D22 lifted) ---
+
+
+def test_cc_planner_is_no_longer_refused_by_decomposer() -> None:
+    """After D22 lift, cc/* planner routes are no longer refused by Decomposer."""
     calls: list[str] = []
 
     def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
@@ -183,13 +193,104 @@ def test_cc_planner_is_refused_and_never_called() -> None:
             "body": {"choices": [{"message": {"content": json.dumps(TWO_UNITS)}}]},
         }
 
-    for config in (
-        DecompositionConfig(model="cc/claude-opus-5"),
-        DecompositionConfig(model="free/alpha:free", planner_models=("cc/claude-haiku-5-5",)),
-    ):
-        with pytest.raises(DecompositionError, match="cc/\\* planner routes are excluded"):
-            Decomposer(config, transport=transport).decompose("fix", repo_root=".")
-    assert calls == []
+    # cc/* planner should now be accepted (no exclusion error)
+    config = DecompositionConfig(model="cc/claude-opus-5")
+    decomposer = Decomposer(config, transport=transport)
+    result = decomposer.decompose("fix", repo_root=".")
+    assert result.model == "cc/claude-opus-5"
+    assert calls == ["cc/claude-opus-5"]
+
+
+def test_decomposition_config_model_default_is_none() -> None:
+    """DecompositionConfig.model should have no default (no hardcoded paid route)."""
+    config = DecompositionConfig()
+    assert config.model is None
+
+
+def test_live_planner_selection_fails_closed_when_no_eligible_planners() -> None:
+    """When the live ladder has no eligible planners, autodev fails closed with named error."""
+    import verdict.autodev_run as autodev
+    from verdict.orchestration.contracts import CapacityClass
+
+    # Only one family eligible
+    verdicts = [_route_verdict("cc/claude-sonnet-5", rank=0, capacity=CapacityClass.SUBSCRIPTION)]
+
+    class _Selector:
+        def select(self, req: Any, *, now: Any) -> Any:
+            return None, tuple(verdicts)
+
+    with pytest.raises(autodev.AutodevError) as excinfo:
+        autodev._live_planner_models(_Selector(), top_n=3)
+
+    message = str(excinfo.value)
+    assert "at least two model families" in message
+    assert "no paid or frontier fallback" in message
+
+
+def test_live_planner_selection_called_for_dry_run_without_decision() -> None:
+    """Dry run with no execution-path decision calls _live_planner_models."""
+    import verdict.autodev_run as autodev
+    import verdict.cli as cli
+
+    called: dict[str, Any] = {}
+
+    def fake_live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
+        called["top_n"] = top_n
+        return ("free/alpha:free",)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(autodev, "_live_planner_models", fake_live_planner_models)
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector",
+        lambda gateway, **kwargs: type("S", (), {"select": lambda self, req, now: (None, ())})(),
+    )
+
+    # Mock Decomposer to return a valid plan without making HTTP calls
+    from verdict.decomposer import DecompositionResult, TokenUsage
+
+    mock_plan = DecompositionResult(
+        units=(), model="free/alpha:free", usage=TokenUsage(), latency_ms=0
+    )
+
+    def mock_decomposer_init(self: Any, config: Any) -> None:
+        self.config = config
+
+    def mock_decompose(
+        self: Any, objective: str, *, repo_root: str, evidence: str = ""
+    ) -> DecompositionResult:
+        return mock_plan
+
+    class MockDecomposer:
+        def __init__(self, config: Any) -> None:
+            mock_decomposer_init(self, config)
+
+        def decompose(
+            self, objective: str, *, repo_root: str, evidence: str = ""
+        ) -> DecompositionResult:
+            return mock_decompose(self, objective, repo_root=repo_root, evidence=evidence)
+
+    monkeypatch.setattr("verdict.decomposer.Decomposer", MockDecomposer)
+
+    def forbid_execution(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("dry-run must not authorize or execute a worker")
+
+    monkeypatch.setattr(autodev, "_require_launch_decision", forbid_execution)
+    monkeypatch.setattr(autodev, "run_autodev", forbid_execution)
+
+    try:
+        cli.cmd_autodev(
+            "fix ruff errors",
+            "/tmp/opencode/test_dry_run",
+            orchestrator_model=None,
+            executor_model=None,
+            base_url="http://127.0.0.1:20128/v1",
+            dry_run=True,
+            output_json=True,
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert called.get("top_n") == 1
 
 
 def test_code_and_test_split_into_two_units_is_merged_before_rejecting() -> None:
@@ -231,7 +332,8 @@ def test_replan_evidence_includes_a_one_unit_json_example() -> None:
         content = json.dumps([unit if len(prompts) == 1 else valid])
         return {"status_code": 200, "body": {"choices": [{"message": {"content": content}}]}}
 
-    Decomposer(transport=transport).decompose("validation", repo_root=".")
+    config = DecompositionConfig(model="free/alpha:free")
+    Decomposer(config, transport=transport).decompose("validation", repo_root=".")
     assert len(prompts) == 2
     assert '"owned_files"' in prompts[1]
     assert "tests/test_" in prompts[1]
@@ -352,8 +454,9 @@ def test_transient_503_on_the_only_planner_raises_after_one_attempt() -> None:
         calls.append(model_id)
         return {"status_code": 503, "body": {}}
 
+    config = DecompositionConfig(model="free/alpha:free")
     with pytest.raises(DecompositionError, match="HTTP 503") as excinfo:
-        Decomposer(transport=transport).decompose("fix", repo_root=".")
+        Decomposer(config, transport=transport).decompose("fix", repo_root=".")
     # A transient error is not re-sent to the same model and there is no hidden fallback.
-    assert calls == ["mistral/codestral-latest"]
+    assert calls == ["free/alpha:free"]
     assert len(excinfo.value.attempts) == 1
