@@ -21,7 +21,6 @@ Fix it so a held lease skips probes only; routes that are already proven (health
 ### Modified Capabilities
 
 - `shared-selection`: Selection still picks the same first route across surfaces when a lease is held, because proven routes are still admitted and chosen.
-- `shared-qualification`: The coordinator lease no longer blocks admission of routes with fresh proof; only probes and confirmations are skipped. (Admission path already had this behavior on `origin/main`.)
 
 ## Impact
 
