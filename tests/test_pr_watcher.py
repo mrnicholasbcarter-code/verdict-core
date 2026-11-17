@@ -81,22 +81,22 @@ class FakeGitHubClient:
         self.fail_open: dict[str, Exception] = {}
         self.fail_merged: dict[str, Exception] = {}
         self.fail_pr: dict[tuple[str, int], Exception] = {}
-        self.before_rerun: Callable[[], None] | None = None
+        self._before_rerun: Callable[[], None] | None = None
         self.checks_calls: list[str] = []
 
-    def set_open_prs(self, repo: str, prs: list[dict[str, Any]]) -> None:
+    def _set_open_prs(self, repo: str, prs: list[dict[str, Any]]) -> None:
         self._open_prs[repo] = prs
 
-    def set_pr(self, repo: str, pr_number: int, details: dict[str, Any]) -> None:
+    def _set_pr(self, repo: str, pr_number: int, details: dict[str, Any]) -> None:
         self._pr_details[(repo, pr_number)] = details
 
-    def set_checks(self, repo: str, sha: str, checks: list[dict[str, Any]]) -> None:
+    def _set_checks(self, repo: str, sha: str, checks: list[dict[str, Any]]) -> None:
         self._checks[(repo, sha)] = checks
 
-    def set_reviews(self, repo: str, pr_number: int, reviews: list[dict[str, Any]]) -> None:
+    def _set_reviews(self, repo: str, pr_number: int, reviews: list[dict[str, Any]]) -> None:
         self._reviews[(repo, pr_number)] = reviews
 
-    def set_merged_prs(self, repo: str, prs: list[dict[str, Any]]) -> None:
+    def _set_merged_prs(self, repo: str, prs: list[dict[str, Any]]) -> None:
         self._merged_prs[repo] = prs
 
     def list_open_prs(self, repo: str) -> list[dict[str, Any]]:
@@ -126,8 +126,8 @@ class FakeGitHubClient:
         ]
 
     def rerun_check(self, job_id: Any, repo: str) -> dict[str, Any]:
-        if self.before_rerun is not None:
-            self.before_rerun()
+        if self._before_rerun is not None:
+            self._before_rerun()
         self.rerun_calls.append({"job_id": job_id, "repo": repo})
         return {"status": "queued"}
 
@@ -138,19 +138,19 @@ class FakeLinearClient:
     def __init__(self) -> None:
         self.comments: list[dict[str, Any]] = []
         self.attempts: list[str] = []
-        self.before_comment: Callable[[], None] | None = None
+        self._before_comment: Callable[[], None] | None = None
         self._fail_on: set[str] = set()
 
-    def set_fail(self, *issue_ids: str) -> None:
+    def _set_fail(self, *issue_ids: str) -> None:
         self._fail_on.update(issue_ids)
 
-    def clear_fail(self) -> None:
+    def _clear_fail(self) -> None:
         self._fail_on.clear()
 
     def add_comment(self, issue_id: str, body: str) -> dict[str, Any]:
         self.attempts.append(issue_id)
-        if self.before_comment is not None:
-            self.before_comment()
+        if self._before_comment is not None:
+            self._before_comment()
         if issue_id in self._fail_on:
             raise RuntimeError("simulated Linear API failure")
         self.comments.append({"issue_id": issue_id, "body": body})
@@ -227,9 +227,9 @@ def open_pr(
         "merge_state_status": merge_state,
         **extra,
     }
-    gh.set_open_prs(repo, [*gh._open_prs.get(repo, []), pr])
-    gh.set_pr(repo, number, pr)
-    gh.set_checks(repo, head, checks)
+    gh._set_open_prs(repo, [*gh._open_prs.get(repo, []), pr])
+    gh._set_pr(repo, number, pr)
+    gh._set_checks(repo, head, checks)
 
 
 def outcomes(result: dict[str, Any]) -> list[tuple[int, str, str]]:
@@ -372,7 +372,7 @@ class TestExactHeadPolling:
         open_pr(gh, 1, head, [check("lint", "CANCELLED", job_id=101, workflow_run_id=55)])
         first = run_watcher(gh, ws, [REPO], now=T0)
 
-        gh.set_checks(REPO, head, [check("lint", "CANCELLED", job_id=102, workflow_run_id=55)])
+        gh._set_checks(REPO, head, [check("lint", "CANCELLED", job_id=102, workflow_run_id=55)])
         later = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in (1, 2)]
 
         assert outcomes(first) == [(1, "CANCELLED", "RETRY")]
@@ -420,8 +420,8 @@ class TestExactHeadPolling:
         old_head, new_head = "b" * 40, "c" * 40
         open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")])
         open_pr(gh, 2, old_head, [check("lint")])
-        gh.set_pr(REPO, 2, {"number": 2, "head_sha": new_head})
-        gh.set_checks(REPO, new_head, [check("proof-full", "CANCELLED", job_id="job-2")])
+        gh._set_pr(REPO, 2, {"number": 2, "head_sha": new_head})
+        gh._set_checks(REPO, new_head, [check("proof-full", "CANCELLED", job_id="job-2")])
 
         result = run_watcher(gh, ws, [REPO], now=T0)
 
@@ -438,7 +438,7 @@ class TestExactHeadPolling:
         """Catches a rollup for an older commit being classified as the head's result."""
         head = "b" * 40
         open_pr(gh, 3, head, [check("lint", "FAILURE")])
-        gh.set_pr(REPO, 3, {"number": 3, "head_sha": head, "commit_oid": "9" * 40})
+        gh._set_pr(REPO, 3, {"number": 3, "head_sha": head, "commit_oid": "9" * 40})
 
         result = run_watcher(gh, ws, [REPO], now=T0)
 
@@ -453,8 +453,8 @@ class TestExactHeadPolling:
         """Catches the head comparison trusting the checks' commit alone."""
         listed = "b" * 40
         open_pr(gh, 4, listed, [check("lint", "FAILURE")])
-        gh.set_pr(REPO, 4, {"number": 4, "head_sha": "c" * 40, "commit_oid": listed})
-        gh.set_checks(REPO, "c" * 40, [check("lint", "FAILURE")])
+        gh._set_pr(REPO, 4, {"number": 4, "head_sha": "c" * 40, "commit_oid": listed})
+        gh._set_checks(REPO, "c" * 40, [check("lint", "FAILURE")])
 
         result = run_watcher(gh, ws, [REPO], now=T0)
 
@@ -573,8 +573,8 @@ class TestMergedPRReconciliation:
     """Requirement: Merged PR discovery reconciles the open poll."""
 
     def merged(self, gh: FakeGitHubClient, number: int, head: str, *states: str) -> None:
-        gh.set_merged_prs(REPO, [{"number": number, "head_sha": head, "merged_at": MERGED_AT}])
-        gh.set_reviews(REPO, number, [{"state": s, "id": i} for i, s in enumerate(states)])
+        gh._set_merged_prs(REPO, [{"number": number, "head_sha": head, "merged_at": MERGED_AT}])
+        gh._set_reviews(REPO, number, [{"state": s, "id": i} for i, s in enumerate(states)])
 
     def test_changes_requested_review_is_a_regression(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -589,8 +589,8 @@ class TestMergedPRReconciliation:
 
     def reviewed(self, gh: FakeGitHubClient, head: str, *reviews: tuple[str, str, int]) -> None:
         """Merged PR 42 at ``head`` with (state, commit, minute submitted) reviews."""
-        gh.set_merged_prs(REPO, [{"number": 42, "head_sha": head, "merged_at": MERGED_AT}])
-        gh.set_reviews(
+        gh._set_merged_prs(REPO, [{"number": 42, "head_sha": head, "merged_at": MERGED_AT}])
+        gh._set_reviews(
             REPO,
             42,
             [
@@ -659,7 +659,7 @@ class TestMergedPRReconciliation:
     ) -> None:
         """Catches a force-pushed-away review commit being read as the merged head."""
         head = "e" * 40
-        gh.set_merged_prs(REPO, [{"number": 42, "head_sha": head, "merged_at": MERGED_AT}])
+        gh._set_merged_prs(REPO, [{"number": 42, "head_sha": head, "merged_at": MERGED_AT}])
         request = {
             "state": "CHANGES_REQUESTED",
             "commit_oid": None,
@@ -667,9 +667,9 @@ class TestMergedPRReconciliation:
         }
         approval = {"state": "APPROVED", "commit_oid": head, "submitted_at": "2026-03-02T10:30:00Z"}
 
-        gh.set_reviews(REPO, 42, [request, approval])
+        gh._set_reviews(REPO, 42, [request, approval])
         cleared = reconcile_merged_prs(gh, ws, REPO, now=T0)
-        gh.set_reviews(REPO, 42, [request])
+        gh._set_reviews(REPO, 42, [request])
         standing = reconcile_merged_prs(gh, ws, REPO, now=T0)
 
         assert cleared == []
@@ -766,10 +766,10 @@ class TestMergedCursor:
         run_watcher(gh, ws, [REPO], now=T0)
         assert disk(ws)["records"]["regression"] == []
 
-        gh.set_open_prs(REPO, [])
+        gh._set_open_prs(REPO, [])
         merged_at = iso(T0 + timedelta(minutes=2))
-        gh.set_merged_prs(REPO, [{"number": 42, "head_sha": head, "merged_at": merged_at}])
-        gh.set_reviews(REPO, 42, [{"state": "CHANGES_REQUESTED", "id": 7}])
+        gh._set_merged_prs(REPO, [{"number": 42, "head_sha": head, "merged_at": merged_at}])
+        gh._set_reviews(REPO, 42, [{"state": "CHANGES_REQUESTED", "id": 7}])
 
         new_records = []
         for run in (1, 2, 3):
@@ -794,8 +794,8 @@ class TestStableRerunFencing:
 
     def fenced(self, gh: FakeGitHubClient, *checks: dict[str, Any], head: str = "a" * 40) -> None:
         """What the immediate pre-rerun reread will see for PR 42."""
-        gh.set_pr(REPO, 42, {"number": 42, "head_sha": head})
-        gh.set_checks(REPO, head, list(checks))
+        gh._set_pr(REPO, 42, {"number": 42, "head_sha": head})
+        gh._set_checks(REPO, head, list(checks))
 
     def test_changed_head_aborts_without_a_rerun_or_a_spent_attempt(
         self, gh: FakeGitHubClient, ws: WatcherState
@@ -846,7 +846,7 @@ class TestStableRerunFencing:
         """Catches the fence accepting a same-named check that belongs to a different commit."""
         head = "a" * 40
         self.fenced(gh, check("lint", "CANCELLED", job_id="job-1"))
-        gh.set_pr(REPO, 42, {"number": 42, "head_sha": head, "commit_oid": "9" * 40})
+        gh._set_pr(REPO, 42, {"number": 42, "head_sha": head, "commit_oid": "9" * 40})
 
         result = request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-1", max_attempts=3)
 
@@ -881,7 +881,7 @@ class TestStableRerunFencing:
             nonlocal reads
             reads += 1
             if reads == 2:
-                gh.set_checks(REPO, head, [check("lint", "SUCCESS", job_id="job-1")])
+                gh._set_checks(REPO, head, [check("lint", "SUCCESS", job_id="job-1")])
             return original(repo, pr_number)
 
         gh.get_pr = get_pr
@@ -899,7 +899,7 @@ class TestStableRerunFencing:
         head = "a" * 40
         self.fenced(gh, check("Analyze (python)", "CANCELLED", job_id="job-1"))
         seen: list[dict[str, int]] = []
-        gh.before_rerun = lambda: seen.append(disk(ws)["rerun_attempts"])
+        gh._before_rerun = lambda: seen.append(disk(ws)["rerun_attempts"])
 
         result = request_bounded_rerun(gh, ws, REPO, 42, head, "Analyze (python)", "job-1")
 
@@ -934,8 +934,8 @@ class TestStableRerunFencing:
             check("lint", "CANCELLED", job_id="job-2"),
             check("test (3.11)", "CANCELLED", job_id="job-1"),
         )
-        gh.set_pr(REPO, 43, {"number": 43, "head_sha": "b" * 40})
-        gh.set_checks(REPO, "b" * 40, [check("lint", "CANCELLED", job_id="job-1")])
+        gh._set_pr(REPO, 43, {"number": 43, "head_sha": "b" * 40})
+        gh._set_checks(REPO, "b" * 40, [check("lint", "CANCELLED", job_id="job-1")])
 
         request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-1")
         request_bounded_rerun(gh, ws, REPO, 42, head, "lint", "job-2")
@@ -980,7 +980,7 @@ class TestStableRerunFencing:
         run_watcher(gh, ws, [REPO], now=T0)
         run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
 
-        gh.set_open_prs(REPO, [])
+        gh._set_open_prs(REPO, [])
         open_pr(gh, 1, "b" * 40, [check("lint", "CANCELLED", job_id="job-2")])
         result = run_watcher(gh, ws, [REPO], now=T0 + 2 * RUN_INTERVAL)
 
@@ -1212,8 +1212,11 @@ class TestRealCheckNames:
 # ============================================================================
 
 
+# The check is an allow-list: every public callable outside the protocol is
+# refused, so these include names no prefix rule would have caught.
 GITHUB_MUTATIONS = (
     "merge",
+    "merge_pull_request",
     "push",
     "create_branch",
     "delete_branch",
@@ -1225,6 +1228,18 @@ GITHUB_MUTATIONS = (
     "write_file",
     "create_pull_request",
     "delete_repository",
+    "rerun_workflow",
+    "dispatch_workflow",
+    "approve",
+    "delete_ref",
+    "create_ref",
+    "create_commit_status",
+    "create_issue_comment",
+    "enable_auto_merge",
+    "cancel_workflow_run",
+    "set_labels",
+    "fail_job",
+    "before_merge",
 )
 LINEAR_MUTATIONS = (
     "create_issue",
@@ -1233,6 +1248,11 @@ LINEAR_MUTATIONS = (
     "create_branch",
     "push",
     "merge",
+    "archive_issue",
+    "assign_issue",
+    "set_state",
+    "issue_update",
+    "remove_comment",
 )
 
 
@@ -1449,9 +1469,9 @@ class TestRepositoryIsolation:
         def reject() -> None:
             raise GitHubClientError("HTTP 403 from GitHub")
 
-        gh.before_rerun = reject
+        gh._before_rerun = reject
         first = run_watcher(gh, ws, [REPO], now=T0)
-        gh.before_rerun = None
+        gh._before_rerun = None
         second = run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
 
         assert first["ok"] is False
@@ -1568,7 +1588,7 @@ class TestCodeAndMergeFailures:
         open_pr(gh, 1, head, [])
         first = run_watcher(gh, ws, [REPO], now=T0)
 
-        gh.set_checks(REPO, head, [check("lint", "FAILURE", job_id=22)])
+        gh._set_checks(REPO, head, [check("lint", "FAILURE", job_id=22)])
         later = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in (1, 2)]
 
         assert [(r["classification"], r["failing_checks"]) for r in first["records"]] == [
@@ -1777,8 +1797,8 @@ class TestTransitionNotifications:
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
         """Catches a regression notification repeated on every run that re-lists the PR."""
-        gh.set_merged_prs(REPO, [{"number": 9, "head_sha": "e" * 40, "merged_at": MERGED_AT}])
-        gh.set_reviews(REPO, 9, [{"state": "CHANGES_REQUESTED", "id": 1}])
+        gh._set_merged_prs(REPO, [{"number": 9, "head_sha": "e" * 40, "merged_at": MERGED_AT}])
+        gh._set_reviews(REPO, 9, [{"state": "CHANGES_REQUESTED", "id": 1}])
 
         runs = [run_watcher(gh, ws, [REPO], now=T0 + n * timedelta(minutes=1)) for n in range(3)]
 
@@ -1792,7 +1812,7 @@ class TestTransitionNotifications:
         open_pr(gh, 3, "1" * 40, [check("lint", "FAILURE")])
         first = run_watcher(gh, ws, [REPO], now=T0)
 
-        gh.set_open_prs(REPO, [])
+        gh._set_open_prs(REPO, [])
         open_pr(gh, 3, "2" * 40, [check("lint", "FAILURE")])
         second = run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
 
@@ -1853,7 +1873,7 @@ class TestTransitionNotifications:
         """Catches a comment sent before the digest and Linear events are durable."""
         open_pr(gh, 8, "8" * 40, [check("lint", "FAILURE")], linear_issue="ENG-102")
         seen: list[dict[str, Any]] = []
-        linear.before_comment = lambda: seen.append(disk(ws))
+        linear._before_comment = lambda: seen.append(disk(ws))
 
         result = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
 
@@ -1975,7 +1995,7 @@ class TestFailedLinearRetry:
     ) -> None:
         """Catches a failed comment being dropped, or re-sent after it finally lands."""
         open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")], linear_issue="ENG-7")
-        linear.set_fail("ENG-7")
+        linear._set_fail("ENG-7")
 
         run_watcher(gh, ws, [REPO], linear=linear, now=T0)
         run_watcher(gh, ws, [REPO], linear=linear, now=T0 + RUN_INTERVAL)
@@ -1983,7 +2003,7 @@ class TestFailedLinearRetry:
         assert [(e["linear_issue_id"], e["retry_count"]) for e in pending] == [("ENG-7", 2)]
         assert linear.comments == []
 
-        linear.clear_fail()
+        linear._clear_fail()
         for n in (2, 3, 4):
             run_watcher(gh, ws, [REPO], linear=linear, now=T0 + n * RUN_INTERVAL)
 
@@ -1996,7 +2016,7 @@ class TestFailedLinearRetry:
     ) -> None:
         """Catches unbounded retries, and an exhausted event vanishing from state."""
         open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")], linear_issue="ENG-7")
-        linear.set_fail("ENG-7")
+        linear._set_fail("ENG-7")
 
         results = [
             run_watcher(gh, ws, [REPO], linear=linear, now=T0 + n * RUN_INTERVAL) for n in range(8)
@@ -2010,7 +2030,7 @@ class TestFailedLinearRetry:
     def test_deliver_reports_sent_and_remaining_separately(self) -> None:
         """Catches a delivered event being left queued, or a failed one being lost."""
         linear = FakeLinearClient()
-        linear.set_fail("ENG-2")
+        linear._set_fail("ENG-2")
         events = [
             build_linear_event("ENG-1", digest_event("new_failure", 1)),
             build_linear_event("ENG-2", digest_event("new_failure", 2)),
@@ -2112,7 +2132,7 @@ class TestStateBeforeSideEffects:
         head = "a" * 40
         open_pr(gh, 42, head, [check("proof-full", "CANCELLED", job_id="job-1")])
         seen: list[dict[str, Any]] = []
-        gh.before_rerun = lambda: seen.append(disk(ws))
+        gh._before_rerun = lambda: seen.append(disk(ws))
 
         run_watcher(gh, ws, [REPO], now=T0)
 
@@ -2132,13 +2152,13 @@ class TestStateBeforeSideEffects:
         def die() -> None:
             raise Killed
 
-        gh.before_rerun = die
+        gh._before_rerun = die
         with pytest.raises(Killed):
             run_watcher(gh, ws, [REPO], now=T0)
         assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr42:{head}:proof-full:job-1": 1}
         assert gh.rerun_calls == []
 
-        gh.before_rerun = None
+        gh._before_rerun = None
         later = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in (1, 2, 3)]
 
         assert gh.rerun_calls == []
@@ -2186,8 +2206,8 @@ class TestDisagreeingEvidence:
     ) -> None:
         """Catches an APPROVED review overriding a recorded Verdict/ocr fail."""
         head = "d" * 40
-        gh.set_merged_prs(REPO, [{"number": 99, "head_sha": head, "merged_at": MERGED_AT}])
-        gh.set_reviews(REPO, 99, [{"state": "APPROVED", "id": 1}])
+        gh._set_merged_prs(REPO, [{"number": 99, "head_sha": head, "merged_at": MERGED_AT}])
+        gh._set_reviews(REPO, 99, [{"state": "APPROVED", "id": 1}])
         receipts = {f"{REPO}:99:{head}": {"status": "FAIL"}}
 
         result = run_watcher(gh, ws, [REPO], verdict_fail_receipts=receipts, now=T0)

@@ -45,34 +45,22 @@ class WatcherGitHubClient(Protocol):
 # --- Capability verification -----------------------------------------------------
 
 _ALLOWED_METHODS = frozenset({"list_open_prs", "get_pr", "list_merged_prs", "rerun_check"})
-_MUTATION_PREFIXES = (
-    "merge",
-    "push",
-    "create_branch",
-    "delete_branch",
-    "edit",
-    "force_push",
-    "commit",
-    "apply_patch",
-    "write",
-    "close",
-    "add_",
-    "update_",
-    "remove_",
-    "checkout",
-    "create_pull_request",
-    "delete_repository",
-)
+
+
+def public_callables(client: object) -> set[str]:
+    """Every public callable a client exposes, whatever its name."""
+    return {m for m in dir(client) if not m.startswith("_") and callable(getattr(client, m))}
 
 
 def assert_no_mutation(client: WatcherGitHubClient) -> None:
-    """Raise TypeError if the client exposes any forbidden mutation method."""
-    methods = {m for m in dir(client) if not m.startswith("_") and callable(getattr(client, m))}
-    helpers = {m for m in methods if m.startswith(("set_", "fail_", "before_"))}
-    mutations = {m for m in methods if m.startswith(_MUTATION_PREFIXES)}
-    bad = mutations - helpers
+    """Raise TypeError if the client exposes any public callable outside the allow-list.
+
+    An allow-list, not a deny-list: a method the watcher does not need is
+    refused whatever it is called.
+    """
+    bad = public_callables(client) - _ALLOWED_METHODS
     if bad:
-        raise TypeError(f"Watcher client exposes mutation methods: {bad}")
+        raise TypeError(f"Watcher client exposes methods outside its allow-list: {sorted(bad)}")
 
 
 # --- Linear story link -----------------------------------------------------------

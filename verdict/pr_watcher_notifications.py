@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from verdict.pr_watcher_github import public_callables
 from verdict.pr_watcher_state import MAX_LINEAR_RETRY
 
 
@@ -18,6 +19,9 @@ class LinearClient(Protocol):
     """Minimal Linear client: only add_comment is exposed."""
 
     def add_comment(self, issue_id: str, body: str) -> dict[str, Any]: ...
+
+
+_ALLOWED_LINEAR_METHODS = frozenset({"add_comment"})
 
 
 # --- Transition detector ----------------------------------------------------------
@@ -114,14 +118,9 @@ def _format_linear_body(event: dict[str, Any]) -> str:
 
 
 def assert_no_mutation(linear: LinearClient) -> None:
-    """Raise TypeError if the Linear client exposes forbidden methods."""
-    methods = {m for m in dir(linear) if not m.startswith("_") and callable(getattr(linear, m))}
-    helpers = {m for m in methods if m.startswith(("set_", "fail_", "before_"))}
-    mutations = {
-        m
-        for m in methods
-        if m.startswith(("create_", "update_", "delete_", "merge", "push", "close", "add_label"))
-    }
-    bad = mutations - helpers
+    """Raise TypeError if the Linear client exposes anything but ``add_comment``."""
+    bad = public_callables(linear) - _ALLOWED_LINEAR_METHODS
     if bad:
-        raise TypeError(f"Watcher Linear client exposes mutation methods: {bad}")
+        raise TypeError(
+            f"Watcher Linear client exposes methods outside its allow-list: {sorted(bad)}"
+        )
