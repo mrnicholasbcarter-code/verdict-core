@@ -255,7 +255,6 @@ def _warm_cache(
     del gateway
     from verdict.identify_service import (
         PASSIVE_INTERVAL_SECONDS,
-        SCREEN_CALENDAR,
         SCREEN_CAPACITY,
         SCREEN_MAX_PER_PROVIDER,
         SCREEN_MAX_ROUTES,
@@ -268,13 +267,13 @@ def _warm_cache(
     choice = _choice(tui, reader, "5 / Identify maintenance", current, "on", ["off", "on"])
     tui.console.print(
         Text(
-            f"Enables: passive reports and bounded daily missing-proof screening. Current timer state: {current}."
+            f"Enables: passive reports and bounded six-hourly missing-proof screening. Current timer state: {current}."
         )
     )
     tui.console.print(
         Text(
             f"'on' installs a {PASSIVE_INTERVAL_SECONDS // 3600}h passive timer (0 model calls) "
-            f"and {SCREEN_CALENDAR} screen: {SCREEN_CAPACITY}; {SCREEN_MAX_PER_PROVIDER}/provider, "
+            f"and a screen every 6 hours: {SCREEN_CAPACITY}; {SCREEN_MAX_PER_PROVIDER}/provider, "
             f"{SCREEN_MAX_ROUTES} routes maximum."
         )
     )

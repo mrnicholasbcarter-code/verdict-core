@@ -613,7 +613,7 @@ Network probes require the explicit `--allow-live-probe` consent flag.
 verdict identify --passive --json                 # read-only; zero model calls
 verdict identify --passive --json --save-report   # also writes $VERDICT_HOME/identify-latest.json (0600)
 verdict identify --screen --allow-live-probe --max-per-provider 1 --max-routes 8 --json
-verdict identify install-service [--dry-run]      # passive and daily screen timers
+verdict identify install-service [--dry-run]      # passive and six-hourly screen timers
 ```
 
 Passive mode makes at most seven bounded GETs to OmniRoute and no POST, write or

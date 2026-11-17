@@ -357,7 +357,7 @@ _ACTIONS: dict[str, dict[str, str]] = {
     IDENTIFY: {
         "description": "Install the passive identify and bounded screen identify timers.",
         "security_impact": (
-            "Writes four systemd user units; the daily screen runs bounded live probes "
+            "Writes four systemd user units; the six-hourly screen runs bounded live probes "
             "(free and subscription capacity only)."
         ),
         "postcondition": "verdict-identify.timer and verdict-identify-screen.timer are active.",
