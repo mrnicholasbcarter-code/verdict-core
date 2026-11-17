@@ -3417,6 +3417,7 @@ def main() -> None:
         parsers_credentials,
         parsers_harness,
         parsers_identify,
+        parsers_ladder,
         parsers_models,
         parsers_openspec,
         parsers_outcome,
@@ -3434,6 +3435,7 @@ def main() -> None:
         parsers_runtime,
         parsers_models,
         parsers_openspec,
+        parsers_ladder,
     ):
         registrar.register(subparsers)
     # Direct calls (not through the tuple-driven loop above) so the static

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from verdict.harness_claude import DEFAULT_BASE_URL as CLAUDE_HARNESS_DEFAULT_BASE_URL
@@ -192,6 +193,145 @@ def _cmd_demo(args: argparse.Namespace) -> None:
         print(claims_text, end="")
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+def _cmd_ladder(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Handle ``verdict ladder`` CLI command (T3: Slice 1).
+
+    Read-only ladder builder for the planner role. Prints LadderResult
+    and shadow event. Exits non-zero on FAIL_CLOSED.
+    """
+    import sys
+
+    from verdict.admission import admit, default_runtime_evidence
+    from verdict.metadata.mapping import load_identity_map
+    from verdict.metadata.store import load_store
+    from verdict.orchestration.run import fetch_connections, fetch_inventory
+    from verdict.role_ladder_event import build_shadow_event
+    from verdict.role_selection import LadderStatus, OpenQuotaView, Role, build_ladder
+
+    role = Role(args.role)
+    if role != Role.PLANNER:
+        parser.error(f"Role {role.value} not enabled in Slice 1")
+
+    # Load inventory fixture or live
+    if args.inventory_fixture:
+        import json
+
+        with open(args.inventory_fixture) as f:
+            fixture = json.load(f)
+        inventory_rows = fixture.get("inventory", [])
+        connections = fixture.get("connections", [])
+    else:
+        # Live mode - read from gateway (requires gateway config)
+        # For T3, we'll use a simple approach with environment
+        gateway = os.environ.get("VERDICT_GATEWAY", "http://localhost:8080")
+        api_key = os.environ.get("VERDICT_API_KEY")
+        try:
+            inventory_rows = fetch_inventory(gateway, api_key=api_key, timeout=30)
+            connections = fetch_connections(gateway, api_key=api_key, timeout=30)
+        except Exception as e:
+            print(f"error: failed to fetch live inventory: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Load metadata snapshot and identity map
+    try:
+        metadata_snapshot = load_store()
+        identity_map = load_identity_map()
+    except Exception:
+        metadata_snapshot = None
+        identity_map = None
+
+    # Build admitted set
+    now = datetime.now(timezone.utc)
+    runtime_evidence = default_runtime_evidence(now=now)
+    admitted = admit(inventory_rows, connections, runtime_evidence, now=now)
+
+    # Build ladder
+    ladder_result = build_ladder(
+        role=role,
+        admitted=admitted,
+        inventory_rows=inventory_rows,
+        connections=connections,
+        signals=None,  # T3: no signals
+        quota_view=OpenQuotaView(),
+        clock=now,
+        metadata_snapshot=metadata_snapshot,
+        identity_map=identity_map,
+    )
+
+    # Build shadow event
+    admitted_set = sorted(list(admitted.ids))
+    shadow_event = build_shadow_event(
+        ladder_result,
+        role,
+        node_id=args.node_id,
+        run_id=args.run_id,
+        correlation_id=args.correlation_id,
+        mode=args.mode,
+        admitted_set=admitted_set,
+    )
+
+    # Output
+    if args.json:
+        output = {
+            "ladder_result": {
+                "status": ladder_result.status.value,
+                "reason": ladder_result.reason,
+                "ordered_routes": list(ladder_result.ordered_routes),
+                "skips": [
+                    {"route_id": s.route_id, "stage": s.stage, "reason": s.reason}
+                    for s in ladder_result.skips
+                ],
+                "h0_inventory": ladder_result.h0_inventory,
+                "h1_admitted": ladder_result.h1_admitted,
+                "h2_narrowed": ladder_result.h2_narrowed,
+                "h3_ordered": ladder_result.h3_ordered,
+                "route_scores": [
+                    {
+                        "route_id": rs.route_id,
+                        "external_strength": rs.external_strength,
+                        "strength_source": rs.strength_source,
+                        "strength_age_s": rs.strength_age_s,
+                        "reliability_lb": rs.reliability_lb,
+                        "n": rs.n,
+                        "confidence": rs.confidence,
+                        "capacity_class": rs.capacity_class.value,
+                        "capacity_confidence": rs.capacity_confidence,
+                        "capacity_evidence": rs.capacity_evidence,
+                        "pool": rs.pool,
+                        "quota_status": rs.quota_status,
+                        "exploration": rs.exploration,
+                    }
+                    for rs in ladder_result.route_scores
+                ],
+                "legacy_pick": ladder_result.legacy_pick,
+                "dynamic_pick": ladder_result.dynamic_pick,
+                "agree": ladder_result.agree,
+                "signals_digest": ladder_result.signals_digest,
+                "metadata_fixture": ladder_result.metadata_fixture,
+            },
+            "shadow_event": json.loads(shadow_event.to_json()),
+        }
+        print(json.dumps(output, indent=2, sort_keys=True))
+    else:
+        # Human-readable output
+        print(f"Role: {role.value}")
+        print(f"Status: {ladder_result.status.value}")
+        if ladder_result.reason:
+            print(f"Reason: {ladder_result.reason}")
+        print(f"Ordered routes: {list(ladder_result.ordered_routes)}")
+        print(f"H0: {ladder_result.h0_inventory[:16]}...")
+        print(f"H1: {ladder_result.h1_admitted[:16]}...")
+        print(f"H2: {ladder_result.h2_narrowed[:16]}...")
+        print(f"H3: {ladder_result.h3_ordered[:16]}...")
+        print(f"Legacy pick: {ladder_result.legacy_pick}")
+        print(f"Dynamic pick: {ladder_result.dynamic_pick}")
+        print(f"Agree: {ladder_result.agree}")
+
+    # Exit non-zero on FAIL_CLOSED
+    if ladder_result.status == LadderStatus.FAIL_CLOSED:
+        sys.exit(1)
 
 
 def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -432,6 +572,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             output_json=args.json,
             allow_live_probe=args.allow_live_probe,
         )
+    elif args.command == "ladder":
+        _cmd_ladder(parser, args)
     elif args.command == "compare":
         legacy.cmd_compare(
             args.task, args.criticality, allow_offline=getattr(args, "allow_offline", False)
