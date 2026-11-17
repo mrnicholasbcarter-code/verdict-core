@@ -314,6 +314,46 @@ class TestExactHeadPolling:
 
         assert result["observations"][0]["classification"] == expected
 
+    @pytest.mark.parametrize(
+        ("mergeable", "merge_state", "classification", "reason"),
+        [
+            ("CONFLICTING", "DIRTY", "CONFLICT", "PR classified as CONFLICT"),
+            ("MERGEABLE", "BEHIND", "BEHIND", "PR classified as BEHIND"),
+            (
+                "MERGEABLE",
+                "CLEAN",
+                "STALLED",
+                "stalled: required check running past threshold; cannot rerun while running",
+            ),
+        ],
+        ids=["stalled+conflict", "stalled+behind", "stalled+clean"],
+    )
+    def test_conflict_and_behind_outrank_a_stalled_check(
+        self,
+        gh: FakeGitHubClient,
+        ws: WatcherState,
+        mergeable: str,
+        merge_state: str,
+        classification: str,
+        reason: str,
+    ) -> None:
+        """Catches a stalled check hiding a conflict/behind PR, or a clean stall losing its reason.
+
+        spec.md:44-45 give stalled and CONFLICT/BEHIND separate adapter rows,
+        and spec.md:81-83 require a CONFLICT/BEHIND head to get a repair record
+        for controller dispatch; the merge state outranks the CI result.
+        """
+        started = iso(T0 - timedelta(minutes=45))
+        hung = check("proof-full", None, "IN_PROGRESS", started_at=started, job_id="job-1")
+        open_pr(gh, 1, "a" * 40, [hung], mergeable=mergeable, merge_state=merge_state)
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert outcomes(result) == [(1, classification, "REPAIR")]
+        assert gh.rerun_calls == []
+        [record] = disk(ws)["records"]["repair"]
+        assert (record["classification"], record["reason"]) == (classification, reason)
+
     def test_check_without_a_start_time_is_pending_not_stalled(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
