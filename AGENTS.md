@@ -34,6 +34,8 @@ standing invariants are [ADR 0001](docs/adr/0001-verdict-control-plane-invariant
 | Removed architecture (Ruflo / swarm / hivemind) stays removed. | [`tests/test_obsolete_architecture_absent.py`](tests/test_obsolete_architecture_absent.py), [`scripts/check_no_obsolete_architecture.py`](scripts/check_no_obsolete_architecture.py) |
 | Doc links resolve. New code is reachable. | [`scripts/check_doc_links.py`](scripts/check_doc_links.py), [`scripts/check_reachability.py`](scripts/check_reachability.py) (tests: `tests/test_check_doc_links.py`, `tests/test_check_reachability.py`) |
 
+For orchestrate acceptance runs, the gate also checks the recorded exit code and time against the run's own structured result.
+
 The proof-gate authority is [`proof/contract.yaml`](proof/contract.yaml), run by
 [`scripts/proof/run.py`](scripts/proof/run.py).
 
