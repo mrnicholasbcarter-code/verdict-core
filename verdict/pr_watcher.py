@@ -208,7 +208,7 @@ def poll_open_prs(
         combined = _combine_classifications(ci_class, merge_class, can_merge)
 
         action = _adapter_action(combined, 0, 1)
-        if stalled:
+        if stalled and merge_class not in {"CONFLICT", "BEHIND"}:
             action = "REPAIR"
             combined = "STALLED"
         obs = {
@@ -706,13 +706,11 @@ def _run_locked(
     # 1. Decide, one repository at a time. A repository whose reads fail is
     # dropped as a whole: no record, transition or cursor move is kept for it,
     # so the next run covers the same ground. The others carry on.
-    has_unsafe_state_key = False
     for repo in repos:
         try:
             _safe_key(repo)
         except UnsafeKeyError as exc:
             repo_errors.append({"repo": repo, "error": str(exc), "kind": "unsafe_state_key"})
-            has_unsafe_state_key = True
             continue
         trial = plan.fork()
         try:
@@ -722,37 +720,9 @@ def _run_locked(
         except (GitHubClientError, UnsafeKeyError) as exc:
             kind = "unsafe_state_key" if isinstance(exc, UnsafeKeyError) else "github_error"
             repo_errors.append({"repo": repo, "error": str(exc), "kind": kind})
-            if kind == "unsafe_state_key":
-                has_unsafe_state_key = True
-            else:
-                # Advance the merged cursor for this repo on github_error failure
-                # only if it has no cursor yet (first run for this repo).
-                if state.get_merged_cursor(plan.data, repo) is None:
-                    plan.data = state.set_merged_cursor(plan.data, repo, current)
             continue
         plan.adopt(trial)
         observations.extend(polled)
-
-    # If any unsafe_state_key error occurred, fail closed without saving state.
-    # This prevents unsafe keys from reaching the state file.
-    if has_unsafe_state_key:
-        return {
-            "ok": False,
-            "error": repo_errors[0]["error"],
-            "type": "unsafe_state_key",
-            "repo_errors": repo_errors,
-            "observations": [],
-            "reruns": [],
-            "records": [],
-            "notifications": [],
-            "linear_sent": [],
-            "pending_events": [],
-        }
-
-    # 2. Persist. Classifications, records, transitions, queued Linear events
-    # and the cursors are durable before the first side effect.
-    data = state.set_last_run(plan.data, current)
-    state.save(data)
 
     # 2. Persist. Classifications, records, transitions, queued Linear events
     # and the cursors are durable before the first side effect.
