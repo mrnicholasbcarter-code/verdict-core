@@ -57,6 +57,9 @@ def test_units_install_idempotently_and_uninstall(tmp_path):
     assert int(argv[argv.index("--max-routes") + 1]) == SCREEN_MAX_ROUTES > 0
     assert f"OnUnitActiveSec={PASSIVE_INTERVAL_SECONDS}" in dry["files"][TIMER]
     assert f"OnCalendar={SCREEN_CALENDAR}" in dry["files"][SCREEN_TIMER]
+    assert "--max-per-provider 16 --max-routes 40" in screen
+    assert "TimeoutStartSec=30min" in screen
+    assert "OnCalendar=*-*-* 00/6:00:00" in dry["files"][SCREEN_TIMER]
     assert "prove-at-rest" not in str(dry) and "census" not in str(dry)
     first = manage_service(unit_dir=directory, run=commands.append)
     assert first["changed"] and len(list(directory.iterdir())) == 4
@@ -271,8 +274,8 @@ def test_screen_unit_command_parses_with_the_approved_bounds(monkeypatch, capsys
     )
     monkeypatch.setattr("sys.argv", ["verdict", *argv[3:]])
     cli.main()
-    assert calls[0]["max_per_provider"] == 1
-    assert calls[0]["max_routes"] == 8
+    assert calls[0]["max_per_provider"] == 16
+    assert calls[0]["max_routes"] == 40
     assert calls[0]["capacities"] == ["free", "subscription"]
     assert calls[0]["allow_live_probe"]
 

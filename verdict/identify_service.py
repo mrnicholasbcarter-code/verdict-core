@@ -27,9 +27,9 @@ SCREEN_SERVICE = "verdict-identify-screen.service"
 SCREEN_TIMER = "verdict-identify-screen.timer"
 # D3 defaults approved by the operator on 2026-10-21; measure host outcomes.
 PASSIVE_INTERVAL_SECONDS = 3 * 60 * 60
-SCREEN_CALENDAR = "daily"
-SCREEN_MAX_PER_PROVIDER = 1
-SCREEN_MAX_ROUTES = 8
+SCREEN_CALENDAR = "*-*-* 00/6:00:00"
+SCREEN_MAX_PER_PROVIDER = 16
+SCREEN_MAX_ROUTES = 40
 SCREEN_CAPACITY = "free,subscription"
 
 
@@ -190,7 +190,7 @@ def manage_service(
         + f"ExecStart={prefix} --passive --json --save-report --refresh-health-cache\nTimeoutStartSec=2min\n",
         SCREEN_SERVICE: "[Unit]\nDescription=Verdict bounded missing-proof screening\nAfter=network-online.target\n"
         + common
-        + f"ExecStart={prefix} --screen --allow-live-probe --capacity {SCREEN_CAPACITY} --max-per-provider {SCREEN_MAX_PER_PROVIDER} --max-routes {SCREEN_MAX_ROUTES} --json\nTimeoutStartSec=12min\n",
+        + f"ExecStart={prefix} --screen --allow-live-probe --capacity {SCREEN_CAPACITY} --max-per-provider {SCREEN_MAX_PER_PROVIDER} --max-routes {SCREEN_MAX_ROUTES} --json\nTimeoutStartSec=30min\n",
         TIMER: "[Unit]\nDescription=Verdict passive identification timer\n[Timer]\nOnBootSec=2min\n"
         + f"OnUnitActiveSec={PASSIVE_INTERVAL_SECONDS}\nUnit={SERVICE}\n[Install]\nWantedBy=timers.target\n",
         SCREEN_TIMER: "[Unit]\nDescription=Verdict daily bounded screening timer\n[Timer]\n"
