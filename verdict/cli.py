@@ -1412,6 +1412,8 @@ def cmd_autodev(
     probe_headers = None
     selected_candidates: tuple[dict[str, Any], ...] = ()
     probe_dropped: tuple[dict[str, str], ...] = ()
+    # Ladder-selected planner routes for a dry run; empty means orchestrator_model alone.
+    planner_models: tuple[str, ...] = ()
     if not dry_run and execution_path_decision is None and allow_live:
         from verdict.patch_executor import DEFAULT_BASE_URL
 
@@ -1481,18 +1483,28 @@ def cmd_autodev(
 
         base_url = base_url or DEFAULT_BASE_URL
         gateway = normalize_omniroute_origin(base_url)
-        selector = build_selector(
-            gateway,
-            scope="",
-            prefer="",
-            required_capabilities=frozenset({"reasoning"}),
-            sync_visibility=False,
-        )
+        try:
+            selector = build_selector(
+                gateway,
+                scope="",
+                prefer="",
+                required_capabilities=frozenset({"reasoning"}),
+                sync_visibility=False,
+            )
+        except Exception as exc:  # live gateway state; fail closed, named
+            _report_autodev_failure(
+                f"autodev planner selection could not read the eligibility ladder: "
+                f"{type(exc).__name__}: {exc}",
+                output_json=output_json,
+            )
+            raise SystemExit(1) from exc
         # No execution-path decision: select planner from live eligibility ladder,
         # or validate explicit --orchestrator-model against admission.
         if orchestrator_model is None:
             try:
-                planners = _live_planner_models(selector, top_n=1)
+                # Same selection as the live path: _live_planner_models needs two
+                # families, so top_n must allow at least two.
+                planner_models = _live_planner_models(selector, top_n=3)
             except AutodevError as exc:
                 _report_autodev_failure(str(exc), output_json=output_json)
                 raise SystemExit(1) from exc
@@ -1503,7 +1515,7 @@ def cmd_autodev(
                     output_json=output_json,
                 )
                 raise SystemExit(1) from exc
-            orchestrator_model = planners[0]
+            orchestrator_model = planner_models[0]
         else:
             # Validate explicit --orchestrator-model through admission:
             # must be admitted, have FREE or SUBSCRIPTION capacity, and not be premium-reserved.
@@ -1572,7 +1584,12 @@ def cmd_autodev(
 
     if dry_run:
         decomposer = Decomposer(
-            DecompositionConfig(model=orchestrator_model, base_url=base_url, api_key=api_key)
+            DecompositionConfig(
+                model=orchestrator_model,
+                planner_models=planner_models,
+                base_url=base_url,
+                api_key=api_key,
+            )
         )
         try:
             plan = decomposer.decompose(objective, repo_root=repo_path, evidence=evidence)

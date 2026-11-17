@@ -227,49 +227,44 @@ def test_live_planner_selection_fails_closed_when_no_eligible_planners() -> None
     assert "no paid or frontier fallback" in message
 
 
-def test_live_planner_selection_called_for_dry_run_without_decision() -> None:
-    """Dry run with no execution-path decision calls _live_planner_models."""
+def test_live_planner_selection_called_for_dry_run_without_decision(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A dry run with no decision plans on the live ladder's two-family planner set.
+
+    Catches the planner walk being cut to one route: ``_live_planner_models``
+    needs two families, so a one-route walk fails every dry run closed.
+    """
     import verdict.autodev_run as autodev
     import verdict.cli as cli
+    from verdict.orchestration.contracts import CapacityClass
 
-    called: dict[str, Any] = {}
+    verdicts = (
+        _route_verdict("free/alpha:free", rank=0),
+        _route_verdict("cc/claude-sonnet-5", rank=1, capacity=CapacityClass.SUBSCRIPTION),
+    )
 
-    def fake_live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
-        called["top_n"] = top_n
-        return ("free/alpha:free",)
+    class _Selector:
+        def select(self, req: Any, *, now: Any) -> Any:
+            return None, verdicts
 
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(autodev, "_live_planner_models", fake_live_planner_models)
     monkeypatch.setattr(
         "verdict.orchestration.eligibility_report.build_selector",
-        lambda gateway, **kwargs: type("S", (), {"select": lambda self, req, now: (None, ())})(),
+        lambda gateway, **kwargs: _Selector(),
     )
+    configs: list[Any] = []
 
-    # Mock Decomposer to return a valid plan without making HTTP calls
-    from verdict.decomposer import DecompositionResult, TokenUsage
+    def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
+        return {
+            "status_code": 200,
+            "body": {"choices": [{"message": {"content": json.dumps(TWO_UNITS)}}]},
+        }
 
-    mock_plan = DecompositionResult(
-        units=(), model="free/alpha:free", usage=TokenUsage(), latency_ms=0
-    )
+    def decomposer_factory(config: Any) -> Decomposer:
+        configs.append(config)
+        return Decomposer(config, transport=transport)
 
-    def mock_decomposer_init(self: Any, config: Any) -> None:
-        self.config = config
-
-    def mock_decompose(
-        self: Any, objective: str, *, repo_root: str, evidence: str = ""
-    ) -> DecompositionResult:
-        return mock_plan
-
-    class MockDecomposer:
-        def __init__(self, config: Any) -> None:
-            mock_decomposer_init(self, config)
-
-        def decompose(
-            self, objective: str, *, repo_root: str, evidence: str = ""
-        ) -> DecompositionResult:
-            return mock_decompose(self, objective, repo_root=repo_root, evidence=evidence)
-
-    monkeypatch.setattr("verdict.decomposer.Decomposer", MockDecomposer)
+    monkeypatch.setattr("verdict.decomposer.Decomposer", decomposer_factory)
 
     def forbid_execution(*args: Any, **kwargs: Any) -> Any:
         pytest.fail("dry-run must not authorize or execute a worker")
@@ -277,20 +272,19 @@ def test_live_planner_selection_called_for_dry_run_without_decision() -> None:
     monkeypatch.setattr(autodev, "_require_launch_decision", forbid_execution)
     monkeypatch.setattr(autodev, "run_autodev", forbid_execution)
 
-    try:
-        cli.cmd_autodev(
-            "fix ruff errors",
-            "/tmp/opencode/test_dry_run",
-            orchestrator_model=None,
-            executor_model=None,
-            base_url="http://127.0.0.1:20128/v1",
-            dry_run=True,
-            output_json=True,
-        )
-    finally:
-        monkeypatch.undo()
+    cli.cmd_autodev(
+        "fix ruff errors",
+        str(tmp_path),
+        orchestrator_model=None,
+        executor_model=None,
+        base_url="http://127.0.0.1:20128/v1",
+        dry_run=True,
+        output_json=True,
+    )
+    capsys.readouterr()
 
-    assert called.get("top_n") == 1
+    assert configs[0].model == "free/alpha:free"
+    assert configs[0].planner_models == ("free/alpha:free", "cc/claude-sonnet-5")
 
 
 def test_code_and_test_split_into_two_units_is_merged_before_rejecting() -> None:

@@ -725,6 +725,9 @@ def test_live_bootstrap_requires_observed_probe_and_binds_plan(
         return transport
 
     monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(_planner_ladder())
+    )
     planner = _decomposer(PLAN)
     monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
     if not probe_ok:
@@ -743,6 +746,63 @@ def test_live_bootstrap_requires_observed_probe_and_binds_plan(
     assert decision.task_slice_id == "fix-a,fix-b"
     assert len(plan.units) == 2
     assert headers["x-omniroute-response-cost"] == "0"
+
+
+def test_pinned_bootstrap_plans_on_live_ladder_planners(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-406: a pinned executor must not leave the planner unset (no model = refused plan)."""
+    import verdict.autodev_run as autodev
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers = {"x-omniroute-model": "model:free", "x-omniroute-response-cost": "0"}
+
+    monkeypatch.setattr("verdict.http_safety.open_no_redirect", lambda *a, **kw: Response())
+
+    def factory(base_url: str, **kwargs: Any) -> Any:
+        def transport(*args: Any) -> Any:
+            kwargs["opener"](None, timeout=1)
+            return {"status_code": 200, "body": {"choices": [{"message": {"content": "OK"}}]}}
+
+        return transport
+
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(_planner_ladder())
+    )
+    configs: list[Any] = []
+
+    def decomposer_factory(config: Any) -> Any:
+        configs.append(config)
+        return _decomposer(PLAN)
+
+    monkeypatch.setattr(autodev, "Decomposer", decomposer_factory)
+    autodev.prepare_live_autodev(
+        "fix", repo, model="provider/model:free", base_url="http://gateway/v1", api_key=None
+    )
+    assert configs[0].model == FREE_A
+    assert configs[0].planner_models == (FREE_A, "agy/gemini-x")
+
+
+def test_pinned_bootstrap_fails_closed_before_probe_on_one_planner_family(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOD-406: without two planner families the pinned path sends nothing."""
+    import verdict.autodev_run as autodev
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector",
+        _ladder([_route_verdict(FREE_A, rank=0)]),
+    )
+    monkeypatch.setattr(
+        "verdict.probes.openai_probe_transport",
+        lambda *a, **kw: pytest.fail("no probe without a planner"),
+    )
+    with pytest.raises(AutodevError, match="at least two model families"):
+        autodev.prepare_live_autodev(
+            "fix", repo, model="provider/model:free", base_url="http://gateway/v1", api_key=None
+        )
 
 
 # AD-03: without an --executor-model pin, autodev selects its own free executor.
@@ -792,6 +852,11 @@ def _ladder(
         return _Selector()
 
     return build_selector
+
+
+def _planner_ladder() -> list[RouteVerdict]:
+    """Two free planner families, so ``_live_planner_models`` can plan (BOD-406)."""
+    return [_route_verdict(FREE_A, rank=0), _route_verdict("agy/gemini-x", rank=1)]
 
 
 def _scripted_probe(
@@ -940,6 +1005,43 @@ def test_prepare_live_autodev_selected_probes_top_n_and_keeps_ladder_order(
     assert decision.why_selected.strip()
     assert headers["x-omniroute-response-cost"] == "0"
     assert len(plan.units) == 2
+
+
+def test_prepare_live_autodev_selected_fails_closed_without_free_route(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restored after the D22 lift: metered and unhealthy routes still never launch."""
+    import verdict.autodev_run as autodev
+
+    verdicts = [
+        _route_verdict("anthropic/claude-sonnet-5", rank=0, capacity=CapacityClass.METERED),
+        _route_verdict(
+            "free/dead:free",
+            rank=1,
+            reached=EligibilityStage.ENTITLED,
+            failed_stage=EligibilityStage.HEALTHY,
+            reason="unhealthy",
+        ),
+    ]
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
+    )
+    probed = _scripted_probe(monkeypatch)
+
+    def forbid_planning(config: Any) -> Any:
+        pytest.fail("without a free route there is nothing to plan")
+
+    monkeypatch.setattr(autodev, "Decomposer", forbid_planning)
+
+    with pytest.raises(AutodevError) as excinfo:
+        autodev.prepare_live_autodev_selected(
+            "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+        )
+
+    message = str(excinfo.value)
+    assert "no paid or frontier fallback" in message
+    assert probed == []
+    assert "anthropic/" not in message
 
 
 def test_live_planner_models_fails_closed_with_one_family(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2544,6 +2646,9 @@ def test_prepare_live_autodev_pinned_probe_accepts_both_served_model_forms(
         return transport
 
     monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(_planner_ladder())
+    )
     planner = _decomposer(PLAN)
     monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
 
@@ -2799,6 +2904,9 @@ def test_prepare_live_autodev_names_receipt_refusal_as_autodev_error(
         return transport
 
     monkeypatch.setattr("verdict.probes.openai_probe_transport", factory)
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector", _ladder(_planner_ladder())
+    )
     monkeypatch.setattr(autodev, "Decomposer", lambda config: _decomposer(PLAN))
 
     def refuse(**kwargs: Any) -> Any:

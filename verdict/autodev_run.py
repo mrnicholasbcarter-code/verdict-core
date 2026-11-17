@@ -2169,6 +2169,9 @@ def prepare_live_autodev(
 
     if not model.endswith(":free") or "/" not in model:
         raise AutodevError("autodev bootstrap requires an explicit provider/model:free route")
+    # The pin names the executor only; the planner comes from the live ladder,
+    # chosen before the probe so an empty ladder fails closed without a send.
+    planners = _select_live_planners(base_url)
     headers: dict[str, str] = {}
 
     def opener(request: Any, *, timeout: float) -> Any:
@@ -2204,9 +2207,11 @@ def prepare_live_autodev(
     ):
         raise AutodevError("autodev free-route probe failed content, identity, or zero-cost check")
     observed = time.time()
-    plan = Decomposer(DecompositionConfig(base_url=base_url, api_key=api_key)).decompose(
-        objective, repo_root=repo, evidence=collect_ruff_evidence(repo)
-    )
+    plan = Decomposer(
+        DecompositionConfig(
+            model=planners[0], planner_models=planners, base_url=base_url, api_key=api_key
+        )
+    ).decompose(objective, repo_root=repo, evidence=collect_ruff_evidence(repo))
     if time.time() - observed > LIVE_PROBE_MAX_AGE_SECONDS:
         raise AutodevError("autodev probe expired while planning (one-hour maximum)")
     binding = hashlib.sha256(json.dumps(plan.to_dict(), sort_keys=True).encode()).hexdigest()
@@ -2337,6 +2342,31 @@ def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
             "(no paid or frontier fallback)"
         )
     return tuple(planners)
+
+
+def _select_live_planners(base_url: str, *, top_n: int = 3) -> tuple[str, ...]:
+    """Build the live ladder for ``base_url`` and return its planner routes (BOD-406).
+
+    For paths that have no ladder of their own (the pinned ``--executor-model``
+    bootstrap, the CLI dry run). Any gateway failure is a named AutodevError.
+    """
+    from verdict.free_tier_admit import normalize_omniroute_origin
+    from verdict.orchestration.eligibility_report import build_selector
+
+    try:
+        selector = build_selector(
+            normalize_omniroute_origin(base_url),
+            scope="",
+            prefer="",
+            required_capabilities=frozenset({"reasoning"}),
+            sync_visibility=False,
+        )
+    except Exception as exc:  # live gateway state; fail closed, named
+        raise AutodevError(
+            f"autodev planner selection could not read the eligibility ladder: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    return _live_planner_models(selector, top_n=top_n)
 
 
 def prepare_live_autodev_selected(
