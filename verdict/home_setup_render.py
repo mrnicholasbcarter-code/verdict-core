@@ -255,7 +255,6 @@ def _warm_cache(
     del gateway
     from verdict.identify_service import (
         PASSIVE_INTERVAL_SECONDS,
-        SCREEN_CALENDAR,
         SCREEN_CAPACITY,
         SCREEN_MAX_PER_PROVIDER,
         SCREEN_MAX_ROUTES,
