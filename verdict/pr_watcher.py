@@ -53,6 +53,10 @@ _REPAIR_NEEDED = frozenset(
 _NOT_GREEN = frozenset({"EMPTY", "MISSING_REQUIRED"})
 _BLOCKED = frozenset({"BLOCKED"})
 
+# Merge states in which GitHub will merge a MERGEABLE PR. UNSTABLE means a
+# non-required check is not passing; HAS_HOOKS means pre-receive hooks exist.
+_MERGE_READY_STATES = frozenset({"CLEAN", "UNSTABLE", "HAS_HOOKS"})
+
 # Required-check conclusions a bounded rerun may clear, and those a repair names.
 _RERUNNABLE_CONCLUSIONS = frozenset({"FAILURE", "CANCELLED"}) | INFRA_CONCLUSIONS
 _FAILING_CONCLUSIONS = frozenset({"FAILURE"}) | REPAIR_CONCLUSIONS
@@ -153,7 +157,11 @@ def poll_open_prs(
         )
 
         # Combined classification
-        combined = _combine_classifications(ci_class, merge_class)
+        can_merge = (
+            pr.get("mergeable") == "MERGEABLE"
+            and pr.get("merge_state_status") in _MERGE_READY_STATES
+        )
+        combined = _combine_classifications(ci_class, merge_class, can_merge)
 
         action = _adapter_action(combined, 0, 1)
         obs = {
@@ -190,16 +198,16 @@ def _is_stalled(check: dict[str, Any], current: datetime) -> bool:
     return (current - started).total_seconds() > STALLED_THRESHOLD_MINUTES * 60
 
 
-def _combine_classifications(ci: str, merge: str) -> str:
+def _combine_classifications(ci: str, merge: str, can_merge: bool) -> str:
     """Combine CI and merge classifications into a single result.
 
     CONFLICT and BEHIND outrank the CI result.  GREEN stands only when GitHub
-    reports the PR mergeable and clean; while mergeability is unknown or held
-    back the PR is PENDING, which is neither ready nor a repair.
+    reports the PR mergeable; while mergeability is unknown or held back the
+    PR is PENDING, which is neither ready nor a repair.
     """
     if merge in {"CONFLICT", "BEHIND"}:
         return merge
-    if ci == "GREEN" and merge != "MERGEABLE":
+    if ci == "GREEN" and not can_merge:
         return "PENDING"
     return ci
 
@@ -342,6 +350,7 @@ def request_bounded_rerun(
     max_attempts: int = 1,
     data: dict[str, Any] | None = None,
     stalled: bool = False,
+    budget_id: int | str | None = None,
 ) -> dict[str, Any]:
     """Request one bounded rerun, fenced on the exact head and check identity.
 
@@ -351,10 +360,16 @@ def request_bounded_rerun(
     A fence mismatch consumes no attempt.  ``data``, when given, is updated in
     place so the caller keeps the state that is now on disk.  A failed state
     write raises ``StateWriteError`` and no rerun is requested.
+
+    ``budget_id`` is the workflow/job identity the attempt is counted under;
+    it defaults to the job id.  The run passes the workflow run id, which a
+    rerun keeps, so that a rerun job with a new id cannot earn a new budget.
     """
     if data is None:
         data = state.load()
-    key = rerun_key(repo, pr_number, head, check_name, workflow_job_id)
+    key = rerun_key(
+        repo, pr_number, head, check_name, workflow_job_id if budget_id is None else budget_id
+    )
 
     try:
         reread = gh.get_pr(repo, pr_number)
@@ -407,7 +422,7 @@ class _Plan:
     stamp: str
     records: list[dict[str, Any]] = field(default_factory=list)
     notifications: list[dict[str, Any]] = field(default_factory=list)
-    reruns: list[tuple[str, int, str, str, Any, bool]] = field(default_factory=list)
+    reruns: list[dict[str, Any]] = field(default_factory=list)
 
     def fork(self) -> _Plan:
         """A plan that starts from this one's state and can be thrown away."""
@@ -450,58 +465,84 @@ def _plan_observation(
     previous = state.get_pr_state(plan.data, repo, pr_number, head)
     action = obs["action"]
 
-    if action == "RETRY":
-        # One bounded rerun per key: every hung or failed check still inside
-        # its own persisted budget is rerun once. The action is BLOCKED only
-        # when no key has budget left, which holds on every later run too.
-        keyed = [
-            (rerun_key(repo, pr_number, head, c["name"], c.get("job_id", "")), c)
-            for c in obs["rerun_targets"]
-        ]
-        within_budget = [
-            c for key, c in keyed if state.get_rerun_attempt(plan.data, key) < max_attempts
-        ]
-        action = _adapter_action(classification, 0 if within_budget else max_attempts, max_attempts)
-        obs["action"] = action
-        stalled = obs["ci_classification"] == "STALLED"
-        plan.reruns.extend(
-            (repo, pr_number, head, c["name"], c.get("job_id", ""), stalled) for c in within_budget
-        )
+    repair_checks: list[dict[str, Any]] = []
+    repair_reason = f"PR classified as {classification}"
 
-    if action == "REPAIR":
-        failed = [
+    if action == "RETRY":
+        targets = obs["rerun_targets"]
+        unrunnable = [c for c in targets if c.get("job_id") in (None, "")]
+        if unrunnable:
+            # Only GitHub Actions jobs can be rerun here. A check from another
+            # app, or a commit status, goes to repair, and nothing is rerun.
+            action = "REPAIR"
+            names = ", ".join(repr(c["name"]) for c in unrunnable)
+            repair_checks = unrunnable
+            repair_reason = (
+                f"check {names} is not a GitHub Actions job and cannot be rerun"
+                if len(unrunnable) == 1
+                else f"checks {names} are not GitHub Actions jobs and cannot be rerun"
+            )
+        else:
+            # One bounded rerun per key: every hung or failed check still
+            # inside its own persisted budget is rerun once. The action is
+            # BLOCKED only when no key has budget left, which holds on every
+            # later run too.
+            keyed = [(c.get("workflow_run_id") or c["job_id"], c) for c in targets]
+            within_budget = [
+                (budget_id, c)
+                for budget_id, c in keyed
+                if state.get_rerun_attempt(
+                    plan.data, rerun_key(repo, pr_number, head, c["name"], budget_id)
+                )
+                < max_attempts
+            ]
+            action = _adapter_action(
+                classification, 0 if within_budget else max_attempts, max_attempts
+            )
+            plan.reruns.extend(
+                {
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "head": head,
+                    "check_name": c["name"],
+                    "workflow_job_id": c["job_id"],
+                    "budget_id": budget_id,
+                    "stalled": obs["ci_classification"] == "STALLED",
+                }
+                for budget_id, c in within_budget
+            )
+        obs["action"] = action
+    elif action == "REPAIR":
+        repair_checks = [
             c
             for c in obs["checks"]
             if c.get("required") is True and c.get("conclusion") in _FAILING_CONCLUSIONS
         ]
-        failing = [c["name"] for c in failed]
-        details = [
-            {
-                "name": c["name"],
-                "conclusion": c["conclusion"],
-                "job_id": c.get("job_id"),
-                "details_url": c.get("details_url"),
-            }
-            for c in failed
-        ]
         # Name the conclusion when it is not a plain failure, so the repair
         # worker can tell "needs a person" from "the code is wrong".
-        named = sorted({str(c["conclusion"]) for c in failed} & REPAIR_CONCLUSIONS)
-        reason = (
-            f"required check concluded {', '.join(named)}"
-            if named
-            else f"PR classified as {classification}"
-        )
+        named = sorted({str(c["conclusion"]) for c in repair_checks} & REPAIR_CONCLUSIONS)
+        if named:
+            repair_reason = f"required check concluded {', '.join(named)}"
+
+    if action == "REPAIR":
         plan.add_record(
             state,
             RepairRecord(
                 repo=repo,
                 pr_number=pr_number,
                 head=head,
-                failing_checks=failing,
-                failing_check_details=details,
+                failing_checks=[c["name"] for c in repair_checks],
+                failing_check_details=[
+                    {
+                        "name": c["name"],
+                        "conclusion": c.get("conclusion"),
+                        "job_id": c.get("job_id"),
+                        "details_url": c.get("details_url"),
+                    }
+                    for c in repair_checks
+                ],
                 classification=classification,
-                reason=reason,
+                reason=repair_reason,
             ).to_dict(plan.stamp),
         )
     elif action == "BLOCKED":
@@ -611,10 +652,10 @@ def _run_locked(
     # 3. Act. Each rerun persists its own attempt counter before its call.
     reruns = []
     for planned in plan.reruns:
-        outcome = request_bounded_rerun(gh, state, *planned[:5], max_attempts, data, planned[5])
+        outcome = request_bounded_rerun(gh, state, max_attempts=max_attempts, data=data, **planned)
         reruns.append(outcome)
         if outcome.get("type") in {"read_error", "api_error"}:
-            repo_errors.append({"repo": planned[0], "error": outcome["reason"]})
+            repo_errors.append({"repo": planned["repo"], "error": outcome["reason"]})
 
     # Linear comments are sent only from the durable queue, so a failed or
     # interrupted send is retried by the next run.

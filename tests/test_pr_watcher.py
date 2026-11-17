@@ -303,6 +303,62 @@ class TestExactHeadPolling:
 
         assert outcomes(result) == [(1, "PENDING", "NO_ACTION")]
 
+    @pytest.mark.parametrize(
+        ("checks", "classification"),
+        [
+            ([check("osv-security / osv-scan", "CANCELLED", job_id=None)], "CANCELLED"),
+            ([check("osv-security / osv-scan", "TIMED_OUT", job_id=None)], "INFRA_FAILURE"),
+            (
+                [
+                    check("lint", "CANCELLED", job_id=7),
+                    check("osv-security / osv-scan", "CANCELLED", job_id=None),
+                ],
+                "CANCELLED",
+            ),
+        ],
+        ids=["cancelled", "timed out", "one of two"],
+    )
+    def test_check_without_an_actions_job_is_repaired_not_rerun(
+        self,
+        gh: FakeGitHubClient,
+        ws: WatcherState,
+        checks: list[dict[str, Any]],
+        classification: str,
+    ) -> None:
+        """Catches a rerun request for a check that is not a GitHub Actions job."""
+        open_pr(gh, 1, "a" * 40, checks)
+
+        runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(2)]
+
+        assert [outcomes(r) for r in runs] == [[(1, classification, "REPAIR")]] * 2
+        assert gh.rerun_calls == []
+        assert disk(ws)["rerun_attempts"] == {}
+        repairs = disk(ws)["records"]["repair"]
+        assert [r["reason"] for r in repairs] == [
+            "check 'osv-security / osv-scan' is not a GitHub Actions job and cannot be rerun"
+        ]
+        assert disk(ws)["records"]["block"] == []
+
+    def test_rerun_budget_follows_the_workflow_run_not_the_job_attempt(
+        self, gh: FakeGitHubClient, ws: WatcherState
+    ) -> None:
+        """Catches an unbounded rerun loop when a rerun gives the job a new id.
+
+        The budget key uses the workflow run id, which a rerun keeps; the job id
+        is only where the rerun request is sent.
+        """
+        head = "a" * 40
+        open_pr(gh, 1, head, [check("lint", "CANCELLED", job_id=101, workflow_run_id=55)])
+        first = run_watcher(gh, ws, [REPO], now=T0)
+
+        gh.set_checks(REPO, head, [check("lint", "CANCELLED", job_id=102, workflow_run_id=55)])
+        later = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in (1, 2)]
+
+        assert outcomes(first) == [(1, "CANCELLED", "RETRY")]
+        assert [outcomes(r) for r in later] == [[(1, "CANCELLED", "BLOCKED")]] * 2
+        assert gh.rerun_calls == [{"job_id": 101, "repo": REPO}]
+        assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr1:{head}:lint:55": 1}
+
     def test_stalled_rerun_targets_the_stalled_check_not_a_finished_one(
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
@@ -905,8 +961,8 @@ class TestBoundedRecoveryAdapter:
             ("UNKNOWN", "UNKNOWN"),
             ("MERGEABLE", "UNKNOWN"),
             ("MERGEABLE", "BLOCKED"),
-            ("MERGEABLE", "UNSTABLE"),
             ("MERGEABLE", "DRAFT"),
+            ("UNKNOWN", "UNSTABLE"),
         ],
     )
     def test_green_checks_without_clean_mergeability_are_pending_not_ready(
@@ -921,6 +977,22 @@ class TestBoundedRecoveryAdapter:
         assert runs[0]["observations"][0]["ci_classification"] == "GREEN"
         assert [r["records"] + r["notifications"] for r in runs] == [[], []]
         assert gh.rerun_calls == []
+
+    @pytest.mark.parametrize("merge_state", ["UNSTABLE", "HAS_HOOKS"])
+    def test_green_required_checks_on_a_mergeable_pr_are_ready_despite_optional_failures(
+        self, gh: FakeGitHubClient, ws: WatcherState, merge_state: str
+    ) -> None:
+        """Catches a failing optional check holding a mergeable PR at PENDING for ever.
+
+        GitHub reports such a PR as MERGEABLE with merge state UNSTABLE, not CLEAN.
+        """
+        optional = {**check("Analyze (python)", "FAILURE"), "required": False}
+        open_pr(gh, 1, "a" * 40, [check("lint"), optional], "MERGEABLE", merge_state)
+
+        result = run_watcher(gh, ws, [REPO], now=T0)
+
+        assert outcomes(result) == [(1, "GREEN", "READY")]
+        assert result["records"] == []
 
     def test_green_pr_is_ready_and_nothing_is_written_to_github_or_linear(
         self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient
