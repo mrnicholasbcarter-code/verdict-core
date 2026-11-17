@@ -1,1 +1,0 @@
-{"id":"chatcmpl-1794781984551-8bec8af8","object":"chat.completion","created":1794781984,"model":"gemini-3.5-flash-lite","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"PONG"}}],"usage":{"prompt_tokens":83,"completion_tokens":2,"total_tokens":85}}EXIT=0

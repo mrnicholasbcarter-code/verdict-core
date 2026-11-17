@@ -5,7 +5,7 @@
 > Host: 127.0.0.1:8000
 > User-Agent: curl/7.81.0
 > Accept: */*
-> Authorization: Bearer [REDACTED]
+> Authorization: Bearer [redacted]
 > Content-Type: application/json
 > Content-Length: 63
 > 

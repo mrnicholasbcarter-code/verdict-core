@@ -63,11 +63,11 @@
   },
   "parent_confirmation": {
     "by": "gem-devops on omniroute/worker/free-first",
-    "at": "2026-11-17T19:52:47Z",
     "command": "verdict doctor --json",
     "raw_output": {
       "path": "docs/proof/dod/mgmt-token-resolver-runtime-adoption/doctor-confirm-2026-11-17T19_52_47Z.json",
       "sha256": "e911d2e397a34d3b55af7a07b751d7971a89fb38c02bd249ee55b421fdd410d7"
-    }
+    },
+    "at": "2026-11-17T20:30:12Z"
   }
 }

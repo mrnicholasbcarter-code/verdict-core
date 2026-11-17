@@ -1,0 +1,65 @@
+* Uses proxy env variable no_proxy == '127.0.0.1,localhost,::1'
+*   Trying 127.0.0.1:8000...
+* Connected to 127.0.0.1 (127.0.0.1) port 8000 (#0)
+> POST /v1/chat/completions HTTP/1.1
+> Host: 127.0.0.1:8000
+> User-Agent: curl/7.81.0
+> Accept: */*
+> Authorization: Bearer [redacted]
+> Content-Type: application/json
+> Content-Length: 63
+> 
+} [63 bytes data]
+* Mark bundle as not supporting multiuse
+< HTTP/1.1 200 OK
+< date: Tue, 17 Nov 2026 20:28:52 GMT
+< server: uvicorn
+< content-security-policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: ws: wss:; worker-src 'self' blob:; manifest-src 'self'
+< x-frame-options: DENY
+< x-content-type-options: nosniff
+< referrer-policy: strict-origin-when-cross-origin
+< permissions-policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=()
+< strict-transport-security: max-age=63072000; includeSubDomains; preload
+< access-control-allow-headers: Content-Type, Authorization, x-api-key, anthropic-version, x-omniroute-connection, X-OmniRoute-Lease-Owner, X-OmniRoute-Lease-Generation, x-internal-test, accept
+< access-control-allow-methods: GET, POST, PUT, DELETE, PATCH, OPTIONS
+< access-control-allow-origin: *
+< vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+< x-omniroute-route-class: CLIENT_API
+< x-request-id: d8549be4-c78c-4b35-8926-9ec01d12e047
+< content-type: application/json
+< x-conversationid: conv_a56796f3-a7ed-45fd-a219-462e28a9344d
+< x-correlation-id: 146752a4-2934-4775-a392-883c41273b34
+< x-omniroute-cache: MISS
+< x-omniroute-cache-hit: false
+< x-omniroute-compression: off; source=off
+< x-omniroute-decision: strategy=single; provider=cc; latency_ms=1289
+< x-omniroute-latency-ms: 1289
+< x-omniroute-model: claude-haiku-4-5-20251001
+< x-omniroute-provider: cc
+< x-omniroute-request-id: aa54f36a-6817-47b4-b708-4c3bdbcf0421
+< x-omniroute-response-cost: 0.0006770000
+< x-omniroute-selected-connection-id: 70870f4f-4ec7-4533-83ed-380fe0154748
+< x-omniroute-session-id: a80082fe02488af4
+< x-omniroute-tokens-in: 57
+< x-omniroute-tokens-out: 124
+< x-omniroute-version: 3.8.53
+< date: Tue, 17 Nov 2026 20:29:13 GMT
+< x-verdict-model: cc/claude-haiku-4-5-20251001
+< x-verdict-tier: 2
+< x-verdict-request-id: req-cd9a0503aaf440f2a2de97e075350e57
+< x-verdict-decision: selected
+< x-verdict-transport-outcome: success
+< x-verdict-quality-outcome: unknown
+< x-verdict-degraded-mode: false
+< x-verdict-pack-injected: true
+< x-verdict-pack-state: hydrated
+< x-verdict-pack-digest: sha256:841e73bebecaba33bed9b4fcbc46805a71c487ed19993ee6294651a1d1febb45
+< x-verdict-evidence-request-id: req-cd9a0503aaf440f2a2de97e075350e57
+< x-verdict-correlation-id: corr-209fa7d04b5f4d44af91fce8aa1fb6c7
+< x-verdict-evidence-id: evidence-e9a6571848484e4890751c5bef5134ef
+< content-length: 758
+< cache-control: no-store
+< 
+{ [758 bytes data]
+* Connection #0 to host 127.0.0.1 left intact
+{"id":"chatcmpl-msg_011Ch98dk3X6rAjEw1BRr3ou","object":"chat.completion","created":1794947353,"model":"claude-haiku-4-5-20251001","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"# Hello! 👋\n\nI'm Claude, an AI assistant made by Anthropic. I'm here to help with a wide variety of tasks, including:\n\n- **Answering questions** on many topics\n- **Writing and editing** text\n- **Coding and debugging** assistance\n- **Analysis and research**\n- **Creative projects**\n- **Problem-solving** and brainstorming\n- **Learning and explanations**\n\nHow can I help you today? Feel free to ask me anything or let me know what you'd like to work on!"}}],"usage":{"prompt_tokens":57,"completion_tokens":124,"total_tokens":181}}
