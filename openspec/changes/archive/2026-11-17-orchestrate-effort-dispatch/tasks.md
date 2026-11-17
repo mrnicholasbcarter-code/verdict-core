@@ -21,4 +21,4 @@
 
 - [x] 4.1 `openspec validate orchestrate-effort-dispatch --strict`
 
-- [ ] (post-merge) After install on a clean main checkout, one orchestrate attempt receipt shows `chosen_effort` and `executed_effort=unverified` without a live paid call.
+- [x] (post-merge) After install on a clean main checkout, one orchestrate attempt receipt shows `chosen_effort` and `executed_effort=unverified` without a live paid call. Verified in live run `20261117T150815Z` (installed-main ac623aec).
