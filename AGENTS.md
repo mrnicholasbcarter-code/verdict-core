@@ -34,6 +34,8 @@ standing invariants are [ADR 0001](docs/adr/0001-verdict-control-plane-invariant
 | Removed architecture (Ruflo / swarm / hivemind) stays removed. | [`tests/test_obsolete_architecture_absent.py`](tests/test_obsolete_architecture_absent.py), [`scripts/check_no_obsolete_architecture.py`](scripts/check_no_obsolete_architecture.py) |
 | Doc links resolve. New code is reachable. | [`scripts/check_doc_links.py`](scripts/check_doc_links.py), [`scripts/check_reachability.py`](scripts/check_reachability.py) (tests: `tests/test_check_doc_links.py`, `tests/test_check_reachability.py`) |
 
+For orchestrate acceptance runs, the gate also checks the recorded exit code and time against the run's own structured result.
+
 The proof-gate authority is [`proof/contract.yaml`](proof/contract.yaml), run by
 [`scripts/proof/run.py`](scripts/proof/run.py).
 
@@ -60,6 +62,7 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy verdict --strict
 uv run python scripts/check_doc_links.py
 uv run python scripts/check_reachability.py --ratchet-base origin/main  # new findings, orphan modules, forbidden symbols, growing baselines
+uv run python scripts/check_lint_gates.py   # everything CI's required lint job runs (add --wip only if the PR has the wip label)
 uv run python scripts/verify_proof_matrix.py
 uv run python scripts/proof/run.py --mode full --no-cache
 git diff --check
@@ -75,6 +78,12 @@ schema, proof matrix, test collection, vendored-path and host-path guards,
 bandit, and targeted tests for the files you changed. It is operator-owned. Do
 not edit it, do not bypass it (`VERDICT_PREPUSH_SKIP=1` is an operator emergency
 switch and is logged), and run it by hand before you ask for review.
+
+**Before every push, run `uv run python scripts/check_lint_gates.py`.** The push
+gate does not run the repo gates in CI's `lint` job (reachability ratchet,
+definition of done, `Proof:` trailers, `openspec validate`, open OpenSpec tasks),
+so a branch can pass it and still fail `lint`. Fix what this reports before you
+push; a red `lint` on a pull request means this step was skipped.
 
 ## Where things live
 

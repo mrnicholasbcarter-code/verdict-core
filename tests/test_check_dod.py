@@ -416,3 +416,830 @@ def test_all_still_flags_an_unproven_archive_beside_a_no_change_story(
     lines = capsys.readouterr().out.splitlines()
     assert any(line.startswith("DONE: ") and "cleanup.json" in line for line in lines), lines
     assert "NOT DONE: openspec change gate was archived without DoD evidence" in lines, lines
+
+
+def _structured_result(
+    *,
+    outcome="COMPLETE",
+    review_status="PASS",
+    run_id="run-1",
+    started_at="2099-01-01T00:00:00Z",
+    finished_at="2099-01-01T00:10:00Z",
+):
+    return json.dumps(
+        {
+            "outcome": outcome,
+            "run_id": run_id,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "events_digest": "a" * 64,
+            "review": {"status": review_status},
+            "marker": RUN_URL,
+            "drill": "orphan module FAILED as intended",
+        }
+    )
+
+
+def _structured_evidence(root, evidence, *, review_status="PASS"):
+    item = evidence["acceptance"][0]
+    for index, (run, name) in enumerate(
+        ((item["first_run"], "structured-first.json"), (item["fresh_run"], "structured-fresh.json"))
+    ):
+        run["raw_output"] = _artifact(
+            root,
+            name,
+            _structured_result(
+                review_status=review_status,
+                run_id=f"run-{index}",
+                started_at="2099-01-02T00:00:00Z" if index else "2099-01-01T00:00:00Z",
+                finished_at="2099-01-02T00:10:00Z" if index else "2099-01-01T00:10:00Z",
+            ),
+        )
+        run["at"] = "2099-01-01T00:05:00Z" if index == 0 else "2099-01-02T00:05:00Z"
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root, "structured-confirm.json", _structured_result(run_id="run-confirm")
+    )
+    evidence["parent_confirmation"]["at"] = "2099-01-01T00:06:00Z"
+
+
+def test_structured_result_exit_and_outcome_must_agree(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    evidence["acceptance"][0]["first_run"]["exit_code"] = 1
+    evidence["acceptance"][0]["expect_exit_code"] = 1
+    evidence["acceptance"][0]["fresh_run"]["exit_code"] = 1
+    errors = _check(root, evidence)
+    assert any("exit_code 1" in e and "outcome COMPLETE" in e for e in errors), errors
+
+
+def test_structured_result_exit_and_outcome_agreement_passes(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    assert _check(root, evidence) == []
+
+
+def test_structured_result_time_must_be_in_own_window(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    evidence["acceptance"][0]["first_run"]["at"] = "2099-01-01T00:20:00Z"
+    errors = _check(root, evidence)
+    assert any("at" in e and "started_at" in e and "finished_at" in e for e in errors), errors
+
+
+def test_structured_result_time_in_own_window_passes(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    assert _check(root, evidence) == []
+
+
+def test_structured_result_review_must_pass_for_zero_exit(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence, review_status="ERROR")
+    errors = _check(root, evidence)
+    assert any("review status ERROR" in e and "PASS" in e for e in errors), errors
+
+
+def test_structured_result_review_passes_for_zero_exit(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    assert _check(root, evidence) == []
+
+
+def test_same_raw_output_cannot_serve_as_two_runs(repo):
+    root, evidence = repo
+    first = evidence["acceptance"][0]["first_run"]["raw_output"]
+    evidence["acceptance"][0]["fresh_run"]["raw_output"] = first
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
+
+
+def test_distinct_raw_outputs_are_valid(repo):
+    root, evidence = repo
+    assert _check(root, evidence) == []
+
+
+def test_non_structured_raw_output_is_unchanged(repo):
+    root, evidence = repo
+    assert _check(root, evidence) == []
+
+
+ORCH_COMMAND = "verdict orchestrate --graph graph.json --repo /tmp/x --runs-dir /tmp/y --executor prime-headless --json"
+
+
+def _orchestrate_evidence(root, evidence, output):
+    for index, run in enumerate(
+        (evidence["acceptance"][0]["first_run"], evidence["acceptance"][0]["fresh_run"])
+    ):
+        run["command"] = ORCH_COMMAND
+        run["raw_output"] = _artifact(root, f"orchestrate-{index}.txt", output)
+    confirmation = evidence["parent_confirmation"]
+    confirmation["command"] = ORCH_COMMAND
+    confirmation["raw_output"] = _artifact(root, "orchestrate-confirm.txt", output)
+
+
+def test_orchestrate_command_rejects_hand_built_summary(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, '{"story": "x", "integrate": {}}')
+    errors = _check(root, evidence)
+    assert all("raw output is not the run" in e for e in errors if "orchestrate" in e), errors
+    assert len([e for e in errors if "raw output is not the run" in e]) == 3
+
+
+def test_orchestrate_command_rejects_empty_output(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, "")
+    errors = _check(root, evidence)
+    assert len([e for e in errors if "raw output is not the run" in e]) == 3
+
+
+def test_orchestrate_command_rejects_leading_noise(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, "stderr warning\n" + _structured_result())
+    errors = _check(root, evidence)
+    assert len([e for e in errors if "stdout only" in e]) == 3
+
+
+def test_orchestrate_command_accepts_result_json(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _structured_result() + "\n")
+    evidence["freshness_window_hours"] = 0.01
+    evidence["acceptance"][0]["fresh_run"]["at"] = "2099-01-01T00:06:00Z"
+    evidence["acceptance"][0]["fresh_run"]["raw_output"] = _artifact(
+        root, "structured-fresh-2.txt", _structured_result(run_id="fresh-2") + "\n\n"
+    )
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root, "structured-confirm-2.txt", _structured_result(run_id="confirm-2") + "\n"
+    )
+    evidence["parent_confirmation"]["at"] = "2099-01-01T00:06:00Z"
+    assert _check(root, evidence) == []
+
+
+def test_non_orchestrate_json_is_unaffected(repo):
+    root, evidence = repo
+    output = (
+        '{"story": "x", "integrate": {}}\n'
+        + RUN_URL
+        + "\ndrill: orphan module FAILED as intended\n"
+    )
+    _orchestrate_evidence(root, evidence, output)
+    for run in (evidence["acceptance"][0]["first_run"], evidence["acceptance"][0]["fresh_run"]):
+        run["command"] = "verdict route --json"
+    evidence["parent_confirmation"]["command"] = "verdict route --json"
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "route-first.txt", output + " first"
+    )
+    evidence["acceptance"][0]["fresh_run"]["raw_output"] = _artifact(
+        root, "route-fresh.txt", output + " fresh"
+    )
+    evidence["parent_confirmation"]["raw_output"] = _artifact(root, "route-confirm.txt", output)
+    assert _check(root, evidence) == []
+
+
+def test_blocked_structured_parent_confirmation_fails(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _structured_result() + "\n")
+    blocked = _structured_result(outcome="BLOCKED", review_status="ERROR", run_id="blocked")
+    evidence["parent_confirmation"]["raw_output"] = _artifact(root, "blocked-confirm.txt", blocked)
+    errors = _check(root, evidence)
+    assert any("outcome BLOCKED" in e and "COMPLETE" in e for e in errors), errors
+
+
+def test_structured_parent_confirmation_time_must_be_in_window(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _structured_result() + "\n")
+    evidence["parent_confirmation"]["at"] = "2099-01-01T00:20:00Z"
+    errors = _check(root, evidence)
+    assert any("parent_confirmation" in e and "outside result window" in e for e in errors), errors
+
+
+def test_orchestrate_command_matcher(repo):
+    assert check_dod._is_orchestrate_json_command(ORCH_COMMAND)
+    assert check_dod._is_orchestrate_json_command("/path/to/.venv/bin/verdict orchestrate --json")
+    assert check_dod._is_orchestrate_json_command("python -m verdict orchestrate --json")
+    assert check_dod._is_orchestrate_json_command("env X=1 verdict orchestrate --json")
+    assert check_dod._is_orchestrate_json_command("timeout 900 verdict orchestrate --json")
+    assert not check_dod._is_orchestrate_json_command("verdict route --json")
+    assert not check_dod._is_orchestrate_json_command("verdict orchestrate")
+
+
+def test_orchestrate_regression_key_shapes_fail_closed(repo):
+    root, evidence = repo
+    shapes = [
+        '{"story":"x","merged_sha":"x","installed_main_sha":"x","run_dir":"x","command":"x","note":"x","worker_terminals":[],"selections":[],"node_states":[],"integrate":{}}',
+        '{"run_id":"x","events":[]}',
+        '{"outcome":"BLOCKED","reason":"review status ERROR"}',
+    ]
+    for index, (run, output) in enumerate(
+        zip(
+            (
+                evidence["acceptance"][0]["first_run"],
+                evidence["acceptance"][0]["fresh_run"],
+                evidence["parent_confirmation"],
+            ),
+            shapes,
+            strict=True,
+        )
+    ):
+        run["command"] = ORCH_COMMAND
+        run["raw_output"] = _artifact(root, f"hand-built-{index}.json", output)
+    errors = _check(root, evidence)
+    assert len([e for e in errors if "raw output is not the run" in e]) == 3
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("started_at", "2026-11-16T18:10:41"),
+        ("finished_at", "2026-11-16T18:10:41"),
+        ("started_at", 12345),
+        ("finished_at", None),
+    ],
+)
+def test_structured_result_invalid_time_fails_without_crashing(repo, field, value):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    result = json.loads(_structured_result())
+    result[field] = value
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "invalid-time.json", json.dumps(result)
+    )
+    errors = _check(root, evidence)
+    assert any("structured result time is invalid" in e for e in errors), errors
+
+
+def test_structured_result_timezone_offsets_and_fraction_pass(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    result = _structured_result(
+        started_at="2026-11-16T18:10:41.123+00:00", finished_at="2026-11-16T18:10:41.456+00:00"
+    )
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "offset-time.json", result
+    )
+    evidence["acceptance"][0]["first_run"]["at"] = "2026-11-16T18:10:41.200+00:00"
+    assert not any("structured result time is invalid" in e for e in _check(root, evidence))
+
+
+def test_structured_result_inverted_interval_fails(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    result = _structured_result(
+        started_at="2026-11-16T18:14:00Z", finished_at="2026-11-16T18:10:00Z"
+    )
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(root, "inverted.json", result)
+    errors = _check(root, evidence)
+    assert any("started_at" in e and "finished_at" in e and "later" in e for e in errors), errors
+
+
+def test_structured_parent_confirmation_review_must_pass(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _structured_result() + "\n")
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root, "error-review.json", _structured_result(review_status="ERROR")
+    )
+    errors = _check(root, evidence)
+    assert any("parent_confirmation" in e and "review status ERROR" in e for e in errors), errors
+
+
+def test_structured_parent_confirmation_complete_passes(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _structured_result() + "\n")
+    assert not any(
+        "parent_confirmation" in e and "review status" in e for e in _check(root, evidence)
+    )
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ("verdict orchestrate -j", False),
+        ("verdict orchestrate --json=true", False),
+        ("v orchestrate --json", False),
+        ("verdict  orchestrate --json", True),
+        ("verdict orchestrate --graph 'my graph.json' --json", True),
+    ],
+)
+def test_orchestrate_command_matcher_boundaries(command, expected):
+    assert check_dod._is_orchestrate_json_command(command) is expected
+
+
+def test_same_run_id_cannot_serve_as_two_structured_runs(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    first = evidence["acceptance"][0]["first_run"]["raw_output"]
+    data = (root / first["path"]).read_text() + "\n"
+    evidence["acceptance"][0]["fresh_run"]["raw_output"] = _artifact(root, "same-run-id.json", data)
+    errors = _check(root, evidence)
+    assert (
+        "the same run_id cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
+
+
+def test_distinct_structured_run_ids_pass(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    assert not any("cannot serve as two runs" in e for e in _check(root, evidence))
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        # argparse accepts any unambiguous prefix of --json; orchestrate sets json=True for each.
+        ("verdict orchestrate goal --j", True),
+        ("verdict orchestrate goal --js", True),
+        ("verdict orchestrate goal --jso", True),
+        ("verdict orchestrate goal --json", True),
+        ("python -m verdict.cli orchestrate goal --json", True),
+        (".venv/bin/python -m verdict.cli orchestrate goal --js", True),
+        # shlex cannot parse these; the fallback split must keep the requirement.
+        ('verdict orchestrate --graph "unterminated --json', True),
+        ("verdict orchestrate fix the user's bug --json", True),
+        # Shell punctuation glued to the flag or the command.
+        ("verdict orchestrate goal --json>out.json", True),
+        ("verdict orchestrate goal --json;", True),
+        ("(verdict orchestrate goal --json)", True),
+        ("verdict orchestrate -j", False),
+        ("verdict orchestrate goal --", False),
+        ("verdict orchestrate goal --jsonl", False),
+        ("verdict orchestrate --json=true", False),
+        ("verdict route --json", False),
+        ("v orchestrate --json", False),
+        ("verdict orchestrate", False),
+        ("python -m verdict.client orchestrate --json", False),
+        ('verdict orchestrate --graph "unterminated', False),
+    ],
+)
+def test_orchestrate_command_matcher_forms(command, expected):
+    assert check_dod._is_orchestrate_json_command(command) is expected
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "verdict orchestrate goal --js",
+        "python -m verdict.cli orchestrate goal --json",
+        'verdict orchestrate --graph "unterminated --json',
+    ],
+)
+def test_hand_built_summary_fails_under_every_orchestrate_json_form(repo, command):
+    root, evidence = repo
+    summary = json.dumps(
+        {"story": "x", "integrate": {}, "marker": RUN_URL, "drill": "FAILED as intended"}
+    )
+    _orchestrate_evidence(root, evidence, summary)
+    item = evidence["acceptance"][0]
+    for run in (item["first_run"], item["fresh_run"], evidence["parent_confirmation"]):
+        run["command"] = command
+    errors = _check(root, evidence)
+    assert len([e for e in errors if "is not the run's result JSON" in e]) == 3, errors
+
+
+def _result_with(**changes):
+    result = json.loads(_structured_result())
+    result.update(changes)
+    return result
+
+
+@pytest.mark.parametrize("run_id", [["a"], {"a": 1}, None, 7, True, ""])
+def test_structured_run_id_must_be_a_non_empty_string(repo, run_id):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "bad-run-id.json", json.dumps(_result_with(run_id=run_id))
+    )
+    errors = _check(root, evidence)
+    assert any("acceptance[0].first_run: run_id" in e and "string" in e for e in errors), errors
+
+
+def _huge_integer_output() -> str:
+    # json.loads raises plain ValueError (not JSONDecodeError) past the int digit limit.
+    return json.dumps(_result_with())[:-1] + ', "n": ' + "1" * 5000 + "}"
+
+
+def test_orchestrate_output_with_an_oversized_integer_is_not_a_result(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _huge_integer_output())
+    errors = _check(root, evidence)
+    assert len([e for e in errors if "is not the run's result JSON" in e]) == 3, errors
+
+
+def test_orchestrate_output_nested_too_deep_is_not_a_result(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, "[" * 200_000 + "]" * 200_000)
+    errors = _check(root, evidence)
+    assert len([e for e in errors if "is not the run's result JSON" in e]) == 3, errors
+
+
+@pytest.mark.parametrize(
+    "output",
+    [_huge_integer_output(), '{"marker": "' + RUN_URL + '", "x": ' + "[" * 200_000],
+    ids=["oversized-integer", "nested-too-deep"],
+)
+def test_unparseable_output_of_another_command_is_plain_text(repo, output):
+    root, evidence = repo
+    item = evidence["acceptance"][0]
+    for index, run in enumerate((item["first_run"], item["fresh_run"])):
+        assert run["command"] == "gh run view 123"
+        run["raw_output"] = _artifact(
+            root, f"plain-{index}.txt", f"{output}\nFAILED as intended {index}\n"
+        )
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root, "plain-confirm.txt", f"{output}\nFAILED as intended confirm\n"
+    )
+    assert _check(root, evidence) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("finished_at", "9999-12-31T23:59:59Z"),
+        ("started_at", "0001-01-01T00:00:00Z"),
+        ("finished_at", "9999-12-31T23:59:59-14:00"),
+        ("started_at", "0001-01-01T00:00:00+14:00"),
+    ],
+)
+def test_structured_result_time_arithmetic_overflow_is_an_invalid_time(repo, field, value):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "overflow-time.json", json.dumps(_result_with(**{field: value}))
+    )
+    errors = _check(root, evidence)
+    assert any("structured result time is invalid" in e for e in errors), errors
+
+
+def test_evidence_file_with_an_oversized_integer_is_reported_not_raised(repo):
+    root, evidence = repo
+    path = root / "docs/proof/dod/gate.json"
+    path.write_text(json.dumps(evidence)[:-1] + ', "pr": ' + "1" * 5000 + "}", encoding="utf-8")
+    errors = check_dod.check_evidence(root, path)
+    assert len(errors) == 1 and errors[0].startswith("cannot read"), errors
+
+
+def test_main_prints_a_lone_surrogate_from_raw_output_without_raising(repo, capsys):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    # "\ud800" is valid JSON text that decodes to a string UTF-8 cannot encode.
+    text = json.dumps(_result_with(outcome="\ud800"))
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(root, "surrogate.json", text)
+    path = root / "docs/proof/dod/gate.json"
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    assert check_dod.main(["--root", str(root), str(path)]) == 1
+    assert "disagrees with outcome \\ud800" in capsys.readouterr().out
+
+
+def _negative_orchestrate_story(root, evidence, outputs, *, expect_exit_code, expect):
+    """An orchestrate story whose acceptance is a non-zero exit; one output per run."""
+    item = evidence["acceptance"][0]
+    item["expect_exit_code"] = expect_exit_code
+    item["expect"] = expect
+    confirmation = evidence["parent_confirmation"]
+    times = ("2099-01-01T00:05:00Z", "2099-01-02T00:05:00Z", "2099-01-03T00:05:00Z")
+    runs = (item["first_run"], item["fresh_run"], confirmation)
+    for index, (run, output, at) in enumerate(zip(runs, outputs, times, strict=True)):
+        run["command"] = ORCH_COMMAND
+        run["at"] = at
+        run["raw_output"] = _artifact(root, f"negative-{index}.txt", output)
+        if run is not confirmation:
+            run["exit_code"] = expect_exit_code
+
+
+def _blocked_result(day: int, *, outcome="BLOCKED", review_status="MISSING") -> str:
+    return _structured_result(
+        outcome=outcome,
+        review_status=review_status,
+        run_id=f"blocked-{day}",
+        started_at=f"2099-01-0{day}T00:00:00Z",
+        finished_at=f"2099-01-0{day}T00:10:00Z",
+    )
+
+
+def test_honest_blocked_story_with_expected_exit_one_passes(repo):
+    root, evidence = repo
+    _negative_orchestrate_story(
+        root,
+        evidence,
+        [_blocked_result(1), _blocked_result(2), _blocked_result(3)],
+        expect_exit_code=1,
+        expect="FAILED as intended",
+    )
+    assert _check(root, evidence) == []
+
+
+def test_complete_confirmation_fails_a_story_that_expects_exit_one(repo):
+    root, evidence = repo
+    _negative_orchestrate_story(
+        root,
+        evidence,
+        [
+            _blocked_result(1),
+            _blocked_result(2),
+            _blocked_result(3, outcome="COMPLETE", review_status="PASS"),
+        ],
+        expect_exit_code=1,
+        expect="FAILED as intended",
+    )
+    errors = _check(root, evidence)
+    assert [e for e in errors if e.startswith("parent_confirmation")] == [
+        "parent_confirmation: outcome COMPLETE, but the acceptance item expects exit code 1 "
+        "(an outcome other than COMPLETE required)"
+    ], errors
+
+
+STARTUP_BLOCK = "BLOCKED: set VERDICT_OMNIROUTE_API_KEY for the OmniRoute gateway"
+
+
+def test_expected_exit_two_is_checked_as_plain_text(repo):
+    # orchestrate exits 2 before it prints a result: one stderr line, no JSON.
+    root, evidence = repo
+    _negative_orchestrate_story(
+        root,
+        evidence,
+        [f"{RUN_URL}\n{STARTUP_BLOCK}\nrun {index}\n" for index in range(3)],
+        expect_exit_code=2,
+        expect=STARTUP_BLOCK,
+    )
+    assert _check(root, evidence) == []
+
+
+def test_expected_exit_one_still_requires_the_result_json(repo):
+    root, evidence = repo
+    _negative_orchestrate_story(
+        root,
+        evidence,
+        [f"{RUN_URL}\n{STARTUP_BLOCK}\nrun {index}\n" for index in range(3)],
+        expect_exit_code=1,
+        expect=STARTUP_BLOCK,
+    )
+    errors = _check(root, evidence)
+    assert len([e for e in errors if "is not the run's result JSON" in e]) == 3, errors
+
+
+def test_expected_exit_zero_confirmation_still_needs_complete_and_pass(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _structured_result() + "\n")
+    evidence["acceptance"][0]["expect_exit_code"] = 0
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root, "blocked-confirm-zero.json", _blocked_result(1)
+    )
+    errors = _check(root, evidence)
+    assert "parent_confirmation: outcome BLOCKED is not COMPLETE (COMPLETE required)" in errors
+    assert "parent_confirmation: review status MISSING is not PASS (PASS required)" in errors
+
+
+def _second_criterion_citing_the_same_runs(evidence):
+    item = copy.deepcopy(evidence["acceptance"][0])
+    item["criterion"] = "the drill names the orphan module"
+    item["expect"] = "orphan module"
+    evidence["acceptance"].append(item)
+
+
+def test_two_criteria_may_cite_the_same_plain_text_runs(repo):
+    root, evidence = repo
+    _second_criterion_citing_the_same_runs(evidence)
+    assert _check(root, evidence) == []
+
+
+def test_two_criteria_may_cite_the_same_structured_runs(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    _second_criterion_citing_the_same_runs(evidence)
+    assert _check(root, evidence) == []
+
+
+def test_one_artifact_recorded_as_runs_at_two_times_is_still_reuse(repo):
+    root, evidence = repo
+    _second_criterion_citing_the_same_runs(evidence)
+    evidence["acceptance"][1]["first_run"]["at"] = "2099-01-01T00:00:01Z"
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[1].first_run"
+    ) in errors, errors
+
+
+def test_reuse_messages_name_both_run_locations(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    item = evidence["acceptance"][0]
+    item["fresh_run"]["raw_output"] = item["first_run"]["raw_output"]
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
+    data = (root / item["first_run"]["raw_output"]["path"]).read_text() + "\n"
+    item["fresh_run"]["raw_output"] = _artifact(root, "same-run-id-2.json", data)
+    errors = _check(root, evidence)
+    assert (
+        "the same run_id cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
+
+
+def test_plain_text_runs_with_identical_bytes_in_two_files_pass(repo):
+    # A deterministic command prints the same bytes on every run.
+    root, evidence = repo
+    item = evidence["acceptance"][0]
+    first, fresh = item["first_run"]["raw_output"], item["fresh_run"]["raw_output"]
+    assert first["sha256"] == fresh["sha256"] and first["path"] != fresh["path"]
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root, "confirm-same-bytes.txt", (root / first["path"]).read_text()
+    )
+    assert evidence["parent_confirmation"]["raw_output"]["sha256"] == first["sha256"]
+    assert _check(root, evidence) == []
+
+
+def test_one_plain_text_file_under_two_path_spellings_is_still_reuse(repo):
+    root, evidence = repo
+    item = evidence["acceptance"][0]
+    alias = dict(item["first_run"]["raw_output"], path="docs/proof/dod/./first.txt")
+    item["fresh_run"]["raw_output"] = alias
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
+
+
+def test_plain_text_confirmation_cannot_reuse_an_acceptance_artifact(repo):
+    root, evidence = repo
+    evidence["parent_confirmation"]["raw_output"] = evidence["acceptance"][0]["fresh_run"][
+        "raw_output"
+    ]
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].fresh_run and parent_confirmation"
+    ) in errors, errors
+
+
+def test_structured_results_with_identical_bytes_in_two_files_fail(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    item = evidence["acceptance"][0]
+    data = (root / item["first_run"]["raw_output"]["path"]).read_text()
+    item["fresh_run"]["raw_output"] = _artifact(root, "copy-of-first.json", data)
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
+
+
+def test_zero_exit_with_a_blocked_outcome_fails_even_with_a_passing_review(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "blocked-zero-exit.json", _structured_result(outcome="BLOCKED", run_id="run-0")
+    )
+    errors = _check(root, evidence)
+    assert errors == ["acceptance[0].first_run: exit_code 0 disagrees with outcome BLOCKED"]
+
+
+@pytest.mark.parametrize(
+    ("at", "in_window"),
+    [
+        ("2098-12-31T23:54:59Z", False),
+        ("2098-12-31T23:55:00Z", True),
+        ("2099-01-01T00:15:00Z", True),
+        ("2099-01-01T00:15:01Z", False),
+    ],
+    ids=["start-minus-5:01", "start-minus-5:00", "finish-plus-5:00", "finish-plus-5:01"],
+)
+def test_result_window_tolerance_is_exactly_five_minutes(repo, at, in_window):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    # Keep the fresh run (00:05 the next day) outside the freshness window at every "at".
+    evidence["freshness_window_hours"] = 12
+    evidence["acceptance"][0]["first_run"]["at"] = at
+    errors = _check(root, evidence)
+    expected = (
+        []
+        if in_window
+        else [
+            f"acceptance[0].first_run: at {at} is outside result window started_at "
+            "2099-01-01T00:00:00Z to finished_at 2099-01-01T00:10:00Z (5 minute tolerance)"
+        ]
+    )
+    assert errors == expected
+
+
+def test_structured_confirmation_cannot_point_at_the_fresh_run_artifact(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    fresh = evidence["acceptance"][0]["fresh_run"]
+    evidence["parent_confirmation"]["raw_output"] = fresh["raw_output"]
+    evidence["parent_confirmation"]["at"] = fresh["at"]
+    errors = _check(root, evidence)
+    assert errors == [
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].fresh_run and parent_confirmation",
+        "the same run_id cannot serve as two runs: acceptance[0].fresh_run and parent_confirmation",
+    ]
+
+
+def test_structured_confirmation_cannot_carry_the_fresh_run_id_in_other_bytes(repo):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    fresh = evidence["acceptance"][0]["fresh_run"]
+    data = (root / fresh["raw_output"]["path"]).read_text() + "\n"
+    evidence["parent_confirmation"]["raw_output"] = _artifact(root, "confirm-reuse.json", data)
+    evidence["parent_confirmation"]["at"] = fresh["at"]
+    errors = _check(root, evidence)
+    assert errors == [
+        "the same run_id cannot serve as two runs: acceptance[0].fresh_run and parent_confirmation"
+    ]
+
+
+def test_orchestrate_command_rejects_leading_whitespace_before_the_result(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _structured_result() + "\n")
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "leading-space.json", " " + _structured_result(run_id="leading-space")
+    )
+    errors = _check(root, evidence)
+    assert any(
+        e.startswith("acceptance[0].first_run:") and "is not the run's result JSON" in e
+        for e in errors
+    ), errors
+
+
+@pytest.mark.parametrize("status", ["pass", "Pass", "PASS ", "PASSED"])
+def test_review_status_must_be_exactly_pass(repo, status):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "review-case.json", _structured_result(review_status=status, run_id="run-0")
+    )
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root,
+        "review-case-confirm.json",
+        _structured_result(review_status=status, run_id="run-confirm"),
+    )
+    errors = _check(root, evidence)
+    assert errors == [
+        f"acceptance[0].first_run: review status {status} is not PASS (PASS required)",
+        f"parent_confirmation: review status {status} is not PASS (PASS required)",
+    ]
+
+
+@pytest.mark.parametrize("key", ["outcome", "run_id", "started_at", "finished_at", "events_digest"])
+def test_orchestrate_result_missing_one_key_names_that_key(repo, key):
+    root, evidence = repo
+    result = _result_with()
+    del result[key]
+    _orchestrate_evidence(root, evidence, json.dumps(result))
+    errors = [e for e in _check(root, evidence) if "is not the run's result JSON" in e]
+    assert len(errors) == 3 and all(f"(missing: {key}; stdout only)" in e for e in errors), errors
+
+
+@pytest.mark.parametrize("which", ["acceptance.0.first_run", "parent_confirmation"])
+def test_missing_artifact_is_reported_once(repo, which):
+    root, evidence = repo
+    changed = _mutate(evidence, f"{which}.raw_output.path", "docs/proof/dod/absent.txt")
+    errors = _check(root, changed)
+    assert len([e for e in errors if "is missing" in e]) == 1, errors
+
+
+def test_each_run_citation_reads_its_artifact_once(repo, monkeypatch):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    _second_criterion_citing_the_same_runs(evidence)
+    read: list[str] = []
+    real = check_dod._artifact
+
+    def counting(root_, artifact, where, errors):
+        read.append(artifact["path"])
+        return real(root_, artifact, where, errors)
+
+    monkeypatch.setattr(check_dod, "_artifact", counting)
+    assert _check(root, evidence) == []
+    # on_main, then four acceptance citations of two runs, then the confirmation.
+    assert len(read) == 6 and len(set(read)) == 4, read
+
+
+def test_fresh_run_copied_from_first_run_is_reuse_not_one_run_cited_twice(repo):
+    root, evidence = repo
+    item = evidence["acceptance"][0]
+    item["fresh_run"] = copy.deepcopy(item["first_run"])
+    errors = _check(root, evidence)
+    assert (
+        "the same raw output cannot serve as two runs: "
+        "acceptance[0].first_run and acceptance[0].fresh_run"
+    ) in errors, errors
+
+
+def test_fresh_run_of_one_criterion_may_be_the_first_run_of_another(repo):
+    root, evidence = repo
+    first = evidence["acceptance"][0]
+    second = copy.deepcopy(first)
+    second["criterion"] = "the drill still fails a day later"
+    second["first_run"] = copy.deepcopy(first["fresh_run"])
+    second["fresh_run"] = _run(root, first["first_run"]["sha"], "2099-01-03T02:00:00Z", "third.txt")
+    evidence["acceptance"].append(second)
+    assert _check(root, evidence) == []
