@@ -8,7 +8,7 @@ actual reruns are performed.
 Requirements:
 - GH_TOKEN must be exported in the environment (conftest replaces HOME with a temp dir)
 - VERDICT_LIVE_SMOKE=1 must be set to run (enforced by conftest)
-- VERDICT_PR_WATCH_SMOKE_REPO can be set to override the default repository
+- VERDICT_PR_WATCH_SMOKE_REPO can be set to override the default repository (comma-separated for multiple)
 
 The test asserts that each observation has a classification.
 """
@@ -26,14 +26,18 @@ from verdict.pr_watcher_state import WatcherState
 
 
 @pytest.mark.skipif(
-    not os.environ.get("VERDICT_LIVE_SMOKE"), reason="Live smoke test requires VERDICT_LIVE_SMOKE=1"
+    os.environ.get("VERDICT_LIVE_SMOKE") != "1",
+    reason="Live smoke test requires VERDICT_LIVE_SMOKE=1",
 )
 class TestPrWatcherLiveSmoke:
     """Live smoke test for the PR watcher (opt-in only)."""
 
     def test_live_smoke_classifies_open_prs(self, tmp_path: Path) -> None:
         """Run watcher against a live repo and verify observations have classifications."""
-        repo = os.environ.get("VERDICT_PR_WATCH_SMOKE_REPO", "mrnicholasbcarter-code/verdict-core")
+        repo_env = os.environ.get(
+            "VERDICT_PR_WATCH_SMOKE_REPO", "mrnicholasbcarter-code/verdict-core"
+        )
+        repos = [r.strip() for r in repo_env.split(",") if r.strip()]
 
         # Create real GitHub client
         gh = create_github_client(linear_team_keys=None)
@@ -41,7 +45,7 @@ class TestPrWatcherLiveSmoke:
         # Wrap rerun_check to fail so no actual reruns happen
         original_rerun = gh.rerun_check
 
-        def failing_rerun(job_id: int, repo: str):
+        def failing_rerun(job_id: int, repo: str) -> None:
             raise AssertionError("Live smoke test must not call rerun_check")
 
         gh.rerun_check = failing_rerun
@@ -52,7 +56,7 @@ class TestPrWatcherLiveSmoke:
         state = WatcherState(state_dir)
 
         # Run watcher
-        result = run_watcher(gh, state, [repo], linear=None, max_attempts=1)
+        result = run_watcher(gh, state, repos, linear=None, max_attempts=1)
 
         # Restore original rerun_check
         gh.rerun_check = original_rerun
