@@ -6,68 +6,31 @@
   "merged_sha": "1ec86c7ec2c3717cb1243e52c1dc5a4f8053b56a",
   "pr": 1014,
   "on_main": {
-    "at": "2026-11-14T23:30:00Z",
+    "at": "2026-11-14T22:54:43Z",
     "sha": "1ec86c7ec2c3717cb1243e52c1dc5a4f8053b56a",
     "environment": "operator-host",
     "command": "gh pr checks 1014 --required",
     "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/43646551903",
     "exit_code": 0,
-    "raw_output": {
-      "path": "docs/proof/dod/bod-413/pr1014-checks.txt",
-      "sha256": "8cc2aa87f15c6172c6f7940c4614a5da28dc64432fc1618ef3f5fea0830f5b97"
-    }
+    "raw_output": {"path": "docs/proof/dod/bod-413/pr1014-checks.txt", "sha256": "8cc2aa87f15c6172c6f7940c4614a5da28dc64432fc1618ef3f5fea0830f5b97"}
   },
   "acceptance": [
     {
       "criterion": "DirectGatewayExecutor resolves the gateway key from the owner-only key file and credentials.test falls through to the resolver (not missing) when only the key file is present",
       "expect": "executor_auth_is_bearer_file_key: True",
-      "first_run": {
-        "at": "2026-11-14T23:21:04Z",
-        "sha": "1ec86c7ec2c3717cb1243e52c1dc5a4f8053b56a",
-        "environment": "operator-host",
-        "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python <pack>/stories/BOD-413/evidence-draft/bod413_accept.py",
-        "real_state_marker": "sha: 1ec86c7e",
-        "exit_code": 0,
-        "raw_output": {
-          "path": "docs/proof/dod/bod-413/acceptance-installed-main-20261114T232104Z.txt",
-          "sha256": "bbea3d83f0a4619f792397eff48afbbb1d3e1a40f778588c849d142660755d9b"
-        }
-      },
-      "fresh_run": {
-        "at": "2026-11-17T05:06:14Z",
-        "sha": "d228f574e5ddf3de8d48e6537fa4d9d228fda6dc",
-        "environment": "operator-host",
-        "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python <pack>/stories/BOD-413/evidence-draft/bod413_accept.py",
-        "real_state_marker": "sha: d228f574",
-        "exit_code": 0,
-        "raw_output": {
-          "path": "docs/proof/dod/bod-413/fresh-run-20261117T050614Z.txt",
-          "sha256": "1ffbe35d36d6b2435854480fbe4718e15c852d3ca8c8e368e75d38a5fc767b04"
-        }
-      }
+      "first_run": {"at": "2026-11-17T06:04:25Z", "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45", "environment": "operator-host", "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python scripts/bod413_keyfile_live.py", "real_state_marker": "credentials_test_status_value: ok", "exit_code": 0, "raw_output": {"path": "docs/proof/dod/bod-413/live-first-20261117T060422Z.txt", "sha256": "818c1bf28a683e8b0fce721ad44977c4aa4939e8896e2a2cd700c445d5b5b4dd"}},
+      "fresh_run": {"at": "2026-11-17T06:05:25Z", "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45", "environment": "operator-host", "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python scripts/bod413_keyfile_live.py", "real_state_marker": "credentials_test_status_value: ok", "exit_code": 0, "raw_output": {"path": "docs/proof/dod/bod-413/live-fresh-20261117T060525Z.txt", "sha256": "818c1bf28a683e8b0fce721ad44977c4aa4939e8896e2a2cd700c445d5b5b4dd"}}
+    },
+    {
+      "criterion": "credentials.test resolves the key file",
+      "expect": "credentials_test_status_is_not_missing: True",
+      "first_run": {"at": "2026-11-17T06:04:25Z", "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45", "environment": "operator-host", "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python scripts/bod413_keyfile_live.py", "real_state_marker": "credentials_test_status_value: ok", "exit_code": 0, "raw_output": {"path": "docs/proof/dod/bod-413/live-first-20261117T060422Z.txt", "sha256": "818c1bf28a683e8b0fce721ad44977c4aa4939e8896e2a2cd700c445d5b5b4dd"}},
+      "fresh_run": {"at": "2026-11-17T06:05:25Z", "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45", "environment": "operator-host", "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python scripts/bod413_keyfile_live.py", "real_state_marker": "credentials_test_status_value: ok", "exit_code": 0, "raw_output": {"path": "docs/proof/dod/bod-413/live-fresh-20261117T060525Z.txt", "sha256": "818c1bf28a683e8b0fce721ad44977c4aa4939e8896e2a2cd700c445d5b5b4dd"}}
     }
   ],
   "freshness_window_hours": 0.25,
-  "stays_true_job": "The hourly verdict-acceptance.timer runs 'verdict acceptance run', whose doctor gate (line 722 in verdict/acceptance.py: \\\"(\\\"doctor\\\", cli(\\\"doctor\\\", [\\\"doctor\\\", \\\"--json\\\"], 600, judge_doctor)),\\\") includes a credential check that exercises the gateway key resolver (_gateway_key_candidates in credentials_store.py), verifying OMNIROUTE_API_KEY resolution via the owner-only key file when no env var is set. CI tests (tests/test_direct_gateway_executor.py, tests/test_credentials_test_action.py) also exercise the key-file-only path on every PR and push.",
-  "setup_doctor": {
-    "status": "green",
-    "command": "env -i HOME=$HOME PATH=<system-bin> XDG_RUNTIME_DIR=<run-user> .venv/bin/python -m verdict doctor --json",
-    "at": "2026-11-17T04:59:57.191046Z",
-    "raw_output": {
-      "path": "docs/proof/dod/bod-413/doctor-green-20261117T045650Z.json",
-      "sha256": "aac2dd31a2a32644ed63663f5ede6d9d729a7711f079938744c27ef0323a5d7c"
-    }
-  },
-  "openspec": {
-    "change": "gateway-key-resolver-parity"
-  },
-  "parent_confirmation": {
-    "by": "gem-orchestrator session 20261117 (run executed by gem-devops on omniroute worker/free-first)",
-    "at": "2026-11-17T05:07:32Z",
-    "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python <pack>/stories/BOD-413/evidence-draft/bod413_accept.py",
-    "raw_output": {
-      "path": "docs/proof/dod/bod-413/parent-confirmation-20261117T050732Z.txt",
-      "sha256": "1ffbe35d36d6b2435854480fbe4718e15c852d3ca8c8e368e75d38a5fc767b04"
-    }
-  }
+  "stays_true_job": "tests/test_direct_gateway_executor.py::test_executor_resolves_key_file_when_env_is_unset and tests/test_credentials_test_action.py::test_credentials_test_resolves_key_file cover the key-file-only path on every PR and push. The hourly verdict-acceptance doctor gate exercises the shared resolver through the credential store on this host, not the key-file branch.",
+  "setup_doctor": {"status": "green", "command": "env -i HOME=$HOME PATH=<system-bin> XDG_RUNTIME_DIR=<run-user> .venv/bin/python -m verdict doctor --json", "at": "2026-11-17T04:56:54Z", "raw_output": {"path": "docs/proof/dod/bod-413/doctor-green-20261117T045650Z.json", "sha256": "aac2dd31a2a32644ed63663f5ede6d9d729a7711f079938744c27ef0323a5d7c"}},
+  "openspec": {"change": "gateway-key-resolver-parity"},
+  "parent_confirmation": {"by": "gem-orchestrator session 20261117", "at": "2026-11-17T06:06:26Z", "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python scripts/bod413_keyfile_live.py", "raw_output": {"path": "docs/proof/dod/bod-413/live-confirm-20261117T060625Z.txt", "sha256": "818c1bf28a683e8b0fce721ad44977c4aa4939e8896e2a2cd700c445d5b5b4dd"}}
 }

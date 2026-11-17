@@ -3,12 +3,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import subprocess
 import tempfile
 from pathlib import Path
-
 
 _REQUIRED_ENV = ("VERDICT_OMNIROUTE_API_KEY", "OMNIROUTE_API_KEY", "OPENAI_API_KEY")
 
@@ -33,17 +31,14 @@ def main() -> int:
         _load_base_url()
 
         sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
+            ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
         ).stdout.strip()
         print(f"sha: {sha}")
         print(f"cwd: {os.getcwd()}")
 
+        from verdict.actions import run_action
         from verdict.credentials_store import resolve_gateway_key
         from verdict.orchestration.executors import DirectGatewayExecutor
-        from verdict.actions import run_action
 
         resolved = resolve_gateway_key()
         if resolved is None:
@@ -60,10 +55,16 @@ def main() -> int:
         print(f"credentials_test_status_is_not_missing: {status != 'missing'}")
         print(f"credentials_test_status_value: {status}")
 
-        output = "\n".join((f"sha: {sha}", f"cwd: {os.getcwd()}", f"resolver_source: {source}",
-            f"executor_auth_is_bearer_file_key: {bearer}",
-            f"credentials_test_status_is_not_missing: {status != 'missing'}",
-            f"credentials_test_status_value: {status}"))
+        output = "\n".join(
+            (
+                f"sha: {sha}",
+                f"cwd: {os.getcwd()}",
+                f"resolver_source: {source}",
+                f"executor_auth_is_bearer_file_key: {bearer}",
+                f"credentials_test_status_is_not_missing: {status != 'missing'}",
+                f"credentials_test_status_value: {status}",
+            )
+        )
         if resolved_key in output:
             raise RuntimeError("key leaked in acceptance output")
         return 0 if result.ok and bearer and status != "missing" else 1
