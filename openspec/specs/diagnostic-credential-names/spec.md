@@ -1,7 +1,9 @@
 # diagnostic-credential-names Specification
 
 ## Purpose
-TBD - created by archiving change redactor-credential-name-false-positive. Update Purpose after archive.
+Verdict diagnostic lines name credentials without reading as a leaked credential to
+`redact_text`, still redact secret shapes in their free text, and never carry a
+credential value.
 
 ## Requirements
 

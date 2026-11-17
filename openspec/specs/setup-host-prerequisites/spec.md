@@ -1,7 +1,9 @@
 # setup-host-prerequisites Specification
 
 ## Purpose
-TBD - created by archiving change bod219-setup-host-prerequisites. Update Purpose after archive.
+`verdict setup` installs the host prerequisites a Verdict host needs (the pinned `ocr`
+reviewer, the `verdict serve` unit with a private env file, and the related timers)
+behind the consent gate, and `verdict doctor` reports each one with its exact repair.
 
 ## Requirements
 

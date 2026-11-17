@@ -1,7 +1,9 @@
 # management-token-resolution Specification
 
 ## Purpose
-TBD - created by archiving change bod219-management-token-resolver. Update Purpose after archive.
+Every Verdict component that needs the OmniRoute management token (serve, doctor,
+subagent selection and the worker runtime) resolves it through the one resolver,
+records where the value came from, and doctor validates the token serve would use.
 
 ## Requirements
 
