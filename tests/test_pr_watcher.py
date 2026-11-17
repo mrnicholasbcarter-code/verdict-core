@@ -85,32 +85,26 @@ class FakeGitHubClient:
         key = (repo, pr_number)
         if key not in self._pr_details:
             raise KeyError(f"no PR details for {repo}/{pr_number}")
-        return dict(self._pr_details[key])
-
-    def get_checks(self, repo: str, sha: str) -> list[dict[str, Any]]:
-        self.checks_calls.append(sha)
-        return list(self._checks.get((repo, sha), []))
-
-    def get_reviews(self, repo: str, pr_number: int) -> list[dict[str, Any]]:
-        return list(self._reviews.get((repo, pr_number), []))
+        details = dict(self._pr_details[key])
+        head = details["head_sha"]
+        self.checks_calls.append(head)
+        return {"commit_oid": head, "checks": list(self._checks.get((repo, head), [])), **details}
 
     def list_merged_prs(self, repo: str, since: str | None) -> list[dict[str, Any]]:
         self.merged_since_calls.append(since)
         if self.merged_listing_error is not None:
             raise self.merged_listing_error
-        prs = self._merged_prs.get(repo, [])
-        if since is None:
-            return list(prs)
-        return [p for p in prs if p["merged_at"] >= since]
+        return [
+            {"reviews": list(self._reviews.get((repo, p["number"]), [])), **p}
+            for p in self._merged_prs.get(repo, [])
+            if since is None or p["merged_at"] >= since
+        ]
 
-    def rerun_check(self, check_run_id: str, repo: str) -> dict[str, Any]:
+    def rerun_check(self, job_id: Any, repo: str) -> dict[str, Any]:
         if self.before_rerun is not None:
             self.before_rerun()
-        self.rerun_calls.append({"check_run_id": check_run_id, "repo": repo})
+        self.rerun_calls.append({"job_id": job_id, "repo": repo})
         return {"status": "queued"}
-
-    def get_check_run(self, check_run_id: str, repo: str) -> dict[str, Any]:
-        return {}
 
 
 class FakeLinearClient:
@@ -275,7 +269,7 @@ class TestExactHeadPolling:
         self, gh: FakeGitHubClient, ws: WatcherState, status: str
     ) -> None:
         """Catches a still-running check being rerun, repaired or reported."""
-        open_pr(gh, 1, "a" * 40, [check("proof-full", None, status, check_run_id="job-1")])
+        open_pr(gh, 1, "a" * 40, [check("proof-full", None, status, job_id="job-1")])
 
         result = run_watcher(gh, ws, [REPO], now=T0)
 
@@ -318,16 +312,14 @@ class TestExactHeadPolling:
             1,
             "a" * 40,
             [
-                check("lint", check_run_id="job-done"),
-                check(
-                    "proof-full", None, "IN_PROGRESS", started_at=started, check_run_id="job-slow"
-                ),
+                check("lint", job_id="job-done"),
+                check("proof-full", None, "IN_PROGRESS", started_at=started, job_id="job-slow"),
             ],
         )
 
         runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(3)]
 
-        assert gh.rerun_calls == [{"check_run_id": "job-slow", "repo": REPO}]
+        assert gh.rerun_calls == [{"job_id": "job-slow", "repo": REPO}]
         assert [r["observations"][0]["action"] for r in runs] == ["RETRY", "BLOCKED", "BLOCKED"]
 
     def test_check_run_id_reaches_github_exactly_as_the_client_reported_it(
@@ -335,11 +327,11 @@ class TestExactHeadPolling:
     ) -> None:
         """Catches the numeric id GitHub reports being rewritten on its way to the rerun."""
         head = "a" * 40
-        open_pr(gh, 1, head, [check("lint", "CANCELLED", check_run_id=987654321)])
+        open_pr(gh, 1, head, [check("lint", "CANCELLED", job_id=987654321)])
 
         run_watcher(gh, ws, [REPO], now=T0)
 
-        assert gh.rerun_calls == [{"check_run_id": 987654321, "repo": REPO}]
+        assert gh.rerun_calls == [{"job_id": 987654321, "repo": REPO}]
         assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr1:{head}:lint:987654321": 1}
 
     def test_optional_failed_check_never_decides_the_result(
@@ -347,7 +339,7 @@ class TestExactHeadPolling:
     ) -> None:
         """Catches a check branch protection does not require causing a repair or a rerun."""
         optional_failure = {**check("Analyze (python)", "FAILURE"), "required": False}
-        optional_cancel = {**check("osv-security / osv-scan", "CANCELLED", check_run_id="job-9")}
+        optional_cancel = {**check("osv-security / osv-scan", "CANCELLED", job_id="job-9")}
         optional_cancel["required"] = False
         open_pr(gh, 1, "a" * 40, [check("lint"), optional_failure, optional_cancel])
 
@@ -379,7 +371,7 @@ class TestExactHeadPolling:
         self, gh: FakeGitHubClient, ws: WatcherState, conclusion: str
     ) -> None:
         """Catches an infrastructure conclusion sitting at PENDING with no action."""
-        open_pr(gh, 1, "a" * 40, [check("test (3.11)", conclusion, check_run_id="job-1")])
+        open_pr(gh, 1, "a" * 40, [check("test (3.11)", conclusion, job_id="job-1")])
 
         runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(3)]
 
@@ -388,7 +380,7 @@ class TestExactHeadPolling:
             [(1, "INFRA_FAILURE", "BLOCKED")],
             [(1, "INFRA_FAILURE", "BLOCKED")],
         ]
-        assert gh.rerun_calls == [{"check_run_id": "job-1", "repo": REPO}]
+        assert gh.rerun_calls == [{"job_id": "job-1", "repo": REPO}]
         assert len(disk(ws)["records"]["block"]) == 1
 
     @pytest.mark.parametrize("conclusion", ["ACTION_REQUIRED", "STALE"])
@@ -396,9 +388,7 @@ class TestExactHeadPolling:
         self, gh: FakeGitHubClient, ws: WatcherState, conclusion: str
     ) -> None:
         """Catches these conclusions being waited on, or the record hiding why it was written."""
-        open_pr(
-            gh, 1, "a" * 40, [check("lint", conclusion, check_run_id="job-1"), check("proof-full")]
-        )
+        open_pr(gh, 1, "a" * 40, [check("lint", conclusion, job_id="job-1"), check("proof-full")])
 
         runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(2)]
 
@@ -413,7 +403,7 @@ class TestExactHeadPolling:
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
         """Catches a naive datetime silently shifting the stall and cursor arithmetic."""
-        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", check_run_id="job-1")])
+        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", job_id="job-1")])
 
         with pytest.raises(ValueError, match="timezone-aware"):
             run_watcher(gh, ws, [REPO], now=datetime(2026, 3, 2, 12, 0, 0))
@@ -635,14 +625,14 @@ class TestStableRerunFencing:
             1,
             head,
             [
-                check("lint", "CANCELLED", check_run_id="job-1"),
-                check("proof-full", "CANCELLED", check_run_id="job-2"),
+                check("lint", "CANCELLED", job_id="job-1"),
+                check("proof-full", "CANCELLED", job_id="job-2"),
             ],
         )
 
         runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(3)]
 
-        assert [c["check_run_id"] for c in gh.rerun_calls] == ["job-1", "job-2"]
+        assert [c["job_id"] for c in gh.rerun_calls] == ["job-1", "job-2"]
         assert [r["observations"][0]["action"] for r in runs] == ["RETRY", "BLOCKED", "BLOCKED"]
         assert disk(ws)["rerun_attempts"] == {
             f"{REPO}:pr1:{head}:lint:job-1": 1,
@@ -651,16 +641,16 @@ class TestStableRerunFencing:
 
     def test_new_head_gets_a_fresh_budget(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
         """Catches a budget keyed without the head, which would block every later push."""
-        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", check_run_id="job-1")])
+        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", job_id="job-1")])
         run_watcher(gh, ws, [REPO], now=T0)
         run_watcher(gh, ws, [REPO], now=T0 + RUN_INTERVAL)
 
         gh.set_open_prs(REPO, [])
-        open_pr(gh, 1, "b" * 40, [check("lint", "CANCELLED", check_run_id="job-2")])
+        open_pr(gh, 1, "b" * 40, [check("lint", "CANCELLED", job_id="job-2")])
         result = run_watcher(gh, ws, [REPO], now=T0 + 2 * RUN_INTERVAL)
 
         assert outcomes(result) == [(1, "CANCELLED", "RETRY")]
-        assert [c["check_run_id"] for c in gh.rerun_calls] == ["job-1", "job-2"]
+        assert [c["job_id"] for c in gh.rerun_calls] == ["job-1", "job-2"]
 
 
 # ============================================================================
@@ -708,11 +698,11 @@ class TestBoundedRecoveryAdapter:
     ) -> None:
         """Catches a run that still reports RETRY after its rerun budget is spent."""
         head = "2" * 40
-        open_pr(gh, 7, head, [check("install-smoke (3.10)", "CANCELLED", check_run_id="job-9")])
+        open_pr(gh, 7, head, [check("install-smoke (3.10)", "CANCELLED", job_id="job-9")])
 
         first = run_watcher(gh, ws, [REPO], now=T0)
         assert first["observations"][0]["action"] == "RETRY"
-        assert gh.rerun_calls == [{"check_run_id": "job-9", "repo": REPO}]
+        assert gh.rerun_calls == [{"job_id": "job-9", "repo": REPO}]
 
         later = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in (1, 2, 3)]
 
@@ -773,7 +763,7 @@ class TestRealCheckNames:
         self, gh: FakeGitHubClient, ws: WatcherState, name: str
     ) -> None:
         """Catches a real name being misread as anything but a passing check."""
-        open_pr(gh, 3, "3" * 40, [check(name, "SUCCESS", check_run_id="job-3")])
+        open_pr(gh, 3, "3" * 40, [check(name, "SUCCESS", job_id="job-3")])
         result = run_watcher(gh, ws, [REPO], now=T0)
 
         assert [(o["classification"], o["action"]) for o in result["observations"]] == [
@@ -789,7 +779,7 @@ class TestRealCheckNames:
     ) -> None:
         """Catches a real name being dropped from, or mangled in, the repair record."""
         head = "4" * 40
-        open_pr(gh, 4, head, [check(name, "FAILURE", check_run_id="job-4")])
+        open_pr(gh, 4, head, [check(name, "FAILURE", job_id="job-4")])
         result = run_watcher(gh, ws, [REPO], now=T0)
 
         assert [(o["classification"], o["action"]) for o in result["observations"]] == [
@@ -807,13 +797,13 @@ class TestRealCheckNames:
     ) -> None:
         """Catches key validation rejecting spaces, parentheses or slashes in a name."""
         head = "6" * 40
-        open_pr(gh, 6, head, [check(name, "CANCELLED", check_run_id="job-6")])
+        open_pr(gh, 6, head, [check(name, "CANCELLED", job_id="job-6")])
         result = run_watcher(gh, ws, [REPO], now=T0)
 
         assert [(o["classification"], o["action"]) for o in result["observations"]] == [
             ("CANCELLED", "RETRY")
         ]
-        assert gh.rerun_calls == [{"check_run_id": "job-6", "repo": REPO}]
+        assert gh.rerun_calls == [{"job_id": "job-6", "repo": REPO}]
         assert disk(ws)["rerun_attempts"] == {f"{REPO}:pr6:{head}:{name}:job-6": 1}
 
 
@@ -852,15 +842,7 @@ class TestCapabilityRestriction:
     def test_client_protocol_is_exactly_reads_and_one_bounded_rerun(self) -> None:
         """Catches a mutation method being added to the interface the watcher is given."""
         public = {name for name in vars(WatcherGitHubClient) if not name.startswith("_")}
-        assert public == {
-            "list_open_prs",
-            "get_pr",
-            "get_checks",
-            "get_reviews",
-            "list_merged_prs",
-            "rerun_check",
-            "get_check_run",
-        }
+        assert public == {"list_open_prs", "get_pr", "list_merged_prs", "rerun_check"}
 
     @pytest.mark.parametrize("method", GITHUB_MUTATIONS)
     def test_github_client_with_a_mutation_method_is_refused(
@@ -869,7 +851,7 @@ class TestCapabilityRestriction:
         """Catches the capability check being skipped, or a forbidden name going unlisted."""
         client_type = type("MutatingClient", (FakeGitHubClient,), {method: lambda self: None})
         gh = client_type()
-        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", check_run_id="job-1")])
+        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", job_id="job-1")])
 
         result = run_watcher(gh, ws, [REPO], now=T0)
 
@@ -909,7 +891,7 @@ class TestSingleWriterIdempotency:
     ) -> None:
         """Catches the same exact-head invocation doing its work twice."""
         open_pr(gh, 1, "a" * 40, [check("lint", "FAILURE")], linear_issue="ENG-1")
-        open_pr(gh, 2, "b" * 40, [check("proof-full", "CANCELLED", check_run_id="job-2")])
+        open_pr(gh, 2, "b" * 40, [check("proof-full", "CANCELLED", job_id="job-2")])
 
         first = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
         second = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
@@ -931,13 +913,7 @@ class TestSingleWriterIdempotency:
         self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient
     ) -> None:
         """Catches a second watcher on the same directory running alongside the first."""
-        open_pr(
-            gh,
-            1,
-            "a" * 40,
-            [check("lint", "CANCELLED", check_run_id="job-1")],
-            linear_issue="ENG-1",
-        )
+        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", job_id="job-1")], linear_issue="ENG-1")
         holder = WatcherState(ws.state_dir)
         holder.acquire_lock()
         try:
@@ -1002,7 +978,7 @@ class TestCodeAndMergeFailures:
     ) -> None:
         """Catches a merge-state failure being hidden behind passing checks."""
         head = "c" * 40
-        open_pr(gh, 1, head, [check("test (3.11)", check_run_id="job-1")], mergeable, merge_state)
+        open_pr(gh, 1, head, [check("test (3.11)", job_id="job-1")], mergeable, merge_state)
 
         result = run_watcher(gh, ws, [REPO], now=T0)
 
@@ -1053,7 +1029,7 @@ class TestTransitionNotifications:
     ) -> None:
         """Catches the digest event being tied to the Linear client being present."""
         head = "f" * 40
-        open_pr(gh, 1, head, [check("lint", "FAILURE", check_run_id="job-1")])
+        open_pr(gh, 1, head, [check("lint", "FAILURE", job_id="job-1")])
 
         runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(3)]
 
@@ -1067,7 +1043,7 @@ class TestTransitionNotifications:
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
         """Catches the RETRY -> BLOCKED transition passing silently."""
-        open_pr(gh, 2, "b" * 40, [check("proof-full", "CANCELLED", check_run_id="job-2")])
+        open_pr(gh, 2, "b" * 40, [check("proof-full", "CANCELLED", job_id="job-2")])
 
         runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(4)]
 
@@ -1228,13 +1204,7 @@ class TestMalformedState:
         self, gh: FakeGitHubClient, ws: WatcherState, linear: FakeLinearClient, payload: str
     ) -> None:
         """Catches a damaged state file being read as empty, which would reset every budget."""
-        open_pr(
-            gh,
-            1,
-            "a" * 40,
-            [check("lint", "CANCELLED", check_run_id="job-1")],
-            linear_issue="ENG-1",
-        )
+        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", job_id="job-1")], linear_issue="ENG-1")
         ws.state_file.write_text(payload)
 
         result = run_watcher(gh, ws, [REPO], linear=linear, now=T0)
@@ -1248,7 +1218,7 @@ class TestMalformedState:
 
     def test_unreadable_state_fails_closed(self, gh: FakeGitHubClient, ws: WatcherState) -> None:
         """Catches an unreadable state path being treated as a missing one."""
-        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", check_run_id="job-1")])
+        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", job_id="job-1")])
         ws.state_file.mkdir()
 
         result = run_watcher(gh, ws, [REPO], now=T0)
@@ -1363,7 +1333,7 @@ class TestPathSafeKeys:
         self, gh: FakeGitHubClient, ws: WatcherState, repo: str
     ) -> None:
         """Catches an unsafe key reaching the state file, or the run acting anyway."""
-        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", check_run_id="job-1")], repo=repo)
+        open_pr(gh, 1, "a" * 40, [check("lint", "CANCELLED", job_id="job-1")], repo=repo)
 
         result = run_watcher(gh, ws, [repo], now=T0)
 
@@ -1376,7 +1346,7 @@ class TestPathSafeKeys:
         self, gh: FakeGitHubClient, ws: WatcherState
     ) -> None:
         """Catches untrusted check text being used as key material without validation."""
-        open_pr(gh, 1, "a" * 40, [check("lint/../../x", "CANCELLED", check_run_id="job-1")])
+        open_pr(gh, 1, "a" * 40, [check("lint/../../x", "CANCELLED", job_id="job-1")])
 
         result = run_watcher(gh, ws, [REPO], now=T0)
 
@@ -1465,7 +1435,7 @@ class TestStateBeforeSideEffects:
     ) -> None:
         """Catches a rerun sent before the counter, classification, transition or cursor is saved."""
         head = "a" * 40
-        open_pr(gh, 42, head, [check("proof-full", "CANCELLED", check_run_id="job-1")])
+        open_pr(gh, 42, head, [check("proof-full", "CANCELLED", job_id="job-1")])
         seen: list[dict[str, Any]] = []
         gh.before_rerun = lambda: seen.append(disk(ws))
 
@@ -1482,7 +1452,7 @@ class TestStateBeforeSideEffects:
     ) -> None:
         """Catches a restarted watcher re-taking an attempt it had already written down."""
         head = "a" * 40
-        open_pr(gh, 42, head, [check("proof-full", "CANCELLED", check_run_id="job-1")])
+        open_pr(gh, 42, head, [check("proof-full", "CANCELLED", job_id="job-1")])
 
         def die() -> None:
             raise Killed
@@ -1511,7 +1481,7 @@ class TestStateBeforeSideEffects:
             gh,
             1,
             "a" * 40,
-            [check("proof-full", "CANCELLED", check_run_id="job-1")],
+            [check("proof-full", "CANCELLED", job_id="job-1")],
             linear_issue="ENG-1",
         )
 
@@ -1652,12 +1622,12 @@ class TestInfraNamedFailure:
     ) -> None:
         """Catches a rerun on every poll, and a block record on every poll after it."""
         head = "a" * 40
-        open_pr(gh, 1, head, [check(INFRA_NAMED_CHECK, "FAILURE", check_run_id="job-1")])
+        open_pr(gh, 1, head, [check(INFRA_NAMED_CHECK, "FAILURE", job_id="job-1")])
 
         runs = [run_watcher(gh, ws, [REPO], now=T0 + n * RUN_INTERVAL) for n in range(5)]
 
         assert [r["observations"][0]["classification"] for r in runs] == ["INFRA_FAILURE"] * 5
-        assert gh.rerun_calls == [{"check_run_id": "job-1", "repo": REPO}]
+        assert gh.rerun_calls == [{"job_id": "job-1", "repo": REPO}]
         state = disk(ws)
         assert state["rerun_attempts"] == {f"{REPO}:pr1:{head}:{INFRA_NAMED_CHECK}:job-1": 1}
         assert [b["idempotency_key"] for b in state["records"]["block"]] == [

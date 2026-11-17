@@ -106,7 +106,7 @@ def poll_open_prs(
         pr_num = pr["number"]
 
         # Fetch checks at exact head
-        checks = gh.get_checks(repo, head)
+        checks = gh.get_pr(repo, pr_num)["checks"]
 
         # Only the checks branch protection requires decide the result; the
         # client reports that flag per check.
@@ -223,7 +223,7 @@ def reconcile_merged_prs(
     for pr in merged_prs:
         pr_num = pr["number"]
         head = pr["head_sha"]
-        reviews = gh.get_reviews(repo, pr_num)
+        reviews = pr["reviews"]
 
         # Check for CHANGES_REQUESTED
         has_changes_requested = any(r["state"] == "CHANGES_REQUESTED" for r in reviews)
@@ -362,7 +362,7 @@ def _plan_observation(
         # its own persisted budget is rerun once. The action is BLOCKED only
         # when no key has budget left, which holds on every later run too.
         keyed = [
-            (rerun_key(repo, pr_number, head, c["name"], c.get("check_run_id", "")), c)
+            (rerun_key(repo, pr_number, head, c["name"], c.get("job_id", "")), c)
             for c in obs["rerun_targets"]
         ]
         within_budget = [
@@ -371,7 +371,7 @@ def _plan_observation(
         action = _adapter_action(classification, 0 if within_budget else max_attempts, max_attempts)
         obs["action"] = action
         plan.reruns.extend(
-            (repo, pr_number, head, c["name"], c.get("check_run_id", "")) for c in within_budget
+            (repo, pr_number, head, c["name"], c.get("job_id", "")) for c in within_budget
         )
 
     if action == "REPAIR":

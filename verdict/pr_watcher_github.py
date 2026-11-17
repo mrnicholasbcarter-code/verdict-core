@@ -22,11 +22,8 @@ class WatcherGitHubClient(Protocol):
 
     def list_open_prs(self, repo: str) -> list[dict[str, Any]]: ...
     def get_pr(self, repo: str, pr_number: int) -> dict[str, Any]: ...
-    def get_checks(self, repo: str, sha: str) -> list[dict[str, Any]]: ...
-    def get_reviews(self, repo: str, pr_number: int) -> list[dict[str, Any]]: ...
-    def list_merged_prs(self, repo: str, since: str | None) -> list[dict[str, Any]]: ...
-    def rerun_check(self, check_run_id: str, repo: str) -> dict[str, Any]: ...
-    def get_check_run(self, check_run_id: str, repo: str) -> dict[str, Any]: ...
+    def list_merged_prs(self, repo: str, since: str) -> list[dict[str, Any]]: ...
+    def rerun_check(self, job_id: int | str, repo: str) -> dict[str, Any]: ...
 
 
 # --- Capability verification -----------------------------------------------------
@@ -103,9 +100,10 @@ class _GhApiClient:
             "mergeable": data.get("mergeable"),
             "merge_state_status": data.get("mergeable_state", ""),
             "state": data["state"],
+            "checks": self._checks(repo, data["head"]["sha"]),
         }
 
-    def get_checks(self, repo: str, sha: str) -> list[dict[str, Any]]:
+    def _checks(self, repo: str, sha: str) -> list[dict[str, Any]]:
         import json
 
         data: dict[str, Any] = json.loads(self._call(f"repos/{repo}/commits/{sha}/check-runs"))
@@ -117,12 +115,12 @@ class _GhApiClient:
                     "status": cr["status"],
                     "conclusion": cr.get("conclusion"),
                     "head_sha": cr.get("head_sha", sha),
-                    "check_run_id": cr["id"],
+                    "job_id": cr["id"],
                 }
             )
         return result
 
-    def get_reviews(self, repo: str, pr_number: int) -> list[dict[str, Any]]:
+    def _reviews(self, repo: str, pr_number: int) -> list[dict[str, Any]]:
         import json
 
         data: list[dict[str, Any]] = json.loads(
@@ -130,7 +128,7 @@ class _GhApiClient:
         )
         return [{"state": r["state"], "id": r["id"]} for r in data]
 
-    def list_merged_prs(self, repo: str, since: str | None) -> list[dict[str, Any]]:
+    def list_merged_prs(self, repo: str, since: str) -> list[dict[str, Any]]:
         import json
 
         q = f"repo:{repo} is:pr is:merged"
@@ -145,21 +143,15 @@ class _GhApiClient:
                     "head_sha": item["head"]["sha"],
                     "merged_at": item.get("closed_at", ""),
                     "state": "closed",
+                    "reviews": self._reviews(repo, item["number"]),
                 }
             )
         return result
 
-    def rerun_check(self, check_run_id: str, repo: str) -> dict[str, Any]:
+    def rerun_check(self, job_id: int | str, repo: str) -> dict[str, Any]:
         import json
 
-        data = json.loads(self._call(f"repos/{repo}/check-runs/{check_run_id}/rerun"))
-        assert isinstance(data, dict)
-        return data
-
-    def get_check_run(self, check_run_id: str, repo: str) -> dict[str, Any]:
-        import json
-
-        data = json.loads(self._call(f"repos/{repo}/check-runs/{check_run_id}"))
+        data = json.loads(self._call(f"repos/{repo}/check-runs/{job_id}/rerun"))
         assert isinstance(data, dict)
         return data
 
