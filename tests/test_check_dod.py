@@ -1196,3 +1196,28 @@ def test_orchestrate_result_missing_one_key_names_that_key(repo, key):
     _orchestrate_evidence(root, evidence, json.dumps(result))
     errors = [e for e in _check(root, evidence) if "is not the run's result JSON" in e]
     assert len(errors) == 3 and all(f"(missing: {key}; stdout only)" in e for e in errors), errors
+
+
+@pytest.mark.parametrize("which", ["acceptance.0.first_run", "parent_confirmation"])
+def test_missing_artifact_is_reported_once(repo, which):
+    root, evidence = repo
+    changed = _mutate(evidence, f"{which}.raw_output.path", "docs/proof/dod/absent.txt")
+    errors = _check(root, changed)
+    assert len([e for e in errors if "is missing" in e]) == 1, errors
+
+
+def test_each_run_citation_reads_its_artifact_once(repo, monkeypatch):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    _second_criterion_citing_the_same_runs(evidence)
+    read: list[str] = []
+    real = check_dod._artifact
+
+    def counting(root_, artifact, where, errors):
+        read.append(artifact["path"])
+        return real(root_, artifact, where, errors)
+
+    monkeypatch.setattr(check_dod, "_artifact", counting)
+    assert _check(root, evidence) == []
+    # on_main, then four acceptance citations of two runs, then the confirmation.
+    assert len(read) == 6 and len(set(read)) == 4, read

@@ -345,6 +345,8 @@ def check_evidence(root: Path, path: Path) -> list[str]:
     window = timedelta(hours=evidence["freshness_window_hours"])
     expected: dict[str, str] = {}
     wanted: dict[str, int] = {}
+    # Text of each run's raw output by location, read once and reused below.
+    texts: dict[str, str | None] = {}
     for index, item in enumerate(evidence["acceptance"]):
         want = item.get("expect_exit_code", 0)
         first, fresh = item["first_run"], item["fresh_run"]
@@ -352,7 +354,7 @@ def check_evidence(root: Path, path: Path) -> list[str]:
         wanted[first["command"]] = want
         for label, run in (("first_run", first), ("fresh_run", fresh)):
             where = f"acceptance[{index}].{label}"
-            text = _run(root, evidence, run, where, errors)
+            text = texts[where] = _run(root, evidence, run, where, errors)
             if text is not None and item["expect"] not in text:
                 errors.append(f"{where}: expected text is not in the raw output")
             if run["exit_code"] != want:
@@ -380,6 +382,9 @@ def check_evidence(root: Path, path: Path) -> list[str]:
     ]
     confirmation = evidence["parent_confirmation"]
     run_artifacts.append(("parent_confirmation", confirmation))
+    texts["parent_confirmation"] = _artifact(
+        root, confirmation["raw_output"], "parent_confirmation", errors
+    )
     cited: set[tuple[str, str, str, str]] = set()
     seen_files: dict[Path, str] = {}
     seen_digests: dict[str, str] = {}
@@ -396,7 +401,7 @@ def check_evidence(root: Path, path: Path) -> list[str]:
         file = (root / run["raw_output"]["path"]).resolve()
         reused = seen_files.get(file)
         seen_files.setdefault(file, where)
-        text = _artifact(root, run["raw_output"], where, errors)
+        text = texts[where]
         result = None
         if text is not None and text == text.lstrip():
             result = _structured_result(text.rstrip())
@@ -421,7 +426,7 @@ def check_evidence(root: Path, path: Path) -> list[str]:
         errors.append("parent_confirmation: command is not one of the acceptance commands")
     if _time(confirmation["at"]) < merged_at:
         errors.append("parent_confirmation: confirmed before the merge")
-    text = _artifact(root, confirmation["raw_output"], "parent_confirmation", errors)
+    text = texts["parent_confirmation"]
     if text is not None:
         # The confirmation re-runs one acceptance command and must end as that item expects.
         _check_run_truth(
