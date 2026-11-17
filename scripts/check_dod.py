@@ -130,9 +130,24 @@ def _structured_result(text: str) -> dict[str, Any] | None:
     return result if required <= result.keys() else None
 
 
+def _requires_result_json(command: str, want: int) -> bool:
+    """Whether a run of ``command`` that should exit ``want`` must record result JSON.
+
+    ``verdict orchestrate --json`` prints its result when it exits 0 or 1. Any other
+    exit code is a startup block: one line on stderr and nothing on stdout.
+    """
+    return want in (0, 1) and _is_orchestrate_json_command(command)
+
+
 def _check_run_truth(
-    run: dict[str, Any], text: str, where: str, errors: list[str], *, required: bool = False
+    run: dict[str, Any], text: str, where: str, errors: list[str], *, want: int = 0
 ) -> None:
+    """Check a run against its own structured result.
+
+    ``want`` is the exit code its acceptance item expects. An acceptance run records
+    its exit code; a parent confirmation records none and is judged by ``want``.
+    """
+    required = _requires_result_json(run["command"], want)
     result = _structured_result(text.rstrip()) if text == text.lstrip() else None
     if result is None:
         if required:
@@ -178,7 +193,15 @@ def _check_run_truth(
                 f"started_at {result['started_at']} to finished_at {result['finished_at']} (5 minute tolerance)"
             )
     if "exit_code" not in run:
-        if outcome != "COMPLETE":
+        if want != 0:
+            # A story that proves a blocked run: the confirmation must be blocked too.
+            if complete:
+                errors.append(
+                    f"{where}: outcome {outcome}, but the acceptance item expects exit code {want} "
+                    "(an outcome other than COMPLETE required)"
+                )
+            return
+        if not complete:
             errors.append(f"{where}: outcome {outcome} is not COMPLETE (COMPLETE required)")
         review = result.get("review")
         status = review.get("status") if isinstance(review, dict) else None
@@ -321,10 +344,12 @@ def check_evidence(root: Path, path: Path) -> list[str]:
 
     window = timedelta(hours=evidence["freshness_window_hours"])
     expected: dict[str, str] = {}
+    wanted: dict[str, int] = {}
     for index, item in enumerate(evidence["acceptance"]):
         want = item.get("expect_exit_code", 0)
         first, fresh = item["first_run"], item["fresh_run"]
         expected[first["command"]] = item["expect"]
+        wanted[first["command"]] = want
         for label, run in (("first_run", first), ("fresh_run", fresh)):
             where = f"acceptance[{index}].{label}"
             text = _run(root, evidence, run, where, errors)
@@ -333,9 +358,7 @@ def check_evidence(root: Path, path: Path) -> list[str]:
             if run["exit_code"] != want:
                 errors.append(f"{where}: exit code {run['exit_code']}, expected {want}")
             if text is not None:
-                _check_run_truth(
-                    run, text, where, errors, required=_is_orchestrate_json_command(run["command"])
-                )
+                _check_run_truth(run, text, where, errors, want=want)
         if _time(first["at"]) < merged_at:
             errors.append(f"acceptance[{index}].first_run: ran before the merge")
         if fresh["command"] != first["command"]:
@@ -382,12 +405,13 @@ def check_evidence(root: Path, path: Path) -> list[str]:
         errors.append("parent_confirmation: confirmed before the merge")
     text = _artifact(root, confirmation["raw_output"], "parent_confirmation", errors)
     if text is not None:
+        # The confirmation re-runs one acceptance command and must end as that item expects.
         _check_run_truth(
             confirmation,
             text,
             "parent_confirmation",
             errors,
-            required=_is_orchestrate_json_command(confirmation["command"]),
+            want=wanted.get(confirmation["command"], 0),
         )
     if text is not None and expected.get(confirmation["command"], "\0") not in text:
         errors.append("parent_confirmation: expected text is not in the raw output")

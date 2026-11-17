@@ -884,3 +884,102 @@ def test_main_prints_a_lone_surrogate_from_raw_output_without_raising(repo, caps
     path.write_text(json.dumps(evidence), encoding="utf-8")
     assert check_dod.main(["--root", str(root), str(path)]) == 1
     assert "disagrees with outcome \\ud800" in capsys.readouterr().out
+
+
+def _negative_orchestrate_story(root, evidence, outputs, *, expect_exit_code, expect):
+    """An orchestrate story whose acceptance is a non-zero exit; one output per run."""
+    item = evidence["acceptance"][0]
+    item["expect_exit_code"] = expect_exit_code
+    item["expect"] = expect
+    confirmation = evidence["parent_confirmation"]
+    times = ("2099-01-01T00:05:00Z", "2099-01-02T00:05:00Z", "2099-01-03T00:05:00Z")
+    runs = (item["first_run"], item["fresh_run"], confirmation)
+    for index, (run, output, at) in enumerate(zip(runs, outputs, times, strict=True)):
+        run["command"] = ORCH_COMMAND
+        run["at"] = at
+        run["raw_output"] = _artifact(root, f"negative-{index}.txt", output)
+        if run is not confirmation:
+            run["exit_code"] = expect_exit_code
+
+
+def _blocked_result(day: int, *, outcome="BLOCKED", review_status="MISSING") -> str:
+    return _structured_result(
+        outcome=outcome,
+        review_status=review_status,
+        run_id=f"blocked-{day}",
+        started_at=f"2099-01-0{day}T00:00:00Z",
+        finished_at=f"2099-01-0{day}T00:10:00Z",
+    )
+
+
+def test_honest_blocked_story_with_expected_exit_one_passes(repo):
+    root, evidence = repo
+    _negative_orchestrate_story(
+        root,
+        evidence,
+        [_blocked_result(1), _blocked_result(2), _blocked_result(3)],
+        expect_exit_code=1,
+        expect="FAILED as intended",
+    )
+    assert _check(root, evidence) == []
+
+
+def test_complete_confirmation_fails_a_story_that_expects_exit_one(repo):
+    root, evidence = repo
+    _negative_orchestrate_story(
+        root,
+        evidence,
+        [
+            _blocked_result(1),
+            _blocked_result(2),
+            _blocked_result(3, outcome="COMPLETE", review_status="PASS"),
+        ],
+        expect_exit_code=1,
+        expect="FAILED as intended",
+    )
+    errors = _check(root, evidence)
+    assert [e for e in errors if e.startswith("parent_confirmation")] == [
+        "parent_confirmation: outcome COMPLETE, but the acceptance item expects exit code 1 "
+        "(an outcome other than COMPLETE required)"
+    ], errors
+
+
+STARTUP_BLOCK = "BLOCKED: set VERDICT_OMNIROUTE_API_KEY for the OmniRoute gateway"
+
+
+def test_expected_exit_two_is_checked_as_plain_text(repo):
+    # orchestrate exits 2 before it prints a result: one stderr line, no JSON.
+    root, evidence = repo
+    _negative_orchestrate_story(
+        root,
+        evidence,
+        [f"{RUN_URL}\n{STARTUP_BLOCK}\nrun {index}\n" for index in range(3)],
+        expect_exit_code=2,
+        expect=STARTUP_BLOCK,
+    )
+    assert _check(root, evidence) == []
+
+
+def test_expected_exit_one_still_requires_the_result_json(repo):
+    root, evidence = repo
+    _negative_orchestrate_story(
+        root,
+        evidence,
+        [f"{RUN_URL}\n{STARTUP_BLOCK}\nrun {index}\n" for index in range(3)],
+        expect_exit_code=1,
+        expect=STARTUP_BLOCK,
+    )
+    errors = _check(root, evidence)
+    assert len([e for e in errors if "is not the run's result JSON" in e]) == 3, errors
+
+
+def test_expected_exit_zero_confirmation_still_needs_complete_and_pass(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _structured_result() + "\n")
+    evidence["acceptance"][0]["expect_exit_code"] = 0
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root, "blocked-confirm-zero.json", _blocked_result(1)
+    )
+    errors = _check(root, evidence)
+    assert "parent_confirmation: outcome BLOCKED is not COMPLETE (COMPLETE required)" in errors
+    assert "parent_confirmation: review status MISSING is not PASS (PASS required)" in errors
