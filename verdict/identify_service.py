@@ -1,4 +1,4 @@
-"""Passive identify maintenance and explicitly bounded daily qualification units."""
+"""Passive identify maintenance and explicitly bounded six-hourly screening units."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ SERVICE = "verdict-identify.service"
 TIMER = "verdict-identify.timer"
 SCREEN_SERVICE = "verdict-identify-screen.service"
 SCREEN_TIMER = "verdict-identify-screen.timer"
-# D3 defaults approved by the operator on 2026-10-21; measure host outcomes.
+# 2026-11-17 operator objective: cover the stale route inventory.
 PASSIVE_INTERVAL_SECONDS = 3 * 60 * 60
 SCREEN_CALENDAR = "*-*-* 00/6:00:00"
 SCREEN_MAX_PER_PROVIDER = 16
@@ -193,7 +193,7 @@ def manage_service(
         + f"ExecStart={prefix} --screen --allow-live-probe --capacity {SCREEN_CAPACITY} --max-per-provider {SCREEN_MAX_PER_PROVIDER} --max-routes {SCREEN_MAX_ROUTES} --json\nTimeoutStartSec=30min\n",
         TIMER: "[Unit]\nDescription=Verdict passive identification timer\n[Timer]\nOnBootSec=2min\n"
         + f"OnUnitActiveSec={PASSIVE_INTERVAL_SECONDS}\nUnit={SERVICE}\n[Install]\nWantedBy=timers.target\n",
-        SCREEN_TIMER: "[Unit]\nDescription=Verdict daily bounded screening timer\n[Timer]\n"
+        SCREEN_TIMER: "[Unit]\nDescription=Verdict six-hourly bounded screening timer\n[Timer]\n"
         + f"OnCalendar={SCREEN_CALENDAR}\nPersistent=true\nUnit={SCREEN_SERVICE}\n[Install]\nWantedBy=timers.target\n",
     }
     plan = plan_units(directory, files, uninstall=uninstall)

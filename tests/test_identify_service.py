@@ -1,4 +1,4 @@
-"""Identify maintenance uses read-only reporting and bounded daily qualification."""
+"""Identify maintenance uses read-only reporting and bounded six-hourly screening."""
 
 import io
 import json
@@ -56,10 +56,14 @@ def test_units_install_idempotently_and_uninstall(tmp_path):
     assert int(argv[argv.index("--max-per-provider") + 1]) == SCREEN_MAX_PER_PROVIDER > 0
     assert int(argv[argv.index("--max-routes") + 1]) == SCREEN_MAX_ROUTES > 0
     assert f"OnUnitActiveSec={PASSIVE_INTERVAL_SECONDS}" in dry["files"][TIMER]
-    assert f"OnCalendar={SCREEN_CALENDAR}" in dry["files"][SCREEN_TIMER]
-    assert "--max-per-provider 16 --max-routes 40" in screen
-    assert "TimeoutStartSec=30min" in screen
-    assert "OnCalendar=*-*-* 00/6:00:00" in dry["files"][SCREEN_TIMER]
+    screen_lines = screen.splitlines()
+    timer_lines = dry["files"][SCREEN_TIMER].splitlines()
+    assert screen_lines[-2].endswith(
+        "--screen --allow-live-probe --capacity free,subscription "
+        "--max-per-provider 16 --max-routes 40 --json"
+    )
+    assert "TimeoutStartSec=30min" in screen_lines
+    assert "OnCalendar=*-*-* 00/6:00:00" in timer_lines
     assert "prove-at-rest" not in str(dry) and "census" not in str(dry)
     first = manage_service(unit_dir=directory, run=commands.append)
     assert first["changed"] and len(list(directory.iterdir())) == 4
@@ -222,6 +226,7 @@ def test_setup_installs_identify_not_legacy(monkeypatch):
     _warm_cache(ui, answers.__next__, "http://localhost:20128", notes)
     assert calls == [{"dry_run": False}]
     assert any("Identify" in note for note in notes)
+    assert any("every 6 hours" in note for note in notes)
 
 
 def test_screen_capacity_comma_list_reaches_domain(monkeypatch, capsys):

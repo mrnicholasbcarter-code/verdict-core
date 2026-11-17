@@ -2,13 +2,16 @@
 
 ## ADDED Requirements
 
-### Requirement: Scheduled screening covers every stale route
+### Requirement: Scheduled screening runs every six hours with larger bounded caps
 
-The scheduled screen MUST probe every free and subscription route whose agentic proof is missing or stale, subject to the existing consent and budget rules, rather than limiting the run to a fixed count of routes. The screen MUST remain bounded by a wall-clock timeout.
+Each scheduled screen run MUST run every six hours and probe at most 40 stale free and subscription routes (a shared cap) and at most 16 routes per provider, in task-rating order. It MUST use the existing explicit live-probe consent and budget rules and remain within the screen's built-in 600-second wall budget. `TimeoutStartSec=30min` is only a systemd backstop above that built-in budget.
 
-#### Scenario: Stale inventory is screened
+Routes not reached because a cap or the wall budget was reached MUST be reported as `skipped_cap` or `skipped_deadline`, with `stopped_reason` `route_cap`, `provider_cap`, or `wall_cap` as applicable, and left for a later run. The command still exits successfully when it reports these bounded skips.
 
-- **WHEN** the scheduled screen runs with explicit live-probe consent
-- **THEN** every free and subscription route without fresh agentic proof is eligible for screening
-- **AND** the run stops within its configured wall-clock budget
-- **AND** routes with fresh proof are skipped
+#### Scenario: Six-hourly run screens the highest-rated stale routes within bounds
+
+- **WHEN** a scheduled screen runs with explicit live-probe consent
+- **THEN** it considers stale free and subscription routes in task-rating order
+- **AND** probes no more than 40 routes across both capacities and no more than 16 routes for any provider
+- **AND** stops at the built-in 600-second wall budget if that is reached first
+- **AND** reports routes not reached as `skipped_cap` or `skipped_deadline` for the next run
