@@ -99,7 +99,7 @@ Missing connection row → UNKNOWN. It fails entitlement.
 - **THEN** its METERED classification extends 24h from that new 402
 
 ### Requirement: ReliabilityObservation v1
-One observation schema, `ReliabilityObservation v1`, mapped onto `strength_profiles.StrengthObservation`:
+The system SHALL record one observation schema, `ReliabilityObservation v1`, mapped onto `strength_profiles.StrengthObservation`:
 - `route_id` (canonical, alias-collapsed)
 - `served_model` (from the call log or response headers)
 - `pool`
@@ -140,7 +140,7 @@ A gateway log matching a Verdict attempt by request id is merged, never counted 
 - **THEN** at most 1 in 10 nodes and 3 per route per run may explore, labelled `exploration=true`
 
 ### Requirement: Quota Sharing Contract
-`QuotaView` protocol (frozen in T3): `state(pool, now)` → `{status: open|pressure|cooldown|exhausted, until, reason}`. In T3-T5 it is a no-op that always returns `open`.
+The system SHALL implement the `QuotaView` protocol (frozen in T3): `state(pool, now)` → `{status: open|pressure|cooldown|exhausted, until, reason}`. In T3-T5 it SHALL be a no-op that always returns `open`.
 
 **Store**: One JSON file under `VERDICT_HOME`, `fcntl LOCK_EX` read-modify-write, atomic `os.replace` (same pattern as `orchestration/health_cache.py`). Every update is atomic across processes (orchestrator, escalation, and worker harnesses share it).
 
@@ -225,7 +225,7 @@ The `events.jsonl` record type `role_ladder.shadow`, `schema_version 1` SHALL co
 - **THEN** the `correlation_id` in the shadow event matches the dispatch record
 
 ### Requirement: Flag Modes (Off/Shadow/On) Per Entry Point
-**Flag**: `VERDICT_DYNAMIC_SELECTION=off|shadow|on`, default `off`.
+The system SHALL support the flag `VERDICT_DYNAMIC_SELECTION=off|shadow|on`, defaulting to `off`.
 
 **Off**: Permanent fail-safe and rollback path. Uses legacy selection algorithm and defaults identically. The one declared exception is the BOD-342 D22 lift (operator 2026-11-17), which is a policy change in every mode. Off is never removed; T12 may delete a legacy constant only when off no longer reads it.
 
@@ -262,7 +262,7 @@ The `events.jsonl` record type `role_ladder.shadow`, `schema_version 1` SHALL co
 - **THEN** `/v1/chat/completions` and `/v1/responses` relay behavior is identical to off
 
 ### Requirement: Reviewer Independence
-Reviewer independence is a hard constraint for protected or high-risk work. If no route from a distinct family AND a distinct pool exists, the review fails closed with `reviewer_independence_unavailable`. For low/medium risk it falls back to a distinct pool of the same family, with receipt reason `reviewer_same_family_fallback`. A same-pool reviewer is never allowed.
+Reviewer independence SHALL be a hard constraint for protected or high-risk work. If no route from a distinct family AND a distinct pool exists, the review SHALL fail closed with `reviewer_independence_unavailable`. For low/medium risk it SHALL fall back to a distinct pool of the same family, with receipt reason `reviewer_same_family_fallback`. A same-pool reviewer SHALL never be allowed.
 
 The served author model family is checked from call logs.
 
@@ -279,7 +279,7 @@ The served author model family is checked from call logs.
 - **THEN** the review fails closed with `reviewer_independence_unavailable`
 
 ### Requirement: Controller Role
-The controller is a first-class role. Its ladder decides which route the harness root should run. It is also the fence: worker, reviewer, and escalation ladders exclude the controller's served route and, under quota pressure, give way to it. `CONTROLLER_MODEL(S)` constants become legacy-only (retained for off mode). The fence reads the served controller identity from the controller role (same source as `subagent_selection`) in shadow/on; the literal set stays for off mode only.
+The controller SHALL be a first-class role. Its ladder SHALL decide which route the harness root runs. It SHALL also act as the fence: worker, reviewer, and escalation ladders SHALL exclude the controller's served route and, under quota pressure, give way to it. `CONTROLLER_MODEL(S)` constants become legacy-only (retained for off mode). The fence reads the served controller identity from the controller role (same source as `subagent_selection`) in shadow/on; the literal set stays for off mode only.
 
 #### Scenario: Controller fence excludes controller route from workers
 - **WHEN** the controller ladder selects a route
@@ -311,7 +311,7 @@ Every hardcoded model reference in the codebase SHALL carry a disposition:
 - **THEN** operator files are read but never modified by Verdict
 
 ### Requirement: T12 Cleanup Limits
-After L1-L5 have passed on main for 14 consecutive days with no rollback, a new OpenSpec change `dynamic-role-selection-legacy-cleanup` may remove constants and branches that no path still reads. `VERDICT_DYNAMIC_SELECTION=off` is kept permanently as the emergency fail-safe and the T11 rollback, and its legacy selection path keeps working. The change removes only constants and branches that no path still reads. Any constant that off needs stays. The task may be cut if nothing qualifies.
+After L1-L5 have passed on main for 14 consecutive days with no rollback, a new OpenSpec change `dynamic-role-selection-legacy-cleanup` MAY remove constants and branches that no path still reads. `VERDICT_DYNAMIC_SELECTION=off` SHALL be kept permanently as the emergency fail-safe and the T11 rollback, and its legacy selection path SHALL keep working. The change SHALL remove only constants and branches that no path still reads. Any constant that off needs SHALL stay. The task MAY be cut if nothing qualifies.
 
 **Never remove**: Flag value `off` or its legacy selection path.
 
