@@ -21,7 +21,7 @@ Verdict implements a dynamic model selection pipeline for orchestration roles. T
 - **S2: Role Narrowing (Remove-Only)** — Iteratively removes candidates. Each removal carries a skip reason:
   - **Capacity**: Role policy over capacity class + confidence (single enforcement point: `capacity_policy.role_capacity_allowed`).
   - **Quota**: `QuotaView` check for cooldown/reserve (hysteresis, monotonic cooldowns, role reserve order).
-  - **Pool**: Keeps the best-ordered route per backend pool (aliased pools included).
+  - **Pool**: Keeps at most one route, the best-ordered, per quota pool in every ladder. The quota pool is `provider_catalog.backend_pool(route_id)` with aliases resolved by `aliased_pools_for`; routes in one backend pool share quota.
   - **Family**: Enforces reviewer independence, controller fence, implementer exclusion.
   - **Measured Demotion**: Removes routes with role-scoped non-completion (Wilson upper bound < 0.5 at ≥ 20 attempts).
   - **Operator Override**: Applies explicit exclusions from the operator override file.

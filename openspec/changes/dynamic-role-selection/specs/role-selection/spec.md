@@ -10,7 +10,7 @@ The orchestrator dynamically selects models for different roles (Planner, Implem
 The selection SHALL follow a four-stage pipeline:
 1. **Inventory (S0)**: Start with live `/v1/models` rows (or a fixture labelled `fixture=true`). Output H0.
 2. **Admission (S1)**: Apply the existing admission ladder and eligibility floors (`verdict/admission.py`, `eligibility.py`, `orchestration/eligibility.py`). Opaque `auto/*` and `combo/*` are removed here. Unknown runtime is never healthy. Output canonical AdmittedSet, H1. Dynamic selection never calls anything that adds to this set.
-3. **Narrowing (S2)**: Remove candidates based on Capacity, Quota, Pool, Family, Measured Demotion, and Operator Override. Each removal carries a skip reason. Output H2 plus skip list `[{route_id, stage, reason}]`.
+3. **Narrowing (S2)**: Remove candidates based on Capacity, Quota, Pool, Family, Measured Demotion, and Operator Override. Pool narrowing SHALL keep at most one route per quota pool in every ladder, where the quota pool is `provider_catalog.backend_pool(route_id)` with aliases resolved by `aliased_pools_for` (routes in one backend pool share quota). Each removal carries a skip reason. Output H2 plus skip list `[{route_id, stage, reason}]`.
 4. **Ordering (S3)**: Order the remaining candidates by `role_strength` signal through `advise_order`. Low confidence (stale or missing) leaves the legacy order. Output H3 ordered ladder.
 
 The selection SHALL ensure that `H3 set == H2 set`, `H2 subset of H1`, and every route in H3 is present in AdmittedSet. An empty H3 gives `LadderResult(status=FAIL_CLOSED, reason=...)`; never a silent default and never a hang.
