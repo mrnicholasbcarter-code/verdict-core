@@ -1,73 +1,73 @@
 {
- "schema_version": 1,
- "story": "bod299-preserve-capability",
- "kind": "product",
- "author": "gem-devops",
- "merged_sha": "5358381d99b8d7d4c79739d8c373472d26f89d43",
- "pr": 943,
- "on_main": {
-  "at": "2026-11-17T18:27:28Z",
-  "sha": "5358381d99b8d7d4c79739d8c373472d26f89d43",
-  "environment": "operator-host",
-  "command": "gh pr checks 943 --required",
-  "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/40377408244",
-  "exit_code": 0,
-  "raw_output": {
-   "path": "docs/proof/dod/bod299-preserve-capability/bod299-preserve-capability-pr943-checks.txt",
-   "sha256": "5c2dce0342b51be1b63815030c13d9568ff9f46d1f38a9ffcbc7cd12c13c416d"
-  }
- },
- "acceptance": [
-  {
-   "criterion": "cc/claude-fable-5 is blocked by a rate limit recorded after its agentic pass, and the earlier pass stays qualified with its original timestamp",
-   "expect": "\"reason\": \"admission:exhausted:rate_limited\",\n      \"capacity_class\": \"subscription\",\n      \"plan_label\": \"\",\n      \"cooldown_until\": \"2026-11-22T22:59:53.671647+00:00\",\n      \"rank\": null,\n      \"pool\": \"claude\",\n      \"capacity_evidence\": \"oauth_subscription\",\n      \"cooldown_scope\": \"\",\n      \"agentic_capability\": {\n        \"source\": \"agentic_probe\",\n        \"child_id\": null,\n        \"checked_at\": \"2026-11-17T06:01:16.424452Z\",\n        \"qualified\": true",
-   "first_run": {
-    "at": "2026-11-17T18:31:26Z",
-    "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+  "schema_version": 1,
+  "story": "bod299-preserve-capability",
+  "kind": "product",
+  "author": "gem-devops",
+  "merged_sha": "5358381d99b8d7d4c79739d8c373472d26f89d43",
+  "pr": 943,
+  "on_main": {
+    "at": "2026-11-17T18:27:28Z",
+    "sha": "5358381d99b8d7d4c79739d8c373472d26f89d43",
     "environment": "operator-host",
-    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --json",
-    "real_state_marker": "\"health_cache\"",
+    "command": "gh pr checks 943 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/40377408244",
     "exit_code": 0,
     "raw_output": {
-     "path": "docs/proof/dod/bod299-preserve-capability/cheapest-proven-selection-s1-first-20261117T183126Z.json",
-     "sha256": "188a58baafdbbd3d1fca91ccc0d9860265870d20840bfd2950264f373c88dc37"
+      "path": "docs/proof/dod/bod299-preserve-capability/bod299-preserve-capability-pr943-checks.txt",
+      "sha256": "5c2dce0342b51be1b63815030c13d9568ff9f46d1f38a9ffcbc7cd12c13c416d"
     }
-   },
-   "fresh_run": {
-    "at": "2026-11-17T18:52:09Z",
-    "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
-    "environment": "operator-host",
-    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --json",
-    "real_state_marker": "\"health_cache\"",
-    "exit_code": 0,
+  },
+  "acceptance": [
+    {
+      "criterion": "cc/claude-fable-5 is blocked by a rate limit recorded after its agentic pass, and the earlier pass stays qualified with its original timestamp",
+      "expect": "\"reason\": \"admission:exhausted:rate_limited\",\n      \"capacity_class\": \"subscription\",\n      \"plan_label\": \"\",\n      \"cooldown_until\": \"2026-11-22T22:59:53.671647+00:00\",\n      \"rank\": null,\n      \"pool\": \"claude\",\n      \"capacity_evidence\": \"oauth_subscription\",\n      \"cooldown_scope\": \"\",\n      \"agentic_capability\": {\n        \"source\": \"agentic_probe\",\n        \"child_id\": null,\n        \"checked_at\": \"2026-11-17T06:01:16.424452Z\",\n        \"qualified\": true",
+      "first_run": {
+        "at": "2026-11-17T18:31:26Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --json",
+        "real_state_marker": "\"health_cache\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod299-preserve-capability/cheapest-proven-selection-s1-first-20261117T183126Z.json",
+          "sha256": "188a58baafdbbd3d1fca91ccc0d9860265870d20840bfd2950264f373c88dc37"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T18:52:09Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --json",
+        "real_state_marker": "\"health_cache\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod299-preserve-capability/cheapest-proven-selection-s1-fresh-20261117T185209Z.json",
+          "sha256": "907a47198c9ac2301cb4404f3642f32d5305a87932a7004686d3a31aeeed8eb5"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "tests covering bod299-preserve-capability run on every PR and push. The hourly verify_refresh gate exercises the selector on this host.",
+  "setup_doctor": {
+    "status": "green",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
+    "at": "2026-11-17T19:57:00Z",
     "raw_output": {
-     "path": "docs/proof/dod/bod299-preserve-capability/cheapest-proven-selection-s1-fresh-20261117T185209Z.json",
-     "sha256": "907a47198c9ac2301cb4404f3642f32d5305a87932a7004686d3a31aeeed8eb5"
+      "path": "docs/proof/dod/bod299-preserve-capability/doctor-ok-2026-11-17T19-57Z.json",
+      "sha256": "4320aa64ab21d6bb53b688696ded1c82ca1faa2312dfb5a50f90d6db26196ccd"
     }
-   }
+  },
+  "openspec": {
+    "change": "bod299-preserve-capability"
+  },
+  "parent_confirmation": {
+    "by": "gem-implementer confirmer on omniroute/worker/free-verified",
+    "at": "2026-11-17T21:41:18Z",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --json",
+    "raw_output": {
+      "path": "docs/proof/dod/bod299-preserve-capability/confirm-20261117T214118Z.json",
+      "sha256": "19979e274d0a8bf4566077beb8734d919e31f856e1fc4d4248194d8d42de2b2d"
+    }
   }
- ],
- "freshness_window_hours": 0.25,
- "stays_true_job": "tests covering bod299-preserve-capability run on every PR and push. The hourly verify_refresh gate exercises the selector on this host.",
- "setup_doctor": {
-  "status": "green",
-  "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
-  "at": "2026-11-17T19:57:00Z",
-  "raw_output": {
-   "path": "docs/proof/dod/bod299-preserve-capability/doctor-ok-2026-11-17T19-57Z.json",
-   "sha256": "4320aa64ab21d6bb53b688696ded1c82ca1faa2312dfb5a50f90d6db26196ccd"
-  }
- },
- "openspec": {
-  "change": "bod299-preserve-capability"
- },
- "parent_confirmation": {
-  "by": "gem-implementer (omniroute/cc/claude-opus-5-5), the batch-3 escalation implementer; placeholder until a separate confirmer re-runs it",
-  "at": "2026-11-17T18:54:38Z",
-  "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --json",
-  "raw_output": {
-   "path": "docs/proof/dod/bod299-preserve-capability/eligibility-confirm-20261117T1853Z.json",
-   "sha256": "525a9a3c2c39f2040277d2a799b55da0000f1487a479e5cf3c9a7ee1c76a89be"
-  }
- }
 }

@@ -1,0 +1,87 @@
+outcome history: skipped indexed run /operator/dev/verdict-core/.git/verdict-prime/bod300-confirm/runs/20261117T204157Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /tmp/bod300-live/runs-3/20261117T153908Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /tmp/bod300-live/runs-2/20261117T153355Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /tmp/bod300-live/runs-3/20261117T151750Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /tmp/bod300-live/runs-2/20261117T151600Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /tmp/bod300-live/runs-1/20261117T150815Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /tmp/bod286-live-run/runs-parent/20261116T194424Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /tmp/bod286-live-run/runs-fresh/20261116T194108Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /tmp/bod286-live-run/runs-confirm2/20261116T181034Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /tmp/bod286-live-run/runs-confirm/20261116T152030Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/smoke-test-20261116/.verdict/runs/20261116T031056Z (not_a_directory)
+outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/smoke-test-20261116/.verdict/runs/20261116T031009Z (not_a_directory)
+outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/smoke-test-20261116/.verdict/runs/20261116T030815Z (not_a_directory)
+outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/smoke-test-20261116/.verdict/runs/20261116T030644Z (not_a_directory)
+outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/smoke-test-20261116/.verdict/runs/20261116T030505Z (not_a_directory)
+outcome history: skipped indexed run /operator/dev/verdict-core/.worktrees/harness-contracts-confirm/runs/20261116T021048Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /tmp/bod286-live-run/runs3/20261115T180726Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /tmp/bod286-live-run/runs/20261115T164123Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/m-swarm-20261112/stories/BOD-300/live-proof/runs/20261115T154800Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/m-swarm-20261112/stories/BOD-300/live-proof/runs/20261115T111804Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /operator/dev/verdict-core-worktrees/packs/m-swarm-20261112/stories/BOD-300/live-proof/runs/20261115T105109Z (receipt_bytes_exceeded)
+outcome history: skipped indexed run /operator/.hermes/profiles/worker/cache/scratch/t_ed3d23d3-review/work/drills/dup-function-runs/dup-function (not_a_directory)
+outcome history: skipped indexed run /operator/.hermes/profiles/worker/cache/scratch/t_ed3d23d3-review/work/drills/stale-function-runs/stale-function (not_a_directory)
+outcome history: skipped indexed run /operator/.hermes/profiles/worker/cache/scratch/t_ed3d23d3-review/work/drills/stale-runs/stale-run (not_a_directory)
+outcome history: skipped indexed run /operator/.hermes/profiles/worker/cache/scratch/t_ed3d23d3-review/work/drills/retrieval-function-runs/retrieval-function (not_a_directory)
+{
+  "confirm": "skipped_no_confirm",
+  "funnel": {
+    "AVAILABLE": 64,
+    "DISCOVERED": 4279,
+    "ENTITLED": 3821,
+    "HEALTHY": 69,
+    "SELECTED": 0,
+    "TASK_ELIGIBLE": 46
+  },
+  "gateway": "http://127.0.0.1:20128",
+  "no_confirm": true,
+  "provenance": {},
+  "reason": "no_eligible_route",
+  "reasons": [
+    "admission:authentication",
+    "admission:connection_status:expired",
+    "admission:connection_status:unavailable",
+    "admission:exhausted:rate_limited",
+    "admission:insufficient_context",
+    "admission:missing_capability:tools",
+    "admission:no_connection_evidence",
+    "admission:not_found",
+    "admission:payment_required",
+    "admission:permission",
+    "agentic_probe_stale",
+    "effort_duplicate",
+    "no_agentic_probe",
+    "probe_budget_exhausted",
+    "quota_low",
+    "session_evidence_insufficient"
+  ],
+  "rejections": {
+    "AVAILABLE": {
+      "admission:exhausted:rate_limited": 6,
+      "quota_low": 817
+    },
+    "ENTITLED": {
+      "admission:authentication": 4,
+      "admission:connection_status:expired": 34,
+      "admission:connection_status:unavailable": 74,
+      "admission:no_connection_evidence": 156,
+      "admission:payment_required": 188,
+      "admission:permission": 2
+    },
+    "HEALTHY": {
+      "admission:not_found": 2
+    },
+    "TASK_ELIGIBLE": {
+      "admission:insufficient_context": 88,
+      "admission:missing_capability:tools": 418,
+      "agentic_probe_stale": 11,
+      "effort_duplicate": 8,
+      "no_agentic_probe": 1678,
+      "session_evidence_insufficient": 2
+    }
+  },
+  "runner_up": null,
+  "selected": null,
+  "selected_because": "selected because admission:authentication; admission:connection_status:expired; admission:connection_status:unavailable; admission:exhausted:rate_limited; admission:insufficient_context; admission:missing_capability:tools; admission:no_connection_evidence; admission:not_found; admission:payment_required; admission:permission; agentic_probe_stale; effort_duplicate; no_agentic_probe; probe_budget_exhausted; quota_low; session_evidence_insufficient",
+  "task_class": "implementation"
+}

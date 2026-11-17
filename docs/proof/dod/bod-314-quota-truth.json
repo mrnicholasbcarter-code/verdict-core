@@ -1,73 +1,73 @@
 {
- "schema_version": 1,
- "story": "bod-314-quota-truth",
- "kind": "product",
- "author": "gem-devops",
- "merged_sha": "7199f00085add10954d1ccecc3c0520946589a58",
- "pr": 805,
- "on_main": {
-  "at": "2026-11-17T18:27:28Z",
-  "sha": "7199f00085add10954d1ccecc3c0520946589a58",
-  "environment": "operator-host",
-  "command": "gh pr checks 805 --required",
-  "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/38042157589",
-  "exit_code": 0,
-  "raw_output": {
-   "path": "docs/proof/dod/bod-314-quota-truth/bod-314-quota-truth-pr805-checks.txt",
-   "sha256": "2152972d19205d88fa150e5efd1a2269748e3ceec070d2f4e0232db010831f2e"
-  }
- },
- "acceptance": [
-  {
-   "criterion": "The verified projection shows per-connection availability evidence with unreported quota as UNKNOWN",
-   "expect": "\"quota_display\": \"UNKNOWN\"",
-   "first_run": {
-    "at": "2026-11-17T20:45:59Z",
-    "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+  "schema_version": 1,
+  "story": "bod-314-quota-truth",
+  "kind": "product",
+  "author": "gem-devops",
+  "merged_sha": "7199f00085add10954d1ccecc3c0520946589a58",
+  "pr": 805,
+  "on_main": {
+    "at": "2026-11-17T18:27:28Z",
+    "sha": "7199f00085add10954d1ccecc3c0520946589a58",
     "environment": "operator-host",
-    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --verified --no-refresh --json",
-    "real_state_marker": "\"source\": \"omniroute:/api/providers\"",
+    "command": "gh pr checks 805 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/38042157589",
     "exit_code": 0,
     "raw_output": {
-     "path": "docs/proof/dod/bod-314-quota-truth/bod-314-quota-truth-314-first.json",
-     "sha256": "bccf77ea36a07f00f7d0d008149a00d94f3c9e63b341a780f3bd1c78a408639f"
+      "path": "docs/proof/dod/bod-314-quota-truth/bod-314-quota-truth-pr805-checks.txt",
+      "sha256": "2152972d19205d88fa150e5efd1a2269748e3ceec070d2f4e0232db010831f2e"
     }
-   },
-   "fresh_run": {
-    "at": "2026-11-17T21:08:02Z",
-    "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
-    "environment": "operator-host",
-    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --verified --no-refresh --json",
-    "real_state_marker": "\"source\": \"omniroute:/api/providers\"",
-    "exit_code": 0,
+  },
+  "acceptance": [
+    {
+      "criterion": "The verified projection shows per-connection availability evidence with unreported quota as UNKNOWN",
+      "expect": "\"quota_display\": \"UNKNOWN\"",
+      "first_run": {
+        "at": "2026-11-17T20:45:59Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --verified --no-refresh --json",
+        "real_state_marker": "\"source\": \"omniroute:/api/providers\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-314-quota-truth/bod-314-quota-truth-314-first.json",
+          "sha256": "bccf77ea36a07f00f7d0d008149a00d94f3c9e63b341a780f3bd1c78a408639f"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T21:08:02Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --verified --no-refresh --json",
+        "real_state_marker": "\"source\": \"omniroute:/api/providers\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-314-quota-truth/bod-314-quota-truth-314-fresh.json",
+          "sha256": "8ac5561131c39094f52da15cdcaf48e6dce3a1f09aef48a29e96179dadd1d17a"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "tests covering bod-314-quota-truth run on every PR and push. The hourly verify_refresh gate exercises the selector on this host.",
+  "setup_doctor": {
+    "status": "green",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
+    "at": "2026-11-17T19:57:00Z",
     "raw_output": {
-     "path": "docs/proof/dod/bod-314-quota-truth/bod-314-quota-truth-314-fresh.json",
-     "sha256": "8ac5561131c39094f52da15cdcaf48e6dce3a1f09aef48a29e96179dadd1d17a"
+      "path": "docs/proof/dod/bod-314-quota-truth/doctor-ok-2026-11-17T19-57Z.json",
+      "sha256": "4320aa64ab21d6bb53b688696ded1c82ca1faa2312dfb5a50f90d6db26196ccd"
     }
-   }
+  },
+  "openspec": {
+    "change": "bod-314-quota-truth"
+  },
+  "parent_confirmation": {
+    "by": "gem-implementer confirmer on omniroute/worker/free-verified",
+    "at": "2026-11-17T21:52:00Z",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --verified --no-refresh --json",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-314-quota-truth/confirm-20261117T2152Z.json",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
   }
- ],
- "freshness_window_hours": 0.25,
- "stays_true_job": "tests covering bod-314-quota-truth run on every PR and push. The hourly verify_refresh gate exercises the selector on this host.",
- "setup_doctor": {
-  "status": "green",
-  "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
-  "at": "2026-11-17T19:57:00Z",
-  "raw_output": {
-   "path": "docs/proof/dod/bod-314-quota-truth/doctor-ok-2026-11-17T19-57Z.json",
-   "sha256": "4320aa64ab21d6bb53b688696ded1c82ca1faa2312dfb5a50f90d6db26196ccd"
-  }
- },
- "openspec": {
-  "change": "bod-314-quota-truth"
- },
- "parent_confirmation": {
-  "by": "gem-implementer (omniroute/cc/claude-opus-5-5), the batch-3 escalation implementer; placeholder until a separate confirmer re-runs it",
-  "at": "2026-11-17T21:14:41Z",
-  "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict eligibility --verified --no-refresh --json",
-  "raw_output": {
-   "path": "docs/proof/dod/bod-314-quota-truth/bod-314-quota-truth-314-confirm.json",
-   "sha256": "b0a6679d18c105ef8287850fc18acc99391b7c8f694d18944c0ef04bf1a708d6"
-  }
- }
 }
