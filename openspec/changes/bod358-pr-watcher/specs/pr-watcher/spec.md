@@ -96,9 +96,15 @@ The watcher SHALL emit a digest event only for a new failure, blocked transition
 
 Repositories are configured via `pr-watch.env` at `<XDG_CONFIG_HOME or ~/.config>/verdict/pr-watch.env` with a single line `VERDICT_PR_WATCH_REPOS=owner/a,owner/b` (owner-only names allowed). Example: `mrnicholasbcarter-code/verdict-core,mrnicholasbcarter-code/verdict-node`.
 
-#### Scenario: Missing timer
-- **WHEN** the watcher timer is absent or inactive
+The watcher is opt-in: until `pr-watch.env` exists, `verdict doctor` SHALL report the watcher as not configured with a warning and SHALL NOT fail on it.
+
+#### Scenario: Missing timer after opt-in
+- **WHEN** `pr-watch.env` exists and the watcher timer is absent, inactive, or failed
 - **THEN** doctor reports a failing diagnostic with the corrective setup action
+
+#### Scenario: Watcher not configured
+- **WHEN** `pr-watch.env` does not exist and the watcher timer is absent
+- **THEN** doctor reports a warning that names `pr-watch.env` and the setup command `verdict setup --apply --allow host.pr-watcher-timer`, and doctor does not fail on it
 
 ### Requirement: Live smoke is opt-in
 
