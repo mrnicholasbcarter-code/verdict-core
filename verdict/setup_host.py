@@ -47,8 +47,9 @@ SERVE = "host.serve"
 PRIME = "host.prime-registry"
 REF_DOCS = "host.ref-docs-timer"
 DOCS_REFRESH = "host.docs-refresh-timer"
+PR_WATCHER = "host.pr-watcher-timer"
 #: Apply order: Prime enable needs a healthy serve, so the serve unit comes first.
-ORDER = (OCR, METADATA, ACCEPTANCE, IDENTIFY, REF_DOCS, DOCS_REFRESH, SERVE, PRIME)
+ORDER = (OCR, METADATA, ACCEPTANCE, IDENTIFY, REF_DOCS, DOCS_REFRESH, PR_WATCHER, SERVE, PRIME)
 #: ``harness prime enable`` waits this many probes (one second apart) for serve.
 SERVE_HEALTH_ATTEMPTS = 15
 PRIME_SYNC_UNIT = "verdict-prime-sync.service"
@@ -211,6 +212,11 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
 
         rendered = docs_refresh_service.manage_service(unit_dir=env.unit_dir, dry_run=True)
         return _timer_problems(env, rendered, docs_refresh_service.TIMER)
+    if provider_id == PR_WATCHER:
+        from verdict import pr_watcher_service
+
+        rendered = pr_watcher_service.manage_service(unit_dir=env.unit_dir, dry_run=True)
+        return _timer_problems(env, rendered, pr_watcher_service.TIMER)
     if provider_id == SERVE:
         from verdict import serve_service
 
@@ -294,6 +300,20 @@ _ACTIONS: dict[str, dict[str, str]] = {
         "postcondition": "verdict-docs-refresh.timer is active.",
         "undo": "verdict memory docs --install-service --uninstall",
         "install_command": "verdict memory docs --install-service",
+    },
+    PR_WATCHER: {
+        "description": (
+            "Install the 5-minute PR watcher timer that polls repositories, classifies CI, "
+            "and emits bounded reruns and Linear transitions."
+        ),
+        "security_impact": (
+            "Writes two systemd user units; every 5 minutes it runs verdict pr-watch --json "
+            "on this checkout. It reads GitHub via gh CLI and writes only the local state "
+            "database. No model calls."
+        ),
+        "postcondition": "verdict-pr-watch.timer is active.",
+        "undo": "verdict pr-watch --install-service --uninstall",
+        "install_command": "verdict pr-watch --install-service",
     },
     SERVE: {
         "description": (
@@ -470,7 +490,13 @@ def _install_prime_registry(env: HostEnvironment) -> dict[str, Any]:
 
 def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[str, Any]:
     """Apply one authorized host action with the existing installer. Never raises."""
-    from verdict import acceptance_service, docs_refresh_service, identify_service, ref_docs_service
+    from verdict import (
+        acceptance_service,
+        docs_refresh_service,
+        identify_service,
+        pr_watcher_service,
+        ref_docs_service,
+    )
 
     provider_id = action.provider_id or ""
     try:
@@ -490,6 +516,9 @@ def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[st
         if provider_id == DOCS_REFRESH:
             steps = _install_timers(env, docs_refresh_service.manage_service)
             return {"status": "applied", "note": f"{docs_refresh_service.TIMER} enabled", **steps}
+        if provider_id == PR_WATCHER:
+            steps = _install_timers(env, pr_watcher_service.manage_service)
+            return {"status": "applied", "note": f"{pr_watcher_service.TIMER} enabled", **steps}
         if provider_id == SERVE:
             return _install_serve(env)
         if provider_id == PRIME:

@@ -36,6 +36,7 @@ HOST_IDS = [
     "host.identify-timers",
     "host.ref-docs-timer",
     "host.docs-refresh-timer",
+    "host.pr-watcher-timer",
     "host.serve",
     "host.prime-registry",
 ]
@@ -472,6 +473,28 @@ def test_docs_refresh_timer_is_planned_until_installed_and_active(host: FakeHost
     ]
     assert action.reason == "verdict-docs-refresh.timer is missing"
     assert action.undo == "verdict memory docs --install-service --uninstall"
+
+
+def test_pr_watcher_timer_is_planned_until_installed_and_active(host: FakeHost) -> None:
+    def planned() -> list[str]:
+        return [a.provider_id or "" for a in setup_host.plan_host_actions(host.env)]
+
+    assert "host.pr-watcher-timer" in planned()
+    report = host.apply(allowlist=["host.pr-watcher-timer"], non_interactive=True)
+    result = _results(report)["bootstrap:host:pr-watcher-timer"]
+    assert result["status"] == "applied" and "verdict-pr-watch.timer" in result["note"]
+    assert ["systemctl", "--user", "enable", "--now", "verdict-pr-watch.timer"] in (
+        host.systemctl_calls
+    )
+    assert "host.pr-watcher-timer" not in planned()
+    host.active.discard("verdict-pr-watch.timer")
+    [action] = [
+        a
+        for a in setup_host.plan_host_actions(host.env)
+        if a.provider_id == "host.pr-watcher-timer"
+    ]
+    assert action.reason == "verdict-pr-watch.timer is missing"
+    assert action.undo == "verdict pr-watch --install-service --uninstall"
 
 
 # --- CLI wiring ------------------------------------------------------------------------
