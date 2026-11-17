@@ -27,7 +27,7 @@
         "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
         "environment": "operator-host",
         "command": "verdict-identify-screen.service (scheduled by verdict-identify-screen.timer, OnCalendar=*-*-* 00/6:00:00)",
-        "real_state_marker": "\"model_calls\"",
+        "real_state_marker": "\"model_calls\": ",
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/identify-screen-full-coverage/scheduled-run-20261117T060004Z.journal.txt",
@@ -39,7 +39,7 @@
         "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
         "environment": "operator-host",
         "command": "verdict-identify-screen.service (scheduled by verdict-identify-screen.timer, OnCalendar=*-*-* 00/6:00:00)",
-        "real_state_marker": "\"model_calls\"",
+        "real_state_marker": "\"model_calls\": ",
         "exit_code": 0,
         "raw_output": {
           "path": "docs/proof/dod/identify-screen-full-coverage/scheduled-run-20261117T180012Z.journal.txt",
@@ -53,10 +53,10 @@
   "setup_doctor": {
     "status": "green",
     "command": "cd /operator/.local/share/verdict/installed-main && .venv/bin/verdict doctor --json",
-    "at": "2026-11-17T18:30:00Z",
+    "at": "2026-11-17T19:31:00Z",
     "raw_output": {
-      "path": "docs/proof/dod/identify-screen-full-coverage/doctor-20261117T183000Z.json",
-      "sha256": "1637e40667be321de10b3550aa8ae42deb7c0d6a32dece00efb25332f982bfb0"
+      "path": "docs/proof/dod/identify-screen-full-coverage/doctor-20261117T193100Z.json",
+      "sha256": "deca2fc6d699d3b3f413cf509e8c330d8d087c3e5f85ac032d4608e0f201f5f2"
     }
   },
   "openspec": {
