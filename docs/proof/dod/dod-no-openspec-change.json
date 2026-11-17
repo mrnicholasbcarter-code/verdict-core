@@ -58,12 +58,12 @@
     "change": "dod-no-openspec-change"
   },
   "parent_confirmation": {
-    "by": "gem-implementer on omniroute/cc/claude-opus-5-5 (placeholder, pending independent confirmer)",
-    "at": "2026-11-17T20:57:10Z",
+    "by": "gem-implementer confirmer on omniroute/worker/free-verified",
+    "at": "2026-11-17T22:05:33Z",
     "command": "python scripts/check_dod.py --all",
     "raw_output": {
-      "path": "docs/proof/dod/dod-no-openspec-change/parent.txt",
-      "sha256": "602810d541c3a440ddea94202d23f42709c4df50bbba0535700c5d44d9a69d6e"
+      "path": "docs/proof/dod/dod-no-openspec-change/confirm-44186541940.txt",
+      "sha256": "c95d4f0119738137743f379d8926009da610938f8db49e7b153d71969981b664"
     }
   }
 }
