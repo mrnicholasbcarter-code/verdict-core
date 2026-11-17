@@ -28,7 +28,7 @@
       "fresh_run": {"at": "2026-11-17T06:05:25Z", "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45", "environment": "operator-host", "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python scripts/bod413_keyfile_live.py", "real_state_marker": "credentials_test_status_value: ok", "exit_code": 0, "raw_output": {"path": "docs/proof/dod/bod-413/live-fresh-20261117T060525Z.txt", "sha256": "818c1bf28a683e8b0fce721ad44977c4aa4939e8896e2a2cd700c445d5b5b4dd"}}
     }
   ],
-  "freshness_window_hours": 0.25,
+  "freshness_window_hours": 0.016, 
   "stays_true_job": "tests/test_direct_gateway_executor.py::test_executor_resolves_key_file_when_env_is_unset and tests/test_credentials_test_action.py::test_credentials_test_resolves_key_file cover the key-file-only path on every PR and push. The hourly verdict-acceptance doctor gate exercises the shared resolver through the credential store on this host, not the key-file branch.",
   "setup_doctor": {"status": "green", "command": "env -i HOME=$HOME PATH=<system-bin> XDG_RUNTIME_DIR=<run-user> .venv/bin/python -m verdict doctor --json", "at": "2026-11-17T04:56:54Z", "raw_output": {"path": "docs/proof/dod/bod-413/doctor-green-20261117T045650Z.json", "sha256": "aac2dd31a2a32644ed63663f5ede6d9d729a7711f079938744c27ef0323a5d7c"}},
   "openspec": {"change": "gateway-key-resolver-parity"},
