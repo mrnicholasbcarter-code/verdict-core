@@ -790,3 +790,97 @@ def test_hand_built_summary_fails_under_every_orchestrate_json_form(repo, comman
         run["command"] = command
     errors = _check(root, evidence)
     assert len([e for e in errors if "is not the run's result JSON" in e]) == 3, errors
+
+
+def _result_with(**changes):
+    result = json.loads(_structured_result())
+    result.update(changes)
+    return result
+
+
+@pytest.mark.parametrize("run_id", [["a"], {"a": 1}, None, 7, True, ""])
+def test_structured_run_id_must_be_a_non_empty_string(repo, run_id):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "bad-run-id.json", json.dumps(_result_with(run_id=run_id))
+    )
+    errors = _check(root, evidence)
+    assert any("acceptance[0].first_run: run_id" in e and "string" in e for e in errors), errors
+
+
+def _huge_integer_output() -> str:
+    # json.loads raises plain ValueError (not JSONDecodeError) past the int digit limit.
+    return json.dumps(_result_with())[:-1] + ', "n": ' + "1" * 5000 + "}"
+
+
+def test_orchestrate_output_with_an_oversized_integer_is_not_a_result(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, _huge_integer_output())
+    errors = _check(root, evidence)
+    assert len([e for e in errors if "is not the run's result JSON" in e]) == 3, errors
+
+
+def test_orchestrate_output_nested_too_deep_is_not_a_result(repo):
+    root, evidence = repo
+    _orchestrate_evidence(root, evidence, "[" * 200_000 + "]" * 200_000)
+    errors = _check(root, evidence)
+    assert len([e for e in errors if "is not the run's result JSON" in e]) == 3, errors
+
+
+@pytest.mark.parametrize(
+    "output",
+    [_huge_integer_output(), '{"marker": "' + RUN_URL + '", "x": ' + "[" * 200_000],
+    ids=["oversized-integer", "nested-too-deep"],
+)
+def test_unparseable_output_of_another_command_is_plain_text(repo, output):
+    root, evidence = repo
+    item = evidence["acceptance"][0]
+    for index, run in enumerate((item["first_run"], item["fresh_run"])):
+        assert run["command"] == "gh run view 123"
+        run["raw_output"] = _artifact(
+            root, f"plain-{index}.txt", f"{output}\nFAILED as intended {index}\n"
+        )
+    evidence["parent_confirmation"]["raw_output"] = _artifact(
+        root, "plain-confirm.txt", f"{output}\nFAILED as intended confirm\n"
+    )
+    assert _check(root, evidence) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("finished_at", "9999-12-31T23:59:59Z"),
+        ("started_at", "0001-01-01T00:00:00Z"),
+        ("finished_at", "9999-12-31T23:59:59-14:00"),
+        ("started_at", "0001-01-01T00:00:00+14:00"),
+    ],
+)
+def test_structured_result_time_arithmetic_overflow_is_an_invalid_time(repo, field, value):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(
+        root, "overflow-time.json", json.dumps(_result_with(**{field: value}))
+    )
+    errors = _check(root, evidence)
+    assert any("structured result time is invalid" in e for e in errors), errors
+
+
+def test_evidence_file_with_an_oversized_integer_is_reported_not_raised(repo):
+    root, evidence = repo
+    path = root / "docs/proof/dod/gate.json"
+    path.write_text(json.dumps(evidence)[:-1] + ', "pr": ' + "1" * 5000 + "}", encoding="utf-8")
+    errors = check_dod.check_evidence(root, path)
+    assert len(errors) == 1 and errors[0].startswith("cannot read"), errors
+
+
+def test_main_prints_a_lone_surrogate_from_raw_output_without_raising(repo, capsys):
+    root, evidence = repo
+    _structured_evidence(root, evidence)
+    # "\ud800" is valid JSON text that decodes to a string UTF-8 cannot encode.
+    text = json.dumps(_result_with(outcome="\ud800"))
+    evidence["acceptance"][0]["first_run"]["raw_output"] = _artifact(root, "surrogate.json", text)
+    path = root / "docs/proof/dod/gate.json"
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    assert check_dod.main(["--root", str(root), str(path)]) == 1
+    assert "disagrees with outcome \\ud800" in capsys.readouterr().out

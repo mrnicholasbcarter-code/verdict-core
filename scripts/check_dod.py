@@ -86,6 +86,10 @@ def _time(value: str) -> datetime:
 
 
 STRUCTURED_KEYS = ("outcome", "run_id", "started_at", "finished_at", "events_digest")
+# json.loads raises JSONDecodeError (a ValueError), plain ValueError for an integer
+# over the digit limit, and RecursionError for deep nesting.
+NOT_JSON = (ValueError, RecursionError)
+RESULT_TIME_TOLERANCE = timedelta(minutes=5)
 
 
 def _command_tokens(command: str) -> list[str]:
@@ -118,7 +122,7 @@ def _is_orchestrate_json_command(command: str) -> bool:
 def _structured_result(text: str) -> dict[str, Any] | None:
     try:
         result = json.loads(text)
-    except json.JSONDecodeError:
+    except NOT_JSON:
         return None
     if not isinstance(result, dict):
         return None
@@ -139,13 +143,16 @@ def _check_run_truth(
                     for key in STRUCTURED_KEYS
                     if not isinstance(parsed, dict) or key not in parsed
                 ]
-            except json.JSONDecodeError:
+            except NOT_JSON:
                 missing = list(STRUCTURED_KEYS)
             errors.append(
                 f"{where}: command is {run['command']!r} but the raw output is not the run's result JSON "
                 f"(missing: {', '.join(missing) or 'stdout only'}; stdout only)"
             )
         return
+    run_id = result["run_id"]
+    if not isinstance(run_id, str) or not run_id:
+        errors.append(f"{where}: run_id {run_id!r} is not a non-empty string")
     outcome = result["outcome"]
     exit_code = run.get("exit_code")
     complete = outcome == "COMPLETE"
@@ -155,15 +162,17 @@ def _check_run_truth(
         started = _time(result["started_at"])
         finished = _time(result["finished_at"])
         recorded = _time(run["at"])
-    except (TypeError, ValueError, KeyError) as exc:
+        # A time at the edge of the calendar overflows here, not in _time.
+        earliest = started - RESULT_TIME_TOLERANCE
+        latest = finished + RESULT_TIME_TOLERANCE
+    except (TypeError, ValueError, KeyError, OverflowError) as exc:
         errors.append(f"{where}: structured result time is invalid: {exc}")
     else:
         if started > finished:
             errors.append(
                 f"{where}: started_at {result['started_at']!r} is later than finished_at {result['finished_at']!r}"
             )
-        tolerance = timedelta(minutes=5)
-        if not (started - tolerance <= recorded <= finished + tolerance):
+        if not (earliest <= recorded <= latest):
             errors.append(
                 f"{where}: at {run['at']} is outside result window "
                 f"started_at {result['started_at']} to finished_at {result['finished_at']} (5 minute tolerance)"
@@ -275,7 +284,7 @@ def check_evidence(root: Path, path: Path) -> list[str]:
     """Return every reason the evidence file at ``path`` does not prove DONE."""
     try:
         evidence = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, *NOT_JSON) as exc:
         return [f"cannot read {path}: {exc}"]
     schema = json.loads((ROOT / SCHEMA_PATH).read_text(encoding="utf-8"))
     schema_errors = sorted(
@@ -360,6 +369,8 @@ def check_evidence(root: Path, path: Path) -> list[str]:
             result = _structured_result(text.rstrip()) if text == text.lstrip() else None
             if result is not None:
                 run_id = result["run_id"]
+                if not isinstance(run_id, str) or not run_id:
+                    continue  # reported by _check_run_truth
                 if run_id in run_ids:
                     errors.append("the same run_id cannot serve as two runs")
                 run_ids.add(run_id)
@@ -389,7 +400,7 @@ def unproven_archives(root: Path, evidence_files: list[Path]) -> list[str]:
     for path in evidence_files:
         try:
             named.add(json.loads(path.read_text(encoding="utf-8"))["openspec"]["change"])
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, *NOT_JSON, KeyError, TypeError):
             continue
     missing = []
     for archived in sorted((root / ARCHIVE_DIR).glob("????-??-??-*")):
@@ -413,12 +424,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("name an evidence file or pass --all")
 
     failed = False
+    encoding = sys.stdout.encoding or "utf-8"
     for path in files:
         errors = check_evidence(root, path)
         failed |= bool(errors)
         print(f"{'NOT DONE' if errors else 'DONE'}: {path}")
         for error in errors:
-            print(f"  - {error}")
+            # An error can quote raw output, and JSON can decode to text stdout cannot encode.
+            print(f"  - {error}".encode(encoding, "backslashreplace").decode(encoding))
     if args.all:
         for change in unproven_archives(root, files):
             failed = True
