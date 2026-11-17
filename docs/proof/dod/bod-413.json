@@ -34,14 +34,14 @@
         }
       },
       "fresh_run": {
-        "at": "2026-11-17T06:18:43Z",
+        "at": "2026-11-17T06:25:27Z",
         "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
         "environment": "operator-host",
         "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python scripts/bod413_keyfile_live.py",
         "real_state_marker": "credentials_test_status_value: ok",
         "exit_code": 0,
         "raw_output": {
-          "path": "docs/proof/dod/bod-413/live-fresh-20261117T061839Z.txt",
+          "path": "docs/proof/dod/bod-413/live-fresh-20261117T062524Z.txt",
           "sha256": "818c1bf28a683e8b0fce721ad44977c4aa4939e8896e2a2cd700c445d5b5b4dd"
         }
       }
@@ -62,14 +62,14 @@
         }
       },
       "fresh_run": {
-        "at": "2026-11-17T06:18:43Z",
+        "at": "2026-11-17T06:25:27Z",
         "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
         "environment": "operator-host",
         "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python scripts/bod413_keyfile_live.py",
         "real_state_marker": "credentials_test_status_value: ok",
         "exit_code": 0,
         "raw_output": {
-          "path": "docs/proof/dod/bod-413/live-fresh-20261117T061839Z.txt",
+          "path": "docs/proof/dod/bod-413/live-fresh-20261117T062524Z.txt",
           "sha256": "818c1bf28a683e8b0fce721ad44977c4aa4939e8896e2a2cd700c445d5b5b4dd"
         }
       }
@@ -91,10 +91,10 @@
   },
   "parent_confirmation": {
     "by": "gem-orchestrator session 20261117",
-    "at": "2026-11-17T06:19:43Z",
+    "at": "2026-11-17T06:26:28Z",
     "command": "env -u PYTHONPATH -u PYTHONHOME TMPDIR=/tmp .venv/bin/python scripts/bod413_keyfile_live.py",
     "raw_output": {
-      "path": "docs/proof/dod/bod-413/live-confirm-20261117T061943Z.txt",
+      "path": "docs/proof/dod/bod-413/live-confirm-20261117T062627Z.txt",
       "sha256": "818c1bf28a683e8b0fce721ad44977c4aa4939e8896e2a2cd700c445d5b5b4dd"
     }
   }
