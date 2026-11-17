@@ -1,0 +1,2185 @@
+{
+  "actions": [
+    {
+      "action_id": "preserve-config",
+      "description": "Preserve the existing Verdict configuration unchanged.",
+      "kind": "inspect",
+      "postcondition": "The existing configuration remains byte-for-byte unchanged.",
+      "reason": "An existing configuration must not be overwritten implicitly.",
+      "requires_consent": false,
+      "reversible": true,
+      "security_impact": "No change; existing configuration and credential references remain untouched.",
+      "target": "config",
+      "undo": "No action required; this is a read-only inspection."
+    },
+    {
+      "action_id": "bootstrap:repair:gateway.omniroute",
+      "description": "Repair gateway.omniroute for capability gateway.inventory.",
+      "kind": "repair_provider",
+      "postcondition": "Provider either becomes healthy/qualified or remains explicitly degraded.",
+      "reason": "endpoint configured but not live-certified",
+      "requires_consent": false,
+      "reversible": true,
+      "security_impact": "No new install; diagnoses existing provider without secret access.",
+      "target": "gateway.omniroute",
+      "undo": "No mutation in repair planning; stop probing."
+    },
+    {
+      "action_id": "bootstrap:repair:harness.claude_code",
+      "description": "Repair harness.claude_code for capability harness.execute.",
+      "kind": "repair_provider",
+      "postcondition": "Provider either becomes healthy/qualified or remains explicitly degraded.",
+      "reason": "binary present; not live-certified",
+      "requires_consent": false,
+      "reversible": true,
+      "security_impact": "No new install; diagnoses existing provider without secret access.",
+      "target": "harness.claude_code",
+      "undo": "No mutation in repair planning; stop probing."
+    }
+  ],
+  "bootstrap": {
+    "apply": {
+      "actions": [],
+      "mutated": false
+    },
+    "certification": {
+      "passport_seam": "runtime_certification",
+      "results": [
+        {
+          "certified": false,
+          "confidence": 0.4,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "adapter.codebase_memory",
+          "reason": "installed != healthy",
+          "state": "unavailable"
+        },
+        {
+          "certified": false,
+          "confidence": 0.4,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "adapter.context7",
+          "reason": "configured is not certified healthy",
+          "state": "unavailable"
+        },
+        {
+          "certified": false,
+          "confidence": 0.4,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "adapter.serena_lsp",
+          "reason": "installed != healthy",
+          "state": "unavailable"
+        },
+        {
+          "certified": false,
+          "confidence": 1.0,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "gateway.9router",
+          "reason": "explicitly unsupported; quota unsupported (not fabricated); cache unsupported (not fabricated)",
+          "state": "unsupported"
+        },
+        {
+          "certified": false,
+          "confidence": 1.0,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "gateway.litellm",
+          "reason": "explicitly unsupported; quota unsupported (not fabricated); cache unsupported (not fabricated)",
+          "state": "unsupported"
+        },
+        {
+          "certified": false,
+          "confidence": 0.55,
+          "freshness": "fresh",
+          "parity": "partial",
+          "passport_seam": "runtime_certification",
+          "provider_id": "gateway.omniroute",
+          "reason": "installed != healthy",
+          "state": "degraded"
+        },
+        {
+          "certified": false,
+          "confidence": 0.4,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "harness.claude_code",
+          "reason": "installed != healthy",
+          "state": "unavailable"
+        },
+        {
+          "certified": false,
+          "confidence": 1.0,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "harness.cline",
+          "reason": "explicitly unsupported",
+          "state": "unsupported"
+        },
+        {
+          "certified": false,
+          "confidence": 0.4,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "harness.codex",
+          "reason": "installed != healthy",
+          "state": "unavailable"
+        },
+        {
+          "certified": false,
+          "confidence": 0.4,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "harness.cursor",
+          "reason": "installed != healthy",
+          "state": "unavailable"
+        },
+        {
+          "certified": false,
+          "confidence": 0.4,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "harness.hermes",
+          "reason": "installed != healthy",
+          "state": "unavailable"
+        },
+        {
+          "certified": false,
+          "confidence": 0.4,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "harness.opencode",
+          "reason": "installed != healthy",
+          "state": "unavailable"
+        },
+        {
+          "certified": false,
+          "confidence": 0.4,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "harness.prime",
+          "reason": "installed != healthy",
+          "state": "unavailable"
+        },
+        {
+          "certified": true,
+          "confidence": 0.9,
+          "freshness": "fresh",
+          "parity": "supported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "native.verdict.ast",
+          "reason": "provider certified ready by BOD-92 runtime certification",
+          "state": "ready"
+        },
+        {
+          "certified": false,
+          "confidence": 1.0,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "security.agentshield",
+          "reason": "explicitly unsupported",
+          "state": "unsupported"
+        },
+        {
+          "certified": false,
+          "confidence": 0.4,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "security.gitleaks",
+          "reason": "installed != healthy",
+          "state": "unavailable"
+        },
+        {
+          "certified": false,
+          "confidence": 0.4,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "security.semgrep",
+          "reason": "installed != healthy",
+          "state": "unavailable"
+        },
+        {
+          "certified": false,
+          "confidence": 0.4,
+          "freshness": "fresh",
+          "parity": "unsupported",
+          "passport_seam": "runtime_certification",
+          "provider_id": "tool.ripgrep",
+          "reason": "installed != healthy",
+          "state": "unavailable"
+        }
+      ],
+      "runtime_report": {
+        "certified_at": "2026-11-17T19:28:02.799841Z",
+        "components": [
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "gateway.execute",
+              "gateway.inventory"
+            ],
+            "component_id": "gateway.9router",
+            "confidence": 1.0,
+            "cooldown": null,
+            "evidence_digest": "sha256:25b3ba3d72dafee2bebeb46dd0599060a361702a4e06fc7576aeeeea6e76681d",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "gateway.9router",
+            "kind": "gateway",
+            "limitations": [
+              "explicitly unsupported",
+              "quota unsupported (not fabricated)",
+              "cache unsupported (not fabricated)"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": null,
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unsupported",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "gateway.execute",
+              "gateway.inventory"
+            ],
+            "component_id": "gateway.litellm",
+            "confidence": 1.0,
+            "cooldown": null,
+            "evidence_digest": "sha256:55f924fbf2f40b88175ce46a5ff6e3ed3ea99eeb8fc1010cf5ab5de836b03dc2",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "gateway.litellm",
+            "kind": "gateway",
+            "limitations": [
+              "explicitly unsupported",
+              "quota unsupported (not fabricated)",
+              "cache unsupported (not fabricated)"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": null,
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unsupported",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "gateway.execute",
+              "gateway.inventory",
+              "gateway.quota"
+            ],
+            "component_id": "gateway.omniroute",
+            "confidence": 0.55,
+            "cooldown": null,
+            "evidence_digest": "sha256:cb8ea7f10ee99e8d252010c8bedf22825a054496bb07ce068200cc49f4341d20",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "gateway.omniroute",
+            "kind": "gateway",
+            "limitations": [
+              "reported degraded",
+              "quota unsupported (not fabricated)",
+              "cache unsupported (not fabricated)"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": null,
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "degraded",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "harness.execute"
+            ],
+            "component_id": "harness.claude_code",
+            "confidence": 0.4,
+            "cooldown": null,
+            "evidence_digest": "sha256:d9bb34f502804f0a69e85530a111e339dacee6a721b4e65e39993c32a9a150bd",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "harness.claude_code",
+            "kind": "harness",
+            "limitations": [
+              "configured is not certified healthy"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": [
+              {
+                "facet": "mcp",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "hooks",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "subagents",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "resume",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_interception",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "model_selection",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "config_import",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "structured_output",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_start",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "before_first_turn",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_pre_post",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "edit_event",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "compaction_yield",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "verification_result",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_end",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "sync_async_semantics",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "mutation_capability",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              }
+            ],
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unavailable",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "harness.execute"
+            ],
+            "component_id": "harness.cline",
+            "confidence": 1.0,
+            "cooldown": null,
+            "evidence_digest": "sha256:e1efb24f70ff15e70bd6f077016273f3f930a079c53445906f44687d82e211e2",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "harness.cline",
+            "kind": "harness",
+            "limitations": [
+              "explicitly unsupported"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": [
+              {
+                "facet": "mcp",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "hooks",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "subagents",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "resume",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_interception",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "model_selection",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "config_import",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "structured_output",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_start",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "before_first_turn",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_pre_post",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "edit_event",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "compaction_yield",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "verification_result",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_end",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "sync_async_semantics",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "mutation_capability",
+                "level": "unsupported",
+                "reason": "no explicit evidence for facet",
+                "source": "capability_bootstrap"
+              }
+            ],
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unsupported",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "harness.execute"
+            ],
+            "component_id": "harness.codex",
+            "confidence": 0.4,
+            "cooldown": null,
+            "evidence_digest": "sha256:a2e1dd6fb2a1d255f88ae892ed40bad6f1976bdf1082f4a85c36504ffb2354d3",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "harness.codex",
+            "kind": "harness",
+            "limitations": [
+              "configured is not certified healthy"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": [
+              {
+                "facet": "mcp",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "hooks",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "subagents",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "resume",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_interception",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "model_selection",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "config_import",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "structured_output",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_start",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "before_first_turn",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_pre_post",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "edit_event",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "compaction_yield",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "verification_result",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_end",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "sync_async_semantics",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "mutation_capability",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              }
+            ],
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unavailable",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "harness.execute"
+            ],
+            "component_id": "harness.cursor",
+            "confidence": 0.4,
+            "cooldown": null,
+            "evidence_digest": "sha256:1aa5e8f917d0f86e552eaf5f582e4ca6644e8fb7064c4d7343cbb910c917e7da",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "harness.cursor",
+            "kind": "harness",
+            "limitations": [
+              "configured is not certified healthy"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": [
+              {
+                "facet": "mcp",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "hooks",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "subagents",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "resume",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_interception",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "model_selection",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "config_import",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "structured_output",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_start",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "before_first_turn",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_pre_post",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "edit_event",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "compaction_yield",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "verification_result",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_end",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "sync_async_semantics",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "mutation_capability",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              }
+            ],
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unavailable",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "harness.execute"
+            ],
+            "component_id": "harness.hermes",
+            "confidence": 0.4,
+            "cooldown": null,
+            "evidence_digest": "sha256:1cdf56df1029944c5f9159bdda47fe0551aa5a38c6f96a82c0152a03a9d4627e",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "harness.hermes",
+            "kind": "harness",
+            "limitations": [
+              "configured is not certified healthy"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": [
+              {
+                "facet": "mcp",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "hooks",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "subagents",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "resume",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_interception",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "model_selection",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "config_import",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "structured_output",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_start",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "before_first_turn",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_pre_post",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "edit_event",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "compaction_yield",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "verification_result",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_end",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "sync_async_semantics",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "mutation_capability",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              }
+            ],
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unavailable",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "harness.execute"
+            ],
+            "component_id": "harness.opencode",
+            "confidence": 0.4,
+            "cooldown": null,
+            "evidence_digest": "sha256:8294d29ed5a59836c5036a7c460ee53bd938261d3b49660665d00ae9004f31f9",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "harness.opencode",
+            "kind": "harness",
+            "limitations": [
+              "configured is not certified healthy"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": [
+              {
+                "facet": "mcp",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "hooks",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "subagents",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "resume",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_interception",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "model_selection",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "config_import",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "structured_output",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_start",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "before_first_turn",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_pre_post",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "edit_event",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "compaction_yield",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "verification_result",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_end",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "sync_async_semantics",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "mutation_capability",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              }
+            ],
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unavailable",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "harness.execute"
+            ],
+            "component_id": "harness.prime",
+            "confidence": 0.4,
+            "cooldown": null,
+            "evidence_digest": "sha256:12e8fedda5b755c0cd2f366369d8f11c577d9d34b660969204038345a4565f4b",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "harness.prime",
+            "kind": "harness",
+            "limitations": [
+              "configured is not certified healthy"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": [
+              {
+                "facet": "mcp",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "hooks",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "subagents",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "resume",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_interception",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "model_selection",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "config_import",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "structured_output",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_start",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "before_first_turn",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "tool_pre_post",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "edit_event",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "compaction_yield",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "verification_result",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "session_end",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "sync_async_semantics",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              },
+              {
+                "facet": "mutation_capability",
+                "level": "unsupported",
+                "reason": "binary presence is not parity",
+                "source": "capability_bootstrap"
+              }
+            ],
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unavailable",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "code.changed-neighborhood",
+              "code.graph",
+              "memory.search"
+            ],
+            "component_id": "adapter.codebase_memory",
+            "confidence": 0.4,
+            "cooldown": null,
+            "evidence_digest": "sha256:4c95d6fd2eca9215c712f37c9b9326bf0dec09407bb6bc71d10fc212bdc0fe41",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "adapter.codebase_memory",
+            "kind": "intelligence",
+            "limitations": [
+              "configured is not certified healthy"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": null,
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unavailable",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "code.callees",
+              "code.callers",
+              "code.definitions",
+              "code.graph",
+              "code.imports",
+              "code.references",
+              "code.symbols"
+            ],
+            "component_id": "adapter.serena_lsp",
+            "confidence": 0.4,
+            "cooldown": null,
+            "evidence_digest": "sha256:436e9c8081b36e11c0cc8a58301191a63438b42fc5fb192d49f8d0658570615a",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "adapter.serena_lsp",
+            "kind": "intelligence",
+            "limitations": [
+              "configured is not certified healthy"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": null,
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unavailable",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "code.graph",
+              "code.symbols"
+            ],
+            "component_id": "native.verdict.ast",
+            "confidence": 0.9,
+            "cooldown": null,
+            "evidence_digest": "sha256:2066a063ab34079d58db77a8f3ecd6c6423104758031bffe55973528b1f0aeb8",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "native.verdict.ast",
+            "kind": "intelligence",
+            "limitations": [],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": null,
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "ready",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "docs.library",
+              "docs.lookup"
+            ],
+            "component_id": "adapter.context7",
+            "confidence": 0.4,
+            "cooldown": null,
+            "evidence_digest": "sha256:7ed4a47c43be4c28be8af25edada72228f8144e2d2e27be1da7066d566991f77",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "adapter.context7",
+            "kind": "mcp",
+            "limitations": [
+              "configured is not certified healthy"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": null,
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unavailable",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "git.diff",
+              "repo.state"
+            ],
+            "component_id": "tool.ripgrep",
+            "confidence": 0.4,
+            "cooldown": null,
+            "evidence_digest": "sha256:d219a302bfdfd478bb37b3db7c49d1cb7cda9888e624e0d87e3aef7b3eba838f",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "tool.ripgrep",
+            "kind": "provider",
+            "limitations": [
+              "configured is not certified healthy"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": null,
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unavailable",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "security.mcp_config",
+              "security.prompt_injection"
+            ],
+            "component_id": "security.agentshield",
+            "confidence": 1.0,
+            "cooldown": null,
+            "evidence_digest": "sha256:df61df23d4153f1b2df3b93ce90d8b374d13089d1486ef1ff359dec7a8838f8f",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "security.agentshield",
+            "kind": "toolchain",
+            "limitations": [
+              "explicitly unsupported"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": null,
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unsupported",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [],
+            "component_id": "security.gitleaks",
+            "confidence": 0.4,
+            "cooldown": null,
+            "evidence_digest": "sha256:8476d85c1146a2c3ce7548702ab03f7a179ee62f53acbb907d8ebc45248dc4ea",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "security.gitleaks",
+            "kind": "toolchain",
+            "limitations": [
+              "configured is not certified healthy"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": null,
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unavailable",
+            "version": null
+          },
+          {
+            "authority_class": null,
+            "cache": null,
+            "capabilities": [
+              "security.agent_config"
+            ],
+            "component_id": "security.semgrep",
+            "confidence": 0.4,
+            "cooldown": null,
+            "evidence_digest": "sha256:b2ce64ecf36bb53346827e104302898668b67a2a2b040bf7decc056b64eac88d",
+            "expires_at": "2026-11-17T19:33:02.799841Z",
+            "freshness": "fresh",
+            "identity": "security.semgrep",
+            "kind": "toolchain",
+            "limitations": [
+              "configured is not certified healthy"
+            ],
+            "observed_at": "2026-11-17T19:28:02.799841Z",
+            "parity": null,
+            "quota": null,
+            "source": "capability_bootstrap",
+            "state": "unavailable",
+            "version": null
+          }
+        ],
+        "conflicts": [],
+        "expires_at": "2026-11-17T19:33:02.799841Z",
+        "memory_authority": null,
+        "premium_probes_used": 0,
+        "probes_used": 0,
+        "purpose": "evidence",
+        "schema_version": "1",
+        "ttl_seconds": 300
+      },
+      "schema_version": "runtime-certification/v1",
+      "summary": "installed != healthy; installed != healthy; installed != healthy; installed != healthy; installed != healthy; installed != healthy; installed != healthy; installed != healthy; installed != healthy; installed != healthy; installed != healthy; installed != healthy"
+    },
+    "credential_access": "disabled",
+    "kind": "capability_bootstrap_report",
+    "mutation_free": true,
+    "network_access": "disabled",
+    "plan": {
+      "actions": [
+        {
+          "action_id": "bootstrap:repair:gateway.omniroute",
+          "capability_ids": [
+            "gateway.inventory"
+          ],
+          "description": "Repair gateway.omniroute for capability gateway.inventory.",
+          "files_changed": [],
+          "install_command": "",
+          "install_source": "",
+          "kind": "repair_provider",
+          "postcondition": "Provider either becomes healthy/qualified or remains explicitly degraded.",
+          "privilege": "user",
+          "provider_id": "gateway.omniroute",
+          "reason": "endpoint configured but not live-certified",
+          "requires_consent": false,
+          "reversible": true,
+          "security_impact": "No new install; diagnoses existing provider without secret access.",
+          "target": "gateway.omniroute",
+          "trust_warning": "Do not treat binary presence as health.",
+          "undo": "No mutation in repair planning; stop probing."
+        },
+        {
+          "action_id": "bootstrap:repair:harness.claude_code",
+          "capability_ids": [
+            "harness.execute"
+          ],
+          "description": "Repair harness.claude_code for capability harness.execute.",
+          "files_changed": [],
+          "install_command": "",
+          "install_source": "",
+          "kind": "repair_provider",
+          "postcondition": "Provider either becomes healthy/qualified or remains explicitly degraded.",
+          "privilege": "user",
+          "provider_id": "harness.claude_code",
+          "reason": "binary present; not live-certified",
+          "requires_consent": false,
+          "reversible": true,
+          "security_impact": "No new install; diagnoses existing provider without secret access.",
+          "target": "harness.claude_code",
+          "trust_warning": "Do not treat binary presence as health.",
+          "undo": "No mutation in repair planning; stop probing."
+        }
+      ],
+      "credential_access": "disabled",
+      "kind": "capability_bootstrap_plan",
+      "mode": "recommended",
+      "mutation_free": true,
+      "network_access": "disabled",
+      "next": "review this plan; APPLY requires interactive consent (--yes) or an explicit allowlist (--allow); non-interactive APPLY requires --allow",
+      "plan_digest": "sha256:adbfd3e44417856f5f3a8fea629f6b38a01a07daa242f5d495bf6abda48d6092",
+      "plan_id": "sha256:adbfd3e44417856f5f3a8fea629f6b38a01a07daa242f5d495bf6abda48d6092",
+      "schema_version": "capability-bootstrap/v1",
+      "scope": "all",
+      "status": "planned"
+    },
+    "providers": [
+      {
+        "auth_state": "unknown",
+        "authority": 90,
+        "capabilities": [
+          "code.changed-neighborhood",
+          "code.graph",
+          "memory.search"
+        ],
+        "config_sources": [
+          "/home/nick/.claude.json",
+          "/home/nick/.codex/config.toml",
+          "/home/nick/.hermes/config.yaml",
+          "/home/nick/.prime/agent/settings.json"
+        ],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow Codebase Memory MCP install docs",
+        "install_source": "codebase-memory-mcp",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "/home/nick/.local/bin/codebase-memory-mcp",
+        "provider_id": "adapter.codebase_memory",
+        "provider_kind": "intelligence",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 70,
+        "capabilities": [
+          "docs.library",
+          "docs.lookup"
+        ],
+        "config_sources": [
+          "/home/nick/.claude.json",
+          "/home/nick/.hermes/config.yaml",
+          "/home/nick/.prime/agent/settings.json"
+        ],
+        "failure_reason": "configured in harness MCP; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow Context7 MCP install docs",
+        "install_source": "context7-mcp",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "configured",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": null,
+        "provider_id": "adapter.context7",
+        "provider_kind": "docs",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 80,
+        "capabilities": [
+          "code.callees",
+          "code.callers",
+          "code.definitions",
+          "code.graph",
+          "code.imports",
+          "code.references",
+          "code.symbols"
+        ],
+        "config_sources": [
+          "/home/nick/.claude.json",
+          "/home/nick/.codex/config.toml",
+          "/home/nick/.hermes/config.yaml",
+          "/home/nick/.prime/agent/settings.json"
+        ],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow Serena MCP install docs",
+        "install_source": "serena-mcp",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "/home/nick/.local/bin/serena",
+        "provider_id": "adapter.serena_lsp",
+        "provider_kind": "intelligence",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 35,
+        "capabilities": [
+          "gateway.execute",
+          "gateway.inventory"
+        ],
+        "config_sources": [],
+        "failure_reason": null,
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "npm install -g 9router",
+        "install_source": "https://github.com/1jehuang/9router",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "not_installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": null,
+        "provider_id": "gateway.9router",
+        "provider_kind": "gateway",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 40,
+        "capabilities": [
+          "gateway.execute",
+          "gateway.inventory"
+        ],
+        "config_sources": [],
+        "failure_reason": null,
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "pip install litellm",
+        "install_source": "https://github.com/BerriAI/litellm",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "not_installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": null,
+        "provider_id": "gateway.litellm",
+        "provider_kind": "gateway",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 50,
+        "capabilities": [
+          "gateway.execute",
+          "gateway.inventory",
+          "gateway.quota"
+        ],
+        "config_sources": [],
+        "failure_reason": "endpoint configured but not live-certified",
+        "freshness": "fresh",
+        "hard_dependency": false,
+        "health_state": "unhealthy",
+        "install_command": "npm install -g omniroute",
+        "install_source": "https://github.com/NeuronZero/omniroute",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "http://127.0.0.1:20128",
+        "provider_id": "gateway.omniroute",
+        "provider_kind": "gateway",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 40,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow upstream Claude Code install docs",
+        "install_source": "https://docs.anthropic.com/claude-code",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "/home/nick/.local/bin/claude",
+        "provider_id": "harness.claude_code",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 30,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": null,
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "npm install -g cline  # or install the VS Code Cline extension",
+        "install_source": "https://github.com/cline/cline",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "not_installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": null,
+        "provider_id": "harness.cline",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 40,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow upstream Codex CLI install docs",
+        "install_source": "https://github.com/openai/codex",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "/home/nick/.local/bin/codex",
+        "provider_id": "harness.codex",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 35,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow upstream Cursor CLI install docs",
+        "install_source": "https://cursor.com",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "/home/nick/.local/bin/cursor-agent",
+        "provider_id": "harness.cursor",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 35,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow upstream Hermes installer",
+        "install_source": "https://github.com/NousResearch/hermes-agent",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "/home/nick/.local/bin/hermes",
+        "provider_id": "harness.hermes",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 30,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow upstream OpenCode install docs",
+        "install_source": "opencode",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "/home/nick/.opencode/bin/opencode",
+        "provider_id": "harness.opencode",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 30,
+        "capabilities": [
+          "harness.execute"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow upstream Prime Agent install docs",
+        "install_source": "prime-agent",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "/home/nick/.local/bin/prime-agent",
+        "provider_id": "harness.prime",
+        "provider_kind": "harness",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "not_required",
+        "authority": 10,
+        "capabilities": [
+          "code.graph",
+          "code.symbols"
+        ],
+        "config_sources": [],
+        "failure_reason": null,
+        "freshness": "fresh",
+        "hard_dependency": false,
+        "health_state": "healthy",
+        "install_command": "",
+        "install_source": "verdict-native",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "healthy",
+        "managed_by_verdict": false,
+        "optional": false,
+        "path_or_endpoint": null,
+        "provider_id": "native.verdict.ast",
+        "provider_kind": "intelligence",
+        "qualification_state": "qualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 20,
+        "capabilities": [
+          "security.mcp_config",
+          "security.prompt_injection"
+        ],
+        "config_sources": [],
+        "failure_reason": null,
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow AgentShield install docs",
+        "install_source": "agentshield",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "not_installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": null,
+        "provider_id": "security.agentshield",
+        "provider_kind": "security",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 20,
+        "capabilities": [
+          "security.secrets"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow Gitleaks install docs",
+        "install_source": "https://github.com/gitleaks/gitleaks",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "/home/nick/.local/bin/gitleaks",
+        "provider_id": "security.gitleaks",
+        "provider_kind": "security",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 20,
+        "capabilities": [
+          "security.agent_config"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Follow Semgrep install docs",
+        "install_source": "https://semgrep.dev",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "/home/nick/.local/bin/semgrep",
+        "provider_id": "security.semgrep",
+        "provider_kind": "security",
+        "qualification_state": "unqualified",
+        "version": null
+      },
+      {
+        "auth_state": "unknown",
+        "authority": 5,
+        "capabilities": [
+          "git.diff",
+          "repo.state"
+        ],
+        "config_sources": [],
+        "failure_reason": "binary present; not live-certified",
+        "freshness": "unknown",
+        "hard_dependency": false,
+        "health_state": "unknown",
+        "install_command": "Install ripgrep via OS package manager",
+        "install_source": "ripgrep",
+        "last_probe": null,
+        "latency_cost": null,
+        "lifecycle": "installed",
+        "managed_by_verdict": false,
+        "optional": true,
+        "path_or_endpoint": "/usr/bin/rg",
+        "provider_id": "tool.ripgrep",
+        "provider_kind": "other",
+        "qualification_state": "unqualified",
+        "version": null
+      }
+    ],
+    "recommendations": [
+      {
+        "candidate_providers": [
+          "harness.claude_code",
+          "harness.codex",
+          "harness.cursor",
+          "harness.hermes",
+          "harness.cline",
+          "harness.opencode",
+          "harness.prime"
+        ],
+        "capability_id": "harness.execute",
+        "hard_dependency": false,
+        "optional": true,
+        "parity": null,
+        "reason": "Provider present but not healthy/qualified (installed != healthy); prefer reuse after repair or choose an alternative.",
+        "selected_provider_id": null,
+        "status": "degraded"
+      },
+      {
+        "candidate_providers": [
+          "gateway.omniroute",
+          "gateway.litellm",
+          "gateway.9router"
+        ],
+        "capability_id": "gateway.inventory",
+        "hard_dependency": false,
+        "optional": true,
+        "parity": null,
+        "reason": "Provider present but not healthy/qualified (installed != healthy); prefer reuse after repair or choose an alternative.",
+        "selected_provider_id": null,
+        "status": "degraded"
+      },
+      {
+        "candidate_providers": [
+          "gateway.omniroute",
+          "gateway.litellm",
+          "gateway.9router"
+        ],
+        "capability_id": "gateway.execute",
+        "hard_dependency": false,
+        "optional": true,
+        "parity": null,
+        "reason": "Provider present but not healthy/qualified (installed != healthy); prefer reuse after repair or choose an alternative.",
+        "selected_provider_id": null,
+        "status": "degraded"
+      },
+      {
+        "candidate_providers": [
+          "adapter.serena_lsp",
+          "native.verdict.ast"
+        ],
+        "capability_id": "code.symbols",
+        "hard_dependency": false,
+        "optional": true,
+        "parity": null,
+        "reason": "Satisfied by healthy provider native.verdict.ast.",
+        "selected_provider_id": "native.verdict.ast",
+        "status": "covered"
+      },
+      {
+        "candidate_providers": [
+          "native.verdict.ast",
+          "adapter.serena_lsp"
+        ],
+        "capability_id": "code.definitions",
+        "hard_dependency": false,
+        "optional": true,
+        "parity": null,
+        "reason": "Satisfied by healthy provider native.verdict.ast.",
+        "selected_provider_id": "native.verdict.ast",
+        "status": "covered"
+      },
+      {
+        "candidate_providers": [
+          "native.verdict.ast",
+          "adapter.serena_lsp"
+        ],
+        "capability_id": "code.references",
+        "hard_dependency": false,
+        "optional": true,
+        "parity": null,
+        "reason": "Satisfied by healthy provider native.verdict.ast.",
+        "selected_provider_id": "native.verdict.ast",
+        "status": "covered"
+      },
+      {
+        "candidate_providers": [
+          "adapter.codebase_memory",
+          "adapter.serena_lsp",
+          "native.verdict.ast"
+        ],
+        "capability_id": "code.graph",
+        "hard_dependency": false,
+        "optional": true,
+        "parity": null,
+        "reason": "Satisfied by healthy provider native.verdict.ast.",
+        "selected_provider_id": "native.verdict.ast",
+        "status": "covered"
+      },
+      {
+        "candidate_providers": [
+          "native.verdict",
+          "adapter.context7"
+        ],
+        "capability_id": "docs.lookup",
+        "hard_dependency": false,
+        "optional": true,
+        "parity": null,
+        "reason": "Satisfied by healthy provider native.verdict.",
+        "selected_provider_id": "native.verdict",
+        "status": "covered"
+      },
+      {
+        "candidate_providers": [
+          "native.verdict.memory_plane",
+          "adapter.codebase_memory"
+        ],
+        "capability_id": "memory.search",
+        "hard_dependency": false,
+        "optional": true,
+        "parity": null,
+        "reason": "Satisfied by healthy provider native.verdict.memory_plane.",
+        "selected_provider_id": "native.verdict.memory_plane",
+        "status": "covered"
+      },
+      {
+        "candidate_providers": [
+          "native.verdict.security",
+          "security.gitleaks"
+        ],
+        "capability_id": "security.secrets",
+        "hard_dependency": false,
+        "optional": true,
+        "parity": null,
+        "reason": "Satisfied by healthy provider native.verdict.security.",
+        "selected_provider_id": "native.verdict.security",
+        "status": "covered"
+      }
+    ],
+    "schema_version": "capability-bootstrap/v1",
+    "stages": [
+      {
+        "details": {
+          "count": 18
+        },
+        "stage": "discover",
+        "status": "ok",
+        "summary": "Discovered 18 catalog provider(s)."
+      },
+      {
+        "details": {
+          "provider_ids": [
+            "adapter.codebase_memory",
+            "adapter.context7",
+            "adapter.serena_lsp",
+            "gateway.9router",
+            "gateway.litellm",
+            "gateway.omniroute",
+            "harness.claude_code",
+            "harness.cline",
+            "harness.codex",
+            "harness.cursor",
+            "harness.hermes",
+            "harness.opencode",
+            "harness.prime",
+            "native.verdict.ast",
+            "security.agentshield",
+            "security.gitleaks",
+            "security.semgrep",
+            "tool.ripgrep"
+          ]
+        },
+        "stage": "normalize",
+        "status": "ok",
+        "summary": "Normalized 18 provider record(s)."
+      },
+      {
+        "details": {
+          "count": 10
+        },
+        "stage": "recommend",
+        "status": "ok",
+        "summary": "0 missing, 3 degraded, 7 covered."
+      },
+      {
+        "details": {
+          "action_ids": [
+            "bootstrap:repair:gateway.omniroute",
+            "bootstrap:repair:harness.claude_code"
+          ],
+          "plan_digest": "sha256:adbfd3e44417856f5f3a8fea629f6b38a01a07daa242f5d495bf6abda48d6092"
+        },
+        "stage": "preflight",
+        "status": "ok",
+        "summary": "Unified plan with 2 action(s); digest sha256:adbfd3e44417856f5f3a8fea629f6b38a01a07daa242f5d495bf6abda48d6092."
+      },
+      {
+        "details": {},
+        "stage": "consent",
+        "status": "skipped",
+        "summary": "Plan/recommended mode: consent deferred until APPLY."
+      },
+      {
+        "details": {},
+        "stage": "apply",
+        "status": "skipped",
+        "summary": "Mutation-free mode; no APPLY."
+      },
+      {
+        "details": {
+          "result_count": 18
+        },
+        "stage": "certify",
+        "status": "ok",
+        "summary": "installed != healthy; unhealthy providers not certified"
+      }
+    ]
+  },
+  "config": {
+    "exists": true,
+    "path": "~/.config/verdict/verdict.yaml"
+  },
+  "credential_access": "disabled",
+  "kind": "setup_plan",
+  "mode": "dry-run",
+  "mutation_free": true,
+  "network_access": "disabled",
+  "next": "review this plan before a future setup apply command",
+  "plan_digest": "sha256:730864d1ff30a8fe727387f29b8953d4bb285a1c2eaa0c4126b304c351d36634",
+  "plan_id": "sha256:730864d1ff30a8fe727387f29b8953d4bb285a1c2eaa0c4126b304c351d36634",
+  "schema_version": "1",
+  "shared_memory": {
+    "auth_state": "not-configured",
+    "configured": false,
+    "endpoint": null,
+    "install_action": "none",
+    "installed": false,
+    "mutated": false,
+    "provider_id": "mcp-memory-service",
+    "state": "not-installed",
+    "token_env": "VERDICT_SHARED_MEMORY_TOKEN"
+  },
+  "status": "planned"
+}

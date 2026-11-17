@@ -1,0 +1,201 @@
+
+VERDICT  /  Doctor
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+  checking documentation memory (may take a while)...
+  checking documentation source verdict-core-docs...
+╭─ CAPABILITIES ───────────────────────────────────────────────────────────────╮
+│                                                                              │
+│  harness.execute: DEGRADED                                                   │
+│      Repair: verdict setup --recommended                                     │
+│  gateway.inventory: DEGRADED                                                 │
+│      Repair: verdict detect                                                  │
+│  gateway.execute: DEGRADED                                                   │
+│      Repair: verdict detect                                                  │
+│  code.symbols: COVERED  native.verdict.ast · healthy · 10                    │
+│  code.definitions: COVERED  native.verdict.ast · healthy · 10                │
+│  code.references: COVERED  native.verdict.ast · healthy · 10                 │
+│  code.graph: COVERED  native.verdict.ast · healthy · 10                      │
+│  docs.lookup: COVERED  native.verdict · healthy · 10                         │
+│  memory.search: COVERED  native.verdict.memory_plane · healthy · 40          │
+│  security.secrets: COVERED  native.verdict.security · healthy · 20           │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+  + Capability coverage  OK
+    7/10 covered (bootstrap view)
+  + Documentation preflight  OK
+    ready (44 documents, 0 ingested, 0 stale, 0 missing)
+  - Shared memory  NOT-INSTALLED
+    mcp-memory-service
+  + Configured Primary Model  OK
+    claude-fable-5-1 (Tier-0)
+  - Gateway lifecycle  WARN
+    gateway unhealthy url=http://127.0.0.1:20128: ReadTimeout: timed out
+    Repair: verdict detect
+  - Gateway remediation  NOTE
+    start the gateway at http://127.0.0.1:20128, or run 'verdict doctor'
+  + Advisory rankings  OK
+    active: gateway_kind=omniroute (verdict.yaml gateway_kind); 8 ranked 
+providers (coding) at http://127.0.0.1:20128
+  + Gateway key  OK
+    DB-backed key hermes
+  + Management token  OK
+    valid (source: environment); serve reads runtime sources health + 
+connections
+
+  Environment reference
+  See .env.example in the repository root for the full environment variable 
+reference.
+  + Connected to OmniRoute  OK
+    Found 0 configured node endpoints
+  ! Live acceptance  FAILED
+    red: /home/nick/.verdict/acceptance/20261117T200015Z.json, 2 min old
+    Repair: verdict acceptance status
+
+VERDICT  /  Credentials
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+  - OMNIROUTE_API_KEY  ENV
+    set (len=35)
+  - VERDICT_OMNIROUTE_API_KEY  ENV
+    set (len=35)
+  - OMNIROUTE_BASE_URL  ENV
+    set (len=22)
+  - OMNIROUTE_MANAGEMENT_TOKEN  ENV
+    set (len=35)
+  - OMNIROUTE_USAGE_API_KEY_ID  ENV
+    set (len=36)
+  - LLMGATE_UPSTREAM_API_KEY  OPTIONAL
+    not set
+  - LLMGATE_UPSTREAM_BASE_URL  OPTIONAL
+    not set
+  - LLMGATE_PROBE_API_KEY  OPTIONAL
+    not set
+  - LLMGATE_PROBE_BASE_URL  OPTIONAL
+    not set
+  - LLMGATE_AUTH_TOKEN  ENV
+    set (len=35)
+  - OPENAI_API_KEY  ENV
+    set (len=35)
+  - OPENAI_BASE_URL  OPTIONAL
+    not set
+  - OPENAI_API_BASE  ENV
+    set (len=22)
+  - GEMINI_API_KEY  OPTIONAL
+    not set
+  - OPENROUTER_API_KEY  ENV
+    set (len=35)
+  - XAI_MANAGEMENT_API_KEY  OPTIONAL
+    not set
+  - PI_API_KEY  OPTIONAL
+    not set
+  - HERMES_API_KEY  OPTIONAL
+    not set
+  - TYPESAFE_API_KEY  ENV
+    set (len=49)
+  - TYPESAFE_BASE_URL  ENV
+    set (len=20)
+  - AI_MEMORY_AUTH_TOKEN  ENV
+    set (len=64)
+  - OPENJEV_API_KEY  OPTIONAL
+    not set
+  - OPENJEV_BASE_URL  OPTIONAL
+    not set
+  + Required credentials  OK
+    all set
+  - Census runtime  NOTE
+    Census retired in favour of the identify timers; keep legacy units disabled.
+
+VERDICT  /  Installed services
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+  + Identify timer  OK
+    verdict-identify.timer is active; command verdict identify --passive --json 
+--save-report --refresh-health-cache; last attempt Tue 2026-11-17 18:56:29 UTC; 
+last completion Tue 2026-11-17 18:56:32 UTC; result success; next run unknown
+  + Identify screen timer  OK
+    verdict-identify-screen.timer is active; command verdict identify --screen; 
+last attempt Tue 2026-11-17 18:00:12 UTC; last completion Tue 2026-11-17 
+18:28:33 UTC; result success; next run Wed 2026-11-18 00:00:00 UTC
+  + Prime-sync timer  OK
+    verdict-prime-sync.timer is active
+  + Acceptance timer  OK
+    verdict-acceptance.timer is active
+  + Reference-docs timer  OK
+    verdict-ref-docs.timer is active; last result success
+  + Documentation refresh timer  OK
+    verdict-docs-refresh.timer is active; last result success
+  + Reference docs default/ref-omniroute  OK
+    tag v3.8.53 (installed v3.8.53), last sync 2026-11-17T20:02:33+00:00, 1436 
+pages
+  + Identify passive report  OK
+    /home/nick/.verdict/identify-latest.json age 4117s; source errors none; 
+model calls 0; health refresh recorded 51, newest evidence age 4119s; 
+implementation pool eligible 32 (free 17), fallback 886; supply complete false, 
+46 unknowns
+  - OmniRoute webhook  WARNING
+    not registered (never attempted); health matrix remains the passive source; 
+repair: verdict identify register-webhook
+    Repair: verdict identify register-webhook
+  + Metadata refresh timer  OK
+    verdict-metadata-refresh.timer active; arena_elo=skipped, 
+artificial_analysis=skipped, bfcl=skipped, litellm=827s, models.dev=827s, 
+models.dev.models=827s, open_llm_leaderboard=skipped, 
+openrouter.artificial_analysis=827s
+  + Health cache  OK
+    69 fresh, 0 stale route(s); passive traffic 58 (newest age 4121s); webhook 
+0; probes 11 (newest age 5850s)
+  + Prime-sync code path  OK
+    verdict-prime-sync.service: cwd 
+/home/nick/.local/share/verdict/installed-main, package 
+/home/nick/.local/share/verdict/installed-main/verdict
+  + Runtime identify  OK
+    verdict-identify.service: package 
+/home/nick/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, 
+gateway default, state /home/nick/.verdict
+  + Runtime identify-screen  OK
+    verdict-identify-screen.service: package 
+/home/nick/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, 
+gateway default, state /home/nick/.verdict
+  + Runtime acceptance  OK
+    verdict-acceptance.service: package 
+/home/nick/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, 
+gateway default, state /home/nick/.verdict
+  + Runtime prime-sync  OK
+    verdict-prime-sync.service: package 
+/home/nick/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, 
+gateway default, state /home/nick/.verdict
+  + Runtime metadata-refresh  OK
+    verdict-metadata-refresh.service: package 
+/home/nick/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, 
+gateway default, state /home/nick/.verdict
+  + Runtime serve  OK
+    verdict-serve.service: package 
+/home/nick/.local/share/verdict/installed-main/verdict, build git ac623aecbf10, 
+gateway default, state /home/nick/.verdict
+
+VERDICT  /  Host prerequisites
+autonomous control plane  ·  plan · select · recover · verify · prove
+
+  + Review tool (ocr)  OK
+    /home/nick/.local/bin/ocr is v1.12.9, sha256 matches verdict.ocr_release
+  + Verdict serve unit  OK
+    verdict-serve.service is active
+  + Verdict serve health  OK
+    http://127.0.0.1:8000/health answers
+  + Prime registry  OK
+    /home/nick/.prime/agent/models.json: providers.omniroute has 4273 model(s)
+  + Prime-sync service  OK
+    verdict-prime-sync.service last result success
+  - WARNING  WARNING
+    missing_mcp_config
+    Repair: verdict doctor --fix
+╭─ ISSUES (1) ─────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│  ISSUE: Live acceptance is red (20261117T200015Z.json): doctor (1 doctor     │
+│  issue(s): http://127.0.0.1:8000/health did not answer; repair: systemctl    │
+│  --user restart verdict-serve.service; logs: journalctl --user -u            │
+│  verdict-serve.service)                                                      │
+│      Repair: systemctl --user restart verdict-serve.service                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯

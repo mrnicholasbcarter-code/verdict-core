@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "story": "bod219-management-token-resolver",
+  "kind": "product",
+  "author": "Nick Carter",
+  "merged_sha": "3293cb3c1c4e5755d65a62b8ec26c6701ac0411a",
+  "pr": 959,
+  "on_main": {
+    "at": "2026-11-17T19:10:00Z",
+    "sha": "3293cb3c1c4e5755d65a62b8ec26c6701ac0411a",
+    "environment": "operator-host",
+    "command": "gh pr checks 959 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod219-management-token-resolver/on_main.txt",
+      "sha256": "ad56804ac3f039756b84bb324c926b1b751354ed08e1d63415ea73c6f3f328c8"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "Management token resolver is operational",
+      "expect": "Management token",
+      "first_run": {
+        "at": "2026-11-17T19:08:38Z",
+        "sha": "3293cb3c1c4e5755d65a62b8ec26c6701ac0411a",
+        "environment": "operator-host",
+        "command": "verdict doctor --json",
+        "real_state_marker": "\"status\": \"ok\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod219-management-token-resolver/doctor-first-2026-11-17T19_08_38Z.json",
+          "sha256": "395b6d93f65671721d6489066e7ab0c289e4d635e0c4c2d30ca318d0f7c25809"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T19:27:53Z",
+        "sha": "3293cb3c1c4e5755d65a62b8ec26c6701ac0411a",
+        "environment": "operator-host",
+        "command": "verdict doctor --json",
+        "real_state_marker": "\"status\": \"ok\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod219-management-token-resolver/doctor-fresh-run-2026-11-17T19_27_53Z.json",
+          "sha256": "fab405af21d6ee8ab51b60a49bfccd3f1aad7c3cdea653bf9b51cfdaf86f1897"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "verdict-acceptance.timer",
+  "setup_doctor": {
+    "status": "green",
+    "command": "verdict doctor --json",
+    "at": "2026-11-17T19:08:38Z",
+    "raw_output": {
+      "path": "docs/proof/dod/bod219-management-token-resolver/doctor-first-2026-11-17T19_08_38Z.json",
+      "sha256": "395b6d93f65671721d6489066e7ab0c289e4d635e0c4c2d30ca318d0f7c25809"
+    }
+  },
+  "openspec": {
+    "change": "bod219-management-token-resolver"
+  },
+  "parent_confirmation": {
+    "by": "gem-devops on omniroute/worker/free-first",
+    "at": "2026-11-17T19:52:47Z",
+    "command": "verdict doctor --json",
+    "raw_output": {
+      "path": "docs/proof/dod/bod219-management-token-resolver/doctor-confirm-2026-11-17T19_52_47Z.json",
+      "sha256": "e911d2e397a34d3b55af7a07b751d7971a89fb38c02bd249ee55b421fdd410d7"
+    }
+  }
+}

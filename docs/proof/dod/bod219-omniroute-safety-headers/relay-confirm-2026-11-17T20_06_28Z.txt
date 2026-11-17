@@ -1,0 +1,65 @@
+* Uses proxy env variable no_proxy == '127.0.0.1,localhost,::1'
+*   Trying 127.0.0.1:8000...
+* Connected to 127.0.0.1 (127.0.0.1) port 8000 (#0)
+> POST /v1/chat/completions HTTP/1.1
+> Host: 127.0.0.1:8000
+> User-Agent: curl/7.81.0
+> Accept: */*
+> Authorization: Bearer [redacted]
+> Content-Type: application/json
+> Content-Length: 63
+> 
+} [63 bytes data]
+* Mark bundle as not supporting multiuse
+< HTTP/1.1 200 OK
+< date: Tue, 17 Nov 2026 20:06:28 GMT
+< server: uvicorn
+< content-security-policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: ws: wss:; worker-src 'self' blob:; manifest-src 'self'
+< x-frame-options: DENY
+< x-content-type-options: nosniff
+< referrer-policy: strict-origin-when-cross-origin
+< permissions-policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=()
+< strict-transport-security: max-age=63072000; includeSubDomains; preload
+< access-control-allow-headers: Content-Type, Authorization, x-api-key, anthropic-version, x-omniroute-connection, X-OmniRoute-Lease-Owner, X-OmniRoute-Lease-Generation, x-internal-test, accept
+< access-control-allow-methods: GET, POST, PUT, DELETE, PATCH, OPTIONS
+< access-control-allow-origin: *
+< vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+< x-omniroute-route-class: CLIENT_API
+< x-request-id: 679da991-56f1-4c99-9ef3-d9582bc620aa
+< content-type: application/json
+< x-conversationid: conv_d996e712-0de6-4a76-abae-acdc006c3e4c
+< x-correlation-id: 992b37d6-4db8-4e83-a019-c1ecfca61492
+< x-omniroute-cache: MISS
+< x-omniroute-cache-hit: false
+< x-omniroute-compression: off; source=off
+< x-omniroute-decision: strategy=single; provider=nvidia; latency_ms=16635
+< x-omniroute-latency-ms: 16635
+< x-omniroute-model: google/gemma-4-31b-it
+< x-omniroute-provider: nvidia
+< x-omniroute-request-id: 06476b85-a510-4de4-b3ab-6118d38b02da
+< x-omniroute-response-cost: 0.0000000000
+< x-omniroute-selected-connection-id: 36b2d505-06bf-4790-b86b-212816bcc3fb
+< x-omniroute-session-id: 96c589e0f6d489c4
+< x-omniroute-tokens-in: 74
+< x-omniroute-tokens-out: 10
+< x-omniroute-version: 3.8.53
+< date: Tue, 17 Nov 2026 20:06:56 GMT
+< x-verdict-model: nvidia/google/gemma-4-31b-it
+< x-verdict-tier: 2
+< x-verdict-request-id: req-95982cc76fff4577865b881c5eddd055
+< x-verdict-decision: selected
+< x-verdict-transport-outcome: success
+< x-verdict-quality-outcome: unknown
+< x-verdict-degraded-mode: false
+< x-verdict-pack-injected: true
+< x-verdict-pack-state: hydrated
+< x-verdict-pack-digest: sha256:841e73bebecaba33bed9b4fcbc46805a71c487ed19993ee6294651a1d1febb45
+< x-verdict-evidence-request-id: req-95982cc76fff4577865b881c5eddd055
+< x-verdict-correlation-id: corr-b4703b72311d4afaac0c279d8aa56727
+< x-verdict-evidence-id: evidence-a758da1dfa4044608a3689bbb792b895
+< content-length: 424
+< cache-control: no-store
+< 
+{ [424 bytes data]
+* Connection #0 to host 127.0.0.1 left intact
+{"id":"b90f98f616fa197e","object":"chat.completion","created":1794946015,"model":"google/gemma-4-31b-it","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","refusal":null,"content":"Hello! How can I help you today?"},"logprobs":null}],"usage":{"prompt_tokens":74,"completion_tokens":10,"total_tokens":84,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}

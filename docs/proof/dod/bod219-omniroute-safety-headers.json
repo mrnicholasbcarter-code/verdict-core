@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "story": "bod219-omniroute-safety-headers",
+  "kind": "product",
+  "author": "Nick Carter",
+  "merged_sha": "3293cb3c1c4e5755d65a62b8ec26c6701ac0411a",
+  "pr": 959,
+  "on_main": {
+    "at": "2026-11-17T19:10:00Z",
+    "sha": "3293cb3c1c4e5755d65a62b8ec26c6701ac0411a",
+    "environment": "operator-host",
+    "command": "gh pr checks 959 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod219-omniroute-safety-headers/on_main.txt",
+      "sha256": "ad56804ac3f039756b84bb324c926b1b751354ed08e1d63415ea73c6f3f328c8"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "Relay sends safety headers",
+      "expect": "x-omniroute-version: 3.8.53",
+      "first_run": {
+        "at": "2026-11-17T19:45:36Z",
+        "sha": "3293cb3c1c4e5755d65a62b8ec26c6701ac0411a",
+        "environment": "operator-host",
+        "command": "curl -sS -v -X POST -H 'Authorization: Bearer [REDACTED]' -H 'Content-Type: application/json' -d '{\"model\":\"test\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}' http://127.0.0.1:8000/v1/chat/completions",
+        "real_state_marker": "x-omniroute-version: 3.8.53",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod219-omniroute-safety-headers/relay-verbose-2026-11-17T19_45_36Z.txt",
+          "sha256": "ee015a596bd85e2bb88199cf0b07ef31c4d972daf5699044dcc562f8f7bb278b"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T20:00:18Z",
+        "sha": "3293cb3c1c4e5755d65a62b8ec26c6701ac0411a",
+        "environment": "operator-host",
+        "command": "curl -sS -v -X POST -H 'Authorization: Bearer [REDACTED]' -H 'Content-Type: application/json' -d '{\"model\":\"test\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}' http://127.0.0.1:8000/v1/chat/completions",
+        "real_state_marker": "x-omniroute-version: 3.8.53",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod219-omniroute-safety-headers/relay-verbose-fresh-2026-11-17T20_00_18Z.txt",
+          "sha256": "0b6263e71efc8bb4e6a7c122f9d94c0ed794561464c61a24646cfc060906cabf"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "verdict-acceptance.timer",
+  "setup_doctor": {
+    "status": "green",
+    "command": "verdict doctor --json",
+    "at": "2026-11-17T19:45:36Z",
+    "raw_output": {
+      "path": "docs/proof/dod/bod219-omniroute-safety-headers/doctor-first-2026-11-17T19_08_38Z.json",
+      "sha256": "395b6d93f65671721d6489066e7ab0c289e4d635e0c4c2d30ca318d0f7c25809"
+    }
+  },
+  "openspec": {
+    "change": "bod219-omniroute-safety-headers"
+  },
+  "parent_confirmation": {
+    "by": "gem-devops on omniroute/worker/free-first",
+    "at": "2026-11-17T20:06:28Z",
+    "command": "curl -sS -v -X POST -H 'Authorization: Bearer [REDACTED]' -H 'Content-Type: application/json' -d '{\"model\":\"test\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}' http://127.0.0.1:8000/v1/chat/completions",
+    "raw_output": {
+      "path": "docs/proof/dod/bod219-omniroute-safety-headers/relay-confirm-2026-11-17T20_06_28Z.txt",
+      "sha256": "08d05c4fb95258f81be09989000ad1d9a12c25ffe7bf8e25f9d9f0c166d135f6"
+    }
+  }
+}
