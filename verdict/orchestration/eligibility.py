@@ -124,6 +124,52 @@ def _parse_iso(value: str) -> datetime | None:
     return parsed
 
 
+def read_only_valid_proof(route_ids: Sequence[str], *, now: datetime) -> dict[str, dict[str, Any]]:
+    """Passport rows whose exact-route proof is valid for read-only (--no-confirm) choose.
+
+    Operator ruling: --no-confirm accepts proof older than the 10-minute permit
+    window while the passport is still valid. The validity test is the normal one,
+    ``passport_confirmation(...)["admitted"]``, evaluated at the passport's own
+    ``qualified_at`` (so only the permit window is waived), plus ``expires_at`` in
+    the future. Newer negative health evidence drops the passport inside
+    ``passport_confirmation``, so it still excludes.
+    """
+    from verdict.admit_prove_confirm import passport_confirmation
+
+    valid: dict[str, dict[str, Any]] = {}
+    for row in passport_confirmation(list(route_ids), now=now)["passport"]:
+        route_id = str(row.get("identity_id", ""))
+        qualified = _parse_iso(str(row.get("qualified_at", "")))
+        expires_at = _parse_iso(str(row.get("expires_at", "")))
+        if qualified is None or expires_at is None or expires_at <= now:
+            continue
+        if route_id in passport_confirmation([route_id], now=qualified)["admitted"]:
+            valid[route_id] = row
+    return valid
+
+
+def _read_only_stale_reason(route_id: str, row: Mapping[str, Any], *, now: datetime) -> str:
+    """Name why a route's proof is not valid for read-only choose."""
+    if not row.get("qualified_at"):
+        # passport_confirmation dropped or never found a passport: tell missing
+        # apart from superseded by newer negative evidence.
+        from verdict.prove_at_rest_legacy import load_healthy_passports
+
+        return (
+            "passport_superseded"
+            if route_id in load_healthy_passports(None)
+            else "passport_missing"
+        )
+    expires_at = _parse_iso(str(row.get("expires_at", "")))
+    if expires_at is None or expires_at <= now:
+        return "passport_expired"
+    if row.get("auth_state") != "authorized":
+        return "passport_unauthorized"
+    if row.get("availability_state") != "eligible":
+        return "passport_ineligible"
+    return "passport_stale"
+
+
 def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
@@ -361,6 +407,7 @@ class EligibilityLadder:
         rankings_category: str | None = None,
         rankings_provenance: Mapping[str, Mapping[str, Any]] | None = None,
         rankings_received_at: str | None = None,
+        read_only: bool = False,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -372,6 +419,7 @@ class EligibilityLadder:
         self._load = load or (lambda _route: 0)
         self._max_per_route = max_per_route
         self._max_probes = max_probes_per_select
+        self._read_only = read_only
         self._state: dict[str, dict[str, dict[str, Any]]] = self._load_state()
         # BOD-341: select() runs concurrently on worker threads. Every _state
         # mutation and its _persist hold this lock (never across a probe).
@@ -1205,6 +1253,7 @@ class EligibilityLadder:
                     elif candidate.health == "healthy":
                         upgraded.append(candidate.route_id)
             self._last_refresh_upgrades = tuple(upgraded)
+
         rank_of = {a.route_id: i for i, a in enumerate(candidates)}
         probes_used = 0
         chosen: _Assessment | None = None
@@ -1244,10 +1293,24 @@ class EligibilityLadder:
                 or qualified is None
                 or (now - qualified).total_seconds() >= PERMIT_PROOF_MAX_VALIDITY_SECONDS
             )
+            stale_reason: str | None = None
+            if proof_stale and self._read_only:
+                # Operator ruling: --no-confirm accepts exact-route proof that is
+                # still valid even when older than the permit window.
+                proof_stale = a.route_id not in read_only_valid_proof([a.route_id], now=now)
+                if proof_stale:
+                    stale_reason = _read_only_stale_reason(
+                        a.route_id, rows[0] if rows else {}, now=now
+                    )
             if a.health != "healthy" or confirming or proof_stale:
                 if lease_held:
                     a.reason = "lease_held"
                     a.failed_stage = EligibilityStage.AVAILABLE
+                    continue
+                if stale_reason is not None:
+                    # Same stage as probe_budget_exhausted below (no new rejection
+                    # stage); only the reason names why proof is not valid.
+                    a.reason = stale_reason
                     continue
                 if probes_used >= self._max_probes:
                     a.reason = "probe_budget_exhausted"

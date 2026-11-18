@@ -22,6 +22,7 @@ def eligibility_ladder():
     ladder._ttl = 300.0
     ladder._max_probes = 8
     ladder._admitted = None
+    ladder._read_only = False
     ladder._state = {
         "inventory": {},
         "health": {},

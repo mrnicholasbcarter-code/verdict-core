@@ -3,17 +3,17 @@
 The receipt ledger is a local, privacy-safe audit boundary. It stores redacted
 metadata and hashes by default; it is not a prompt archive or a credential
 vault. Operators remain responsible for host access controls, disk encryption,
-SQLite backups, and upstream provider retention.
+SQLite backups, and upstream provider retention. <!-- claim:C-073 -->
 
 ## Assets and trust boundaries
 
 - Decision-time route metadata, lifecycle state, verification status, hashes,
-  and scope identifiers are the canonical assets.
+  and scope identifiers are the canonical assets. <!-- claim:C-074 -->
 - Raw prompts, tool arguments, outputs, credentials, and provider tokens are
-  outside the default storage boundary and require explicit field allowlists.
+  outside the default storage boundary and require explicit field allowlists. <!-- claim:C-075 -->
 - The SQLite file, WAL, exports, backups, and diagnostic logs are local
   persistence boundaries. A replacement storage provider may be added without
-  changing receipt semantics.
+  changing receipt semantics. <!-- claim:C-076 -->
 
 ## Threats and controls
 
@@ -43,7 +43,7 @@ provider, adapter, or network endpoint.
 Certification can consume receipt bytes signed by GitHub Actions OIDC and
 Sigstore. The trusted signer is the pinned
 `mrnicholasbcarter-code/verdict-core/.github/workflows/certify-rehearsal.yml`
-workflow, running on `refs/heads/main` at the exact certified source SHA.
+workflow, running on `refs/heads/main` at the exact certified source SHA. <!-- claim:C-077 -->
 The workflow uses the protected `certification` environment and GitHub-hosted
 runners. The verifier enforces repository, signer workflow, source ref, source
 and signer digests, issuer, and SLSA predicate through `gh attestation verify`.

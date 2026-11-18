@@ -61,7 +61,21 @@ def test_every_ci_lint_check_has_a_local_gate() -> None:
     assert checks, "found no checks in the lint job; has ci.yml moved?"
     local = _local_tokens()
     missing = [c for c in checks if not any(c in cmd for cmd in local)]
+    if _ci_has_check_claims():
+        # check_claims.py is in ci.yml but not captured by CI_CHECK regex
+        assert any(
+            "check_claims.py" in " ".join(g.argv) for g in check_lint_gates.gates("BASE", wip=False)
+        ), "check_claims.py missing from check_lint_gates.py gates"
     assert not missing, f"ci.yml lint checks missing from check_lint_gates.py: {missing}"
+
+
+def _ci_has_check_claims() -> bool:
+    workflow: dict[str, Any] = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    for step in workflow["jobs"]["lint"]["steps"]:
+        run = step.get("run", "")
+        if "check_claims.py" in run:
+            return True
+    return False
 
 
 def test_local_gates_run_in_ci_order() -> None:

@@ -1,0 +1,28 @@
+# Tasks: BOD-212 public claim inventory
+
+- [x] Inventory every capability claim in README.md, docs/*.md (top level), and pyproject.toml
+- [x] Create docs/CLAIMS.md with 108 rows: id, quote, file:line, label, evidence
+- [x] Add `<!-- claim:C-XXX -->` markers to all claim sentences in README.md
+- [x] Add `<!-- claim:C-XXX -->` markers to all claim sentences in docs/architecture.md
+- [x] Add `<!-- claim:C-XXX -->` markers to all claim sentences in docs/CONFIGURATION.md
+- [x] Add `<!-- claim:C-XXX -->` markers to all claim sentences in docs/CAPABILITY_PASSPORTS.md
+- [x] Add `<!-- claim:C-XXX -->` markers to all claim sentences in docs/BOD-333-AUTODEV-CONTEXT.md
+- [x] Add `<!-- claim:C-XXX -->` markers to all claim sentences in docs/REPO-METADATA.md
+- [x] Add `<!-- claim:C-XXX -->` markers to all claim sentences in docs/THREAT_MODEL_RECEIPTS.md
+- [x] Add `<!-- claim:C-XXX -->` markers to all claim sentences in docs/credentials.md
+- [x] Add `<!-- claim:C-XXX -->` markers to all claim sentences in docs/typescript-contract-parity.md
+- [x] Add `<!-- claim:C-XXX -->` markers to all claim sentences in docs/USER_JOURNEY.md
+- [x] Add `<!-- claim:C-XXX -->` marker to pyproject.toml description
+- [x] Create scripts/check_claims.py verification script
+- [x] Create tests/test_check_claims.py test
+- [x] Add check_claims.py to CI lint job in .github/workflows/ci.yml
+- [x] Verify: `python scripts/check_claims.py` exits 0
+- [x] Verify: `pytest -q tests/test_check_claims.py` passes
+- [x] Verify: `ruff check .` passes
+- [x] Verify: `mypy verdict --strict` (pre-existing errors only)
+- [x] Verify: `python scripts/check_doc_links.py` passes
+- [x] Verify: `python scripts/check_reachability.py` passes (baselined only)
+- [x] Verify: `npx @fission-ai/openspec@1.13.2 validate --all --strict --no-interactive` passes
+- [x] Verify: `python scripts/check_openspec_tasks.py --base origin/main` passes
+- [x] Create OpenSpec change proposal.md, design.md, tasks.md
+- [ ] (post-merge) Verify CI runs check_claims.py on PR and fails on missing markers/evidence

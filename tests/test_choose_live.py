@@ -332,7 +332,15 @@ def test_no_confirm_matches_confirming_path_with_fresh_proofs(live_pool, monkeyp
     assert readonly["confirm"] == "skipped_no_confirm"
 
 
-def test_no_confirm_rejects_stale_or_negative_proof(live_pool, monkeypatch, capsys):
+def test_no_confirm_selects_old_valid_proof_and_rejects_negative_proof(
+    live_pool, monkeypatch, capsys, tmp_path
+):
+    """Operator ruling 2026-11-18: --no-confirm accepts valid proof older than 10 min.
+
+    free/weak has a valid passport (authorized, eligible, not expired) 601 s old:
+    selected, no confirmation, no writes. sub/strong has newer negative evidence:
+    still rejected.
+    """
     from datetime import timedelta
     from unittest.mock import Mock
 
@@ -347,9 +355,39 @@ def test_no_confirm_rejects_stale_or_negative_proof(live_pool, monkeypatch, caps
     cache.save()
     forbidden = Mock(side_effect=AssertionError("read-only choose must not probe"))
     monkeypatch.setattr("verdict.subagent_selection.openai_health_probe", forbidden)
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    _choose(monkeypatch, "--no-confirm")
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["selected"]["route_id"] == "free/weak"
+    assert payload["confirm"] == "skipped_no_confirm"
+    # The newer negative evidence still rejects sub/strong (the stronger route).
+    assert payload["rejections"] == {"HEALTHY": {"admission:upstream": 1}}
+    forbidden.assert_not_called()
+
+
+def test_no_confirm_never_selects_expired_proof(live_pool, monkeypatch, capsys, tmp_path):
+    """End to end: waiving the 10-minute window must not waive the passport's expires_at.
+
+    Uses sub/strong because an expired free route is dropped before the proof check.
+    The ladder-level expiry check is pinned by test_orch_eligibility
+    ::test_read_only_mode_skips_expired_passport_with_named_reason.
+    """
+    from datetime import timedelta
+    from unittest.mock import Mock
+
+    from verdict.admit_prove_confirm import record_dispatch_observation
+    from verdict.model_passports import PASSPORT_TTL_SECONDS
+
+    expired = datetime.now(timezone.utc) - timedelta(seconds=PASSPORT_TTL_SECONDS + 60)
+    record_dispatch_observation("sub/strong", healthy=True, observed_at=expired)
+    forbidden = Mock(side_effect=AssertionError("read-only choose must not probe"))
+    monkeypatch.setattr("verdict.subagent_selection.openai_health_probe", forbidden)
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     with pytest.raises(SystemExit) as exc:
         _choose(monkeypatch, "--no-confirm")
     assert exc.value.code == 1
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
     payload = json.loads(capsys.readouterr().out)
     assert payload["selected"] is None
     assert payload["confirm"] == "skipped_no_confirm"
