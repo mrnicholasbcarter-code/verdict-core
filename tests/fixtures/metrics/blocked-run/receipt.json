@@ -1,0 +1,86 @@
+{
+  "claimed_outcome": "",
+  "controller_events": [],
+  "cooldowns": [],
+  "decision_signals": null,
+  "event_count": 8,
+  "events_digest": "sha256:f3404bc16cfbf455962cd2517de27b1907d0248a0120901220f94a8ed918191a",
+  "finished_at": null,
+  "goal": "Test blocked run",
+  "graph_digest": "sha256:04f63144c69b0ee2da1395fa70a4745cb2010004dfd167c4530be25ddaa9365c",
+  "integration": {
+    "barriers": [
+      {
+        "name": "integration",
+        "ok": true,
+        "seq": 6
+      },
+      {
+        "name": "ownership",
+        "ok": true,
+        "seq": 7
+      }
+    ],
+    "missing": [],
+    "ok": true
+  },
+  "nodes": [
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "free",
+          "duration_seconds": 5.0,
+          "executed_model": "free/model-a",
+          "fault_injected": false,
+          "intended_route": "free/model-a",
+          "outcome": "success",
+          "provider": "free",
+          "route_id": "free/model-a",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": 0.0,
+            "input_tokens": 1000,
+            "output_tokens": 100
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "alpha",
+      "validated_by": [
+        {
+          "command": "pytest test_alpha.py",
+          "exit_code": 0,
+          "seq": 4
+        }
+      ]
+    }
+  ],
+  "outcome": "BLOCKED",
+  "planner_attempts": [],
+  "producer": {
+    "dirty": false,
+    "git_sha": "abc123",
+    "verdict_version": "0.5.0"
+  },
+  "reason": "review status FAIL (PASS required)",
+  "reassignments": [],
+  "review": {
+    "blocking": 1,
+    "reviewer": "ocr",
+    "route_id": "free/reviewer",
+    "status": "FAIL"
+  },
+  "route_identity_summary": {
+    "attempts": 1,
+    "match": 1,
+    "mechanical": 0,
+    "mismatch": 0,
+    "unattested": 0
+  },
+  "run_id": "test-blocked",
+  "schema": "verdict.run-receipt/v1",
+  "started_at": "2026-11-18T00:00:00Z",
+  "topology": "PARALLEL_WORK_UNITS"
+}

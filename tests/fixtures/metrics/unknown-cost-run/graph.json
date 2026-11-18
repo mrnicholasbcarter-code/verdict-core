@@ -1,0 +1,10 @@
+{
+  "run_id": "test-unknown-cost",
+  "goal": "Test unknown cost run",
+  "nodes": [
+    {"node_id": "alpha", "objective": "Test alpha", "kind": "implement", "barrier": "ownership", "owned_files": ["test_alpha.py"], "verification_command": ["pytest test_alpha.py"]},
+    {"node_id": "beta", "objective": "Test beta", "kind": "implement", "barrier": "ownership", "owned_files": ["test_beta.py"], "verification_command": ["pytest test_beta.py"]},
+    {"node_id": "gamma", "objective": "Test gamma", "kind": "implement", "barrier": "ownership", "owned_files": ["test_gamma.py"], "verification_command": ["pytest test_gamma.py"]}
+  ],
+  "topology": "PARALLEL_WORK_UNITS"
+}

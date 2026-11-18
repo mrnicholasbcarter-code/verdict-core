@@ -846,6 +846,157 @@ def _action_run_receipt(**kwargs: Any) -> ActionResult:
     )
 
 
+def _action_metrics(**kwargs: Any) -> ActionResult:
+    """Compute efficiency metrics from verified receipts."""
+    import json as _json
+    from pathlib import Path
+
+    from verdict.orchestration.receipt import compute_run_metrics, verify_run_receipt
+
+    runs_dir_str: str = kwargs.get("runs_dir", ".verdict/runs")
+    run_dir_str: str | None = kwargs.get("run_dir")
+    json_output: bool = kwargs.get("json", False)
+
+    runs_dir = Path(runs_dir_str)
+    if not runs_dir.exists():
+        return ActionResult(
+            data={"error": f"runs directory not found: {runs_dir}"}, ok=False, exit_code=2
+        )
+
+    run_dirs: list[Path] = []
+    if run_dir_str:
+        # Single run directory specified
+        from verdict.actions.views import _resolve_run
+
+        run_path = _resolve_run(run_dir_str, runs_dir_str)
+        run_dirs = [run_path]
+    else:
+        # Scan runs_dir for receipt.json files
+        for receipt_path in runs_dir.rglob("receipt.json"):
+            run_dirs.append(receipt_path.parent)
+
+    if not run_dirs:
+        return ActionResult(
+            data={"error": f"no receipts found in {runs_dir}"}, ok=False, exit_code=2
+        )
+
+    aggregated: dict[str, Any] = {
+        "accepted_tasks": 0,
+        "total_cost": 0.0,
+        "has_unknown_cost": False,
+        "total_model_attempts": 0,
+        "free_attempts": 0,
+        "subscription_attempts": 0,
+        "metered_attempts": 0,
+        "unknown_capacity_attempts": 0,
+        "runs_processed": 0,
+        "runs_skipped": 0,
+        "skipped_runs": [],
+        "per_run": [],
+    }
+
+    for run_dir in run_dirs:
+        receipt_path = run_dir / "receipt.json"
+        if not receipt_path.exists():
+            aggregated["runs_skipped"] += 1
+            aggregated["skipped_runs"].append({"run_dir": str(run_dir), "reason": "no receipt"})
+            continue
+
+        try:
+            receipt = _json.loads(receipt_path.read_text())
+        except (ValueError, OSError) as exc:
+            aggregated["runs_skipped"] += 1
+            aggregated["skipped_runs"].append(
+                {"run_dir": str(run_dir), "reason": f"invalid receipt: {exc}"}
+            )
+            continue
+
+        problems = verify_run_receipt(run_dir)
+        if problems:
+            aggregated["runs_skipped"] += 1
+            aggregated["skipped_runs"].append(
+                {"run_dir": str(run_dir), "reason": f"verification failed: {'; '.join(problems)}"}
+            )
+            continue
+
+        metrics = compute_run_metrics(receipt)
+
+        aggregated["accepted_tasks"] += metrics["accepted_tasks"]
+        if metrics["dollars"] is not None:
+            aggregated["total_cost"] += metrics["dollars"]
+        else:
+            aggregated["has_unknown_cost"] = True
+        aggregated["total_model_attempts"] += metrics["total_model_attempts"]
+        for key in (
+            "free_attempts",
+            "subscription_attempts",
+            "metered_attempts",
+            "unknown_capacity_attempts",
+        ):
+            aggregated[key] += metrics[key]
+        aggregated["runs_processed"] += 1
+        aggregated["per_run"].append(
+            {
+                "run_id": metrics["run_id"],
+                "run_dir": str(run_dir),
+                "outcome": metrics["outcome"],
+                "accepted_tasks": metrics["accepted_tasks"],
+                "dollars": metrics["dollars"],
+                "has_unknown_cost": metrics["has_unknown_cost"],
+                "tasks_per_dollar": metrics["tasks_per_dollar"],
+                "free_share": metrics["free_share"],
+                "subscription_share": metrics["subscription_share"],
+                "metered_share": metrics["metered_share"],
+                "unknown_capacity_share": metrics["unknown_capacity_share"],
+                "total_model_attempts": metrics["total_model_attempts"],
+            }
+        )
+
+    # Compute final aggregated metrics
+    dollars = None if aggregated["has_unknown_cost"] else aggregated["total_cost"]
+    if dollars is not None and dollars > 0:
+        tasks_per_dollar = aggregated["accepted_tasks"] / dollars
+    else:
+        tasks_per_dollar = "undefined"
+
+    total_attempts = aggregated["total_model_attempts"]
+    if total_attempts > 0:
+        free_share = aggregated["free_attempts"] / total_attempts
+        subscription_share = aggregated["subscription_attempts"] / total_attempts
+        metered_share = aggregated["metered_attempts"] / total_attempts
+        unknown_capacity_share = aggregated["unknown_capacity_attempts"] / total_attempts
+    else:
+        free_share = 0.0
+        subscription_share = 0.0
+        metered_share = 0.0
+        unknown_capacity_share = 0.0
+
+    result = {
+        "accepted_tasks": aggregated["accepted_tasks"],
+        "dollars": dollars,
+        "has_unknown_cost": aggregated["has_unknown_cost"],
+        "tasks_per_dollar": tasks_per_dollar,
+        "free_share": free_share,
+        "subscription_share": subscription_share,
+        "metered_share": metered_share,
+        "unknown_capacity_share": unknown_capacity_share,
+        "total_model_attempts": total_attempts,
+        "runs_processed": aggregated["runs_processed"],
+        "runs_skipped": aggregated["runs_skipped"],
+        "skipped_runs": aggregated["skipped_runs"],
+        "per_run": aggregated["per_run"]
+        if not json_output or len(aggregated["per_run"]) <= 10
+        else [],
+    }
+
+    if not json_output and len(aggregated["per_run"]) > 10:
+        result["per_run_note"] = (
+            f"showing first 10 of {len(aggregated['per_run'])} runs (use --json for all)"
+        )
+
+    return ActionResult(data=result, ok=aggregated["runs_processed"] > 0, exit_code=0)
+
+
 def _action_compare(**kwargs: Any) -> ActionResult:
     """Compare a DIRECT frontier call against the Verdict route (issue #265).
 
@@ -1651,6 +1802,16 @@ def _register_builtins() -> None:
                 "Traces",
             ),
             _action_run_receipt,
+        ),
+        (
+            ActionSpec(
+                "metrics",
+                "metrics",
+                "read",
+                "Compute efficiency metrics from verified receipts",
+                "Metrics",
+            ),
+            _action_metrics,
         ),
         (
             ActionSpec(
