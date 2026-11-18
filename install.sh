@@ -13,6 +13,9 @@
 #
 # Install from a local source tree (bypasses PyPI download and hash checks):
 #   VERDICT_SOURCE=/path/to/verdict-core bash install.sh
+#
+# Force a specific installer (for testing):
+#   VERDICT_INSTALLER=uv|pipx|venv bash install.sh
 
 set -euo pipefail
 
@@ -31,6 +34,9 @@ VERDICT_SDIST_SHA256="b59e3858b4f29ca65f7261fcdbf3ec456bc2116885542af81407b92844
 # Optional: install from a local source checkout (skips PyPI download + hash check)
 VERDICT_SOURCE="${VERDICT_SOURCE:-}"
 
+# Optional: force a specific installer (uv, pipx, venv)
+VERDICT_INSTALLER="${VERDICT_INSTALLER:-}"
+
 # ── Colours ─────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -38,9 +44,9 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-log_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
-log_success() { echo -e "${GREEN}[OK]${NC} $*"; }
-log_warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_info()    { echo -e "${BLUE}[INFO]${NC} $*" >&2; }
+log_success() { echo -e "${GREEN}[OK]${NC} $*" >&2; }
+log_warn()    { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 # ── Helper: fetch PyPI digest for an exact version ──────────────────
@@ -109,6 +115,9 @@ print(h.hexdigest())
 # ── Install uv if not present ──────────────────────────────────────
 # Uses the official uv installer (https://github.com/astral-sh/uv#installation)
 ensure_uv() {
+  if [[ "$VERDICT_INSTALLER" == "pipx" ]] || [[ "$VERDICT_INSTALLER" == "venv" ]]; then
+    return 1
+  fi
   if command -v uv >/dev/null 2>&1; then
     return 0
   fi
@@ -129,6 +138,9 @@ ensure_uv() {
 # ── Install via uv tool ────────────────────────────────────────────
 install_via_uv() {
   local artifact="$1"
+  if [[ "$VERDICT_INSTALLER" == "pipx" ]] || [[ "$VERDICT_INSTALLER" == "venv" ]]; then
+    return 1
+  fi
   log_info "Installing verified artifact via uv tool..."
   # uv tool install supports installing from a local wheel file
   if uv tool install "$artifact"; then
@@ -142,6 +154,9 @@ install_via_uv() {
 # ── Install via pipx ───────────────────────────────────────────────
 install_via_pipx() {
   local artifact="$1"
+  if [[ "$VERDICT_INSTALLER" == "uv" ]] || [[ "$VERDICT_INSTALLER" == "venv" ]]; then
+    return 1
+  fi
   if ! command -v pipx >/dev/null 2>&1; then
     return 1
   fi
@@ -172,8 +187,8 @@ install_via_private_venv() {
     return 1
   }
 
-  # Install the wheel into the venv
-  "${venv_dir}/bin/pip" install --no-deps "$artifact" || {
+  # Install the wheel into the venv (with dependencies)
+  "${venv_dir}/bin/pip" install "$artifact" || {
     log_error "Failed to install artifact into private venv"
     return 1
   }
@@ -188,6 +203,44 @@ install_via_private_venv() {
   }
 
   log_success "Installed via private venv; symlinked to ${symlink_target}"
+  return 0
+}
+
+# ── Build wheel from local source using private venv ───────────────
+build_wheel_from_source() {
+  local source_dir="$1"
+  local output_dir="$2"
+  local venv_dir="${HOME}/.local/share/verdict-core/build-venv"
+
+  log_info "Building wheel from local source using isolated build venv..."
+
+  # Create a temporary build venv
+  python3 -m venv "$venv_dir" || {
+    log_error "Failed to create build virtual environment"
+    return 1
+  }
+
+  # Install build and hatchling in the build venv
+  "${venv_dir}/bin/pip" install --quiet build hatchling || {
+    log_error "Failed to install build dependencies in build venv"
+    rm -rf "$venv_dir"
+    return 1
+  }
+
+  # Build the wheel - disable color output to avoid ANSI codes in pip input
+  local artifact
+  NO_COLOR=1 TERM=dumb artifact=$(cd "$source_dir" && "${venv_dir}/bin/python" -m build --wheel --no-isolation -o "$output_dir" 2>&1)
+  artifact=$(find "$output_dir" -name "verdict_core-*.whl" 2>/dev/null | head -1)
+
+  # Clean up build venv
+  rm -rf "$venv_dir"
+
+  if [[ -z "$artifact" ]]; then
+    log_error "Failed to build wheel from local source"
+    return 1
+  fi
+
+  echo "$artifact"
   return 0
 }
 
@@ -207,19 +260,9 @@ install_verified() {
   local artifact
 
   if [[ -n "$VERDICT_SOURCE" ]]; then
-    # Install from local source tree
+    # Install from local source tree - build wheel in isolated venv
     log_info "Building wheel from local source: ${VERDICT_SOURCE}"
-    # Ensure build module and hatchling (build backend) are available
-    # Use --break-system-packages for containers/CI where PEP 668 blocks pip install
-    python3 -m pip install --quiet --break-system-packages build hatchling 2>/dev/null || \
-    python3 -m pip install --quiet --user build hatchling 2>/dev/null || \
-    true
-    artifact=$(cd "$VERDICT_SOURCE" && python3 -m build --wheel --no-isolation -o "$tmpdir" 2>&1 | tail -1)
-    artifact=$(find "$tmpdir" -name "verdict_core-*.whl" 2>/dev/null | head -1)
-    if [[ -z "$artifact" ]]; then
-      log_error "Failed to build wheel from local source"
-      exit 1
-    fi
+    artifact=$(build_wheel_from_source "$VERDICT_SOURCE" "$tmpdir") || exit 1
     log_info "Built wheel: $(basename "$artifact")"
     # Skip hash verification for local builds
   else
