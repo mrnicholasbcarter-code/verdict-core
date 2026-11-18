@@ -173,6 +173,7 @@ def test_live_rehearsal_dispatch_is_free_only_without_subscription_escape(tmp_pa
     This proves the Verdict dispatch filter, not OmniRoute's upstream boundary;
     BOD-332's final-target tests remain a separate release prerequisite.
     """
+    import json
     import subprocess
 
     import pytest
@@ -190,6 +191,24 @@ def test_live_rehearsal_dispatch_is_free_only_without_subscription_escape(tmp_pa
         if "orchestrate" in argv:
             captures.append(argv)
             return subprocess.CompletedProcess(argv, 1, b"", b"")
+        # Preflight screen: return minimal valid proof so orchestrate runs
+        if "identify" in argv and "--screen" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps(
+                    {
+                        "routes_checked": 1,
+                        "passed": 1,
+                        "model_calls": 3,
+                        "model_requests_sent": 3,
+                        "stopped_reason": "complete",
+                        "routes": [],
+                        "mode": "screen",
+                    }
+                ).encode(),
+                b"",
+            )
         return subprocess.CompletedProcess(argv, 0, b"", b"")
 
     monkeypatch.setattr(script.subprocess, "run", record_child)
@@ -199,3 +218,122 @@ def test_live_rehearsal_dispatch_is_free_only_without_subscription_escape(tmp_pa
     argv = captures[0]
     assert argv[argv.index("--capacity") + 1] == "free"
     assert not any(value in argv for value in ("free,subscription", "metered", "unknown"))
+
+
+def test_preflight_argv_is_free_only_and_bounded(tmp_path, monkeypatch):
+    """Preflight screen command uses FREE-only capacity and explicit bounds."""
+    import subprocess
+
+    import pytest
+
+    from scripts import run_certification_rehearsals as script
+
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", "https://gateway.invalid")
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "test-key-canary")
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "snapshot.json")
+    preflight_args = []
+
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+
+    def record_child(argv, **kwargs):
+        if "identify" in argv and "--screen" in argv:
+            # identify has no --gateway flag; CI sets no OMNIROUTE_BASE_URL, so the
+            # preflight must point the screen at the certification gateway itself.
+            assert kwargs["env"]["OMNIROUTE_BASE_URL"] == "https://gateway.invalid"
+            preflight_args.append(argv)
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                b'{"routes_checked": 1, "passed": 1, "model_calls": 3, "model_requests_sent": 3, "stopped_reason": "complete", "routes": [], "mode": "screen"}',
+                b"",
+            )
+        return subprocess.CompletedProcess(argv, 1, b"", b"")
+
+    monkeypatch.setattr(script.subprocess, "run", record_child)
+    with pytest.raises(ValueError):
+        script.run()
+
+    assert len(preflight_args) == 1
+    argv = preflight_args[0]
+    assert "--screen" in argv
+    assert "--allow-live-probe" in argv
+    assert "--capacity" in argv
+    cap_idx = argv.index("--capacity")
+    assert argv[cap_idx + 1] == "free"
+    # Bounded: max-per-provider and max-routes are small explicit values
+    assert "--max-per-provider" in argv
+    assert "--max-routes" in argv
+    mp_idx = argv.index("--max-per-provider")
+    mr_idx = argv.index("--max-routes")
+    max_per_provider = int(argv[mp_idx + 1])
+    max_routes = int(argv[mr_idx + 1])
+    assert 0 < max_per_provider <= script.PREFLIGHT_MAX_PER_PROVIDER
+    assert 0 < max_routes <= script.PREFLIGHT_MAX_ROUTES
+
+
+def test_preflight_fails_closed_when_no_free_routes_qualify(tmp_path, monkeypatch):
+    """Empty preflight report prevents orchestrate from running."""
+    import subprocess
+
+    import pytest
+
+    from scripts import run_certification_rehearsals as script
+
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", "https://gateway.invalid")
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "test-key-canary")
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "snapshot.json")
+    orchestrate_called = []
+
+    def record_child(argv, **kwargs):
+        if "orchestrate" in argv:
+            orchestrate_called.append(True)
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+        # Preflight returns zero qualified routes
+        if "identify" in argv and "--screen" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                b'{"routes_checked": 0, "passed": 0, "model_calls": 0, "model_requests_sent": 0, "stopped_reason": "complete", "routes": [], "mode": "screen"}',
+                b"",
+            )
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(script.subprocess, "run", record_child)
+    with pytest.raises(script.RehearsalConfigurationError, match="no qualified FREE routes"):
+        script.run()
+
+    # Orchestrate must never have been called
+    assert len(orchestrate_called) == 0
+
+
+def test_preflight_failure_message_never_echoes_child_output(tmp_path, monkeypatch):
+    """A failed preflight prints a fixed message, never child stderr (credentials, URL)."""
+    import subprocess
+
+    import pytest
+
+    from scripts import run_certification_rehearsals as script
+
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", "https://gateway.invalid")
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "test-key-canary")
+    monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "snapshot.json")
+    orchestrated = []
+
+    def child(argv, **kwargs):
+        if "orchestrate" in argv:
+            orchestrated.append(argv)
+        if "identify" in argv:
+            return subprocess.CompletedProcess(argv, 2, b"test-key-canary", b"test-key-canary")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(script.subprocess, "run", child)
+    with pytest.raises(script.RehearsalConfigurationError) as error:
+        script.run()
+    assert "test-key-canary" not in str(error.value)
+    assert "gateway.invalid" not in str(error.value)
+    assert orchestrated == []

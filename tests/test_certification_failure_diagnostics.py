@@ -48,6 +48,19 @@ def test_failed_child_retains_only_safe_diagnostics(
     )
 
     def child(command, **kwargs):
+        if "identify" in command and "--screen" in command:
+            # Passing preflight in the real `identify --screen --json` schema,
+            # so this test still reaches the orchestration failure it covers.
+            screen = {
+                "mode": "screen",
+                "routes": [],
+                "routes_checked": 1,
+                "passed": 1,
+                "model_calls": 3,
+                "model_requests_sent": 3,
+                "stopped_reason": "complete",
+            }
+            return subprocess.CompletedProcess(command, 0, json.dumps(screen).encode(), b"")
         if "orchestrate" not in command:
             return subprocess.CompletedProcess(command, 0, b"", b"")
         runs = tmp_path / "runs-clean" / "run"
