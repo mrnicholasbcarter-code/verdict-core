@@ -4,10 +4,12 @@
 
 Owned files: `verdict/orchestration/receipt.py` (add `compute_run_metrics`), `verdict/actions/registry.py` (add `_action_metrics`). Verification: focused tests in `tests/test_orch_metrics.py`, source ruff check/format, strict mypy on changed source.
 
-- [x] 1.1 Add `compute_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]` in `receipt.py` that returns the four numbers plus raw counts.
+- [x] 1.1 Add `compute_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]` in `receipt.py` that returns the four numbers plus raw counts. (Reticked after review: accepted tasks now require `completion_verdict` COMPLETE; raw attempt counts returned and summed.)
 - [x] 1.2 Add `_action_metrics` in `registry.py` that scans runs, verifies receipts, aggregates.
 - [x] 1.3 Handle tampered receipts (verify_run_receipt returns problems) — skip with warning.
 - [x] 1.4 Handle unknown costs — report as unknown, never 0.
+- [x] 1.5 `build_run_receipt` takes `run_id` from the digest-bound `run_started` event before `graph.json`, so an untampered run whose graph keeps a planner-input id verifies; editing any receipt field still fails (`tests/test_orch_receipt.py`).
+- [x] 1.6 Tests: CANCELLED -> 0, failed OpenSpec conformance -> 0, edited BLOCKED -> 0, COMPLETE -> n, raw-count aggregation (`tests/test_orch_metrics.py`).
 
 ## 2. CLI command
 
@@ -51,7 +53,7 @@ Owned files: all changed source. Test verification: automated CI checks (ruff, m
 - [x] 5.3 `uv run python scripts/check_doc_links.py`
 - [x] 5.4 `uv run python scripts/check_reachability.py --ratchet-base origin/main`
 - [x] 5.5 `uv run python scripts/check_openspec_tasks.py --base origin/main`
-- [x] 5.6 Both OpenSpec validators pass.
+- [x] 5.6 Both OpenSpec validators pass (reticked after `.openspec.yaml` got `schema: verdict-change-v1` and the `efficiency-metrics` delta).
 
 ## 6. PR and merge
 
@@ -59,5 +61,5 @@ Test verification: git push, vgate, gh pr create --draft with real-run output; C
 
 - [x] 6.1 Push branch, `vgate` passes.
 - [x] 6.2 `gh pr create --draft` with real-run output pasted.
-- [x] 6.3 Independent review from different model family.
-- [x] 6.4 Squash-merge on clean main.
+- [ ] 6.3 Independent re-review from a different model family of the fixes for the first review (cc/claude-sonnet-5, BLOCKING).
+- [ ] (post-merge) 6.4 Squash-merge pinned to the head SHA and rerun `verdict metrics` on clean main.

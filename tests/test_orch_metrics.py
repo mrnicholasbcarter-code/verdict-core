@@ -242,8 +242,7 @@ def test_aggregate_shares_use_raw_counts(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(receipt_mod, "compute_run_metrics", fake)
     result = run_action(
-        "metrics",
-        {"run_dir": str(FIXTURES_DIR / "complete-run"), "runs_dir": str(FIXTURES_DIR)},
+        "metrics", {"run_dir": str(FIXTURES_DIR / "complete-run"), "runs_dir": str(FIXTURES_DIR)}
     )
     assert result.data["free_share"] == pytest.approx(15 / 22)
     assert result.data["subscription_share"] == pytest.approx(7 / 22)
