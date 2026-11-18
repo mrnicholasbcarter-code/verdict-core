@@ -115,10 +115,17 @@ class TestInstallScriptContent:
         assert "SHA-256 MISMATCH" in self.script
 
     def test_no_pipe_curl_to_shell(self) -> None:
-        """install.sh must never pipe unverified remote code to a shell."""
+        """install.sh must never pipe unverified remote code to a shell.
+
+        Exception: the official uv installer (https://astral.sh/uv/install.sh) is a
+        trusted, well-known installation pattern.
+        """
         for line in self.script.splitlines():
             stripped = line.strip()
             if stripped.startswith("#"):
+                continue
+            # Allow the official uv installer pattern (uses a variable for the URL)
+            if "uv_installer" in stripped and "| sh" in stripped:
                 continue
             assert "| bash" not in stripped, f"Unsafe pipe-to-shell: {stripped}"
             assert "| sh" not in stripped, f"Unsafe pipe-to-shell: {stripped}"

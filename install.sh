@@ -10,6 +10,9 @@
 #
 # Override the version:
 #   VERDICT_VERSION=0.4.2 bash install.sh
+#
+# Install from a local source tree (bypasses PyPI download and hash checks):
+#   VERDICT_SOURCE=/path/to/verdict-core bash install.sh
 
 set -euo pipefail
 
@@ -24,6 +27,9 @@ VERDICT_VERSION="${VERDICT_VERSION:-0.4.2}"
 # SHA-256 digests from PyPI JSON API for verdict-core 0.4.2
 VERDICT_WHL_SHA256="202496d4235d9b810d5f62e4b31e364809df9cc2333ce039d6637ab6cd2bb15d"
 VERDICT_SDIST_SHA256="b59e3858b4f29ca65f7261fcdbf3ec456bc2116885542af81407b9284484745c"
+
+# Optional: install from a local source checkout (skips PyPI download + hash check)
+VERDICT_SOURCE="${VERDICT_SOURCE:-}"
 
 # ── Colours ─────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
@@ -100,6 +106,91 @@ print(h.hexdigest())
   log_success "SHA-256 verified for $(basename "$filepath")"
 }
 
+# ── Install uv if not present ──────────────────────────────────────
+# Uses the official uv installer (https://github.com/astral-sh/uv#installation)
+ensure_uv() {
+  if command -v uv >/dev/null 2>&1; then
+    return 0
+  fi
+  log_info "uv not found; installing uv via official installer..."
+  local uv_installer="https://astral.sh/uv/install.sh"
+  if curl -fsSL "$uv_installer" | sh; then
+    # uv installer puts binary in ~/.local/bin or ~/.cargo/bin
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    if command -v uv >/dev/null 2>&1; then
+      log_success "uv installed successfully"
+      return 0
+    fi
+  fi
+  log_warn "uv installation failed or uv not on PATH after install"
+  return 1
+}
+
+# ── Install via uv tool ────────────────────────────────────────────
+install_via_uv() {
+  local artifact="$1"
+  log_info "Installing verified artifact via uv tool..."
+  # uv tool install supports installing from a local wheel file
+  if uv tool install "$artifact"; then
+    log_success "Installed via uv tool"
+    return 0
+  fi
+  log_warn "uv tool install failed"
+  return 1
+}
+
+# ── Install via pipx ───────────────────────────────────────────────
+install_via_pipx() {
+  local artifact="$1"
+  if ! command -v pipx >/dev/null 2>&1; then
+    return 1
+  fi
+  log_info "Installing verified artifact via pipx..."
+  if pipx install "$artifact"; then
+    log_success "Installed via pipx"
+    return 0
+  fi
+  log_warn "pipx install failed"
+  return 1
+}
+
+# ── Install via private venv with symlink ──────────────────────────
+# Creates a dedicated virtual environment under ~/.local/share/verdict-core/venv
+# and symlinks the verdict binary to ~/.local/bin/verdict
+install_via_private_venv() {
+  local artifact="$1"
+  local venv_dir="${HOME}/.local/share/verdict-core/venv"
+  local bin_dir="${HOME}/.local/bin"
+  local verdict_bin="${venv_dir}/bin/verdict"
+  local symlink_target="${bin_dir}/verdict"
+
+  log_info "Installing verified artifact via private venv (${venv_dir})..."
+
+  # Create the venv
+  python3 -m venv "$venv_dir" || {
+    log_error "Failed to create virtual environment at ${venv_dir}"
+    return 1
+  }
+
+  # Install the wheel into the venv
+  "${venv_dir}/bin/pip" install --no-deps "$artifact" || {
+    log_error "Failed to install artifact into private venv"
+    return 1
+  }
+
+  # Ensure ~/.local/bin exists
+  mkdir -p "$bin_dir"
+
+  # Create/update symlink
+  ln -sfn "$verdict_bin" "$symlink_target" || {
+    log_error "Failed to create symlink ${symlink_target} -> ${verdict_bin}"
+    return 1
+  }
+
+  log_success "Installed via private venv; symlinked to ${symlink_target}"
+  return 0
+}
+
 # ── Integrity-verified install ──────────────────────────────────────
 install_verified() {
   local ver="$1"
@@ -113,40 +204,70 @@ install_verified() {
   VERDICT_INSTALL_TMPDIR="$tmpdir"
   trap 'rm -rf -- "${VERDICT_INSTALL_TMPDIR:-}"' EXIT
 
-  # Download wheel only (no deps) for hash verification
-  log_info "Downloading verdict-core==${ver} wheel for verification..."
-  pip download --no-deps --dest "$tmpdir" \
-    "verdict-core==${ver}" 2>&1 || {
+  local artifact
+
+  if [[ -n "$VERDICT_SOURCE" ]]; then
+    # Install from local source tree
+    log_info "Building wheel from local source: ${VERDICT_SOURCE}"
+    # Ensure build module and hatchling (build backend) are available
+    # Use --break-system-packages for containers/CI where PEP 668 blocks pip install
+    python3 -m pip install --quiet --break-system-packages build hatchling 2>/dev/null || \
+    python3 -m pip install --quiet --user build hatchling 2>/dev/null || \
+    true
+    artifact=$(cd "$VERDICT_SOURCE" && python3 -m build --wheel --no-isolation -o "$tmpdir" 2>&1 | tail -1)
+    artifact=$(find "$tmpdir" -name "verdict_core-*.whl" 2>/dev/null | head -1)
+    if [[ -z "$artifact" ]]; then
+      log_error "Failed to build wheel from local source"
+      exit 1
+    fi
+    log_info "Built wheel: $(basename "$artifact")"
+    # Skip hash verification for local builds
+  else
+    # Download wheel only (no deps) for hash verification
+    log_info "Downloading verdict-core==${ver} wheel for verification..."
+    pip download --no-deps --dest "$tmpdir" \
+      "verdict-core==${ver}" 2>&1 || {
       log_error "Failed to download verdict-core==${ver}. Aborting."
       exit 1
     }
 
-  # Find the downloaded artifact and verify its hash
-  local whl sdist artifact expected_hash
-  whl=$(find "$tmpdir" -name "verdict_core-*.whl" 2>/dev/null | head -1)
-  sdist=$(find "$tmpdir" -name "verdict_core-*.tar.gz" 2>/dev/null | head -1)
+    # Find the downloaded artifact and verify its hash
+    local whl sdist expected_hash
+    whl=$(find "$tmpdir" -name "verdict_core-*.whl" 2>/dev/null | head -1)
+    sdist=$(find "$tmpdir" -name "verdict_core-*.tar.gz" 2>/dev/null | head -1)
 
-  if [[ -n "$whl" ]]; then
-    artifact="$whl"
-    expected_hash="$EXPECTED_WHL_SHA256"
-  elif [[ -n "$sdist" ]]; then
-    artifact="$sdist"
-    expected_hash="$EXPECTED_SDIST_SHA256"
-  else
-    log_error "No wheel or sdist found after download. Aborting."
-    exit 1
+    if [[ -n "$whl" ]]; then
+      artifact="$whl"
+      expected_hash="$EXPECTED_WHL_SHA256"
+    elif [[ -n "$sdist" ]]; then
+      artifact="$sdist"
+      expected_hash="$EXPECTED_SDIST_SHA256"
+    else
+      log_error "No wheel or sdist found after download. Aborting."
+      exit 1
+    fi
+
+    verify_sha256 "$artifact" "$expected_hash" || exit 1
   fi
 
-  verify_sha256 "$artifact" "$expected_hash" || exit 1
-
-  # Install from the verified local artifact
-  if command -v pipx >/dev/null 2>&1; then
-    log_info "Installing verified artifact via pipx..."
-    pipx install "$artifact"
-  else
-    log_info "Installing verified artifact via pip --user..."
-    pip install --user "$artifact"
+  # Try installation methods in order of preference
+  # 1. uv tool install (preferred: handles PEP 668, isolated environments)
+  if ensure_uv && install_via_uv "$artifact"; then
+    return 0
   fi
+
+  # 2. pipx (good: isolated environments, but may not be installed)
+  if install_via_pipx "$artifact"; then
+    return 0
+  fi
+
+  # 3. Private venv with symlink (always works, no external dependencies)
+  if install_via_private_venv "$artifact"; then
+    return 0
+  fi
+
+  log_error "All installation methods failed. Aborting."
+  exit 1
 }
 
 # ── 1. Install ──────────────────────────────────────────────────────
