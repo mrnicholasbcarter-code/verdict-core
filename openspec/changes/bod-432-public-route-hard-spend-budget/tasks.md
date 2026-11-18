@@ -2,27 +2,27 @@
 
 ## 1. Local implementation — wave 2: budget validation
 
-- [ ] 1.1 RED: add public HTTP tests in `tests/test_public_route_budget.py` covering:
+- [x] 1.1 RED: add public HTTP tests in `tests/test_public_route_budget.py` covering:
   - Valid integer input (e.g., `5`), valid fractional input (e.g., `0.01`), omitted input.
   - 400 for: `null`, `true`/`false`, `"5"`, `[]`, `{}`, `0`, `-1`, `NaN`, `Infinity`, float overflow (`1e400`).
   - No probe or authority work on invalid input (assert early 400 before any admission call).
-- [ ] 1.2 GREEN: in `_public_execution_path_request` (verdict/api.py:1119), validate `hard_spend_budget` from `raw.get("hard_spend_budget")`:
+- [x] 1.2 GREEN: in `_public_execution_path_request` (verdict/api.py:1119), validate `hard_spend_budget` from `raw.get("hard_spend_budget")`:
   - Absent key → do not set (preserves `None`).
   - Explicit `null` or non-numeric → `ExecutionPathError("execution_path_request.hard_spend_budget must be a positive finite number")`.
   - `bool` check first (since `isinstance(True, int)`), then `int`/`float`, then `math.isfinite`, then `> 0`.
   - Thread validated value into `ExecutionPathRequest(hard_spend_budget=validated)` at line 1295.
-- [ ] 1.3 Run focused tests: `uv run python -m pytest -q tests/test_public_route_budget.py`.
-- [ ] 1.4 Run related suites: `tests/test_candidate_pool.py`, `tests/test_live_candidate_shortlist.py`, `tests/test_security.py`.
+- [x] 1.3 Run focused tests: `uv run python -m pytest -q tests/test_public_route_budget.py`.
+- [x] 1.4 Run related suites: `tests/test_candidate_pool.py`, `tests/test_live_candidate_shortlist.py`, `tests/test_security.py`.
 
 ## 2. Local implementation — wave 2: routing trace plumbing
 
-- [ ] 2.1 RED: add public HTTP tests in `tests/test_public_route_routing_trace.py` covering:
+- [x] 2.1 RED: add public HTTP tests in `tests/test_public_route_routing_trace.py` covering:
   - `POST /v1/route?include_routing_trace=true` returns `routing_trace` with all four fields.
   - `POST /v1/route` (no query param) returns legacy response without `routing_trace`.
   - Trace present on no-selection responses (denied/blocked) when an authoritative decision was reached.
   - Trace fields match snapshots: admitted = receipt.admitted ∩ offered (or confirmed.admitted), shortlist = pool_receipt.shortlist route_ids, optimizer_decision = ExecutionPathDecision outcome + selected_candidate_id, rejected_offers = decision.rejected (candidate_id + reason).
-- [ ] 2.2 GREEN: in `verdict/models.py`, add optional internal field `routing_trace: dict | None = None` to `RoutingDecision` (not in `_safe_decision_dict` projection).
-- [ ] 2.3 GREEN: in `verdict/intelligence.py`, `_prepare_execution_path_request_at` (lines 1371-1489):
+- [x] 2.2 GREEN: in `verdict/models.py`, add optional internal field `routing_trace: dict | None = None` to `RoutingDecision` (not in `_safe_decision_dict` projection).
+- [x] 2.3 GREEN: in `verdict/intelligence.py`, `_prepare_execution_path_request_at` (lines 1371-1489):
   - Snapshot `offered_admitted` (line 1372: admitted IDs narrowed to offered universe) or `confirmed.admitted` on live path (line 1437).
   - Snapshot ordered shortlist route_ids from `pool.shortlist` (line 1400).
   - After `optimize_execution_path` returns the `ExecutionPathDecision`, build the trace dict once:
@@ -40,29 +40,29 @@
     }
     ```
   - Attach to the `RoutingDecision` returned by `intelligence.route()` (the caller wraps the decision).
-- [ ] 2.4 GREEN: in `verdict/api.py`, `route_task` (line 1399):
+- [x] 2.4 GREEN: in `verdict/api.py`, `route_task` (line 1399):
   - Add `include_routing_trace: bool = False` as a typed query parameter (FastAPI default).
   - After getting `decision` from `_route_with_intelligence`, if `include_routing_trace` and `decision.routing_trace`, include it in the response JSON.
-- [ ] 2.5 Run focused tests: `uv run python -m pytest -q tests/test_public_route_routing_trace.py`.
-- [ ] 2.6 Run related suites: `tests/test_candidate_pool.py`, `tests/test_live_candidate_shortlist.py`, `tests/test_security.py`.
+- [x] 2.5 Run focused tests: `uv run python -m pytest -q tests/test_public_route_routing_trace.py`.
+- [x] 2.6 Run related suites: `tests/test_candidate_pool.py`, `tests/test_live_candidate_shortlist.py`, `tests/test_security.py`.
 
 ## 3. Local implementation — wave 2: A25 invariance tests
 
-- [ ] 3.1 RED: add tests in `tests/test_public_route_a25_invariance.py` covering:
+- [x] 3.1 RED: add tests in `tests/test_public_route_a25_invariance.py` covering:
   - With matched authorization/proof and multiple eligible candidates, label-only and price-only mutations preserving budget eligibility keep: admitted membership, ordered shortlist, optimizer outcome/choice, public selection unchanged.
   - Assertions use structured fields (`routing_trace.admitted_candidate_ids`, `shortlist_candidate_ids`, `optimizer_decision`, `rejected_offers`), not reason prose.
-- [ ] 3.2 GREEN: ensure the implementation satisfies these invariants (no code change expected if trace plumbing is correct).
-- [ ] 3.3 Run focused tests.
+- [x] 3.2 GREEN: ensure the implementation satisfies these invariants (no code change expected if trace plumbing is correct).
+- [x] 3.3 Run focused tests.
 
 ## 4. Local implementation — wave 2: gates
 
-- [ ] 4.1 Run full test suite: `uv run python -m pytest -q`.
-- [ ] 4.2 Run linters: `uv run ruff check . && uv run ruff format --check .`.
-- [ ] 4.3 Run type checker: `uv run mypy verdict --strict`.
-- [ ] 4.4 Run doc links: `uv run python scripts/check_doc_links.py`.
-- [ ] 4.5 Run reachability: `uv run python scripts/check_reachability.py --ratchet-base origin/main`.
-- [ ] 4.6 Run OpenSpec validation: `uv run python verdict/openspec_vendor/validate_openspec_change.py openspec/changes/bod-432-public-route-hard-spend-budget` and `npx --yes @fission-ai/openspec@1.13.2 validate bod-432-public-route-hard-spend-budget --strict --no-interactive` and `npx --yes @fission-ai/openspec@1.13.2 validate --all --strict --no-interactive`.
-- [ ] 4.7 Run git diff check: `git diff --check`.
+- [x] 4.1 Run full test suite: `uv run python -m pytest -q`.
+- [x] 4.2 Run linters: `uv run ruff check . && uv run ruff format --check .`.
+- [x] 4.3 Run type checker: `uv run mypy verdict --strict`.
+- [x] 4.4 Run doc links: `uv run python scripts/check_doc_links.py`.
+- [x] 4.5 Run reachability: `uv run python scripts/check_reachability.py --ratchet-base origin/main`.
+- [x] 4.6 Run OpenSpec validation: `uv run python verdict/openspec_vendor/validate_openspec_change.py openspec/changes/bod-432-public-route-hard-spend-budget` and `npx --yes @fission-ai/openspec@1.13.2 validate bod-432-public-route-hard-spend-budget --strict --no-interactive` and `npx --yes @fission-ai/openspec@1.13.2 validate --all --strict --no-interactive`.
+- [x] 4.7 Run git diff check: `git diff --check`.
 
 ## 5. Independent review — wave 3
 

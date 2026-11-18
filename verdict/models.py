@@ -75,6 +75,10 @@ class RoutingDecision:
     # BOD-203 AC2: ranking receipt from adaptive advisory.
     adaptive_influence: dict[str, Any] | None = None
     admission_proofs: dict[str, AdmissionProof] = field(default_factory=dict)
+    # BOD-432: stage outputs of this request (admitted set, shortlist, optimizer
+    # outcome, rejection codes), captured once by IntelligenceService. Internal:
+    # only ``POST /v1/route?include_routing_trace=true`` projects it.
+    routing_trace: dict[str, Any] | None = None
 
     @property
     def selected_model(self) -> str:
