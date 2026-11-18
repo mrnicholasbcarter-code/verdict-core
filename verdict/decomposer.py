@@ -32,8 +32,6 @@ from verdict.patch_executor import (
 from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.work_unit import WorkUnit, WorkUnitError, parse_work_units
 
-DEFAULT_ORCHESTRATOR_MODEL = "mistral/codestral-latest"
-
 # A rejected plan gets one corrected retry on the same model before moving on.
 _PLAN_TRIES_PER_MODEL = 2
 
@@ -95,7 +93,7 @@ class DecompositionConfig:
     ``api_key`` is explicit and never read from the environment or logged.
     """
 
-    model: str = DEFAULT_ORCHESTRATOR_MODEL
+    model: str | None = None
     # Planner routes tried in order (live-selected by the caller). Empty means
     # ``model`` alone; it never falls back to a hard-coded route.
     planner_models: tuple[str, ...] = ()
@@ -153,20 +151,20 @@ class Decomposer:
         model. A transport failure, an HTTP error (5xx, 429, ...) or an
         unreadable response moves to the next model at once instead of
         re-sending to the same one. The raised error carries every attempt.
-        A ``cc/...`` planner is refused before anything is sent (BOD-342 D22).
         """
         if not isinstance(objective, str) or not objective.strip():
             raise DecompositionError("objective must be a non-empty string")
         models = self.config.planner_models or (self.config.model,)
-        excluded = [model for model in models if model.startswith("cc/")]
-        if excluded:
+        if not models or models[0] is None:
             raise DecompositionError(
-                f"cc/* planner routes are excluded (BOD-342 D22); refused {excluded}"
+                "no planner model configured; caller must select from live ladder or pass --orchestrator-model"
             )
+        # At this point, models[0] is guaranteed to be str (not None)
+        models_str: tuple[str, ...] = tuple(m for m in models if m is not None)
 
         attempts: list[dict[str, Any]] = []
         last: DecompositionError | None = None
-        for model in models:
+        for model in models_str:
             for _try in range(_PLAN_TRIES_PER_MODEL):
                 try:
                     result = self._decompose_once(
@@ -421,7 +419,6 @@ def _strip_fence(text: str) -> str:
 
 __all__ = [
     "DECOMPOSITION_SYSTEM_PROMPT",
-    "DEFAULT_ORCHESTRATOR_MODEL",
     "Decomposer",
     "DecompositionConfig",
     "DecompositionError",
