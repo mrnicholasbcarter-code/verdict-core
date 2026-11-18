@@ -990,7 +990,8 @@ def cmd_route(
             print(json.dumps(error_payload, sort_keys=True))
         else:
             print(json.dumps(data, sort_keys=True, indent=2))
-        raise SystemExit(1)
+        # lease_held has its own exit status so callers can wait and retry.
+        raise SystemExit(result.exit_code or 1)
 
     selected = data["selected"]
     model = selected["route_id"]
@@ -4612,6 +4613,7 @@ def cmd_prove_at_rest(
     inventory_path: str | None = None,
     ledger: str | None = None,
     dry_run: bool = False,
+    reprobe: tuple[str, ...] = (),
 ) -> None:
     """Run or inspect the health-cache prober.
 
@@ -4766,6 +4768,7 @@ def cmd_prove_at_rest(
             "agentic_concurrency": agentic_concurrency,
             "agentic_pool_concurrency": agentic_pool_concurrency,
             "agentic_wall_seconds": agentic_wall_seconds,
+            "reprobe": list(reprobe),
         }
         if base_url is not None:
             params["base_url"] = base_url

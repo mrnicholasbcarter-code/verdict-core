@@ -149,6 +149,15 @@ def register(subparsers: Any) -> None:
             default=None,
             help="Wall-time cap for the agentic phase (default: --max-wall-seconds)",
         )
+    prove_once_p.add_argument(
+        "--reprobe",
+        action="append",
+        default=[],
+        metavar="ROUTE",
+        help="Run the agentic probe for this admitted free route even when its proof is "
+        "fresh or it has an active negative; repeatable; named routes do not count "
+        "against --agentic-max-routes but do count against --max-requests",
+    )
     acceptance_p = subparsers.add_parser(
         "acceptance", help="Run the live acceptance checks and record the result"
     )

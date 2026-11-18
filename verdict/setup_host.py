@@ -108,6 +108,19 @@ def _serve_health() -> bool:
     return healthy()
 
 
+def _docs_ready() -> bool:
+    """Read-only documentation preflight for the checkout the refresh service uses."""
+    from verdict.documentation_preflight import run_documentation_preflight
+
+    root = Path(__file__).resolve().parent.parent
+    return bool(run_documentation_preflight(repo_root=root, fix=False).passed)
+
+
+def docs_refresh_command() -> str:
+    """The command that refreshes the documentation index (what the service runs)."""
+    return f"verdict memory docs --fix --repo-root {Path(__file__).resolve().parent.parent}"
+
+
 @dataclass(frozen=True)
 class HostEnvironment:
     """Where setup and doctor look, and the side-effecting steps they may take."""
@@ -126,6 +139,7 @@ class HostEnvironment:
     metadata_refresh: Callable[[], Mapping[str, Any]] = _metadata_refresh
     prime_sync: Callable[[str], Mapping[str, Any]] = _prime_sync
     serve_health: Callable[[], bool] = _serve_health
+    docs_ready: Callable[[], bool] = _docs_ready
     sleep: Callable[[float], None] = field(default=time.sleep)
 
     @classmethod
@@ -170,6 +184,14 @@ def _inactive(env: HostEnvironment, *units: str) -> list[str]:
         for unit in units
         if env.unit_state(unit).get("state") != "active"
     ]
+
+
+def _docs_index_ready(env: HostEnvironment) -> bool:
+    """A preflight that cannot run is "not ready": the refresh is the repair either way."""
+    try:
+        return bool(env.docs_ready())
+    except Exception:
+        return False
 
 
 def _timer_problems(env: HostEnvironment, rendered: Mapping[str, Any], *units: str) -> list[str]:
@@ -286,7 +308,12 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
         from verdict import docs_refresh_service
 
         rendered = docs_refresh_service.manage_service(unit_dir=env.unit_dir, dry_run=True)
-        return _timer_problems(env, rendered, docs_refresh_service.TIMER)
+        problems = _timer_problems(env, rendered, docs_refresh_service.TIMER)
+        if not problems and not _docs_index_ready(env):
+            # An install changes the checkout commit the index is keyed to; the
+            # timer would leave it stale for up to six hours.
+            problems.append("documentation index is not ready")
+        return problems
     if provider_id == PR_WATCHER:
         from verdict import pr_watcher_service
 
@@ -598,7 +625,15 @@ def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[st
             return {"status": "applied", "note": f"{ref_docs_service.TIMER} enabled", **steps}
         if provider_id == DOCS_REFRESH:
             steps = _install_timers(env, docs_refresh_service.manage_service)
-            return {"status": "applied", "note": f"{docs_refresh_service.TIMER} enabled", **steps}
+            note = f"{docs_refresh_service.TIMER} enabled"
+            if not _docs_index_ready(env):
+                # Start the refresh once, without waiting: it takes minutes.
+                env.systemctl(
+                    ["systemctl", "--user", "start", "--no-block", docs_refresh_service.SERVICE]
+                )
+                steps["refresh_started"] = docs_refresh_service.SERVICE
+                note += f"; started {docs_refresh_service.SERVICE} (documentation index was stale)"
+            return {"status": "applied", "note": note, **steps}
         if provider_id == PR_WATCHER:
             try:
                 repos = _pr_watch_repos()

@@ -810,6 +810,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             agentic_pool_concurrency=getattr(args, "agentic_pool_concurrency", 1),
             agentic_wall_seconds=getattr(args, "agentic_wall_seconds", None),
             inventory_path=getattr(args, "inventory_path", None),
+            reprobe=tuple(getattr(args, "reprobe", None) or ()),
             ledger=getattr(args, "ledger", None),
             dry_run=getattr(args, "dry_run", False),
         )

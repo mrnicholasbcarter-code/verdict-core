@@ -1628,6 +1628,20 @@ class HealthCache:
         )
         if keep_agentic and previous is not None:
             preserve_agentic = True
+        # A route-scoped billing refusal is an answer about this route, not a missing
+        # answer: the route no longer does what its proof says. Drop the proof and its
+        # timestamp so the next agentic cycle probes the route again.
+        revoke_agentic = (
+            not keep_agentic
+            and result.category == CATEGORY_PAYMENT
+            and result.failure_scope == "route"
+            and result.capacity_evidence == "billing_402_metered"
+        )
+        if revoke_agentic:
+            preserve_agentic = False
+            if result.probe_class != "agentic":
+                probe_class = result.probe_class
+                agentic_checked_at = None
         if preserve_agentic and previous is not None:
             # No answer does not revoke an older proof; conflicting same-time
             # evidence still fails closed, as in the cache's merge policy.
@@ -1703,7 +1717,7 @@ class HealthCache:
                 agentic_ok=agentic_ok if preserve_agentic else False,
                 agentic_checked_at=(
                     agentic_checked_at
-                    if agentic_checked_at is not None
+                    if agentic_checked_at is not None or revoke_agentic
                     else (previous.agentic_checked_at if previous is not None else None)
                 ),
                 # Preserve the earlier valid success time (never invent one).
