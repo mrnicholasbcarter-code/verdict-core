@@ -1,12 +1,25 @@
-# Spec: Credit Routes Capacity Classification
+## ADDED Requirements
 
-## Purpose
+### Requirement: Credit provider capacity classification
 
-Ensure models billed against prepaid credit balances (such as Pollinations / `pol/*`) never count as `FREE` capacity by assumption when pricing is unknown.
+Routes served by credit providers (Pollinations, `pol`, `g4f-pollinations`, or configured via `VERDICT_CREDIT_PROVIDERS`) without explicit free evidence SHALL NOT be assumed free. When pricing is unknown and no free suffix, connection free signal, or all-zero pricing is present, the capacity class SHALL be `CapacityClass.UNKNOWN` (`credit_provider_unknown_pricing`).
 
-## Requirements
+#### Scenario: Credit provider route with unknown pricing
+- **WHEN** a route belongs to a credit provider, has no pricing, and lacks a free suffix or free connection signal
+- **THEN** its capacity class is `UNKNOWN` and evidence is `credit_provider_unknown_pricing`
 
-1. **Credit Provider Identification**: Routes served by credit providers (Pollinations, `pol`, `g4f-pollinations`) without explicit free evidence must not be assumed free.
-2. **Unknown Pricing**: Credit provider routes with unknown pricing must be classified as `CapacityClass.UNKNOWN` (`credit_provider_unknown_pricing`).
-3. **Free Community Routes Preserved**: Credit provider routes carrying a `:free` community suffix or free connection signals or all-zero inventory pricing continue to be classified as `CapacityClass.FREE`.
-4. **Priced Models Metered**: Credit provider routes with positive inventory pricing are classified as `CapacityClass.METERED`.
+#### Scenario: Credit provider route with free suffix
+- **WHEN** a credit provider route carries a `:free` community suffix
+- **THEN** its capacity class is `FREE` and evidence is `free_suffix`
+
+#### Scenario: Credit provider route with positive pricing
+- **WHEN** a credit provider route has positive pricing
+- **THEN** its capacity class is `METERED` and evidence is `apikey_positive_pricing`
+
+### Requirement: Configurable credit providers via environment variable
+
+The set of credit providers SHALL be configurable via the `VERDICT_CREDIT_PROVIDERS` environment variable (comma-separated, case-insensitive, replacing the default set; an empty string means no credit providers).
+
+#### Scenario: Overriding credit providers
+- **WHEN** `VERDICT_CREDIT_PROVIDERS` is set to `custom-credit,other-credit`
+- **THEN** only `custom-credit` and `other-credit` are treated as credit providers

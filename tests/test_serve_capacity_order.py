@@ -348,3 +348,37 @@ def test_credit_provider_with_positive_pricing_is_metered():
     )
     assert cls is CapacityClass.METERED
     assert evidence == "apikey_positive_pricing"
+
+
+def test_non_credit_provider_unknown_pricing_assumes_free():
+    from verdict.capacity import CapacityClass, classify_route_capacity
+
+    conn = {"provider": "customprovider", "authType": "apikey", "isActive": True}
+    row = {"id": "customprovider/some-model"}
+    cls, _plan, evidence = classify_route_capacity(
+        conn, row, route_id="customprovider/some-model", openrouter_free_set=None
+    )
+    assert cls is CapacityClass.FREE
+    assert evidence == "assumed_free_no_paid_evidence"
+
+
+def test_verdict_credit_providers_env_override(monkeypatch):
+    from verdict.capacity import CapacityClass, classify_route_capacity
+
+    monkeypatch.setenv("VERDICT_CREDIT_PROVIDERS", "mycreditprovider")
+    conn = {"provider": "mycreditprovider", "authType": "apikey", "isActive": True}
+    row = {"id": "mycreditprovider/model"}
+    cls, _plan, evidence = classify_route_capacity(
+        conn, row, route_id="mycreditprovider/model", openrouter_free_set=None
+    )
+    assert cls is CapacityClass.UNKNOWN
+    assert evidence == "credit_provider_unknown_pricing"
+
+    # Pollinations is no longer a credit provider when overridden
+    conn2 = {"provider": "pollinations", "authType": "apikey", "isActive": True}
+    row2 = {"id": "pollinations/claude-fast"}
+    cls2, _plan2, evidence2 = classify_route_capacity(
+        conn2, row2, route_id="pollinations/claude-fast", openrouter_free_set=None
+    )
+    assert cls2 is CapacityClass.FREE
+    assert evidence2 == "assumed_free_no_paid_evidence"

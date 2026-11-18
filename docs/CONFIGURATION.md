@@ -788,6 +788,12 @@ verdict route "summarize the change" --terse
 An empty free∩active intersection fails closed. There is no automatic upgrade to
 a frontier model when eligibility returns nothing. <!-- claim:C-049 -->
 
+## Capacity classification and credit providers
+
+Verdict classifies route capacity into `FREE`, `SUBSCRIPTION`, `METERED`, and `UNKNOWN`. Models billed against prepaid credit balances (such as Pollinations / `pollinations/*`, `pol/*`) must never be counted as `FREE` capacity by assumption when pricing is unknown.
+
+The set of credit providers is configurable via the `VERDICT_CREDIT_PROVIDERS` environment variable (comma-separated list of provider names or prefixes, case-insensitive; defaults to `pollinations,pol,g4f-pollinations`; an empty string disables credit provider classification). Credit provider routes without explicit free evidence (`:free` suffix, free connection signals, or all-zero inventory pricing) and without positive pricing are classified as `CapacityClass.UNKNOWN` (`credit_provider_unknown_pricing`).
+
 ---
 
 ## Related
