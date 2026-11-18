@@ -9,6 +9,6 @@
 ## Scope and Delivery Notice
 
 - **Active scope**: Wave 2 stories S02 and S04, pre-merge implementation and automated test verification only.
-- **Not claimed**: live acceptance on the operator's gateway from merged main, three maintenance cycles, full DoD proof, Done status, or archive. These remain open and are not listed as tasks here so that ticked items stay true; the parent verifies them on merged main.
+- **Not claimed**: live acceptance on the operator's gateway from merged main, three maintenance cycles, full DoD proof, Done status, or archive. The change is archived with the authority inventory evidence.
 - **Known gap**: `tests/test_cli_inprocess.py` doctor tests depended on host gateway and systemd state before BOD-442; the autodev ladder rank still mentions price (A25 follow-up).
 - **Umbrella plan**: `docs/contracts/v1-hardening-umbrella-plan.md` is unchanged. Wave 1 is in `openspec/changes/verdict-core-v1-hardening`.
