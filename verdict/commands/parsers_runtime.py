@@ -155,8 +155,8 @@ def register(subparsers: Any) -> None:
         default=[],
         metavar="ROUTE",
         help="Run the agentic probe for this admitted free route even when its proof is "
-        "fresh or it has an active negative; repeatable; counts against "
-        "--agentic-max-routes and --max-requests",
+        "fresh or it has an active negative; repeatable; named routes do not count "
+        "against --agentic-max-routes but do count against --max-requests",
     )
     acceptance_p = subparsers.add_parser(
         "acceptance", help="Run the live acceptance checks and record the result"

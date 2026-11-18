@@ -935,8 +935,8 @@ class Prober:
     # picks agentic survivors. ``None`` keeps the unscreened candidate order.
     screen_transport: ScreenTransportFn | None = None
     # ``--reprobe``: admitted FREE chat routes to probe again even though their
-    # agentic proof is fresh or they carry an active negative. Bounded like every
-    # other candidate by ``agentic_max_routes`` and the request cap.
+    # agentic proof is fresh or they carry an active negative. They do not count
+    # against ``agentic_max_routes``; the request cap still bounds them.
     reprobe_routes: frozenset[str] = frozenset()
     # Half-open agentic allowlist: screen survivors from pools already cooled
     # before this cycle's screen, with no fresh account-level failure for that
@@ -1318,17 +1318,19 @@ class Prober:
         seconds = exchange.retry_after_seconds if exchange.retry_after_seconds else 60.0
         self.cache.zero_bucket(route.provider, now + timedelta(seconds=seconds), pool=route.pool)
 
-    def _with_reprobe(
+    def _split_reprobe(
         self, pending: list[AdmittedRoute], snapshot: Sequence[AdmittedRoute], stats: CycleStats
-    ) -> list[AdmittedRoute]:
-        """Put the operator's ``--reprobe`` routes first; record the ones that cannot run.
+    ) -> tuple[list[AdmittedRoute], list[AdmittedRoute]]:
+        """``(forced, rest)``: the operator's ``--reprobe`` routes and the other candidates.
 
-        A forced route skips the freshness check and the active-negative skip, nothing
-        else: it must be an admitted FREE chat route, so a reprobe can never spend on a
-        metered, subscription or unknown-capacity route.
+        A forced route skips the freshness check, the active-negative skip and the
+        ``agentic_max_routes`` limit, nothing else: it must be an admitted FREE chat
+        route, so a reprobe can never spend on a metered, subscription or
+        unknown-capacity route, and it still counts against the request cap. Routes
+        that cannot run are recorded with the reason.
         """
         if not self.reprobe_routes:
-            return pending
+            return [], pending
         by_id = {route.route_id: route for route in snapshot}
         forced: list[AdmittedRoute] = []
         skipped: dict[str, str] = {}
@@ -1344,7 +1346,7 @@ class Prober:
                 forced.append(route)
         stats.reprobe = {"queued": [route.route_id for route in forced], "skipped": skipped}
         forced_ids = {route.route_id for route in forced}
-        return [*forced, *(route for route in pending if route.route_id not in forced_ids)]
+        return forced, [route for route in pending if route.route_id not in forced_ids]
 
     def _needs_agentic(self, route: AdmittedRoute, now: datetime) -> bool:
         """True when the route is FREE and its agentic probe is stale or missing.
@@ -1411,8 +1413,10 @@ class Prober:
             pending = self._screen(pending, stats, deadline)
             if stats.agentic_stopped_reason:
                 return
-        pending = self._with_reprobe(pending, snapshot, stats)
-        pending = pending[: self.agentic_max_routes]
+        # Routes the operator named are extra: they do not use up the
+        # ``agentic_max_routes`` slots of the routes the cycle picked itself.
+        forced, pending = self._split_reprobe(pending, snapshot, stats)
+        pending = [*forced, *pending[: self.agentic_max_routes]]
         # BOD-297: the agentic phase shares the cycle's single request budget
         # with the chat phase (and the gateway screen). Conversations that
         # would exceed the remaining requests are deferred, never run over it.
@@ -1424,7 +1428,7 @@ class Prober:
             kept = {route.route_id for route in pending}
             for route_id in stats.reprobe["queued"]:
                 if route_id not in kept:
-                    stats.reprobe["skipped"][route_id] = "budget"
+                    stats.reprobe["skipped"][route_id] = "request_cap"
             stats.reprobe["queued"] = [r for r in stats.reprobe["queued"] if r in kept]
         if pending:
             # Prove the cache is writable before any dispatch, as the chat phase does.

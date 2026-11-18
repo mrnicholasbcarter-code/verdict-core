@@ -90,7 +90,8 @@ LADDER_CONFIRMATION_SOURCE = "ladder_probe:openai_health_probe"
 def _is_inband_refusal(result: HealthResult) -> bool:
     """An HTTP 200 credit refusal is about one route, never the pool or provider.
 
-    Free siblings on the same key still answer, so this must not cool them.
+    Free siblings on the same key still answer, so this must not cool them. A real
+    HTTP 402 keeps its pool and provider cooldown (BOD-334).
     """
     return result.category == "payment_required" and result.status_code == 200
 

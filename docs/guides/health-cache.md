@@ -134,8 +134,9 @@ Order inside a cycle:
    `--agentic-wall-seconds` (default `--max-wall-seconds`).
    `verdict prove-at-rest once --reprobe ROUTE` (repeatable) puts an admitted
    FREE route into this phase even when its proof is fresh or it has an active
-   negative; it counts against the same caps, and the output lists the queued
-   and skipped routes under `reprobe`. Routes whose chat
+   negative. Named routes do not count against `--agentic-max-routes`; they
+   do count against `--max-requests` (three requests each). The output lists
+   the queued and skipped routes under `reprobe`. Routes whose chat
    and tool probe passed go first, then routes the gateway's synced catalog
    (`/api/synced-available-models`) serves. An empty bucket waits for its refill
    inside the phase budget.

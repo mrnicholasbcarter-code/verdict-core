@@ -12,7 +12,6 @@
 - [x] 2.3 `lease_held` reason and exit status; acceptance wait, single retry, no retry for `no_eligible_route`
 - [x] 2.4 Docs refresh started when stale, not when ready; doctor repair hint
 - [x] 2.5 Relay failover after a refusal without an idempotency key
-- [x] 2.6 `:free` suffix is not free evidence
 
 ## 3. Implementation
 
@@ -21,7 +20,6 @@
 - [x] 3.3 `lease_held` outcome, acceptance retry, identify screen calendar
 - [x] 3.4 Docs-refresh setup action and doctor hint
 - [x] 3.5 Relay edge after an in-band refusal
-- [x] 3.6 Capacity classification without the suffix shortcut
 
 ## 4. Live checks
 

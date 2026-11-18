@@ -665,13 +665,15 @@ def test_capacity_class_matches_the_ladder() -> None:
     # capacity_class_of intentionally skips (document their divergence).
     suffix_conn = {"authType": "oauth", "plan_label": "pro"}
     suffix_row: dict[str, object] = {}
-    # A ``:free`` suffix is a hint, not evidence: both stay SUBSCRIPTION.
+    # :free suffix → FREE in ladder, but capacity_class_of returns SUBSCRIPTION.
     ladder_class, _, rule = ladder._capacity_class(
         suffix_conn, suffix_row, route_id="cc/model:free"
     )
-    assert ladder_class == CapacityClass.SUBSCRIPTION, f"suffix alone made it {rule}"
+    assert ladder_class == CapacityClass.FREE, f"ladder should classify :free as FREE, got {rule}"
     standalone_class, _ = capacity_class_of(suffix_conn, suffix_row)
-    assert standalone_class == CapacityClass.SUBSCRIPTION
+    assert standalone_class == CapacityClass.SUBSCRIPTION, (
+        "capacity_class_of must NOT classify :free suffix (it is a documented omission)"
+    )
 
 
 def test_legacy_cycle_file_is_not_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

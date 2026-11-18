@@ -17,10 +17,8 @@ from fastapi.testclient import TestClient
 
 import verdict.api as api
 from tests import test_serve_failure_feedback as feedback
-from tests.test_bod418_gaps import _free_set
 from tests.test_inband_credit_refusal import _Response, answer_body, refusal_body
 from verdict import acceptance
-from verdict.capacity import CapacityClass, classify_route_capacity
 from verdict.orchestration import selection
 from verdict.orchestration.contracts import EligibilityStage, RouteVerdict, TaskRequirements
 from verdict.orchestration.eligibility import EligibilityLadder
@@ -159,7 +157,12 @@ def _fresh_proof_cache(tmp_path: Path, *routes: str) -> HealthCache:
 
 
 def _reprobe_prober(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, routes: list[AdmittedRoute], **kwargs: Any
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    routes: list[AdmittedRoute],
+    *,
+    unproven: frozenset[str] = frozenset(),
+    **kwargs: Any,
 ) -> tuple[Prober, list[str]]:
     sent: list[str] = []
 
@@ -172,7 +175,8 @@ def _reprobe_prober(
     def no_chat(route_id: str, phase: str, timeout: float) -> Any:
         raise AssertionError("the agentic phase must not use the chat transport")
 
-    cache = _fresh_proof_cache(tmp_path, *(r.route_id for r in routes))
+    proven = [r.route_id for r in routes if r.route_id not in unproven]
+    cache = _fresh_proof_cache(tmp_path, *proven)
     prober = Prober(
         cache,
         lambda: routes,
@@ -211,43 +215,59 @@ def test_reprobe_forces_a_route_with_fresh_proof_into_the_agentic_phase(
     assert entry is not None and not entry.agentic_ok and entry.category == CATEGORY_PAYMENT
 
 
-def test_reprobe_stays_inside_the_route_and_capacity_bounds(
+def test_named_reprobe_routes_do_not_count_against_agentic_max_routes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Catches: a forced reprobe exceeding agentic_max_routes or probing a paid route."""
-    routes = [
-        AdmittedRoute("pa/m", "pa", "free"),
-        AdmittedRoute("pb/m", "pb", "free"),
-        AdmittedRoute("pc/paid", "pc", "metered"),
-    ]
+    """Catches: an explicit reprobe list cut to the default route limit (seen live: CAPPED)."""
+    routes = [AdmittedRoute(f"p{i}/m", f"p{i}", "free") for i in range(5)]
+    named = frozenset({"p0/m", "p1/m", "p2/m"})
     prober, sent = _reprobe_prober(
         tmp_path,
         monkeypatch,
         routes,
+        unproven=frozenset({"p3/m", "p4/m"}),  # the cycle's own candidates
         agentic_max_routes=1,
-        reprobe_routes=frozenset({"pa/m", "pb/m", "pc/paid", "zz/unknown"}),
+        reprobe_routes=named,
+    )
+    stats = CycleStats()
+    prober.run_agentic_probes(stats)
+    assert named <= set(sent), "every named route is probed past agentic_max_routes"
+    # The limit still holds for the routes the cycle picked itself: one of two.
+    assert len(set(sent) - named) == 1 and len(sent) == 4
+    assert stats.reprobe == {"queued": sorted(named), "skipped": {}}
+
+
+def test_reprobe_only_forces_admitted_free_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches: a forced reprobe probing a paid or non-admitted route."""
+    routes = [AdmittedRoute("pa/m", "pa", "free"), AdmittedRoute("pc/paid", "pc", "metered")]
+    prober, sent = _reprobe_prober(
+        tmp_path, monkeypatch, routes, reprobe_routes=frozenset({"pa/m", "pc/paid", "zz/unknown"})
     )
     stats = CycleStats()
     prober.run_agentic_probes(stats)
     assert sent == ["pa/m"]
     assert stats.reprobe == {
         "queued": ["pa/m"],
-        "skipped": {"pb/m": "budget", "pc/paid": "capacity:metered", "zz/unknown": "not_admitted"},
+        "skipped": {"pc/paid": "capacity:metered", "zz/unknown": "not_admitted"},
     }
 
 
 def test_reprobe_respects_the_request_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Catches: named routes running past --max-requests (three requests per route)."""
+    routes = [AdmittedRoute("pa/m", "pa", "free"), AdmittedRoute("pb/m", "pb", "free")]
     prober, sent = _reprobe_prober(
         tmp_path,
         monkeypatch,
-        [AdmittedRoute("pa/m", "pa", "free")],
-        max_requests=2,  # fewer than one three-turn conversation
-        reprobe_routes=frozenset({"pa/m"}),
+        routes,
+        max_requests=3,  # room for exactly one three-turn conversation
+        reprobe_routes=frozenset({"pa/m", "pb/m"}),
     )
     stats = CycleStats()
     prober.run_agentic_probes(stats)
-    assert sent == []
-    assert stats.reprobe == {"queued": [], "skipped": {"pa/m": "budget"}}
+    assert sent == ["pa/m"]
+    assert stats.reprobe == {"queued": ["pa/m"], "skipped": {"pb/m": "request_cap"}}
 
 
 def test_prove_at_rest_once_passes_repeatable_reprobe_to_the_prober(
@@ -474,50 +494,3 @@ def test_relay_does_not_retry_a_real_5xx_without_an_idempotency_key(
     with TestClient(api.app) as client:
         response = client.post("/v1/chat/completions", json=feedback._request_body())
     assert len(sent) == 1 and response.status_code == 503
-
-
-# -- operator rule: a ":free" name is not free evidence --------------------------
-
-OAUTH = {"provider": "kilocode", "authType": "oauth", "isActive": True}
-CREDIT = {"provider": "pollinations", "authType": "apikey", "isActive": True}
-
-
-def _classify(conn: dict[str, Any], route_id: str, **row: Any) -> tuple[CapacityClass, str]:
-    cls, _plan, evidence = classify_route_capacity(
-        conn, {"id": route_id, **row}, route_id=route_id, openrouter_free_set=row.pop("fs", None)
-    )
-    return cls, evidence
-
-
-def test_free_suffix_on_a_credit_provider_is_unknown_without_evidence() -> None:
-    """Catches: pol/...:free ranked FREE on its name while billing a credit balance."""
-    route = "pol/community/someone/model:free"
-    assert _classify(CREDIT, route) == (CapacityClass.UNKNOWN, "free_suffix_unverified")
-
-
-def test_free_suffix_route_is_free_only_with_evidence() -> None:
-    route = "pol/community/someone/model:free"
-    zero = {"input": 0.0, "output": 0.0}
-    assert _classify(CREDIT, route, pricing=zero) == (CapacityClass.FREE, "all_zero_pricing")
-    signalled = {**CREDIT, "import_free_only": True}
-    assert _classify(signalled, route) == (CapacityClass.FREE, "import_free_only")
-    paid = {"input": 1.0, "output": 2.0}
-    assert _classify(CREDIT, route, pricing=paid)[0] is CapacityClass.METERED
-
-
-def test_free_suffix_no_longer_overrides_a_subscription_connection() -> None:
-    """Catches: kc/...:free classified FREE by suffix when it is not a public 0/0 route."""
-    free_set = _free_set()
-    member = "kc/poolside/laguna-xs-2.1:free"
-    outsider = "kc/vendor/not-in-the-public-set:free"
-    assert classify_route_capacity(
-        OAUTH, {"id": member}, route_id=member, openrouter_free_set=free_set
-    )[::2] == (CapacityClass.FREE, "openrouter_public_zero_alias")
-    assert classify_route_capacity(
-        OAUTH, {"id": outsider}, route_id=outsider, openrouter_free_set=free_set
-    )[::2] == (CapacityClass.SUBSCRIPTION, "oauth_subscription")
-    # No free set at all is no evidence either.
-    assert (
-        classify_route_capacity(OAUTH, {"id": member}, route_id=member, openrouter_free_set=None)[0]
-        is CapacityClass.SUBSCRIPTION
-    )

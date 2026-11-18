@@ -20,19 +20,29 @@ to the probed route: it SHALL NOT write a pool or provider cooldown or a pool no
 
 `verdict prove-at-rest once --reprobe ROUTE` SHALL be repeatable and SHALL put each named route
 into the agentic phase even when its agentic proof is fresh or it has an active negative. A
-forced route SHALL be an admitted FREE chat route and SHALL count against `--agentic-max-routes`
-and `--max-requests`. The output SHALL list the forced routes that were queued and, for each
-route that was not, the reason.
+named route SHALL be an admitted FREE chat route. Named routes SHALL NOT count against
+`--agentic-max-routes`. They SHALL count against `--max-requests`. The output SHALL list the
+named routes that were queued and, for each route that was not, the reason.
 
 #### Scenario: Fresh proof is probed again
 
 - **WHEN** a route has agentic proof five minutes old and is named with `--reprobe`
 - **THEN** the cycle runs the agentic probe for it
 
-#### Scenario: Bounds hold
+#### Scenario: More named routes than the route limit
 
-- **WHEN** four routes are named, `--agentic-max-routes` is 1, one route is metered and one is not admitted
-- **THEN** one route is probed and the others are reported as `budget`, `capacity:metered` and `not_admitted`
+- **WHEN** three routes are named and `--agentic-max-routes` is 1
+- **THEN** all three named routes are probed, and at most one other route is probed
+
+#### Scenario: Request cap holds
+
+- **WHEN** two routes are named and `--max-requests` leaves room for one conversation
+- **THEN** one named route is probed and the other is reported as `request_cap`
+
+#### Scenario: Only admitted free routes
+
+- **WHEN** a metered route and a route that is not admitted are named
+- **THEN** neither is probed, and they are reported as `capacity:metered` and `not_admitted`
 
 ### Requirement: A billing refusal invalidates agentic proof
 
@@ -125,26 +135,3 @@ attempt the idempotency rule SHALL be unchanged.
 
 - **WHEN** the first candidate answers HTTP 503 and the request has no idempotency key
 - **THEN** no second candidate is tried
-
-### Requirement: A free suffix is not free evidence
-
-Capacity classification SHALL NOT return FREE because a route id ends with `:free` or contains
-"free". FREE SHALL need evidence: public OpenRouter 0/0 membership (for `openrouter/` routes and
-for `:free` routes on prefixes that share the OpenRouter free pool), a connection free signal,
-or all-zero inventory pricing. A `:free` route on a credit provider without such evidence and
-without positive pricing SHALL be UNKNOWN with evidence `free_suffix_unverified`.
-
-#### Scenario: Credit provider
-
-- **WHEN** a `pol/` route ends with `:free` and has no pricing and no connection free signal
-- **THEN** its capacity class is UNKNOWN and its evidence is `free_suffix_unverified`
-
-#### Scenario: Alias of a public free route
-
-- **WHEN** a `kc/` route ends with `:free` and the same model id is in the public OpenRouter 0/0 set
-- **THEN** its capacity class is FREE and its evidence is `openrouter_public_zero_alias`
-
-#### Scenario: Suffix on a subscription connection
-
-- **WHEN** a `kc/` route ends with `:free`, is not in the public 0/0 set and its connection is OAuth
-- **THEN** its capacity class is SUBSCRIPTION

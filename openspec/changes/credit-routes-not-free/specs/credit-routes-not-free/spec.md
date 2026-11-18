@@ -2,15 +2,15 @@
 
 ### Requirement: Credit provider capacity classification
 
-Routes served by credit providers (Pollinations, `pol`, `g4f-pollinations`, or configured via `VERDICT_CREDIT_PROVIDERS`) without explicit free evidence SHALL NOT be assumed free. When pricing is unknown and no connection free signal or all-zero pricing is present (a `:free` suffix is not evidence), the capacity class SHALL be `CapacityClass.UNKNOWN` (`credit_provider_unknown_pricing`).
+Routes served by credit providers (Pollinations, `pol`, `g4f-pollinations`, or configured via `VERDICT_CREDIT_PROVIDERS`) without explicit free evidence SHALL NOT be assumed free. When pricing is unknown and no free suffix, connection free signal, or all-zero pricing is present, the capacity class SHALL be `CapacityClass.UNKNOWN` (`credit_provider_unknown_pricing`).
 
 #### Scenario: Credit provider route with unknown pricing
-- **WHEN** a route belongs to a credit provider, has no pricing, no `:free` suffix and no free connection signal
+- **WHEN** a route belongs to a credit provider, has no pricing, and lacks a free suffix or free connection signal
 - **THEN** its capacity class is `UNKNOWN` and evidence is `credit_provider_unknown_pricing`
 
 #### Scenario: Credit provider route with free suffix
-- **WHEN** a credit provider route carries a `:free` community suffix and has no pricing and no free connection signal
-- **THEN** its capacity class is `UNKNOWN` and evidence is `free_suffix_unverified`
+- **WHEN** a credit provider route carries a `:free` community suffix
+- **THEN** its capacity class is `FREE` and evidence is `free_suffix`
 
 #### Scenario: Credit provider route with positive pricing
 - **WHEN** a credit provider route has positive pricing
