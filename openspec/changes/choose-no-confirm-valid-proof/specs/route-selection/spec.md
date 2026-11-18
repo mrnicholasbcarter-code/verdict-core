@@ -13,6 +13,6 @@ The choose command with --no-confirm SHALL never send a model confirmation or wr
 - **WHEN** --no-confirm is set and a route's passport is missing, expired, unauthorized, ineligible, or has newer negative evidence
 - **THEN** the route is skipped with a reason naming the condition (not probe_budget_exhausted)
 
-#### Scenario: No valid proof
+#### Scenario: No fresh proof
 - **WHEN** --no-confirm is set and no route has valid proof
 - **THEN** selected is null and no confirmation is sent
