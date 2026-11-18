@@ -2,7 +2,7 @@
 
 ## Context
 
-Waves 5-7 of V1 hardening: S09 (BOD-437), S10 (BOD-438), S11 (BOD-414), S05 phase 2 (BOD-297), and the S03-C executor-origin addendum (BOD-433). Waves 2-4 are in `openspec/changes/v1-authority-inventory` and `openspec/changes/v1-permits-streams-public-models`. All results are recorded on the combined integration branch `integration/v1-waves5-7`.
+Waves 5-7 of V1 hardening: S09 (BOD-437), S10 (BOD-438), S11 (BOD-414), S05 phase 2 (BOD-297), and the S03-C executor-origin addendum (BOD-433). Waves 2-4 are in `openspec/changes/archive/2026-11-12-v1-authority-inventory` and `openspec/changes/v1-permits-streams-public-models`. All results are recorded on the combined integration branch `integration/v1-waves5-7`.
 
 ## Decisions
 
