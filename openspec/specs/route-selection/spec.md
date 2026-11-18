@@ -42,10 +42,18 @@ An upstream HTTP 402 SHALL record the existing long-lived route-scoped payment n
 - **THEN** that route is METERED while the negative is active and is not redispatched
 
 ### Requirement: Read-only choose
-The choose command with --no-confirm SHALL never send a model confirmation or write selection evidence. It SHALL select only routes with fresh exact-route proof and otherwise return no eligible route.
+The choose command with --no-confirm SHALL never send a model confirmation or write selection evidence. It SHALL select only routes with valid exact-route proof (passport admitted and not expired) and otherwise return no eligible route. Proof older than the 10-minute permit freshness window is accepted when the passport remains valid.
 
-#### Scenario: No fresh proof
-- **WHEN** --no-confirm is set and no route has fresh proof
+#### Scenario: Valid but older-than-10-minute proof is selected
+- **WHEN** --no-confirm is set and a route has an admitted passport that is not expired but qualified_at exceeds 600 seconds
+- **THEN** the route is selected with zero probes and zero writes
+
+#### Scenario: Expired or missing passport is not selected
+- **WHEN** --no-confirm is set and a route's passport is missing, expired, unauthorized, ineligible, or has newer negative evidence
+- **THEN** the route is skipped with a reason naming the condition (not probe_budget_exhausted)
+
+#### Scenario: No valid proof
+- **WHEN** --no-confirm is set and no route has valid proof
 - **THEN** selected is null and no confirmation is sent
 
 ### Requirement: Coding-task rating
@@ -54,3 +62,6 @@ Obvious code-edit task text SHALL use the coding rating through the shared famil
 #### Scenario: Python edit request
 - **WHEN** task text is "edit a python function and run its test"
 - **THEN** choose and serve use a code-edit family and aa_coding
+
+## Tasks
+- [ ] (post-merge) Install from merged main and confirm `verdict choose --task-class implementation --no-confirm --json` selects a route
