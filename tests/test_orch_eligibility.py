@@ -890,6 +890,169 @@ class TestSelect:
             "probe should be called in normal mode for old passport"
         )
 
+    def test_read_only_mode_skips_passport_superseded_by_newer_negative_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """Read-only mode skips a passport with newer negative health evidence, reason is passport_superseded."""
+        from verdict.model_passports import ModelPassport
+        from verdict.orchestration.health_cache import CATEGORY_OK, CATEGORY_RATE_LIMITED, HealthCache, ProbeResult, default_cache_path
+        from verdict.prove_at_rest_legacy import (
+            STATUS_HEALTHY,
+            ProofResult,
+            ProveAtRestCycle,
+            ProveAtRestStore,
+            default_state_path,
+        )
+
+        rows = [row("cc/claude-sonnet-5", owned_by="claude")]
+        connections = [conn("claude")]
+        # Use the default health cache path so passport_confirmation sees the negative evidence
+        cache = HealthCache(default_cache_path())
+        # Provide a fresh healthy probe result for the route
+        checked = NOW - timedelta(seconds=60)
+        cache.record(
+            "cc/claude-sonnet-5",
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            checked,
+        )
+        # Add newer negative evidence (rate limited) that supersedes the passport
+        newer_negative = NOW - timedelta(seconds=10)
+        cache.record(
+            "cc/claude-sonnet-5",
+            ProbeResult(
+                category=CATEGORY_RATE_LIMITED,
+                chat_ok=False,
+                tool_ok=False,
+                probe_class="agentic",
+                agentic_ok=False,
+            ),
+            newer_negative,
+        )
+        cache.save()
+
+        # Create a passport store with a VALID passport (not expired, authorized, eligible)
+        passport_store_path = default_state_path()
+        passport_store_path.parent.mkdir(parents=True, exist_ok=True)
+        passport = ModelPassport(
+            provider="claude",
+            model_id="cc/claude-sonnet-5",
+            auth_state="authorized",
+            availability_state="eligible",
+            qualified_at=NOW - timedelta(minutes=30),
+            last_verified_timestamp=NOW - timedelta(minutes=30),
+            expires_at=NOW + timedelta(minutes=10),
+        )
+        proof_result = ProofResult(
+            identity_id="cc/claude-sonnet-5",
+            provider="claude",
+            status=STATUS_HEALTHY,
+            proved_at=NOW - timedelta(minutes=30),
+            latency_ms=100,
+            passport=passport,
+        )
+        cycle = ProveAtRestCycle(
+            cycle_id="test-cycle",
+            started_at=NOW - timedelta(minutes=35),
+            finished_at=NOW - timedelta(minutes=30),
+            results=(proof_result,),
+        )
+        store = ProveAtRestStore(path=passport_store_path)
+        store.write(cycle)
+
+        # Read-only mode: the passport is valid but superseded by newer negative evidence
+        probe = FakeProbe()
+        ladder, _ = make_ladder(
+            tmp_path,
+            rows,
+            connections,
+            probe,
+            health_cache=cache,
+            max_probes_per_select=0,
+            read_only=True,
+        )
+        selected, verdicts = ladder.select(REQ, now=NOW)
+
+        assert selected is None, "superseded passport should not be selected in read-only mode"
+        assert probe.calls == [], "no probe calls in read-only mode"
+        v = by_route(verdicts)["cc/claude-sonnet-5"]
+        assert v.reason == "passport_superseded", f"expected 'passport_superseded', got '{v.reason}'"
+
+    def test_read_only_mode_lease_held_wins(self, tmp_path: Path) -> None:
+        """Read-only mode with lease held returns lease_held reason, not passport_invalid."""
+        from verdict.model_passports import ModelPassport
+        from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+        from verdict.orchestration.verified_refresh import _JobLock
+        from verdict.prove_at_rest_legacy import (
+            STATUS_HEALTHY,
+            ProofResult,
+            ProveAtRestCycle,
+            ProveAtRestStore,
+            default_state_path,
+        )
+
+        rows = [row("cc/claude-sonnet-5", owned_by="claude")]
+        connections = [conn("claude")]
+        cache = HealthCache(tmp_path / "health.json")
+        cache.save()  # Empty cache - route needs probe
+
+        # Create a passport store with a VALID passport
+        passport_store_path = default_state_path()
+        passport_store_path.parent.mkdir(parents=True, exist_ok=True)
+        passport = ModelPassport(
+            provider="claude",
+            model_id="cc/claude-sonnet-5",
+            auth_state="authorized",
+            availability_state="eligible",
+            qualified_at=NOW - timedelta(minutes=30),
+            last_verified_timestamp=NOW - timedelta(minutes=30),
+            expires_at=NOW + timedelta(minutes=10),
+        )
+        proof_result = ProofResult(
+            identity_id="cc/claude-sonnet-5",
+            provider="claude",
+            status=STATUS_HEALTHY,
+            proved_at=NOW - timedelta(minutes=30),
+            latency_ms=100,
+            passport=passport,
+        )
+        cycle = ProveAtRestCycle(
+            cycle_id="test-cycle",
+            started_at=NOW - timedelta(minutes=35),
+            finished_at=NOW - timedelta(minutes=30),
+            results=(proof_result,),
+        )
+        store = ProveAtRestStore(path=passport_store_path)
+        store.write(cycle)
+
+        # Acquire the lease
+        lock = _JobLock(tmp_path / "verified-refresh.lock")
+        assert lock.acquire()
+        try:
+            probe = FakeProbe()
+            ladder, _ = make_ladder(
+                tmp_path,
+                rows,
+                connections,
+                probe,
+                health_cache=cache,
+                max_probes_per_select=0,
+                read_only=True,
+            )
+            selected, verdicts = ladder.select(REQ, now=NOW)
+        finally:
+            lock.release()
+
+        assert selected is None, "no route should be chosen when lease is held"
+        assert probe.calls == [], "no probe calls when lease is held"
+        v = by_route(verdicts)["cc/claude-sonnet-5"]
+        assert v.reason == "lease_held", f"expected 'lease_held', got '{v.reason}'"
+
 
 class TestPersistence:
     def test_state_round_trip(self, tmp_path: Path) -> None:
