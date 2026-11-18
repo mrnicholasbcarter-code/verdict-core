@@ -76,10 +76,10 @@
 
 **Verification:** Live end-to-end proof on installed merged main with operator consent and independent parent confirmation. Raw HTTP evidence captured and validated via `scripts/check_dod.py`.
 
-- [ ] 6.1 (post-merge) After exact-head CI and merge, verify installed SHA, `verdict doctor`, and service state; do not restart OmniRoute.
-- [ ] 6.2 (post-merge) Repeat after required freshness interval and record scheduled coverage.
-- [ ] 6.3 (post-merge) Prepare reviewed JSON files in INPUT from current live candidates, using held evidence only as a structural reference. Pin consent, fresh proof and eligible non-pay-per-token routes; stop rather than trigger any unauthorized or pay-per-token probe.
-- [ ] 6.4 (post-merge) Run the live acceptance commands from the plan (see `docs/plan/20261118-route-hard-spend-budget/plan.yaml`).
-- [ ] 6.5 (post-merge) Negative cases show the matching structured rejection and no selection of the rejected candidate. The same unpriced candidate in the no-budget control remains eligible and can be selected. Invalid budget is 400 with the field name; omitted budget without opt-in preserves the legacy response.
-- [ ] 6.6 (post-merge) Parent independently reruns and records raw evidence.
-- [ ] 6.7 (post-merge) Only after all AGENTS.md DoD parts pass, complete post-merge tasks, validate evidence with `scripts/check_dod.py`, archive the change and close BOD-432.
+- [ ] (post-merge) 6.1 After exact-head CI and merge, verify installed SHA, `verdict doctor`, and service state; do not restart OmniRoute.
+- [ ] (post-merge) 6.2 Repeat after required freshness interval and record scheduled coverage.
+- [ ] (post-merge) 6.3 Prepare reviewed JSON files in INPUT from current live candidates, using held evidence only as a structural reference. Pin consent, fresh proof and eligible non-pay-per-token routes; stop rather than trigger any unauthorized or pay-per-token probe.
+- [ ] (post-merge) 6.4 Run the live acceptance commands from the plan (see `docs/plan/20261118-route-hard-spend-budget/plan.yaml`).
+- [ ] (post-merge) 6.5 Negative cases show the matching structured rejection and no selection of the rejected candidate. The same unpriced candidate in the no-budget control remains eligible and can be selected. Invalid budget is 400 with the field name; omitted budget without opt-in preserves the legacy response.
+- [ ] (post-merge) 6.6 Parent independently reruns and records raw evidence.
+- [ ] (post-merge) 6.7 Only after all AGENTS.md DoD parts pass, complete post-merge tasks, validate evidence with `scripts/check_dod.py`, archive the change and close BOD-432.
