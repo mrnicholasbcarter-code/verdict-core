@@ -1,15 +1,15 @@
-# /home/nick/.config/systemd/user/verdict-identify-screen.service
+# /operator/.config/systemd/user/verdict-identify-screen.service
 [Unit]
 Description=Verdict bounded missing-proof screening
 After=network-online.target
 [Service]
 Type=oneshot
 UMask=0077
-WorkingDirectory=/home/nick/.local/share/verdict/installed-main
-ExecStart="/home/nick/.local/share/verdict/installed-main/.venv/bin/python" -m verdict identify --screen --allow-live-probe --capacity free,subscription --max-per-provider 16 --max-routes 40 --json
+WorkingDirectory=/operator/.local/share/verdict/installed-main
+ExecStart="/operator/.local/share/verdict/installed-main/.venv/bin/python" -m verdict identify --screen --allow-live-probe --capacity free,subscription --max-per-provider 16 --max-routes 40 --json
 TimeoutStartSec=30min
 
-# /home/nick/.config/systemd/user/verdict-identify-screen.timer
+# /operator/.config/systemd/user/verdict-identify-screen.timer
 [Unit]
 Description=Verdict six-hourly bounded screening timer
 [Timer]
