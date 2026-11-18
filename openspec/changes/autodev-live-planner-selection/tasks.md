@@ -9,6 +9,7 @@ Verification: `uv run python verdict/openspec_vendor/validate_openspec_change.py
 - [x] 1.3 Rewrite `design.md` with implementation decisions.
 - [x] 1.4 Rewrite `tasks.md` with implementation tasks.
 - [x] 1.5 Rewrite `specs/autodev-live-planner-selection/spec.md` (was `autodev-planner-default`) as complete spec delta.
+- [x] 1.6 Make the delta ADDED-only (no capability exists on main) and delete the stale `specs/autodev-planner-default/spec.md`; `openspec archive` in a temp worktree succeeds.
 
 ## 2. Tests first (TDD - Red phase)
 

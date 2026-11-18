@@ -1558,10 +1558,16 @@ def cmd_autodev(
                 not in (CapacityClass.FREE, CapacityClass.SUBSCRIPTION)
                 or _is_premium_reserved(orchestrator_model)
             ):
+                if model_verdict.capacity_class is CapacityClass.METERED:
+                    why = "pay-per-token routes are not eligible for planning"
+                elif _is_premium_reserved(orchestrator_model):
+                    why = "premium-reserved routes are not eligible for planning"
+                else:
+                    why = "route is not task-eligible for planning"
                 _report_autodev_failure(
                     f"explicit --orchestrator-model {orchestrator_model!r} is not admissible: "
-                    f"stage={getattr(model_verdict.reached, 'value', None)}, "
-                    f"capacity={model_verdict.capacity_class.value}",
+                    f"{why} (stage={getattr(model_verdict.reached, 'value', None)}, "
+                    f"capacity={model_verdict.capacity_class.value})",
                     output_json=output_json,
                 )
                 raise SystemExit(1)

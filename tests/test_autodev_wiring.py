@@ -698,7 +698,12 @@ def test_cli_dry_run_explicit_orchestrator_model_paid_refused(
         )
     assert excinfo.value.code == 1
     output = capsys.readouterr().out
-    assert "not admissible" in output or "capacity" in output
+    reason = json.loads(output)["reason"]
+    assert reason.startswith(
+        "explicit --orchestrator-model 'mistral/codestral-latest' is not admissible: "
+        "pay-per-token routes are not eligible for planning"
+    )
+    assert "capacity=metered" in reason
 
 
 @pytest.mark.parametrize("probe_ok", [True, False])

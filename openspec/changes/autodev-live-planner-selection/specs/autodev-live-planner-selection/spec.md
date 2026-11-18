@@ -42,26 +42,18 @@ The `claude` and `codex` credential pools SHALL NOT be excluded from planner or 
 - **WHEN** `Decomposer.decompose` is called with a `cc/*` model in `planner_models` or `model`
 - **THEN** it proceeds normally (no refusal)
 
-## MODIFIED Requirements
+#### Scenario: Pay-per-token stays excluded
+- **WHEN** the only admitted routes are metered (pay-per-token)
+- **THEN** autodev fails closed with a named "no paid or frontier fallback" error and sends nothing
 
-### Requirement: DEFAULT_ORCHESTRATOR_MODEL is removed
+### Requirement: The planner model SHALL have no fixed default
 
-The constant `DEFAULT_ORCHESTRATOR_MODEL = "mistral/codestral-latest"` in `verdict/decomposer.py` SHALL be removed. `DecompositionConfig.model` SHALL have no default (or default to `None`), requiring an explicit model from either the ladder selection or `--orchestrator-model`.
+The planner configuration SHALL carry no built-in default model. A plan is requested only with a model chosen by the live eligibility ladder or given by an admitted `--orchestrator-model`. With neither, planning SHALL fail closed with a named error before any request is sent. The former fixed default `mistral/codestral-latest` (a pay-per-token route) SHALL NOT be used.
 
-#### Scenario: DecompositionConfig model has no default
-- **WHEN** `DecompositionConfig()` is instantiated without a `model` argument
-- **THEN** `config.model` is `None` (no default paid route)
+#### Scenario: Planner configured without a model
+- **WHEN** a plan is requested with no planner model configured
+- **THEN** planning fails with a named "no planner model configured" error and no request is sent
 
-## REMOVED Requirements
-
-### Requirement: BOD-342 D22 exclusion of cc/* and cx/* routes
-
-The exclusion of `cc/*` and `cx/*` routes from planning and execution (BOD-342 D22) SHALL be removed per operator ruling 2026-11-17 (Linear BOD-342). The `_PLANNER_EXCLUDED_POOLS` constant and all its uses SHALL be removed. The `cc/*` planner refusal in `Decomposer.decompose` SHALL be removed.
-
-#### Scenario: _PLANNER_EXCLUDED_POOLS constant is removed
-- **WHEN** `verdict/autodev_run.py` is imported
-- **THEN** `_PLANNER_EXCLUDED_POOLS` is not defined
-
-#### Scenario: Decomposer no longer refuses cc/* planner
-- **WHEN** `Decomposer.decompose` is called with a `cc/*` model
-- **THEN** no `DecompositionError` about cc/* exclusion is raised
+#### Scenario: Pinned executor path plans on the live ladder
+- **WHEN** `verdict autodev --allow-live --executor-model <provider/model:free>` runs with no execution-path decision
+- **THEN** the planner routes come from the live eligibility ladder, chosen before the executor probe, and an empty ladder fails closed before any probe is sent

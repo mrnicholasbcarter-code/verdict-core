@@ -20,8 +20,7 @@
 
 ### Modified Capabilities
 
-- `autodev-planner-default` (replaced): the old fixed subscription default `cc/claude-sonnet-5-5` is replaced by live ladder selection.
-- Subscription pools (`claude`, `codex`) are now admitted for planning and execution.
+None. No capability in `openspec/specs` on main covers the autodev planner, so every requirement is ADDED under `autodev-live-planner-selection` (including the no-fixed-default rule and the admission of the `claude`/`codex` pools). The unmerged `autodev-planner-default` draft (fixed `cc/claude-sonnet-5-5` default) is dropped, not modified.
 
 ## Impact
 
