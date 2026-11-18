@@ -29,6 +29,12 @@ class RehearsalConfigurationError(ValueError):
     """Fixed, credential-free configuration messages that may be printed."""
 
 
+# Bounded preflight configuration: strictly FREE, small explicit bounds.
+PREFLIGHT_MAX_PER_PROVIDER = 2
+PREFLIGHT_MAX_ROUTES = 4
+PREFLIGHT_WALL_SECONDS = 600  # 10 minutes
+
+
 def _connections_snapshot(root: Path) -> Path:
     raw = os.environ.get("VERDICT_CERT_CONNECTIONS", "")
     if not raw.strip():
@@ -51,6 +57,72 @@ def _connections_snapshot(root: Path) -> Path:
     return path
 
 
+def _run_preflight(root: Path, env: dict[str, str]) -> dict:
+    """Run a bounded FREE-only identify screen to produce fresh agentic proof.
+
+    Returns the screen report dict on success. Raises RehearsalConfigurationError
+    if the preflight qualifies no FREE routes (fail-closed).
+    """
+    verdict_home = env.get("VERDICT_HOME")
+    if not verdict_home:
+        raise RehearsalConfigurationError("VERDICT_HOME not set for preflight")
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "verdict",
+        "identify",
+        "--screen",
+        "--allow-live-probe",
+        "--capacity",
+        "free",
+        "--max-per-provider",
+        str(PREFLIGHT_MAX_PER_PROVIDER),
+        "--max-routes",
+        str(PREFLIGHT_MAX_ROUTES),
+        "--json",
+    ]
+
+    # Use the same VERDICT_HOME and env as orchestrate
+    preflight_env = env.copy()
+    preflight_env["VERDICT_HOME"] = verdict_home
+
+    result = subprocess.run(
+        cmd,
+        env=preflight_env,
+        capture_output=True,
+        timeout=PREFLIGHT_WALL_SECONDS + 30,  # allow some overhead
+    )
+
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RehearsalConfigurationError(
+            f"Preflight identify screen failed (exit {result.returncode}): {stderr}"
+        )
+
+    try:
+        report = json.loads(result.stdout.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RehearsalConfigurationError(f"Preflight screen produced invalid JSON: {exc}") from exc
+
+    # Verify the screen produced genuine agentic qualification for FREE routes
+    routes_checked = report.get("routes_checked", 0)
+    passed = report.get("passed", 0)
+    agentic_probed = report.get("agentic_probed", 0)
+    agentic_passed = report.get("agentic_passed", 0)
+
+    # Fail-closed: no FREE route qualified as an implementation worker
+    if routes_checked == 0 or passed == 0 or agentic_probed == 0 or agentic_passed == 0:
+        raise RehearsalConfigurationError(
+            "Preflight screen produced no qualified FREE routes: "
+            f"checked={routes_checked}, passed={passed}, "
+            f"agentic_probed={agentic_probed}, agentic_passed={agentic_passed}. "
+            "Rehearsal cannot proceed without fresh agentic proof."
+        )
+
+    return report
+
+
 def run() -> None:
     root = Path(os.environ["RUNNER_TEMP"])
     snapshot_path = _connections_snapshot(root)
@@ -64,6 +136,14 @@ def run() -> None:
     env.pop("VERDICT_CERT_CONNECTIONS", None)
     env["VERDICT_CONNECTIONS_SNAPSHOT"] = str(snapshot_path)
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env["PATH"]
+    # Set VERDICT_HOME for the preflight and orchestrate to share the health cache
+    verdict_home = root / "verdict-certification"
+    env["VERDICT_HOME"] = str(verdict_home)
+
+    # Bounded FREE-only preflight: produce genuine fresh agentic proof
+    # before attempting orchestration. Fail-closed if no route qualifies.
+    _run_preflight(root, env)
+
     for name, goal in GOALS.items():
         fixture = root / f"fixture-{name}"
         fixture.mkdir(exist_ok=False)
