@@ -1090,3 +1090,114 @@ def completion_verdict(receipt: Mapping[str, Any]) -> tuple[str, str]:
         RunOutcome.COMPLETE.value,
         "all implement/integrate nodes validated, barrier ok, review PASS",
     )
+
+
+def compute_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Compute efficiency metrics from a verified receipt.
+
+    Returns a dict with:
+    - accepted_tasks: int (implement/integrate nodes with VALIDATED final_state, integration ok, review PASS)
+    - dollars: float | None (sum of cost_usd across all model attempts; None if any cost unknown)
+    - has_unknown_cost: bool (True if any model attempt has missing or null cost_usd)
+    - tasks_per_dollar: float | str (accepted_tasks / dollars if defined, else "undefined")
+    - free_share: float (fraction of model attempts with capacity_class=free)
+    - subscription_share: float (fraction of model attempts with capacity_class=subscription)
+    - metered_share: float (fraction of model attempts with capacity_class=metered)
+    - unknown_capacity_share: float (fraction of model attempts with capacity_class=unknown or missing)
+    - total_model_attempts: int (denominator for share calculations)
+    - run_id: str
+    - outcome: str (COMPLETE, BLOCKED, etc.)
+    """
+    from verdict.orchestration.contracts import NodeKind, NodeState
+
+    # 1. Accepted tasks: implement/integrate nodes that are VALIDATED, with integration ok and review PASS
+    gated = {NodeKind.IMPLEMENT.value, NodeKind.INTEGRATE.value}
+    work_nodes = [n for n in receipt.get("nodes") or [] if n.get("kind") in gated]
+
+    integration = receipt.get("integration") or {}
+    review = receipt.get("review") or {}
+    integration_ok = integration.get("ok") is True
+    review_pass = review.get("status") == "PASS" and review.get("blocking", 0) == 0
+
+    accepted_tasks = 0
+    if integration_ok and review_pass:
+        for node in work_nodes:
+            if node.get("final_state") == NodeState.VALIDATED.value:
+                accepted_tasks += 1
+
+    # 2. Dollars and cost tracking across all model attempts
+    total_cost = 0.0
+    has_unknown_cost = False
+    total_model_attempts = 0
+    free_attempts = 0
+    subscription_attempts = 0
+    metered_attempts = 0
+    unknown_capacity_attempts = 0
+
+    for node in receipt.get("nodes") or []:
+        for attempt in node.get("attempts") or []:
+            # Count as model attempt if it has a route_id and is not local/mechanical
+            route_id = str(attempt.get("route_id") or "")
+            if (
+                not route_id
+                or route_id.startswith("local/")
+                or attempt.get("route_identity") == "mechanical"
+            ):
+                continue
+            total_model_attempts += 1
+
+            capacity = str(attempt.get("capacity_class") or "unknown").lower()
+            if capacity == "free":
+                free_attempts += 1
+            elif capacity == "subscription":
+                subscription_attempts += 1
+            elif capacity == "metered":
+                metered_attempts += 1
+            else:
+                unknown_capacity_attempts += 1
+
+            usage = attempt.get("usage")
+            if isinstance(usage, Mapping):
+                cost = usage.get("cost_usd")
+                if cost is None:
+                    has_unknown_cost = True
+                elif isinstance(cost, int | float):
+                    total_cost += float(cost)
+                else:
+                    has_unknown_cost = True
+            else:
+                has_unknown_cost = True
+
+    dollars: float | None = None if has_unknown_cost else total_cost
+
+    # 3. Tasks per dollar
+    if dollars is not None and dollars > 0:
+        tasks_per_dollar: float | str = accepted_tasks / dollars
+    else:
+        tasks_per_dollar = "undefined"
+
+    # 4. Free share and other capacity shares
+    if total_model_attempts > 0:
+        free_share = free_attempts / total_model_attempts
+        subscription_share = subscription_attempts / total_model_attempts
+        metered_share = metered_attempts / total_model_attempts
+        unknown_capacity_share = unknown_capacity_attempts / total_model_attempts
+    else:
+        free_share = 0.0
+        subscription_share = 0.0
+        metered_share = 0.0
+        unknown_capacity_share = 0.0
+
+    return {
+        "accepted_tasks": accepted_tasks,
+        "dollars": dollars,
+        "has_unknown_cost": has_unknown_cost,
+        "tasks_per_dollar": tasks_per_dollar,
+        "free_share": free_share,
+        "subscription_share": subscription_share,
+        "metered_share": metered_share,
+        "unknown_capacity_share": unknown_capacity_share,
+        "total_model_attempts": total_model_attempts,
+        "run_id": str(receipt.get("run_id") or ""),
+        "outcome": str(receipt.get("outcome") or ""),
+    }
