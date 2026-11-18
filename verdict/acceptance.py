@@ -280,14 +280,28 @@ def judge_doctor(code: int, out: str, err: str) -> tuple[bool, str, dict[str, An
 
 
 def judge_choose(code: int, out: str, err: str) -> tuple[bool, str, dict[str, Any]]:
-    payload = _json(out)
-    if code != 0 or not isinstance(payload, dict):
-        first = err.strip().splitlines()[-1] if err.strip() else ""
+    # Only exit 0 with a valid `selected` passes; nonzero exit always fails.
+    if code != 0:
+        payload = _json(out)
+        if isinstance(payload, dict):
+            reason = payload.get("reason") or payload.get("error") or "unknown"
+            return False, f"not implemented: exit {code} {reason}", {}
+        # Payload is not a dict: fall back to stderr (skip outcome history lines)
+        first = ""
+        for line in reversed(err.strip().splitlines()):
+            if not line.startswith("outcome history:"):
+                first = line
+                break
+        if not first and err.strip():
+            first = err.strip().splitlines()[-1]
         return False, f"not implemented: exit {code} {redact_text(first)[:160]}".strip(), {}
-    selected = payload.get("selected")
-    if not selected:
-        return False, f"no route selected: {payload.get('reason', 'unknown')}", {}
-    return True, "route selected", {"selected": selected}
+    # Exit 0: payload must contain `selected` to pass.
+    payload = _json(out)
+    if isinstance(payload, dict):
+        selected = payload.get("selected")
+        if selected:
+            return True, "route selected", {"selected": selected}
+    return False, "not implemented: exit 0 no route selected", {}
 
 
 _INVALID_ROUTE_NAMES = frozenset(

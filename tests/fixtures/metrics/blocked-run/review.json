@@ -1,0 +1,7 @@
+{
+  "status": "FAIL",
+  "reviewer": "ocr",
+  "route_id": "free/reviewer",
+  "blocking": 1,
+  "findings": [{"severity": "critical", "message": "Test failure"}]
+}

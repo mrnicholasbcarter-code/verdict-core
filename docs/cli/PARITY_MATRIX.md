@@ -30,6 +30,7 @@
 | `mcp` | `mcp.init` | Configuration | mutation | ✅ action |
 | `memory` | `memory.put` | Memory | mutation | ✅ action |
 | `metadata` | `metadata.show` | Models | read | ✅ action |
+| `metrics` | `metrics` | Metrics | read | ✅ action |
 | `models` | `models.list` | Models | read | ✅ action |
 | `openspec` | `openspec.admit` | Configuration | mutation | ✅ action |
 | `orchestrate` | — | Orchestration | launch | 🚀 launch: _orchestrate (run_golden_path): plans a WorkGraph, dispatches parallel workers, and writes a signed receipt over minutes to hours; long-running interactive TUI |
@@ -56,5 +57,5 @@
 | `uninstall` | — | — | — | 🔧 machine-only: cmd_uninstall (uninstall_memory_bridge): removes memory bridge hooks, MCP registrations, and optionally purges the .verdict data directory globally; destructive global uninstall |
 | `watch` | — | Orchestration | launch | 🚀 launch: _watch (tui.follow): live-follows a running orchestration's events.jsonl and renders the TUI until the run terminates; long-running interactive view |
 
-**Summary:** 41 actions, 8 launch, 2 machine-only, 0 gaps
+**Summary:** 42 actions, 8 launch, 2 machine-only, 0 gaps
 

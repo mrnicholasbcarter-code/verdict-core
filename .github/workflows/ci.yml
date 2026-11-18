@@ -186,6 +186,8 @@ jobs:
           fi
       - name: Definition of done (docs/proof/dod evidence; AGENTS.md)
         run: python scripts/check_dod.py --all
+      - name: Claim inventory (every README claim labeled and evidenced)
+        run: python scripts/check_claims.py
       - name: Proof paths change only with a Proof trailer and a valid receipt
         if: steps.base.outputs.sha != ''
         env:

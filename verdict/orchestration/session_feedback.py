@@ -36,6 +36,7 @@ _CACHE_CATEGORIES = {
     "upstream_temporary": "upstream",
     "transport_temporary": "upstream",
     "timeout": "timeout",
+    "stalled": "timeout",
     "empty_output": "empty_output",
     "no_final_answer": "no_final_answer",
     "malformed_response": "malformed_response",

@@ -110,7 +110,9 @@ def test_wrapper_defaults_refuse_redirect(caller: str, tmp_path: Path) -> None:
             assert attempt.outcome == "error"
             message = attempt.reason
         else:
-            decomposer = Decomposer(DecompositionConfig(base_url=source, api_key=key))
+            decomposer = Decomposer(
+                DecompositionConfig(model="fixture/model", base_url=source, api_key=key)
+            )
             with pytest.raises(DecompositionError) as raised:
                 decomposer.decompose("fixture task", repo_root=tmp_path)
             message = str(raised.value)

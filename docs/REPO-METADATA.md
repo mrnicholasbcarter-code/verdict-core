@@ -10,7 +10,7 @@ Current (to replace): "Fail-closed LLM routing..."
 
 New:
 
-> Control plane for AI coding work: model admission, bounded recovery, a separate review route and verifiable run receipts.
+> Control plane for AI coding work: model admission, bounded recovery, a separate review route and verifiable run receipts. <!-- claim:C-071 -->
 
 Website: leave empty until a docs site exists.
 
@@ -27,7 +27,7 @@ Remove if present:
 
 Reason: Verdict is a control plane for coding work (plan, admit, run, recover, review,
 receipt). It is not an LLM gateway, and no cost saving is claimed
-([`docs/benchmarks/README.md`](benchmarks/README.md)).
+([`docs/benchmarks/README.md`](benchmarks/README.md)). <!-- claim:C-072 -->
 
 ## Social preview
 

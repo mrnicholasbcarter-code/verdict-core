@@ -1,0 +1,3284 @@
+n
+Manual model refresh plan (not executed)
+consumer=verified_view  gateway_origin=http://127.0.0.1:20128
+candidate_count=4  selected_count=4  omitted_count=0
+caps: max_routes=20  max_requests=40  wall_seconds=120.0  concurrency=4
+estimated_requests=8
+requires_confirmation=yes  force=no  include_metered=yes
+filters: none  page=1
+needed_ids (50):
+  claude/claude-opus-4-8
+  claude/claude-sonnet-5
+  claude/claude-opus-5
+  cc/claude-opus-4-8
+  cc/claude-sonnet-5
+  cc/claude-opus-5
+  pollinations/community/YoannDev90/nvidia-mistral-large-4-1t-a52b:free
+  pollinations/community/CloudCompile/nvidia-nemotron-3-ultra-550b-a55b:free
+  openrouter/inclusionai/ling-3.2-flash:free
+  cc/claude-sonnet-5-5
+  claude/claude-sonnet-5-5
+  claude/claude-sonnet-4-5-20250929
+  claude/claude-sonnet-4-6
+  cc/claude-sonnet-4-6
+  cc/claude-sonnet-4-5-20250929
+  antigravity/gemini-3.8-flash-high
+  antigravity/gemini-3.8-flash-low
+  antigravity/gemini-3.8-flash-medium
+  antigravity/gemini-3.8-flash-tiered
+  claude/claude-opus-4-5-20251101
+  github/claude-opus-4.8
+  amazon-q/amazon-q
+  aq/amazon-q
+  cc/claude-opus-4-5-20251101
+  gh/claude-opus-4.8
+  openrouter/google/lyria-3-pro-preview
+  openrouter/google/lyria-3-clip-preview
+  af/claude-fable-5
+  af/deepseek-v4-flash-0731
+  af/gemini-3.5-flash
+  af/gemini-3.6-flash
+  af/gpt-5.4
+  af/gpt-5.6-luna
+  af/gpt-5.6-sol
+  af/gpt-5.6-terra
+  af/hy3-preview
+  af/kimi-k2.7-code
+  af/kimi-k3
+  af/mimo-v2.5
+  af/mimo-v2.5-pro
+  af/muse-spark-1.1
+  af/muse-spark-1.3
+  agy/claude-opus-4-6-thinking
+  agy/claude-sonnet-4-6
+  agy/gemini-3-flash
+  agy/gemini-3.1-flash-lite
+  agy/gemini-3.5-flash-lite
+  agy/gemini-3.6-flash-low
+  agy/gemini-3.8-flash-high
+  agy/gemini-3.8-flash-low
+Selected routes (4):
+  1. antigravity/gemini-3.8-flash-high  provider=antigravity  capacity_class=free  probe_kind=full
+  2. antigravity/gemini-3.8-flash-low  provider=antigravity  capacity_class=free  probe_kind=full
+  3. antigravity/gemini-3.8-flash-medium  provider=antigravity  capacity_class=free  probe_kind=full
+  4. antigravity/gemini-3.8-flash-tiered  provider=antigravity  capacity_class=free  probe_kind=full
+Spend note: SUBSCRIPTION and METERED probes may consume quota; FREE can also have provider limits; UNKNOWN may incur charges; currency estimate unavailable
+created_at=2026-11-17T20:51:36.868852Z  valid_until=2026-11-17T20:53:36.868852Z
+evidence_generation=76c29a3368c21919b9d2c9ab313b911d9b63d636383cc3373cb0bbd586e4ca64
+plan_digest=8372167cea0ae9ad8c13d713fc678e60df4bfe05250cc6f7762956af24136bc0
+This is a plan, not a probe result. Explicit confirmation is required before execution.
+
+Capacity groups (each is approved separately):
+  FREE: 4 routes, 8 requests, provider limits may apply (default yes)
+Refresh these groups? y = confirm each group, f = free only [y/N] 
+{
+  "counts_by_status": {
+    "EXCLUDED": 0,
+    "FAILED": 8,
+    "INVENTORY_ONLY": 54,
+    "STALE": 4,
+    "UNAVAILABLE": 2103,
+    "UNVERIFIED": 2127,
+    "VERIFIED": 15
+  },
+  "filtered_count": 4311,
+  "filtered_counts_by_status": {
+    "EXCLUDED": 0,
+    "FAILED": 8,
+    "INVENTORY_ONLY": 54,
+    "STALE": 4,
+    "UNAVAILABLE": 2103,
+    "UNVERIFIED": 2127,
+    "VERIFIED": 15
+  },
+  "filters": {
+    "provider": null,
+    "search": null,
+    "status": null
+  },
+  "generated_at": "2026-11-17T20:51:36.869579Z",
+  "page": 1,
+  "page_count": 87,
+  "page_size": 50,
+  "refresh": {
+    "last_known": true,
+    "outcome": "not_confirmed",
+    "requests_made": 0
+  },
+  "rows": [
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": false,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T20:44:35.151949Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-18T03:04:35.151949Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-18T02:44:35.151949Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T20:44:35.151949Z",
+      "latency_ms": 3064.214617246762,
+      "price": 30.0,
+      "probe_class": "single_call",
+      "provider": "claude",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh"
+      ],
+      "route_id": "claude/claude-opus-4-8",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": false,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T20:44:35.151949Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-18T03:04:35.151949Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-18T02:44:35.151949Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T20:44:35.151949Z",
+      "latency_ms": 5128.295727772638,
+      "price": 12.0,
+      "probe_class": "single_call",
+      "provider": "claude",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh"
+      ],
+      "route_id": "claude/claude-sonnet-5",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": false,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T20:44:35.151949Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-18T03:04:35.151949Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-18T02:44:35.151949Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T20:44:35.151949Z",
+      "latency_ms": 5723.603574093431,
+      "price": 30.0,
+      "probe_class": "single_call",
+      "provider": "claude",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh"
+      ],
+      "route_id": "claude/claude-opus-5",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": "2026-11-17T12:19:11.104700Z",
+      "agentic_ok": true,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T20:42:05.855452Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-18T03:02:05.855452Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-18T02:42:05.855452Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T20:42:05.855452Z",
+      "latency_ms": 2434.810741106048,
+      "price": 30.0,
+      "probe_class": "agentic",
+      "provider": "claude",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": null,
+      "restrictions": [],
+      "route_id": "cc/claude-opus-4-8",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": "2026-11-17T12:01:15.364635Z",
+      "agentic_ok": true,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T20:42:05.855452Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-18T03:02:05.855452Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-18T02:42:05.855452Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T20:42:05.855452Z",
+      "latency_ms": 4248.78510623239,
+      "price": 12.0,
+      "probe_class": "agentic",
+      "provider": "claude",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": null,
+      "restrictions": [],
+      "route_id": "cc/claude-sonnet-5",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": false,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T20:42:05.855452Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-18T03:02:05.855452Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-18T02:42:05.855452Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T20:42:05.855452Z",
+      "latency_ms": 6996.026534121484,
+      "price": 30.0,
+      "probe_class": "single_call",
+      "provider": "claude",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh"
+      ],
+      "route_id": "cc/claude-opus-5",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": "2026-11-17T18:27:38.475203Z",
+      "agentic_ok": true,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2012.377579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:04.492000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "pollinations",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "3dedb0eecede",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 128000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": "2026-11-17T18:27:38.475203Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-18T00:47:38.475203Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-18T00:27:38.475203Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T18:27:38.475203Z",
+      "latency_ms": 26673.806096892804,
+      "price": null,
+      "probe_class": "agentic",
+      "provider": "pollinations",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": null,
+      "restrictions": [],
+      "route_id": "pollinations/community/YoannDev90/nvidia-mistral-large-4-1t-a52b:free",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": "2026-11-17T18:27:19.431492Z",
+      "agentic_ok": true,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2012.377579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:04.492000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "pollinations",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "3dedb0eecede",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 128000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": "2026-11-17T18:27:19.431492Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-18T00:47:19.431492Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-18T00:27:19.431492Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T18:27:19.431492Z",
+      "latency_ms": 18213.58755300753,
+      "price": null,
+      "probe_class": "agentic",
+      "provider": "pollinations",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": null,
+      "restrictions": [],
+      "route_id": "pollinations/community/CloudCompile/nvidia-nemotron-3-ultra-550b-a55b:free",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": "2026-11-17T18:05:45.307093Z",
+      "agentic_ok": true,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 556.647579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:20.222000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "openrouter",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "2835ac341c0e",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 556.646579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:20.223000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "openrouter",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "06388b1ca6e7",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": "2026-11-17T18:05:45.307093Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-18T00:25:45.307093Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-18T00:05:45.307093Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T18:05:45.307093Z",
+      "latency_ms": 12877.630179049447,
+      "price": 0.0,
+      "probe_class": "agentic",
+      "provider": "openrouter",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": null,
+      "restrictions": [],
+      "route_id": "openrouter/inclusionai/ling-3.2-flash:free",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": "2026-11-17T06:03:10.679956Z",
+      "agentic_ok": true,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:16:52.000412Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-17T21:36:52.000412Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-17T21:16:52.000412Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T15:16:52.000412Z",
+      "latency_ms": 1842.4608712084591,
+      "price": 12.0,
+      "probe_class": "agentic",
+      "provider": "claude",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": null,
+      "restrictions": [],
+      "route_id": "cc/claude-sonnet-5-5",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": false,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:16:03.498676Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-17T21:36:03.498676Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-17T21:16:03.498676Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T15:16:03.498676Z",
+      "latency_ms": 1823.8183741923422,
+      "price": 12.0,
+      "probe_class": "single_call",
+      "provider": "claude",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh"
+      ],
+      "route_id": "claude/claude-sonnet-5-5",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": "2026-11-15T10:54:33.915738Z",
+      "agentic_ok": true,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 200000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:16:03.498676Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-17T21:36:03.498676Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-17T21:16:03.498676Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T15:16:03.498676Z",
+      "latency_ms": 1925.6560700014234,
+      "price": 18.0,
+      "probe_class": "agentic",
+      "provider": "claude",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh"
+      ],
+      "route_id": "claude/claude-sonnet-4-5-20250929",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": "2026-11-15T10:40:26.521983Z",
+      "agentic_ok": true,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:16:03.498676Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-17T21:36:03.498676Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-17T21:16:03.498676Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T15:16:03.498676Z",
+      "latency_ms": 2038.4895652532578,
+      "price": 18.0,
+      "probe_class": "agentic",
+      "provider": "claude",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh"
+      ],
+      "route_id": "claude/claude-sonnet-4-6",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": false,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:09:16.286949Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-17T21:29:16.286949Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-17T21:09:16.286949Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T15:09:16.286949Z",
+      "latency_ms": 1860.7586331199855,
+      "price": 18.0,
+      "probe_class": "single_call",
+      "provider": "claude",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh"
+      ],
+      "route_id": "cc/claude-sonnet-4-6",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": false,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 200000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:09:16.286949Z",
+      "coding_ok": true,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-17T21:29:16.286949Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-17T21:09:16.286949Z",
+      "freshness": "fresh",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-17T15:09:16.286949Z",
+      "latency_ms": 2294.020120985806,
+      "price": 18.0,
+      "probe_class": "single_call",
+      "provider": "claude",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": false,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh"
+      ],
+      "route_id": "cc/claude-sonnet-4-5-20250929",
+      "status": "VERIFIED"
+    },
+    {
+      "agentic_checked_at": "2026-11-15T10:54:51.936610Z",
+      "agentic_ok": true,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 766.794579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:38:50.075000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "antigravity",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "57010df406ca",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 569.836579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:07.033000+00:00",
+          "observed_cooldown_until": "2026-11-17T20:18:36.600000+00:00",
+          "provider": "antigravity",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "a9e26f80f468",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": "2026-11-15T18:07:50.837506Z",
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-16T00:27:50.837506Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-16T00:07:50.837506Z",
+      "freshness": "expired",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-15T18:07:50.837506Z",
+      "latency_ms": 12951.238781912252,
+      "price": 4.5,
+      "probe_class": "agentic",
+      "provider": "antigravity",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": true,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh",
+        "stale_expired"
+      ],
+      "route_id": "antigravity/gemini-3.8-flash-high",
+      "status": "STALE"
+    },
+    {
+      "agentic_checked_at": "2026-11-15T10:41:13.650573Z",
+      "agentic_ok": true,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 766.794579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:38:50.075000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "antigravity",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "57010df406ca",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 569.836579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:07.033000+00:00",
+          "observed_cooldown_until": "2026-11-17T20:18:36.600000+00:00",
+          "provider": "antigravity",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "a9e26f80f468",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": "2026-11-15T16:41:49.343473Z",
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-15T23:01:49.343473Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-15T22:41:49.343473Z",
+      "freshness": "expired",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-15T16:41:49.343473Z",
+      "latency_ms": 4251.192528987303,
+      "price": 4.5,
+      "probe_class": "agentic",
+      "provider": "antigravity",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": true,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh",
+        "stale_expired"
+      ],
+      "route_id": "antigravity/gemini-3.8-flash-low",
+      "status": "STALE"
+    },
+    {
+      "agentic_checked_at": "2026-11-15T10:40:44.529351Z",
+      "agentic_ok": true,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 766.794579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:38:50.075000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "antigravity",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "57010df406ca",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 569.836579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:07.033000+00:00",
+          "observed_cooldown_until": "2026-11-17T20:18:36.600000+00:00",
+          "provider": "antigravity",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "a9e26f80f468",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": "2026-11-15T16:41:49.343473Z",
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-15T23:01:49.343473Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-15T22:41:49.343473Z",
+      "freshness": "expired",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-15T16:41:49.343473Z",
+      "latency_ms": 14199.027863913216,
+      "price": 4.5,
+      "probe_class": "agentic",
+      "provider": "antigravity",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": true,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh",
+        "stale_expired"
+      ],
+      "route_id": "antigravity/gemini-3.8-flash-medium",
+      "status": "STALE"
+    },
+    {
+      "agentic_checked_at": "2026-11-15T08:54:15.820562Z",
+      "agentic_ok": true,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 766.794579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:38:50.075000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "antigravity",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "57010df406ca",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 569.836579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:07.033000+00:00",
+          "observed_cooldown_until": "2026-11-17T20:18:36.600000+00:00",
+          "provider": "antigravity",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "a9e26f80f468",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": "2026-11-15T15:21:03.876277Z",
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-15T21:41:03.876277Z",
+      "failure_category": null,
+      "fresh_until": "2026-11-15T21:21:03.876277Z",
+      "freshness": "expired",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 200,
+      "identity": "verified",
+      "last_success_at": "2026-11-15T15:21:03.876277Z",
+      "latency_ms": 14683.745989925228,
+      "price": 4.5,
+      "probe_class": "agentic",
+      "provider": "antigravity",
+      "reason": null,
+      "refresh_reason": null,
+      "refreshable": true,
+      "restriction": "agentic_not_fresh",
+      "restrictions": [
+        "agentic_not_fresh",
+        "stale_expired"
+      ],
+      "route_id": "antigravity/gemini-3.8-flash-tiered",
+      "status": "STALE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 200000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T20:44:35.151949Z",
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": "2026-11-17T20:52:35.151949Z",
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-17T20:52:35.151949Z",
+      "failure_category": "http_error",
+      "fresh_until": null,
+      "freshness": "negative",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 400,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 30.0,
+      "probe_class": null,
+      "provider": "claude",
+      "reason": "http_error",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "route_negative",
+      "restrictions": [
+        "route_negative"
+      ],
+      "route_id": "claude/claude-opus-4-5-20251101",
+      "status": "FAILED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 26.291579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:51:10.578000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "github",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "bee4ab36085e",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 200000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T20:44:35.151949Z",
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": "2026-11-17T20:59:35.151949Z",
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-17T20:59:35.151949Z",
+      "failure_category": "http_error",
+      "fresh_until": null,
+      "freshness": "negative",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 400,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 30.0,
+      "probe_class": null,
+      "provider": "github",
+      "reason": "http_error",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "route_negative",
+      "restrictions": [
+        "route_negative"
+      ],
+      "route_id": "github/claude-opus-4.8",
+      "status": "FAILED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2016.459579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:00.410000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "amazon-q",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "f5779bd6cfb9",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 128000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T20:42:05.855452Z",
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": "2026-11-17T20:57:05.855452Z",
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-17T20:57:05.855452Z",
+      "failure_category": "http_error",
+      "fresh_until": null,
+      "freshness": "negative",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 400,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "amazon-q",
+      "reason": "http_error",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "route_negative",
+      "restrictions": [
+        "route_negative"
+      ],
+      "route_id": "amazon-q/amazon-q",
+      "status": "FAILED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2016.459579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:00.410000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "amazon-q",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "f5779bd6cfb9",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 128000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T20:42:05.855452Z",
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": "2026-11-17T20:57:05.855452Z",
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-17T20:57:05.855452Z",
+      "failure_category": "http_error",
+      "fresh_until": null,
+      "freshness": "negative",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 400,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "amazon-q",
+      "reason": "http_error",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "route_negative",
+      "restrictions": [
+        "route_negative"
+      ],
+      "route_id": "aq/amazon-q",
+      "status": "FAILED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2013.563579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:03.306000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "claude",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "8ec80a4d120d",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 200000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T20:42:05.855452Z",
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": "2026-11-17T20:57:05.855452Z",
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-17T20:57:05.855452Z",
+      "failure_category": "http_error",
+      "fresh_until": null,
+      "freshness": "negative",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 400,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 30.0,
+      "probe_class": null,
+      "provider": "claude",
+      "reason": "http_error",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "route_negative",
+      "restrictions": [
+        "route_negative"
+      ],
+      "route_id": "cc/claude-opus-4-5-20251101",
+      "status": "FAILED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 26.291579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:51:10.578000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "github",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "bee4ab36085e",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 200000,
+        "structured": true,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T20:42:05.855452Z",
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": "2026-11-17T20:57:05.855452Z",
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-17T20:57:05.855452Z",
+      "failure_category": "http_error",
+      "fresh_until": null,
+      "freshness": "negative",
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": 400,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 30.0,
+      "probe_class": null,
+      "provider": "github",
+      "reason": "http_error",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "route_negative",
+      "restrictions": [
+        "route_negative"
+      ],
+      "route_id": "gh/claude-opus-4.8",
+      "status": "FAILED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 556.647579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:20.222000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "openrouter",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "2835ac341c0e",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 556.646579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:20.223000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "openrouter",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "06388b1ca6e7",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": false,
+        "tools": false
+      },
+      "capacity_class": "free",
+      "checked_at": "2026-11-17T18:27:18.185349Z",
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": "2026-11-18T06:27:18.185349Z",
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-18T06:27:18.185349Z",
+      "failure_category": "not_found",
+      "fresh_until": null,
+      "freshness": "negative",
+      "hints": [],
+      "http_status": 404,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 0.0,
+      "probe_class": null,
+      "provider": "openrouter",
+      "reason": "not_found",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "route_negative",
+      "restrictions": [
+        "route_negative",
+        "tools_capability_unavailable"
+      ],
+      "route_id": "openrouter/google/lyria-3-pro-preview",
+      "status": "FAILED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 556.647579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:20.222000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "openrouter",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "2835ac341c0e",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 556.646579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:20.223000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "openrouter",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "06388b1ca6e7",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": false,
+        "tools": false
+      },
+      "capacity_class": "free",
+      "checked_at": "2026-11-17T18:27:17.379167Z",
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": "2026-11-18T18:27:17.379167Z",
+      "evidence_source": "health_cache",
+      "expires_at": "2026-11-18T18:27:17.379167Z",
+      "failure_category": "not_found",
+      "fresh_until": null,
+      "freshness": "negative",
+      "hints": [],
+      "http_status": 404,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 0.0,
+      "probe_class": null,
+      "provider": "openrouter",
+      "reason": "not_found",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "route_negative",
+      "restrictions": [
+        "route_negative",
+        "tools_capability_unavailable"
+      ],
+      "route_id": "openrouter/google/lyria-3-clip-preview",
+      "status": "FAILED"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/claude-fable-5",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/deepseek-v4-flash-0731",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 128000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/gemini-3.5-flash",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 128000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/gemini-3.6-flash",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 409600,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/gpt-5.4",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1050000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/gpt-5.6-luna",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1050000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/gpt-5.6-sol",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1050000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/gpt-5.6-terra",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 262144,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/hy3-preview",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 262144,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/kimi-k2.7-code",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/kimi-k3",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/mimo-v2.5",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/mimo-v2.5-pro",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 128000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/muse-spark-1.1",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 2011.405579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:05.464000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "704175a3df04",
+          "source": "omniroute:/api/providers"
+        },
+        {
+          "active": true,
+          "age_seconds": 2009.595579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:18:07.274000+00:00",
+          "observed_cooldown_until": null,
+          "provider": "api-airforce",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "671f5babf045",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 128000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "free",
+      "checked_at": null,
+      "coding_ok": false,
+      "cooldown_scope": null,
+      "cooldown_until": null,
+      "evidence_source": "admission",
+      "expires_at": null,
+      "failure_category": null,
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [
+        "receipt_admitted_hint"
+      ],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "api-airforce",
+      "reason": "cooldown:catalog_stale",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "entitlement_denied",
+      "restrictions": [
+        "entitlement_denied"
+      ],
+      "route_id": "af/muse-spark-1.3",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 562.339579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:14.530000+00:00",
+          "observed_cooldown_until": "2026-11-17T20:18:31.471000+00:00",
+          "provider": "agy",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "2db5333ed217",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:08:21.671647Z",
+      "coding_ok": false,
+      "cooldown_scope": "provider:agy",
+      "cooldown_until": "2026-11-17T21:08:21.671647Z",
+      "evidence_source": "health_cache",
+      "expires_at": null,
+      "failure_category": "permission",
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 30.0,
+      "probe_class": null,
+      "provider": "agy",
+      "reason": "permission",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "availability_blocked",
+      "restrictions": [
+        "availability_blocked"
+      ],
+      "route_id": "agy/claude-opus-4-6-thinking",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 562.339579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:14.530000+00:00",
+          "observed_cooldown_until": "2026-11-17T20:18:31.471000+00:00",
+          "provider": "agy",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "2db5333ed217",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:08:21.671647Z",
+      "coding_ok": false,
+      "cooldown_scope": "provider:agy",
+      "cooldown_until": "2026-11-17T21:08:21.671647Z",
+      "evidence_source": "health_cache",
+      "expires_at": null,
+      "failure_category": "permission",
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 18.0,
+      "probe_class": null,
+      "provider": "agy",
+      "reason": "permission",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "availability_blocked",
+      "restrictions": [
+        "availability_blocked"
+      ],
+      "route_id": "agy/claude-sonnet-4-6",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 562.339579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:14.530000+00:00",
+          "observed_cooldown_until": "2026-11-17T20:18:31.471000+00:00",
+          "provider": "agy",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "2db5333ed217",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:08:21.671647Z",
+      "coding_ok": false,
+      "cooldown_scope": "provider:agy",
+      "cooldown_until": "2026-11-17T21:08:21.671647Z",
+      "evidence_source": "health_cache",
+      "expires_at": null,
+      "failure_category": "permission",
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 3.5,
+      "probe_class": null,
+      "provider": "agy",
+      "reason": "permission",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "availability_blocked",
+      "restrictions": [
+        "availability_blocked"
+      ],
+      "route_id": "agy/gemini-3-flash",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 562.339579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:14.530000+00:00",
+          "observed_cooldown_until": "2026-11-17T20:18:31.471000+00:00",
+          "provider": "agy",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "2db5333ed217",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:08:21.671647Z",
+      "coding_ok": false,
+      "cooldown_scope": "provider:agy",
+      "cooldown_until": "2026-11-17T21:08:21.671647Z",
+      "evidence_source": "health_cache",
+      "expires_at": null,
+      "failure_category": "permission",
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 1.75,
+      "probe_class": null,
+      "provider": "agy",
+      "reason": "permission",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "availability_blocked",
+      "restrictions": [
+        "availability_blocked"
+      ],
+      "route_id": "agy/gemini-3.1-flash-lite",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 562.339579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:14.530000+00:00",
+          "observed_cooldown_until": "2026-11-17T20:18:31.471000+00:00",
+          "provider": "agy",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "2db5333ed217",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1000000,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:08:21.671647Z",
+      "coding_ok": false,
+      "cooldown_scope": "provider:agy",
+      "cooldown_until": "2026-11-17T21:08:21.671647Z",
+      "evidence_source": "health_cache",
+      "expires_at": null,
+      "failure_category": "permission",
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 2.8,
+      "probe_class": null,
+      "provider": "agy",
+      "reason": "permission",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "availability_blocked",
+      "restrictions": [
+        "availability_blocked"
+      ],
+      "route_id": "agy/gemini-3.5-flash-lite",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 562.339579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:14.530000+00:00",
+          "observed_cooldown_until": "2026-11-17T20:18:31.471000+00:00",
+          "provider": "agy",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "2db5333ed217",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:08:21.671647Z",
+      "coding_ok": false,
+      "cooldown_scope": "provider:agy",
+      "cooldown_until": "2026-11-17T21:08:21.671647Z",
+      "evidence_source": "health_cache",
+      "expires_at": null,
+      "failure_category": "permission",
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": null,
+      "probe_class": null,
+      "provider": "agy",
+      "reason": "permission",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "availability_blocked",
+      "restrictions": [
+        "availability_blocked"
+      ],
+      "route_id": "agy/gemini-3.6-flash-low",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 562.339579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:14.530000+00:00",
+          "observed_cooldown_until": "2026-11-17T20:18:31.471000+00:00",
+          "provider": "agy",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "2db5333ed217",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:08:21.671647Z",
+      "coding_ok": false,
+      "cooldown_scope": "provider:agy",
+      "cooldown_until": "2026-11-17T21:08:21.671647Z",
+      "evidence_source": "health_cache",
+      "expires_at": null,
+      "failure_category": "permission",
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 4.5,
+      "probe_class": null,
+      "provider": "agy",
+      "reason": "permission",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "availability_blocked",
+      "restrictions": [
+        "availability_blocked"
+      ],
+      "route_id": "agy/gemini-3.8-flash-high",
+      "status": "UNAVAILABLE"
+    },
+    {
+      "agentic_checked_at": null,
+      "agentic_ok": null,
+      "availability_evidence": [
+        {
+          "active": true,
+          "age_seconds": 562.339579,
+          "availability": "UNKNOWN",
+          "configured": true,
+          "error_category": null,
+          "observed_at": "2026-11-17T20:42:14.530000+00:00",
+          "observed_cooldown_until": "2026-11-17T20:18:31.471000+00:00",
+          "provider": "agy",
+          "quota_display": "UNKNOWN",
+          "quota_percent": null,
+          "quota_window": null,
+          "scope": "account",
+          "scope_id": "2db5333ed217",
+          "source": "omniroute:/api/providers"
+        }
+      ],
+      "capabilities": {
+        "context_window": 1048576,
+        "structured": null,
+        "tools": true
+      },
+      "capacity_class": "subscription",
+      "checked_at": "2026-11-17T15:08:21.671647Z",
+      "coding_ok": false,
+      "cooldown_scope": "provider:agy",
+      "cooldown_until": "2026-11-17T21:08:21.671647Z",
+      "evidence_source": "health_cache",
+      "expires_at": null,
+      "failure_category": "permission",
+      "fresh_until": null,
+      "freshness": null,
+      "hints": [],
+      "http_status": null,
+      "identity": null,
+      "last_success_at": null,
+      "latency_ms": null,
+      "price": 4.5,
+      "probe_class": null,
+      "provider": "agy",
+      "reason": "permission",
+      "refresh_reason": "blocked",
+      "refreshable": false,
+      "restriction": "availability_blocked",
+      "restrictions": [
+        "availability_blocked"
+      ],
+      "route_id": "agy/gemini-3.8-flash-low",
+      "status": "UNAVAILABLE"
+    }
+  ],
+  "schema": "verdict.verified-models/v1",
+  "source_errors": [
+    "health_cache[claude/cu/gemini-3.5-flash]: unknown category (value='upstream_temporary')",
+    "health_cache[claude/cu/gemini-3.8-flash]: unknown category (value='upstream_temporary')",
+    "health_cache[claude/cu/gemini-4-argon]: unknown category (value='upstream_temporary')",
+    "health_cache[claude/cu/gpt-5-mini]: unknown category (value='upstream_temporary')",
+    "health_cache[claude/cu/gpt-5.1]: unknown category (value='upstream_temporary')",
+    "health_cache[claude/cu/kimi-k2.7-code]: unknown category (value='upstream_temporary')",
+    "health_cache[claude/cursor/gemini-3.5-flash]: unknown category (value='upstream_temporary')",
+    "health_cache[claude/cursor/gemini-3.8-flash]: unknown category (value='upstream_temporary')",
+    "health_cache[claude/cursor/gemini-4-argon]: unknown category (value='upstream_temporary')",
+    "health_cache[claude/cursor/gpt-5-mini]: unknown category (value='upstream_temporary')",
+    "health_cache[claude/cursor/gpt-5.1]: unknown category (value='upstream_temporary')",
+    "health_cache[claude/cursor/kimi-k2.7-code]: unknown category (value='upstream_temporary')",
+    "health_cache[claude/gh/claude-opus-5]: unknown category (value='unsupported')",
+    "health_cache[claude/gh/claude-sonnet-5]: unknown category (value='unsupported')",
+    "health_cache[claude/gh/gemini-3.8-flash]: unknown category (value='unsupported')",
+    "health_cache[claude/gh/gpt-5.6-luna]: unknown category (value='unsupported')",
+    "health_cache[claude/gh/gpt-5.6-sol]: unknown category (value='unsupported')",
+    "health_cache[claude/gh/gpt-5.6-terra]: unknown category (value='unsupported')",
+    "health_cache[claude/gh/gpt-6-astra]: unknown category (value='unsupported')",
+    "health_cache[claude/gh/kimi-k3]: unknown category (value='unsupported')",
+    "health_cache[claude/github/claude-opus-5]: unknown category (value='unsupported')",
+    "health_cache[claude/github/claude-sonnet-5]: unknown category (value='unsupported')",
+    "health_cache[claude/github/gemini-3.8-flash]: unknown category (value='unsupported')",
+    "health_cache[claude/github/gpt-5.6-luna]: unknown category (value='unsupported')",
+    "health_cache[claude/github/gpt-5.6-sol]: unknown category (value='unsupported')",
+    "health_cache[claude/github/gpt-5.6-terra]: unknown category (value='unsupported')",
+    "health_cache[claude/github/gpt-6-astra]: unknown category (value='unsupported')",
+    "health_cache[claude/github/kimi-k3]: unknown category (value='unsupported')",
+    "health_cache[cxa/gpt-5.5]: unknown category (value='upstream_temporary')",
+    "health_cache[cxa/gpt-5.6-sol]: unknown category (value='upstream_temporary')",
+    "health_cache[cxa/gpt-5.6-terra]: unknown category (value='upstream_temporary')",
+    "health_cache[gh/claude-opus-5]: unknown category (value='unsupported')",
+    "health_cache[gh/claude-sonnet-5]: unknown category (value='unsupported')",
+    "health_cache[gh/gpt-5.6-sol]: unknown category (value='unsupported')",
+    "health_cache[gh/gpt-5.6-terra]: unknown category (value='unsupported')",
+    "health_cache[gh/gpt-6-astra]: unknown category (value='unsupported')",
+    "health_cache[gh/kimi-k3]: unknown category (value='unsupported')",
+    "health_cache[github/gpt-5.6-sol]: unknown category (value='unsupported')",
+    "health_cache[github/gpt-5.6-terra]: unknown category (value='unsupported')",
+    "health_cache[github/gpt-6-astra]: unknown category (value='unsupported')",
+    "health_cache[github/kimi-k3]: unknown category (value='unsupported')",
+    "health_cache[no-think/gh/claude-opus-5]: unknown category (value='unsupported')",
+    "health_cache[no-think/github/claude-opus-5]: unknown category (value='unsupported')"
+  ],
+  "total_count": 4311
+}
+completion snapshot incomplete; suggestions suppressed

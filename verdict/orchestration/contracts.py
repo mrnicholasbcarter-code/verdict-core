@@ -491,7 +491,7 @@ class FailureClassification:
     """Normalized failure and bounded corrective action."""
 
     category: str  # e.g. rate_limited, quota_exhausted, authentication, payment_required,
-    # permission, unsupported, timeout, upstream_temporary,
+    # permission, unsupported, timeout, stalled, upstream_temporary,
     # transport_temporary, malformed_response, empty_output,
     # no_final_answer, model_mismatch, verification_failed,
     # ownership_violation, unknown

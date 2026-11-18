@@ -123,3 +123,8 @@ contracts/*.tgz
 !docs/proof/live-controller-run/controller-g1.log
 !tests/fixtures/openjev/calibration/replay_sample.jsonl
 !tests/fixtures/cockpit_controls/events.jsonl
+# BOD-311 metrics fixtures: event logs bound to receipts by digest.
+!tests/fixtures/metrics/blocked-run/events.jsonl
+!tests/fixtures/metrics/complete-run/events.jsonl
+!tests/fixtures/metrics/tampered-run/events.jsonl
+!tests/fixtures/metrics/unknown-cost-run/events.jsonl

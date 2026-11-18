@@ -2,9 +2,9 @@
 
 # Verdict
 
-**A control plane for coding agents that shows its work.**
+**A control plane for coding agents that shows its work.** <!-- claim:C-001 -->
 
-Model admission, bounded recovery, a separate review route and receipts you can verify, around the coding agent you already use.
+Model admission, bounded recovery, a separate review route and receipts you can verify, around the coding agent you already use. <!-- claim:C-002 -->
 
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
@@ -67,12 +67,12 @@ an admission check cannot be ranked back in.
 
 ## Why Verdict
 
-- **Checks models before trusting them.** Verdict looks at live account, health and quota evidence before it uses a model, and records why it dropped any other.
-- **Uses eligible free and already-paid capacity first.** This is a selection policy, not a savings claim. The [retained live run](docs/proof/dogfood-bod-225-live-2026-09-29/README.md) used subscription workers, not free workers; free capacity still needs fresh admission evidence. See the [live run bundle](docs/proof/dogfood-bod-225-live-2026-09-29/README.md).
-- **Recovers on its own when a model fails.** A quota limit, rate limit, timeout or failed verification can retry the same work, sometimes on another admitted model, within a bounded number of tries.
-- **Gets a separate review route.** A reviewer on a route that did not implement the work must approve the result. Another model family is preferred; when none has capacity, review falls back to route-level independence ([runtime policy](verdict/orchestration/runtime.py), [review tests](tests/test_orch_runtime.py)).
-- **Hands you a receipt you can verify.** A completed run's receipt stores a digest of its event log; `verdict run-receipt` checks that log against the receipt and flags any change.
-- **Asks before risky actions.** A manual model refresh that could hit metered models shows you its plan and waits for your yes, and Prime Agent model selection previews the change, asks before editing `settings.json`, and keeps a backup you can restore.
+- **Checks models before trusting them.** Verdict looks at live account, health and quota evidence before it uses a model, and records why it dropped any other. <!-- claim:C-003 -->
+- **Uses eligible free and already-paid capacity first.** This is a selection policy, not a savings claim. The [retained live run](docs/proof/dogfood-bod-225-live-2026-09-29/README.md) used subscription workers, not free workers; free capacity still needs fresh admission evidence. See the [live run bundle](docs/proof/dogfood-bod-225-live-2026-09-29/README.md). <!-- claim:C-004 --><!-- claim:C-016 --><!-- claim:C-017 -->
+- **Recovers on its own when a model fails.** A quota limit, rate limit, timeout or failed verification can retry the same work, sometimes on another admitted model, within a bounded number of tries. <!-- claim:C-005 -->
+- **Gets a separate review route.** A reviewer on a route that did not implement the work must approve the result. Another model family is preferred; when none has capacity, review falls back to route-level independence ([runtime policy](verdict/orchestration/runtime.py), [review tests](tests/test_orch_runtime.py)). <!-- claim:C-006 -->
+- **Hands you a receipt you can verify.** A completed run's receipt stores a digest of its event log; `verdict run-receipt` checks that log against the receipt and flags any change. <!-- claim:C-007 -->
+- **Asks before risky actions.** A manual model refresh that could hit metered models shows you its plan and waits for your yes, and Prime Agent model selection previews the change, asks before editing `settings.json`, and keeps a backup you can restore. <!-- claim:C-008 -->
 
 ## Try it without API keys
 
@@ -101,14 +101,14 @@ their results are not independently verified from this checkout. The retained
 These are offline scripted demonstrations, not live provider runs.
 
 `verdict demo` ships in `verdict-core` on PyPI (since 0.4.0). From a source checkout, `pip install -e .`
-gives the same command.
+gives the same command. <!-- claim:C-009 -->
 
 `verdict demo` is an **offline self-test**: scripted workers, fixture routes and injected
 faults, with no model calls. It runs the real orchestration pipeline (planner, admission, DAG
 runtime, failure handling, integration barrier, review-route policy, receipt writer) against
 fixture data. It shows the mechanics. It is not evidence of live behavior. The full trace, the
 committed fixture run and the offline recordings are in the
-[offline demo guide](docs/guides/offline-demo.md).
+[offline demo guide](docs/guides/offline-demo.md). <!-- claim:C-029 -->
 
 ## What's new in 0.5.0
 
@@ -122,7 +122,7 @@ verdict eligibility --verified
 
 Shows each listed model's evidence-backed status (VERIFIED, STALE, FAILED, UNAVAILABLE,
 UNVERIFIED, INVENTORY_ONLY, EXCLUDED) with the recorded reason. In the TUI prompt, the same
-view is `/eligibility`.
+view is `/eligibility`. <!-- claim:C-010 -->
 
 **Refresh that list safely, with a cost cap and your confirmation.**
 
@@ -135,7 +135,7 @@ SUBSCRIPTION, UNKNOWN, METERED) and asks about each group separately, or "free o
 and METERED routes can cost money: they default to no and show an estimated spend. From a
 script, `verdict eligibility --verified --refresh` probes only FREE and SUBSCRIPTION routes
 unless you add `--include-unknown` or `--allow-metered`. Automatic refresh only touches free
-or already-paid routes.
+or already-paid routes. <!-- claim:C-011 -->
 
 **Pick your Prime Agent models with a preview and a one-step undo.**
 
@@ -146,7 +146,7 @@ verdict harness prime restore
 
 `select` previews the change to `~/.prime/agent/settings.json` (your enabled-model list), asks
 you to confirm, backs the file up, then applies it; `restore` puts the backup back if its safety
-checks pass. In the TUI prompt: `/bootstrap prime`.
+checks pass. In the TUI prompt: `/bootstrap prime`. <!-- claim:C-012 -->
 
 **An honest Claude Code compatibility report.**
 
@@ -154,10 +154,10 @@ checks pass. In the TUI prompt: `/bootstrap prime`.
 /bootstrap claude
 ```
 
-Read-only: it tells you what would work if Claude Code pointed at Verdict, and changes nothing.
+Read-only: it tells you what would work if Claude Code pointed at Verdict, and changes nothing. <!-- claim:C-013 -->
 
 **Smart Tab-completion in the prompt.** Commands, flags, model ids and run ids all complete as
-you type — see [docs/guides/tui-completion.md](docs/guides/tui-completion.md).
+you type — see [docs/guides/tui-completion.md](docs/guides/tui-completion.md). <!-- claim:C-014 -->
 
 
 ## Quick start
@@ -185,7 +185,7 @@ Status: PASS
 Each excluded candidate gets a named refusal reason. Source:
 [`verdict/flagship_demo.py`](verdict/flagship_demo.py).
 Test: [`tests/test_flagship_demo.py`](tests/test_flagship_demo.py) (asserts this block
-byte-for-byte).
+byte-for-byte). <!-- claim:C-015 -->
 
 For a contributor checkout:
 
@@ -806,7 +806,7 @@ that they are **NOT certification-gated**; no CERTIFIED status is implied.
 
 ```bash
 pip install verdict-core
-```
+``` <!-- claim:C-025 -->
 
 Python 3.10+. The offline proof path above needs no API key or gateway.
 
@@ -846,7 +846,7 @@ verdict probe task-coding --base-url http://localhost:20128/v1 --allow-live-prob
 `detect` must show `server_running: true`. `probe` must return `status: ready` for a
 **named** model. `auto/*` IDs are opaque and are not live proof. A catalog timeout is
 `blocked`, not success. See [`docs/guides/golden-path.md`](docs/guides/golden-path.md) for the
-dated live observation and its limitations.
+dated live observation and its limitations. <!-- claim:C-026 --><!-- claim:C-027 -->
 
 With `OMNIROUTE_BASE_URL` (and `OMNIROUTE_API_KEY` when required) a low-criticality `verdict
 route` admits a concrete **free-tier ∩ active-provider** identity, prints an `admit_receipt`
@@ -871,7 +871,7 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
 [setup-detection-flow](diagrams/setup-detection-flow.mmd),
 [failover-sequence](diagrams/failover-sequence.mmd),
 [goal-to-receipt](diagrams/goal-to-receipt.mmd),
-[ownership-map](diagrams/ownership-map.mmd)).
+[ownership-map](diagrams/ownership-map.mmd)). <!-- claim:C-028 -->
 
 ## Commands
 
@@ -947,21 +947,21 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
 ## Limits
 
 - **No cost saving is claimed yet.** The only live cost run chose the same model in both arms,
-  so it measured no routing saving. See [`docs/benchmarks/README.md`](docs/benchmarks/README.md).
+  so it measured no routing saving. See [`docs/benchmarks/README.md`](docs/benchmarks/README.md). <!-- claim:C-018 -->
 - **Live orchestration requires a gateway.** OmniRoute must be running at
-  `http://localhost:20128`. The credential-free quickstart and benchmark paths need no gateway.
+  `http://localhost:20128`. The credential-free quickstart and benchmark paths need no gateway. <!-- claim:C-019 -->
 - **Worker model availability is external.** Verdict combines gateway inventory and account evidence with its own runtime health
   and admission evidence before selection. Quota, rate limits, and provider outages are not under Verdict's
-  control — it recovers from them, but cannot prevent them.
+  control — it recovers from them, but cannot prevent them. <!-- claim:C-020 -->
 - **Independent review requires `ocr` on PATH.** `open-code-review` is a separate binary.
-  `--no-review` skips it and ends the run `BLOCKED`.
+  `--no-review` skips it and ends the run `BLOCKED`. <!-- claim:C-021 -->
 - **Receipt integrity covers event logs, not LLM or OCR output.** Verification detects event-log
   changes against the retained receipt. Recorded reviewer PASS alone can lack semantic coverage.
-  Neither the receipt nor the log is signed or externally anchored against replacing both files.
+  Neither the receipt nor the log is signed or externally anchored against replacing both files. <!-- claim:C-022 -->
 - **No static fallback chains (retries stay inside the admitted set); OpenTelemetry is optional (`verdict-core[tracing]`).** See
-  [How Verdict differs](#how-verdict-differs).
+  [How Verdict differs](#how-verdict-differs). <!-- claim:C-023 -->
 - **Version 0.5.0, active development.** Contracts, schemas, and receipt formats are
-  versioned. Breaking changes require an ADR.
+  versioned. Breaking changes require an ADR. <!-- claim:C-024 -->
 
 ## License
 

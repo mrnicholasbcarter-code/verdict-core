@@ -1,0 +1,65 @@
+* Uses proxy env variable no_proxy == '127.0.0.1,localhost,::1'
+*   Trying 127.0.0.1:8000...
+* Connected to 127.0.0.1 (127.0.0.1) port 8000 (#0)
+> POST /v1/chat/completions HTTP/1.1
+> Host: 127.0.0.1:8000
+> User-Agent: curl/7.81.0
+> Accept: */*
+> Authorization: Bearer [redacted]
+> Content-Type: application/json
+> Content-Length: 63
+> 
+} [63 bytes data]
+* Mark bundle as not supporting multiuse
+< HTTP/1.1 200 OK
+< date: Tue, 17 Nov 2026 20:44:23 GMT
+< server: uvicorn
+< content-security-policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: ws: wss:; worker-src 'self' blob:; manifest-src 'self'
+< x-frame-options: DENY
+< x-content-type-options: nosniff
+< referrer-policy: strict-origin-when-cross-origin
+< permissions-policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=()
+< strict-transport-security: max-age=63072000; includeSubDomains; preload
+< access-control-allow-headers: Content-Type, Authorization, x-api-key, anthropic-version, x-omniroute-connection, X-OmniRoute-Lease-Owner, X-OmniRoute-Lease-Generation, x-internal-test, accept
+< access-control-allow-methods: GET, POST, PUT, DELETE, PATCH, OPTIONS
+< access-control-allow-origin: *
+< vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+< x-omniroute-route-class: CLIENT_API
+< x-request-id: 0fa06155-a75f-43c0-bee9-0c148bb50419
+< content-type: application/json
+< x-conversationid: conv_6afaed04-5080-4246-8860-9661e7b05d80
+< x-correlation-id: 7d390994-6db6-4b1c-8a72-db48d849e54c
+< x-omniroute-cache: MISS
+< x-omniroute-cache-hit: false
+< x-omniroute-compression: off; source=off
+< x-omniroute-decision: strategy=single; provider=cc; latency_ms=2260
+< x-omniroute-latency-ms: 2260
+< x-omniroute-model: claude-opus-4-8
+< x-omniroute-provider: cc
+< x-omniroute-request-id: 3c9cd33b-f3fd-4d70-874e-48694404113d
+< x-omniroute-response-cost: 0.0032750000
+< x-omniroute-selected-connection-id: 70870f4f-4ec7-4533-83ed-380fe0154748
+< x-omniroute-session-id: 967c3b676529382d
+< x-omniroute-tokens-in: 95
+< x-omniroute-tokens-out: 112
+< x-omniroute-version: 3.8.53
+< date: Tue, 17 Nov 2026 20:44:46 GMT
+< x-verdict-model: cc/claude-opus-4-8
+< x-verdict-tier: 2
+< x-verdict-request-id: req-e45b556771574a4297f08bb16feba6cd
+< x-verdict-decision: selected
+< x-verdict-transport-outcome: success
+< x-verdict-quality-outcome: unknown
+< x-verdict-degraded-mode: false
+< x-verdict-pack-injected: true
+< x-verdict-pack-state: hydrated
+< x-verdict-pack-digest: sha256:841e73bebecaba33bed9b4fcbc46805a71c487ed19993ee6294651a1d1febb45
+< x-verdict-evidence-request-id: req-e45b556771574a4297f08bb16feba6cd
+< x-verdict-correlation-id: corr-53a7407de3e04672893d88dc40911d67
+< x-verdict-evidence-id: evidence-ce61db74f4da467a8d9bbfa559a2dd86
+< content-length: 630
+< cache-control: no-store
+< 
+{ [630 bytes data]
+* Connection #0 to host 127.0.0.1 left intact
+{"id":"chatcmpl-msg_011Ch99pWhH9WH6YWu8qT2UM","object":"chat.completion","created":1794948286,"model":"claude-opus-4-8","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Hello! 👋\n\nI'm Claude Code, ready to help you with your software engineering tasks. What would you like to work on today?\n\nWhether you need help with:\n- Writing or debugging code\n- Explaining how something works\n- Refactoring or improving existing code\n- Setting up a project\n- Reviewing code\n\nJust let me know what you're working on!"}}],"usage":{"prompt_tokens":95,"completion_tokens":112,"total_tokens":207}}

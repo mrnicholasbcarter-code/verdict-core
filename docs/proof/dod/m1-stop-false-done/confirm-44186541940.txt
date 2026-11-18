@@ -1,0 +1,26 @@
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	﻿2026-11-17T22:09:27.4876863Z ##[group]Run python scripts/check_dod.py --all
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:27.4877177Z ^[[36;1mpython scripts/check_dod.py --all^[[0m
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:27.4921201Z shell: /usr/bin/bash -e {0}
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:27.4921414Z env:
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:27.4921574Z   AUTOFIX: false
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:27.4921768Z   OPENSPEC_TELEMETRY: 0
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:27.4922012Z   pythonLocation: /opt/hostedtoolcache/Python/3.13.18/x64
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:27.4922365Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.13.18/x64/lib/pkgconfig
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:27.4922710Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.13.18/x64
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:27.4923019Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.13.18/x64
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:27.4923316Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.13.18/x64
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:27.4923614Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.13.18/x64/lib
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:27.4923876Z ##[endgroup]
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1733112Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-286.json
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1735438Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-297.json
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1736028Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-300-effort-dispatch.json
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1736642Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-300-reviewer-identity.json
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1737173Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-410.json
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1737644Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-413.json
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1738173Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-416-doctor-gateway-key.json
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1738719Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-416-route-key-file.json
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1739227Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-417.json
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1739666Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-434.json
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1740407Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-437.json
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1741064Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/dod-run-truth.json
+lint	Definition of done (docs/proof/dod evidence; AGENTS.md)	2026-11-17T22:09:34.1741458Z check_dod: 12 evidence file(s) checked

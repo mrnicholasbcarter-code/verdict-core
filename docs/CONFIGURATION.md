@@ -396,6 +396,34 @@ installed, inactive timers, failed or never-completed refreshes, and stale sourc
 ages fail the check. Completion or source evidence older than twelve hours fails;
 missing, invalid, or future source timestamps remain explicit failures.
 
+## PR watcher
+
+The PR watcher polls open pull requests across configured repositories, classifies
+CI status, and emits bounded reruns and transition events.
+
+### Repository configuration
+
+Repositories are configured via `pr-watch.env` at `<XDG_CONFIG_HOME or ~/.config>/verdict/pr-watch.env`
+with a single line:
+
+```
+VERDICT_PR_WATCH_REPOS=owner/a,owner/b
+```
+
+Owner-only names are allowed (e.g., `mrnicholasbcarter-code/verdict-core,mrnicholasbcarter-code/verdict-node`).
+The file must be owned by the user and not group/world-writable (mode 0600 recommended).
+Surrounding quotes, an `export ` prefix, and leading spaces are stripped.
+Each entry is validated as `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$` without `..`.
+
+### Timer
+
+`verdict setup` installs and enables a user timer (`verdict-pr-watch.timer`) that runs
+the watcher every five minutes. `verdict doctor` reports the timer state, runtime
+provenance, configured repositories, and state scope with secrets redacted.
+The watcher is opt-in: until `pr-watch.env` exists, a missing timer is a doctor
+warning ("not configured"), not a failure. Once `pr-watch.env` exists, a missing,
+inactive or failed timer fails doctor.
+
 ## Passive health refresh
 
 The passive identify unit (`verdict-identify.service`, every three hours) runs
@@ -491,6 +519,7 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `LLMGATE_AVAILABILITY_STALE_WINDOW_SECONDS` | Availability stale-while-revalidate window |
 | `VERDICT_ALLOW_UNVERIFIED_DEV` | Opt-in (`1`/`true`) to admit unverified (unknown/error/timeout) candidates for non-protected work when the intelligence profile is `development`. Default off: unknown-state models are excluded as `runtime_truth_absent` |
 | `VERDICT_OUTCOME_SHADOW_ROOTS` | BOD-304/BOD-426 outcome-shadow run directories (OS path-separator list, or one manifest file with one run dir per line). Default unset: shadow disabled and nothing persisted. When set, every admission receipt's `outcome_shadow` block is also appended to `outcome_shadow.jsonl` next to the first entry; see [Outcome shadow sink](#outcome-shadow-sink) |
+| `VERDICT_WORKER_IDLE_SECONDS` | BOD-312 idle-output bound for `verdict orchestrate` Prime headless workers: a worker that writes nothing to stdout or stderr for this many seconds has its process group killed, the attempt ends `stalled`, and recovery moves the node to a different route within the attempt budget. Default `300`; an empty, zero, negative or non-numeric value keeps the default |
 
 ### Outcome shadow sink
 
@@ -604,6 +633,41 @@ Operator-visible fail-closed modes:
   health cache says it is healthy. The result is written to `admission.json`
   in the run directory.
 
+### Public route endpoint (`POST /v1/route`)
+
+`POST /v1/route` is the authoritative routing endpoint. It requires an
+`execution_path_request` body (schema version `execution-path/v1`) describing
+candidate offers with pricing, capability evidence, and certification state.
+A request without `execution_path_request` returns HTTP 400.
+
+#### Execution-path request fields
+
+The `execution_path_request` object accepts the following fields (in addition
+to the required `trajectory_id`, `slice_id`, `candidates`, `acceptance_criteria`,
+`proof_criteria`, and optional `task_family`, `min_context_tokens`,
+`reasoning_required`, `tools_required`, `structured_output_required`,
+`streaming_required`, `vision_required`):
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `hard_spend_budget` | number (USD) | No | Hard spend ceiling in USD. Must be a finite JSON number > 0. Absent = no budget enforcement (existing behaviour). Explicit `null`, boolean, string, array, object, zero, negative, non-finite, or overflow = HTTP 400 naming `execution_path_request.hard_spend_budget`. When set, offers with `expected_cost.cash_usd > budget` are rejected with `exceeds_hard_spend_budget`; offers with unknown cash (`has_unknown_cash`) are rejected with `unknown_price_not_treated_as_free`. Exact equality (`cash_usd == budget`) qualifies if otherwise eligible. No budget = unknown price remains advisory (A25 invariant). |
+
+#### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `include_routing_trace` | boolean | `false` | When `true`, the response includes a `routing_trace` object with structured diagnostics: `admitted_candidate_ids` (set), `shortlist_candidate_ids` (ordered), `optimizer_decision` (`outcome` + `selected_candidate_id`), `rejected_offers` (`candidate_id` + `code`). The trace is a read-only projection of the same request's admission, shortlist, and optimizer stages. Present on all authoritative outcomes including no-selection (`denied`, `blocked`). Legacy response (without this parameter) is unchanged. |
+
+#### Response
+
+On success (HTTP 200): a routing decision object with `model`, `provider`, `tier`, `reason`, `alternatives`, `decision` ("selected" or "denied"), `candidate_states`, `admit_receipt`, and evidence headers (`x-verdict-evidence-id`, `x-verdict-evidence-request-id`, `x-verdict-correlation-id`).
+
+When `include_routing_trace=true`, an additional `routing_trace` field is included (see above).
+
+On denial (HTTP 503): a routing decision with `decision: "denied"` and `model: null`.
+
+On invalid request (HTTP 400): error detail naming the invalid field (e.g., `execution_path_request.hard_spend_budget`).
+
 The OpenAI-compatible relay (`/v1/chat/completions`, `/v1/responses`) has a
 narrower boundary:
 
@@ -651,7 +715,7 @@ recorded in the admit receipt (`spend_policy`).
 ### Optional platform-neutral guidance
 
 Guidance is an experimental, host-neutral boundary. It is disabled by
-default, does not read `AGENTS.md` / `CLAUDE.md`, and cannot bypass gates.
+default, does not read `AGENTS.md` / `CLAUDE.md`, and cannot bypass gates. <!-- claim:C-048 -->
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -689,7 +753,7 @@ Every service installer (prove-at-rest, acceptance, census) returns an install
 `$VERDICT_HOME/service-rollback/<UTC>/`, before any unit file is written. A dry
 run returns the plan and writes nothing.
 
-Census and prove-at-rest's chat phase are the two automatic maintenance
+Census and prove-at-rest's chat phase are the two automatic maintenance <!-- claim:C-047 -->
 producers on the shared `RefreshCoordinator` (`verdict/orchestration/verified_refresh.py`).
 Both probe FREE and SUBSCRIPTION capacity only; METERED/UNKNOWN routes stay
 reachable only through the consented manual refresh plan (`--include-unknown`,
@@ -718,7 +782,7 @@ verdict route "summarize the change" --terse
 ```
 
 An empty free∩active intersection fails closed. There is no automatic upgrade to
-a frontier model when eligibility returns nothing.
+a frontier model when eligibility returns nothing. <!-- claim:C-049 -->
 
 ---
 
@@ -734,7 +798,7 @@ a frontier model when eligibility returns nothing.
 
 An inference-scoped OmniRoute key cannot read `/api/providers`.
 Never send a manage/admin key through a public tunnel.
-Capture connection evidence locally, using the local admin key:
+Capture connection evidence locally, using the local admin key: <!-- claim:C-050 -->
 
 ```bash
 # Supply VERDICT_OMNIROUTE_API_KEY securely in this local process.

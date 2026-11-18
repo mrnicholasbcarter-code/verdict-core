@@ -60,6 +60,7 @@ def gates(base: str, *, wip: bool) -> list[Gate]:
         Gate("mypy verdict --strict", (py, "-m", "mypy", "verdict", "--strict")),
         Gate("reachability ratchet", (py, "scripts/check_reachability.py", "--ratchet-base", base)),
         Gate("definition of done", (py, "scripts/check_dod.py", "--all")),
+        Gate("claims inventory", (py, "scripts/check_claims.py")),
         Gate("proof-path trailers", (py, "scripts/check_proof_paths.py", "--base", base)),
         Gate(
             "openspec validate",
