@@ -94,7 +94,7 @@ provider failure, not evidence of a live provider's reliability.
 
 Each path emits bounded, privacy-safe evidence.
 
-## Maturity matrix
+## Maturity matrix <!-- claim:C-106 -->
 
 | Capability | Status | Evidence | Limitation |
 |---|---|---|---|

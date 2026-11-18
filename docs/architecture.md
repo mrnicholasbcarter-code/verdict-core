@@ -264,7 +264,7 @@ Use [`proof/EVIDENCE_INDEX.md`](proof/EVIDENCE_INDEX.md) for what is actually ce
 
 - [ADR index (lifecycle-classified)](adr/README.md)
 - [ADR-004 Local-first MemoryPlane](adr/ADR-004-local-first-memory-plane.md)
-- [ADR-010 Fail-closed capability passports](adr/ADR-010-fail-closed-capability-passports.md)
+- [ADR-010 Fail-closed capability passports] <!-- claim:C-030 -->(adr/ADR-010-fail-closed-capability-passports.md)
 - [ADR-032 Core model metadata store](adr/ADR-032-core-model-metadata-store.md)
 - [ADR-023 Governed swarm supervision](adr/ADR-023-governed-swarm-supervision.md) — **SUPERSEDED** by [ADR-035](adr/ADR-035-authorized-selected-route-dispatch.md)
 - [ADR-035 Authorized selected-route dispatch](adr/ADR-035-authorized-selected-route-dispatch.md) — execution-path authority + authorized dispatcher binding (post-swarm path)

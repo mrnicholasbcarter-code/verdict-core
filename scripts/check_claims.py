@@ -2,6 +2,11 @@
 """
 Check that every public claim in README.md has an inventory entry in docs/CLAIMS.md
 and that every inventory entry's evidence path exists.
+
+Rules:
+- 'shipped' claims must have at least one evidence path under tests/
+- 'observed' claims must have at least one evidence path under docs/proof/
+- 'proposed', 'superseded', 'disputed' claims need no test evidence
 """
 
 import re
@@ -12,7 +17,6 @@ from pathlib import Path
 def extract_readme_claims(readme_path: Path) -> set[str]:
     """Extract all claim IDs from README.md markers like <!-- claim:C-001 -->"""
     content = readme_path.read_text()
-    # Match <!-- claim:C-XXX --> pattern (can have multiple per line)
     pattern = r"<!--\s*claim:(C-\d+)\s*-->"
     matches = re.findall(pattern, content)
     return set(matches)
@@ -23,8 +27,6 @@ def extract_claims_md_claims(claims_path: Path) -> dict[str, dict]:
     content = claims_path.read_text()
     claims = {}
 
-    # Parse the markdown table rows
-    # Pattern: | C-XXX | ... | ... | ... | evidence paths ... |
     lines = content.split("\n")
     in_table = False
     for line in lines:
@@ -36,9 +38,6 @@ def extract_claims_md_claims(claims_path: Path) -> dict[str, dict]:
                 label = parts[4].strip()
                 evidence_col = parts[5].strip()
 
-                # Extract evidence paths from the evidence column
-                # Evidence column contains comma-separated paths like:
-                # "verdict/eligibility.py, tests/test_eligibility_gate.py"
                 evidence_paths = []
                 for ep in evidence_col.split(","):
                     ep = ep.strip()
@@ -54,12 +53,10 @@ def extract_claims_md_claims(claims_path: Path) -> dict[str, dict]:
                         and not ep.startswith(".github/")
                         and not ep.startswith("pyproject.toml")
                     ):
-                        # Skip non-path entries
                         continue
                     if ep:
                         evidence_paths.append(ep)
 
-                # Also check for docs/proof/ paths
                 for ep in evidence_col.split(","):
                     ep = ep.strip()
                     if ep.startswith("docs/proof/"):
@@ -76,11 +73,20 @@ def check_evidence_exists(evidence_paths: list[str], repo_root: Path) -> list[st
     """Check if evidence paths exist. Return list of missing paths."""
     missing = []
     for ep in evidence_paths:
-        # Handle multiple paths in one entry (comma-separated already split)
         path = repo_root / ep
         if not path.exists():
             missing.append(ep)
     return missing
+
+
+def has_test_evidence(evidence_paths: list[str]) -> bool:
+    """Check if any evidence path is under tests/"""
+    return any(ep.startswith("tests/") for ep in evidence_paths)
+
+
+def has_proof_evidence(evidence_paths: list[str]) -> bool:
+    """Check if any evidence path is under docs/proof/"""
+    return any(ep.startswith("docs/proof/") for ep in evidence_paths)
 
 
 def main():
@@ -96,7 +102,6 @@ def main():
         print(f"ERROR: {claims_path} not found")
         return 1
 
-    # Extract claims from both sources
     readme_claims = extract_readme_claims(readme_path)
     claims_md_claims = extract_claims_md_claims(claims_path)
 
@@ -115,7 +120,7 @@ def main():
     else:
         print("\n✓ All README claim markers have entries in docs/CLAIMS.md")
 
-    # Check 2: Every CLAIMS.md entry has a README marker (optional but good practice)
+    # Check 2: Every CLAIMS.md entry has a README marker (warning only)
     extra_in_claims = set(claims_md_claims.keys()) - readme_claims
     if extra_in_claims:
         print(
@@ -140,7 +145,7 @@ def main():
     else:
         print("✓ All evidence paths exist")
 
-    # Check 4: No README claim is unlabeled (every claim in CLAIMS.md has a label)
+    # Check 4: Every claim has a label
     unlabeled = [
         cid for cid, data in claims_md_claims.items() if not data["label"] or data["label"] == ""
     ]
@@ -152,8 +157,39 @@ def main():
     else:
         print("✓ All claims have labels")
 
-    # Check 5: Proposed/disputed claims are not presented as shipped in README
-    # This is a manual check - we verify the label in CLAIMS.md
+    # Check 5: 'shipped' claims must have test evidence
+    shipped_without_tests = []
+    for cid, data in claims_md_claims.items():
+        if data["label"] == "shipped" and not has_test_evidence(data["evidence_paths"]):
+            shipped_without_tests.append((cid, data["evidence_paths"]))
+
+    if shipped_without_tests:
+        print(
+            f"\nERROR: {len(shipped_without_tests)} 'shipped' claim(s) lack test evidence (tests/*):"
+        )
+        for cid, eps in shipped_without_tests:
+            print(f"  - {cid}: {eps}")
+        return 1
+    else:
+        print("✓ All 'shipped' claims have test evidence")
+
+    # Check 6: 'observed' claims must have proof evidence
+    observed_without_proof = []
+    for cid, data in claims_md_claims.items():
+        if data["label"] == "observed" and not has_proof_evidence(data["evidence_paths"]):
+            observed_without_proof.append((cid, data["evidence_paths"]))
+
+    if observed_without_proof:
+        print(
+            f"\nERROR: {len(observed_without_proof)} 'observed' claim(s) lack proof evidence (docs/proof/*):"
+        )
+        for cid, eps in observed_without_proof:
+            print(f"  - {cid}: {eps}")
+        return 1
+    else:
+        print("✓ All 'observed' claims have proof evidence")
+
+    # Check 7: Proposed/disputed claims are not presented as shipped in README
     proposed_or_disputed = [
         cid
         for cid, data in claims_md_claims.items()

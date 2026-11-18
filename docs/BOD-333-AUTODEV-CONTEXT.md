@@ -13,7 +13,7 @@ The action registry's `autodev.packet.execute` launch entry uses the same domain
 Prime-owned tool loops are not intercepted; `harness_prime` reports
 `tool_interception` and `tool_pre_post` as unsupported.
 
-The policy observes the raw **post-compilation context string** placed in
+The policy observes the raw **post-compilation context string** placed in <!-- claim:C-065 -->
 `WorkUnit.context`. It runs no transform or compression engine. Raw passthrough
 is the only supported transform, so no lossy candidate is forwarded. <!-- claim:C-066 --> Compiler
 budget, security exclusions, and sanitization remain unchanged. This flag does
@@ -21,7 +21,7 @@ not claim to preserve facts that the compiler already omitted or sanitized. <!--
 System constraints, code/edit arguments, paths, digests, refusals, and test counts
 in the compiled context are not rewritten by the output policy.
 
-The existing context receipt gets `raw_artifact_pointer` (SHA-256 and UTF-8 bytes),
+The existing context receipt gets `raw_artifact_pointer` (SHA-256 and UTF-8 bytes), <!-- claim:C-068 -->
 `output_policy`, and `output_metrics`. This pointer identifies the context string,
 not the entire provider request. PatchExecutor adds its own instructions and owned
 source outside that string. Input/output bytes measure only raw policy passthrough; <!-- claim:C-069 -->
