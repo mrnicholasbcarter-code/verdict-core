@@ -181,3 +181,69 @@ def test_fixture_runs_are_fixtures():
         receipt = json.loads(receipt_path.read_text())
         # Fixture runs have test-* run_ids
         assert receipt["run_id"].startswith("test-"), f"{run_name} should have test run_id"
+
+
+def _fixture_receipt(name: str) -> dict[str, object]:
+    loaded: dict[str, object] = json.loads((FIXTURES_DIR / name / "receipt.json").read_text())
+    return loaded
+
+
+def test_cancelled_run_accepts_no_tasks():
+    """A CANCELLED run with validated nodes and a PASS review must not count them."""
+    receipt = _fixture_receipt("complete-run")
+    receipt["claimed_outcome"] = "CANCELLED"
+    metrics = compute_run_metrics(receipt)
+    assert metrics["accepted_tasks"] == 0
+    assert metrics["outcome"] == "CANCELLED"
+
+
+def test_failed_openspec_conformance_accepts_no_tasks():
+    """Failed OpenSpec conformance blocks the run, so no node is accepted."""
+    receipt = _fixture_receipt("complete-run")
+    receipt["openspec"] = {
+        "spec_revision_digest": "sha256:abc",
+        "conformance_result": {"status": "FAIL", "reason": "scenario missing"},
+    }
+    metrics = compute_run_metrics(receipt)
+    assert metrics["accepted_tasks"] == 0
+    assert metrics["outcome"] == "BLOCKED"
+
+
+def test_blocked_receipt_edited_to_complete_accepts_no_tasks():
+    """The stored outcome field is not trusted; the verdict is recomputed."""
+    receipt = _fixture_receipt("blocked-run")
+    receipt["outcome"] = "COMPLETE"
+    metrics = compute_run_metrics(receipt)
+    assert metrics["accepted_tasks"] == 0
+    assert metrics["outcome"] == "BLOCKED"
+
+
+def test_aggregate_shares_use_raw_counts(monkeypatch: pytest.MonkeyPatch):
+    """15 free of 22 attempts must aggregate to 15, not int(15/22*22) == 14."""
+    import verdict.orchestration.receipt as receipt_mod
+    from verdict.actions.registry import run_action
+
+    real = receipt_mod.compute_run_metrics
+
+    def fake(receipt: dict[str, object]) -> dict[str, object]:
+        metrics = real(receipt)
+        metrics.update(
+            total_model_attempts=22,
+            free_attempts=15,
+            subscription_attempts=7,
+            metered_attempts=0,
+            unknown_capacity_attempts=0,
+            free_share=15 / 22,
+            subscription_share=7 / 22,
+            metered_share=0.0,
+            unknown_capacity_share=0.0,
+        )
+        return metrics
+
+    monkeypatch.setattr(receipt_mod, "compute_run_metrics", fake)
+    result = run_action(
+        "metrics",
+        {"run_dir": str(FIXTURES_DIR / "complete-run"), "runs_dir": str(FIXTURES_DIR)},
+    )
+    assert result.data["free_share"] == pytest.approx(15 / 22)
+    assert result.data["subscription_share"] == pytest.approx(7 / 22)

@@ -851,11 +851,7 @@ def _action_metrics(**kwargs: Any) -> ActionResult:
     import json as _json
     from pathlib import Path
 
-    from verdict.orchestration.receipt import (
-        completion_verdict,
-        compute_run_metrics,
-        verify_run_receipt,
-    )
+    from verdict.orchestration.receipt import compute_run_metrics, verify_run_receipt
 
     runs_dir_str: str = kwargs.get("runs_dir", ".verdict/runs")
     run_dir_str: str | None = kwargs.get("run_dir")
@@ -923,7 +919,6 @@ def _action_metrics(**kwargs: Any) -> ActionResult:
             )
             continue
 
-        _outcome, _reason = completion_verdict(receipt)
         metrics = compute_run_metrics(receipt)
 
         aggregated["accepted_tasks"] += metrics["accepted_tasks"]
@@ -932,16 +927,13 @@ def _action_metrics(**kwargs: Any) -> ActionResult:
         else:
             aggregated["has_unknown_cost"] = True
         aggregated["total_model_attempts"] += metrics["total_model_attempts"]
-        aggregated["free_attempts"] += int(metrics["free_share"] * metrics["total_model_attempts"])
-        aggregated["subscription_attempts"] += int(
-            metrics["subscription_share"] * metrics["total_model_attempts"]
-        )
-        aggregated["metered_attempts"] += int(
-            metrics["metered_share"] * metrics["total_model_attempts"]
-        )
-        aggregated["unknown_capacity_attempts"] += int(
-            metrics["unknown_capacity_share"] * metrics["total_model_attempts"]
-        )
+        for key in (
+            "free_attempts",
+            "subscription_attempts",
+            "metered_attempts",
+            "unknown_capacity_attempts",
+        ):
+            aggregated[key] += metrics[key]
         aggregated["runs_processed"] += 1
         aggregated["per_run"].append(
             {

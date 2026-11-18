@@ -732,9 +732,11 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
 
     receipt: dict[str, Any] = {
         "schema": RECEIPT_SCHEMA,
+        # run_started is digest-bound and names the run dir; graph.json is not
+        # and may keep a planner-input id, so it is only a pre-start fallback.
         "run_id": str(
-            graph_raw.get("run_id")
-            or (started.data.get("run_id") if started else "")
+            (started.data.get("run_id") if started else "")
+            or graph_raw.get("run_id")
             or run_dir.name
         ),
         "goal": graph.goal if graph is not None else str(graph_raw.get("goal") or ""),
@@ -1095,35 +1097,19 @@ def completion_verdict(receipt: Mapping[str, Any]) -> tuple[str, str]:
 def compute_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]:
     """Compute efficiency metrics from a verified receipt.
 
-    Returns a dict with:
-    - accepted_tasks: int (implement/integrate nodes with VALIDATED final_state, integration ok, review PASS)
-    - dollars: float | None (sum of cost_usd across all model attempts; None if any cost unknown)
-    - has_unknown_cost: bool (True if any model attempt has missing or null cost_usd)
-    - tasks_per_dollar: float | str (accepted_tasks / dollars if defined, else "undefined")
-    - free_share: float (fraction of model attempts with capacity_class=free)
-    - subscription_share: float (fraction of model attempts with capacity_class=subscription)
-    - metered_share: float (fraction of model attempts with capacity_class=metered)
-    - unknown_capacity_share: float (fraction of model attempts with capacity_class=unknown or missing)
-    - total_model_attempts: int (denominator for share calculations)
-    - run_id: str
-    - outcome: str (COMPLETE, BLOCKED, etc.)
+    ``accepted_tasks`` counts implement/integrate nodes only when
+    ``completion_verdict`` recomputes COMPLETE (the stored ``outcome`` is not
+    trusted). ``dollars`` is None when any model attempt's cost is unknown,
+    never 0. Shares are fractions of model attempts; raw counts are returned
+    too so aggregation never round-trips through a float.
     """
-    from verdict.orchestration.contracts import NodeKind, NodeState
-
-    # 1. Accepted tasks: implement/integrate nodes that are VALIDATED, with integration ok and review PASS
+    outcome, _reason = completion_verdict(receipt)
     gated = {NodeKind.IMPLEMENT.value, NodeKind.INTEGRATE.value}
-    work_nodes = [n for n in receipt.get("nodes") or [] if n.get("kind") in gated]
-
-    integration = receipt.get("integration") or {}
-    review = receipt.get("review") or {}
-    integration_ok = integration.get("ok") is True
-    review_pass = review.get("status") == "PASS" and review.get("blocking", 0) == 0
-
-    accepted_tasks = 0
-    if integration_ok and review_pass:
-        for node in work_nodes:
-            if node.get("final_state") == NodeState.VALIDATED.value:
-                accepted_tasks += 1
+    accepted_tasks = (
+        sum(1 for n in receipt.get("nodes") or [] if n.get("kind") in gated)
+        if outcome == RunOutcome.COMPLETE.value
+        else 0
+    )
 
     # 2. Dollars and cost tracking across all model attempts
     total_cost = 0.0
@@ -1198,6 +1184,10 @@ def compute_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "metered_share": metered_share,
         "unknown_capacity_share": unknown_capacity_share,
         "total_model_attempts": total_model_attempts,
+        "free_attempts": free_attempts,
+        "subscription_attempts": subscription_attempts,
+        "metered_attempts": metered_attempts,
+        "unknown_capacity_attempts": unknown_capacity_attempts,
         "run_id": str(receipt.get("run_id") or ""),
-        "outcome": str(receipt.get("outcome") or ""),
+        "outcome": outcome,
     }
