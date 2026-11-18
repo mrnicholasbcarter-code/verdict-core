@@ -64,15 +64,15 @@
         }
       },
       "fresh_run": {
-        "at": "2026-11-17T23:00:00Z",
-        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "at": "2026-11-18T05:05:29Z",
+        "sha": "c94e763e4323f8c30be5dd977bf6c2a9d8e1b14f",
         "environment": "operator-host",
-        "command": "PENDING fresh_run: capture-1045-fresh.timer fires 2026-11-18T05:05:16Z",
-        "real_state_marker": "PENDING-fresh-run",
-        "exit_code": -1,
+        "command": "systemctl --user cat verdict-identify-screen.service verdict-identify-screen.timer",
+        "real_state_marker": "# /operator/.config/systemd/user/verdict-identify-screen.service",
+        "exit_code": 0,
         "raw_output": {
-          "path": "docs/proof/dod/identify-screen-full-coverage/PENDING-fresh-run.txt",
-          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          "path": "docs/proof/dod/identify-screen-full-coverage/unit-cat-fresh-20261118T050529Z.txt",
+          "sha256": "3638c35b2060ff5247f4c3558a767743703a4c7d256c4e603ea5002e91157735"
         }
       }
     }
