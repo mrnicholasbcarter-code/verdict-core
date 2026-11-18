@@ -1214,8 +1214,8 @@ class EligibilityLadder:
         # qualified_at window is IGNORED in read-only mode. These should be
         # allowed to proceed to selection without probes.
         if self._read_only:
-            from verdict.prove_at_rest_legacy import load_healthy_passports
             from verdict.orchestration.health_cache import HealthCache, default_cache_path
+            from verdict.prove_at_rest_legacy import load_healthy_passports
 
             for a in assessments:
                 if a.failed_stage is EligibilityStage.HEALTHY and a.health == "unhealthy":
