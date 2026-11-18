@@ -157,6 +157,44 @@ def test_probe_records_a_route_scoped_payment_negative(prober: Any) -> None:
     assert outcome.model_scoped
 
 
+def test_agentic_probe_writes_a_route_scoped_metered_negative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The at-rest agentic probe is what kept the dead routes qualified."""
+    from verdict.prove_at_rest import CycleStats, Prober, _cooled_pools
+
+    sent: list[Any] = []
+
+    def fake_open(request: Any, *, timeout: float) -> _Response:
+        sent.append(request)
+        return _Response(refusal_body())
+
+    monkeypatch.setattr("verdict.prove_at_rest.open_no_redirect", fake_open)
+
+    def no_chat(route_id: str, phase: str, timeout: float) -> Any:
+        raise AssertionError("the agentic phase must not use the chat/tool transport")
+
+    cache = HealthCache(tmp_path / "health.json")
+    prober = Prober(
+        cache,
+        lambda: [AdmittedRoute("pol/openai/gpt-5.5", "pol", "free")],
+        no_chat,
+        agentic_transport=live_agentic_transport("http://gw", api_key="k"),
+        clock=lambda: NOW,
+    )
+    stats = CycleStats()
+    prober.run_agentic_probes(stats)
+    assert len(sent) == 1  # the conversation stops at the refused turn
+    assert stats.agentic_passed == 0
+    entry = HealthCache(cache.path).entry("pol/openai/gpt-5.5")
+    assert entry is not None and not entry.healthy and not entry.agentic_ok
+    assert entry.category == CATEGORY_PAYMENT and not entry.chat_ok
+    assert entry.failure_scope == "route"
+    assert entry.capacity_evidence == "billing_402_metered"
+    assert entry.state_at(NOW + timedelta(hours=1)) == STATE_NEGATIVE
+    assert _cooled_pools(cache, NOW) == set()  # free siblings on the key stay open
+
+
 # -- relay --------------------------------------------------------------------
 
 
