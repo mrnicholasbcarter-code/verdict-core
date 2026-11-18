@@ -1,0 +1,38 @@
+{
+  "data": {
+    "search": {
+      "issueCount": 2,
+      "pageInfo": {
+        "hasNextPage": true,
+        "endCursor": "Y3Vyc29yOjE="
+      },
+      "nodes": [
+        {
+          "number": 5,
+          "mergedAt": "2026-03-02T11:58:00Z",
+          "headRefOid": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "headRefName": "fix/bod-286-cursor",
+          "body": "Fixes the cursor.",
+          "reviews": {
+            "nodes": [
+              {
+                "state": "COMMENTED",
+                "submittedAt": "2026-03-02T10:00:00Z",
+                "commit": {
+                  "oid": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+                }
+              },
+              {
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-03-02T10:30:00Z",
+                "commit": {
+                  "oid": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

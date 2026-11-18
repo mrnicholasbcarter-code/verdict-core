@@ -1,5 +1,8 @@
 import asyncio
 import subprocess
+from datetime import datetime, timezone
+
+import pytest
 
 from verdict.intelligence import IntelligenceService
 
@@ -88,3 +91,121 @@ def test_default_profile_is_development_and_fail_closed_does_not_depend_on_it(mo
         dev_mode=(DEFAULT_PROFILE == "development"),
     )
     assert result.admitted == []
+
+
+# --- Execution-path route clock (route-execution-path-aware-clock) ---------------
+# These drive the real IntelligenceService down the serve branch: no fixture
+# admit snapshot, a configured OmniRoute endpoint, build_selector, the real
+# eligibility ladder and the real health cache. Only external reads are faked
+# (tests/helpers/live_execution_path.py).
+
+
+def _route_live(svc: IntelligenceService):
+    import verdict.api as api
+    from tests.helpers.live_execution_path import public_request_body
+
+    body = public_request_body()
+    context = api._authority_context(dict(body), task=body["task"])
+    return asyncio.run(svc.route(body["task"], criticality="low", context=context))
+
+
+def test_live_execution_path_route_without_admit_now_reaches_a_decision(
+    monkeypatch, tmp_path, no_gateway_network
+) -> None:
+    """Catches the live 500: admit_now=None reached HealthCache.lookup as ``now``.
+
+    On the unfixed service this raises HealthCacheError("now must be a
+    timezone-aware datetime") from selector._assess_all.
+    """
+    from tests.helpers.live_execution_path import ROUTE, install_live_fakes, live_service
+
+    install_live_fakes(monkeypatch, tmp_path)
+    decision = _route_live(live_service(admit_now=None))
+
+    assert decision.decision == "selected"
+    assert f"{decision.provider}/{decision.model}" == ROUTE
+
+
+def test_live_execution_path_route_reads_one_instant_for_every_health_check(
+    monkeypatch, tmp_path, no_gateway_network
+) -> None:
+    """Catches a second clock: every health-cache time check in one request sees one instant.
+
+    Spies on the ladder's HealthCache.lookup (selector._assess_all) and on the
+    candidate-pool billing check in _route_capacity. A call site that reads
+    datetime.now() for itself shows up as a second, later instant.
+    """
+    import verdict.intelligence as intelligence
+    from tests.helpers.live_execution_path import install_live_fakes, live_service
+    from verdict.orchestration.health_cache import HealthCache
+
+    install_live_fakes(monkeypatch, tmp_path)
+    seen: dict[str, list[datetime]] = {"lookup": [], "billing": []}
+    real_lookup = HealthCache.lookup
+    real_billing = intelligence.billing_capacity_override
+
+    def lookup(self, route, now):
+        seen["lookup"].append(now)
+        return real_lookup(self, route, now)
+
+    def billing(cache, route_id, now):
+        seen["billing"].append(now)
+        return real_billing(cache, route_id, now)
+
+    monkeypatch.setattr(HealthCache, "lookup", lookup)
+    monkeypatch.setattr(intelligence, "billing_capacity_override", billing)
+
+    assert _route_live(live_service(admit_now=None)).decision == "selected"
+
+    assert seen["lookup"], "the ladder never read the health cache"
+    assert seen["billing"], "_route_capacity never ran"
+    instants = {*seen["lookup"], *seen["billing"]}
+    assert len(instants) == 1, f"one request read {len(instants)} clocks: {sorted(instants)}"
+    (instant,) = instants
+    assert instant.tzinfo is not None
+
+
+def test_live_execution_path_route_uses_injected_admit_now(
+    monkeypatch, tmp_path, no_gateway_network
+) -> None:
+    """Catches a call site that ignores the injected clock on the serve branch."""
+    from datetime import timedelta
+
+    from tests.helpers.live_execution_path import install_live_fakes, live_service
+    from verdict.orchestration.health_cache import HealthCache
+
+    install_live_fakes(monkeypatch, tmp_path)
+    injected = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=5)
+    seen: list[datetime] = []
+    real_lookup = HealthCache.lookup
+
+    def lookup(self, route, now):
+        seen.append(now)
+        return real_lookup(self, route, now)
+
+    monkeypatch.setattr(HealthCache, "lookup", lookup)
+
+    assert _route_live(live_service(admit_now=injected)).decision == "selected"
+    assert seen and set(seen) == {injected}
+
+
+@pytest.mark.parametrize("assign", [False, True])
+def test_naive_admit_now_is_rejected(assign: bool) -> None:
+    """Catches a naive injected clock that would fail later, inside a request, as a 500."""
+    naive = datetime(2026, 11, 17, 12, 0)
+    if assign:
+        svc = _service()
+        with pytest.raises(ValueError, match="timezone-aware"):
+            svc.admit_now = naive
+        assert svc.admit_now is None
+        return
+    with pytest.raises(ValueError, match="timezone-aware"):
+        IntelligenceService(
+            primary_model="anthropic/claude-3-opus",
+            providers={},
+            profile="development",
+            log_path="",
+            log_full_task=False,
+            discovery_ttl=60,
+            admit_now=naive,
+        )

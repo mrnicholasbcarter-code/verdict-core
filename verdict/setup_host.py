@@ -47,8 +47,9 @@ SERVE = "host.serve"
 PRIME = "host.prime-registry"
 REF_DOCS = "host.ref-docs-timer"
 DOCS_REFRESH = "host.docs-refresh-timer"
+PR_WATCHER = "host.pr-watcher-timer"
 #: Apply order: Prime enable needs a healthy serve, so the serve unit comes first.
-ORDER = (OCR, METADATA, ACCEPTANCE, IDENTIFY, REF_DOCS, DOCS_REFRESH, SERVE, PRIME)
+ORDER = (OCR, METADATA, ACCEPTANCE, IDENTIFY, REF_DOCS, DOCS_REFRESH, PR_WATCHER, SERVE, PRIME)
 #: ``harness prime enable`` waits this many probes (one second apart) for serve.
 SERVE_HEALTH_ATTEMPTS = 15
 PRIME_SYNC_UNIT = "verdict-prime-sync.service"
@@ -179,6 +180,81 @@ def _timer_problems(env: HostEnvironment, rendered: Mapping[str, Any], *units: s
     return problems + _inactive(env, *units)
 
 
+def _pr_watch_config_path() -> Path:
+    return (
+        Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+        / "verdict"
+        / "pr-watch.env"
+    )
+
+
+def _pr_watch_repos() -> list[str]:
+    """Read and validate repositories from pr-watch.env.
+
+    Returns empty list if file missing. Raises ValueError with reason if file
+    exists but is invalid (permissions, format, or invalid repo names).
+    """
+    import re
+    import stat
+
+    path = _pr_watch_config_path()
+    try:
+        st = path.stat()
+    except OSError:
+        return []
+
+    # Check file permissions: must not be group/world-writable
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise ValueError(
+            f"pr-watch.env has unsafe permissions (mode {oct(st.st_mode & 0o777)}): "
+            "must not be group or world writable"
+        )
+    # Check ownership: must be owned by current user
+    if st.st_uid != os.getuid():
+        raise ValueError(
+            f"pr-watch.env is owned by uid {st.st_uid}, not current user {os.getuid()}"
+        )
+
+    try:
+        content = path.read_text()
+    except OSError:
+        return []
+
+    lines = content.splitlines()
+    raw_value = ""
+    for line in lines:
+        # Strip the line, remove export prefix, remove trailing comment
+        stripped = line.strip()
+        if stripped.startswith("export "):
+            stripped = stripped[len("export ") :].strip()
+        if " #" in stripped:
+            stripped = stripped.split(" #", 1)[0].rstrip()
+        if stripped.startswith("VERDICT_PR_WATCH_REPOS="):
+            raw_value = stripped.split("=", 1)[1]
+            break
+
+    # Strip surrounding quotes, leading/trailing spaces
+    value = raw_value.strip()
+    if (value.startswith('"') and value.endswith('"')) or (
+        value.startswith("'") and value.endswith("'")
+    ):
+        value = value[1:-1]
+
+    repos = [repo.strip() for repo in value.split(",") if repo.strip()]
+
+    # Validate each repo: ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ without ..
+    repo_pattern = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+    for repo in repos:
+        if ".." in repo or not repo_pattern.match(repo):
+            raise ValueError(f"invalid repository name in pr-watch.env: {repo!r}")
+
+    return repos
+
+
+def _pr_watch_problem() -> str:
+    return f"no repositories configured: write VERDICT_PR_WATCH_REPOS to {_pr_watch_config_path()}"
+
+
 def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
     """What is wrong with one prerequisite; empty when it is satisfied."""
     if provider_id == OCR:
@@ -211,6 +287,19 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
 
         rendered = docs_refresh_service.manage_service(unit_dir=env.unit_dir, dry_run=True)
         return _timer_problems(env, rendered, docs_refresh_service.TIMER)
+    if provider_id == PR_WATCHER:
+        from verdict import pr_watcher_service
+
+        try:
+            repos = _pr_watch_repos()
+        except ValueError as exc:
+            return [str(exc)]
+        if not repos:
+            return [_pr_watch_problem()]
+        rendered = pr_watcher_service.manage_service(
+            unit_dir=env.unit_dir, dry_run=True, repos=repos
+        )
+        return _timer_problems(env, rendered, pr_watcher_service.TIMER)
     if provider_id == SERVE:
         from verdict import serve_service
 
@@ -294,6 +383,20 @@ _ACTIONS: dict[str, dict[str, str]] = {
         "postcondition": "verdict-docs-refresh.timer is active.",
         "undo": "verdict memory docs --install-service --uninstall",
         "install_command": "verdict memory docs --install-service",
+    },
+    PR_WATCHER: {
+        "description": (
+            "Install the 5-minute PR watcher timer that polls repositories, classifies CI, "
+            "and emits bounded reruns."
+        ),
+        "security_impact": (
+            "Reads GitHub through gh api graphql; its only write is a bounded rerun of a failed "
+            "required CI job (POST /repos/{owner}/{repo}/actions/jobs/{id}/rerun), fenced on the "
+            "exact head; writes local state under the git common dir."
+        ),
+        "postcondition": "verdict-pr-watch.timer is active.",
+        "undo": "systemctl --user disable --now verdict-pr-watch.timer; remove verdict-pr-watch.service and verdict-pr-watch.timer",
+        "install_command": "verdict setup --apply --allow host.pr-watcher-timer",
     },
     SERVE: {
         "description": (
@@ -470,7 +573,13 @@ def _install_prime_registry(env: HostEnvironment) -> dict[str, Any]:
 
 def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[str, Any]:
     """Apply one authorized host action with the existing installer. Never raises."""
-    from verdict import acceptance_service, docs_refresh_service, identify_service, ref_docs_service
+    from verdict import (
+        acceptance_service,
+        docs_refresh_service,
+        identify_service,
+        pr_watcher_service,
+        ref_docs_service,
+    )
 
     provider_id = action.provider_id or ""
     try:
@@ -490,6 +599,22 @@ def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[st
         if provider_id == DOCS_REFRESH:
             steps = _install_timers(env, docs_refresh_service.manage_service)
             return {"status": "applied", "note": f"{docs_refresh_service.TIMER} enabled", **steps}
+        if provider_id == PR_WATCHER:
+            try:
+                repos = _pr_watch_repos()
+            except ValueError as exc:
+                return {"status": "blocked", "note": str(exc)}
+            if not repos:
+                return {"status": "blocked", "note": _pr_watch_problem()}
+            result = pr_watcher_service.manage_service(
+                unit_dir=env.unit_dir, run=env.systemctl, repos=repos
+            )
+            return {
+                "status": "applied",
+                "note": f"{pr_watcher_service.TIMER} enabled",
+                "plan": result.get("plan"),
+                "changed": result.get("changed"),
+            }
         if provider_id == SERVE:
             return _install_serve(env)
         if provider_id == PRIME:

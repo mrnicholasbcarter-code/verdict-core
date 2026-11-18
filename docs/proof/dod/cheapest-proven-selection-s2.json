@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "story": "cheapest-proven-selection-s2",
+  "kind": "product",
+  "author": "gem-devops",
+  "merged_sha": "30c2b71e222d2a139d1334abdda26fcb25a0bb41",
+  "pr": 941,
+  "on_main": {
+    "at": "2026-11-17T18:27:28Z",
+    "sha": "30c2b71e222d2a139d1334abdda26fcb25a0bb41",
+    "environment": "operator-host",
+    "command": "gh pr checks 941 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/39684795956",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/cheapest-proven-selection-s2/cheapest-proven-selection-s2-pr941-checks.txt",
+      "sha256": "862e092a0cbf710cfd6a2397364551b534f90515ef80c5149c54f00545f69062"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "choose --no-confirm is read-only: it records that model confirmation was skipped",
+      "expect": "\"confirm\": \"skipped_no_confirm\"",
+      "first_run": {
+        "at": "2026-11-17T20:45:18Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict choose --task 'edit a python function and run its test' --no-confirm --json",
+        "real_state_marker": "\"gateway\": \"http://127.0.0.1:20128\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/cheapest-proven-selection-s2/cheapest-proven-selection-s2-s2-first.json",
+          "sha256": "4cb74e3171210f7a38a2bc36610b1ba87fb588466650689c49537bae5e3aa5fb"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T21:08:02Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict choose --task 'edit a python function and run its test' --no-confirm --json",
+        "real_state_marker": "\"gateway\": \"http://127.0.0.1:20128\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/cheapest-proven-selection-s2/cheapest-proven-selection-s2-s2-fresh.json",
+          "sha256": "ac9f0fc1da1b70b9c7250528f407d53c9dbfb30e11507ed0c59c94656c7b59da"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 0.25,
+  "stays_true_job": "tests covering cheapest-proven-selection-s2 run on every PR and push. The hourly verify_refresh gate exercises the selector on this host.",
+  "setup_doctor": {
+    "status": "green",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict doctor --json",
+    "at": "2026-11-17T19:57:00Z",
+    "raw_output": {
+      "path": "docs/proof/dod/cheapest-proven-selection-s2/doctor-ok-2026-11-17T19-57Z.json",
+      "sha256": "4320aa64ab21d6bb53b688696ded1c82ca1faa2312dfb5a50f90d6db26196ccd"
+    }
+  },
+  "openspec": {
+    "change": "cheapest-proven-selection-s2"
+  },
+  "parent_confirmation": {
+    "by": "gem-implementer confirmer on omniroute/worker/free-verified",
+    "at": "2026-11-17T22:06:19Z",
+    "command": "cd /operator/.local/share/verdict/<installed-main> && .venv/bin/verdict choose --task 'edit a python function and run its test' --no-confirm --json",
+    "raw_output": {
+      "path": "docs/proof/dod/cheapest-proven-selection-s2/confirm-20261117T220619Z.json",
+      "sha256": "1056a7cc7be935eb577da01b94eb037ddf228912f9ad043bc27e7f2a93e972e5"
+    }
+  }
+}

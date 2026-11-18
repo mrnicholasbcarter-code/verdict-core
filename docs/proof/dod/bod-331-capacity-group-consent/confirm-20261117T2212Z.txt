@@ -1,0 +1,74 @@
+n
+Manual model refresh plan (not executed)
+consumer=verified_view  gateway_origin=http://127.0.0.1:20128
+candidate_count=3  selected_count=3  omitted_count=0
+caps: max_routes=20  max_requests=40  wall_seconds=120.0  concurrency=4
+estimated_requests=6
+requires_confirmation=yes  force=no  include_metered=yes
+filters: none  page=1
+needed_ids (50):
+  cc/claude-sonnet-5-5
+  cc/claude-sonnet-4-6
+  cc/claude-sonnet-4-5-20250929
+  pol/community/CloudCompile/nvidia-nemotron-3-ultra-550b-a55b:free
+  pollinations/community/YoannDev90/vercel-nemotron-3.5-lightning:free
+  ddgw/tinfoil/gpt-oss-120b
+  ddgw/tinfoil/gemma4-31b
+  ddgw/mistral-small-2603
+  claude/claude-opus-4-8
+  claude/claude-sonnet-5
+  claude/claude-opus-5
+  cc/claude-opus-4-8
+  cc/claude-sonnet-5
+  cc/claude-opus-5
+  pollinations/community/YoannDev90/nvidia-mistral-large-4-1t-a52b:free
+  pollinations/community/CloudCompile/nvidia-nemotron-3-ultra-550b-a55b:free
+  openrouter/inclusionai/ling-3.2-flash:free
+  claude/claude-sonnet-4-5-20250929
+  claude/claude-sonnet-4-6
+  claude/claude-sonnet-5-5
+  grok-cli/grok-voice-transcribe-2.0
+  openrouter/alibaba/wan-3.0-prime
+  ollama-cloud/clef:27b
+  af/audio1.0
+  pol/Marcus-Mok-GH/pt-copperline
+  nvidia/deepseek-v4.1-flash
+  gh/claude-opus-4.8
+  cursor/auto-cost
+  grok-cli/grok-tts
+  openrouter/alibaba/wan-3.0
+  ollama-cloud/beam
+  af/aion-rp-llama-3.1-8b
+  pol/Lorodn4x/ps5-beta
+  nvidia/deepseek-coder-6.7b-instruct
+  groq/allam-2-7b
+  gh/auto
+  ollama-local/nomic-embed-text
+  nvidia/codellama-70b
+  nvidia/cosmos-reason2-8b
+  ollama-local/bge-m3
+  grok-cli/grok-imagine-video
+  pollinations/Catniti/north-mini-code
+  ollama-cloud/glm-5.2
+  api-airforce/audio1.0
+  nvidia/arctic-embed-l
+  groq/llama-prompt-guard-2-86m
+  github/claude-opus-4.8
+  huggingchat/CohereLabs/command-a-reasoning-08-2025
+  cursor/auto-balance
+  aq/amazon-q
+Selected routes (3):
+  1. claude/claude-sonnet-4-5-20250929  provider=claude  capacity_class=subscription  probe_kind=full
+  2. claude/claude-sonnet-4-6  provider=claude  capacity_class=subscription  probe_kind=full
+  3. claude/claude-sonnet-5-5  provider=claude  capacity_class=subscription  probe_kind=full
+Spend note: SUBSCRIPTION and METERED probes may consume quota; FREE can also have provider limits; UNKNOWN may incur charges; currency estimate unavailable
+created_at=2026-11-17T22:11:46.653334Z  valid_until=2026-11-17T22:13:46.653334Z
+evidence_generation=8340f4e91730593c2b5f7b96b98122a0228819e4b803e0d151134883fd89a595
+plan_digest=eff1fa02d3f4a26e07c12a6d96980d8007a967cf97e1ca083b5824486f2812b3
+This is a plan, not a probe result. Explicit confirmation is required before execution.
+
+Capacity groups (each is approved separately):
+  SUBSCRIPTION: 3 routes, 6 requests, uses prepaid subscription quota (default yes)
+Refresh these groups? y = confirm each group, f = free only [y/N] 
+
+Session terminated, killing shell... ...killed.

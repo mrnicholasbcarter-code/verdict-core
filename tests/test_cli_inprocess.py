@@ -60,6 +60,11 @@ def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     monkeypatch.setattr(
         docs_refresh_service, "timer_state", lambda unit: {"state": "active", "result": "success"}
     )
+    import verdict.pr_watcher_service as pr_watcher_service
+
+    monkeypatch.setattr(
+        pr_watcher_service, "timer_state", lambda unit: {"state": "active", "result": "success"}
+    )
     from datetime import datetime, timezone
 
     monkeypatch.setattr(

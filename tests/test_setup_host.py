@@ -36,6 +36,7 @@ HOST_IDS = [
     "host.identify-timers",
     "host.ref-docs-timer",
     "host.docs-refresh-timer",
+    "host.pr-watcher-timer",
     "host.serve",
     "host.prime-registry",
 ]
@@ -272,6 +273,10 @@ def test_bootstrap_plan_mode_includes_host_actions_and_stays_mutation_free(host:
 def test_apply_with_consent_installs_every_prerequisite_through_the_existing_installers(
     host: FakeHost,
 ) -> None:
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("VERDICT_PR_WATCH_REPOS=owner/a\n")
+    config.chmod(0o600)
     report = host.apply()
     results = _results(report)
     assert {aid: r["status"] for aid, r in results.items()} == {
@@ -423,6 +428,10 @@ def test_drifted_prerequisites_are_planned_and_applied_again(host: FakeHost) -> 
 
 
 def test_rollback_names_manual_undo_for_host_actions(host: FakeHost) -> None:
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("VERDICT_PR_WATCH_REPOS=owner/a\n")
+    config.chmod(0o600)
     host.apply()
     stage = rollback_bootstrap_actions(state_dir=host.root / "state").to_dict()
     assert stage["status"] == "partial"
@@ -472,6 +481,133 @@ def test_docs_refresh_timer_is_planned_until_installed_and_active(host: FakeHost
     ]
     assert action.reason == "verdict-docs-refresh.timer is missing"
     assert action.undo == "verdict memory docs --install-service --uninstall"
+
+
+def test_pr_watcher_timer_is_planned_until_installed_and_active(host: FakeHost) -> None:
+    def planned() -> list[str]:
+        return [a.provider_id or "" for a in setup_host.plan_host_actions(host.env)]
+
+    (host.home / ".config" / "verdict").mkdir(parents=True, exist_ok=True)
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.write_text("VERDICT_PR_WATCH_REPOS=owner/a,owner/b\n")
+    config.chmod(0o600)
+    assert "host.pr-watcher-timer" in planned()
+    report = host.apply(allowlist=["host.pr-watcher-timer"], non_interactive=True)
+    result = _results(report)["bootstrap:host:pr-watcher-timer"]
+    assert result["status"] == "applied" and "verdict-pr-watch.timer" in result["note"]
+    assert ["systemctl", "--user", "enable", "--now", "verdict-pr-watch.timer"] in (
+        host.systemctl_calls
+    )
+    assert "host.pr-watcher-timer" not in planned()
+    host.active.discard("verdict-pr-watch.timer")
+    [action] = [
+        a
+        for a in setup_host.plan_host_actions(host.env)
+        if a.provider_id == "host.pr-watcher-timer"
+    ]
+    assert action.reason == "verdict-pr-watch.timer is missing"
+    assert (
+        action.undo
+        == "systemctl --user disable --now verdict-pr-watch.timer; remove verdict-pr-watch.service and verdict-pr-watch.timer"
+    )
+
+
+def test_pr_watcher_timer_install_contains_each_configured_repository(host: FakeHost) -> None:
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("VERDICT_PR_WATCH_REPOS=owner/a,owner/b\n")
+    config.chmod(0o600)
+    host.apply(allowlist=["host.pr-watcher-timer"], non_interactive=True)
+    service = host.unit_dir / "verdict-pr-watch.service"
+    assert '--repo "owner/a"' in service.read_text()
+    assert '--repo "owner/b"' in service.read_text()
+
+
+def test_pr_watcher_timer_is_not_installed_without_repositories(host: FakeHost) -> None:
+    [action] = [
+        a for a in setup_host.plan_host_actions(host.env) if a.provider_id == setup_host.PR_WATCHER
+    ]
+    assert action.reason.startswith("no repositories configured: write VERDICT_PR_WATCH_REPOS")
+
+
+def test_pr_watcher_timer_observe_and_apply_render_identical_units(host: FakeHost) -> None:
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("VERDICT_PR_WATCH_REPOS=owner/a\n")
+    config.chmod(0o600)
+
+    from verdict.setup_host import PR_WATCHER, _observe
+
+    # After setup applies the pr-watcher-timer, the observe should return empty
+    report = host.apply(allowlist=["host.pr-watcher-timer"], non_interactive=True)
+    result = _results(report).get("bootstrap:host:pr-watcher-timer", {})
+    assert result.get("status") == "applied"
+
+    # Now _observe should return no problems
+    problems = _observe(host.env, PR_WATCHER)
+    assert problems == []
+
+
+def test_pr_watch_env_parsing_handles_export_and_comment(host: FakeHost) -> None:
+    """pr-watch.env parsing strips export prefix and trailing comments."""
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    # Test with export prefix and trailing comment
+    config.write_text("export VERDICT_PR_WATCH_REPOS=owner/a # main\n")
+    config.chmod(0o600)
+
+    from verdict.setup_host import _pr_watch_repos
+
+    repos = _pr_watch_repos()
+    assert repos == ["owner/a"]
+
+
+def test_pr_watch_env_parsing_handles_leading_spaces_and_comment(host: FakeHost) -> None:
+    """pr-watch.env parsing strips leading spaces and trailing comments."""
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    # Test with leading spaces and trailing comment
+    config.write_text("  VERDICT_PR_WATCH_REPOS=owner/a # main\n")
+    config.chmod(0o600)
+
+    from verdict.setup_host import _pr_watch_repos
+
+    repos = _pr_watch_repos()
+    assert repos == ["owner/a"]
+
+
+def test_pr_watch_env_refuses_mode_0o666(host: FakeHost) -> None:
+    """pr-watch.env with mode 0o666 is refused."""
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("VERDICT_PR_WATCH_REPOS=owner/a\n")
+    config.chmod(0o666)
+
+    from verdict.setup_host import _pr_watch_repos
+
+    try:
+        _pr_watch_repos()
+        raise AssertionError("Expected ValueError")
+    except ValueError as exc:
+        assert "unsafe permissions" in str(exc)
+        assert "0o666" in str(exc) or "666" in str(exc)
+
+
+def test_pr_watch_env_invalid_repo_blocks(host: FakeHost) -> None:
+    """Invalid repo name in pr-watch.env blocks with reason."""
+    config = host.home / ".config" / "verdict" / "pr-watch.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("VERDICT_PR_WATCH_REPOS=invalid..repo\n")
+    config.chmod(0o600)
+
+    from verdict.setup_host import _pr_watch_repos
+
+    try:
+        _pr_watch_repos()
+        raise AssertionError("Expected ValueError")
+    except ValueError as exc:
+        assert "invalid repository name" in str(exc)
+        assert "invalid..repo" in str(exc)
 
 
 # --- CLI wiring ------------------------------------------------------------------------
