@@ -1844,6 +1844,11 @@ class HealthCache:
             state = previous.state_at(current)
             if state == STATE_NEGATIVE:
                 return "skipped_active_negative"
+            if not previous.healthy and previous.category == CATEGORY_PAYMENT:
+                # Traffic status cannot tell a credit refusal sent as HTTP 200
+                # from an answer. Only a probe, which reads the reply, clears
+                # a billing negative, even after its backoff has ended.
+                return "skipped_billing_negative"
             if previous.healthy and previous.tool_ok and state in {STATE_FRESH, STATE_STALE}:
                 return "skipped_tool_proof_usable"
         entry = self.record_liveness(

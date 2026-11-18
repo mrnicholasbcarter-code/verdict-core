@@ -49,6 +49,8 @@ class WebhookEvent:
     model: str | None
     latency_ms: float | None
     digest: str
+    # Output tokens OmniRoute reported for the request; None when it sent none.
+    output_tokens: int | None = None
 
 
 def config_path() -> Path:
@@ -131,6 +133,12 @@ def _latency(value: Any) -> float | None:
     return float(value)
 
 
+def _tokens(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return int(value)
+
+
 def _read_lines() -> list[str]:
     try:
         return events_path().read_text(encoding="utf-8").splitlines()
@@ -195,6 +203,7 @@ def accept_delivery(
         "provider": _text(data.get("provider")),
         "model": _text(data.get("model")),
         "latency_ms": _latency(data.get("latencyMs")),
+        "output_tokens": _tokens(data.get("tokensOutput", data.get("tokens_out"))),
         "digest": hashlib.sha256(raw_body).hexdigest(),
     }
     if not _store(row):
@@ -220,6 +229,7 @@ def _event_from_row(row: Any) -> WebhookEvent | None:
         model=_text(row.get("model")),
         latency_ms=_latency(row.get("latency_ms")),
         digest=digest,
+        output_tokens=_tokens(row.get("output_tokens")),
     )
 
 

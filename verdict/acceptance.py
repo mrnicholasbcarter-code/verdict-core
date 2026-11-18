@@ -34,6 +34,7 @@ from typing import IO, Any
 from verdict.acceptance_state import ISSUE_PREFIX, acceptance_dir, prune, update_alert_state
 from verdict.http_safety import open_no_redirect
 from verdict.openrouter_free_set import load_openrouter_free_set
+from verdict.orchestration.provider_catalog import is_inband_billing_refusal
 from verdict.security import redact_text
 
 KEEP_RESULTS = 48
@@ -597,6 +598,21 @@ def serve_check(gateway: str, *, startup_seconds: float = 120) -> Check:
         return _serve_check(gateway, startup_seconds, log)
 
 
+def _serve_verdict(status: int, raw: str) -> tuple[bool, str]:
+    """Pass only an HTTP 200 that carries a reply; a credit refusal is not a reply."""
+    reply = _json(raw)
+    model = reply.get("model") if isinstance(reply, dict) else None
+    if status == 200 and is_inband_billing_refusal(reply):
+        return False, f"HTTP 200 credit refusal from {model}: no completion tokens"
+    content = None
+    if isinstance(reply, dict) and reply.get("choices"):
+        msg = reply["choices"][0].get("message") or {}
+        content = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning")
+    if status == 200 and content is not None:
+        return True, f"HTTP 200 from {model}"
+    return False, f"HTTP {status}: {redact_text(raw)[:160]}"
+
+
 def _serve_check(gateway: str, startup_seconds: float, log: IO[str]) -> Check:
     port = _free_port()
     token = secrets.token_urlsafe(24)
@@ -653,20 +669,12 @@ def _serve_check(gateway: str, startup_seconds: float, log: IO[str]) -> Check:
             status, raw, served_by = 0, f"{type(exc).__name__}: {exc}", ""
         check.exit_code = status
         check.stdout_sha256 = _digest(raw)
-        reply = _json(raw)
-        content = None
-        if isinstance(reply, dict) and reply.get("choices"):
-            msg = reply["choices"][0].get("message") or {}
-            content = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning")
         check.detail = {
             "http_status": status,
-            "model": (reply or {}).get("model"),
+            "model": (_json(raw) or {}).get("model"),
             "served_by": served_by,
         }
-        if status == 200 and content is not None:
-            check.passed, check.reason = True, f"HTTP 200 from {check.detail['model']}"
-        else:
-            check.reason = f"HTTP {status}: {redact_text(raw)[:160]}"
+        check.passed, check.reason = _serve_verdict(status, raw)
         return check
     finally:
         process.terminate()

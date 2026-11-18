@@ -13,6 +13,7 @@ upstream quota.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -244,6 +245,8 @@ _NOT_FREE_PHRASES = (
     "deposit required",
     "purchase more credits",
     "credits exhausted",
+    "enough credits",
+    "top up",
 )
 
 
@@ -257,6 +260,45 @@ def is_not_free_signal(
         return True
     lower = error_message.lower()
     return any(phrase in lower for phrase in _NOT_FREE_PHRASES)
+
+
+# A refusal is one short sentence; a larger body is a real answer and is not parsed.
+_INBAND_REFUSAL_MAX_BYTES = 65_536
+
+
+def is_inband_billing_refusal(body: Mapping[str, Any] | bytes | str | None) -> bool:
+    """True when a chat completion body is a provider credit refusal, not an answer.
+
+    Some providers answer HTTP 200 with the refusal as the assistant text. All
+    of these must hold: the usage block reports zero completion tokens, the
+    message carries no tool call, and the text matches a not-free phrase. A
+    model that wrote the same words itself spent completion tokens, so it does
+    not match. The caller checks the HTTP status.
+    """
+    parsed: Any = body
+    if isinstance(body, (bytes, str)):
+        if not body or len(body) > _INBAND_REFUSAL_MAX_BYTES:
+            return False
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            return False
+    if not isinstance(parsed, Mapping):
+        return False
+    usage = parsed.get("usage")
+    if not isinstance(usage, Mapping):
+        return False
+    produced = usage.get("completion_tokens", usage.get("output_tokens"))
+    if isinstance(produced, bool) or produced != 0:
+        return False
+    choices = parsed.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
+        return False
+    message = choices[0].get("message")
+    if not isinstance(message, Mapping) or message.get("tool_calls"):
+        return False
+    content = message.get("content")
+    return isinstance(content, str) and is_not_free_signal(error_message=content)
 
 
 NOT_FREE_OVERRIDE_TTL_SECONDS: float = 21600.0  # 6 hours

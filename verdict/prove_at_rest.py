@@ -104,7 +104,7 @@ from verdict.orchestration.health_cache import (
     agentic_capability,
     default_cache_path,
 )
-from verdict.orchestration.provider_catalog import is_catalog_stale_error
+from verdict.orchestration.provider_catalog import is_catalog_stale_error, is_inband_billing_refusal
 
 # The old cycle document stays readable. This module no longer writes it.
 # ``ProveAtRestDaemon`` is the legacy free-intersect-active prover; the
@@ -1862,7 +1862,7 @@ class Prober:
             probe_class="agentic",
             agentic_ok=passed,
             pool=route.pool,
-            capacity_evidence=route.capacity_evidence,
+            capacity_evidence=_capacity_evidence(route, category, last.http_status),
             identity="verified" if passed else "",
             failure_scope=(
                 "route"
@@ -2085,6 +2085,8 @@ def _exchange_from_body(
         body = {}
     # Capture the reported model identity before deciding ok (defect 3 fix).
     reported_model: str = str(body.get("model", "")) if isinstance(body, Mapping) else ""
+    if status == 200 and is_inband_billing_refusal(body):
+        return _inband_refusal_exchange(latency_ms, reported_model)
     choices = body.get("choices")
     message: Mapping[str, Any] = {}
     if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
@@ -2114,6 +2116,29 @@ def _exchange_from_body(
         error_category=None,
         reported_model=reported_model,
     )
+
+
+def _inband_refusal_exchange(latency_ms: float | None, reported_model: str) -> ProbeExchange:
+    """An HTTP 200 whose body is a credit refusal: a payment failure, never proof."""
+    return ProbeExchange(
+        http_status=200,
+        ok=False,
+        latency_ms=latency_ms,
+        error_category="payment_required",
+        reported_model=reported_model,
+    )
+
+
+def _is_inband_refusal(category: str, http_status: int | None) -> bool:
+    """A payment category at HTTP 200 only comes from an in-band credit refusal."""
+    return category == CATEGORY_PAYMENT and http_status == 200
+
+
+def _capacity_evidence(route: AdmittedRoute, category: str, http_status: int | None) -> str | None:
+    """Billing evidence for a refused route, so it stops counting as free while negative."""
+    if _is_inband_refusal(category, http_status):
+        return "billing_402_metered"
+    return route.capacity_evidence
 
 
 def _http_error_exchange(exc: urllib.error.HTTPError, latency_ms: float) -> ProbeExchange:
@@ -2221,6 +2246,8 @@ def live_agentic_transport(
                 untrusted = _untrusted_exchange(response, elapsed, str(body.get("model") or ""))
                 if untrusted is not None:
                     return untrusted
+                if response.status == 200 and is_inband_billing_refusal(body):
+                    return _inband_refusal_exchange(elapsed, str(body.get("model") or ""))
                 return ProbeExchange(
                     http_status=response.status,
                     ok=200 <= response.status < 300,
@@ -2425,6 +2452,10 @@ def _detail_is_model_scoped(
     public 0/0 free set is route-scoped so it cannot cool the FREE pool.
     The same error on a confirmed-free route stays account/provider scoped.
     """
+    if _is_inband_refusal(category, http_status):
+        # The refusal is about this route's price: free community routes on the
+        # same key still answer, so it must not stop the provider or its pool.
+        return True
     free_set = openrouter_free_set
     if free_set is None and route_id.split("/", 1)[0].lower() == "openrouter":
         free_set = load_openrouter_free_set_for_prober()
@@ -2650,8 +2681,9 @@ def probe_full(
         http_status=status,
         retry_after_seconds=observed.retry_after_seconds,
         pool=route.pool,
-        capacity_evidence=route.capacity_evidence,
+        capacity_evidence=_capacity_evidence(route, category, status),
         identity=identity,
+        failure_scope="route" if _is_inband_refusal(category, status) else None,
     )
     return FullProbeOutcome(
         route.route_id,
@@ -2739,8 +2771,9 @@ def probe_liveness(
         http_status=status,
         retry_after_seconds=chat.retry_after_seconds,
         pool=route.pool,
-        capacity_evidence=route.capacity_evidence,
+        capacity_evidence=_capacity_evidence(route, category, status),
         identity=identity,
+        failure_scope="route" if _is_inband_refusal(category, status) else None,
     )
     return FullProbeOutcome(
         route.route_id,
