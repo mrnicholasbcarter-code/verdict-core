@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -28,6 +29,26 @@ CAPACITY_ORDER: Mapping[CapacityClass, int] = {
     CapacityClass.METERED: 2,
     CapacityClass.UNKNOWN: 3,
 }
+
+DEFAULT_CREDIT_PROVIDERS: frozenset[str] = frozenset({"pollinations", "pol", "g4f-pollinations"})
+
+
+def get_credit_providers() -> frozenset[str]:
+    raw = os.getenv("VERDICT_CREDIT_PROVIDERS")
+    if raw is not None:
+        return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+    return DEFAULT_CREDIT_PROVIDERS
+
+
+def is_credit_provider_route(route_id: str, conn: Mapping[str, Any] | None) -> bool:
+    providers = get_credit_providers()
+    if not providers:
+        return False
+    provider = str(conn.get("provider", "")).strip().lower() if conn else ""
+    if provider in providers:
+        return True
+    lower_id = route_id.lower()
+    return any(lower_id.startswith(f"{p}/") for p in providers)
 
 
 def classify_route_capacity(
@@ -99,6 +120,10 @@ def classify_route_capacity(
     # (e) apikey with positive pricing → METERED.
     if positive:
         return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
+
+    # Credit providers without free evidence or pricing stay UNKNOWN.
+    if is_credit_provider_route(route_id, conn):
+        return CapacityClass.UNKNOWN, plan_label, "credit_provider_unknown_pricing"
 
     # D7: absence of specific paid/subscription evidence is assumed free,
     # not proof of capability. The same agentic gate still applies.
