@@ -488,7 +488,9 @@ class IntelligenceService:
     def admit_now(self, value: datetime | None) -> None:
         # A naive instant cannot be compared with the aware timestamps in the
         # health cache and passports; reject it here instead of failing per request.
-        if value is not None and (not isinstance(value, datetime) or value.tzinfo is None):
+        if value is not None and (
+            not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None
+        ):
             raise ValueError("admit_now must be a timezone-aware datetime or None")
         self._admit_now = value
 
@@ -711,7 +713,7 @@ class IntelligenceService:
                             authorization_digest=ep.decision_digest,
                             provider=route.provider,
                             model=route.model,
-                            now=datetime.now(timezone.utc),
+                            now=self._now,
                         )
                         if proof is not None:
                             proofs[route.route_id] = proof
