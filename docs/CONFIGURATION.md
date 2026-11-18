@@ -455,6 +455,10 @@ Rules:
   that route while the entry is usable; agentic screening is unaffected.
 - Only HTTP 402 and 5xx traffic becomes a route negative; authentication and
   request errors stay out of the cache, the same rule the relay uses.
+- A webhook completion that reports zero output tokens is not liveness
+  (`skipped_zero_output`). Traffic never turns a payment negative healthy,
+  even after its backoff has ended (`skipped_billing_negative`): a provider
+  can send a credit refusal as HTTP 200, and only a probe reads the reply.
 - The webhook receiver is exempt from bearer auth because each delivery is
   HMAC-signed. It rejects bodies over 64 KiB with 413.
 

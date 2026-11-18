@@ -120,6 +120,11 @@ def refresh_health_from_traffic(
         if not provider or not routes:
             report["webhook_events_unattributed"] += 1
             continue
+        if getattr(event, "output_tokens", None) == 0:
+            # A completed request with no output is not an answer: providers
+            # report credit refusals this way. It proves no liveness.
+            skipped["skipped_zero_output"] += 1
+            continue
         for route in sorted(routes):
             if not admissible(route, provider):
                 continue

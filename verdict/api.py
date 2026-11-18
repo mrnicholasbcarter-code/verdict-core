@@ -86,6 +86,7 @@ from verdict.orchestration.health_cache import (
     HealthCache,
     default_cache_path,
 )
+from verdict.orchestration.provider_catalog import is_inband_billing_refusal
 from verdict.orchestration.verified_models import public_model_entry
 from verdict.outcome_log import build_outcome_record, log_outcome, omniroute_anomaly_names
 from verdict.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
@@ -1659,6 +1660,19 @@ def _task_text(payload: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _inband_refusal_body(surface: str) -> bytes:
+    """The error body Verdict returns in place of an in-band credit refusal."""
+    error = {
+        "message": "upstream answered HTTP 200 with a credit refusal and no output",
+        "type": "invalid_request_error",
+        "code": "payment_required",
+    }
+    payload: dict[str, Any] = (
+        {"type": "error", "error": error} if surface == "messages" else {"error": error}
+    )
+    return json.dumps(payload).encode("utf-8")
+
+
 def _as_response(result: BufferedUpstreamResponse) -> Response:
     return Response(
         content=result.body, status_code=result.status_code, headers=dict(result.headers)
@@ -2446,6 +2460,17 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     assert validated_stream is not None
                     await validated_stream.aclose()
                 raise RuntimeError("dispatch permit revoked after commit; possibly sent")
+            inband_refusal = False
+            if (
+                isinstance(result, BufferedUpstreamResponse)
+                and result.status_code == 200
+                and is_inband_billing_refusal(result.body)
+            ):
+                # The provider answered 200 but the body is a credit refusal with
+                # no completion tokens. Project it as a 402 so it is a failed
+                # attempt everywhere below; the provider text is not forwarded.
+                inband_refusal = True
+                result = replace(result, status_code=402, body=_inband_refusal_body(surface))
             last_status = result.status_code
             # Extract bounded body text for failure classification (context-length
             # detection).  Error responses are always BufferedUpstreamResponse, so
@@ -2575,10 +2600,14 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "context_pack": injection.to_dict(),
                 },
             )
-            if result.status_code < 400 or not retryable_response_status(
-                result.status_code,
-                compatibility_applied=result.compatibility_rule_version is not None,
-                body=_error_body,
+            # An in-band refusal produced no output, so another candidate is safe.
+            if result.status_code < 400 or not (
+                inband_refusal
+                or retryable_response_status(
+                    result.status_code,
+                    compatibility_applied=result.compatibility_rule_version is not None,
+                    body=_error_body,
+                )
             ):
                 break
             # A later denial fences this request even when its rejection or
