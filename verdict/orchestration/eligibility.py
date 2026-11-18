@@ -1216,6 +1216,7 @@ class EligibilityLadder:
         if self._read_only:
             from verdict.admit_prove_confirm import load_healthy_passports
             from verdict.orchestration.health_cache import HealthCache, default_cache_path
+
             for a in assessments:
                 if a.failed_stage is EligibilityStage.HEALTHY and a.health == "unhealthy":
                     # Load passport directly (ignores 10-minute freshness window)
@@ -1313,7 +1314,8 @@ class EligibilityLadder:
                         if (
                             negative is not None
                             and not negative.healthy
-                            and negative.checked_at >= _parse_iso(str(passport_row.get("qualified_at", "")))
+                            and negative.checked_at
+                            >= _parse_iso(str(passport_row.get("qualified_at", "")))
                         ):
                             proof_stale = True
                             stale_reason = "passport_superseded"

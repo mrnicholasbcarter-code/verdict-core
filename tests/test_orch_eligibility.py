@@ -987,7 +987,9 @@ class TestSelect:
         assert selected is None, "superseded passport should not be selected in read-only mode"
         assert probe.calls == [], "no probe calls in read-only mode"
         v = by_route(verdicts)["cc/claude-sonnet-5"]
-        assert v.reason == "passport_superseded", f"expected 'passport_superseded', got '{v.reason}'"
+        assert v.reason == "passport_superseded", (
+            f"expected 'passport_superseded', got '{v.reason}'"
+        )
 
     def test_read_only_mode_lease_held_wins(self, tmp_path: Path) -> None:
         """Read-only mode with lease held returns lease_held reason, not passport_invalid."""
