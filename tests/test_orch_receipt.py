@@ -287,6 +287,40 @@ def test_appended_event_and_edited_receipt_detected(tmp_path: Path) -> None:
     ]
 
 
+def test_graph_run_id_does_not_override_the_logged_run_id(tmp_path: Path) -> None:
+    """graph.json is not digest-bound; run_started in events.jsonl names the run.
+
+    Real case: a held copy of run 20261118T031028Z whose graph.json kept the
+    planner input's own run_id ("bod341-par3") reported a false run_id mismatch.
+    """
+    run_dir = _run(tmp_path, review=PASS)
+    write_run_receipt(run_dir)
+    graph_path = run_dir / "graph.json"
+    graph_path.write_text(json.dumps({**_graph().to_dict(), "run_id": "planner-input-id"}))
+    assert verify_run_receipt(run_dir) == []
+    assert build_run_receipt(run_dir)["run_id"] == "run-1"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("run_id", "planner-input-id"), ("goal", "other goal"), ("outcome", "BLOCKED")],
+)
+def test_editing_a_receipt_field_still_fails_with_a_graph_run_id(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    run_dir = _run(tmp_path, review=PASS)
+    graph_path = run_dir / "graph.json"
+    graph_path.write_text(json.dumps({**_graph().to_dict(), "run_id": "planner-input-id"}))
+    write_run_receipt(run_dir)
+    receipt_path = run_dir / "receipt.json"
+    stored = json.loads(receipt_path.read_text())
+    stored[field] = value
+    receipt_path.write_text(json.dumps(stored))
+    assert verify_run_receipt(run_dir) == [
+        f"{field} mismatch: stored receipt differs from recomputed evidence"
+    ]
+
+
 def test_verify_missing_receipt(tmp_path: Path) -> None:
     assert verify_run_receipt(tmp_path) == ["missing receipt.json"]
 

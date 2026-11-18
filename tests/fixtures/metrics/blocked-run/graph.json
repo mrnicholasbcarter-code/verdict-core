@@ -1,0 +1,8 @@
+{
+  "run_id": "test-blocked",
+  "goal": "Test blocked run",
+  "nodes": [
+    {"node_id": "alpha", "objective": "Test alpha", "kind": "implement", "barrier": "ownership", "owned_files": ["test_alpha.py"], "verification_command": ["pytest test_alpha.py"]}
+  ],
+  "topology": "PARALLEL_WORK_UNITS"
+}
