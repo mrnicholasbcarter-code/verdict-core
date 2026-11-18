@@ -1,5 +1,5 @@
 <!-- generated — do not edit by hand; run: python scripts/generate_proof_matrix.py -->
-# Proof Matrix <!-- claim:C-108 -->
+# Proof Matrix
 
 > Auto-generated from [`docs/proof/proof_matrix.v1.json`](proof/proof_matrix.v1.json).
 > Regenerate with `python scripts/generate_proof_matrix.py`.

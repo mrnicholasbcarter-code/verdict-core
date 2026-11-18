@@ -13,6 +13,36 @@ import re
 import sys
 from pathlib import Path
 
+ALLOWED_LABELS = {"shipped", "observed", "proposed", "superseded", "disputed"}
+
+
+def validate_claim(label: str, evidence_paths: list[str], repo_root: Path) -> list[str]:
+    """Reject invalid labels and structurally unrelated evidence, not certify behavior."""
+    errors = []
+    if label not in ALLOWED_LABELS:
+        errors.append("invalid label")
+    if label == "observed" and not has_proof_evidence(evidence_paths):
+        errors.append("missing proof evidence")
+    if label == "shipped":
+        tests = [p for p in evidence_paths if p.startswith("tests/")]
+        if not tests:
+            errors.append("missing test evidence")
+        modules = {
+            Path(p).stem
+            for p in evidence_paths
+            if p.startswith("verdict/") and Path(p).suffix == ".py"
+        }
+        if not any(
+            (repo_root / test).is_file()
+            and any(
+                re.search(r"\b" + re.escape(module) + r"\b", (repo_root / test).read_text())
+                for module in modules
+            )
+            for test in tests
+        ):
+            errors.append("test evidence does not mention a cited source module")
+    return errors
+
 
 def extract_readme_claims(readme_path: Path) -> set[str]:
     """Extract all claim IDs from README.md markers like <!-- claim:C-001 -->"""
@@ -104,6 +134,15 @@ def main():
 
     readme_claims = extract_readme_claims(readme_path)
     claims_md_claims = extract_claims_md_claims(claims_path)
+
+    invalid = [
+        f"{cid}: {error}"
+        for cid, data in claims_md_claims.items()
+        for error in validate_claim(data["label"], data["evidence_paths"], repo_root)
+    ]
+    if invalid:
+        print("\n".join(invalid))
+        return 1
 
     print(f"Found {len(readme_claims)} claim markers in README.md")
     print(f"Found {len(claims_md_claims)} claim entries in docs/CLAIMS.md")

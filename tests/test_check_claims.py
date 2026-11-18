@@ -4,6 +4,36 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from scripts.check_claims import validate_claim
+
+
+@pytest.mark.parametrize(
+    ("label", "paths", "message"),
+    [
+        ("verified", [], "invalid label"),
+        ("shipped", ["verdict/admission.py"], "test evidence"),
+        ("observed", ["verdict/admission.py"], "proof evidence"),
+        ("shipped", ["verdict/admission.py", "tests/test_other.py"], "source module"),
+    ],
+)
+def test_rejects_invalid_label_or_unrelated_evidence(tmp_path, label, paths, message):
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_other.py").write_text("def test_other():\n    assert True\n")
+    assert any(message in error for error in validate_claim(label, paths, tmp_path))
+
+
+def test_accepts_test_that_mentions_source_module(tmp_path):
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_admission.py").write_text("from verdict.admission import admit\n")
+    assert (
+        validate_claim("shipped", ["verdict/admission.py", "tests/test_admission.py"], tmp_path)
+        == []
+    )
+
 
 def test_check_claims_passes():
     """The check_claims script should pass on the current repo."""
