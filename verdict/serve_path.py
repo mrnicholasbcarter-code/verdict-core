@@ -43,6 +43,44 @@ LEGACY_NON_AUTHORITY_FLAG = "legacy_non_authority_selector"
 SERVE_PATH_AUTHORITY_FLAG = "bod104_execution_path_authority"
 
 
+class TracedExecutionPathError(ExecutionPathError):
+    """A no-selection decision, carrying the routing trace of the same request.
+
+    The message is the one ``require_serve_path_decision`` raised, so callers
+    that only catch ``ExecutionPathError`` see no change.
+    """
+
+    def __init__(self, message: str, routing_trace: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.routing_trace = dict(routing_trace)
+
+
+def routing_trace(
+    stages: Mapping[str, Any] | None, decision: ExecutionPathDecision
+) -> dict[str, Any]:
+    """Project stage outputs and the optimizer decision; ids and codes only.
+
+    ``stages`` holds the admitted set and shortlist captured while the request
+    was prepared; a stage that never ran is omitted, never invented.
+    """
+
+    trace: dict[str, Any] = dict(stages or {})
+    # Same test require_serve_path_decision applies: anything else is no selection.
+    selected = decision.selected_strategy != "blocked" and bool(decision.selected_candidate_id)
+    trace["optimizer_decision"] = {
+        "outcome": "selected" if selected else "denied",
+        "selected_candidate_id": decision.selected_candidate_id,
+    }
+    # A reason may carry a "; ..." annotation with prices (for example
+    # higher_complete_expected_cost; selected_cash=...); the code is the part before it.
+    trace["rejected_offers"] = [
+        {"candidate_id": item.candidate_id, "code": item.reason.split(";", 1)[0].strip()}
+        for item in decision.rejected
+        if item.candidate_id is not None
+    ]
+    return trace
+
+
 def serve_path_authority_required(
     *,
     profile: str | None = None,
