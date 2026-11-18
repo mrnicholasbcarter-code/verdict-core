@@ -7,7 +7,7 @@
       "choose",
       "route"
     ],
-    "path": "/home/nick/.verdict/acceptance/20261118T120014Z.json",
+    "path": "/operator/.verdict/acceptance/20261118T120014Z.json",
     "state": "red"
   },
   "capability_bootstrap": {
@@ -152,10 +152,10 @@
           "memory.search"
         ],
         "config_sources": [
-          "/home/nick/.claude.json",
-          "/home/nick/.codex/config.toml",
-          "/home/nick/.hermes/config.yaml",
-          "/home/nick/.prime/agent/settings.json"
+          "/operator/.claude.json",
+          "/operator/.codex/config.toml",
+          "/operator/.hermes/config.yaml",
+          "/operator/.prime/agent/settings.json"
         ],
         "failure_reason": "binary present; not live-certified",
         "freshness": "unknown",
@@ -168,7 +168,7 @@
         "lifecycle": "installed",
         "managed_by_verdict": false,
         "optional": true,
-        "path_or_endpoint": "/home/nick/.local/bin/codebase-memory-mcp",
+        "path_or_endpoint": "/operator/.local/bin/codebase-memory-mcp",
         "provider_id": "adapter.codebase_memory",
         "provider_kind": "intelligence",
         "qualification_state": "unqualified",
@@ -182,9 +182,9 @@
           "docs.lookup"
         ],
         "config_sources": [
-          "/home/nick/.claude.json",
-          "/home/nick/.hermes/config.yaml",
-          "/home/nick/.prime/agent/settings.json"
+          "/operator/.claude.json",
+          "/operator/.hermes/config.yaml",
+          "/operator/.prime/agent/settings.json"
         ],
         "failure_reason": "configured in harness MCP; not live-certified",
         "freshness": "unknown",
@@ -216,10 +216,10 @@
           "code.symbols"
         ],
         "config_sources": [
-          "/home/nick/.claude.json",
-          "/home/nick/.codex/config.toml",
-          "/home/nick/.hermes/config.yaml",
-          "/home/nick/.prime/agent/settings.json"
+          "/operator/.claude.json",
+          "/operator/.codex/config.toml",
+          "/operator/.hermes/config.yaml",
+          "/operator/.prime/agent/settings.json"
         ],
         "failure_reason": "binary present; not live-certified",
         "freshness": "unknown",
@@ -232,7 +232,7 @@
         "lifecycle": "installed",
         "managed_by_verdict": false,
         "optional": true,
-        "path_or_endpoint": "/home/nick/.local/bin/serena",
+        "path_or_endpoint": "/operator/.local/bin/serena",
         "provider_id": "adapter.serena_lsp",
         "provider_kind": "intelligence",
         "qualification_state": "unqualified",
@@ -332,7 +332,7 @@
         "lifecycle": "installed",
         "managed_by_verdict": false,
         "optional": true,
-        "path_or_endpoint": "/home/nick/.local/bin/claude",
+        "path_or_endpoint": "/operator/.local/bin/claude",
         "provider_id": "harness.claude_code",
         "provider_kind": "harness",
         "qualification_state": "unqualified",
@@ -380,7 +380,7 @@
         "lifecycle": "installed",
         "managed_by_verdict": false,
         "optional": true,
-        "path_or_endpoint": "/home/nick/.local/bin/codex",
+        "path_or_endpoint": "/operator/.local/bin/codex",
         "provider_id": "harness.codex",
         "provider_kind": "harness",
         "qualification_state": "unqualified",
@@ -404,7 +404,7 @@
         "lifecycle": "installed",
         "managed_by_verdict": false,
         "optional": true,
-        "path_or_endpoint": "/home/nick/.local/bin/cursor-agent",
+        "path_or_endpoint": "/operator/.local/bin/cursor-agent",
         "provider_id": "harness.cursor",
         "provider_kind": "harness",
         "qualification_state": "unqualified",
@@ -428,7 +428,7 @@
         "lifecycle": "installed",
         "managed_by_verdict": false,
         "optional": true,
-        "path_or_endpoint": "/home/nick/.local/bin/hermes",
+        "path_or_endpoint": "/operator/.local/bin/hermes",
         "provider_id": "harness.hermes",
         "provider_kind": "harness",
         "qualification_state": "unqualified",
@@ -452,7 +452,7 @@
         "lifecycle": "installed",
         "managed_by_verdict": false,
         "optional": true,
-        "path_or_endpoint": "/home/nick/.opencode/bin/opencode",
+        "path_or_endpoint": "/operator/.opencode/bin/opencode",
         "provider_id": "harness.opencode",
         "provider_kind": "harness",
         "qualification_state": "unqualified",
@@ -476,7 +476,7 @@
         "lifecycle": "installed",
         "managed_by_verdict": false,
         "optional": true,
-        "path_or_endpoint": "/home/nick/.local/bin/prime-agent",
+        "path_or_endpoint": "/operator/.local/bin/prime-agent",
         "provider_id": "harness.prime",
         "provider_kind": "harness",
         "qualification_state": "unqualified",
@@ -550,7 +550,7 @@
         "lifecycle": "installed",
         "managed_by_verdict": false,
         "optional": true,
-        "path_or_endpoint": "/home/nick/.local/bin/gitleaks",
+        "path_or_endpoint": "/operator/.local/bin/gitleaks",
         "provider_id": "security.gitleaks",
         "provider_kind": "security",
         "qualification_state": "unqualified",
@@ -574,7 +574,7 @@
         "lifecycle": "installed",
         "managed_by_verdict": false,
         "optional": true,
-        "path_or_endpoint": "/home/nick/.local/bin/semgrep",
+        "path_or_endpoint": "/operator/.local/bin/semgrep",
         "provider_id": "security.semgrep",
         "provider_kind": "security",
         "qualification_state": "unqualified",
@@ -1169,7 +1169,7 @@
       "verdict-core-docs": "a5d41947f0745a88ea2d5928b333b4116e8c41df"
     },
     "source_roots": {
-      "verdict-core-docs": "/home/nick/dev/verdict-core-worktrees/identify-screen-closeout"
+      "verdict-core-docs": "/operator/.local/share/verdict/installed-main"
     },
     "sources": 1,
     "stale": 45,
@@ -1199,12 +1199,12 @@
   "issues": [
     "authoritative documentation preflight did not pass",
     "Live acceptance is red (20261118T120014Z.json): doctor (1 doctor issue(s): authoritative documentation preflight did not pass), choose (not implemented: exit 1 no_eligible_route), route (no route (exit 1): no_eligible_route)",
-    "verdict-identify.service: interpreter /home/nick/.local/share/verdict/installed-main/.venv/bin/python installs /home/nick/.local/share/verdict/installed-main/verdict; imports /home/nick/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /home/nick/dev/verdict-core-worktrees/identify-screen-closeout/verdict (reviewed build git a5d41947f074; package /home/nick/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /home/nick/.verdict)",
-    "verdict-identify-screen.service: interpreter /home/nick/.local/share/verdict/installed-main/.venv/bin/python installs /home/nick/.local/share/verdict/installed-main/verdict; imports /home/nick/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /home/nick/dev/verdict-core-worktrees/identify-screen-closeout/verdict (reviewed build git a5d41947f074; package /home/nick/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /home/nick/.verdict)",
-    "verdict-acceptance.service: interpreter /home/nick/.local/share/verdict/installed-main/.venv/bin/python installs /home/nick/.local/share/verdict/installed-main/verdict; imports /home/nick/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /home/nick/dev/verdict-core-worktrees/identify-screen-closeout/verdict (reviewed build git a5d41947f074; package /home/nick/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /home/nick/.verdict)",
-    "verdict-prime-sync.service: interpreter /home/nick/.local/share/verdict/installed-main/.venv/bin/python installs /home/nick/.local/share/verdict/installed-main/verdict; imports /home/nick/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /home/nick/dev/verdict-core-worktrees/identify-screen-closeout/verdict (reviewed build git a5d41947f074; package /home/nick/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /home/nick/.verdict)",
-    "verdict-metadata-refresh.service: interpreter /home/nick/.local/share/verdict/installed-main/.venv/bin/python installs /home/nick/.local/share/verdict/installed-main/verdict; imports /home/nick/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /home/nick/dev/verdict-core-worktrees/identify-screen-closeout/verdict (reviewed build git a5d41947f074; package /home/nick/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /home/nick/.verdict)",
-    "verdict-serve.service: interpreter /home/nick/.local/share/verdict/installed-main/.venv/bin/python installs /home/nick/.local/share/verdict/installed-main/verdict; imports /home/nick/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /home/nick/dev/verdict-core-worktrees/identify-screen-closeout/verdict (reviewed build git a5d41947f074; package /home/nick/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /home/nick/.verdict)"
+    "verdict-identify.service: interpreter /operator/.local/share/verdict/installed-main/.venv/bin/python installs /operator/.local/share/verdict/installed-main/verdict; imports /operator/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /operator/.local/share/verdict/installed-main/verdict (reviewed build git a5d41947f074; package /operator/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /operator/.verdict)",
+    "verdict-identify-screen.service: interpreter /operator/.local/share/verdict/installed-main/.venv/bin/python installs /operator/.local/share/verdict/installed-main/verdict; imports /operator/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /operator/.local/share/verdict/installed-main/verdict (reviewed build git a5d41947f074; package /operator/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /operator/.verdict)",
+    "verdict-acceptance.service: interpreter /operator/.local/share/verdict/installed-main/.venv/bin/python installs /operator/.local/share/verdict/installed-main/verdict; imports /operator/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /operator/.local/share/verdict/installed-main/verdict (reviewed build git a5d41947f074; package /operator/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /operator/.verdict)",
+    "verdict-prime-sync.service: interpreter /operator/.local/share/verdict/installed-main/.venv/bin/python installs /operator/.local/share/verdict/installed-main/verdict; imports /operator/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /operator/.local/share/verdict/installed-main/verdict (reviewed build git a5d41947f074; package /operator/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /operator/.verdict)",
+    "verdict-metadata-refresh.service: interpreter /operator/.local/share/verdict/installed-main/.venv/bin/python installs /operator/.local/share/verdict/installed-main/verdict; imports /operator/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /operator/.local/share/verdict/installed-main/verdict (reviewed build git a5d41947f074; package /operator/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /operator/.verdict)",
+    "verdict-serve.service: interpreter /operator/.local/share/verdict/installed-main/.venv/bin/python installs /operator/.local/share/verdict/installed-main/verdict; imports /operator/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /operator/.local/share/verdict/installed-main/verdict (reviewed build git a5d41947f074; package /operator/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /operator/.verdict)"
   ],
   "repaired": [],
   "runtime_health": {
@@ -1283,7 +1283,7 @@
       "state": "ok"
     },
     {
-      "detail": "red: /home/nick/.verdict/acceptance/20261118T120014Z.json, 54 min old",
+      "detail": "red: /operator/.verdict/acceptance/20261118T120014Z.json, 54 min old",
       "label": "Live acceptance",
       "state": "failed"
     },
@@ -1453,7 +1453,7 @@
       "state": "ok"
     },
     {
-      "detail": "verdict-pr-watch.timer is active; last result success; interpreter=/home/nick/.local/share/verdict/installed-main/.venv/bin/python; checkout=/home/nick/.local/share/verdict/installed-main; repos=mrnicholasbcarter-code/verdict-core,mrnicholasbcarter-code/verdict-node; state dir=/home/nick/dev/verdict-core/.git/verdict-prime/pr-watcher",
+      "detail": "verdict-pr-watch.timer is active; last result success; interpreter=/operator/.local/share/verdict/installed-main/.venv/bin/python; checkout=/operator/.local/share/verdict/installed-main; repos=mrnicholasbcarter-code/verdict-core,mrnicholasbcarter-code/verdict-node; state dir=/operator/dev/verdict-core/.git/verdict-prime/pr-watcher",
       "label": "PR watcher timer",
       "state": "ok"
     },
@@ -1463,7 +1463,7 @@
       "state": "ok"
     },
     {
-      "detail": "/home/nick/.verdict/identify-latest.json age 45s; source errors none; model calls 0; health refresh recorded 60, newest evidence age 188s; implementation pool eligible 19 (free 9), fallback 901; supply complete false, 48 unknowns",
+      "detail": "/operator/.verdict/identify-latest.json age 45s; source errors none; model calls 0; health refresh recorded 60, newest evidence age 188s; implementation pool eligible 19 (free 9), fallback 901; supply complete false, 48 unknowns",
       "label": "Identify passive report",
       "state": "ok"
     },
@@ -1483,37 +1483,37 @@
       "state": "ok"
     },
     {
-      "detail": "verdict-prime-sync.service: cwd /home/nick/.local/share/verdict/installed-main, package /home/nick/.local/share/verdict/installed-main/verdict",
+      "detail": "verdict-prime-sync.service: cwd /operator/.local/share/verdict/installed-main, package /operator/.local/share/verdict/installed-main/verdict",
       "label": "Prime-sync code path",
       "state": "ok"
     },
     {
-      "detail": "verdict-identify.service: interpreter /home/nick/.local/share/verdict/installed-main/.venv/bin/python installs /home/nick/.local/share/verdict/installed-main/verdict; imports /home/nick/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /home/nick/dev/verdict-core-worktrees/identify-screen-closeout/verdict (reviewed build git a5d41947f074; package /home/nick/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /home/nick/.verdict)",
+      "detail": "verdict-identify.service: interpreter /operator/.local/share/verdict/installed-main/.venv/bin/python installs /operator/.local/share/verdict/installed-main/verdict; imports /operator/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /operator/.local/share/verdict/installed-main/verdict (reviewed build git a5d41947f074; package /operator/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /operator/.verdict)",
       "label": "Runtime identify",
       "state": "failed"
     },
     {
-      "detail": "verdict-identify-screen.service: interpreter /home/nick/.local/share/verdict/installed-main/.venv/bin/python installs /home/nick/.local/share/verdict/installed-main/verdict; imports /home/nick/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /home/nick/dev/verdict-core-worktrees/identify-screen-closeout/verdict (reviewed build git a5d41947f074; package /home/nick/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /home/nick/.verdict)",
+      "detail": "verdict-identify-screen.service: interpreter /operator/.local/share/verdict/installed-main/.venv/bin/python installs /operator/.local/share/verdict/installed-main/verdict; imports /operator/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /operator/.local/share/verdict/installed-main/verdict (reviewed build git a5d41947f074; package /operator/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /operator/.verdict)",
       "label": "Runtime identify-screen",
       "state": "failed"
     },
     {
-      "detail": "verdict-acceptance.service: interpreter /home/nick/.local/share/verdict/installed-main/.venv/bin/python installs /home/nick/.local/share/verdict/installed-main/verdict; imports /home/nick/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /home/nick/dev/verdict-core-worktrees/identify-screen-closeout/verdict (reviewed build git a5d41947f074; package /home/nick/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /home/nick/.verdict)",
+      "detail": "verdict-acceptance.service: interpreter /operator/.local/share/verdict/installed-main/.venv/bin/python installs /operator/.local/share/verdict/installed-main/verdict; imports /operator/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /operator/.local/share/verdict/installed-main/verdict (reviewed build git a5d41947f074; package /operator/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /operator/.verdict)",
       "label": "Runtime acceptance",
       "state": "failed"
     },
     {
-      "detail": "verdict-prime-sync.service: interpreter /home/nick/.local/share/verdict/installed-main/.venv/bin/python installs /home/nick/.local/share/verdict/installed-main/verdict; imports /home/nick/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /home/nick/dev/verdict-core-worktrees/identify-screen-closeout/verdict (reviewed build git a5d41947f074; package /home/nick/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /home/nick/.verdict)",
+      "detail": "verdict-prime-sync.service: interpreter /operator/.local/share/verdict/installed-main/.venv/bin/python installs /operator/.local/share/verdict/installed-main/verdict; imports /operator/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /operator/.local/share/verdict/installed-main/verdict (reviewed build git a5d41947f074; package /operator/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /operator/.verdict)",
       "label": "Runtime prime-sync",
       "state": "failed"
     },
     {
-      "detail": "verdict-metadata-refresh.service: interpreter /home/nick/.local/share/verdict/installed-main/.venv/bin/python installs /home/nick/.local/share/verdict/installed-main/verdict; imports /home/nick/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /home/nick/dev/verdict-core-worktrees/identify-screen-closeout/verdict (reviewed build git a5d41947f074; package /home/nick/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /home/nick/.verdict)",
+      "detail": "verdict-metadata-refresh.service: interpreter /operator/.local/share/verdict/installed-main/.venv/bin/python installs /operator/.local/share/verdict/installed-main/verdict; imports /operator/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /operator/.local/share/verdict/installed-main/verdict (reviewed build git a5d41947f074; package /operator/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /operator/.verdict)",
       "label": "Runtime metadata-refresh",
       "state": "failed"
     },
     {
-      "detail": "verdict-serve.service: interpreter /home/nick/.local/share/verdict/installed-main/.venv/bin/python installs /home/nick/.local/share/verdict/installed-main/verdict; imports /home/nick/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /home/nick/dev/verdict-core-worktrees/identify-screen-closeout/verdict (reviewed build git a5d41947f074; package /home/nick/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /home/nick/.verdict)",
+      "detail": "verdict-serve.service: interpreter /operator/.local/share/verdict/installed-main/.venv/bin/python installs /operator/.local/share/verdict/installed-main/verdict; imports /operator/.local/share/verdict/installed-main/verdict (git 204c3f15a182), not the reviewed build /operator/.local/share/verdict/installed-main/verdict (reviewed build git a5d41947f074; package /operator/.local/share/verdict/installed-main/verdict, build git 204c3f15a182, gateway default, state /operator/.verdict)",
       "label": "Runtime serve",
       "state": "failed"
     },
@@ -1523,7 +1523,7 @@
       "state": "header"
     },
     {
-      "detail": "/home/nick/.local/bin/ocr is v1.12.9, sha256 matches verdict.ocr_release",
+      "detail": "/operator/.local/bin/ocr is v1.12.9, sha256 matches verdict.ocr_release",
       "label": "Review tool (ocr)",
       "state": "ok"
     },
@@ -1538,7 +1538,7 @@
       "state": "ok"
     },
     {
-      "detail": "/home/nick/.prime/agent/models.json: providers.omniroute has 4307 model(s)",
+      "detail": "/operator/.prime/agent/models.json: providers.omniroute has 4307 model(s)",
       "label": "Prime registry",
       "state": "ok"
     },
