@@ -1,25 +1,32 @@
 """Role-based model selection ladder (T3: Slice 1).
 
 Read-only fail-closed ladder library for the planner role.
-Reuses: admission (AdmittedSet), capacity.classify, provider_catalog pools,
-metadata store lookup_omniroute_id, decision_signals advise_order.
-New code: stage composer, frozen QuotaView protocol, build_ladder.
+Reuses: admission (AdmittedSet), the eligibility ladder (canonical connection
+resolution, capacity classes, planner floors, D6 rank), provider_catalog pools,
+the metadata store, autodev's live planner choice, and decision_signals
+advise_order. New code: stage composer, frozen QuotaView protocol, build_ladder.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, Protocol
 
-from verdict.admission import AdmittedSet
-from verdict.capacity import CapacityClass, classify_route_capacity
+from verdict.admission import AdmittedSet, canonical_route_id
+from verdict.capacity import CapacityClass
 from verdict.decision_signals.advisory import advise_order
+from verdict.identify_rank import RATING_MAX_AGE
+from verdict.metadata.mapping import IdentityMap
 from verdict.metadata.store import MetadataSnapshot, lookup_omniroute_id
-from verdict.orchestration.provider_catalog import aliased_pools_for, backend_pool
+from verdict.models import ModelInfo
+from verdict.orchestration.contracts import RouteVerdict, TaskRequirements
+from verdict.orchestration.provider_catalog import aliased_pools_for
 
 # ---------------------------------------------------------------------------
 # Role Enum
@@ -102,6 +109,7 @@ class LadderResult:
     agree: bool | None = None
     signals_digest: str | None = None
     metadata_fixture: bool = False
+    live_proof: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -131,322 +139,279 @@ class OpenQuotaView:
 # Capacity Policy (D7 rule)
 # ---------------------------------------------------------------------------
 
-# D7: For critical roles (planner, reviewer, controller, escalation),
-# an assumed-FREE status (absence of evidence) SHALL be treated as UNKNOWN.
-# This is enforced only in capacity_policy.role_capacity_allowed.
-# The legacy capacity.classify() result (absence of paid evidence is FREE)
-# is kept for existing callers.
-
 CRITICAL_ROLES = frozenset({Role.PLANNER, Role.REVIEWER, Role.CONTROLLER, Role.ESCALATION})
 
 
 def role_capacity_allowed(
     role: Role, capacity_class: CapacityClass, capacity_evidence: str
 ) -> bool:
-    """Check if a capacity class is allowed for a role (D7 rule)."""
+    """Single enforcement point for capacity per role (D7).
+
+    Unknown capacity is never healthy, so it never enters a critical-role
+    ladder. An assumed-FREE result (no paid evidence) counts as UNKNOWN for
+    critical roles; the legacy classify() result is unchanged for other callers.
+    """
+    if role not in CRITICAL_ROLES:
+        return capacity_class != CapacityClass.UNKNOWN
+    if capacity_class == CapacityClass.UNKNOWN:
+        return False
     return not (
-        role in CRITICAL_ROLES
-        and capacity_class == CapacityClass.FREE
+        capacity_class == CapacityClass.FREE
         and capacity_evidence == "assumed_free_no_paid_evidence"
     )
 
 
-# ---------------------------------------------------------------------------
-# Inventory and Hash Helpers
-# ---------------------------------------------------------------------------
+# The planner requirements autodev's live planner selection uses
+# (autodev_run._live_planner_models, BOD-393), minus its D22 pool exclusion:
+# D22 is applied by the legacy choice itself, never by the dynamic ladder.
+PLANNER_REQUIREMENTS = TaskRequirements(
+    required_capabilities=frozenset({"reasoning"}),
+    coding=True,
+    reasoning=True,
+    frontier_worthy=True,
+)
 
-
-def _sha256_sorted_ids(ids: list[str]) -> str:
-    """Compute SHA256 over sorted canonical route IDs."""
-    sorted_ids = sorted(ids)
-    return hashlib.sha256(json.dumps(sorted_ids).encode()).hexdigest()
-
-
-def _canonical_route_id(route_id: str) -> str:
-    """Normalize route ID (lowercase)."""
-    return route_id.lower()
-
-
-# ---------------------------------------------------------------------------
-# Stage S0: Inventory (H0)
-# ---------------------------------------------------------------------------
-
-
-def _stage_s0_inventory(
-    admitted: AdmittedSet, inventory_rows: list[dict[str, Any]]
-) -> tuple[list[str], str]:
-    """S0: Inventory hash (H0) over all discovered route IDs."""
-    ids = [_canonical_route_id(r["id"]) for r in inventory_rows]
-    h0 = _sha256_sorted_ids(ids)
-    return ids, h0
+# Planner strength is the general intelligence index from Core's store.
+_PLANNER_STRENGTH_METRIC = "aa_intelligence"
 
 
 # ---------------------------------------------------------------------------
-# Stage S1: Admission (H1) - reuse canonical AdmittedSet
+# Hash helpers
 # ---------------------------------------------------------------------------
 
 
-def _stage_s1_admission(admitted: AdmittedSet) -> tuple[list[str], str]:
-    """S1: Admission hash (H1) over admitted route IDs."""
-    ids = sorted(_canonical_route_id(rid) for rid in admitted.ids)
-    h1 = _sha256_sorted_ids(ids)
-    return ids, h1
+def _sha256_sorted_ids(ids: Sequence[str]) -> str:
+    """SHA-256 over the sorted canonical route ids leaving a stage."""
+    return hashlib.sha256(json.dumps(sorted(ids)).encode()).hexdigest()
+
+
+def quota_pool(route_id: str, provider: str) -> str:
+    """Quota pool for a route: an aliased backend pool, else its connection.
+
+    Gateway route ids are kept for admission and hashes. Pool identity comes
+    from canonical provider evidence (the resolved connection provider), so
+    ``codex/gpt-6-luna``, ``cx/...``, ``cxa/...`` and the unprefixed
+    ``gpt-6-astra`` (owned_by=codex) share one pool. Cross-prefix aliases
+    (agy/antigravity, the shared ``:free`` pool) win over the provider.
+    """
+    aliased = aliased_pools_for(frozenset({route_id}))
+    if aliased:
+        return next(iter(aliased))
+    return provider or route_id.split("/", 1)[0].lower()
+
+
+def _capacity_confidence(evidence: str) -> str:
+    if evidence.startswith("assumed"):
+        return "assumed"
+    if evidence == "billing_402_metered":
+        return "observed"
+    return "declared"
 
 
 # ---------------------------------------------------------------------------
-# Stage S2: Narrowing (H2) - pool dedup + capacity class filter
+# Eligibility evidence (canonical ladder, read-only)
+# ---------------------------------------------------------------------------
+
+
+def _ladder_verdicts(
+    admitted: AdmittedSet,
+    inventory_rows: Sequence[Mapping[str, Any]],
+    connections: Sequence[Mapping[str, Any]],
+    *,
+    now: datetime,
+    metadata_snapshot: MetadataSnapshot | None,
+    identity_map: IdentityMap | None,
+    openrouter_free_set: Any,
+    health_cache: Any,
+    state_path: Path | None,
+) -> list[RouteVerdict]:
+    """Planner verdicts from the canonical eligibility ladder, never probed.
+
+    ``evaluate`` reuses the ladder's connection resolution (owned_by aliases,
+    first active connection), capacity classes (billing override included),
+    planner floors and the D6 rank. It does not probe and does not persist.
+    """
+    from verdict.orchestration.eligibility import EligibilityLadder
+    from verdict.paths import verdict_home
+    from verdict.subagent_selection import HealthResult
+
+    ladder = EligibilityLadder(
+        inventory_rows,
+        connections,
+        lambda _route: HealthResult(False, "not_probed"),
+        state_path or (verdict_home() / "orchestration-health.json"),
+        prefer_providers=(),
+        admitted=admitted,
+        health_cache=health_cache,
+        openrouter_free_set=openrouter_free_set,
+        metadata=metadata_snapshot,
+        identity_map=identity_map,
+        max_probes_per_select=0,
+    )
+    return list(ladder.evaluate(PLANNER_REQUIREMENTS, now=now))
+
+
+def _legacy_planner_pick(verdicts: Sequence[RouteVerdict]) -> str | None:
+    """The route main's live planner selection would choose (BOD-406/BOD-393).
+
+    Runs ``_live_planner_models`` itself over the same verdicts. It needs two
+    model families; when it would fail, the legacy path has no planner (None).
+    """
+    from verdict.autodev_run import AutodevError, _live_planner_models
+
+    class _Verdicts:
+        def select(
+            self, requirements: TaskRequirements, *, now: datetime
+        ) -> tuple[None, tuple[RouteVerdict, ...]]:
+            return None, tuple(verdicts)
+
+    try:
+        return _live_planner_models(_Verdicts(), top_n=3)[0]
+    except AutodevError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Stage S2: narrowing (capacity, planner floors, quota pool)
 # ---------------------------------------------------------------------------
 
 
 def _stage_s2_narrowing(
-    admitted: AdmittedSet,
-    inventory_rows: list[dict[str, Any]],
-    connections: list[dict[str, Any]],
     role: Role,
+    admitted_ids: frozenset[str],
+    verdicts: Sequence[RouteVerdict],
+    quota_view: QuotaView,
     now: datetime,
-    openrouter_free_set: Any = None,
-) -> tuple[list[str], list[LadderSkip], list[RouteScore], str]:
-    """S2: Narrow by pool deduplication and capacity class.
+) -> tuple[list[str], list[LadderSkip], list[RouteScore]]:
+    """Remove-only narrowing of the admitted set, in the legacy D6 order.
 
-    Rules:
-    - Pool deduplication: keep first route per backend pool (by admitted order)
-    - Capacity class: filter by role_capacity_allowed (D7 rule)
-    - Opaque routes already excluded by admission
-    - Pay-per-token (METERED) excluded for planner
+    The first route of each quota pool in D6 order is the best-ordered one,
+    so later routes of that pool are skipped with ``pool_dedup:<pool>``.
     """
-    admitted_ids = list(admitted.ids)
-    admitted_by_id = {r.route_id: r for r in admitted.records if r.admitted}
-
-    # Build connection lookup by provider
-    conn_by_provider = {c["provider"]: c for c in connections}
-
-    # Compute aliased pools from admitted routes (for cross-prefix deduplication awareness)
-    _aliased_pools = aliased_pools_for(admitted.ids)
-
-    # Track seen pools for deduplication
+    by_id = {canonical_route_id(v.route_id): v for v in verdicts}
+    ranked = sorted(
+        (rid for rid in admitted_ids if rid in by_id and by_id[rid].rank is not None),
+        key=lambda rid: by_id[rid].rank or 0,
+    )
+    unranked = sorted(rid for rid in admitted_ids if rid not in ranked)
     seen_pools: set[str] = set()
     narrowed: list[str] = []
     skips: list[LadderSkip] = []
-    route_scores: list[RouteScore] = []
-
-    for route_id in admitted_ids:
-        record = admitted_by_id.get(route_id)
-        if not record:
+    scores: list[RouteScore] = []
+    for rid in ranked + unranked:
+        verdict = by_id.get(rid)
+        if verdict is None:
+            skips.append(LadderSkip(rid, "S2", "missing_inventory_row"))
             continue
-
-        # Find inventory row
-        row = next((r for r in inventory_rows if _canonical_route_id(r["id"]) == route_id), None)
-        if not row:
-            skips.append(LadderSkip(route_id, "S2", "missing_inventory_row"))
+        capacity, evidence = verdict.capacity_class, verdict.capacity_evidence
+        if not role_capacity_allowed(role, capacity, evidence):
+            skips.append(LadderSkip(rid, "S2", f"capacity_not_allowed_for_role:{capacity.value}"))
             continue
-
-        # Find connection
-        owned_by = row.get("owned_by", route_id.split("/", 1)[0])
-        conn = conn_by_provider.get(owned_by.lower())
-
-        # Classify capacity
-        capacity_class, _plan_label, capacity_evidence = classify_route_capacity(
-            conn, row, route_id=route_id, openrouter_free_set=openrouter_free_set
-        )
-
-        # Check capacity allowed for role (D7)
-        if not role_capacity_allowed(role, capacity_class, capacity_evidence):
-            skips.append(
-                LadderSkip(route_id, "S2", f"capacity_not_allowed_for_role:{capacity_class.value}")
-            )
+        if capacity == CapacityClass.METERED:
+            skips.append(LadderSkip(rid, "S2", "pay_per_token_excluded_for_planner"))
             continue
-
-        # Planner: exclude METERED (pay-per-token)
-        if role == Role.PLANNER and capacity_class == CapacityClass.METERED:
-            skips.append(LadderSkip(route_id, "S2", "pay_per_token_excluded_for_planner"))
+        if verdict.rank is None:
+            skips.append(LadderSkip(rid, "S2", f"planner_eligibility:{verdict.reason}"))
             continue
-
-        # Pool deduplication
-        pool = backend_pool(route_id)
+        pool = quota_pool(rid, verdict.provider)
         if pool in seen_pools:
-            skips.append(LadderSkip(route_id, "S2", f"pool_dedup:{pool}"))
+            skips.append(LadderSkip(rid, "S2", f"pool_dedup:{pool}"))
             continue
-
         seen_pools.add(pool)
-        narrowed.append(route_id)
-
-        # Build route score (strength will be filled in S3)
-        route_scores.append(
+        narrowed.append(rid)
+        scores.append(
             RouteScore(
-                route_id=route_id,
+                route_id=rid,
                 external_strength=None,
                 strength_source=None,
                 strength_age_s=None,
                 reliability_lb=None,
                 n=None,
                 confidence=None,
-                capacity_class=capacity_class,
-                capacity_confidence="high"
-                if capacity_evidence != "assumed_free_no_paid_evidence"
-                else "low",
-                capacity_evidence=capacity_evidence,
+                capacity_class=capacity,
+                capacity_confidence=_capacity_confidence(evidence),
+                capacity_evidence=evidence,
                 pool=pool,
-                quota_status="open",  # T3: no-op QuotaView
+                quota_status=str(quota_view.state(pool, now).get("status", "open")),
                 exploration=False,
             )
         )
-
-    h2 = _sha256_sorted_ids(narrowed)
-    return narrowed, skips, route_scores, h2
+    return narrowed, skips, scores
 
 
 # ---------------------------------------------------------------------------
-# Stage S3: Ordering (H3) - use advise_order for advisory reordering
+# Stage S3: advisory order through advise_order
 # ---------------------------------------------------------------------------
+
+
+def _role_strength(
+    route_id: str,
+    metadata_snapshot: MetadataSnapshot | None,
+    identity_map: IdentityMap | None,
+    now: datetime,
+) -> tuple[float | None, float | None]:
+    """Fresh planner strength and its age in seconds; (None, age) when stale."""
+    if metadata_snapshot is None:
+        return None, None
+    lookup = lookup_omniroute_id(
+        metadata_snapshot, route_id, identity_map=identity_map, now=now, max_age=RATING_MAX_AGE
+    )
+    item = getattr(lookup.record.scores, _PLANNER_STRENGTH_METRIC) if lookup.record else None
+    if item is None or isinstance(item.value, bool) or not isinstance(item.value, (int, float)):
+        return None, None
+    try:
+        fetched = datetime.fromisoformat(item.provenance.fetched_at.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return None, None
+    age = now - fetched
+    if fetched.tzinfo is None or age.total_seconds() < 0 or age > RATING_MAX_AGE:
+        return None, age.total_seconds() if fetched.tzinfo else None
+    return float(item.value), age.total_seconds()
 
 
 def _stage_s3_ordering(
     narrowed: list[str],
-    route_scores: list[RouteScore],
+    scores: list[RouteScore],
+    verdicts: Sequence[RouteVerdict],
     metadata_snapshot: MetadataSnapshot | None,
-    identity_map: Any,
+    identity_map: IdentityMap | None,
     now: datetime,
-    admitted: AdmittedSet,
-    signals: Any = None,  # DecisionSignalSetV1 or None
-) -> tuple[list[str], list[RouteScore], str, str | None]:
-    """S3: Order by external strength from metadata store, then apply advise_order.
+    signals: Any,
+) -> tuple[list[str], list[RouteScore], str | None]:
+    """Order the narrowed set with advise_order over the D6 baseline.
 
-    Fallback to legacy D6 order (capacity tier) when strength is stale or missing.
-    This is advisory - does not change membership.
-    Returns: (ordered, final_scores, h3, signals_digest)
+    Strength reaches the order only as ``quality_confidence`` inside
+    advise_order. With no fresh strength on any candidate the advice has no
+    evidence, which the spec treats as low confidence: the D6 order stays.
     """
-    if not narrowed:
-        return [], route_scores, _sha256_sorted_ids([]), None
-
-    # Build lookup for route_scores by route_id
-    scores_by_id = {rs.route_id: rs for rs in route_scores}
-
-    # Try to get strength from metadata
-    if metadata_snapshot is not None and identity_map is not None:
-        for _i, route_id in enumerate(narrowed):
-            rs = scores_by_id.get(route_id)
-            if not rs:
-                continue
-
-            # Look up in metadata store
-            lookup = lookup_omniroute_id(
-                metadata_snapshot,
-                route_id,
-                identity_map=identity_map,
-                now=now,
-                max_age=None,  # No max_age in T3
-            )
-
-            if lookup.record is not None and lookup.drop is None:
-                # Extract strength from metadata
-                # Use AA intelligence index for planner role
-                aa_index = lookup.record.scores.aa_intelligence
-                if aa_index is not None:
-                    strength_value = aa_index.value if hasattr(aa_index, "value") else aa_index
-                    strength_float: float | None = (
-                        float(strength_value) if isinstance(strength_value, (int, float)) else None
-                    )
-                    # Check freshness (24h TTL for T5+, but T3 just uses what's there)
-                    fetched_at = aa_index.provenance.fetched_at if aa_index.provenance else None
-                    age_s = None
-                    if fetched_at:
-                        try:
-                            fetched = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
-                            age_s = (now - fetched).total_seconds()
-                        except (ValueError, AttributeError):
-                            pass
-
-                    # Create updated RouteScore with strength
-                    scores_by_id[route_id] = RouteScore(
-                        route_id=rs.route_id,
-                        external_strength=strength_float,
-                        strength_source="aa_intelligence",
-                        strength_age_s=age_s,
-                        reliability_lb=rs.reliability_lb,
-                        n=rs.n,
-                        confidence=rs.confidence,
-                        capacity_class=rs.capacity_class,
-                        capacity_confidence=rs.capacity_confidence,
-                        capacity_evidence=rs.capacity_evidence,
-                        pool=rs.pool,
-                        quota_status=rs.quota_status,
-                        exploration=rs.exploration,
-                    )
-
-    # Build fake ModelInfo objects for advise_order
-    candidates = []
-    for route_id in narrowed:
-        rs = scores_by_id.get(route_id)
-        if rs:
-            candidates.append(_make_fake_model(route_id, rs))
-
-    # First, establish baseline order by metadata strength (strongest first)
-    # This is the "legacy" order when no signals are available
-    has_strength = {rid for rid, rs in scores_by_id.items() if rs.external_strength is not None}
-    if has_strength:
-        scored = sorted(
-            [rid for rid in narrowed if rid in has_strength],
-            key=lambda rid: (-(scores_by_id[rid].external_strength or 0.0), rid),
+    by_id = {canonical_route_id(v.route_id): v for v in verdicts}
+    enriched: dict[str, RouteScore] = {}
+    candidates: list[ModelInfo] = []
+    for rs in scores:
+        strength, age = _role_strength(rs.route_id, metadata_snapshot, identity_map, now)
+        enriched[rs.route_id] = replace(
+            rs,
+            external_strength=strength,
+            strength_source=_PLANNER_STRENGTH_METRIC if strength is not None else None,
+            strength_age_s=age,
         )
-        unscored = [rid for rid in narrowed if rid not in has_strength]
-        baseline_order = scored + unscored
-    else:
-        # No strength data: use deterministic sorted order for legacy D6 tier order
-        baseline_order = sorted(narrowed)
-
-    # Rebuild candidates in baseline order for advise_order
-    baseline_candidates = []
-    for route_id in baseline_order:
-        rs = scores_by_id.get(route_id)
-        if rs:
-            baseline_candidates.append(_make_fake_model(route_id, rs))
-
-    # Use advise_order for advisory reordering on top of metadata strength baseline
-    # Planner is a critical role, but we pass protected=False because the metadata
-    # strength ordering is separate from advisory signals; protected only skips
-    # the advisory reordering, not the metadata strength baseline.
-    ordered_candidates, influence = advise_order(
-        baseline_candidates, signals, protected=False, privacy=None
+        tier = by_id[rs.route_id].capability_tier
+        candidates.append(
+            ModelInfo(
+                id=rs.route_id,
+                provider=rs.pool,
+                capability_tier=tier if tier is not None else 3,
+                quality_confidence=strength,
+            )
+        )
+    has_evidence = any(s.external_strength is not None for s in enriched.values())
+    ordered, influence = advise_order(
+        candidates, signals, protected=False, min_confidence=None if has_evidence else float("inf")
     )
-
-    ordered = [getattr(m, "id", "") for m in ordered_candidates]
-
-    # Verify membership invariant: H3 set == H2 set
-    if set(ordered) != set(narrowed):
-        # This should not happen as advise_order preserves membership
+    ids = [m.id for m in ordered]
+    if sorted(ids) != sorted(narrowed):
         raise RuntimeError("advise_order violated membership invariant")
-
-    h3 = _sha256_sorted_ids(ordered)
-
-    # Update route_scores with final order
-    final_scores = [scores_by_id[rid] for rid in ordered if rid in scores_by_id]
-
-    return ordered, final_scores, h3, influence.signals_digest
-
-
-def _capacity_tier_from_class(capacity_class: CapacityClass) -> int:
-    """Map capacity class to capability tier proxy."""
-    mapping = {
-        CapacityClass.FREE: 3,
-        CapacityClass.SUBSCRIPTION: 2,
-        CapacityClass.METERED: 1,
-        CapacityClass.UNKNOWN: 4,
-    }
-    return mapping.get(capacity_class, 2)
-
-
-def _make_fake_model(route_id: str, rs: RouteScore) -> Any:
-    """Create a fake ModelInfo-like object for advise_order."""
-
-    class FakeModel:
-        def __init__(self, route_id: str, rs: RouteScore):
-            self.id = route_id
-            self.capability_tier = _capacity_tier_from_class(rs.capacity_class)
-            self.provider = route_id.split("/", 1)[0] if "/" in route_id else route_id
-            self.quality_confidence = rs.external_strength
-            self.pricing: dict[str, float] = {}
-
-    return FakeModel(route_id, rs)
+    return ids, [enriched[rid] for rid in ids], influence.signals_digest
 
 
 # ---------------------------------------------------------------------------
@@ -463,82 +428,69 @@ def build_ladder(
     quota_view: QuotaView | None = None,
     clock: datetime | None = None,
     metadata_snapshot: MetadataSnapshot | None = None,
-    identity_map: Any = None,
+    identity_map: IdentityMap | None = None,
     openrouter_free_set: Any = None,
+    health_cache: Any = None,
+    state_path: Path | None = None,
+    fixture_input: bool = False,
 ) -> LadderResult:
-    """Build the role ladder (S0-S3 pipeline).
+    """Build the role ladder (S0-S3). Read-only, fail-closed, deterministic.
 
-    This is the main entry point. Read-only, fail-closed, deterministic.
+    ``fixture_input`` is the caller's explicit statement that inventory or
+    metadata came from a fixture; it sets ``metadata_fixture`` and clears
+    ``live_proof``. Snapshot presence never decides provenance.
     """
     if role != Role.PLANNER:
         raise RoleNotEnabledError(role)
-
     now = clock or datetime.now(timezone.utc)
     quota_view = quota_view or OpenQuotaView()
 
-    # S0: Inventory
-    _inventory_ids, h0 = _stage_s0_inventory(admitted, inventory_rows)
+    h0 = _sha256_sorted_ids([canonical_route_id(str(r["id"])) for r in inventory_rows])
+    admitted_ids = frozenset(canonical_route_id(rid) for rid in admitted.ids)
+    h1 = _sha256_sorted_ids(list(admitted_ids))
 
-    # S1: Admission (reuse canonical AdmittedSet)
-    admitted_ids, h1 = _stage_s1_admission(admitted)
-
-    # S2: Narrowing (pool dedup + capacity)
-    narrowed, skips, route_scores, h2 = _stage_s2_narrowing(
-        admitted, inventory_rows, connections, role, now, openrouter_free_set
+    verdicts = _ladder_verdicts(
+        admitted,
+        inventory_rows,
+        connections,
+        now=now,
+        metadata_snapshot=metadata_snapshot,
+        identity_map=identity_map,
+        openrouter_free_set=openrouter_free_set,
+        health_cache=health_cache,
+        state_path=state_path,
     )
-
-    # S3: Ordering (external strength + advise_order)
-    ordered, final_scores, h3, signals_digest = _stage_s3_ordering(
-        narrowed, route_scores, metadata_snapshot, identity_map, now, admitted, signals
+    narrowed, skips, scores = _stage_s2_narrowing(role, admitted_ids, verdicts, quota_view, now)
+    h2 = _sha256_sorted_ids(narrowed)
+    ordered, final_scores, digest = _stage_s3_ordering(
+        narrowed, scores, verdicts, metadata_snapshot, identity_map, now, signals
     )
+    h3 = _sha256_sorted_ids(ordered)
 
-    # Verify invariants
+    def closed(reason: str) -> LadderResult:
+        return LadderResult(
+            status=LadderStatus.FAIL_CLOSED,
+            reason=reason,
+            ordered_routes=(),
+            skips=tuple(skips),
+            h0_inventory=h0,
+            h1_admitted=h1,
+            h2_narrowed=h2,
+            h3_ordered=h3,
+            signals_digest=digest,
+            metadata_fixture=fixture_input,
+            live_proof=not fixture_input,
+        )
+
     if set(ordered) != set(narrowed):
-        return LadderResult(
-            status=LadderStatus.FAIL_CLOSED,
-            reason="candidate_set_violation: H3 != H2",
-            ordered_routes=(),
-            skips=tuple(skips),
-            h0_inventory=h0,
-            h1_admitted=h1,
-            h2_narrowed=h2,
-            h3_ordered=h3,
-            metadata_fixture=metadata_snapshot is not None,
-        )
+        return closed("candidate_set_violation: H3 != H2")
+    if not set(narrowed) <= admitted_ids:
+        return closed("candidate_set_violation: H2 not subset of H1")
+    if not ordered:
+        return closed("empty_narrowed_set")
 
-    if not set(narrowed).issubset(set(admitted_ids)):
-        return LadderResult(
-            status=LadderStatus.FAIL_CLOSED,
-            reason="candidate_set_violation: H2 not subset of H1",
-            ordered_routes=(),
-            skips=tuple(skips),
-            h0_inventory=h0,
-            h1_admitted=h1,
-            h2_narrowed=h2,
-            h3_ordered=h3,
-            metadata_fixture=metadata_snapshot is not None,
-        )
-
-    # Empty narrowed set -> FAIL_CLOSED
-    if not narrowed:
-        return LadderResult(
-            status=LadderStatus.FAIL_CLOSED,
-            reason="empty_narrowed_set",
-            ordered_routes=(),
-            skips=tuple(skips),
-            h0_inventory=h0,
-            h1_admitted=h1,
-            h2_narrowed=h2,
-            h3_ordered=h3,
-            metadata_fixture=metadata_snapshot is not None,
-        )
-
-    # Legacy pick (first admitted route)
-    legacy_pick = admitted_ids[0] if admitted_ids else None
-    # Dynamic pick (first ordered route)
-    dynamic_pick = ordered[0] if ordered else None
-    agree = legacy_pick == dynamic_pick if legacy_pick and dynamic_pick else None
-
+    legacy_pick = _legacy_planner_pick(verdicts)
+    dynamic_pick = ordered[0]
     return LadderResult(
         status=LadderStatus.OK,
         reason=None,
@@ -551,9 +503,10 @@ def build_ladder(
         route_scores=tuple(final_scores),
         legacy_pick=legacy_pick,
         dynamic_pick=dynamic_pick,
-        agree=agree,
-        signals_digest=signals_digest,
-        metadata_fixture=metadata_snapshot is not None,
+        agree=(legacy_pick == dynamic_pick) if legacy_pick is not None else None,
+        signals_digest=digest,
+        metadata_fixture=fixture_input,
+        live_proof=not fixture_input,
     )
 
 
@@ -562,6 +515,7 @@ def build_ladder(
 # ---------------------------------------------------------------------------
 
 __all__ = [
+    "PLANNER_REQUIREMENTS",
     "LadderResult",
     "LadderSkip",
     "LadderStatus",
@@ -571,5 +525,6 @@ __all__ = [
     "RoleNotEnabledError",
     "RouteScore",
     "build_ladder",
+    "quota_pool",
     "role_capacity_allowed",
 ]

@@ -45,7 +45,7 @@ def row(route_id: str, *, owned_by: str | None = None, tools: bool = True) -> di
         "id": route_id,
         "owned_by": owned_by or route_id.split("/", 1)[0],
         "context_length": 200_000,
-        "capabilities": {"tool_calling": tools},
+        "capabilities": {"tool_calling": tools, "reasoning": True},
     }
 
 
@@ -408,6 +408,7 @@ class TestSlice1FixtureMode:
                 schema_version="1", refreshed_at=NOW.isoformat(), sources={}, records=()
             ),
             identity_map=IdentityMap(omniroute_to_models_dev={}),
+            fixture_input=True,
         )
         assert result.metadata_fixture is True
 
@@ -485,24 +486,17 @@ class TestSlice1FableFixture:
         assert strength_val > 0.9
         assert fable_score.capacity_class == CapacityClass.SUBSCRIPTION
 
-        # With fable removed, next rung from different pool (not cc/*)
-        inventory_without_fable = [r for r in inventory_rows if r["id"] != "cc/claude-fable-5-2"]
-        connections_subset = [c for c in connections if c["provider"] != "cc"]
-
-        admitted2 = admit(inventory_without_fable, connections_subset, RuntimeEvidence(), now=NOW)
-        result2 = build_ladder(
-            role=Role.PLANNER,
-            admitted=admitted2,
-            inventory_rows=inventory_without_fable,
-            connections=connections_subset,
-            quota_view=OpenQuotaView(),
-            clock=NOW,
-            metadata_snapshot=metadata_snapshot,
-            identity_map=identity_map,
+        # With Fable removed from the ladder, the next rung comes from a different
+        # pool. The cc connection and a second, strong cc route stay in the input,
+        # so this only holds because pool dedup removed cc/claude-sonnet-5-5.
+        assert any(c["provider"] == "cc" for c in connections)
+        assert "cc/claude-sonnet-5-5" in admitted
+        assert len(result.ordered_routes) >= 2
+        assert not result.ordered_routes[1].startswith("cc/")
+        assert any(
+            s.route_id == "cc/claude-sonnet-5-5" and s.reason == "pool_dedup:cc"
+            for s in result.skips
         )
-        assert result2.status == LadderStatus.OK
-        first_route = result2.ordered_routes[0]
-        assert not first_route.startswith("cc/"), f"Expected non-cc route, got {first_route}"
 
 
 # =============================================================================
@@ -823,3 +817,317 @@ class TestSlice1Regression:
     def test_routing_demo_fixture_cannot_pass(self):
         """tests/test_routing_demo.py::test_fixture_catalog_cannot_pass must pass."""
         pass
+
+
+# =============================================================================
+# Codex re-review round 3 (Opus): pools, ordering, capacity, provenance
+# =============================================================================
+
+STALE_FETCH = "2026-09-24T10:00:00Z"  # 50h before NOW: past the 12h rating TTL
+FRESH_FETCH = "2026-09-26T10:00:00Z"
+
+
+def _healthy(*route_ids: str) -> RuntimeEvidence:
+    from verdict.admission import RuntimeObservation
+
+    return RuntimeEvidence(
+        tuple(
+            RuntimeObservation(f"route:{rid}", "healthy", "ok", "test", NOW.isoformat())
+            for rid in route_ids
+        ),
+        ("test",),
+    )
+
+
+def _snapshot(
+    scores: dict[str, dict[str, tuple[float, str]]], refreshed_at: str | None = None
+) -> MetadataSnapshot:
+    records = []
+    for route_id, metrics in scores.items():
+        fields = {
+            name: ProvenancedField(
+                value=value, provenance=FieldProvenance(source="models_dev_api", fetched_at=at)
+            )
+            for name, (value, at) in metrics.items()
+        }
+        records.append(
+            ModelMetadataRecord(
+                id=f"md-{route_id.replace('/', '-')}",
+                scores=SoftScores(**fields),
+                omniroute_ids=(route_id,),
+            )
+        )
+    return MetadataSnapshot(
+        schema_version="1",
+        refreshed_at=refreshed_at or NOW.isoformat(),
+        sources={},
+        records=tuple(records),
+    )
+
+
+def _strength_signals() -> Any:
+    from verdict.decision_signals.contracts import DecisionSignalSetV1
+
+    return DecisionSignalSetV1(
+        schema_version="decision-signals/v1",
+        provider="test",
+        model="test-model",
+        version="1.0",
+        request_id="req-1",
+        purpose="route",
+        signals={"frontier_worthy": 0.8, "complexity": 0.7},
+        confidence=0.9,
+        latency_ms=50,
+        usage={"input_tokens": 10, "output_tokens": 5},
+        input_digest="b" * 64,
+        observed_at="2026-09-26T11:00:00Z",
+        failure_class=None,
+        mode="ADVISORY",
+    )
+
+
+def _build(rows: list[dict[str, Any]], conns: list[dict[str, Any]], **kw: Any) -> Any:
+    runtime = kw.pop("runtime", RuntimeEvidence())
+    admitted = admit(rows, conns, runtime, now=NOW)
+    return admitted, build_ladder(
+        role=Role.PLANNER,
+        admitted=admitted,
+        inventory_rows=rows,
+        connections=conns,
+        quota_view=OpenQuotaView(),
+        clock=NOW,
+        **kw,
+    )
+
+
+class TestQuotaPoolFromProviderEvidence:
+    """Failure caught: the live gateway's unprefixed codex ids (gpt-6-astra,
+    owned_by=codex) each became their own pool beside codex/* and cx/*."""
+
+    def test_prefixed_and_unprefixed_routes_of_one_provider_give_one_rung(self) -> None:
+        rows = [
+            row("codex/gpt-6-luna", owned_by="codex"),
+            row("gpt-6-astra", owned_by="codex"),
+            row("gpt-6.1-sol", owned_by="codex"),
+            row("cx/gpt-5.6-terra", owned_by="codex"),
+            row("cxa/gpt-5.5", owned_by="codex-app-server"),
+            row("kr/gpt-4.1"),
+        ]
+        conns = [conn("codex"), conn("kr")]
+        admitted, result = _build(rows, conns)
+        assert result.status == LadderStatus.OK
+        codex_ids = {r["id"] for r in rows if r["id"] != "kr/gpt-4.1"}
+        assert codex_ids <= admitted.ids
+        kept = [rid for rid in result.ordered_routes if rid in codex_ids]
+        assert len(kept) == 1
+        assert {s.pool for s in result.route_scores if s.route_id in kept} == {"codex"}
+        dedup = {s.route_id for s in result.skips if s.reason == "pool_dedup:codex"}
+        assert dedup == codex_ids - set(kept)
+        assert "kr/gpt-4.1" in result.ordered_routes
+
+    def test_backend_pool_behaviour_for_other_callers_is_unchanged(self) -> None:
+        assert backend_pool("gpt-6-astra") == "gpt-6-astra"
+        assert backend_pool("cx/gpt-6-astra") == "cx"
+
+
+class TestCapacityCanonicalConnection:
+    """Failure caught: S2 looked connections up by raw owned_by, so an aliased
+    owned_by (codex-app-server) became UNKNOWN, and UNKNOWN passed the planner."""
+
+    def test_unknown_is_never_allowed_for_planner(self) -> None:
+        from verdict.role_selection import role_capacity_allowed
+
+        assert role_capacity_allowed(Role.PLANNER, CapacityClass.UNKNOWN, "no_connection") is False
+
+    def test_admitted_route_whose_connection_does_not_resolve_is_skipped(self) -> None:
+        # Admission matches the kr connection by route prefix; the owned_by
+        # provider (krx-agentic) resolves to no connection row.
+        rows = [row("kr/model-x", owned_by="krx-agentic"), row("gh/gpt-4.1")]
+        conns = [conn("kr"), conn("gh")]
+        admitted, result = _build(rows, conns)
+        assert "kr/model-x" in admitted
+        assert "kr/model-x" not in result.ordered_routes
+        assert any(
+            s.route_id == "kr/model-x" and s.reason == "capacity_not_allowed_for_role:unknown"
+            for s in result.skips
+        )
+
+    def test_aliased_owned_by_resolves_to_its_connection(self) -> None:
+        rows = [row("cxa/gpt-5.5", owned_by="codex-app-server")]
+        _admitted, result = _build(rows, [conn("codex")])
+        assert result.status == LadderStatus.OK
+        score = result.route_scores[0]
+        assert score.capacity_class == CapacityClass.SUBSCRIPTION
+
+
+class TestPlannerEligibilityFloors:
+    """Failure caught: S2 ran with empty requirements, so a route without the
+    planner's reasoning capability or context floor could lead the ladder."""
+
+    def test_route_without_reasoning_or_context_is_skipped(self) -> None:
+        no_reasoning = row("kr/gpt-4.1")
+        no_reasoning["capabilities"] = {"tool_calling": True}
+        short = row("gh/gpt-4.1")
+        short["context_length"] = 8_000
+        rows = [no_reasoning, short, row("ag/gemini-3-pro")]
+        _admitted, result = _build(rows, [conn("kr"), conn("gh"), conn("ag")])
+        assert result.ordered_routes == ("ag/gemini-3-pro",)
+        reasons = {s.route_id: s.reason for s in result.skips}
+        assert reasons["kr/gpt-4.1"] == "planner_eligibility:missing_capability:reasoning"
+        assert reasons["gh/gpt-4.1"] == "planner_eligibility:insufficient_context"
+
+    def test_planner_requirements_match_live_planner_selection(self) -> None:
+        import dataclasses
+
+        from verdict.autodev_run import AutodevError, _live_planner_models
+        from verdict.role_selection import PLANNER_REQUIREMENTS
+
+        seen: list[Any] = []
+
+        class Recorder:
+            def select(self, requirements: Any, *, now: datetime) -> tuple[None, tuple[()]]:
+                seen.append(requirements)
+                return None, ()
+
+        with pytest.raises(AutodevError):
+            _live_planner_models(Recorder(), top_n=3)
+        assert dataclasses.replace(seen[0], exclude_pools=frozenset()) == PLANNER_REQUIREMENTS
+
+
+class TestOrderingThroughAdviseOrder:
+    """Failure caught: S3 sorted by strength locally and legacy_pick was the
+    first sorted id, not the planner route main would choose."""
+
+    def test_legacy_pick_is_the_live_planner_choice(self) -> None:
+        rows = [row("ag/gemini-3-pro"), row("kr/gpt-4.1"), row("cc/claude-opus-5-5")]
+        conns = [conn("ag"), conn("kr"), conn("cc")]
+        snapshot = _snapshot({"kr/gpt-4.1": {"aa_coding": (60.0, FRESH_FETCH)}})
+        admitted, result = _build(
+            rows,
+            conns,
+            runtime=_healthy(*(r["id"] for r in rows)),
+            metadata_snapshot=snapshot,
+            identity_map=IdentityMap(omniroute_to_models_dev={}),
+        )
+        assert sorted(admitted.ids)[0] == "ag/gemini-3-pro"
+        # D6 rating puts the rated kr route first; D22 keeps cc out of legacy.
+        assert result.legacy_pick == "kr/gpt-4.1"
+
+    def test_stale_strength_leaves_the_d6_order(self) -> None:
+        rows = [row("ag/gemini-3-pro"), row("kr/gpt-4.1"), row("gh/gpt-4o")]
+        conns = [conn("ag"), conn("kr"), conn("gh")]
+        _a, baseline = _build(rows, conns, signals=_strength_signals())
+        stale = _snapshot(
+            {"gh/gpt-4o": {"aa_intelligence": (99.0, STALE_FETCH)}}, refreshed_at=STALE_FETCH
+        )
+        _a, result = _build(
+            rows,
+            conns,
+            signals=_strength_signals(),
+            metadata_snapshot=stale,
+            identity_map=IdentityMap(omniroute_to_models_dev={}),
+        )
+        assert result.ordered_routes == baseline.ordered_routes
+        assert all(s.external_strength is None for s in result.route_scores)
+
+    def test_fresh_strength_reorders_only_through_advise_order(self) -> None:
+        # D6 baseline: a fresh aa_coding score (rank 0) beats an intelligence
+        # fallback (rank 1). Planner strength is aa_intelligence.
+        rows = [row("kr/gpt-4.1"), row("gh/gpt-4o")]
+        conns = [conn("kr"), conn("gh")]
+        snapshot = _snapshot(
+            {
+                "kr/gpt-4.1": {"aa_coding": (50.0, FRESH_FETCH)},
+                "gh/gpt-4o": {"aa_intelligence": (90.0, FRESH_FETCH)},
+            }
+        )
+        kw = {
+            "metadata_snapshot": snapshot,
+            "identity_map": IdentityMap(omniroute_to_models_dev={}),
+        }
+        _a, without = _build(rows, conns, **kw)
+        _a, advised = _build(rows, conns, signals=_strength_signals(), **kw)
+        assert without.ordered_routes == ("kr/gpt-4.1", "gh/gpt-4o")
+        assert advised.ordered_routes == ("gh/gpt-4o", "kr/gpt-4.1")
+        assert advised.signals_digest == "b" * 64
+        gh = next(s for s in advised.route_scores if s.route_id == "gh/gpt-4o")
+        assert gh.external_strength == 90.0
+        assert gh.strength_source == "aa_intelligence"
+
+
+class TestProvenanceFlags:
+    """Failure caught: metadata_fixture followed snapshot presence, so a live
+    run with a metadata store was labelled fixture and fixture runs without a
+    store were labelled live; the event had no live_proof field."""
+
+    def test_live_input_with_metadata_store_is_live(self) -> None:
+        rows = [row("kr/gpt-4.1")]
+        _a, result = _build(
+            rows,
+            [conn("kr")],
+            metadata_snapshot=_snapshot({}),
+            identity_map=IdentityMap(omniroute_to_models_dev={}),
+        )
+        assert result.metadata_fixture is False
+        assert result.live_proof is True
+        event = json.loads(build_shadow_event(result, Role.PLANNER, timestamp="t").to_json())
+        assert event["live_proof"] is True
+        assert event["metadata_fixture"] is False
+
+    def test_fixture_input_without_metadata_store_is_not_live(self) -> None:
+        rows = [row("kr/gpt-4.1")]
+        _a, result = _build(rows, [conn("kr")], fixture_input=True)
+        assert result.metadata_fixture is True
+        assert result.live_proof is False
+        event = json.loads(build_shadow_event(result, Role.PLANNER, timestamp="t").to_json())
+        assert event["live_proof"] is False
+        assert event["metadata_fixture"] is True
+
+
+def _run_cli(tmp_path: Path, fixture: dict[str, Any]) -> Any:
+    import os
+    import subprocess
+    import sys
+
+    path = tmp_path / "inventory.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    env = {**os.environ, "VERDICT_HOME": str(tmp_path / "vh"), "VERDICT_PLAIN": "1"}
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "verdict",
+            "ladder",
+            "--role",
+            "planner",
+            "--json",
+            "--inventory-fixture",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=120,
+        check=False,
+    )
+
+
+class TestLadderCli:
+    """Failure caught: the CLI exit code and fixture provenance were never
+    exercised end to end."""
+
+    def test_fixture_run_without_metadata_store(self, tmp_path: Path) -> None:
+        proc = _run_cli(tmp_path, {"inventory": [row("kr/gpt-4.1")], "connections": [conn("kr")]})
+        assert proc.returncode == 0, proc.stderr
+        out = json.loads(proc.stdout)
+        assert out["ladder_result"]["metadata_fixture"] is True
+        assert out["ladder_result"]["live_proof"] is False
+        assert out["shadow_event"]["live_proof"] is False
+
+    def test_fail_closed_exits_non_zero(self, tmp_path: Path) -> None:
+        proc = _run_cli(
+            tmp_path, {"inventory": [row("auto/best-coding")], "connections": [conn("auto")]}
+        )
+        assert proc.returncode != 0
+        out = json.loads(proc.stdout)
+        assert out["ladder_result"]["status"] == "FAIL_CLOSED"

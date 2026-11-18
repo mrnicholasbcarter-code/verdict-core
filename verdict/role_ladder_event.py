@@ -21,7 +21,7 @@ class RoleLadderShadowEvent:
     Fields per shadow_event_contract in plan.yaml:
     role, node_id, run_id, correlation_id, mode, H0, H1, H2, H3,
     admitted_set, dynamic_candidates, skips, legacy_pick, dynamic_pick,
-    agree, signals_digest, metadata_fixture
+    agree, signals_digest, metadata_fixture, live_proof (false for any fixture input)
     """
 
     schema_version: int = 1
@@ -44,6 +44,7 @@ class RoleLadderShadowEvent:
     agree: bool | None = None
     signals_digest: str | None = None
     metadata_fixture: bool = False
+    live_proof: bool = True
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def __post_init__(self) -> None:
@@ -125,6 +126,7 @@ def build_shadow_event(
         agree=ladder_result.agree,
         signals_digest=ladder_result.signals_digest,
         metadata_fixture=ladder_result.metadata_fixture,
+        live_proof=ladder_result.live_proof,
         timestamp=ts,
     )
 

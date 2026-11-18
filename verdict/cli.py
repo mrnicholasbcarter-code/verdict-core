@@ -3435,7 +3435,6 @@ def main() -> None:
         parsers_runtime,
         parsers_models,
         parsers_openspec,
-        parsers_ladder,
     ):
         registrar.register(subparsers)
     # Direct calls (not through the tuple-driven loop above) so the static
@@ -3443,6 +3442,7 @@ def main() -> None:
     parsers_autodev.register(subparsers)
     parsers_census.register(subparsers)
     parsers_identify.register(subparsers)
+    parsers_ladder.register(subparsers)
     parsers_outcome.register(subparsers)
 
     from verdict.commands.dispatch import dispatch

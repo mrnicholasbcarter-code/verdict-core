@@ -206,7 +206,11 @@ def _cmd_ladder(parser: argparse.ArgumentParser, args: argparse.Namespace) -> No
 
     from verdict.admission import admit, default_runtime_evidence
     from verdict.metadata.mapping import load_identity_map
+    from verdict.metadata.records import ModelMetadataError
     from verdict.metadata.store import load_store
+    from verdict.openrouter_free_set import load_openrouter_free_set
+    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+    from verdict.paths import verdict_home
     from verdict.role_ladder_event import build_shadow_event
     from verdict.role_selection import LadderStatus, OpenQuotaView, Role, build_ladder
 
@@ -214,14 +218,14 @@ def _cmd_ladder(parser: argparse.ArgumentParser, args: argparse.Namespace) -> No
     if role != Role.PLANNER:
         parser.error(f"Role {role.value} not enabled in Slice 1")
 
-    # Load inventory fixture or live
-    if args.inventory_fixture:
+    # Provenance is the explicit flag, never whether a metadata store exists.
+    fixture_input = bool(args.inventory_fixture)
+    if fixture_input:
         with open(args.inventory_fixture) as f:
             fixture = json.load(f)
         inventory_rows = fixture.get("inventory", [])
         connections = fixture.get("connections", [])
     else:
-        # Live mode - use existing resolver and fetch path
         from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
 
         gateway = os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128")
@@ -233,30 +237,38 @@ def _cmd_ladder(parser: argparse.ArgumentParser, args: argparse.Namespace) -> No
             print(f"error: failed to fetch live inventory: {e}", file=sys.stderr)
             sys.exit(1)
 
-    # Load metadata snapshot and identity map
     try:
         metadata_snapshot = load_store()
-        identity_map = load_identity_map()
-    except Exception:
+    except (OSError, ValueError):  # missing or unreadable store: no strength
         metadata_snapshot = None
+    try:
+        identity_map = load_identity_map() if metadata_snapshot is not None else None
+    except (OSError, ModelMetadataError):
         identity_map = None
 
-    # Build admitted set
+    # Same read-only state the eligibility ladder reads (build_selector).
     now = datetime.now(timezone.utc)
-    runtime_evidence = default_runtime_evidence(now=now)
+    state_path = verdict_home() / "orchestration-health.json"
+    runtime_evidence = default_runtime_evidence(
+        now=now, state_dir=state_path.parent, ladder_state=state_path
+    )
     admitted = admit(inventory_rows, connections, runtime_evidence, now=now)
-
-    # Build ladder
     ladder_result = build_ladder(
         role=role,
         admitted=admitted,
         inventory_rows=inventory_rows,
         connections=connections,
-        signals=None,  # T3: no signals
+        signals=None,  # T3: no decision signals collected
         quota_view=OpenQuotaView(),
         clock=now,
         metadata_snapshot=metadata_snapshot,
         identity_map=identity_map,
+        openrouter_free_set=load_openrouter_free_set(
+            now=now, cache_path=state_path.parent / "openrouter-free-set.json", refresh=False
+        ),
+        health_cache=HealthCache(default_cache_path()),
+        state_path=state_path,
+        fixture_input=fixture_input,
     )
 
     # Build shadow event
@@ -309,6 +321,7 @@ def _cmd_ladder(parser: argparse.ArgumentParser, args: argparse.Namespace) -> No
                 "agree": ladder_result.agree,
                 "signals_digest": ladder_result.signals_digest,
                 "metadata_fixture": ladder_result.metadata_fixture,
+                "live_proof": ladder_result.live_proof,
             },
             "shadow_event": json.loads(shadow_event.to_json()),
         }
