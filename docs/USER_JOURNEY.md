@@ -20,13 +20,13 @@ does not configure a provider or make a network call.
 Use `verdict detect --offline --json` for a no-probe offline provider status
 report. The command returns before live discovery, so it does not open sockets,
 invoke provider CLIs, read credentials, or send a prompt. A catalog record is
-not proof of reachability; protected work requires a fresh capability passport.
+not proof of reachability; protected work requires a fresh capability passport. <!-- claim:C-095 -->
 
 For a credential-free route decision, run the checked-in fixture:
 
 ```bash
 verdict quickstart --non-interactive --dry-run --json
-```
+``` <!-- claim:C-096 -->
 
 For an operator-configured live route, the syntax is positional. It executes a
 completion through the configured provider and fails closed when no qualified
@@ -34,9 +34,9 @@ route remains:
 
 ```bash
 verdict route "summarize this change" --criticality low --terse
-```
+``` <!-- claim:C-097 -->
 
-Use `verdict simulate "summarize this change"` for a no-send forecast.
+Use `verdict simulate "summarize this change"` for a no-send forecast. <!-- claim:C-098 -->
 `--allow-offline` disables live discovery and probes; it exits non-zero with
 `transport_outcome=error` because no provider completion was sent. The separate
 `--allow-legacy-selector` flag is only the explicit migration escape to the selector that predates the execution-path authority optimizer.
@@ -46,7 +46,7 @@ Use `verdict simulate "summarize this change"` for a no-send forecast.
 `verdict orchestrate` runs the full goal-to-receipt pipeline (ADR-036): frontier
 planner decomposes the goal into a DAG, each node gets an eligible route, workers
 run in parallel, faults trigger same-node reroute, an independent reviewer checks
-output, and a digest-verified receipt is written.
+output, and a digest-verified receipt is written. <!-- claim:C-099 -->
 
 ```bash
 # Full run (requires OmniRoute gateway on localhost:20128)
@@ -58,13 +58,13 @@ verdict orchestrate "Add a tested textkit.stats feature" \
   --inject "cc/*=rate_limit"
 
 # Live TUI view while a run is in progress
-verdict watch <run-id>
+verdict watch <run-id> <!-- claim:C-100 -->
 
 # Inspect the eligibility ladder
-verdict eligibility
+verdict eligibility <!-- claim:C-101 -->
 
 # Verify the receipt (event-log digest) after completion
-verdict run-receipt <run-id>
+verdict run-receipt <run-id> <!-- claim:C-102 -->
 ```
 
 See [`docs/guides/orchestration-golden-path.md`](guides/orchestration-golden-path.md) for
@@ -75,9 +75,9 @@ prerequisites, scenario matrix (A–J), and recorded evidence.
 The offline proof path is credential-free:
 
 ```bash
-verdict autodev-golden-path --objective "verify a small repository" --repo /tmp/repo --json
-verdict failover-proof --memory-path /tmp/failover.db --json
-VERDICT_MEMORY_DB=/tmp/failover.db verdict replay <session-id> --json
+verdict autodev-golden-path --objective "verify a small repository" --repo /tmp/repo --json <!-- claim:C-103 -->
+verdict failover-proof --memory-path /tmp/failover.db --json <!-- claim:C-104 -->
+VERDICT_MEMORY_DB=/tmp/failover.db verdict replay <session-id> --json <!-- claim:C-105 -->
 ```
 
 The golden path is an offline proof over a clean Git repository: discovery,
@@ -104,6 +104,6 @@ Each path emits bounded, privacy-safe evidence.
 | Goal-to-receipt orchestration | one retained live run; bounded recovery and receipt verification | [BOD-225 live bundle](proof/dogfood-bod-225-live-2026-09-29/README.md) | includes an injected fault; raw OCR output and coverage are not retained; not production certification |
 | Forced failover and replay | offline proof | `failover-proof` CLI | simulated provider failure |
 | Live provider routing | implemented; externally contingent | consent-gated probes, execution receipts, and fail-closed identity checks | authorization, quota, health, and live model output remain external |
-| Adaptive/quality/cost claims | simulated only | benchmark fixtures and reports | not a production quality guarantee |
+| Adaptive/quality/cost claims | simulated only | benchmark fixtures and reports | not a production quality guarantee <!-- claim:C-031 --> |
 | Dashboard and ecosystem adapters | functional but incomplete | package/import and focused adapter tests | deployment and cross-repo operation are not proven here |
 | External provider health/quota | missing | not tested in CI | requires live credentials and network |

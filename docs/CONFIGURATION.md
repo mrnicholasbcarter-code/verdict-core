@@ -679,7 +679,7 @@ recorded in the admit receipt (`spend_policy`).
 ### Optional platform-neutral guidance
 
 Guidance is an experimental, host-neutral boundary. It is disabled by
-default, does not read `AGENTS.md` / `CLAUDE.md`, and cannot bypass gates.
+default, does not read `AGENTS.md` / `CLAUDE.md`, and cannot bypass gates. <!-- claim:C-048 -->
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -717,7 +717,7 @@ Every service installer (prove-at-rest, acceptance, census) returns an install
 `$VERDICT_HOME/service-rollback/<UTC>/`, before any unit file is written. A dry
 run returns the plan and writes nothing.
 
-Census and prove-at-rest's chat phase are the two automatic maintenance
+Census and prove-at-rest's chat phase are the two automatic maintenance <!-- claim:C-047 -->
 producers on the shared `RefreshCoordinator` (`verdict/orchestration/verified_refresh.py`).
 Both probe FREE and SUBSCRIPTION capacity only; METERED/UNKNOWN routes stay
 reachable only through the consented manual refresh plan (`--include-unknown`,
@@ -746,7 +746,7 @@ verdict route "summarize the change" --terse
 ```
 
 An empty free∩active intersection fails closed. There is no automatic upgrade to
-a frontier model when eligibility returns nothing.
+a frontier model when eligibility returns nothing. <!-- claim:C-049 -->
 
 ---
 
@@ -762,7 +762,7 @@ a frontier model when eligibility returns nothing.
 
 An inference-scoped OmniRoute key cannot read `/api/providers`.
 Never send a manage/admin key through a public tunnel.
-Capture connection evidence locally, using the local admin key:
+Capture connection evidence locally, using the local admin key: <!-- claim:C-050 -->
 
 ```bash
 # Supply VERDICT_OMNIROUTE_API_KEY securely in this local process.

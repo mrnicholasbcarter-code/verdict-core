@@ -29,16 +29,16 @@ verdict doctor
 
 ## Credential Storage
 
-Credentials are stored in `$XDG_CONFIG_HOME/verdict/credentials.env` (typically `~/.config/verdict/credentials.env`).
+Credentials are stored in `$XDG_CONFIG_HOME/verdict/credentials.env` (typically `~/.config/verdict/credentials.env`). <!-- claim:C-078 -->
 
 ### Security
 
-- **Directory permissions**: `0700` (owner only)
-- **File permissions**: `0600` (owner read/write only)
-- **Atomic writes**: Via temp file + `os.replace()` to prevent corruption
-- **Permission enforcement**: Refuses to load when group/world readable
-- **Never in YAML**: Secrets are never written to `verdict.yaml`
-- **Never in argv**: Set via `getpass()` or `--stdin`, never command arguments
+- **Directory permissions**: `0700` (owner only) <!-- claim:C-079 -->
+- **File permissions**: `0600` (owner read/write only) <!-- claim:C-079 -->
+- **Atomic writes**: Via temp file + `os.replace()` to prevent corruption <!-- claim:C-080 -->
+- **Permission enforcement**: Refuses to load when group/world readable <!-- claim:C-081 -->
+- **Never in YAML**: Secrets are never written to `verdict.yaml` <!-- claim:C-082 -->
+- **Never in argv**: Set via `getpass()` or `--stdin`, never command arguments <!-- claim:C-083 -->
 
 If permissions are too permissive, you'll see:
 
@@ -49,11 +49,11 @@ Fix with: chmod 0600 /home/user/.config/verdict/credentials.env
 
 ## Precedence
 
-Exported environment variables **always win** over stored values. The store only fills unset names. It's loaded once at CLI and server startup.
+Exported environment variables **always win** over stored values. The store only fills unset names. It's loaded once at CLI and server startup. <!-- claim:C-084 -->
 
 ## Registered Credentials
 
-All credentials used by Verdict must be registered in `verdict/credentials_registry.py`. The drift test ensures no credential is read without being registered.
+All credentials used by Verdict must be registered in `verdict/credentials_registry.py`. The drift test ensures no credential is read without being registered. <!-- claim:C-085 --><!-- claim:C-086 -->
 
 ## Dependencies
 
@@ -61,7 +61,7 @@ The registry also tracks optional dependencies. Check their status with `verdict
 
 ## Masking
 
-All credential values are masked in output: `set (len=N)`. No characters of the secret are ever shown. Full secrets never appear in logs, doctor output, or `verdict.yaml`.
+All credential values are masked in output: `set (len=N)`. No characters of the secret are ever shown. Full secrets never appear in logs, doctor output, or `verdict.yaml`. <!-- claim:C-087 --><!-- claim:C-088 -->
 
 ## API
 

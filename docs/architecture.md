@@ -1,6 +1,6 @@
 # Architecture Overview
 
-> **Shipped behavior.** This page describes the live control-plane path.
+> **Shipped behavior.** This page describes the live control-plane path. <!-- claim:C-032 -->
 > Design-only specifications under `docs/architecture/*_SPECIFICATION.md` are
 > **not** additional shipped behaviour unless linked from an ADR marked CURRENT.
 
@@ -33,14 +33,14 @@
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Invariant:** hard eligibility runs before advisory ranking. A model excluded by
+**Invariant:** hard eligibility runs before advisory ranking. A model excluded by <!-- claim:C-032 -->
 a gate cannot be restored by a score, similarity signal, or cost heuristic.
 
 ## Core components
 
 ### 1. Gate (`verdict/gate.py`)
 
-Composes eligibility + intelligence and exposes the routing entry points:
+Composes eligibility + intelligence and exposes the routing entry points: <!-- claim:C-033 -->
 
 ```python
 class Gate:
@@ -53,7 +53,7 @@ class Gate:
 
 ### 2. [Eligibility Gate (`verdict/eligibility.py`)](../verdict/eligibility.py)
 
-Availability-aware hard filtering with explicit unknown handling:
+Availability-aware hard filtering with explicit unknown handling: <!-- claim:C-034 -->
 
 ```python
 class EligibilityGate:
@@ -72,14 +72,14 @@ protected work when fail-closed mode is enabled.
 ### 3. [Intelligence Service (`verdict/intelligence.py`)](../verdict/intelligence.py)
 
 **Advisory ranking only** — cannot bypass hard gates. Orders already-eligible
-candidates using historical MemoryPlane signals and expected-value estimates.
+candidates using historical MemoryPlane signals and expected-value estimates. <!-- claim:C-035 -->
 
 Canonical durable memory is MemoryPlane (`verdict/memory_*`). Ruflo/swarm
 learning is not part of Core after the Ruflo/swarm/hivemind removal (see ADR-023, superseded).
 
 ### 4. Availability Cache (`verdict/availability_cache.py`)
 
-Bounded SWR cache (issue #56):
+Bounded SWR cache (issue #56): <!-- claim:C-036 -->
 
 - **Cache key**: provider + model + policy_version
 - **TTL**: configurable (default 60s)
@@ -91,18 +91,18 @@ Bounded SWR cache (issue #56):
 
 On the API serve path, execution-path authority is required. Demoted
 legacy selectors may still feed candidate sets, but they are not routing
-authority when `require_execution_path_authority` is set (the ADR-035 legacy-selector cutover).
+authority when `require_execution_path_authority` is set (the ADR-035 legacy-selector cutover). <!-- claim:C-037 -->
 
 ### 6. Dispatcher (`verdict/dispatcher.py`)
 
 Binds an authorized `selected_route`, hydrates the execution plan, and emits
 assignment explanation. `SwarmDispatcher` is a legacy class name for the
 authorize-only dispatcher after the Ruflo/swarm removal. It is not Ruflo swarm supervision and
-does not supervise a swarm.
+does not supervise a swarm. <!-- claim:C-038 -->
 
 ### 7. [OmniRoute transport (`verdict/omniroute.py`)](../verdict/omniroute.py)
 
-Optional HTTP transport for catalog inventory, execute, and health evidence.
+Optional HTTP transport for catalog inventory, execute, and health evidence. <!-- claim:C-039 -->
 The live catalog has thousands of models across dozens of providers (live count
 via `verdict eligibility`); this document does not freeze a provider or
 free-tier count.
@@ -120,7 +120,7 @@ Harness adapters (Claude Code, Codex, Cursor, …) talk to Verdict. OmniRoute on
 Independently fetched model caps from models.dev (primary) and LiteLLM
 (secondary). Each field carries `source` + `version|fetched_at`. Soft ranks are
 never invented. See [`guides/model-metadata-store.md`](guides/model-metadata-store.md)
-and [ADR-032](adr/ADR-032-core-model-metadata-store.md).
+and [ADR-032](adr/ADR-032-core-model-metadata-store.md). <!-- claim:C-040 -->
 
 ---
 
@@ -129,7 +129,7 @@ and [ADR-032](adr/ADR-032-core-model-metadata-store.md).
 
 [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md) defines the shipped
 `verdict.orchestration` control plane. It owns a run from a goal through a
-validated DAG, bounded execution and independent review to a durable receipt.
+validated DAG, bounded execution and independent review to a durable receipt. <!-- claim:C-041 -->
 The [orchestration golden path](guides/orchestration-golden-path.md) documents the
 operator flow.
 
@@ -173,7 +173,7 @@ These are the live replacements for the retired architecture-page links:
 ### Request routing: decision and execution are separate
 
 The HTTP decision API does not forward a completion. The relay surfaces do.
-The CLI's synchronous `Gate` is a third entry point, not an alias for either.
+The CLI's synchronous `Gate` is a third entry point, not an alias for either. <!-- claim:C-042 -->
 
 ```text
 POST /v1/route
@@ -212,7 +212,7 @@ configuration are documented in [CONFIGURATION.md](CONFIGURATION.md).
 Returns freshness + eligibility explain records from
 `AvailabilityCache.explain` and `EligibilityGate` explain surfaces. Exact JSON
 shape is versioned with the API; treat the OpenAPI schema and live
-`/v1/route/explain` response as authoritative over any pasted example.
+`/v1/route/explain` response as authoritative over any pasted example. <!-- claim:C-043 -->
 
 ---
 
@@ -220,7 +220,7 @@ shape is versioned with the API; treat the OpenAPI schema and live
 
 Versioned, strict dataclass contracts for all public APIs. The canonical
 machine-readable definition is [schemas/contracts.v1.json](../schemas/contracts.v1.json)
-and the checked-in fixture is validated by:
+and the checked-in fixture is validated by: <!-- claim:C-044 -->
 
 ```bash
 uv run python scripts/validate_contract_schema.py
@@ -248,7 +248,7 @@ omit it; any declared version other than `"1"` is rejected.
 - **API key redaction**: keys stripped from logs/telemetry
 - **PII masking**: common secret/PII patterns redacted
 - **Private host blocking**: RFC1918, localhost, metadata endpoints blocked by default
-- **Fail-closed**: unknown availability is ineligible for protected work
+- **Fail-closed**: unknown availability is ineligible for protected work <!-- claim:C-045 -->
 
 ---
 
@@ -256,7 +256,7 @@ omit it; any declared version other than `"1"` is rejected.
 
 No CI-backed latency SLA is currently claimed for Gate/Eligibility/Intelligence.
 Treat any historical p50/p99 tables as **unmeasured targets**, not shipped proof.
-Use [`proof/EVIDENCE_INDEX.md`](proof/EVIDENCE_INDEX.md) for what is actually certified.
+Use [`proof/EVIDENCE_INDEX.md`](proof/EVIDENCE_INDEX.md) for what is actually certified. <!-- claim:C-046 -->
 
 ---
 
