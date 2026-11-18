@@ -69,6 +69,23 @@ _STATUS_RE = re.compile(r"\b([45]\d{2})\b")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _STDERR_TAIL_CHARS = 400
 _TERM_GRACE_SECONDS = 5.0
+#: BOD-312: a worker with no stdout/stderr for this long is killed as ``stalled``.
+IDLE_OUTPUT_ENV = "VERDICT_WORKER_IDLE_SECONDS"
+DEFAULT_IDLE_OUTPUT_SECONDS = 300.0
+
+
+def idle_output_seconds_from_env(env: Mapping[str, str] | None = None) -> float:
+    """The idle-output bound from ``VERDICT_WORKER_IDLE_SECONDS``, else the default.
+
+    Only a positive finite number is accepted; anything else keeps the default,
+    so a typo can never switch the stall kill off.
+    """
+    raw = (os.environ if env is None else env).get(IDLE_OUTPUT_ENV, "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_IDLE_OUTPUT_SECONDS
+    return value if math.isfinite(value) and value > 0 else DEFAULT_IDLE_OUTPUT_SECONDS
 
 
 def _sanitize(text: str, limit: int = _STDERR_TAIL_CHARS) -> str:
@@ -246,12 +263,18 @@ class PrimeHeadlessExecutor:
         extra_args: tuple[str, ...] = ("-nc", "-ns"),
         thinking: str | None = None,
         env: Mapping[str, str] | None = None,
+        idle_output_seconds: float | None = None,
     ) -> None:
         self.prime_bin = prime_bin
         self.provider = provider
         self.extra_args = tuple(extra_args)
         self.thinking = thinking
         self.env = dict(env) if env is not None else None
+        self.idle_output_seconds = (
+            idle_output_seconds
+            if idle_output_seconds is not None
+            else idle_output_seconds_from_env(self._child_env())
+        )
         # Launch dirs pinned by an origin check, keyed by what ``run`` receives.
         self._pinned: dict[tuple[str, str], tuple[tempfile.TemporaryDirectory[str], str]] = {}
         # Every origin this executor reported to a dispatch check.
@@ -452,17 +475,23 @@ class PrimeHeadlessExecutor:
                 duration_seconds=time.monotonic() - started,
             )
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-        except asyncio.TimeoutError:
-            await self._kill_group(proc)
-            launch_config.cleanup()
-            return WorkerTerminal(
-                executor_kind="live",
-                ok=False,
-                model="",
-                error="timeout",
-                duration_seconds=time.monotonic() - started,
-            )
+            stdout_b, stderr_b, cut = await self._collect(proc, timeout_seconds)
+            if cut:
+                await self._kill_group(proc)
+                launch_config.cleanup()
+                stalled = cut == "stalled"
+                return WorkerTerminal(
+                    executor_kind="live",
+                    ok=False,
+                    model="",
+                    stop_reason="stalled" if stalled else "",
+                    error=(
+                        f"stalled: no worker output for {self.idle_output_seconds:g}s"
+                        if stalled
+                        else "timeout"
+                    ),
+                    duration_seconds=time.monotonic() - started,
+                )
         except asyncio.CancelledError:
             # BOD-276: cancel_node/cancel_run cancels this task; kill the
             # subprocess (and its process group) before propagating so a
@@ -481,6 +510,55 @@ class PrimeHeadlessExecutor:
             route_id=route_id,
             duration=duration,
         )
+
+    async def _collect(
+        self, proc: asyncio.subprocess.Process, timeout_seconds: float
+    ) -> tuple[bytes, bytes, str]:
+        """Read both pipes to EOF and wait for exit, bounded twice.
+
+        Returns ``(stdout, stderr, cut)``; ``cut`` is ``""`` on a normal exit,
+        ``"timeout"`` when the whole attempt ran past ``timeout_seconds`` and
+        ``"stalled"`` when no stdout/stderr byte arrived for
+        ``idle_output_seconds``. The caller kills the process group on a cut.
+        """
+        buffers = {"stdout": bytearray(), "stderr": bytearray()}
+        last_output = time.monotonic()
+
+        async def pump(name: str, stream: asyncio.StreamReader | None) -> None:
+            nonlocal last_output
+            if stream is None:
+                return
+            while chunk := await stream.read(65536):
+                buffers[name] += chunk
+                last_output = time.monotonic()
+
+        tasks = {
+            asyncio.ensure_future(pump("stdout", proc.stdout)),
+            asyncio.ensure_future(pump("stderr", proc.stderr)),
+            asyncio.ensure_future(proc.wait()),
+        }
+        started = time.monotonic()
+        cut = ""
+        try:
+            while True:
+                now = time.monotonic()
+                hard_left = timeout_seconds - (now - started)
+                idle_left = self.idle_output_seconds - (now - last_output)
+                if hard_left <= 0:
+                    cut = "timeout"
+                    break
+                if idle_left <= 0:
+                    cut = "stalled"
+                    break
+                _, pending = await asyncio.wait(tasks, timeout=min(hard_left, idle_left))
+                if not pending:
+                    break
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return bytes(buffers["stdout"]), bytes(buffers["stderr"]), cut
 
     async def _kill_group(self, proc: asyncio.subprocess.Process) -> None:
         """SIGTERM the whole process group; escalate to SIGKILL after a grace period."""
