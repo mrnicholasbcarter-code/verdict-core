@@ -169,6 +169,7 @@ class FailureIntelligence:
         - 400 + unsupported -> unsupported, REROUTE, route, 86400
         - 404 or model_not_found -> model_unavailable, REROUTE, route, 3600
         - 5xx -> upstream_temporary, REROUTE, route, 60
+        - stalled (no worker output for the idle bound) -> stalled, REROUTE, route, 120
         - timeout -> timeout, REROUTE, route, 120
         - connection refused/reset -> transport_temporary, REROUTE, route, 60
         - empty/whitespace output -> empty_output, REROUTE, route, 300
@@ -417,6 +418,20 @@ class FailureIntelligence:
                 cooldown = 3600
             return FailureClassification(
                 category="model_unavailable",
+                action="REROUTE",
+                cooldown_seconds=cooldown,
+                scope="route",
+                evidence=_sanitize_error(error_text),
+            )
+
+        # BOD-312: the executor killed a worker that wrote nothing for its idle
+        # bound. Its own category so the receipt names the stall; the route is
+        # cooled and the node rerouted like a timeout.
+        if terminal.stop_reason == "stalled" or error_text.startswith("stalled:"):
+            if not cooldown:
+                cooldown = 120
+            return FailureClassification(
+                category="stalled",
                 action="REROUTE",
                 cooldown_seconds=cooldown,
                 scope="route",

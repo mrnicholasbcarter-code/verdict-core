@@ -2096,7 +2096,7 @@ class DagRuntime:
         results; everything else is ``wrong_result``.
         """
         category = failure.category
-        if category == "timeout":
+        if category in {"timeout", "stalled"}:
             return "timeout"
         if category in {
             "rate_limited",
