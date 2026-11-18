@@ -903,7 +903,7 @@ def cmd_route(
         "terse": terse,
         "context": ctx,
     }
-    if terse:
+    if terse or output_json:
         result = run_action("route", params)
     else:
         status_label = (
