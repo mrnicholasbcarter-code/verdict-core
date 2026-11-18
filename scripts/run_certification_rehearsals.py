@@ -83,9 +83,12 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict:
         "--json",
     ]
 
-    # Use the same VERDICT_HOME and env as orchestrate
+    # Use the same VERDICT_HOME and env as orchestrate. `identify` has no
+    # --gateway flag and otherwise defaults to loopback, which a CI runner
+    # does not have; point it at the certification gateway orchestrate uses.
     preflight_env = env.copy()
     preflight_env["VERDICT_HOME"] = verdict_home
+    preflight_env["OMNIROUTE_BASE_URL"] = env["VERDICT_CERT_GATEWAY_URL"]
 
     result = subprocess.run(
         cmd,

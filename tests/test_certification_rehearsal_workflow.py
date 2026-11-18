@@ -235,8 +235,13 @@ def test_preflight_argv_is_free_only_and_bounded(tmp_path, monkeypatch):
     monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "snapshot.json")
     preflight_args = []
 
+    monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+
     def record_child(argv, **kwargs):
         if "identify" in argv and "--screen" in argv:
+            # identify has no --gateway flag; CI sets no OMNIROUTE_BASE_URL, so the
+            # preflight must point the screen at the certification gateway itself.
+            assert kwargs["env"]["OMNIROUTE_BASE_URL"] == "https://gateway.invalid"
             preflight_args.append(argv)
             return subprocess.CompletedProcess(
                 argv,
