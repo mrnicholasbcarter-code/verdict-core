@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Run the two live CI fixtures; never print provider output or credentials."""
 
+from __future__ import annotations
+
 import json
 import os
 import shutil
@@ -8,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from verdict.orchestration.connections_snapshot import read_connections_snapshot
 from verdict.orchestration.contracts import OrchestrationError
@@ -57,7 +60,7 @@ def _connections_snapshot(root: Path) -> Path:
     return path
 
 
-def _run_preflight(root: Path, env: dict[str, str]) -> dict:
+def _run_preflight(root: Path, env: dict[str, str]) -> dict[str, Any]:
     """Run a bounded FREE-only identify screen to produce fresh agentic proof.
 
     Returns the screen report dict on success. Raises RehearsalConfigurationError
