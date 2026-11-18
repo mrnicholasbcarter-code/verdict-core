@@ -105,18 +105,17 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict:
     except json.JSONDecodeError as exc:
         raise RehearsalConfigurationError(f"Preflight screen produced invalid JSON: {exc}") from exc
 
-    # Verify the screen produced genuine agentic qualification for FREE routes
+    # Verify the screen produced genuine agentic qualification for FREE routes.
+    # The screen report's 'passed' counts routes where the 3-turn agentic probe
+    # succeeded (row["result"] == "pass"). 'routes_checked' counts completed probes.
     routes_checked = report.get("routes_checked", 0)
     passed = report.get("passed", 0)
-    agentic_probed = report.get("agentic_probed", 0)
-    agentic_passed = report.get("agentic_passed", 0)
 
-    # Fail-closed: no FREE route qualified as an implementation worker
-    if routes_checked == 0 or passed == 0 or agentic_probed == 0 or agentic_passed == 0:
+    # Fail-closed: no FREE route completed and passed the agentic probe.
+    if routes_checked == 0 or passed == 0:
         raise RehearsalConfigurationError(
             "Preflight screen produced no qualified FREE routes: "
-            f"checked={routes_checked}, passed={passed}, "
-            f"agentic_probed={agentic_probed}, agentic_passed={agentic_passed}. "
+            f"routes_checked={routes_checked}, passed={passed}. "
             "Rehearsal cannot proceed without fresh agentic proof."
         )
 

@@ -197,7 +197,15 @@ def test_live_rehearsal_dispatch_is_free_only_without_subscription_escape(tmp_pa
                 argv,
                 0,
                 json.dumps(
-                    {"routes_checked": 1, "passed": 1, "agentic_probed": 1, "agentic_passed": 1}
+                    {
+                        "routes_checked": 1,
+                        "passed": 1,
+                        "model_calls": 3,
+                        "model_requests_sent": 3,
+                        "stopped_reason": "complete",
+                        "routes": [],
+                        "mode": "screen",
+                    }
                 ).encode(),
                 b"",
             )
@@ -233,7 +241,7 @@ def test_preflight_argv_is_free_only_and_bounded(tmp_path, monkeypatch):
             return subprocess.CompletedProcess(
                 argv,
                 0,
-                b'{"routes_checked": 1, "passed": 1, "agentic_probed": 1, "agentic_passed": 1}',
+                b'{"routes_checked": 1, "passed": 1, "model_calls": 3, "model_requests_sent": 3, "stopped_reason": "complete", "routes": [], "mode": "screen"}',
                 b"",
             )
         return subprocess.CompletedProcess(argv, 1, b"", b"")
@@ -284,7 +292,7 @@ def test_preflight_fails_closed_when_no_free_routes_qualify(tmp_path, monkeypatc
             return subprocess.CompletedProcess(
                 argv,
                 0,
-                b'{"routes_checked": 0, "passed": 0, "agentic_probed": 0, "agentic_passed": 0}',
+                b'{"routes_checked": 0, "passed": 0, "model_calls": 0, "model_requests_sent": 0, "stopped_reason": "complete", "routes": [], "mode": "screen"}',
                 b"",
             )
         return subprocess.CompletedProcess(argv, 0, b"", b"")
