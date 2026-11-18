@@ -928,3 +928,54 @@ def test_public_policy_cannot_be_weakened_and_optimizer_is_price_invariant(
     )
     # route-a is still selected because shortlist order dominates class labels
     assert dec4.selected_candidate_id == "route-a"
+
+
+def test_api_route_execution_path_request_without_clock_returns_decision(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Catches the live HTTP 500 on POST /v1/route with an execution_path_request.
+
+    The real FastAPI app builds the real IntelligenceService in its lifespan, so
+    the request runs the serve branch: build_selector, the eligibility ladder and
+    the health cache. Only external reads are faked. On the unfixed service the
+    ladder passed ``admit_now=None`` to HealthCache.lookup and the app answered
+    500 (HealthCacheError: now must be a timezone-aware datetime).
+    """
+    import socket
+
+    from fastapi.testclient import TestClient
+
+    import verdict.api as api
+    from tests.helpers.live_execution_path import (
+        ROUTE,
+        install_live_fakes,
+        live_service,
+        public_request_body,
+    )
+    from verdict.actions.verified_models import PublicModelsUnavailableError
+
+    def no_socket(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"this test must not open a connection: {args!r}")
+
+    # TestClient is in-process and opens no socket; any real gateway read would.
+    monkeypatch.setattr(socket.socket, "connect", no_socket)
+    monkeypatch.setattr(socket, "create_connection", no_socket)
+    install_live_fakes(monkeypatch, tmp_path)
+    monkeypatch.setattr(api, "_build_intelligence", lambda: live_service(admit_now=None))
+    monkeypatch.setattr(api, "_build_availability_cache", lambda: None)
+
+    def no_public_models(**_: object) -> None:
+        raise PublicModelsUnavailableError("inventory_absent")
+
+    monkeypatch.setattr(api, "load_public_models", no_public_models)
+    monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("LLMGATE_LOG_PATH", "")
+
+    with TestClient(api.app, raise_server_exceptions=False) as client:
+        response = client.post("/v1/route", json=public_request_body())
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["decision"] == "selected"
+    assert f"{body['provider']}/{body['model']}" == ROUTE

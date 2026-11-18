@@ -1,0 +1,54 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 10,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "BLOCKED",
+        "headRefOid": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+        "headRefName": "docs/readme",
+        "body": "",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+                "statusCheckRollup": {
+                  "state": "FAILURE",
+                  "contexts": {
+                    "totalCount": 1,
+                    "pageInfo": {
+                      "hasNextPage": false,
+                      "endCursor": null
+                    },
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "databaseId": 9201,
+                        "name": "proof-full",
+                        "status": "COMPLETED",
+                        "conclusion": "CANCELLED",
+                        "startedAt": "2026-03-02T11:40:00Z",
+                        "completedAt": "2026-03-02T11:45:00Z",
+                        "detailsUrl": "https://github.com/org/repo/actions/runs/701/job/9201",
+                        "isRequired": true,
+                        "checkSuite": {
+                          "workflowRun": {
+                            "databaseId": 701,
+                            "workflow": {
+                              "name": "CI"
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

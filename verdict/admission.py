@@ -57,6 +57,12 @@ ACTIVE_CONTROLLER_ENV = "VERDICT_ACTIVE_CONTROLLER_ROUTE"
 CONTROLLER_IDENTITY_UNKNOWN = "unknown"
 _OPAQUE_PREFIXES = ("auto/", "combo/", "router/", "virtual/")
 _OPAQUE_IDS = frozenset({"auto", "default", "best"})
+# Bare IDs that count as opaque only when they appear as the model path after a
+# provider segment. ``best`` is intentionally excluded: a vendor model literally
+# named ``best`` (e.g. ``a/best``) is concrete, not a resolver alias.
+_OPAQUE_MODEL_IDS = frozenset({"auto", "default"})
+# Known router names that make a following "free" segment opaque
+_OPAQUE_ROUTER_NAMES = frozenset({"openrouter"})
 _BAD_TEST_STATUS = frozenset(
     {
         "error",
@@ -120,8 +126,69 @@ def canonical_route_id(route_id: str) -> str:
 
 
 def is_opaque(route_id: str) -> bool:
+    """Return True when the route ID names a gateway resolver alias rather than a concrete model.
+
+    After stripping the gateway prefix (``omniroute/``), the remaining path is checked
+    for opaque patterns in two ways:
+    1. The full path (legacy): exact opaque IDs or opaque prefixes at the start
+    2. The model path after provider: same patterns applied after the first ``/``
+
+    A tier suffix (e.g., ``:free``) is stripped from the last segment before matching.
+
+    Opaque patterns:
+    - Exact match: ``auto``, ``default`` (bare IDs only as model path after provider;
+      ``best`` stays concrete even as a bare model-path ID)
+    - Exact match: ``free`` ONLY when the immediately preceding segment is a known router
+      (e.g., ``openrouter``), including when the provider segment itself is that router
+    - Prefix match: ``auto/``, ``combo/``, ``router/``, ``virtual/``
+    - Vendor auto-router: first segment ends with ``-auto`` (case-insensitive)
+    """
     lowered = canonical_route_id(route_id).lower()
-    return lowered in _OPAQUE_IDS or lowered.startswith(_OPAQUE_PREFIXES)
+
+    # Legacy check: full path matches opaque patterns at the start
+    if lowered in _OPAQUE_IDS or lowered.startswith(_OPAQUE_PREFIXES):
+        return True
+
+    # New check: model path after provider segment
+    if "/" not in lowered:
+        return False
+
+    # Split provider and model path
+    provider, model_path = lowered.split("/", 1)
+
+    # Strip tier suffix from the last segment (e.g., ":free", ":small")
+    segments = model_path.split("/")
+    if segments:
+        last_seg = segments[-1]
+        if ":" in last_seg:
+            segments[-1] = last_seg.split(":", 1)[0]
+        model_path = "/".join(segments)
+
+    # Check exact opaque model IDs in model path (auto/default only; best stays concrete)
+    if model_path in _OPAQUE_MODEL_IDS:
+        return True
+
+    # Check opaque prefixes in model path
+    for prefix in _OPAQUE_PREFIXES:
+        if model_path.startswith(prefix):
+            return True
+
+    # Check vendor auto-router: first segment ends with -auto
+    first_seg = segments[0] if segments else ""
+    if first_seg.endswith("-auto"):
+        return True
+
+    # Check for "free" preceded by known router (e.g., openrouter/free).
+    # When "free" is the first model segment (i == 0), the provider segment
+    # itself is the preceding router (e.g., openrouter/free).
+    for i, seg in enumerate(segments):
+        if seg == "free":
+            if i > 0 and segments[i - 1] in _OPAQUE_ROUTER_NAMES:
+                return True
+            if i == 0 and provider in _OPAQUE_ROUTER_NAMES:
+                return True
+
+    return False
 
 
 def route_provider_prefix(route_id: str) -> str:

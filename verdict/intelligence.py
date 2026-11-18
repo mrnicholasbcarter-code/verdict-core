@@ -5,7 +5,8 @@ import logging
 import os
 import subprocess
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -73,6 +74,8 @@ from verdict.task_profile import TaskProfile, TaskProfileError, profile_task
 from verdict.worthiness import classify_worthiness
 
 _LOG = logging.getLogger(__name__)
+# Wall-clock instant bound for one route() call; see IntelligenceService._request_clock.
+_REQUEST_NOW: ContextVar[datetime | None] = ContextVar("verdict_request_now", default=None)
 
 
 def _bind_context_plan(assistance_plan: AssistancePlan, plan: ContextPlan) -> AssistancePlan:
@@ -476,6 +479,47 @@ class IntelligenceService:
         self.managed_backend_status = "offline" if allow_offline else "not_used"
         self._policy_version = "policy-2026-07-13.1"
 
+    @property
+    def admit_now(self) -> datetime | None:
+        """Injected admission clock (tests and replay); ``None`` means wall-clock UTC."""
+        return self._admit_now
+
+    @admit_now.setter
+    def admit_now(self, value: datetime | None) -> None:
+        # A naive instant cannot be compared with the aware timestamps in the
+        # health cache and passports; reject it here instead of failing per request.
+        if value is not None and (not isinstance(value, datetime) or value.tzinfo is None):
+            raise ValueError("admit_now must be a timezone-aware datetime or None")
+        self._admit_now = value
+
+    @property
+    def _now(self) -> datetime:
+        """The one timezone-aware instant for admission and health-cache checks.
+
+        Order: the injected ``admit_now``, else the instant bound for the current
+        request by ``_request_clock``, else the current UTC time.
+        """
+        if self._admit_now is not None:
+            return self._admit_now
+        bound = _REQUEST_NOW.get()
+        return bound if bound is not None else datetime.now(timezone.utc)
+
+    @contextlib.contextmanager
+    def _request_clock(self) -> Iterator[None]:
+        """Bind one wall-clock instant for every ``_now`` read in this request.
+
+        A ContextVar keeps concurrent requests on the shared service apart. A
+        nested call reuses the instant its caller already bound.
+        """
+        if _REQUEST_NOW.get() is not None:
+            yield
+            return
+        token = _REQUEST_NOW.set(datetime.now(timezone.utc))
+        try:
+            yield
+        finally:
+            _REQUEST_NOW.reset(token)
+
     async def rank(self, eligible: list[ModelInfo], task_spec: Any) -> IntelligenceRanking:
         """Return a deterministic advisory ordering for already-eligible rows."""
         ranked = [
@@ -541,6 +585,17 @@ class IntelligenceService:
         """Route ``task``. ``request_id`` (when the caller already owns one) is stamped
         on the decision *before* it is logged so post-execution outcome receipts
         can join back to this row."""
+        with self._request_clock():
+            return await self._route(task, criticality, context, request_id=request_id)
+
+    async def _route(
+        self,
+        task: str | dict[str, Any],
+        criticality: str,
+        context: dict[str, Any] | None,
+        *,
+        request_id: str | None,
+    ) -> RoutingDecision:
         start_t = time.time()
 
         # Handle envelope input
@@ -1029,7 +1084,7 @@ class IntelligenceService:
             context_window = DEFAULT_CHEAP_PATH_TOKEN_BUDGET
             if metadata is not None:
                 lookup = lookup_omniroute_id(
-                    metadata, candidate_id, identity_map=identity_map, now=self.admit_now
+                    metadata, candidate_id, identity_map=identity_map, now=self._now
                 )
                 field = None if lookup.record is None else lookup.record.caps.context
                 if field is not None and isinstance(field.value, (int, float)):
@@ -1071,7 +1126,7 @@ class IntelligenceService:
         from verdict.orchestration.provider_catalog import resolve_provider
         from verdict.paths import verdict_home
 
-        now = self.admit_now or datetime.now(timezone.utc)
+        now = self._now
         free_set = load_openrouter_free_set(
             now=now, cache_path=verdict_home() / "openrouter-free-set.json", refresh=False
         )
@@ -1133,7 +1188,7 @@ class IntelligenceService:
             if passport is None:
                 continue
             evidence[model_id] = RouteEvidence(latency_ms=passport.latency_p95)
-        as_of = self.admit_now or datetime.now(timezone.utc)
+        as_of = self._now
         # BOD-438: verified checker history feeds task-specific demotion inside
         # build_candidate_pool (order-only, never membership). Loading never
         # blocks admission: a failure here means no verified history, not a
@@ -1209,7 +1264,7 @@ class IntelligenceService:
                 roots=self.outcome_shadow_roots,
                 task_family=profile.task_family,
                 fingerprint_digest=profile.digest,
-                as_of=self.admit_now,
+                as_of=self._now,
                 sink=self.outcome_shadow_sink,
             )
         return (
@@ -1241,6 +1296,13 @@ class IntelligenceService:
         fails closed later if the execution-path optimizer cannot produce a valid
         decision.
         """
+        with self._request_clock():
+            return self._prepare_execution_path_request_at(task, criticality, context, request)
+
+    def _prepare_execution_path_request_at(
+        self, task: str, criticality: str, context: dict[str, Any], request: Any
+    ) -> Any:
+        """Body of ``_prepare_execution_path_request``; reads time only through ``_now``."""
         from verdict.execution_path import ExecutionPathError, ExecutionPathRequest
 
         if not isinstance(request, ExecutionPathRequest) or request.pool_receipt is not None:
@@ -1268,7 +1330,7 @@ class IntelligenceService:
         )
         policy_admitted = receipt.admitted
         receipt = gate_capability(
-            receipt, requirements, snapshot=metadata, identity_map=identity_map, now=self.admit_now
+            receipt, requirements, snapshot=metadata, identity_map=identity_map, now=self._now
         )
         raw_offered = tuple(dict.fromkeys(offer.route.route_id for offer in request.offers))
         from verdict.free_tier_admit import normalize_omniroute_origin
@@ -1298,11 +1360,11 @@ class IntelligenceService:
                 prefer="",
                 required_capabilities=orch_reqs.required_capabilities,
                 min_context_tokens=orch_reqs.min_context_tokens,
-                now=self.admit_now,
+                now=self._now,
                 task_category=orch_reqs.task_category,
                 visibility_executor="direct-gateway",
             )
-            _, candidates = selector._assess_all(orch_reqs, self.admit_now)
+            _, candidates = selector._assess_all(orch_reqs, self._now)
             offered_universe = tuple(
                 c.route_id for c in candidates if c.route_id in set(raw_offered)
             )
@@ -1367,7 +1429,7 @@ class IntelligenceService:
             passive_health=snapshot.passive_health,
             passport_store_path=self.passport_store_path,
             confirm_transport=confirm_transport,
-            now=self.admit_now,
+            now=self._now,
             live=confirm_live,
             consented=confirm_live or self.confirm_transport is not None,
             max_confirm_candidates=self.candidate_top_k,
@@ -1592,7 +1654,7 @@ class IntelligenceService:
         from verdict.orchestration.health_cache import HealthCache, default_cache_path
 
         cache = HealthCache(default_cache_path())
-        current = self.admit_now or datetime.now(timezone.utc)
+        current = self._now
         cooled = {
             route for route in receipt.admitted if cache.lookup(route, current).state == "negative"
         }
@@ -1641,7 +1703,7 @@ class IntelligenceService:
             requirements,
             snapshot=metadata_for_gate,
             identity_map=identity_map if use_candidate_pool else None,
-            now=self.admit_now,
+            now=self._now,
         )
         if metadata_for_gate is not None:
             receipt, _pool = self._apply_candidate_pool(
@@ -1671,7 +1733,7 @@ class IntelligenceService:
             passive_health=snapshot.passive_health,
             passport_store_path=self.passport_store_path,
             confirm_transport=confirm_transport,
-            now=self.admit_now,
+            now=self._now,
             live=confirm_live,
             consented=confirm_live or self.confirm_transport is not None,
             max_confirm_candidates=self.candidate_top_k,
@@ -1730,7 +1792,7 @@ class IntelligenceService:
             eligibility = gated
         if receipt.admitted:
             receipt = apply_best_of_admitted(
-                receipt, now=self.admit_now, task_class=classification.protected_ranker_class
+                receipt, now=self._now, task_class=classification.protected_ranker_class
             )
         # Advisory reordering is NOT applied on the live-admit path because
         # the admitted set here contains string IDs, not ModelInfo objects, and the
@@ -2049,10 +2111,7 @@ class IntelligenceService:
             from verdict.orchestration.health_cache import HealthCache, default_cache_path
 
             dispatch_cache = HealthCache(default_cache_path())
-            if (
-                dispatch_cache.lookup(chosen, self.admit_now or datetime.now(timezone.utc)).state
-                == "negative"
-            ):
+            if dispatch_cache.lookup(chosen, self._now).state == "negative":
                 transport_outcome, preview = "error", "route cooling before dispatch"
             elif self.offload_executor is not None:
                 transport_outcome, preview = self.offload_executor(chosen, packed_task)
