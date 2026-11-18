@@ -4,17 +4,6 @@
 
 The public `/v1/route` endpoint validates and enforces a per-request hard spend budget in USD and returns an opt-in, per-request routing trace showing the admitted set, ordered shortlist, optimizer outcome, and rejection codes — without changing the legacy response shape or authority.
 
-## MODIFIED Requirements
-
-### Requirement: Read-only choose
-The choose command with --no-confirm SHALL never send a model confirmation or write selection evidence. It SHALL select only routes with fresh exact-route proof and otherwise return no eligible route.
-
-#### Scenario: No fresh proof
-- **WHEN** --no-confirm is set and no route has fresh proof
-- **THEN** selected is null and no confirmation is sent
-
-*(Note: This requirement is listed as MODIFIED because the OpenSpec change adds a new route-selection capability that interacts with the public optimizer contract. The requirement text itself is unchanged.)*
-
 ## ADDED Requirements
 
 ### Requirement: Public route hard spend budget
