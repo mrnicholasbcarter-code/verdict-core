@@ -1,5 +1,3 @@
-# Spec Delta
-
 ## ADDED Requirements
 
 ### Requirement: Scheduled screening runs every six hours with larger bounded caps
