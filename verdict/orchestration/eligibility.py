@@ -124,6 +124,52 @@ def _parse_iso(value: str) -> datetime | None:
     return parsed
 
 
+def read_only_valid_proof(route_ids: Sequence[str], *, now: datetime) -> dict[str, dict[str, Any]]:
+    """Passport rows whose exact-route proof is valid for read-only (--no-confirm) choose.
+
+    Operator ruling: --no-confirm accepts proof older than the 10-minute permit
+    window while the passport is still valid. The validity test is the normal one,
+    ``passport_confirmation(...)["admitted"]``, evaluated at the passport's own
+    ``qualified_at`` (so only the permit window is waived), plus ``expires_at`` in
+    the future. Newer negative health evidence drops the passport inside
+    ``passport_confirmation``, so it still excludes.
+    """
+    from verdict.admit_prove_confirm import passport_confirmation
+
+    valid: dict[str, dict[str, Any]] = {}
+    for row in passport_confirmation(list(route_ids), now=now)["passport"]:
+        route_id = str(row.get("identity_id", ""))
+        qualified = _parse_iso(str(row.get("qualified_at", "")))
+        expires_at = _parse_iso(str(row.get("expires_at", "")))
+        if qualified is None or expires_at is None or expires_at <= now:
+            continue
+        if route_id in passport_confirmation([route_id], now=qualified)["admitted"]:
+            valid[route_id] = row
+    return valid
+
+
+def _read_only_stale_reason(route_id: str, row: Mapping[str, Any], *, now: datetime) -> str:
+    """Name why a route's proof is not valid for read-only choose."""
+    if not row.get("qualified_at"):
+        # passport_confirmation dropped or never found a passport: tell missing
+        # apart from superseded by newer negative evidence.
+        from verdict.prove_at_rest_legacy import load_healthy_passports
+
+        return (
+            "passport_superseded"
+            if route_id in load_healthy_passports(None)
+            else "passport_missing"
+        )
+    expires_at = _parse_iso(str(row.get("expires_at", "")))
+    if expires_at is None or expires_at <= now:
+        return "passport_expired"
+    if row.get("auth_state") != "authorized":
+        return "passport_unauthorized"
+    if row.get("availability_state") != "eligible":
+        return "passport_ineligible"
+    return "passport_stale"
+
+
 def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
@@ -1208,41 +1254,6 @@ class EligibilityLadder:
                         upgraded.append(candidate.route_id)
             self._last_refresh_upgrades = tuple(upgraded)
 
-        # In read-only mode, re-evaluate routes that failed at HEALTHY stage
-        # due to negative health evidence but have a valid passport (authorized,
-        # eligible, not expired, AND no newer negative evidence). The 10-minute
-        # qualified_at window is IGNORED in read-only mode. These should be
-        # allowed to proceed to selection without probes.
-        if self._read_only:
-            from verdict.orchestration.health_cache import HealthCache, default_cache_path
-            from verdict.prove_at_rest_legacy import load_healthy_passports
-
-            for a in assessments:
-                if a.failed_stage is EligibilityStage.HEALTHY and a.health == "unhealthy":
-                    # Load passport directly (ignores 10-minute freshness window)
-                    passports = load_healthy_passports(None)
-                    passport = passports.get(a.route_id)
-                    if passport is not None:
-                        # Check newer negative evidence using the health cache
-                        negative = None
-                        cache = HealthCache(default_cache_path())
-                        negative = cache.entry(a.route_id)
-                        if (
-                            negative is not None
-                            and not negative.healthy
-                            and negative.checked_at >= passport.qualified_at
-                        ):
-                            # Superseded by newer negative evidence - update reason
-                            a.reason = "passport_superseded"
-                            continue
-                        # Valid passport - clear the health failure so it can be selected
-                        a.failed_stage = None
-                        a.reason = ""
-                        a.health = "unprobed"  # will be selected without probe
-                        # Add to candidates if not at capacity
-                        if self._load(a.route_id) < self._max_per_route:
-                            candidates.append(a)
-
         rank_of = {a.route_id: i for i, a in enumerate(candidates)}
         probes_used = 0
         chosen: _Assessment | None = None
@@ -1277,72 +1288,29 @@ class EligibilityLadder:
             confirmation = passport_confirmation([a.route_id], now=now)
             rows = confirmation["passport"]
             qualified = _parse_iso(str(rows[0].get("qualified_at", ""))) if rows else None
-            # In read-only (no-confirm) mode, proof is stale only if the passport
-            # is missing, expired, unauthorized, ineligible, or has newer negative
-            # evidence. The 10-minute freshness window (qualified_at age) is
-            # ignored because --no-confirm selects routes with valid (not expired)
-            # passports even when qualified_at exceeds 600 seconds.
-            # In read-only (no-confirm) mode, a route is selectable iff its passport
-            # is admitted by passport_confirmation (exists, authorized, eligible,
-            # not expired, no newer negative evidence). The 10-minute freshness
-            # window (qualified_at age) is ignored. In normal mode, the existing
-            # logic applies: proof is stale if not admitted OR qualified_at > 600s.
-            if self._read_only:
-                # In read-only mode, do our own validity check: passport exists,
-                # authorized, eligible, not expired, and no newer negative evidence.
-                # Ignore the 10-minute qualified_at window.
-                passport_row = rows[0] if rows else None
-                if passport_row is None:
-                    proof_stale = True
-                    stale_reason = "passport_missing"
-                elif passport_row.get("auth_state") != "authorized":
-                    proof_stale = True
-                    stale_reason = "passport_unauthorized"
-                elif passport_row.get("availability_state") != "eligible":
-                    proof_stale = True
-                    stale_reason = "passport_ineligible"
-                else:
-                    expires_at = _parse_iso(str(passport_row.get("expires_at", "")))
-                    if expires_at is None or expires_at <= now:
-                        proof_stale = True
-                        stale_reason = "passport_expired"
-                    else:
-                        # Check for newer negative health evidence
-                        negative = None
-                        if self._health_cache is not None:
-                            negative = self._health_cache.entry(a.route_id)
-                        if (
-                            negative is not None
-                            and not negative.healthy
-                            and negative.checked_at
-                            >= _parse_iso(str(passport_row.get("qualified_at", "")))
-                        ):
-                            proof_stale = True
-                            stale_reason = "passport_superseded"
-                        else:
-                            proof_stale = False
-                            stale_reason = None
-            else:
-                proof_stale = (
-                    a.route_id not in confirmation["admitted"]
-                    or qualified is None
-                    or (now - qualified).total_seconds() >= PERMIT_PROOF_MAX_VALIDITY_SECONDS
-                )
-                stale_reason = None
-
+            proof_stale = (
+                a.route_id not in confirmation["admitted"]
+                or qualified is None
+                or (now - qualified).total_seconds() >= PERMIT_PROOF_MAX_VALIDITY_SECONDS
+            )
+            stale_reason: str | None = None
+            if proof_stale and self._read_only:
+                # Operator ruling: --no-confirm accepts exact-route proof that is
+                # still valid even when older than the permit window.
+                proof_stale = a.route_id not in read_only_valid_proof([a.route_id], now=now)
+                if proof_stale:
+                    stale_reason = _read_only_stale_reason(
+                        a.route_id, rows[0] if rows else {}, now=now
+                    )
             if a.health != "healthy" or confirming or proof_stale:
                 if lease_held:
                     a.reason = "lease_held"
                     a.failed_stage = EligibilityStage.AVAILABLE
                     continue
-                # In read-only mode, proof_stale means the passport is invalid.
-                # Use the precomputed stale_reason so the caller knows exactly why.
-                if self._read_only and proof_stale:
-                    assert stale_reason is not None, (
-                        "stale_reason must be set when proof_stale is True in read-only mode"
-                    )
+                if stale_reason is not None:
+                    # Same stage as probe_budget_exhausted below (no new rejection
+                    # stage); only the reason names why proof is not valid.
                     a.reason = stale_reason
-                    a.failed_stage = EligibilityStage.AVAILABLE
                     continue
                 if probes_used >= self._max_probes:
                     a.reason = "probe_budget_exhausted"

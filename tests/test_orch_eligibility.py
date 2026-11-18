@@ -987,9 +987,10 @@ class TestSelect:
         assert selected is None, "superseded passport should not be selected in read-only mode"
         assert probe.calls == [], "no probe calls in read-only mode"
         v = by_route(verdicts)["cc/claude-sonnet-5"]
-        assert v.reason == "passport_superseded", (
-            f"expected 'passport_superseded', got '{v.reason}'"
-        )
+        # Newer negative evidence excludes the route where normal mode does (at
+        # HEALTHY); read-only mode must not re-admit it from the old passport.
+        assert v.failed_stage is EligibilityStage.HEALTHY
+        assert v.reason == "rate_limited", f"expected 'rate_limited', got '{v.reason}'"
 
     def test_read_only_mode_lease_held_wins(self, tmp_path: Path) -> None:
         """Read-only mode with lease held returns lease_held reason, not passport_invalid."""
@@ -1060,6 +1061,127 @@ class TestSelect:
         assert probe.calls == [], "no probe calls when lease is held"
         v = by_route(verdicts)["cc/claude-sonnet-5"]
         assert v.reason == "lease_held", f"expected 'lease_held', got '{v.reason}'"
+
+    def test_read_only_mode_does_not_reject_unpassported_route_at_available(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression (PR #1061 f1f7fea2): a healthy route with no passport row.
+
+        Live shape: ``passport_confirmation`` returns ``{"identity_id": ..., "fresh":
+        False, "reason": "no_passport"}`` with no ``auth_state``. Main lets such a
+        route reach TASK_ELIGIBLE (then probe_budget_exhausted under --no-confirm);
+        f1f7fea2 rejected it at AVAILABLE as ``passport_unauthorized``.
+        """
+        from verdict.admit_prove_confirm import passport_confirmation
+        from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+        route = "openrouter/vendor/model-x:free"
+        rows = [row(route, owned_by="openrouter")]
+        cache = HealthCache(tmp_path / "health.json")
+        cache.record(
+            route,
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            NOW - timedelta(seconds=60),
+        )
+        cache.save()
+        assert passport_confirmation([route], now=NOW)["passport"] == [
+            {"identity_id": route, "fresh": False, "reason": "no_passport"}
+        ]
+
+        def run(read_only: bool) -> Any:
+            ladder, probe = make_ladder(
+                tmp_path,
+                rows,
+                [conn("openrouter")],
+                FakeProbe(),
+                health_cache=cache,
+                max_probes_per_select=0,
+                read_only=read_only,
+            )
+            selected, verdicts = ladder.select(REQ, now=NOW)
+            assert selected is None and probe.calls == []
+            return by_route(verdicts)[route]
+
+        baseline, read_only = run(False), run(True)
+        assert baseline.failed_stage is None
+        assert read_only.failed_stage is baseline.failed_stage
+        assert read_only.reached is baseline.reached
+        assert read_only.reason == "passport_missing"
+
+    def test_read_only_valid_proof_is_the_seed_and_ladder_test(self, tmp_path: Path) -> None:
+        """build_selector seeds --no-confirm admission from read_only_valid_proof.
+
+        Catches: the seed using the 10-minute passport_confirmation set, which left a
+        valid 30-minute-old passport unlaunchable live (admitted_unverified). Only
+        the permit window is waived: expired, unauthorized and superseded stay out.
+        """
+        from verdict.model_passports import ModelPassport
+        from verdict.orchestration.eligibility import read_only_valid_proof
+        from verdict.orchestration.health_cache import (
+            CATEGORY_RATE_LIMITED,
+            HealthCache,
+            ProbeResult,
+            default_cache_path,
+        )
+        from verdict.prove_at_rest_legacy import (
+            STATUS_HEALTHY,
+            ProofResult,
+            ProveAtRestCycle,
+            ProveAtRestStore,
+            default_state_path,
+        )
+
+        def result(route: str, *, expires: timedelta, auth: str = "authorized") -> ProofResult:
+            qualified = NOW - timedelta(minutes=30)
+            return ProofResult(
+                identity_id=route,
+                provider="claude",
+                status=STATUS_HEALTHY,
+                proved_at=qualified,
+                latency_ms=100,
+                passport=ModelPassport(
+                    provider="claude",
+                    model_id=route,
+                    auth_state=auth,
+                    availability_state="eligible",
+                    qualified_at=qualified,
+                    last_verified_timestamp=qualified,
+                    expires_at=NOW + expires,
+                ),
+            )
+
+        results = (
+            result("cc/valid-old", expires=timedelta(minutes=10)),
+            result("cc/expired", expires=timedelta(minutes=-5)),
+            result("cc/unauthorized", expires=timedelta(minutes=10), auth="unauthorized"),
+            result("cc/superseded", expires=timedelta(minutes=10)),
+        )
+        path = default_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ProveAtRestStore(path=path).write(
+            ProveAtRestCycle(
+                cycle_id="c",
+                started_at=NOW - timedelta(minutes=35),
+                finished_at=NOW - timedelta(minutes=30),
+                results=results,
+            )
+        )
+        cache = HealthCache(default_cache_path())
+        cache.record(
+            "cc/superseded",
+            ProbeResult(category=CATEGORY_RATE_LIMITED, chat_ok=False, tool_ok=False),
+            NOW - timedelta(seconds=10),
+        )
+        cache.save()
+
+        ids = [r.identity_id for r in results] + ["cc/no-passport"]
+        assert set(read_only_valid_proof(ids, now=NOW)) == {"cc/valid-old"}
 
 
 class TestPersistence:

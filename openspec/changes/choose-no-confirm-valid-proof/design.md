@@ -23,20 +23,15 @@ The `passport_confirmation` function in `admit_prove_confirm.py` already defines
 
 1. **Explicit `read_only` flag**: Instead of inferring read-only from `max_probes=0`, pass `read_only=no_confirm` from `build_selector`. This separates probe budget from freshness policy and makes the intent clear.
 
-2. **Read-only validity check**: In `EligibilityLadder.select()`, when `self._read_only` is true:
-   - Load passports directly via `load_healthy_passports()` (ignores 10-minute window).
-   - Check passport: exists, authorized, eligible, not expired.
-   - Check health cache for newer negative evidence (`checked_at >= passport.qualified_at`).
-   - If valid, clear the HEALTHY-stage failure and add to candidates.
-   - If superseded, set reason to `passport_superseded` (not `probe_budget_exhausted`).
+2. **One validity test, shared**: `read_only_valid_proof()` in `verdict/orchestration/eligibility.py` keeps a route when `passport_confirmation([route], now=passport.qualified_at)["admitted"]` holds and `expires_at` is after now. Evaluating the normal test at the passport's own `qualified_at` waives only the 10-minute permit window; authorization, eligibility and newer negative health evidence (which `passport_confirmation` already applies by dropping the passport) are unchanged.
 
-3. **Re-evaluation timing**: The re-evaluation runs after the refresh hook and before candidate ranking, iterating over all `assessments` (not just `candidates`) so HEALTHY-failed routes are considered.
+3. **Both read-only call sites use it**: `build_selector(no_confirm=True)` seeds the admitted set's launch evidence from it, and `EligibilityLadder.select()` uses it only where normal mode found the proof stale. There is no extra rejection stage: a route that never reaches the proof check is assessed exactly as in normal mode (first f1f7fea2 attempt rejected 35 such routes at AVAILABLE; regression test `test_read_only_mode_does_not_reject_unpassported_route_at_available`).
 
-4. **Named skip reasons**: In the proof-stale branch, derive specific reason from passport evidence instead of generic `probe_budget_exhausted`.
+4. **Named skip reasons**: a read-only route that would otherwise need a probe gets `passport_missing`, `passport_superseded`, `passport_expired`, `passport_unauthorized`, `passport_ineligible` or `passport_stale` instead of `probe_budget_exhausted`, at the same stage. `lease_held` is checked first and still wins.
 
 ## Risks / Trade-offs
 
-- **Risk**: A route with a valid-but-old passport might have degraded capability since the passport was issued. **Mitigation**: The health cache check catches newer negative evidence; if the route was recently probed and failed, it's excluded.
+- **Risk**: A route with a valid-but-old passport might have degraded capability since the passport was issued. **Mitigation**: `passport_confirmation` drops a passport with newer negative health evidence, so a recently failed route is excluded.
 - **Risk**: Divergence between read-only and normal mode validity definitions. **Mitigation**: Normal mode unchanged; read-only explicitly ignores only the 10-minute window, not authorization/expiry/health.
 - **Trade-off**: Adding `read_only` flag increases API surface slightly, but prevents future bugs where `max_probes=0` is used for other purposes.
 
@@ -53,7 +48,7 @@ No new trust boundaries. Read-only mode still never probes or writes. The health
 ## Migration / rollback
 
 - **Migration**: No data migration needed. The change is purely behavioral in the selector.
-- **Rollback**: Revert the `read_only` flag and re-evaluation logic in `EligibilityLadder.select()`; `build_selector` reverts to not passing `read_only`. No state format changes.
+- **Rollback**: Revert `read_only_valid_proof`, the `read_only` flag in `EligibilityLadder.select()` and its use in `build_selector`. No state format changes.
 
 ## ADR impact
 

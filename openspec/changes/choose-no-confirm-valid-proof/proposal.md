@@ -35,7 +35,7 @@ The operator ruling (2026-11-18) diagnosed that `verdict choose --no-confirm` wa
 - [x] Read-only mode selects a route with a valid passport whose `qualified_at` is 30 minutes old (zero probes).
 - [x] Read-only mode skips an expired passport with reason `passport_expired`.
 - [x] Normal mode unchanged: a 30-minute-old passport triggers a probe.
-- [x] Read-only mode skips a passport superseded by newer negative health evidence with reason `passport_superseded`.
+- [x] Read-only mode keeps a route with newer negative health evidence excluded, as normal mode does.
 - [x] Read-only mode with lease held returns `lease_held` reason.
 - [x] All existing tests pass (test_orch_eligibility.py, test_acceptance.py, test_admit_prove_confirm.py, test_route_ladder_parity.py, test_admission.py, test_eligibility_event_post_probe.py).
 

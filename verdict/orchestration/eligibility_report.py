@@ -216,23 +216,22 @@ def build_selector(
     ).merged(load_omniroute_health(gateway, api_key=key, now=now))
     if no_confirm:
         from verdict.admission import RuntimeEvidence, RuntimeObservation
-        from verdict.admit_prove_confirm import passport_confirmation
+        from verdict.orchestration.eligibility import read_only_valid_proof
 
-        proof = passport_confirmation([str(row.get("id", "")) for row in rows], now=now)
-        fresh = set(proof["admitted"])
+        # Same validity test the ladder applies under --no-confirm.
+        valid = read_only_valid_proof([str(row.get("id", "")) for row in rows], now=now)
         runtime = runtime.merged(
             RuntimeEvidence(
                 tuple(
                     RuntimeObservation(
-                        key=f"route:{row['identity_id']}",
+                        key=f"route:{route_id}",
                         state="healthy",
                         category="ok",
                         source="passport_confirmation",
                         observed_at=row.get("qualified_at"),
                         until=row.get("expires_at"),
                     )
-                    for row in proof["passport"]
-                    if row["identity_id"] in fresh
+                    for route_id, row in valid.items()
                 ),
                 ("passport_confirmation",),
             )
