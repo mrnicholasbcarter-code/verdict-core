@@ -68,9 +68,9 @@
 
 **Verification:** Independent code review by a different model family, selected per-review via `~/bin/pick-reviewer --author`. Reviewer verifies the implementation against the spec and tests.
 
-- [ ] 5.1 Orchestrator selects reviewer with `~/bin/pick-reviewer --author` using served author model; capture observed distinct reviewer family and substantive review.
-- [ ] 5.2 Reviewer verifies: input rejection, unchanged legacy response and routing, no re-admission or fallback, accurate stage provenance, no secret exposure.
-- [ ] 5.3 Findings resolved and exact-head gates green before merge.
+- [x] 5.1 Orchestrator selects reviewer with `~/bin/pick-reviewer --author` using served author model; capture observed distinct reviewer family and substantive review.
+- [x] 5.2 Reviewer verifies: input rejection, unchanged legacy response and routing, no re-admission or fallback, accurate stage provenance, no secret exposure.
+- [x] 5.3 Findings resolved and exact-head gates green before merge.
 
 ## 6. Post-merge live verification — wave 4
 
