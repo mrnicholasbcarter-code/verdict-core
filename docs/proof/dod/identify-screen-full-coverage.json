@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "story": "identify-screen-full-coverage",
+  "kind": "product",
+  "author": "gem-devops (omniroute worker/free-first)",
+  "merged_sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+  "pr": 1044,
+  "on_main": {
+    "at": "2026-11-17T06:15:00Z",
+    "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+    "environment": "operator-host",
+    "command": "gh pr checks 1044 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44025470411",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/identify-screen-full-coverage/pr_checks_1044.txt",
+      "sha256": "b48696ba14fb0e995838b5d231c14117d20548a4afa000ec916f51a7227a4e1e"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "Scheduled screen runs every six hours with caps max-per-provider 16, max-routes 40, reports bounded skips, and systemd timer fires on calendar",
+      "expect": "\"routes_checked\": ",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-17T06:10:37Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "verdict-identify-screen.service (scheduled by verdict-identify-screen.timer, OnCalendar=*-*-* 00/6:00:00)",
+        "real_state_marker": "\"model_calls\": ",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/identify-screen-full-coverage/scheduled-run-20261117T060004Z.journal.txt",
+          "sha256": "ec79cdecca12d72785919098727b78ce26946f722f55cdc618d87b1933fa1dd6"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-17T18:10:23Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "verdict-identify-screen.service (scheduled by verdict-identify-screen.timer, OnCalendar=*-*-* 00/6:00:00)",
+        "real_state_marker": "\"model_calls\": ",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/identify-screen-full-coverage/scheduled-run-20261117T180012Z.journal.txt",
+          "sha256": "0c75f7ceab36f0fd4b55d32a41dbdef50740d4726d63a1c028551c28531acc41"
+        }
+      }
+    },
+    {
+      "criterion": "Installed screen units carry the ac623aec values: ExecStart has --max-per-provider 16 --max-routes 40 (ac623aec^ rendered --max-per-provider 1 --max-routes 8) and the timer has OnCalendar=*-*-* 00/6:00:00 (ac623aec^ rendered OnCalendar=daily); both strings are in the raw output",
+      "expect": "--max-per-provider 16 --max-routes 40",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-17T23:00:00Z",
+        "sha": "ac623aecbf10c490cd86070c5c7030cba7fdce45",
+        "environment": "operator-host",
+        "command": "systemctl --user cat verdict-identify-screen.service verdict-identify-screen.timer",
+        "real_state_marker": "# /operator/.config/systemd/user/verdict-identify-screen.service",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/identify-screen-full-coverage/unit-cat-20261117T230000Z.txt",
+          "sha256": "3638c35b2060ff5247f4c3558a767743703a4c7d256c4e603ea5002e91157735"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-18T05:05:29Z",
+        "sha": "c94e763e4323f8c30be5dd977bf6c2a9d8e1b14f",
+        "environment": "operator-host",
+        "command": "systemctl --user cat verdict-identify-screen.service verdict-identify-screen.timer",
+        "real_state_marker": "# /operator/.config/systemd/user/verdict-identify-screen.service",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/identify-screen-full-coverage/unit-cat-fresh-20261118T050529Z.txt",
+          "sha256": "3638c35b2060ff5247f4c3558a767743703a4c7d256c4e603ea5002e91157735"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 6,
+  "stays_true_job": "verdict-identify-screen.timer (every 6 hours)",
+  "setup_doctor": {
+    "status": "green",
+    "command": "cd /operator/.local/share/verdict/installed-main && .venv/bin/verdict doctor --json",
+    "at": "2026-11-17T19:31:00Z",
+    "raw_output": {
+      "path": "docs/proof/dod/identify-screen-full-coverage/doctor-20261117T193100Z.json",
+      "sha256": "deca2fc6d699d3b3f413cf509e8c330d8d087c3e5f85ac032d4608e0f201f5f2"
+    }
+  },
+  "openspec": {
+    "change": "identify-screen-full-coverage"
+  },
+  "parent_confirmation": {
+    "by": "PENDING parent confirmation",
+    "at": "2026-11-17T23:00:00Z",
+    "command": "PENDING parent_confirmation: re-run systemctl --user cat verdict-identify-screen.service verdict-identify-screen.timer after fresh_run",
+    "raw_output": {
+      "path": "docs/proof/dod/identify-screen-full-coverage/PENDING-parent-confirmation.txt",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}
