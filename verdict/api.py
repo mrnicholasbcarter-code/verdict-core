@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import math
 import os
 import sys
 import uuid
@@ -1129,6 +1130,7 @@ def _public_execution_path_request(
         raise ExecutionPathError(
             f"execution_path_request.schema_version must be {EXECUTION_PATH_SCHEMA_VERSION!r}"
         )
+    hard_spend_budget = _public_hard_spend_budget(raw)
     trajectory_id = raw.get("trajectory_id")
     slice_id = raw.get("slice_id")
     candidates = raw.get("candidates")
@@ -1305,7 +1307,31 @@ def _public_execution_path_request(
         structured_output_required=structured_output_required,
         streaming_required=streaming_required,
         vision_required=vision_required,
+        hard_spend_budget=hard_spend_budget,
     )
+
+
+def _public_hard_spend_budget(raw: Mapping[str, Any]) -> float | None:
+    """Validate the optional USD cap; an absent key means no budget."""
+
+    from verdict.execution_path import ExecutionPathError
+
+    if "hard_spend_budget" not in raw:
+        return None
+    value = raw["hard_spend_budget"]
+    error = ExecutionPathError(
+        "execution_path_request.hard_spend_budget must be a positive finite number"
+    )
+    # bool is an int subclass, so it must be refused before the numeric check.
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise error
+    try:
+        budget = float(value)
+    except OverflowError as exc:  # an integer too large for a float
+        raise error from exc
+    if not math.isfinite(budget) or budget <= 0:
+        raise error
+    return budget
 
 
 RESERVED_WEAKENING_FLAGS = frozenset(
@@ -1396,7 +1422,9 @@ async def _route_with_intelligence(
 
 
 @app.post("/v1/route")
-async def route_task(request: Request, req: RouteRequest) -> Response:
+async def route_task(
+    request: Request, req: RouteRequest, include_routing_trace: bool = False
+) -> Response:
     raw_context = req.model_dump() if hasattr(req, "model_dump") else req.dict()
     try:
         context = _authority_context(raw_context, task=req.task)
@@ -1406,7 +1434,19 @@ async def route_task(request: Request, req: RouteRequest) -> Response:
         if isinstance(exc, ExecutionPathError):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise
-    decision = await _route_with_intelligence(req.task, req.criticality, context=context)
+    try:
+        decision = await _route_with_intelligence(req.task, req.criticality, context=context)
+    except HTTPException as exc:
+        from verdict.serve_path import TracedExecutionPathError
+
+        cause = exc.__cause__
+        if include_routing_trace and isinstance(cause, TracedExecutionPathError):
+            # Same status and detail as the legacy no-selection error, plus the trace.
+            return JSONResponse(
+                content={"detail": exc.detail, "routing_trace": cause.routing_trace},
+                status_code=exc.status_code,
+            )
+        raise
     route_evidence, evidence_key = _start_evidence(
         decision,
         task=req.task,
@@ -1436,9 +1476,10 @@ async def route_task(request: Request, req: RouteRequest) -> Response:
         headers["x-verdict-evidence-id"] = route_evidence.evidence_id
     headers["x-verdict-evidence-request-id"] = route_evidence.routing_decision.request_id or ""
     headers["x-verdict-correlation-id"] = route_evidence.routing_decision.correlation_id or ""
-    return JSONResponse(
-        content=_safe_decision_dict(decision), status_code=status_code, headers=headers
-    )
+    content = _safe_decision_dict(decision)
+    if include_routing_trace and decision.routing_trace is not None:
+        content["routing_trace"] = decision.routing_trace
+    return JSONResponse(content=content, status_code=status_code, headers=headers)
 
 
 @app.get("/health")
@@ -1558,6 +1599,8 @@ def _safe_decision_dict(decision: Any) -> dict[str, Any]:
     # a client-facing decision field (cheap-path pack). Its digest lives in the receipt.
     data.pop("context_pack_prompt", None)
     data.pop("admission_proofs", None)
+    # Opt-in diagnostic; only route_task projects it, on request.
+    data.pop("routing_trace", None)
     return cast(dict[str, Any], redact_contract_secrets(data))
 
 

@@ -617,16 +617,21 @@ class IntelligenceService:
         from verdict.serve_path import (
             LEGACY_NON_AUTHORITY_FLAG,
             SERVE_PATH_AUTHORITY_FLAG,
+            TracedExecutionPathError,
             require_serve_path_decision,
             resolve_execution_path_decision,
+            routing_trace,
             selected_route_dispatch_identity,
             serve_path_authority_required,
         )
 
+        trace_stages: dict[str, Any] | None = None
         if isinstance(context, dict) and "execution_path_request" in context:
             context = dict(context)
-            context["execution_path_request"] = self._prepare_execution_path_request(
-                task_str, criticality, context, context["execution_path_request"]
+            context["execution_path_request"], trace_stages = (
+                self._prepare_traced_execution_path_request(
+                    task_str, criticality, context, context["execution_path_request"]
+                )
             )
         ep = resolve_execution_path_decision(context if isinstance(context, dict) else None)
         require_authority = serve_path_authority_required(
@@ -635,7 +640,12 @@ class IntelligenceService:
             require_execution_path_authority=self.require_execution_path_authority,
         )
         if ep is not None:
-            require_serve_path_decision(ep, surface="intelligence.route")
+            # Built once from this request's stages and its one optimizer decision.
+            trace = routing_trace(trace_stages, ep)
+            try:
+                require_serve_path_decision(ep, surface="intelligence.route")
+            except ExecutionPathError as exc:
+                raise TracedExecutionPathError(str(exc), trace) from exc
             identity = selected_route_dispatch_identity(ep)
             payload = ep.to_dict()
             elapsed = (time.time() - start_t) * 1000
@@ -764,6 +774,7 @@ class IntelligenceService:
                 admission_proofs=proofs,
                 alternatives=alternatives,
                 candidate_states=candidate_states,
+                routing_trace=trace,
             )
             if self.log_path:
                 log_decision(self.log_path, task_str, 2, dec, self.log_full_task)
@@ -1296,20 +1307,31 @@ class IntelligenceService:
         fails closed later if the execution-path optimizer cannot produce a valid
         decision.
         """
+        return self._prepare_traced_execution_path_request(task, criticality, context, request)[0]
+
+    def _prepare_traced_execution_path_request(
+        self, task: str, criticality: str, context: dict[str, Any], request: Any
+    ) -> tuple[Any, dict[str, Any] | None]:
+        """``_prepare_execution_path_request`` plus the stage outputs it used.
+
+        The second item is ``None`` when no stage ran (the request is returned
+        unchanged); otherwise it holds ``admitted_candidate_ids`` and
+        ``shortlist_candidate_ids`` for the routing trace.
+        """
         with self._request_clock():
             return self._prepare_execution_path_request_at(task, criticality, context, request)
 
     def _prepare_execution_path_request_at(
         self, task: str, criticality: str, context: dict[str, Any], request: Any
-    ) -> Any:
+    ) -> tuple[Any, dict[str, Any] | None]:
         """Body of ``_prepare_execution_path_request``; reads time only through ``_now``."""
         from verdict.execution_path import ExecutionPathError, ExecutionPathRequest
 
         if not isinstance(request, ExecutionPathRequest) or request.pool_receipt is not None:
-            return request
+            return request, None
         snapshot, endpoint, live, _fetch_error = self._load_admit_snapshot()
         if snapshot is None:
-            return request
+            return request, None
         metadata, identity_map = self._load_metadata()
         if metadata is None:
             raise ExecutionPathError(
@@ -1494,12 +1516,23 @@ class IntelligenceService:
             *(f"context_plan={plan.candidate_id}:{plan.digest}" for plan in plans),
             "live_confirm_scope=candidate_pool_shortlist",
         )
-        return replace(
-            request,
-            offers=filtered_offers,
-            pool_receipt=pool,
-            hard_excluded_ids=frozenset(excluded),
-            assumptions=assumptions,
+        # Routing trace stages, read from the objects this request used: the
+        # confirmed set when live confirmation ran, else the offered admission.
+        stages = {
+            "admitted_candidate_ids": list(
+                confirmed.admitted if confirm_live else offered_admitted
+            ),
+            "shortlist_candidate_ids": [item.route_id for item in pool.shortlist],
+        }
+        return (
+            replace(
+                request,
+                offers=filtered_offers,
+                pool_receipt=pool,
+                hard_excluded_ids=frozenset(excluded),
+                assumptions=assumptions,
+            ),
+            stages,
         )
 
     def prepare_controller_execution_request(

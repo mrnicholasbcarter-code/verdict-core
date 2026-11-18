@@ -819,6 +819,7 @@ _CATEGORY_CLASS: Mapping[str, str] = {
     "authentication": "auth_error",
     "permission": "auth_error",
     "timeout": "timeout",
+    "stalled": "timeout",
     "upstream_temporary": "provider_5xx",
     "gateway_busy": "provider_5xx",
     "transport_temporary": "stream_drop",
