@@ -366,6 +366,7 @@ def build_selector(
         session_ledger=session_ledger if session_ledger is not None else SessionLedger(),
         openrouter_free_set=openrouter_free_set,
         max_probes_per_select=0 if no_confirm else 8,
+        read_only=no_confirm,
         rankings=rankings or None,
         rankings_omission=rankings_omission,
         rankings_category=rankings_category,

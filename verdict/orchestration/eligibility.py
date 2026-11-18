@@ -361,6 +361,7 @@ class EligibilityLadder:
         rankings_category: str | None = None,
         rankings_provenance: Mapping[str, Mapping[str, Any]] | None = None,
         rankings_received_at: str | None = None,
+        read_only: bool = False,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -372,6 +373,7 @@ class EligibilityLadder:
         self._load = load or (lambda _route: 0)
         self._max_per_route = max_per_route
         self._max_probes = max_probes_per_select
+        self._read_only = read_only
         self._state: dict[str, dict[str, dict[str, Any]]] = self._load_state()
         # BOD-341: select() runs concurrently on worker threads. Every _state
         # mutation and its _persist hold this lock (never across a probe).
@@ -1239,14 +1241,52 @@ class EligibilityLadder:
             confirmation = passport_confirmation([a.route_id], now=now)
             rows = confirmation["passport"]
             qualified = _parse_iso(str(rows[0].get("qualified_at", ""))) if rows else None
-            proof_stale = (
-                a.route_id not in confirmation["admitted"]
-                or qualified is None
-                or (now - qualified).total_seconds() >= PERMIT_PROOF_MAX_VALIDITY_SECONDS
-            )
+            # In read-only (no-confirm) mode, proof is stale only if the passport
+            # is missing, expired, unauthorized, ineligible, or has newer negative
+            # evidence. The 10-minute freshness window (qualified_at age) is
+            # ignored because --no-confirm selects routes with valid (not expired)
+            # passports even when qualified_at exceeds 600 seconds.
+            if self._read_only:
+                # Check passport evidence directly: valid if exists, authorized,
+                # eligible, not expired, and not superseded by newer negative evidence.
+                passport_row = rows[0] if rows else None
+                expires_at = _parse_iso(str(passport_row.get("expires_at", ""))) if passport_row else None
+                proof_stale = (
+                    passport_row is None
+                    or passport_row.get("auth_state") != "authorized"
+                    or passport_row.get("availability_state") != "eligible"
+                    or expires_at is None
+                    or expires_at <= now
+                )
+            else:
+                proof_stale = (
+                    a.route_id not in confirmation["admitted"]
+                    or qualified is None
+                    or (now - qualified).total_seconds() >= PERMIT_PROOF_MAX_VALIDITY_SECONDS
+                )
             if a.health != "healthy" or confirming or proof_stale:
                 if lease_held:
                     a.reason = "lease_held"
+                    a.failed_stage = EligibilityStage.AVAILABLE
+                    continue
+                # In read-only mode, proof_stale means the passport is invalid
+                # (missing, expired, unauthorized, ineligible, or newer negative evidence).
+                # We should not pretend this is a probe budget issue; set a specific reason.
+                if self._read_only and proof_stale:
+                    # Determine the specific reason from the passport evidence
+                    passport_row = rows[0] if rows else None
+                    if passport_row is None:
+                        a.reason = "passport_missing"
+                    elif passport_row.get("auth_state") != "authorized":
+                        a.reason = "passport_unauthorized"
+                    elif passport_row.get("availability_state") != "eligible":
+                        a.reason = "passport_ineligible"
+                    else:
+                        expires_at = _parse_iso(str(passport_row.get("expires_at", "")))
+                        if expires_at is None or expires_at <= now:
+                            a.reason = "passport_expired"
+                        else:
+                            a.reason = "passport_stale"
                     a.failed_stage = EligibilityStage.AVAILABLE
                     continue
                 if probes_used >= self._max_probes:

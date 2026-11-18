@@ -652,6 +652,244 @@ class TestSelect:
         assert selected.reached is EligibilityStage.SELECTED
         assert probe.calls == ["cc/claude-sonnet-5"], "probe should be called when lease not held"
 
+    def test_read_only_mode_selects_valid_but_old_passport_zero_probes(
+        self, tmp_path: Path
+    ) -> None:
+        """Read-only (no-confirm) mode selects a route with valid passport older than 10 min, zero probes."""
+        from verdict.model_passports import ModelPassport
+        from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+        from verdict.prove_at_rest_legacy import (
+            STATUS_HEALTHY,
+            ProofResult,
+            ProveAtRestCycle,
+            ProveAtRestStore,
+            default_state_path,
+        )
+
+        rows = [row("cc/claude-sonnet-5", owned_by="claude")]
+        connections = [conn("claude")]
+        cache = HealthCache(tmp_path / "health.json")
+        # Provide a fresh healthy probe result for the route
+        checked = NOW - timedelta(seconds=60)
+        cache.record(
+            "cc/claude-sonnet-5",
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            checked,
+        )
+        cache.save()
+
+        # Create a passport store with a passport that is VALID but qualified_at is 30 min old
+        # (older than the 10-minute PERMIT_PROOF_MAX_VALIDITY_SECONDS)
+        passport_store_path = default_state_path()
+        passport_store_path.parent.mkdir(parents=True, exist_ok=True)
+        passport = ModelPassport(
+            provider="claude",
+            model_id="cc/claude-sonnet-5",
+            auth_state="authorized",
+            availability_state="eligible",
+            qualified_at=NOW - timedelta(minutes=30),  # 30 min old - older than 10 min window
+            last_verified_timestamp=NOW - timedelta(minutes=30),
+            expires_at=NOW + timedelta(minutes=10),  # Not expired
+        )
+        proof_result = ProofResult(
+            identity_id="cc/claude-sonnet-5",
+            provider="claude",
+            status=STATUS_HEALTHY,
+            proved_at=NOW - timedelta(minutes=30),
+            latency_ms=100,
+            passport=passport,
+        )
+        cycle = ProveAtRestCycle(
+            cycle_id="test-cycle",
+            started_at=NOW - timedelta(minutes=35),
+            finished_at=NOW - timedelta(minutes=30),
+            results=(proof_result,),
+        )
+        store = ProveAtRestStore(path=passport_store_path)
+        store.write(cycle)
+
+        # Read-only mode: max_probes_per_select=0, read_only=True
+        probe = FakeProbe()
+        ladder, _ = make_ladder(
+            tmp_path,
+            rows,
+            connections,
+            probe,
+            health_cache=cache,
+            max_probes_per_select=0,
+            read_only=True,
+        )
+        selected, _verdicts = ladder.select(REQ, now=NOW)
+
+        assert selected is not None and selected.route_id == "cc/claude-sonnet-5"
+        assert selected.reached is EligibilityStage.SELECTED
+        assert selected.reason == "selected"
+        assert probe.calls == [], (
+            "no probe calls should be made in read-only mode with valid passport"
+        )
+
+    def test_read_only_mode_skips_expired_passport_with_named_reason(self, tmp_path: Path) -> None:
+        """Read-only mode skips expired passport with a reason naming the condition, not probe_budget_exhausted."""
+        from verdict.model_passports import ModelPassport
+        from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+        from verdict.prove_at_rest_legacy import (
+            STATUS_HEALTHY,
+            ProofResult,
+            ProveAtRestCycle,
+            ProveAtRestStore,
+            default_state_path,
+        )
+
+        rows = [row("cc/claude-sonnet-5", owned_by="claude")]
+        connections = [conn("claude")]
+        cache = HealthCache(tmp_path / "health.json")
+        checked = NOW - timedelta(seconds=60)
+        cache.record(
+            "cc/claude-sonnet-5",
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            checked,
+        )
+        cache.save()
+
+        # Create a passport store with an EXPIRED passport
+        passport_store_path = default_state_path()
+        passport_store_path.parent.mkdir(parents=True, exist_ok=True)
+        passport = ModelPassport(
+            provider="claude",
+            model_id="cc/claude-sonnet-5",
+            auth_state="authorized",
+            availability_state="eligible",
+            qualified_at=NOW - timedelta(minutes=30),
+            last_verified_timestamp=NOW - timedelta(minutes=30),
+            expires_at=NOW - timedelta(minutes=5),  # EXPIRED
+        )
+        proof_result = ProofResult(
+            identity_id="cc/claude-sonnet-5",
+            provider="claude",
+            status=STATUS_HEALTHY,
+            proved_at=NOW - timedelta(minutes=30),
+            latency_ms=100,
+            passport=passport,
+        )
+        cycle = ProveAtRestCycle(
+            cycle_id="test-cycle",
+            started_at=NOW - timedelta(minutes=35),
+            finished_at=NOW - timedelta(minutes=30),
+            results=(proof_result,),
+        )
+        store = ProveAtRestStore(path=passport_store_path)
+        store.write(cycle)
+
+        probe = FakeProbe()
+        ladder, _ = make_ladder(
+            tmp_path,
+            rows,
+            connections,
+            probe,
+            health_cache=cache,
+            max_probes_per_select=0,
+            read_only=True,
+        )
+        selected, verdicts = ladder.select(REQ, now=NOW)
+
+        assert selected is None, "expired passport should not be selected in read-only mode"
+        assert probe.calls == [], "no probe calls in read-only mode"
+        v = by_route(verdicts)["cc/claude-sonnet-5"]
+        # The reason should name the condition (expired passport), not probe_budget_exhausted
+        assert v.reason != "probe_budget_exhausted", f"expected named reason, got '{v.reason}'"
+        assert "expired" in v.reason.lower() or "stale" in v.reason.lower(), (
+            f"reason should mention expired/stale, got '{v.reason}'"
+        )
+
+    def test_normal_mode_unchanged_requires_fresh_proof(self, tmp_path: Path) -> None:
+        """Normal mode (confirm allowed) still requires fresh proof within 10 minutes."""
+        from verdict.model_passports import ModelPassport
+        from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+        from verdict.prove_at_rest_legacy import (
+            STATUS_HEALTHY,
+            ProofResult,
+            ProveAtRestCycle,
+            ProveAtRestStore,
+            default_state_path,
+        )
+
+        rows = [row("cc/claude-sonnet-5", owned_by="claude")]
+        connections = [conn("claude")]
+        cache = HealthCache(tmp_path / "health.json")
+        checked = NOW - timedelta(seconds=60)
+        cache.record(
+            "cc/claude-sonnet-5",
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            checked,
+        )
+        cache.save()
+
+        # Create a passport store with a passport that is VALID but qualified_at is 30 min old
+        passport_store_path = default_state_path()
+        passport_store_path.parent.mkdir(parents=True, exist_ok=True)
+        passport = ModelPassport(
+            provider="claude",
+            model_id="cc/claude-sonnet-5",
+            auth_state="authorized",
+            availability_state="eligible",
+            qualified_at=NOW - timedelta(minutes=30),  # 30 min old
+            last_verified_timestamp=NOW - timedelta(minutes=30),
+            expires_at=NOW + timedelta(minutes=10),  # Not expired
+        )
+        proof_result = ProofResult(
+            identity_id="cc/claude-sonnet-5",
+            provider="claude",
+            status=STATUS_HEALTHY,
+            proved_at=NOW - timedelta(minutes=30),
+            latency_ms=100,
+            passport=passport,
+        )
+        cycle = ProveAtRestCycle(
+            cycle_id="test-cycle",
+            started_at=NOW - timedelta(minutes=35),
+            finished_at=NOW - timedelta(minutes=30),
+            results=(proof_result,),
+        )
+        store = ProveAtRestStore(path=passport_store_path)
+        store.write(cycle)
+
+        # Normal mode: max_probes_per_select=8 (default), read_only=False (default)
+        probe = FakeProbe({"cc/claude-sonnet-5": HealthResult(healthy=True, category="")})
+        ladder, _ = make_ladder(
+            tmp_path,
+            rows,
+            connections,
+            probe,
+            health_cache=cache,
+            # max_probes_per_select defaults to 8
+            # read_only defaults to False
+        )
+        selected, _verdicts = ladder.select(REQ, now=NOW)
+
+        # In normal mode, the old passport should trigger a probe
+        assert selected is not None and selected.route_id == "cc/claude-sonnet-5"
+        assert probe.calls == ["cc/claude-sonnet-5"], (
+            "probe should be called in normal mode for old passport"
+        )
+
 
 class TestPersistence:
     def test_state_round_trip(self, tmp_path: Path) -> None:
