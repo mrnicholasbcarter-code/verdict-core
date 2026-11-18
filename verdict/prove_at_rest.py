@@ -386,8 +386,17 @@ class CycleStats:
     # before the agentic probe, and how many answered.
     screened: int = 0
     screen_ok: int = 0
+    # ``--reprobe``: routes the operator forced into the agentic phase, and why any
+    # of them was not probed. ``None`` when no reprobe was asked for.
+    reprobe: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        data = self._counters()
+        if self.reprobe is not None:
+            data["reprobe"] = self.reprobe
+        return data
+
+    def _counters(self) -> dict[str, Any]:
         return {
             "requests": self.requests,
             "probed": self.probed,
@@ -925,6 +934,10 @@ class Prober:
     # BOD-410: cheap gateway chat screen (``POST /api/models/test-all``) that
     # picks agentic survivors. ``None`` keeps the unscreened candidate order.
     screen_transport: ScreenTransportFn | None = None
+    # ``--reprobe``: admitted FREE chat routes to probe again even though their
+    # agentic proof is fresh or they carry an active negative. Bounded like every
+    # other candidate by ``agentic_max_routes`` and the request cap.
+    reprobe_routes: frozenset[str] = frozenset()
     # Half-open agentic allowlist: screen survivors from pools already cooled
     # before this cycle's screen, with no fresh account-level failure for that
     # pool in the current screen/cycle. One tool conversation each.
@@ -1305,6 +1318,34 @@ class Prober:
         seconds = exchange.retry_after_seconds if exchange.retry_after_seconds else 60.0
         self.cache.zero_bucket(route.provider, now + timedelta(seconds=seconds), pool=route.pool)
 
+    def _with_reprobe(
+        self, pending: list[AdmittedRoute], snapshot: Sequence[AdmittedRoute], stats: CycleStats
+    ) -> list[AdmittedRoute]:
+        """Put the operator's ``--reprobe`` routes first; record the ones that cannot run.
+
+        A forced route skips the freshness check and the active-negative skip, nothing
+        else: it must be an admitted FREE chat route, so a reprobe can never spend on a
+        metered, subscription or unknown-capacity route.
+        """
+        if not self.reprobe_routes:
+            return pending
+        by_id = {route.route_id: route for route in snapshot}
+        forced: list[AdmittedRoute] = []
+        skipped: dict[str, str] = {}
+        for route_id in sorted(self.reprobe_routes):
+            route = by_id.get(route_id)
+            if route is None:
+                skipped[route_id] = "not_admitted"
+            elif route.non_chat:
+                skipped[route_id] = "non_chat"
+            elif route.capacity != CapacityClass.FREE.value:
+                skipped[route_id] = f"capacity:{route.capacity}"
+            else:
+                forced.append(route)
+        stats.reprobe = {"queued": [route.route_id for route in forced], "skipped": skipped}
+        forced_ids = {route.route_id for route in forced}
+        return [*forced, *(route for route in pending if route.route_id not in forced_ids)]
+
     def _needs_agentic(self, route: AdmittedRoute, now: datetime) -> bool:
         """True when the route is FREE and its agentic probe is stale or missing.
 
@@ -1370,6 +1411,7 @@ class Prober:
             pending = self._screen(pending, stats, deadline)
             if stats.agentic_stopped_reason:
                 return
+        pending = self._with_reprobe(pending, snapshot, stats)
         pending = pending[: self.agentic_max_routes]
         # BOD-297: the agentic phase shares the cycle's single request budget
         # with the chat phase (and the gateway screen). Conversations that
@@ -1378,6 +1420,12 @@ class Prober:
         pending = pending[: max(0, remaining_requests // AGENTIC_TURNS)]
         self._cycle_started = phase_start
         self._request_cap = stats.requests + AGENTIC_TURNS * len(pending) + 1
+        if stats.reprobe is not None:
+            kept = {route.route_id for route in pending}
+            for route_id in stats.reprobe["queued"]:
+                if route_id not in kept:
+                    stats.reprobe["skipped"][route_id] = "budget"
+            stats.reprobe["queued"] = [r for r in stats.reprobe["queued"] if r in kept]
         if pending:
             # Prove the cache is writable before any dispatch, as the chat phase does.
             self._save()
@@ -1416,6 +1464,12 @@ class Prober:
                             self._half_open_routes.discard(route.route_id)
                         else:
                             pending.remove(route)
+                            if (
+                                stats.reprobe is not None
+                                and route.route_id in (stats.reprobe["queued"])
+                            ):
+                                stats.reprobe["queued"].remove(route.route_id)
+                                stats.reprobe["skipped"][route.route_id] = "pool_cooled"
                             continue
                     # Reserve every turn up front and PERSIST the reservation
                     # before dispatch, so another process reading the shared
@@ -2833,6 +2887,7 @@ def build_live_daemon(
     agentic_concurrency: int = DEFAULT_AGENTIC_CONCURRENCY,
     agentic_pool_concurrency: int = DEFAULT_AGENTIC_POOL_CONCURRENCY,
     agentic_wall_seconds: float | None = None,
+    reprobe_routes: Sequence[str] = (),
 ) -> ProverDaemon:
     """Construct the daemon. ``state_path`` is accepted and ignored.
 
@@ -2883,6 +2938,7 @@ def build_live_daemon(
         agentic_concurrency=agentic_concurrency,
         agentic_pool_concurrency=agentic_pool_concurrency,
         agentic_wall_seconds=agentic_wall_seconds,
+        reprobe_routes=frozenset(r.strip() for r in reprobe_routes if r and r.strip()),
         gateway_auth_check=(
             live_gateway_auth_check(origin, api_key=key) if transport is None else None
         ),

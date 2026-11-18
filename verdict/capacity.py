@@ -17,6 +17,7 @@ from verdict.orchestration.contracts import CapacityClass as CapacityClass
 if TYPE_CHECKING:
     from verdict.orchestration.health_cache import HealthCache
 from verdict.orchestration.provider_catalog import (
+    backend_pool,
     connection_signals_free,
     has_free_suffix,
     sanitized_plan_label,
@@ -51,6 +52,40 @@ def is_credit_provider_route(route_id: str, conn: Mapping[str, Any] | None) -> b
     return any(lower_id.startswith(f"{p}/") for p in providers)
 
 
+def _prices(row: Mapping[str, Any]) -> list[float]:
+    pricing = row.get("pricing")
+    if not isinstance(pricing, Mapping):
+        return []
+    return [
+        float(value)
+        for value in pricing.values()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+
+
+def _all_zero_pricing(row: Mapping[str, Any]) -> bool:
+    prices = _prices(row)
+    return bool(prices) and all(p == 0 for p in prices)
+
+
+def _positive_pricing(row: Mapping[str, Any]) -> bool:
+    return any(p > 0 for p in _prices(row))
+
+
+def free_suffix_alias_is_public_free(route_id: str, free_set: OpenRouterFreeSet | None) -> bool:
+    """True when a ``:free`` route on an OpenRouter-pool prefix is in the public 0/0 set.
+
+    ``backend_pool`` already treats these prefixes as one upstream pool with
+    ``openrouter/``. No free set, or an id outside it, is no evidence.
+    """
+    prefix, _, bare = route_id.partition("/")
+    if free_set is None or not bare or backend_pool(route_id) != "openrouter-free":
+        return False
+    if prefix.lower() == "openrouter":
+        return False  # openrouter/ itself is decided by openrouter_route_is_public_free
+    return openrouter_route_is_public_free(f"openrouter/{bare}", free_set)
+
+
 def classify_route_capacity(
     conn: Mapping[str, Any] | None,
     row: Mapping[str, Any],
@@ -83,11 +118,15 @@ def classify_route_capacity(
     if str(conn.get("provider", "")).lower() == "anthropic" and auth_type == "apikey":
         return CapacityClass.METERED, plan_label, "anthropic_apikey"
 
-    # (a) :free suffix overrides oauth → subscription (fixes D5: 72
-    # kilocode :free misclassed as SUBSCRIPTION). Openrouter-family is
-    # handled above and must not take this shortcut.
-    if route_id and has_free_suffix(route_id) and not is_openrouter_catalog_route(route_id):
-        return CapacityClass.FREE, plan_label, "free_suffix"
+    # (a) A ``:free`` suffix (or "free" in the name) is a hint, never evidence
+    # (operator rule, 2026-11-18): a provider can name a credit-billed route
+    # ``:free``. One corroboration is checked here: kc/kilocode ``:free`` routes
+    # are the OpenRouter ``:free`` routes under another prefix (same upstream
+    # pool), so membership in OpenRouter's public 0/0 set is zero-price evidence
+    # for them. It overrides oauth -> subscription for those routes.
+    suffix_hint = bool(route_id) and has_free_suffix(route_id)
+    if suffix_hint and free_suffix_alias_is_public_free(route_id, openrouter_free_set):
+        return CapacityClass.FREE, plan_label, "openrouter_public_zero_alias"
 
     # (b) Connection-level free signals. Openrouter-family is excluded:
     # OmniRoute may set importFreeModelsOnly on a free-only key while the
@@ -96,19 +135,24 @@ def classify_route_capacity(
     if is_free and not (route_id and is_openrouter_catalog_route(route_id)):
         return CapacityClass.FREE, plan_label, signal
 
+    # A credit provider bills against a prepaid balance. Its ``:free`` route with
+    # no free evidence (connection signal above, zero inventory pricing below)
+    # is UNKNOWN: the name alone must not make it FREE or assumed free.
+    if (
+        suffix_hint
+        and is_credit_provider_route(route_id, conn)
+        and not _all_zero_pricing(row)
+        and not _positive_pricing(row)
+    ):
+        return CapacityClass.UNKNOWN, plan_label, "free_suffix_unverified"
+
     # (c) oauth without a free signal → SUBSCRIPTION.
     if auth_type == "oauth":
         return CapacityClass.SUBSCRIPTION, plan_label, "oauth_subscription"
 
     # Pricing evidence for apikey connections.
-    pricing = row.get("pricing")
-    prices: list[float] = []
-    if isinstance(pricing, Mapping):
-        for value in pricing.values():
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                prices.append(float(value))
-    all_zero = bool(prices) and all(p == 0 for p in prices)
-    positive = any(p > 0 for p in prices)
+    all_zero = _all_zero_pricing(row)
+    positive = _positive_pricing(row)
 
     # All-zero explicit inventory pricing is FREE even for apikey, but not
     # for openrouter-family when a public free set is available (public

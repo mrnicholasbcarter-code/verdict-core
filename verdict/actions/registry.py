@@ -385,7 +385,7 @@ def _action_route(**kwargs: Any) -> ActionResult:
     from verdict.credentials_store import resolve_gateway_binding
     from verdict.free_tier_admit import normalize_omniroute_origin
     from verdict.orchestration.contracts import OrchestrationError, TaskRequirements
-    from verdict.orchestration.selection import select_route_for_task
+    from verdict.orchestration.selection import no_route_outcome, select_route_for_task
     from verdict.task_profile import profile_task
 
     try:
@@ -447,9 +447,11 @@ def _action_route(**kwargs: Any) -> ActionResult:
         provenance=selection.provenance,
     )
     if selection.route is None:
-        payload["reason"] = "explicit_model_ineligible" if explicit_model else "no_eligible_route"
+        payload["reason"], exit_code = no_route_outcome(
+            selection, explicit_model=bool(explicit_model)
+        )
         payload["selected"] = None
-        return ActionResult(data=payload, ok=False, exit_code=1)
+        return ActionResult(data=payload, ok=False, exit_code=exit_code)
 
     selected_dict = selection.route.to_dict() | {
         "gateway": gateway,

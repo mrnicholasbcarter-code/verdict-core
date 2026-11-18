@@ -68,6 +68,7 @@ class FakeHost:
         self.asset = ASSET
         self.serve_up: bool | BaseException = True
         self.restart_heals = True
+        self.docs_ready = True
         self.env = setup_host.HostEnvironment(
             home=self.home,
             unit_dir=self.unit_dir,
@@ -82,6 +83,7 @@ class FakeHost:
             metadata_refresh=self.refresh,
             prime_sync=self.sync,
             serve_health=self.health,
+            docs_ready=lambda: self.docs_ready,
             sleep=lambda seconds: None,
         )
 
@@ -168,6 +170,7 @@ _SEAMS = (
     "metadata_refresh",
     "prime_sync",
     "serve_health",
+    "docs_ready",
     "sleep",
 )
 
@@ -769,3 +772,37 @@ def test_a_host_only_allowlist_never_authorizes_catalog_installs(
         f"bootstrap:host:{pid.removeprefix('host.')}" for pid in HOST_IDS
     )
     assert set(catalog) <= set(_stage(report, "consent")["details"]["blocked"])
+
+
+def test_stale_docs_index_starts_the_refresh_once_and_a_ready_one_does_not(host: FakeHost) -> None:
+    """Catches: after an install the index stays stale until the six-hourly timer fires."""
+    start = ["systemctl", "--user", "start", "--no-block", "verdict-docs-refresh.service"]
+    host.docs_ready = False
+    report = host.apply(allowlist=["host.docs-refresh-timer"], non_interactive=True)
+    result = _results(report)["bootstrap:host:docs-refresh-timer"]
+    assert result["status"] == "applied" and "verdict-docs-refresh.service" in result["note"]
+    assert host.systemctl_calls.count(start) == 1
+    # Timer installed and active, index still stale: the action is planned again.
+    planned = [a.provider_id for a in setup_host.plan_host_actions(host.env)]
+    assert "host.docs-refresh-timer" in planned
+
+    host.systemctl_calls.clear()
+    host.docs_ready = True
+    planned = [a.provider_id for a in setup_host.plan_host_actions(host.env)]
+    assert "host.docs-refresh-timer" not in planned
+    host.active.discard("verdict-docs-refresh.timer")
+    host.apply(allowlist=["host.docs-refresh-timer"], non_interactive=True)
+    assert start not in host.systemctl_calls
+
+
+def test_docs_repair_hint_names_the_command_that_refreshes_the_index() -> None:
+    """Catches: the doctor hint pointing at a command that does not refresh docs."""
+    from verdict.doctor_diagnostics import _docs_refresh_timer_row
+    from verdict.doctor_presentation import repair_command
+
+    row = _docs_refresh_timer_row(lambda unit: {"state": "active", "result": "exit-code"})
+    assert row["status"] == "failed"
+    command = repair_command(row["detail"])
+    assert command.startswith("verdict memory docs --fix --repo-root ")
+    finding = f"authoritative documentation preflight did not pass; repair: {command}"
+    assert repair_command(finding) == command

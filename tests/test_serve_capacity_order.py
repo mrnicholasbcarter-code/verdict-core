@@ -326,7 +326,8 @@ def test_credit_provider_unknown_pricing_is_unknown():
     assert evidence == "credit_provider_unknown_pricing"
 
 
-def test_credit_provider_with_free_suffix_stays_free():
+def test_credit_provider_with_free_suffix_alone_is_unknown():
+    """Operator rule 2026-11-18: a ``:free`` name does not prove the route is free."""
     from verdict.capacity import CapacityClass, classify_route_capacity
 
     conn = {"provider": "pollinations", "authType": "apikey", "isActive": True}
@@ -334,8 +335,20 @@ def test_credit_provider_with_free_suffix_stays_free():
     cls, _plan, evidence = classify_route_capacity(
         conn, row, route_id="pollinations/claude-fast:free", openrouter_free_set=None
     )
+    assert cls is CapacityClass.UNKNOWN
+    assert evidence == "free_suffix_unverified"
+
+
+def test_credit_provider_with_free_suffix_and_zero_pricing_is_free():
+    from verdict.capacity import CapacityClass, classify_route_capacity
+
+    conn = {"provider": "pollinations", "authType": "apikey", "isActive": True}
+    row = {"id": "pollinations/claude-fast:free", "pricing": {"input": 0.0, "output": 0.0}}
+    cls, _plan, evidence = classify_route_capacity(
+        conn, row, route_id="pollinations/claude-fast:free", openrouter_free_set=None
+    )
     assert cls is CapacityClass.FREE
-    assert evidence == "free_suffix"
+    assert evidence == "all_zero_pricing"
 
 
 def test_credit_provider_with_positive_pricing_is_metered():

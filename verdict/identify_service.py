@@ -27,7 +27,9 @@ SCREEN_SERVICE = "verdict-identify-screen.service"
 SCREEN_TIMER = "verdict-identify-screen.timer"
 # 2026-11-17 operator objective: cover the stale route inventory.
 PASSIVE_INTERVAL_SECONDS = 3 * 60 * 60
-SCREEN_CALENDAR = "*-*-* 00/6:00:00"
+# Twenty past, not on the hour: the hourly acceptance run starts on the hour and a
+# screen holding verified-refresh.lock made its route and choose checks report lease_held.
+SCREEN_CALENDAR = "*-*-* 00/6:20:00"
 SCREEN_MAX_PER_PROVIDER = 16
 SCREEN_MAX_ROUTES = 40
 SCREEN_CAPACITY = "free,subscription"

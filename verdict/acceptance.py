@@ -126,6 +126,49 @@ def gateway_env(gateway: str) -> dict[str, str]:
     return {**os.environ, "OMNIROUTE_BASE_URL": gateway}
 
 
+#: ``verdict route`` / ``verdict choose`` exit status and reason when every candidate
+#: left was skipped because another producer holds ``verified-refresh.lock``.
+LEASE_HELD_EXIT = 75
+LEASE_HELD_REASON = "lease_held"
+#: Longest wait for that lease before the one retry.
+LEASE_WAIT_SECONDS = 600.0
+LEASE_POLL_SECONDS = 5.0
+
+
+def _is_lease_held(check: Check) -> bool:
+    """True when the command reported ``lease_held``; plain ``no_eligible_route`` is not."""
+    if check.passed:
+        return False
+    return check.exit_code == LEASE_HELD_EXIT or check.detail.get("reason") == LEASE_HELD_REASON
+
+
+def _refresh_lease_live() -> bool:
+    from verdict.orchestration.health_cache import default_cache_path
+    from verdict.orchestration.verified_refresh import _JobLock
+
+    return bool(_JobLock(default_cache_path().parent / "verified-refresh.lock").live())
+
+
+def wait_for_refresh_lease(
+    *,
+    max_seconds: float = LEASE_WAIT_SECONDS,
+    live: Callable[[], bool] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> float:
+    """Wait until the refresh lease is free or ``max_seconds`` passed. Returns the wait."""
+    held = live or _refresh_lease_live
+    started = monotonic()
+    while monotonic() - started < max_seconds:
+        try:
+            if not held():
+                break
+        except Exception:
+            break  # an unreadable lock must not hold the job; the retry decides
+        sleep(LEASE_POLL_SECONDS)
+    return round(monotonic() - started, 1)
+
+
 def _cli_check(
     name: str,
     args: list[str],
@@ -134,6 +177,7 @@ def _cli_check(
     gateway: str,
     *,
     _run_cli: Callable[..., tuple[int, str, str]] | None = None,
+    _wait_for_lease: Callable[[], float] | None = None,
 ) -> Check:
     _run = _run_cli or run_cli
     started = time.monotonic()
@@ -152,17 +196,22 @@ def _cli_check(
         stderr_sha256=_digest(err),
         detail=detail,
     )
-    if _is_transient_gateway_failure(check, raw_output=out + " " + err):
-        # The gateway intermittently stalls /v1/models rebuilds and other
-        # Retry the whole command once before recording a failure; a flaky
-        # gateway must not turn an hourly acceptance run red by itself.
-        first = {
+    lease_held = _is_lease_held(check)
+    if lease_held or _is_transient_gateway_failure(check, raw_output=out + " " + err):
+        # Two transient causes get one retry, and both attempts are recorded:
+        # the gateway intermittently stalls /v1/models rebuilds, and another
+        # producer may hold verified-refresh.lock so selection sent no probe.
+        # Neither may turn an hourly acceptance run red by itself. Any other
+        # failure, plain no_eligible_route included, is recorded as it is.
+        first: dict[str, Any] = {
             "attempt": 1,
             "exit_code": check.exit_code,
             "reason": check.reason,
             "stdout_sha256": check.stdout_sha256,
             "stderr_sha256": check.stderr_sha256,
         }
+        if lease_held:
+            first["lease_wait_seconds"] = (_wait_for_lease or wait_for_refresh_lease)()
         retry_started = time.monotonic()
         code2, out2, err2 = _run(args, timeout, gateway_env(gateway))
         passed2, reason2, detail2 = judge(code2, out2, err2)
@@ -187,7 +236,8 @@ def _cli_check(
             },
         ]
         if check.passed:
-            check.reason = f"{reason2} (retry after transient gateway failure)"
+            cause = "refresh lease was held" if lease_held else "transient gateway failure"
+            check.reason = f"{reason2} (retry after {cause})"
     return check
 
 
@@ -286,7 +336,7 @@ def judge_choose(code: int, out: str, err: str) -> tuple[bool, str, dict[str, An
         payload = _json(out)
         if isinstance(payload, dict):
             reason = payload.get("reason") or payload.get("error") or "unknown"
-            return False, f"not implemented: exit {code} {reason}", {}
+            return False, f"not implemented: exit {code} {reason}", {"reason": reason}
         # Payload is not a dict: fall back to stderr (skip outcome history lines)
         first = ""
         for line in reversed(err.strip().splitlines()):

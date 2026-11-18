@@ -285,7 +285,7 @@ def _action_choose_live(**kwargs: Any) -> ActionResult:
     from verdict.credentials_store import resolve_gateway_binding
     from verdict.free_tier_admit import normalize_omniroute_origin
     from verdict.orchestration.contracts import OrchestrationError, TaskRequirements
-    from verdict.orchestration.selection import select_route_for_task
+    from verdict.orchestration.selection import no_route_outcome, select_route_for_task
 
     task_class: str = kwargs["task_class"]
     requires = frozenset(p.strip() for p in kwargs.get("requires", "").split(",") if p.strip())
@@ -348,8 +348,8 @@ def _action_choose_live(**kwargs: Any) -> ActionResult:
         provenance=selection.provenance,
     )
     if selection.route is None:
-        payload["reason"] = "explicit_model_ineligible" if model else "no_eligible_route"
-        return ActionResult(data=payload, ok=False, exit_code=1)
+        payload["reason"], exit_code = no_route_outcome(selection, explicit_model=bool(model))
+        return ActionResult(data=payload, ok=False, exit_code=exit_code)
     payload["selected"] = selection.route.to_dict() | {
         "gateway": gateway,
         "model": selection.route.route_id,
@@ -1002,6 +1002,7 @@ def _action_prove_at_rest_once(**kwargs: Any) -> ActionResult:
                 if kwargs.get("agentic_wall_seconds") is not None
                 else None
             ),
+            reprobe_routes=tuple(kwargs.get("reprobe") or ()),
         )
         stats = daemon.run_once()
     except ProveError as exc:

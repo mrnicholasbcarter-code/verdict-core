@@ -175,15 +175,16 @@ class TestBackendPool:
 
 
 class TestCapacityClassification:
-    def test_free_suffix_overrides_oauth(self) -> None:
-        """Fixes D5: 72 kilocode :free misclassed as SUBSCRIPTION."""
+    def test_free_suffix_alone_does_not_override_oauth(self) -> None:
+        """A ``:free`` name is a hint: with no public 0/0 set it proves nothing."""
         ladder = _make_ladder()
         req = TaskRequirements(required_capabilities=frozenset({"tools"}))
         verdicts = ladder.evaluate(req, now=NOW)
         kilo_free = [v for v in verdicts if ":free" in v.route_id and "kilocode" in v.route_id]
+        assert kilo_free
         for v in kilo_free:
-            assert v.capacity_class == CapacityClass.FREE, (
-                f"{v.route_id} should be FREE, got {v.capacity_class}"
+            assert v.capacity_class != CapacityClass.FREE, (
+                f"{v.route_id} must not be FREE from its name alone"
             )
 
     def test_oauth_with_free_tier_signal_is_free(self) -> None:
@@ -565,26 +566,22 @@ def _ranking_openrouter_free_set(inventory: list[dict[str, Any]]) -> OpenRouterF
     )
 
 
-def _expected_class_changes() -> dict[str, tuple[CapacityClass, CapacityClass, str]]:
+def _expected_class_changes(
+    free_set: OpenRouterFreeSet,
+) -> dict[str, tuple[CapacityClass, CapacityClass, str]]:
     """Every route whose class differs from origin/main, with the new rule."""
     out: dict[str, tuple[CapacityClass, CapacityClass, str]] = {}
+    # A kc/kilocode ``:free`` route is FREE only as an alias of a public 0/0
+    # OpenRouter route; the suffix alone leaves it SUBSCRIPTION (oauth), unchanged.
     for tail in _KILOCODE_FREE_TAILS:
+        if tail not in free_set.free_ids:
+            continue
         for prefix in ("kc", "kilocode"):
             out[f"{prefix}/{tail}"] = (
                 CapacityClass.SUBSCRIPTION,
                 CapacityClass.FREE,
-                "free_suffix",
+                "openrouter_public_zero_alias",
             )
-    out["cmd/inclusionai/ling-3.0-flash-sante:free"] = (
-        CapacityClass.UNKNOWN,
-        CapacityClass.FREE,
-        "free_suffix",
-    )
-    out["command-code/inclusionai/ling-3.0-flash-sante:free"] = (
-        CapacityClass.UNKNOWN,
-        CapacityClass.FREE,
-        "free_suffix",
-    )
     # BOD-418: openrouter/ FREE requires public 0/0 membership; import_free_only
     # alone no longer classifies these routes FREE.
     out["openrouter/auto"] = (
@@ -995,7 +992,8 @@ class TestRankingParityAgainstOriginMain:
         new_verdicts = {v.route_id: v for v in new.evaluate(req, now=NOW)}
         assert set(old_verdicts) == set(new_verdicts)
 
-        expected = _expected_class_changes()
+        expected = _expected_class_changes(free_set)
+        assert any(rid.startswith("kc/") for rid in expected), "fixture must cover the alias rule"
         # D7 deliberately reclassifies every connected legacy UNKNOWN route.
         # Derive this set from the legacy fixture and account facts, never the
         # new classifier's output. No-connection UNKNOWN remains unchanged.

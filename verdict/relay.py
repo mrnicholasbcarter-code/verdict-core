@@ -473,8 +473,15 @@ def transition_edge(
     safety: RetrySafety,
     protocol: str,
     protected: bool,
+    rejected_without_output: bool = False,
 ) -> TransitionEdge | None:
-    """Return the #116-compiled edge to the next attempt, if one exists."""
+    """Return the #116-compiled edge to the next attempt, if one exists.
+
+    ``rejected_without_output`` is for an attempt the provider refused before doing any
+    work: an HTTP 200 credit refusal with zero completion tokens and no tool call. A
+    second POST cannot repeat an effect, so the edge needs no caller idempotency key.
+    Every other gate (identity, protocol, protection, attempt budget) still applies.
+    """
 
     if index + 1 >= len(attempts):
         return None
@@ -492,11 +499,14 @@ def transition_edge(
             reasons=("protected opaque alias has no actual-route attestation",),
             route_key=target.candidate.route_key,
         )
+    if rejected_without_output:
+        safety = RetrySafety.SAFE
     policy = Policy(
         protected=protected,
         require_actual_identity=True,
         allowed_protocols=frozenset({protocol}),
         max_attempts=3,
+        require_idempotency_key=not rejected_without_output,
     )
     graph = TransitionCompiler(policy).compile(
         current.candidate,

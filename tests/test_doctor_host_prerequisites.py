@@ -288,15 +288,16 @@ def test_ref_docs_timer_row_names_its_repair(state: str, result: str, repair: st
     [
         ("missing", "unknown", "verdict setup --apply --allow host.docs-refresh-timer"),
         ("inactive", "success", "systemctl --user enable --now verdict-docs-refresh.timer"),
-        ("failed", "failed", "verdict memory docs --fix"),
-        ("active", "failed", "verdict memory docs --fix"),
+        ("failed", "failed", "verdict memory docs --fix --repo-root "),
+        ("active", "failed", "verdict memory docs --fix --repo-root "),
     ],
 )
 def test_docs_refresh_timer_row_names_its_repair(state: str, result: str, repair: str) -> None:
     row = dd._docs_refresh_timer_row(lambda unit: {"state": state, "result": result})
     assert row["status"] == "failed"
     assert f"verdict-docs-refresh.timer is {state}; last result {result}" in row["detail"]
-    assert repair_command(row["detail"]) == repair
+    # The refresh command names the checkout, so only its fixed part is compared.
+    assert repair_command(row["detail"]).startswith(repair)
 
 
 def test_docs_refresh_timer_row_is_ok_when_active_and_last_run_succeeded() -> None:

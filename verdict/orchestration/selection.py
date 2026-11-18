@@ -17,6 +17,22 @@ class SelectionResult:
     reasons: tuple[str, ...]
     provenance: dict[str, Any]
     explanation: dict[str, Any]
+    # No route, and the candidates left were skipped only because another producer
+    # holds verified-refresh.lock. Transient: the caller may wait and retry.
+    lease_held: bool = False
+
+
+#: Exit status of ``verdict route`` / ``verdict choose`` for ``lease_held`` (EX_TEMPFAIL).
+LEASE_HELD_EXIT = 75
+#: The reason the ladder writes on a candidate it skipped under the refresh lease.
+LEASE_HELD_REASON = "lease_held"
+
+
+def no_route_outcome(selection: SelectionResult, *, explicit_model: bool) -> tuple[str, int]:
+    """Reason and exit status when selection chose nothing."""
+    if selection.lease_held:
+        return LEASE_HELD_REASON, LEASE_HELD_EXIT
+    return ("explicit_model_ineligible" if explicit_model else "no_eligible_route"), 1
 
 
 def select_route_for_task(
@@ -60,4 +76,7 @@ def select_route_for_task(
     if not reasons:
         reasons = ("no_candidates",)
     provenance = dict(route.rank_components or {}) if route else {}
-    return SelectionResult(route, reasons, provenance, explanation)
+    # Under the lease the ladder sends no probe, so a candidate is either chosen
+    # or marked lease_held; with no route chosen, lease_held names what is left.
+    lease_held = route is None and any(v.reason == LEASE_HELD_REASON for v in verdicts)
+    return SelectionResult(route, reasons, provenance, explanation, lease_held)

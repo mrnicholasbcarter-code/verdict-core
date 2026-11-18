@@ -613,8 +613,14 @@ def _collect_doctor_diagnostics(
                 ["authoritative documentation preflight unreachable", *documentation_report.errors]
             )
         else:
+            from verdict.setup_host import docs_refresh_command
+
             issues_found.extend(
-                ["authoritative documentation preflight did not pass", *documentation_report.errors]
+                [
+                    "authoritative documentation preflight did not pass; "
+                    f"repair: {docs_refresh_command()}",
+                    *documentation_report.errors,
+                ]
             )
     elif fix and documentation_report.ingested:
         fixed_issues.append("authoritative documentation preflight repaired")
@@ -1196,7 +1202,7 @@ def _ref_docs_timer_row(timer_state: Callable[[str], dict[str, Any]] | None) -> 
 def _docs_refresh_timer_row(timer_state: Callable[[str], dict[str, Any]] | None) -> dict[str, str]:
     """The six-hourly documentation refresh timer is active and its last run succeeded."""
     from verdict import docs_refresh_service
-    from verdict.setup_host import DOCS_REFRESH, setup_repair
+    from verdict.setup_host import DOCS_REFRESH, docs_refresh_command, setup_repair
 
     unit = docs_refresh_service.TIMER
     state = (timer_state or docs_refresh_service.timer_state)(unit)
@@ -1211,7 +1217,7 @@ def _docs_refresh_timer_row(timer_state: Callable[[str], dict[str, Any]] | None)
         detail += f"; repair: systemctl --user enable --now {unit}"
     else:
         detail += (
-            "; repair: verdict memory docs --fix; "
+            f"; repair: {docs_refresh_command()}; "
             f"logs: journalctl --user -u {docs_refresh_service.SERVICE}"
         )
     return {"label": label, "status": "failed", "detail": detail}

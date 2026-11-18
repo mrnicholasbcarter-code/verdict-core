@@ -86,6 +86,15 @@ _PROVIDER_SCOPE_CATEGORIES = frozenset({"payment_required", "permission", "authe
 # Source recorded on an admission record confirmed by the ladder's own probe.
 LADDER_CONFIRMATION_SOURCE = "ladder_probe:openai_health_probe"
 
+
+def _is_inband_refusal(result: HealthResult) -> bool:
+    """An HTTP 200 credit refusal is about one route, never the pool or provider.
+
+    Free siblings on the same key still answer, so this must not cool them.
+    """
+    return result.category == "payment_required" and result.status_code == 200
+
+
 _ADMISSION_TO_LADDER: Mapping[str, EligibilityStage] = {
     "DISCOVERED": EligibilityStage.DISCOVERED,
     "ENTITLED": EligibilityStage.ENTITLED,
@@ -1341,6 +1350,7 @@ class EligibilityLadder:
                         a.cooldown_until = str(entry.get("until"))
                     if (
                         result.category in _PROVIDER_SCOPE_CATEGORIES
+                        and not _is_inband_refusal(result)
                         and not key_limit_on_non_free_is_route_scoped(
                             route_id=a.route_id,
                             http_status=getattr(result, "status_code", None),
@@ -1536,7 +1546,9 @@ class EligibilityLadder:
                 seconds = cooldown_seconds_for(category, result.retry_after_seconds)
                 entry = {"until": _iso(now + timedelta(seconds=seconds)), "category": category}
                 self._state["cooldowns"][f"route:{route_id}"] = dict(entry)
-                route_scoped_key_limit = key_limit_on_non_free_is_route_scoped(
+                route_scoped_key_limit = _is_inband_refusal(
+                    result
+                ) or key_limit_on_non_free_is_route_scoped(
                     route_id=route_id,
                     http_status=getattr(result, "status_code", None),
                     detail=result.error_message or "",

@@ -703,6 +703,15 @@ def openai_health_probe(
                     payload = json.loads(raw) if raw else {}
                 except (TypeError, ValueError):
                     return HealthResult(False, "malformed_response", response.status)
+                from verdict.orchestration.provider_catalog import is_inband_billing_refusal
+
+                if is_inband_billing_refusal(payload):
+                    # HTTP 200 whose text is the provider's credit refusal (zero completion
+                    # tokens, no tool call) is a payment failure, not an answer. The 200
+                    # status is kept: it marks the failure as about this one route.
+                    return HealthResult(
+                        False, "payment_required", response.status, error_message="inband_refusal"
+                    )
                 if not _has_inference_output(payload):
                     flags = _empty_but_alive_flags(
                         payload,

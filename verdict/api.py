@@ -2319,6 +2319,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         None,
     )
     dispatch_denial: str | None = None
+    previous_refused = False  # last sent attempt was an in-band refusal with no output
     for index, attempt in enumerate(attempts):
         if index:
             edge = transition_edge(
@@ -2329,6 +2330,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 safety=safety,
                 protocol=protocol,
                 protected=decision.protected,
+                rejected_without_output=previous_refused,
             )
             if edge is None or not edge.legal:
                 break
@@ -2471,6 +2473,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 # attempt everywhere below; the provider text is not forwarded.
                 inband_refusal = True
                 result = replace(result, status_code=402, body=_inband_refusal_body(surface))
+            previous_refused = inband_refusal
             last_status = result.status_code
             # Extract bounded body text for failure classification (context-length
             # detection).  Error responses are always BufferedUpstreamResponse, so

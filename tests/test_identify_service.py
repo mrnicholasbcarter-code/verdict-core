@@ -62,7 +62,7 @@ def test_units_install_idempotently_and_uninstall(tmp_path):
         "--max-per-provider 16 --max-routes 40 --json"
     )
     assert "TimeoutStartSec=30min" in screen_lines
-    assert "OnCalendar=*-*-* 00/6:00:00" in timer_lines
+    assert "OnCalendar=*-*-* 00/6:20:00" in timer_lines
     assert "prove-at-rest" not in str(dry) and "census" not in str(dry)
     first = manage_service(unit_dir=directory, run=commands.append)
     assert first["changed"] and len(list(directory.iterdir())) == 4

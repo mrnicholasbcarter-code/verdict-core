@@ -12,7 +12,7 @@ Models billed against a prepaid credit balance (e.g. Pollinations credit models,
 ## Safety
 
 - Admission narrows only: unknown remains explicitly unknown and never healthy or free.
-- `:free` community routes on the same key continue to stay `FREE`.
+- `:free` community routes on the same key need free evidence like any other route (changed by `acceptance-red-fixes`: the suffix alone gives `UNKNOWN`, evidence `free_suffix_unverified`).
 - Priced models are correctly marked `METERED`.
 
 ## Impact
