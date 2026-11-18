@@ -312,3 +312,39 @@ def test_free_only_admission_fails_closed_when_only_subscription_supply(monkeypa
     with pytest.raises(ExecutionPathError, match="BOD-104"):
         asyncio.run(service.route("fix code", criticality="low", context=ctx))
     assert offloaded == []
+
+
+def test_credit_provider_unknown_pricing_is_unknown():
+    from verdict.capacity import CapacityClass, classify_route_capacity
+
+    conn = {"provider": "pollinations", "authType": "apikey", "isActive": True}
+    row = {"id": "pollinations/claude-fast"}
+    cls, _plan, evidence = classify_route_capacity(
+        conn, row, route_id="pollinations/claude-fast", openrouter_free_set=None
+    )
+    assert cls is CapacityClass.UNKNOWN
+    assert evidence == "credit_provider_unknown_pricing"
+
+
+def test_credit_provider_with_free_suffix_stays_free():
+    from verdict.capacity import CapacityClass, classify_route_capacity
+
+    conn = {"provider": "pollinations", "authType": "apikey", "isActive": True}
+    row = {"id": "pollinations/claude-fast:free"}
+    cls, _plan, evidence = classify_route_capacity(
+        conn, row, route_id="pollinations/claude-fast:free", openrouter_free_set=None
+    )
+    assert cls is CapacityClass.FREE
+    assert evidence == "free_suffix"
+
+
+def test_credit_provider_with_positive_pricing_is_metered():
+    from verdict.capacity import CapacityClass, classify_route_capacity
+
+    conn = {"provider": "pollinations", "authType": "apikey", "isActive": True}
+    row = {"id": "pollinations/claude-fast", "pricing": {"input": 1.0, "output": 1.0}}
+    cls, _plan, evidence = classify_route_capacity(
+        conn, row, route_id="pollinations/claude-fast", openrouter_free_set=None
+    )
+    assert cls is CapacityClass.METERED
+    assert evidence == "apikey_positive_pricing"

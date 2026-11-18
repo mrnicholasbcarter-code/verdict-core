@@ -29,6 +29,16 @@ CAPACITY_ORDER: Mapping[CapacityClass, int] = {
     CapacityClass.UNKNOWN: 3,
 }
 
+CREDIT_PROVIDERS: frozenset[str] = frozenset({"pollinations", "pol", "g4f-pollinations"})
+
+
+def is_credit_provider_route(route_id: str, conn: Mapping[str, Any] | None) -> bool:
+    provider = str(conn.get("provider", "")).strip().lower() if conn else ""
+    if provider in CREDIT_PROVIDERS:
+        return True
+    lower_id = route_id.lower()
+    return any(lower_id.startswith(f"{p}/") for p in CREDIT_PROVIDERS)
+
 
 def classify_route_capacity(
     conn: Mapping[str, Any] | None,
@@ -99,6 +109,10 @@ def classify_route_capacity(
     # (e) apikey with positive pricing → METERED.
     if positive:
         return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
+
+    # Credit providers without free evidence or pricing stay UNKNOWN.
+    if is_credit_provider_route(route_id, conn):
+        return CapacityClass.UNKNOWN, plan_label, "credit_provider_unknown_pricing"
 
     # D7: absence of specific paid/subscription evidence is assumed free,
     # not proof of capability. The same agentic gate still applies.
