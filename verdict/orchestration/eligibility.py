@@ -1214,7 +1214,7 @@ class EligibilityLadder:
         # qualified_at window is IGNORED in read-only mode. These should be
         # allowed to proceed to selection without probes.
         if self._read_only:
-            from verdict.admit_prove_confirm import load_healthy_passports
+            from verdict.prove_at_rest_legacy import load_healthy_passports
             from verdict.orchestration.health_cache import HealthCache, default_cache_path
 
             for a in assessments:
@@ -1338,6 +1338,9 @@ class EligibilityLadder:
                 # In read-only mode, proof_stale means the passport is invalid.
                 # Use the precomputed stale_reason so the caller knows exactly why.
                 if self._read_only and proof_stale:
+                    assert stale_reason is not None, (
+                        "stale_reason must be set when proof_stale is True in read-only mode"
+                    )
                     a.reason = stale_reason
                     a.failed_stage = EligibilityStage.AVAILABLE
                     continue
