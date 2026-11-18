@@ -1,0 +1,158 @@
+plan_id: '20261118-route-hard-spend-budget'
+status: pending
+tldr: |
+  Wire the public route budget to execution-path authority and prove BOD-432 A25
+  through structured, opt-in diagnostics on the installed public route.
+created_at: '2026-11-18'
+created_by: gem-planner
+revision: 2
+replan_count: 0
+planner_revision_used: true
+decisions:
+  - 'OpenSpec change: bod-432-public-route-hard-spend-budget; add a route-selection delta before coding.'
+  - Reuse execution-path qualification. Hard budget rejects unknown cash with unknown_price_not_treated_as_free; no budget leaves unknown pricing advisory.
+  - Use POST /v1/route?include_routing_trace=true to return a per-request routing_trace without changing the legacy response shape or relying on a subsequent explain lookup.
+  - The trace is a read-only projection of real stage outputs, not a new admission or optimizer path. Expose candidate IDs, outcome and rejection codes, not evidence payloads or secrets.
+  - A25 invariance applies when budget eligibility is unchanged; crossing the hard ceiling is a separate negative control.
+assumptions:
+  - Live proof requires the operator's installed merged-main runtime, consent, and an evidenced non-pay-per-token probe route; otherwise stop and record blocked.
+  - Prior captures at c04e3e61 are baseline evidence only, not a pass or a source of credentials.
+tasks:
+  - id: spec
+    title: Define the public contract
+    description: '[reuse] Extend route-selection via the named OpenSpec change and document the public interface and A25 runbook.'
+    wave: 1
+    depends_on: []
+    agent: gem-documentation-writer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - Strict validation of bod-432-public-route-hard-spend-budget passes; post-merge proof tasks have the required marker.
+      - Specify numeric USD input only, finite and greater than zero; absent preserves old behavior, explicit null is invalid. Invalid values return 400 naming execution_path_request.hard_spend_budget.
+      - 'Define routing_trace.admitted_candidate_ids (set), shortlist_candidate_ids (ordered), optimizer_decision (outcome and selected candidate ID or null), and rejected_offers (candidate ID and code). Include trace on existing no-selection responses when an authoritative decision was reached; never fabricate unavailable stages.'
+      - >-
+        Document provenance: IntelligenceService._prepare_execution_path_request_at
+        (verdict/intelligence.py:1371-1489) captures admitted IDs from receipt.admitted
+        narrowed to offered IDs or, on the live confirmation path, from confirmed.admitted;
+        take the ordered shortlist from the final ep_request.pool_receipt.shortlist route_ids.
+        Complete the read-only trace once per request from those snapshots and the same
+        ExecutionPathDecision (outcome, selected_candidate_id and rejected codes).
+        Carry it in an optional internal RoutingDecision.routing_trace field
+        (verdict/models.py:35-77) to route_task (verdict/api.py:1397-1440).
+      - 'Specify route_task include_routing_trace: bool = False as a plain typed query parameter like route_explain (verdict/api.py:1806-1813), not request.query_params.'
+      - Document exact-budget eligibility, above-budget and unknown-price rejections, and unchanged authority and legacy response behavior.
+    handoff:
+      constraints: [Read ETHOS.md and AGENTS.md first, Use Context7 for library documentation, No probe disclosure redesign]
+      relevant_context: [docs/acceptance/v1-routing.md A25, openspec/changes/v1-authority-inventory/specs/task-authority/spec.md]
+      high_risk_signals: [api_change, contract_change]
+      critic_signals: []
+  - id: wire
+    title: Test and wire public budget and routing trace
+    description: >-
+      [reuse/stdlib] Size HIGH: budget validation plus cross-layer trace plumbing
+      in verdict/intelligence.py, verdict/models.py and verdict/api.py. Capture RED
+      via public HTTP tests, then wire budget validation and the trace through in
+      two verifiable slices. Refactor only if needed after GREEN.
+    wave: 2
+    depends_on: [spec]
+    agent: gem-implementer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - RED covers valid integer and fractional input, omitted input, and 400 for null, boolean, string, array, object, zero, negatives, non-finite and float overflow; no probe or authority work on invalid input.
+      - GREEN proves above-budget and unknown-cash offers cannot be selected, equality qualifies if otherwise eligible, omitted budget leaves unpriced selection possible, and an exhausted pool fails closed without fallback. Missing execution-path authority still returns 400.
+      - With matched authorization and proof and multiple eligible candidates, label-only and price-only mutations preserving budget eligibility keep admitted membership, ordered shortlist, optimizer outcome/choice and public selection unchanged. Assertions use structured fields, not reason prose.
+      - >-
+        In IntelligenceService._prepare_execution_path_request_at
+        (verdict/intelligence.py:1371-1489), snapshot receipt.admitted narrowed to
+        offered IDs, or confirmed.admitted on the live path, before membership is
+        folded into the pool receipt and hard exclusions. Snapshot ordered route_ids
+        from the final ep_request.pool_receipt.shortlist. Complete the immutable trace
+        once with the same ExecutionPathDecision outcome, selected_candidate_id and
+        rejected codes; attach it to the returned RoutingDecision as the optional
+        internal routing_trace field (verdict/models.py:35-77). Test that route_task
+        (verdict/api.py:1397-1440) projects that field without a second admission,
+        shortlist or optimizer pass or changes to ordinary decision serialization.
+      - 'Add include_routing_trace: bool = False to route_task as a plain typed query parameter, matching route_explain (verdict/api.py:1806-1813); do not parse request.query_params.'
+      - Preserve existing response/status without trace opt-in; run focused public-route tests plus tests/test_candidate_pool.py, tests/test_live_candidate_shortlist.py and tests/test_security.py using project Python; run repository gates.
+    handoff:
+      constraints: [Fake clocks and transports with temporary state, No live or paid calls in tests, No vgate bypass or force-push, No changes to ranking authority]
+      relevant_context: [verdict/api.py _public_execution_path_request and route_task, verdict/execution_path.py _qualify_offer]
+      high_risk_signals: [api_change, contract_change]
+      critic_signals: []
+  - id: review
+    title: Independently review public contract and authority
+    description: '[reuse] Review the actual spec, code and tests at the candidate SHA before integration.'
+    wave: 3
+    depends_on: [wire]
+    agent: gem-reviewer
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - Orchestrator selects reviewer with ~/bin/pick-reviewer --author using served author model; capture observed distinct reviewer family and substantive review.
+      - Verify input rejection, unchanged legacy response and routing, no re-admission or fallback, accurate stage provenance, and no secret exposure; findings resolved and exact-head gates green before merge.
+    handoff:
+      constraints: [No pay-per-token, Empty or skipped review fails closed]
+      high_risk_signals: [api_change, contract_change]
+      critic_signals: []
+  - id: live
+    title: Prove A25 on installed merged main
+    description: '[reuse] Use the installed Verdict public API and real OmniRoute authorization/proof. Capture HTTP bodies and status, installed provenance, and independent parent confirmation; no fixture counts as proof.'
+    wave: 4
+    depends_on: [review]
+    agent: gem-devops
+    status: pending
+    retries_used: 0
+    acceptance_criteria:
+      - After exact-head CI and merge, verify installed SHA, verdict doctor, and service state; do not restart OmniRoute. Repeat after required freshness interval and record scheduled coverage.
+      - Prepare reviewed JSON files in INPUT from current live candidates, using held evidence only as a structural reference. Pin consent, fresh proof and eligible non-pay-per-token routes; stop rather than trigger any unauthorized or pay-per-token probe.
+      - Run the live commands below. Negative cases show the matching structured rejection and no selection of the rejected candidate. The same unpriced candidate in the no-budget control remains eligible and can be selected. Invalid budget is 400 with the field name; omitted budget without opt-in preserves the legacy response.
+      - Parent independently reruns and records raw evidence. Only after all AGENTS.md DoD parts pass, complete post-merge tasks, validate evidence with scripts/check_dod.py, archive the change and close BOD-432.
+    handoff:
+      constraints: [Consent and bounded probes per ADR-012, No pay-per-token, No credentials in evidence, Do not switch main checkout]
+      relevant_context: [.git/verdict-prime/held-evidence/bod432-a25, docs/acceptance/v1-routing.md A25]
+      high_risk_signals: [api_change, contract_change]
+      critic_signals: []
+risks:
+  - Public input and output contracts can regress legacy clients; opt in to diagnostics and test unchanged legacy shape/status.
+  - Stage diagnostics can misrepresent authority; capture once from the same request and never infer from the winner or prose.
+  - >-
+    Cross-layer trace plumbing is high risk: route_task (verdict/api.py:1397-1440)
+    receives only RoutingDecision (verdict/models.py:35-77), which has no admitted
+    set today. Once IntelligenceService._prepare_execution_path_request_at
+    (verdict/intelligence.py:1371-1489) folds admission into the prepared request,
+    reconstructing it in the API can misreport the set. Snapshot at the source
+    and test that the same decision carries the trace to the API without leaking
+    it into the legacy response.
+  - Live evidence drift or a confirm probe can invalidate comparisons or incur spend; hold evidence constant and stop on stale proof or uncertain billing.
+live_acceptance_commands: |
+  # Run with bash after consent and provenance checks, outside automated tests.
+  # INPUT contains reviewed cases; OUT is a new private evidence directory.
+  # This live run is gated by operator consent, reviewed INPUT files, and the
+  # operator-provided private auth.cfg containing only the auth header.
+  set -euo pipefail
+  umask 077
+  verdict doctor > "$OUT/doctor.txt"
+  for c in base label-only price-only priced-budget noprice-budget noprice invalid legacy; do
+    url=http://127.0.0.1:8000/v1/route
+    if [ "$c" != legacy ]; then url="$url?include_routing_trace=true"; fi
+    curl --config "$AUTH_CFG" --silent --show-error --max-time 150 \
+      -H 'Content-Type: application/json' --data-binary "@$INPUT/$c.json" \
+      --output "$OUT/$c.json" --write-out '%{http_code}\n' "$url" > "$OUT/$c.status"
+  done
+  for c in base label-only price-only; do
+    test "$(cat "$OUT/$c.status")" = 200
+    jq -eS '.routing_trace as $t | select(($t.admitted_candidate_ids | length) >= 2 and ($t.shortlist_candidate_ids | length) >= 2 and $t.optimizer_decision.selected_candidate_id != null and .model != null) | [($t.admitted_candidate_ids | sort), $t.shortlist_candidate_ids, $t.optimizer_decision, .provider, .model]' "$OUT/$c.json" > "$OUT/$c.comparison.json"
+  done
+  diff -u "$OUT/base.comparison.json" "$OUT/label-only.comparison.json"
+  diff -u "$OUT/base.comparison.json" "$OUT/price-only.comparison.json"
+  for c in priced-budget noprice-budget; do
+    if [ "$c" = priced-budget ]; then id="$PRICED_ID"; code=exceeds_hard_spend_budget; else id="$UNPRICED_ID"; code=unknown_price_not_treated_as_free; fi
+    jq -e --arg id "$id" --arg code "$code" '.routing_trace | (.rejected_offers | any(.candidate_id == $id and .code == $code)) and (.optimizer_decision.selected_candidate_id != $id)' "$OUT/$c.json"
+  done
+  test "$(cat "$OUT/noprice.status")" = 200
+  jq -e --arg id "$UNPRICED_ID" '.routing_trace.optimizer_decision.selected_candidate_id == $id' "$OUT/noprice.json"
+  test "$(cat "$OUT/invalid.status")" = 400
+  jq -e 'tostring | contains("execution_path_request.hard_spend_budget")' "$OUT/invalid.json"
+  test "$(cat "$OUT/legacy.status")" = 200
+  jq -e 'has("routing_trace") | not' "$OUT/legacy.json"

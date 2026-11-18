@@ -632,6 +632,41 @@ Operator-visible fail-closed modes:
   health cache says it is healthy. The result is written to `admission.json`
   in the run directory.
 
+### Public route endpoint (`POST /v1/route`)
+
+`POST /v1/route` is the authoritative routing endpoint. It requires an
+`execution_path_request` body (schema version `execution-path/v1`) describing
+candidate offers with pricing, capability evidence, and certification state.
+A request without `execution_path_request` returns HTTP 400.
+
+#### Execution-path request fields
+
+The `execution_path_request` object accepts the following fields (in addition
+to the required `trajectory_id`, `slice_id`, `candidates`, `acceptance_criteria`,
+`proof_criteria`, and optional `task_family`, `min_context_tokens`,
+`reasoning_required`, `tools_required`, `structured_output_required`,
+`streaming_required`, `vision_required`):
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `hard_spend_budget` | number (USD) | No | Hard spend ceiling in USD. Must be a finite JSON number > 0. Absent = no budget enforcement (existing behaviour). Explicit `null`, boolean, string, array, object, zero, negative, non-finite, or overflow = HTTP 400 naming `execution_path_request.hard_spend_budget`. When set, offers with `expected_cost.cash_usd > budget` are rejected with `exceeds_hard_spend_budget`; offers with unknown cash (`has_unknown_cash`) are rejected with `unknown_price_not_treated_as_free`. Exact equality (`cash_usd == budget`) qualifies if otherwise eligible. No budget = unknown price remains advisory (A25 invariant). |
+
+#### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `include_routing_trace` | boolean | `false` | When `true`, the response includes a `routing_trace` object with structured diagnostics: `admitted_candidate_ids` (set), `shortlist_candidate_ids` (ordered), `optimizer_decision` (`outcome` + `selected_candidate_id`), `rejected_offers` (`candidate_id` + `code`). The trace is a read-only projection of the same request's admission, shortlist, and optimizer stages. Present on all authoritative outcomes including no-selection (`denied`, `blocked`). Legacy response (without this parameter) is unchanged. |
+
+#### Response
+
+On success (HTTP 200): a routing decision object with `model`, `provider`, `tier`, `reason`, `alternatives`, `decision` ("selected" or "denied"), `candidate_states`, `admit_receipt`, and evidence headers (`x-verdict-evidence-id`, `x-verdict-evidence-request-id`, `x-verdict-correlation-id`).
+
+When `include_routing_trace=true`, an additional `routing_trace` field is included (see above).
+
+On denial (HTTP 503): a routing decision with `decision: "denied"` and `model: null`.
+
+On invalid request (HTTP 400): error detail naming the invalid field (e.g., `execution_path_request.hard_spend_budget`).
+
 The OpenAI-compatible relay (`/v1/chat/completions`, `/v1/responses`) has a
 narrower boundary:
 
