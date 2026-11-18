@@ -97,7 +97,7 @@
     "command": "systemctl --user cat verdict-identify-screen.service verdict-identify-screen.timer",
     "raw_output": {
       "path": "docs/proof/dod/identify-screen-full-coverage/parent-confirmation-unit-cat.txt",
-      "sha256": "3230ed83864c8315abde9d8c1bb136a847171f2d5b1d1d488720eabb5abfd1be"
+      "sha256": "3638c35b2060ff5247f4c3558a767743703a4c7d256c4e603ea5002e91157735"
     }
   }
 }
