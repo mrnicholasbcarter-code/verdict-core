@@ -11,10 +11,7 @@ def test_check_claims_passes():
     script = repo_root / "scripts" / "check_claims.py"
 
     result = subprocess.run(
-        [sys.executable, str(script)],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
+        [sys.executable, str(script)], cwd=repo_root, capture_output=True, text=True
     )
 
     # Print output for debugging
@@ -32,10 +29,7 @@ def test_check_claims_output_contains_summary():
     script = repo_root / "scripts" / "check_claims.py"
 
     result = subprocess.run(
-        [sys.executable, str(script)],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
+        [sys.executable, str(script)], cwd=repo_root, capture_output=True, text=True
     )
 
     assert "Claim Count by Label" in result.stdout
