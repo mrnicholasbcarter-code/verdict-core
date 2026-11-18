@@ -26,6 +26,8 @@
 - [x] Regression test: a healthy route with no passport row is not rejected at AVAILABLE in read-only mode
 - [x] Test: `read_only_valid_proof` keeps only valid-but-old proof (not expired, unauthorized, superseded or missing)
 - [x] Test: read-only mode with lease held returns `lease_held` reason
+- [x] Test (test_choose_live): a valid passport 601 s old is selected under --no-confirm with no writes; newer negative evidence still rejects (renamed from test_no_confirm_rejects_stale_or_negative_proof per the ruling)
+- [x] Test (test_choose_live): an expired passport is not selected under --no-confirm
 - [x] All existing tests pass (test_orch_eligibility.py, test_acceptance.py, test_admit_prove_confirm.py, test_route_ladder_parity.py, test_admission.py, test_eligibility_event_post_probe.py)
 
 ## 4. Quality Gates
