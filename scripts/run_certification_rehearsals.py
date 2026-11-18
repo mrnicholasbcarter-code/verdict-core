@@ -94,16 +94,19 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict:
         timeout=PREFLIGHT_WALL_SECONDS + 30,  # allow some overhead
     )
 
+    # These messages are printed verbatim by __main__; child output can carry
+    # provider text, the key or the gateway URL, so it is never included.
     if result.returncode != 0:
-        stderr = result.stderr.decode("utf-8", errors="replace").strip()
         raise RehearsalConfigurationError(
-            f"Preflight identify screen failed (exit {result.returncode}): {stderr}"
+            f"Preflight identify screen failed (exit {result.returncode})"
         )
 
     try:
         report = json.loads(result.stdout.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise RehearsalConfigurationError(f"Preflight screen produced invalid JSON: {exc}") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RehearsalConfigurationError("Preflight screen produced invalid JSON") from exc
+    if not isinstance(report, dict):
+        raise RehearsalConfigurationError("Preflight screen produced invalid JSON")
 
     # Verify the screen produced genuine agentic qualification for FREE routes.
     # The screen report's 'passed' counts routes where the 3-turn agentic probe

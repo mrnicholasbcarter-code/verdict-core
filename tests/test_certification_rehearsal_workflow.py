@@ -303,3 +303,32 @@ def test_preflight_fails_closed_when_no_free_routes_qualify(tmp_path, monkeypatc
 
     # Orchestrate must never have been called
     assert len(orchestrate_called) == 0
+
+
+def test_preflight_failure_message_never_echoes_child_output(tmp_path, monkeypatch):
+    """A failed preflight prints a fixed message, never child stderr (credentials, URL)."""
+    import subprocess
+
+    import pytest
+
+    from scripts import run_certification_rehearsals as script
+
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", "https://gateway.invalid")
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "test-key-canary")
+    monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "snapshot.json")
+    orchestrated = []
+
+    def child(argv, **kwargs):
+        if "orchestrate" in argv:
+            orchestrated.append(argv)
+        if "identify" in argv:
+            return subprocess.CompletedProcess(argv, 2, b"test-key-canary", b"test-key-canary")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(script.subprocess, "run", child)
+    with pytest.raises(script.RehearsalConfigurationError) as error:
+        script.run()
+    assert "test-key-canary" not in str(error.value)
+    assert "gateway.invalid" not in str(error.value)
+    assert orchestrated == []
