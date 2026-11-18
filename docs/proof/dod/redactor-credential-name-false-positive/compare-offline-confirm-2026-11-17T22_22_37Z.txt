@@ -1,0 +1,13 @@
+verdict: default_primary_model [configuration] field=primary_model source=default - no primary_model from any canonical source; using the built-in default 'anthropic/claude-opus-5', which is returned as the tier-0 / no-offload-match routing decision; remediation: set 'primary_model' in /tmp/opencode/dod-empty-home.fg2PlD/.config/verdict/verdict.yaml, or export LLMGATE_PRIMARY
+verdict: credential_env_missing [configuration] field=OMNIROUTE_API_KEY - provider 'omniroute' declares api_key_env OMNIROUTE_API_KEY but it is unset in the environment and in the credential store; remediation: export OMNIROUTE_API_KEY, or run 'verdict credentials set OMNIROUTE_API_KEY'
+{
+  "comparison_report": {
+    "cost_delta": 0.0,
+    "direct_model": "anthropic/claude-opus-5",
+    "latency_delta": 0.0,
+    "quality_score": 1.0,
+    "task": "hello",
+    "verdict_model": "anthropic/claude-opus-5",
+    "verdict_strategy": "SWARM_AUTODEV"
+  }
+}

@@ -1,0 +1,16 @@
+{"seq": 1, "at": "2026-11-18T00:00:00Z", "type": "run_started", "node_id": "", "data": {"run_id": "test-unknown-cost", "goal": "Test unknown cost run", "producer": {"verdict_version": "0.5.0", "git_sha": "abc123", "dirty": false}}}
+{"seq": 2, "at": "2026-11-18T00:00:01Z", "type": "dispatch", "node_id": "alpha", "data": {"attempt": 1, "route_id": "free/model-a", "provider": "free", "capacity_class": "free"}}
+{"seq": 3, "at": "2026-11-18T00:00:10Z", "type": "terminal", "node_id": "alpha", "data": {"attempt": 1, "ok": true, "route_id": "free/model-a", "reported_model": "free/model-a", "duration_seconds": 5.0}}
+{"seq": 4, "at": "2026-11-18T00:00:11Z", "type": "verify", "node_id": "alpha", "data": {"ok": true, "command": "pytest test_alpha.py", "exit_code": 0}}
+{"seq": 5, "at": "2026-11-18T00:00:12Z", "type": "node_state", "node_id": "alpha", "data": {"state": "VALIDATED"}}
+{"seq": 6, "at": "2026-11-18T00:00:13Z", "type": "dispatch", "node_id": "beta", "data": {"attempt": 1, "route_id": "sub/model-b", "provider": "sub", "capacity_class": "subscription"}}
+{"seq": 7, "at": "2026-11-18T00:00:20Z", "type": "terminal", "node_id": "beta", "data": {"attempt": 1, "ok": true, "route_id": "sub/model-b", "reported_model": "sub/model-b", "duration_seconds": 8.0, "usage": {"cost_usd": 0.05, "input_tokens": 2000, "output_tokens": 200}}}
+{"seq": 8, "at": "2026-11-18T00:00:21Z", "type": "verify", "node_id": "beta", "data": {"ok": true, "command": "pytest test_beta.py", "exit_code": 0}}
+{"seq": 9, "at": "2026-11-18T00:00:22Z", "type": "node_state", "node_id": "beta", "data": {"state": "VALIDATED"}}
+{"seq": 10, "at": "2026-11-18T00:00:23Z", "type": "dispatch", "node_id": "gamma", "data": {"attempt": 1, "route_id": "metered/model-c", "provider": "metered", "capacity_class": "metered"}}
+{"seq": 11, "at": "2026-11-18T00:00:30Z", "type": "terminal", "node_id": "gamma", "data": {"attempt": 1, "ok": true, "route_id": "metered/model-c", "reported_model": "metered/model-c", "duration_seconds": 10.0, "usage": {"cost_usd": null, "input_tokens": 3000, "output_tokens": 300}}}
+{"seq": 12, "at": "2026-11-18T00:00:31Z", "type": "verify", "node_id": "gamma", "data": {"ok": true, "command": "pytest test_gamma.py", "exit_code": 0}}
+{"seq": 13, "at": "2026-11-18T00:00:32Z", "type": "node_state", "node_id": "gamma", "data": {"state": "VALIDATED"}}
+{"seq": 14, "at": "2026-11-18T00:00:33Z", "type": "barrier", "node_id": "integration", "data": {"name": "integration", "ok": true}}
+{"seq": 15, "at": "2026-11-18T00:00:34Z", "type": "barrier", "node_id": "ownership", "data": {"name": "ownership", "ok": true}}
+{"seq": 16, "at": "2026-11-18T00:00:35Z", "type": "review", "node_id": "", "data": {"status": "PASS", "reviewer": "ocr", "route_id": "free/reviewer", "blocking": 0}}

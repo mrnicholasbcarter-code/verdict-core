@@ -6,8 +6,10 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
+from verdict.commands.parsers_pr_watcher import _default_state_dir, _repos_from_env
 from verdict.harness_claude import DEFAULT_BASE_URL as CLAUDE_HARNESS_DEFAULT_BASE_URL
 from verdict.harness_claude import DEFAULT_TOKEN_ENV as CLAUDE_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.harness_cline import DEFAULT_BASE_URL as CLINE_HARNESS_DEFAULT_BASE_URL
@@ -124,6 +126,79 @@ def _cmd_trace(args: argparse.Namespace) -> None:
         sys.exit(result.exit_code or 1)
 
 
+def _cmd_pr_watch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Handle ``verdict pr-watch`` CLI command."""
+    import json
+    import sys
+
+    from verdict.pr_watcher import run_watcher
+    from verdict.pr_watcher_github import create_github_client
+    from verdict.pr_watcher_state import WatcherState
+
+    # Collect repos from args and env
+    repos = list(args.repo)
+    if not repos:
+        repos = _repos_from_env()
+
+    if not repos:
+        parser.error("no repositories to watch: use --repo or set VERDICT_PR_WATCH_REPOS")
+
+    # Determine state directory
+    state_dir = args.state_dir or _default_state_dir()
+    if not state_dir:
+        parser.error("not in a git repository and --state-dir not provided")
+
+    # Create GitHub client
+    linear_team_keys = (
+        list(args.linear_team_keys) if getattr(args, "linear_team_keys", None) else None
+    )
+    gh = create_github_client(linear_team_keys=linear_team_keys)
+
+    # Create state
+    state = WatcherState(Path(state_dir))
+
+    # Run the watcher
+    try:
+        result = run_watcher(
+            gh=gh, state=state, repos=repos, linear=None, max_attempts=args.max_attempts
+        )
+    except ValueError as exc:
+        # Naive clock or other validation error
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:
+        # Any other exception - report and exit 1, never traceback
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Output
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    # Print error and type to stderr in BOTH modes
+    if result.get("error") or result.get("type"):
+        print(f"error={result.get('error', '')} type={result.get('type', '')}", file=sys.stderr)
+    if not args.json:
+        for repo in repos:
+            repo_errors = [e for e in result.get("repo_errors", []) if e.get("repo") == repo]
+            if repo_errors:
+                for err in repo_errors:
+                    print(f"{repo}: ERROR {err.get('error', 'unknown')}")
+            else:
+                # Count reruns per repo using the repo field in rerun outcomes
+                repo_reruns = [r for r in result.get("reruns", []) if r.get("repo") == repo]
+                repo_notifications = [
+                    n for n in result.get("notifications", []) if n.get("repo") == repo
+                ]
+                print(
+                    f"{repo}: PRs seen={len([o for o in result.get('observations', []) if o.get('repo') == repo])}, "
+                    f"actions={len(repo_reruns) + len(repo_notifications)}, "
+                    f"errors={len(repo_errors)}"
+                )
+
+    # Exit 0 only when ok is True
+    sys.exit(0 if result.get("ok") else 1)
+
+
 def _cmd_demo(args: argparse.Namespace) -> None:
     """Handle ``verdict demo`` CLI command."""
     import json
@@ -192,6 +267,157 @@ def _cmd_demo(args: argparse.Namespace) -> None:
         print(claims_text, end="")
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+def _cmd_ladder(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Handle ``verdict ladder`` CLI command (T3: Slice 1).
+
+    Read-only ladder builder for the planner role. Prints LadderResult
+    and shadow event. Exits non-zero on FAIL_CLOSED.
+    """
+    import json
+    import sys
+
+    from verdict.admission import admit, default_runtime_evidence
+    from verdict.metadata.mapping import load_identity_map
+    from verdict.metadata.records import ModelMetadataError
+    from verdict.metadata.store import load_store
+    from verdict.openrouter_free_set import load_openrouter_free_set
+    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+    from verdict.paths import verdict_home
+    from verdict.role_ladder_event import build_shadow_event
+    from verdict.role_selection import LadderStatus, OpenQuotaView, Role, build_ladder
+
+    role = Role(args.role)
+    if role != Role.PLANNER:
+        parser.error(f"Role {role.value} not enabled in Slice 1")
+
+    # Provenance is the explicit flag, never whether a metadata store exists.
+    fixture_input = bool(args.inventory_fixture)
+    if fixture_input:
+        with open(args.inventory_fixture) as f:
+            fixture = json.load(f)
+        inventory_rows = fixture.get("inventory", [])
+        connections = fixture.get("connections", [])
+    else:
+        from verdict.orchestration.run import fetch_connections, fetch_inventory, resolve_api_key
+
+        gateway = os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128")
+        api_key = resolve_api_key()
+        try:
+            inventory_rows = fetch_inventory(gateway, api_key=api_key, timeout=30)
+            connections = fetch_connections(gateway, api_key=api_key, timeout=30)
+        except Exception as e:
+            print(f"error: failed to fetch live inventory: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        metadata_snapshot = load_store()
+    except (OSError, ValueError):  # missing or unreadable store: no strength
+        metadata_snapshot = None
+    try:
+        identity_map = load_identity_map() if metadata_snapshot is not None else None
+    except (OSError, ModelMetadataError):
+        identity_map = None
+
+    # Same read-only state the eligibility ladder reads (build_selector).
+    now = datetime.now(timezone.utc)
+    state_path = verdict_home() / "orchestration-health.json"
+    runtime_evidence = default_runtime_evidence(
+        now=now, state_dir=state_path.parent, ladder_state=state_path
+    )
+    admitted = admit(inventory_rows, connections, runtime_evidence, now=now)
+    ladder_result = build_ladder(
+        role=role,
+        admitted=admitted,
+        inventory_rows=inventory_rows,
+        connections=connections,
+        signals=None,  # T3: no decision signals collected
+        quota_view=OpenQuotaView(),
+        clock=now,
+        metadata_snapshot=metadata_snapshot,
+        identity_map=identity_map,
+        openrouter_free_set=load_openrouter_free_set(
+            now=now, cache_path=state_path.parent / "openrouter-free-set.json", refresh=False
+        ),
+        health_cache=HealthCache(default_cache_path()),
+        state_path=state_path,
+        fixture_input=fixture_input,
+    )
+
+    # Build shadow event
+    admitted_set = sorted(list(admitted.ids))
+    shadow_event = build_shadow_event(
+        ladder_result,
+        role,
+        node_id=args.node_id,
+        run_id=args.run_id,
+        correlation_id=args.correlation_id,
+        mode=args.mode,
+        admitted_set=admitted_set,
+    )
+
+    # Output
+    if args.json:
+        output = {
+            "ladder_result": {
+                "status": ladder_result.status.value,
+                "reason": ladder_result.reason,
+                "ordered_routes": list(ladder_result.ordered_routes),
+                "skips": [
+                    {"route_id": s.route_id, "stage": s.stage, "reason": s.reason}
+                    for s in ladder_result.skips
+                ],
+                "h0_inventory": ladder_result.h0_inventory,
+                "h1_admitted": ladder_result.h1_admitted,
+                "h2_narrowed": ladder_result.h2_narrowed,
+                "h3_ordered": ladder_result.h3_ordered,
+                "route_scores": [
+                    {
+                        "route_id": rs.route_id,
+                        "external_strength": rs.external_strength,
+                        "strength_source": rs.strength_source,
+                        "strength_age_s": rs.strength_age_s,
+                        "reliability_lb": rs.reliability_lb,
+                        "n": rs.n,
+                        "confidence": rs.confidence,
+                        "capacity_class": rs.capacity_class.value,
+                        "capacity_confidence": rs.capacity_confidence,
+                        "capacity_evidence": rs.capacity_evidence,
+                        "pool": rs.pool,
+                        "quota_status": rs.quota_status,
+                        "exploration": rs.exploration,
+                    }
+                    for rs in ladder_result.route_scores
+                ],
+                "legacy_pick": ladder_result.legacy_pick,
+                "dynamic_pick": ladder_result.dynamic_pick,
+                "agree": ladder_result.agree,
+                "signals_digest": ladder_result.signals_digest,
+                "metadata_fixture": ladder_result.metadata_fixture,
+                "live_proof": ladder_result.live_proof,
+            },
+            "shadow_event": json.loads(shadow_event.to_json()),
+        }
+        print(json.dumps(output, indent=2, sort_keys=True))
+    else:
+        # Human-readable output
+        print(f"Role: {role.value}")
+        print(f"Status: {ladder_result.status.value}")
+        if ladder_result.reason:
+            print(f"Reason: {ladder_result.reason}")
+        print(f"Ordered routes: {list(ladder_result.ordered_routes)}")
+        print(f"H0: {ladder_result.h0_inventory[:16]}...")
+        print(f"H1: {ladder_result.h1_admitted[:16]}...")
+        print(f"H2: {ladder_result.h2_narrowed[:16]}...")
+        print(f"H3: {ladder_result.h3_ordered[:16]}...")
+        print(f"Legacy pick: {ladder_result.legacy_pick}")
+        print(f"Dynamic pick: {ladder_result.dynamic_pick}")
+        print(f"Agree: {ladder_result.agree}")
+
+    # Exit non-zero on FAIL_CLOSED
+    if ladder_result.status == LadderStatus.FAIL_CLOSED:
+        sys.exit(1)
 
 
 def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -432,6 +658,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             output_json=args.json,
             allow_live_probe=args.allow_live_probe,
         )
+    elif args.command == "ladder":
+        _cmd_ladder(parser, args)
     elif args.command == "compare":
         legacy.cmd_compare(
             args.task, args.criticality, allow_offline=getattr(args, "allow_offline", False)
@@ -799,6 +1027,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             repo=Path(args.repo),
             create_if_missing=bool(getattr(args, "create", False)),
         )
+    elif args.command == "pr-watch":
+        _cmd_pr_watch(parser, args)
     elif args.command == "openspec":
         # OpenSpec lifecycle commands use func-based dispatch
         if hasattr(args, "func"):

@@ -520,6 +520,138 @@ class TestSelect:
         v = by_route(ladder.evaluate(REQ, now=NOW + timedelta(seconds=10)))["cc/claude-sonnet-5"]
         assert v.cooldown_until == until
 
+    def test_lease_held_fresh_healthy_launchable_route_selected_zero_probes(
+        self, tmp_path: Path
+    ) -> None:
+        """Lease held + a fresh healthy launchable route -> select returns it, zero probe calls."""
+
+        from verdict.model_passports import ModelPassport
+        from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+        from verdict.orchestration.verified_refresh import _JobLock
+        from verdict.prove_at_rest_legacy import (
+            STATUS_HEALTHY,
+            ProofResult,
+            ProveAtRestCycle,
+            ProveAtRestStore,
+            default_state_path,
+        )
+
+        rows = [row("cc/claude-sonnet-5", owned_by="claude")]
+        connections = [conn("claude")]
+        cache = HealthCache(tmp_path / "health.json")
+        # Provide a fresh healthy probe result for the route
+        checked = NOW - timedelta(seconds=60)
+        cache.record(
+            "cc/claude-sonnet-5",
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            checked,
+        )
+        cache.save()
+
+        # Create a passport store at the default path (uses HOME from test fixture)
+        passport_store_path = default_state_path()
+        passport_store_path.parent.mkdir(parents=True, exist_ok=True)
+        passport = ModelPassport(
+            provider="claude",
+            model_id="cc/claude-sonnet-5",
+            auth_state="authorized",
+            availability_state="eligible",
+            qualified_at=NOW - timedelta(minutes=1),
+            last_verified_timestamp=NOW - timedelta(minutes=1),
+            expires_at=NOW + timedelta(minutes=10),
+        )
+        proof_result = ProofResult(
+            identity_id="cc/claude-sonnet-5",
+            provider="claude",
+            status=STATUS_HEALTHY,
+            proved_at=NOW - timedelta(minutes=1),
+            latency_ms=100,
+            passport=passport,
+        )
+        cycle = ProveAtRestCycle(
+            cycle_id="test-cycle",
+            started_at=NOW - timedelta(minutes=5),
+            finished_at=NOW,
+            results=(proof_result,),
+        )
+        store = ProveAtRestStore(path=passport_store_path)
+        store.write(cycle)
+
+        # Acquire the lease
+        lock = _JobLock(tmp_path / "verified-refresh.lock")
+        assert lock.acquire()
+        try:
+            probe = FakeProbe()
+            ladder, _ = make_ladder(tmp_path, rows, connections, probe, health_cache=cache)
+            selected, verdicts = ladder.select(REQ, now=NOW)
+        finally:
+            lock.release()
+
+        assert selected is not None and selected.route_id == "cc/claude-sonnet-5"
+        assert selected.reached is EligibilityStage.SELECTED
+        assert selected.reason == "selected"
+        assert probe.calls == [], (
+            "no probe calls should be made when lease is held and route is fresh"
+        )
+        # The verdict should show selected
+        v = by_route(verdicts)["cc/claude-sonnet-5"]
+        assert v.reason == "selected"
+
+    def test_lease_held_only_route_needing_probe_returns_none_lease_held_reason(
+        self, tmp_path: Path
+    ) -> None:
+        """Lease held + only a route that needs a probe -> no probe, chosen is None, reason is 'lease_held'."""
+        from verdict.orchestration.health_cache import HealthCache
+        from verdict.orchestration.verified_refresh import _JobLock
+
+        rows = [row("cc/claude-sonnet-5", owned_by="claude")]
+        connections = [conn("claude")]
+        cache = HealthCache(tmp_path / "health.json")
+        cache.save()  # Empty cache - route needs probe
+
+        # Acquire the lease
+        lock = _JobLock(tmp_path / "verified-refresh.lock")
+        assert lock.acquire()
+        try:
+            probe = FakeProbe()
+            ladder, _ = make_ladder(tmp_path, rows, connections, probe, health_cache=cache)
+            selected, verdicts = ladder.select(REQ, now=NOW)
+        finally:
+            lock.release()
+
+        assert selected is None, "no route should be chosen when all need probes and lease is held"
+        assert probe.calls == [], "no probe calls should be made when lease is held"
+        v = by_route(verdicts)["cc/claude-sonnet-5"]
+        assert v.reason == "lease_held", f"expected 'lease_held', got '{v.reason}'"
+        assert (
+            v.failed_stage is EligibilityStage.HEALTHY
+            or v.failed_stage is EligibilityStage.AVAILABLE
+        )
+
+    def test_lease_not_held_behaviour_unchanged(self, tmp_path: Path) -> None:
+        """Lease not held -> behaviour unchanged (existing tests stay green)."""
+        from verdict.orchestration.health_cache import HealthCache
+
+        rows = [row("cc/claude-sonnet-5", owned_by="claude")]
+        connections = [conn("claude")]
+        cache = HealthCache(tmp_path / "health.json")
+        cache.save()
+
+        # Do NOT acquire the lease
+        probe = FakeProbe({"cc/claude-sonnet-5": HealthResult(healthy=True, category="")})
+        ladder, _ = make_ladder(tmp_path, rows, connections, probe, health_cache=cache)
+        selected, _verdicts = ladder.select(REQ, now=NOW)
+
+        assert selected is not None and selected.route_id == "cc/claude-sonnet-5"
+        assert selected.reached is EligibilityStage.SELECTED
+        assert probe.calls == ["cc/claude-sonnet-5"], "probe should be called when lease not held"
+
 
 class TestPersistence:
     def test_state_round_trip(self, tmp_path: Path) -> None:

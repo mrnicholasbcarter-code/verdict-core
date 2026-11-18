@@ -1,0 +1,25 @@
+$ gh api repos/mrnicholasbcarter-code/verdict-core/actions/runs/44026281103 --jq '[.id,.created_at,.head_sha,.event,.conclusion,.html_url]|@tsv'
+44026281103	2026-11-17T05:45:10Z	ac623aecbf10c490cd86070c5c7030cba7fdce45	push	success	https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44026281103
+$ gh run view 44026281103 --repo mrnicholasbcarter-code/verdict-core --log  (lint job, Definition of done step)
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1832610Z ##[group]Run python scripts/check_dod.py --all
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1833093Z ^[[36;1mpython scripts/check_dod.py --all^[[0m
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1884435Z shell: /usr/bin/bash -e {0}
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1884663Z env:
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1884830Z   AUTOFIX: false
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1885020Z   OPENSPEC_TELEMETRY: 0
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1885269Z   pythonLocation: /opt/hostedtoolcache/Python/3.13.18/x64
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1885615Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.13.18/x64/lib/pkgconfig
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1885953Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.13.18/x64
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1886270Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.13.18/x64
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1886613Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.13.18/x64
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1886929Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.13.18/x64/lib
+lint	UNKNOWN STEP	2026-11-17T05:46:17.1887197Z ##[endgroup]
+lint	UNKNOWN STEP	2026-11-17T05:46:23.0928238Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-286.json
+lint	UNKNOWN STEP	2026-11-17T05:46:23.0929036Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-297.json
+lint	UNKNOWN STEP	2026-11-17T05:46:23.0929887Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-410.json
+lint	UNKNOWN STEP	2026-11-17T05:46:23.0930686Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-416-doctor-gateway-key.json
+lint	UNKNOWN STEP	2026-11-17T05:46:23.0931536Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-416-route-key-file.json
+lint	UNKNOWN STEP	2026-11-17T05:46:23.0932257Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-417.json
+lint	UNKNOWN STEP	2026-11-17T05:46:23.0932911Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-434.json
+lint	UNKNOWN STEP	2026-11-17T05:46:23.0933568Z DONE: /runner/work/verdict-core/verdict-core/docs/proof/dod/bod-437.json
+lint	UNKNOWN STEP	2026-11-17T05:46:23.0934076Z check_dod: 8 evidence file(s) checked

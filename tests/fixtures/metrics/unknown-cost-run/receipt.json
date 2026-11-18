@@ -1,0 +1,143 @@
+{
+  "claimed_outcome": "",
+  "controller_events": [],
+  "cooldowns": [],
+  "decision_signals": null,
+  "event_count": 16,
+  "events_digest": "sha256:102055568d9dc65e62ab5edd761bd059a935bbfe67bd9caf2d388df18e7c9eab",
+  "finished_at": null,
+  "goal": "Test unknown cost run",
+  "graph_digest": "sha256:7ee17d9f3fc8d2fecb0f25d9155b9b5898303766d3a686d75867d68a0f4d7dec",
+  "integration": {
+    "barriers": [
+      {
+        "name": "integration",
+        "ok": true,
+        "seq": 14
+      },
+      {
+        "name": "ownership",
+        "ok": true,
+        "seq": 15
+      }
+    ],
+    "missing": [],
+    "ok": true
+  },
+  "nodes": [
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "free",
+          "duration_seconds": 5.0,
+          "executed_model": "free/model-a",
+          "fault_injected": false,
+          "intended_route": "free/model-a",
+          "outcome": "success",
+          "provider": "free",
+          "route_id": "free/model-a",
+          "route_identity": "match"
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "alpha",
+      "validated_by": [
+        {
+          "command": "pytest test_alpha.py",
+          "exit_code": 0,
+          "seq": 4
+        }
+      ]
+    },
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "subscription",
+          "duration_seconds": 8.0,
+          "executed_model": "sub/model-b",
+          "fault_injected": false,
+          "intended_route": "sub/model-b",
+          "outcome": "success",
+          "provider": "sub",
+          "route_id": "sub/model-b",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": 0.05,
+            "input_tokens": 2000,
+            "output_tokens": 200
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "beta",
+      "validated_by": [
+        {
+          "command": "pytest test_beta.py",
+          "exit_code": 0,
+          "seq": 8
+        }
+      ]
+    },
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "capacity_class": "metered",
+          "duration_seconds": 10.0,
+          "executed_model": "metered/model-c",
+          "fault_injected": false,
+          "intended_route": "metered/model-c",
+          "outcome": "success",
+          "provider": "metered",
+          "route_id": "metered/model-c",
+          "route_identity": "match",
+          "usage": {
+            "cost_usd": null,
+            "input_tokens": 3000,
+            "output_tokens": 300
+          }
+        }
+      ],
+      "final_state": "VALIDATED",
+      "kind": "implement",
+      "node_id": "gamma",
+      "validated_by": [
+        {
+          "command": "pytest test_gamma.py",
+          "exit_code": 0,
+          "seq": 12
+        }
+      ]
+    }
+  ],
+  "outcome": "COMPLETE",
+  "planner_attempts": [],
+  "producer": {
+    "dirty": false,
+    "git_sha": "abc123",
+    "verdict_version": "0.5.0"
+  },
+  "reason": "all implement/integrate nodes validated, barrier ok, review PASS",
+  "reassignments": [],
+  "review": {
+    "blocking": 0,
+    "reviewer": "ocr",
+    "route_id": "free/reviewer",
+    "status": "PASS"
+  },
+  "route_identity_summary": {
+    "attempts": 3,
+    "match": 3,
+    "mechanical": 0,
+    "mismatch": 0,
+    "unattested": 0
+  },
+  "run_id": "test-unknown-cost",
+  "schema": "verdict.run-receipt/v1",
+  "started_at": "2026-11-18T00:00:00Z",
+  "topology": "PARALLEL_WORK_UNITS"
+}

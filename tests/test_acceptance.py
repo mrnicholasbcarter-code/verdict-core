@@ -1002,3 +1002,38 @@ def test_eligibility_check_retries_on_transient_gateway_failure(live: Path) -> N
     assert check.detail["attempts"][1]["attempt"] == 2
     # The retried payload still feeds the independent measurement path.
     assert check.detail["eligible_free"] == 1
+
+
+def test_judge_choose_skips_outcome_history_lines() -> None:
+    """judge_choose extracts failure reason from stdout JSON first, then last non-'outcome history:' stderr line."""
+    # Case 1: stdout JSON present with error
+    ok, reason, _detail = acceptance.judge_choose(
+        1, '{"error": "failed"}', "some error\noutcome history: line1\noutcome history: line2"
+    )
+    assert ok is False
+    assert "failed" in reason
+
+    # Case 2: stdout JSON absent, stderr has outcome history lines
+    ok, reason, _detail = acceptance.judge_choose(
+        1, "", "real error\noutcome history: line1\noutcome history: line2"
+    )
+    assert ok is False
+    assert "real error" in reason
+
+    # Case 3: stdout JSON absent, stderr only has outcome history lines
+    ok, reason, _detail = acceptance.judge_choose(
+        1, "", "outcome history: line1\noutcome history: line2"
+    )
+    assert ok is False
+    # Falls back to last line
+    assert "outcome history: line2" in reason
+
+    # Case 4: stdout JSON absent, stderr empty
+    ok, reason, _detail = acceptance.judge_choose(1, "", "")
+    assert ok is False
+    assert "not implemented: exit 1" in reason
+
+    # Case 5: nonzero exit code with stdout selected - MUST fail (exit != 0 always fails)
+    ok, reason, _detail = acceptance.judge_choose(1, '{"selected": "cc/claude-sonnet-5"}', "")
+    assert ok is False, "nonzero exit must always fail even with selected in stdout"
+    assert "no route selected" in reason or "not implemented" in reason

@@ -182,6 +182,15 @@ def add_parsers(subparsers: Any) -> None:
     rec.add_argument("--runs-dir", default=str(DEFAULT_RUNS))
     rec.add_argument("--json", action="store_true")
 
+    met = subparsers.add_parser("metrics", help="Compute efficiency metrics from verified receipts")
+    met.add_argument("path", nargs="?", help="Run directory or runs directory root")
+    met.add_argument(
+        "--runs-dir",
+        default=str(DEFAULT_RUNS),
+        help="Runs directory root (used when path is a run id)",
+    )
+    met.add_argument("--json", action="store_true", help="Print JSON output")
+
     from verdict.orchestration import supervisor
 
     supervisor.add_parser(subparsers)
@@ -362,6 +371,7 @@ def dispatch(args: argparse.Namespace) -> int | None:
         "orchestrate": _orchestrate,
         "watch": _watch,
         "run-receipt": _receipt,
+        "metrics": _metrics,
         "eligibility": _eligibility,
         "routing": _routing,
         "context": _context,
@@ -1223,6 +1233,55 @@ def verified_refresh_options(args: argparse.Namespace) -> dict[str, Any]:
         "interactive": sys.stdin.isatty(),
         "opt_in": tuple(opt_in),
     }
+
+
+def _metrics(args: argparse.Namespace) -> int:
+    from verdict.actions.registry import run_action
+
+    # Determine runs_dir and run_dir
+    runs_dir = args.runs_dir
+    path_arg = args.path
+
+    if path_arg:
+        # Path could be a run directory or a run id
+        run_dir = _resolve_run(path_arg, runs_dir)
+        result = run_action(
+            "metrics", {"run_dir": str(run_dir), "runs_dir": runs_dir, "json": args.json}
+        )
+    else:
+        # Scan runs_dir
+        result = run_action("metrics", {"runs_dir": runs_dir, "json": args.json})
+
+    data = result.data
+    if data.get("error"):
+        print(data["error"], file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(data, indent=2, default=str))
+    else:
+        # Human-readable output
+        print(f"Accepted tasks: {data['accepted_tasks']}")
+        if data["dollars"] is not None:
+            print(f"Dollars: ${data['dollars']:.4f}")
+        else:
+            print("Dollars: unknown (some attempts have unknown cost)")
+        if data["tasks_per_dollar"] != "undefined":
+            print(f"Accepted tasks per dollar: {data['tasks_per_dollar']:.2f}")
+        else:
+            print("Accepted tasks per dollar: undefined")
+        print(f"Free share: {data['free_share']:.2%}")
+        print(f"Subscription share: {data['subscription_share']:.2%}")
+        print(f"Metered share: {data['metered_share']:.2%}")
+        print(f"Unknown capacity share: {data['unknown_capacity_share']:.2%}")
+        print(f"Total model attempts: {data['total_model_attempts']}")
+        print(f"Runs processed: {data['runs_processed']}")
+        if data["runs_skipped"] > 0:
+            print(f"Runs skipped: {data['runs_skipped']}")
+            for skipped in data["skipped_runs"]:
+                print(f"  - {skipped['run_dir']}: {skipped['reason']}")
+
+    return 0 if data.get("runs_processed", 0) > 0 else 1
 
 
 def _eligibility_verified(args: argparse.Namespace) -> int:
