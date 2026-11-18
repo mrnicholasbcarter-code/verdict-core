@@ -895,7 +895,13 @@ class TestSelect:
     ) -> None:
         """Read-only mode skips a passport with newer negative health evidence, reason is passport_superseded."""
         from verdict.model_passports import ModelPassport
-        from verdict.orchestration.health_cache import CATEGORY_OK, CATEGORY_RATE_LIMITED, HealthCache, ProbeResult, default_cache_path
+        from verdict.orchestration.health_cache import (
+            CATEGORY_OK,
+            CATEGORY_RATE_LIMITED,
+            HealthCache,
+            ProbeResult,
+            default_cache_path,
+        )
         from verdict.prove_at_rest_legacy import (
             STATUS_HEALTHY,
             ProofResult,
@@ -986,7 +992,7 @@ class TestSelect:
     def test_read_only_mode_lease_held_wins(self, tmp_path: Path) -> None:
         """Read-only mode with lease held returns lease_held reason, not passport_invalid."""
         from verdict.model_passports import ModelPassport
-        from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+        from verdict.orchestration.health_cache import HealthCache
         from verdict.orchestration.verified_refresh import _JobLock
         from verdict.prove_at_rest_legacy import (
             STATUS_HEALTHY,
