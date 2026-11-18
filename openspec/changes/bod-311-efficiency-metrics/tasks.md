@@ -61,5 +61,5 @@ Test verification: git push, vgate, gh pr create --draft with real-run output; C
 
 - [x] 6.1 Push branch, `vgate` passes.
 - [x] 6.2 `gh pr create --draft` with real-run output pasted.
-- [ ] 6.3 Independent re-review from a different model family of the fixes for the first review (cc/claude-sonnet-5, BLOCKING).
+- [x] 6.3 Independent re-review from a different model family of the fixes for the first review (cc/claude-sonnet-5, BLOCKING). Re-review at c89e6b26 by kilocode/nvidia/nemotron-3-ultra-550b-a55b:free (pick-reviewer, nvidia family): pass; orchestrator re-ran run-receipt on clean, receipt-edited and events-edited copies (exit 0, 1, 1).
 - [ ] (post-merge) 6.4 Squash-merge pinned to the head SHA and rerun `verdict metrics` on clean main.
