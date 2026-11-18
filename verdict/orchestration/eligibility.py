@@ -1250,7 +1250,9 @@ class EligibilityLadder:
                 # Check passport evidence directly: valid if exists, authorized,
                 # eligible, not expired, and not superseded by newer negative evidence.
                 passport_row = rows[0] if rows else None
-                expires_at = _parse_iso(str(passport_row.get("expires_at", ""))) if passport_row else None
+                expires_at = (
+                    _parse_iso(str(passport_row.get("expires_at", ""))) if passport_row else None
+                )
                 proof_stale = (
                     passport_row is None
                     or passport_row.get("auth_state") != "authorized"
