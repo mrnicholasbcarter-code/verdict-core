@@ -2441,6 +2441,24 @@ class DagRuntime:
             raise OwnershipError("overall controller deadline spent")
         return timeout
 
+    def _reviewer_capacity_wait(self, level: str) -> Callable[[str, datetime], Awaitable[datetime]]:
+        """The reviewer's short-cooldown wait: same event, clock and sleep as workers."""
+
+        async def wait(route_id: str, until: datetime) -> datetime:
+            self.events.emit(
+                "cooldown",
+                key=route_id,
+                scope="wait",
+                category="waiting_for_capacity",
+                until=until.isoformat(),
+                phase="review",
+                level=level,
+            )
+            await _sleep(max(0.0, (until - self.now()).total_seconds()) + 1)
+            return self.now()
+
+        return wait
+
     async def _review_with_bound(
         self,
         *,
@@ -2462,16 +2480,24 @@ class DagRuntime:
         ):
             try:
                 review = self.reviewer.review
-                supports_timeout = False
+                supports_timeout = supports_wait = False
                 try:
                     parameters = inspect.signature(review).parameters
-                    supports_timeout = "timeout_seconds" in parameters or any(
+                    variadic = any(
                         parameter.kind is inspect.Parameter.VAR_KEYWORD
                         for parameter in parameters.values()
                     )
+                    supports_timeout = "timeout_seconds" in parameters or variadic
+                    supports_wait = "capacity_wait" in parameters
                 except (TypeError, ValueError):
                     pass
                 if supports_timeout:
+                    wait_kwargs: dict[str, Any] = {}
+                    if supports_wait:
+                        wait_kwargs = {
+                            "capacity_wait": self._reviewer_capacity_wait(level),
+                            "max_cooldown_wait_seconds": self.policy.max_cooldown_wait_seconds,
+                        }
                     review_call = cast(Any, review)(
                         repo=repo,
                         base_ref=base_ref,
@@ -2480,6 +2506,7 @@ class DagRuntime:
                         exclude_routes=exclude_routes,
                         exclude_families=exclude_families,
                         timeout_seconds=timeout_seconds,
+                        **wait_kwargs,
                     )
                 else:
                     review_call = review(

@@ -1322,7 +1322,7 @@ class CoolingSelector(FakeSelector):
     def _verdicts(self, requirements: TaskRequirements, now: datetime) -> tuple[RouteVerdict, ...]:
         rid = self.route_id
         provider = rid.split("/", 1)[0]
-        if now < self.until or self.still_cooling and self.selects[1:]:
+        if now < self.until or (self.still_cooling and self.selects[1:]):
             return (
                 RouteVerdict(
                     rid,
@@ -1334,10 +1334,7 @@ class CoolingSelector(FakeSelector):
                     cooldown_until=self.until.isoformat(),
                 ),
             )
-        if rid in requirements.exclude_routes:
-            reason = "excluded_route"
-        else:
-            reason = self.future_reject
+        reason = "excluded_route" if rid in requirements.exclude_routes else self.future_reject
         if reason:
             return (
                 RouteVerdict(
@@ -1393,7 +1390,9 @@ def _cooling_run(
     runner = runner or FakeRunner(
         OcrRun(exit_code=0), review_payload=_load_fixture("sample-clean.json")
     )
-    ctor = {k: overrides.pop(k) for k in ("timeout_seconds", "max_reviewer_attempts") if k in overrides}
+    ctor = {
+        k: overrides.pop(k) for k in ("timeout_seconds", "max_reviewer_attempts") if k in overrides
+    }
     reviewer = _reviewer(tmp_path, selector, runner, **ctor)
     return (
         _run(reviewer, capacity_wait=wait, max_cooldown_wait_seconds=limit, **overrides),
@@ -1449,9 +1448,7 @@ def test_cooling_route_that_fails_the_floor_is_not_waited_for(
     assert wait.calls == []
 
 
-def test_route_still_cooling_after_wait_errors_after_one_wait(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_route_still_cooling_after_wait_errors_after_one_wait(tmp_path: Path, monkeypatch) -> None:
     """Failure caught: an unbounded wait/reselect loop."""
     monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
     selector = CoolingSelector("cerebras/gpt-oss-120b", _soon(5), still_cooling=True)

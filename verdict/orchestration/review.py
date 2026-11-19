@@ -674,7 +674,7 @@ class OpenCodeReviewer:
             (until, str(v.route_id))
             for v in verdicts
             for until in [_cooldown_end(v, now)]
-            if until is not None and (until - now).total_seconds() <= limit_seconds
+            if until is not None and (until - now).total_seconds() + 1 <= limit_seconds
         )
         for until, route_id in ends:
             at = until + timedelta(seconds=1)

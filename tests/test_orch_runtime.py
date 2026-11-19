@@ -1976,3 +1976,41 @@ async def test_authority_mode_denies_every_send_without_a_proof(repo: Path) -> N
     assert ex.calls == []
     assert result.nodes["a"].state is NodeState.BLOCKED
     assert ev.of("failure", "a")[0]["category"] == "dispatch_denied"
+
+
+async def test_reviewer_short_cooldown_wait_uses_runtime_clock_and_event(repo: Path) -> None:
+    """Failure caught: the reviewer had no wait, or one that really sleeps or is invisible."""
+    from unittest.mock import AsyncMock, patch
+
+    from verdict.orchestration import runtime
+
+    until = NOW + timedelta(seconds=5)
+
+    class WaitingReviewer(Reviewer):
+        async def review(  # type: ignore[override]
+            self, *, capacity_wait: Any, max_cooldown_wait_seconds: float, **kwargs: Any
+        ) -> ReviewResult:
+            self.calls.append({**kwargs, "limit": max_cooldown_wait_seconds})
+            resumed = await capacity_wait("cx/cooling", until)
+            assert resumed == NOW
+            return ReviewResult("PASS", "fake-ocr", "cx/cooling")
+
+    reviewer = WaitingReviewer()
+    sleep_mock = AsyncMock()
+    with patch.object(runtime, "_sleep", sleep_mock):
+        rt, ev, _ = make(
+            repo,
+            WorkGraph("g", (node("a"),)),
+            Executor({}),
+            ["cc/s"],
+            reviewer=reviewer,
+            max_cooldown_wait_seconds=90.0,
+        )
+        result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert reviewer.calls[0]["limit"] == 90.0
+    sleep_mock.assert_awaited_once_with(6.0)
+    [wait] = [e for e in ev.of("cooldown") if e.get("phase") == "review"]
+    assert wait["scope"] == "wait" and wait["category"] == "waiting_for_capacity"
+    assert wait["until"] == until.isoformat() and wait["key"] == "cx/cooling"
+    assert wait["level"] == "family"
