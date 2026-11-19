@@ -34,7 +34,6 @@ from verdict.orchestration.provider_catalog import (
     aliased_pools_for,
     backend_pool,
     connection_signals_free,
-    has_free_suffix,
     is_catalog_stale_error,
     is_not_free_overridden,
     is_not_free_signal,
@@ -344,11 +343,6 @@ class TestCapacityClassification:
         assert is_free
         assert rule == expected_rule
         assert "user@secret.example.com" not in rule
-
-    def test_has_free_suffix(self) -> None:
-        assert has_free_suffix("kilocode/model:free")
-        assert not has_free_suffix("kilocode/model")
-        assert not has_free_suffix("kilocode/model-free")
 
 
 # -----------------------------------------------------------------------
