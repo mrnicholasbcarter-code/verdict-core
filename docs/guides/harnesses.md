@@ -17,6 +17,15 @@ no `/v1`). Claude Code appends `/v1/messages`. Translation is delegated to the
 upstream gateway. The OpenAI-compatible side-path still uses `:8000/v1`.
 Direct provider traffic remains outside this relay boundary.
 
+**Clients, not workers.** Every `verdict harness <name>` command on this page
+makes a tool a *client* of Verdict's relay: the tool keeps running its own
+session and sends its model calls through Verdict. None of them makes the tool
+a worker of `verdict orchestrate`. Orchestration workers run on the built-in
+`direct-gateway` executor by default. The only other worker backend is the
+optional Prime Agent harness, `--executor prime-headless` (alias `prime`); see
+[Prime Agent as a worker harness](#prime-agent-as-a-worker-harness). There is no
+worker executor for Claude Code, Codex, Cursor, Cline or OpenCode.
+
 See [coding-agent-gate.md](coding-agent-gate.md) for the relay's fail-closed
 setup, and [controller-routing.md](controller-routing.md) /
 [prime-workflow.md](prime-workflow.md) for the Prime Agent supervisor and
@@ -379,6 +388,45 @@ verdict harness prime disable
 ```
 
 Restores the pre-enable backup byte-for-byte.
+
+### Prime Agent as a worker harness
+
+Prime Agent is also the one optional worker harness for `verdict orchestrate`.
+It is off by default: workers run on `direct-gateway`, which sends each worker
+request straight to the gateway and needs no agent installed.
+
+```bash
+verdict orchestrate "goal" --executor prime-headless          # every worker on Prime
+verdict orchestrate "goal" --executor-map "node-1=prime-headless"   # one node on Prime
+```
+
+`--executor` accepts `direct-gateway`, `prime-headless` and its alias `prime`.
+With `prime-headless`, each worker is a `prime-agent -p --model <exact route>`
+process. Prime never selects models: Verdict passes the exact admitted route.
+The planner always runs on `direct-gateway` (`--planner-executor` has no other
+choice). A route that is missing from Prime's `~/.prime/agent/models.json` fails
+the `ENTITLED` stage with `not_harness_visible`. Flags and the per-attempt
+`harness` field are in the [CLI reference](../CLI_REFERENCE.md); what `verdict
+setup` and `verdict doctor` do on a host without Prime is in
+[Configuration](../CONFIGURATION.md#worker-executor-and-optional-harnesses).
+
+### Choosing Prime's models: select and restore
+
+- **Asks before risky actions.** A manual model refresh that could hit metered models shows you its plan and waits for your yes, and, if you use the optional Prime Agent harness, Prime model selection previews the change, asks before editing `settings.json`, and keeps a backup you can restore. <!-- claim:C-008 -->
+- `verdict harness prime select` previews the change to `~/.prime/agent/settings.json`, asks you to confirm and backs the file up; `verdict harness prime restore` puts the backup back. <!-- claim:C-012 -->
+
+```bash
+verdict harness prime select <ids> --preview   # show the change, write nothing
+verdict harness prime select <ids>             # preview, then ask [y/N]
+verdict harness prime restore --preview        # show what restore would do
+verdict harness prime restore                  # put the prior selection back
+```
+
+Without an interactive terminal, both commands return a preview only; piping `y`
+is not consent. `restore --transaction <id>` restores one named selection.
+Selection changes what Prime shows in its model picker. It does not admit a
+route or grant launch permission. The full workflow, the refusal rules and the
+concurrency limits are in [harness-bootstrap.md](harness-bootstrap.md).
 
 ### Keeping the Prime model registry current
 
