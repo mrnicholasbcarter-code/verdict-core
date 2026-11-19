@@ -335,7 +335,9 @@ def screen_models(
             if max_capability_tier is not None and (tier is None or tier > max_capability_tier):
                 # Unknown is never sufficient; the route neither probes nor
                 # claims an alias slot or a cap slot.
-                row["result"] = "skipped_unknown_tier" if tier is None else "skipped_capability_tier"
+                row["result"] = (
+                    "skipped_unknown_tier" if tier is None else "skipped_capability_tier"
+                )
                 rows.append(row)
                 continue
             now = clock()

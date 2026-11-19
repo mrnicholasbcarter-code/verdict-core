@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from verdict.orchestration.connections_snapshot import read_connections_snapshot
-from verdict.orchestration.contracts import OrchestrationError
+from verdict.orchestration.contracts import (
+    PLANNER_MAX_CAPABILITY_TIER,
+    PLANNER_MIN_CONTEXT_TOKENS,
+    PLANNER_REQUIRED_CAPABILITIES,
+    OrchestrationError,
+)
 from verdict.orchestration.receipt import verify_run_receipt
 
 GOALS = {
@@ -36,6 +41,72 @@ class RehearsalConfigurationError(ValueError):
 PREFLIGHT_MAX_PER_PROVIDER = 2
 PREFLIGHT_MAX_ROUTES = 4
 PREFLIGHT_WALL_SECONDS = 600  # 10 minutes
+
+# Fixed, credential-free substrings of run_finished reasons, first match wins.
+# The artifact only ever carries the enum, never the reason text.
+_REASON_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("planning_none_eligible", ("planning failed on every eligible frontier model",)),
+    ("gateway_auth", ("failed (HTTP 401)", "failed (HTTP 403)")),
+    ("gateway_discovery", ("gateway /",)),
+    ("operator_policy", ("operator policy",)),
+    ("harness_inventory_unavailable", ("harness_inventory_unavailable",)),
+)
+_METADATA_ERRORS = frozenset({"metadata_unavailable"})
+
+
+def classify_run_finished(data: Any) -> str:
+    """Map a run_finished payload to a closed enum; raw text never leaves here."""
+    if not isinstance(data, dict):
+        return "unclassified"
+    reason = data.get("reason")
+    if isinstance(reason, str):
+        for name, needles in _REASON_CLASSES:
+            if any(needle in reason for needle in needles):
+                return name
+    return "startup" if data.get("phase") == "startup" else "unclassified"
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _planner_eligible(row: Any) -> bool:
+    """A screen PASS the frontier planner can admit (same floor as plan_with_failover)."""
+    if not isinstance(row, dict) or row.get("result") != "pass":
+        return False
+    tier, context = row.get("capability_tier"), row.get("context_window")
+    tools_ok = "tools" not in PLANNER_REQUIRED_CAPABILITIES or row.get("supports_tools") is True
+    return (
+        _count(tier) is not None
+        and tier <= PLANNER_MAX_CAPABILITY_TIER
+        and tools_ok
+        and _count(context) is not None
+        and context >= PLANNER_MIN_CONTEXT_TOKENS
+    )
+
+
+def preflight_summary(report: Any) -> dict[str, Any]:
+    """Counts and enums only, safe to upload."""
+    report = report if isinstance(report, dict) else {}
+    routes = report.get("routes")
+    rows = routes if isinstance(routes, list) else []
+    metadata_error = report.get("metadata_error")
+    return {
+        "routes_checked": _count(report.get("routes_checked")),
+        "passed": _count(report.get("passed")),
+        "planner_eligible_passed": sum(_planner_eligible(row) for row in rows),
+        "metadata_error": (
+            None
+            if metadata_error is None
+            else metadata_error
+            if metadata_error in _METADATA_ERRORS
+            else "unclassified"
+        ),
+    }
+
+
+def _write_failure(root: Path, report: dict[str, Any]) -> None:
+    (root / "certification-failure.json").write_text(json.dumps(report))
 
 
 def _connections_snapshot(root: Path) -> Path:
@@ -63,8 +134,9 @@ def _connections_snapshot(root: Path) -> Path:
 def _run_preflight(root: Path, env: dict[str, str]) -> dict[str, Any]:
     """Run a bounded FREE-only identify screen to produce fresh agentic proof.
 
-    Returns the screen report dict on success. Raises RehearsalConfigurationError
-    if the preflight qualifies no FREE routes (fail-closed).
+    Returns the safe preflight summary on success. Raises
+    RehearsalConfigurationError when no pass is one the planner can admit
+    (fail-closed): a tier-3 pass satisfies nothing the planner needs.
     """
     verdict_home = env.get("VERDICT_HOME")
     if not verdict_home:
@@ -83,6 +155,8 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict[str, Any]:
         str(PREFLIGHT_MAX_PER_PROVIDER),
         "--max-routes",
         str(PREFLIGHT_MAX_ROUTES),
+        "--max-capability-tier",
+        str(PLANNER_MAX_CAPABILITY_TIER),
         "--json",
     ]
 
@@ -114,21 +188,23 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict[str, Any]:
     if not isinstance(report, dict):
         raise RehearsalConfigurationError("Preflight screen produced invalid JSON")
 
-    # Verify the screen produced genuine agentic qualification for FREE routes.
-    # The screen report's 'passed' counts routes where the 3-turn agentic probe
-    # succeeded (row["result"] == "pass"). 'routes_checked' counts completed probes.
-    routes_checked = report.get("routes_checked", 0)
-    passed = report.get("passed", 0)
-
-    # Fail-closed: no FREE route completed and passed the agentic probe.
-    if routes_checked == 0 or passed == 0:
+    summary = preflight_summary(report)
+    if not summary["routes_checked"] or not summary["passed"]:
+        _write_failure(root, {"stage": "preflight", "preflight": summary})
         raise RehearsalConfigurationError(
             "Preflight screen produced no qualified FREE routes: "
-            f"routes_checked={routes_checked}, passed={passed}. "
+            f"routes_checked={summary['routes_checked']}, passed={summary['passed']}. "
             "Rehearsal cannot proceed without fresh agentic proof."
         )
-
-    return report
+    if not summary["planner_eligible_passed"]:
+        _write_failure(root, {"stage": "preflight", "preflight": summary})
+        raise RehearsalConfigurationError(
+            "Preflight screen produced no planner-eligible FREE routes "
+            f"(tier<={PLANNER_MAX_CAPABILITY_TIER}, tools, "
+            f"{PLANNER_MIN_CONTEXT_TOKENS // 1000}k context): "
+            f"routes_checked={summary['routes_checked']}, passed={summary['passed']}."
+        )
+    return summary
 
 
 def run() -> None:
@@ -150,7 +226,7 @@ def run() -> None:
 
     # Bounded FREE-only preflight: produce genuine fresh agentic proof
     # before attempting orchestration. Fail-closed if no route qualifies.
-    _run_preflight(root, env)
+    preflight = _run_preflight(root, env)
 
     for name, goal in GOALS.items():
         fixture = root / f"fixture-{name}"
@@ -230,9 +306,7 @@ def run() -> None:
                                         and outcome in {"COMPLETE", "BLOCKED", "CANCELLED"}
                                         else None
                                     )
-                                    raw_reason = event.get("data", {}).get("reason", "")
-                                    if raw_reason and "harness_inventory_unavailable" in raw_reason:
-                                        run_finished_reason = "harness_inventory_unavailable"
+                                    run_finished_reason = classify_run_finished(event.get("data"))
                             except Exception:
                                 pass
             report = {
@@ -241,8 +315,9 @@ def run() -> None:
                 "error_category": "child_exit",
                 "run_finished_outcome": run_finished_outcome,
                 "run_finished_reason": run_finished_reason,
+                "preflight": preflight,
             }
-            (root / "certification-failure.json").write_text(json.dumps(report))
+            _write_failure(root, report)
             raise ValueError(f"{name} rehearsal orchestration failed (exit {result.returncode})")
         children = list(runs.iterdir())
         if len(children) != 1 or not children[0].is_dir():

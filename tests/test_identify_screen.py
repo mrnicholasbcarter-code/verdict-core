@@ -465,8 +465,7 @@ def tiered_snapshot():
     """Free routes with known tier 1, tier 3 and unknown tier, all strongest-rated."""
     ids = ["p/claude-sonnet-4.5", "p/gemma-4-26b-a4b-it", "q/zzqx-blob"]
     rows = {
-        r: {"id": r, "capabilities": {"tool_calling": True}, "context_length": 200_000}
-        for r in ids
+        r: {"id": r, "capabilities": {"tool_calling": True}, "context_length": 200_000} for r in ids
     }
     return OmniRouteEvidence(
         fetched_at=NOW,
