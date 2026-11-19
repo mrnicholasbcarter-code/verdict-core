@@ -165,6 +165,8 @@ def identify_models(
         "usable_connection_count": sum(c.usable for c in evidence.connections),
         "excluded_connection_count": sum(not c.usable for c in evidence.connections),
         "source_errors": list(evidence.source_errors),
+        "source_error_kinds": dict(evidence.source_error_kinds),
+        "connections_source": evidence.connections_source,
         "sources": [
             {
                 "name": name,
