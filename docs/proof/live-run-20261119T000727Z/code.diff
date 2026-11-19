@@ -1,0 +1,31 @@
+diff --git a/math_utils.py b/math_utils.py
+new file mode 100644
+index 00000000..df00491a
+--- /dev/null
++++ b/math_utils.py
+@@ -0,0 +1,6 @@
++"""Math utility functions."""
++
++
++def subtract(a: int, b: int) -> int:
++    """Return a minus b."""
++    return a - b
+diff --git a/tests/test_subtract.py b/tests/test_subtract.py
+new file mode 100644
+index 00000000..22e1966d
+--- /dev/null
++++ b/tests/test_subtract.py
+@@ -0,0 +1,13 @@
++from math_utils import subtract
++
++
++def test_subtract_positive() -> None:
++    assert subtract(5, 3) == 2
++
++
++def test_subtract_negative() -> None:
++    assert subtract(-2, -3) == 1
++
++
++def test_subtract_zero() -> None:
++    assert subtract(5, 0) == 5
