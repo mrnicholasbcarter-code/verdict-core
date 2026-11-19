@@ -22,7 +22,7 @@ the captured JSON when parsed.
 | `credentials_list__default.json` | `credentials list --json` | `credentials.list` | OMNIROUTE_BASE_URL always `set (len=18)` in test env |
 | `replay__missing.json` | `replay missing-session --json` | `replay` | Exit 1; session not found |
 | `replay__valid.json` | `replay session-f3golden-bod275 --json` (via shim) | `replay` | Exit 0; session seeded from `inputs/replay-session.json`; timestamps normalised |
-| `run_receipt__fixture.json` | `run-receipt <run_dir> --json` | `run-receipt` | Uses `inputs/run-receipt-run/receipt.json`; exit 1 (BLOCKED, missing events.jsonl) |
+| `run_receipt__fixture.json` | `run-receipt <run_dir> --json` | `run-receipt` | Uses `inputs/run-receipt-run/receipt.json`; exit 1 (INTEGRITY_FAILED, recorded BLOCKED, missing events.jsonl) |
 | `stats__no_log.json` | `stats` | `stats` | No `--json` flag; human stdout; no log file → deterministic warning |
 | `stats__with_log.json` | `stats --log_path=<fixture>` | `stats` | No `--json` flag; human stdout; 15-entry fixture log |
 | `cost_report__no_log.json` | `cost-report` | `cost-report` | No `--json` flag; human stdout; no log file → deterministic warning |

@@ -843,6 +843,38 @@ def _execute_cli_decision(gate: Gate, task: str, dec: Any, *, allow_offline: boo
     return replace(dec, transport_outcome=outcome, execute_preview=preview, reason=reason)
 
 
+def _print_route_decision_json(dec: Any, selection: Any, task: str, *, allow_offline: bool) -> None:
+    """``route --json`` on the gate path: exactly one JSON document on stdout.
+
+    Exit 0 when a route decision is returned. ``--allow-offline`` never
+    executes, so its decision is the result (``executed: false``). A denied
+    decision, or a failed send on the executing path, exits 1 with ``error``.
+    """
+    transport_ok = dec.transport_outcome in {"sent", "success"}
+    payload: dict[str, Any] = {
+        "task": task[:100],
+        "model": dec.model,
+        "provider": dec.provider,
+        "tier": dec.tier,
+        "decision": dec.decision,
+        "transport_outcome": dec.transport_outcome,
+        "executed": transport_ok,
+        "reason": dec.reason,
+        "request_id": dec.request_id,
+        "strategy_selection": selection.to_dict(),
+    }
+    if dec.admit_receipt:
+        payload["admit_receipt"] = dec.admit_receipt
+    if dec.execute_preview:
+        payload["execute_preview"] = dec.execute_preview[:500]
+    failed = dec.decision == "denied" or (not allow_offline and not transport_ok)
+    if failed:
+        payload["error"] = dec.reason or dec.decision
+    print(json.dumps(payload, sort_keys=True, default=str))
+    if failed:
+        raise SystemExit(1)
+
+
 def cmd_route(
     task: str,
     criticality: str,
@@ -903,7 +935,8 @@ def cmd_route(
         "terse": terse,
         "context": ctx,
     }
-    if terse:
+    if terse or output_json:
+        # Machine-readable modes: stdout carries only the result, so no spinner.
         result = run_action("route", params)
     else:
         status_label = (
@@ -944,9 +977,13 @@ def cmd_route(
             print(dec.model)
             return
 
+        assert selection is not None  # non-terse always requests a strategy
+        if output_json:
+            _print_route_decision_json(dec, selection, task, allow_offline=allow_offline)
+            return
+
         from verdict import present
 
-        assert selection is not None  # non-terse always requests a strategy
         present.header("Routing Decision")
         present.kv(
             {
