@@ -441,3 +441,67 @@ def test_preflight_passes_the_planner_rejects_fail_closed(tmp_path, monkeypatch,
     assert data["stage"] == "preflight"
     assert data["preflight"]["planner_eligible_passed"] == 0
     assert data["preflight"]["metadata_error"] == "metadata_unavailable"
+
+
+def _rehearsal_with_run_file(tmp_path, monkeypatch, leak):
+    """Drive run() to its evidence scan: orchestrate 'writes' a complete run whose
+    extra file holds ``leak``. Returns (script, env seen by orchestrate)."""
+    import subprocess
+
+    from scripts import run_certification_rehearsals as script
+
+    gateway, key = "https://cert-gw-7f3a9c.example.invalid:8443", "test-key-canary-9d2e"
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", gateway)
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", key)
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "snapshot.json")
+    monkeypatch.setattr(script, "verify_run_receipt", lambda run_dir: [])
+    seen = {}
+
+    def child(argv, **kwargs):
+        if "orchestrate" in argv:
+            seen["env"] = kwargs.get("env") or {}
+            run_dir = Path(argv[argv.index("--runs-dir") + 1]) / "run1"
+            run_dir.mkdir(parents=True)
+            (run_dir / "receipt.json").write_text(
+                json.dumps(
+                    {
+                        "outcome": "COMPLETE",
+                        "claimed_outcome": "COMPLETE",
+                        "producer": {"git_sha": "a" * 40},
+                        "nodes": [],
+                    }
+                )
+            )
+            text = {"gateway": gateway, "key": key, "none": "redacted"}[leak]
+            (run_dir / "events.jsonl").write_text(json.dumps({"gateway_origin": text}) + "\n")
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        if "identify" in argv:
+            report = _screen([ELIGIBLE_PASS])
+            return subprocess.CompletedProcess(argv, 0, json.dumps(report).encode(), b"")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(script.subprocess, "run", child)
+    return script, seen
+
+
+def test_rehearsal_orchestrate_is_asked_to_redact_the_gateway_origin(tmp_path, monkeypatch):
+    """Catches: the rehearsal running orchestrate without the redaction setting."""
+    from verdict.orchestration.runtime import REDACT_GATEWAY_ORIGIN_ENV
+
+    script, seen = _rehearsal_with_run_file(tmp_path, monkeypatch, "none")
+    with pytest.raises(ValueError, match="Chaos must contain a controlled failure"):
+        script.run()  # clean passes the scan; the stub's chaos run has no failure
+    assert seen["env"][REDACT_GATEWAY_ORIGIN_ENV] == "1"
+
+
+@pytest.mark.parametrize("leak", ["gateway", "key"])
+def test_rehearsal_scan_still_refuses_evidence_holding_a_protected_value(
+    tmp_path, monkeypatch, leak
+):
+    """Catches: the evidence scan being narrowed (one case per protected value)."""
+    script, _ = _rehearsal_with_run_file(tmp_path, monkeypatch, leak)
+    with pytest.raises(ValueError, match="protected configuration; refusing upload"):
+        script.run()
+    assert not (tmp_path / "attested-rehearsals" / "clean").exists()
