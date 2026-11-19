@@ -314,71 +314,63 @@ def test_free_only_admission_fails_closed_when_only_subscription_supply(monkeypa
     assert offloaded == []
 
 
-def test_credit_provider_unknown_pricing_is_unknown():
-    from verdict.capacity import CapacityClass, classify_route_capacity
+def _classify(provider, route_id, **row):
+    from verdict.capacity import classify_route_capacity
 
-    conn = {"provider": "pollinations", "authType": "apikey", "isActive": True}
-    row = {"id": "pollinations/claude-fast"}
+    conn = {"provider": provider, "authType": "apikey", "isActive": True}
     cls, _plan, evidence = classify_route_capacity(
-        conn, row, route_id="pollinations/claude-fast", openrouter_free_set=None
+        conn, {"id": route_id, **row}, route_id=route_id, openrouter_free_set=None
     )
-    assert cls is CapacityClass.UNKNOWN
-    assert evidence == "credit_provider_unknown_pricing"
+    return cls, evidence
 
 
-def test_credit_provider_with_free_suffix_stays_free():
-    from verdict.capacity import CapacityClass, classify_route_capacity
+@pytest.mark.parametrize(
+    "provider,route_id",
+    [
+        # cert-fix10: pol `:free` passed the screen and then refused for credit.
+        ("pol", "pol/community/CloudCompile/nvidia-nemotron-3-ultra-550b-a55b:free"),
+        ("pollinations", "pollinations/claude-fast"),
+        ("pollinations", "pollinations/claude-fast:free"),
+        ("kc", "kc/vendor/model:free"),
+        ("freemodel-dev", "freemodel-dev/free-model"),
+        ("free", "free/model-free"),
+        ("customprovider", "customprovider/some-model"),
+    ],
+)
+def test_route_name_never_makes_a_route_free(provider, route_id):
+    """Catches a `:free` suffix, a free-sounding name or a provider list deciding capacity.
 
-    conn = {"provider": "pollinations", "authType": "apikey", "isActive": True}
-    row = {"id": "pollinations/claude-fast:free"}
-    cls, _plan, evidence = classify_route_capacity(
-        conn, row, route_id="pollinations/claude-fast:free", openrouter_free_set=None
-    )
-    assert cls is CapacityClass.FREE
-    assert evidence == "free_suffix"
+    Operator, 2026-11-19 14:38Z: "no names should never determine if something
+    is a free route or not". With no declared or observed fact the route is
+    UNKNOWN, and unknown is never free.
+    """
+    from verdict.capacity import CapacityClass
 
-
-def test_credit_provider_with_positive_pricing_is_metered():
-    from verdict.capacity import CapacityClass, classify_route_capacity
-
-    conn = {"provider": "pollinations", "authType": "apikey", "isActive": True}
-    row = {"id": "pollinations/claude-fast", "pricing": {"input": 1.0, "output": 1.0}}
-    cls, _plan, evidence = classify_route_capacity(
-        conn, row, route_id="pollinations/claude-fast", openrouter_free_set=None
-    )
-    assert cls is CapacityClass.METERED
-    assert evidence == "apikey_positive_pricing"
-
-
-def test_non_credit_provider_unknown_pricing_assumes_free():
-    from verdict.capacity import CapacityClass, classify_route_capacity
-
-    conn = {"provider": "customprovider", "authType": "apikey", "isActive": True}
-    row = {"id": "customprovider/some-model"}
-    cls, _plan, evidence = classify_route_capacity(
-        conn, row, route_id="customprovider/some-model", openrouter_free_set=None
-    )
-    assert cls is CapacityClass.FREE
-    assert evidence == "assumed_free_no_paid_evidence"
+    cls, evidence = _classify(provider, route_id)
+    assert cls is CapacityClass.UNKNOWN, (cls, evidence)
+    assert evidence == "no_free_evidence"
 
 
-def test_verdict_credit_providers_env_override(monkeypatch):
-    from verdict.capacity import CapacityClass, classify_route_capacity
+def test_declared_zero_price_makes_any_route_free():
+    """Catches the fact path being lost with the name rules: 0/0 is FREE whatever the name."""
+    from verdict.capacity import CapacityClass
 
-    monkeypatch.setenv("VERDICT_CREDIT_PROVIDERS", "mycreditprovider")
-    conn = {"provider": "mycreditprovider", "authType": "apikey", "isActive": True}
-    row = {"id": "mycreditprovider/model"}
-    cls, _plan, evidence = classify_route_capacity(
-        conn, row, route_id="mycreditprovider/model", openrouter_free_set=None
-    )
-    assert cls is CapacityClass.UNKNOWN
-    assert evidence == "credit_provider_unknown_pricing"
+    route = "pol/community/CloudCompile/nvidia-nemotron-3-ultra-550b-a55b:free"
+    cls, evidence = _classify("pol", route, pricing={"input": 0, "output": 0})
+    assert (cls, evidence) == (CapacityClass.FREE, "all_zero_pricing")
+    # A single declared zero price is enough: all declared values are zero (at least one).
+    assert _classify("pol", route, pricing={"input": 0})[0] is CapacityClass.FREE
 
-    # Pollinations is no longer a credit provider when overridden
-    conn2 = {"provider": "pollinations", "authType": "apikey", "isActive": True}
-    row2 = {"id": "pollinations/claude-fast"}
-    cls2, _plan2, evidence2 = classify_route_capacity(
-        conn2, row2, route_id="pollinations/claude-fast", openrouter_free_set=None
-    )
-    assert cls2 is CapacityClass.FREE
-    assert evidence2 == "assumed_free_no_paid_evidence"
+
+def test_positive_price_is_metered_whatever_the_name():
+    from verdict.capacity import CapacityClass
+
+    cls, evidence = _classify("x", "x/model:free", pricing={"input": 1.0, "output": 1.0})
+    assert (cls, evidence) == (CapacityClass.METERED, "apikey_positive_pricing")
+
+
+def test_gateway_free_tier_flag_is_free_evidence():
+    from verdict.capacity import CapacityClass
+
+    cls, evidence = _classify("x", "x/model", gateway_free_tier=True)
+    assert (cls, evidence) == (CapacityClass.FREE, "gateway_free_tier")

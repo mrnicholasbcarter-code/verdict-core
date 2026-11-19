@@ -516,7 +516,11 @@ class TestActualSelectionRatingOrder:
         from verdict.admission import RuntimeEvidence, admit
         from verdict.orchestration.health_cache import HealthCache, ProbeResult
 
-        rows = [_ladder_row(route, pricing={}, tier=1) for route in ("cc/weak", "op/strong")]
+        rows = [
+            _ladder_row("cc/weak", pricing={}, tier=1),
+            # op/strong: declared 0/0 pricing makes it FREE (facts-only rule).
+            _ladder_row("op/strong", pricing={"input": 0.0, "output": 0.0}, tier=1),
+        ]
         conns = [_conn("cc", auth="oauth"), _conn("op", auth="apikey")]
         meta = _snapshot(
             _record("acme/weak", "cc/weak", aa_coding=_score(20.0)),
@@ -641,8 +645,8 @@ def test_explain_does_not_claim_rank_win_when_equal_rating_scheduler_selects_lat
     "pricing,tier,capacity",
     [
         ({"input": 3.0, "output": 15.0}, 0, CapacityClass.METERED),
-        ({}, 0, CapacityClass.FREE),
-        ({}, 1, CapacityClass.FREE),
+        ({"input": 0.0, "output": 0.0}, 0, CapacityClass.FREE),
+        ({"input": 0.0, "output": 0.0}, 1, CapacityClass.FREE),
     ],
 )
 @pytest.mark.parametrize("confirmation_ok", [True, False])

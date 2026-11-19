@@ -50,7 +50,8 @@ def test_subscription_selected_when_free_has_no_tool_screen(tmp_path):
     assert next(v for v in verdicts if v.route_id == "free/unrated").reason == "no_agentic_probe"
 
 
-def test_missing_price_is_assumed_free_but_still_requires_screen(tmp_path):
+def test_missing_price_is_unknown_never_free(tmp_path):
+    """Catches a missing price being read as free (capacity from facts, never names)."""
     ladder = EligibilityLadder(
         [_ladder_row("p/unknown", pricing={})],
         [_conn("p", auth="apikey")],
@@ -59,11 +60,9 @@ def test_missing_price_is_assumed_free_but_still_requires_screen(tmp_path):
         health_cache=HealthCache(tmp_path / "health.json"),
         metadata=None,
     )
-    assert ladder.capacity_class("p/unknown") is CapacityClass.FREE
-    selected, verdicts = ladder.select(TaskRequirements(), now=NOW)
+    assert ladder.capacity_class("p/unknown") is CapacityClass.UNKNOWN
+    selected, _verdicts = ladder.select(TaskRequirements(), now=NOW)
     assert selected is None
-    assert verdicts[0].reason == "no_agentic_probe"
-    assert verdicts[0].capacity_evidence == "assumed_free_no_paid_evidence"
 
 
 def test_specific_paid_and_subscription_evidence_keeps_its_class(tmp_path):
@@ -91,12 +90,14 @@ def test_specific_paid_and_subscription_evidence_keeps_its_class(tmp_path):
         tmp_path / "state.json",
         metadata=None,
     )
+    # Provider names (anthropic, openrouter connection) no longer decide the
+    # class; without a price or a free fact those routes are UNKNOWN.
     assert [ladder.capacity_class(row["id"]) for row in rows] == [
-        CapacityClass.METERED,
-        CapacityClass.METERED,
+        CapacityClass.UNKNOWN,
+        CapacityClass.UNKNOWN,
         CapacityClass.SUBSCRIPTION,
         CapacityClass.METERED,
-        CapacityClass.FREE,
+        CapacityClass.UNKNOWN,
     ]
 
 

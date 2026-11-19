@@ -329,12 +329,13 @@ the verdict-core root; replace paths and goals with real values.
    run. Chaos injects planning quota/no-final-answer and worker rate-limit faults.
    Before either run, a bounded FREE-only preflight
    (`verdict identify --screen --allow-live-probe --capacity free --max-per-provider 2
-   --max-routes 13 --max-capability-tier 2 --min-context-tokens 100000 --require-tools
+   --max-routes 30 --max-capability-tier 2 --min-context-tokens 100000 --require-tools
    --max-per-pool 1`) mints fresh agentic proof in the empty
    `VERDICT_HOME`. The tier ceiling, tools and 100k-context floor are the frontier
    planner's own constants; a route below the floor is skipped without a probe. One
-   probe per backend pool means the 13 probes cover up to 13 pools, at most 39 model
-   requests (3 agentic turns each). The rehearsal stops before orchestration unless at
+   probe per backend pool means the 30 probes cover up to 30 pools, at most 90 model
+   requests (3 agentic turns each). Request caps do not matter for free capacity
+   (operator decision, 2026-11-05); the cap only bounds the probe set. The rehearsal stops before orchestration unless at
    least one pass meets that floor ("no planner-eligible FREE routes"). It also stops
    unless the planner-eligible passes sit in at least 5 backend pools ("Preflight
    screen proved planner-eligible FREE routes in N backend pool(s); 5 are required"):

@@ -16,12 +16,18 @@ from verdict.metadata.records import (
 )
 from verdict.metadata.store import MetadataSnapshot
 from verdict.omniroute_evidence import OmniRouteEvidence, TrafficEvidence
-from verdict.orchestration.health_cache import HealthCache, ProbeResult
+from verdict.orchestration.health_cache import (
+    CATEGORY_PAYMENT,
+    HealthCache,
+    HealthEntry,
+    ProbeResult,
+)
 from verdict.prove_at_rest import (
     AGENTIC_PROBE_FILE,
     AGENTIC_TOOL_EDIT,
     AGENTIC_TOOL_READ,
     ProbeExchange,
+    _inband_refusal_exchange,
 )
 
 NOW = datetime(2026, 10, 21, 12, tzinfo=timezone.utc)
@@ -781,3 +787,134 @@ def test_floor_and_pool_cap_require_screen_mode(option):
     """Catches a passive report silently ignoring a screen-only option."""
     with pytest.raises(ValueError, match="requires --screen"):
         identify.identify_report(**option)
+
+
+def _refusing(calls, refusals):
+    """Pass every route except those in ``refusals``, which return their exchange."""
+    good = passing(calls)
+
+    def send(route, payload, timeout):
+        if route in refusals:
+            calls.append((route, payload))
+            return refusals[route]
+        return good(route, payload, timeout)
+
+    return send
+
+
+INBAND_CREDIT = {
+    "usage": {"prompt_tokens": 10, "completion_tokens": 0},
+    "choices": [
+        {
+            "message": {
+                "role": "assistant",
+                "content": "Insufficient credits. Please add credits to your account to continue.",
+            }
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        ProbeExchange(http_status=401, ok=False, detail="bad credentials"),
+        ProbeExchange(http_status=402, ok=False, detail="payment required"),
+    ],
+    ids=["auth_401", "payment_402"],
+)
+def test_pool_seen_refusing_takes_no_more_cap_slots(tmp_path, refusal):
+    """Catches cert-fix10: slots spent on pools that already refused auth or payment.
+
+    The refusing pool's second route is skipped without a probe and the cap
+    reaches a later good pool instead.
+    In-band credit refusals are route-scoped (failure_scope="route") and do not
+    mark the pool; they are covered by test_route_scoped_402_does_not_skip_its_pool.
+    """
+    from verdict.prove_at_rest import is_inband_billing_refusal
+
+    assert is_inband_billing_refusal(INBAND_CREDIT)
+    calls = []
+    specs = [
+        ("bad/one", 1, 200_000, True),
+        ("bad/two", 1, 200_000, True),
+        ("good/one", 1, 200_000, True),
+    ]
+    report = screen_inventory(
+        tmp_path,
+        calls,
+        specs,
+        transport=_refusing(calls, {"bad/one": refusal, "bad/two": refusal}),
+        max_routes=2,
+        max_per_pool=2,
+    )
+    assert probed(calls) == ["bad/one", "good/one"]
+    assert results(report)["bad/two"] == "skipped_pool_refused"
+    assert results(report)["good/one"] == "pass"
+    assert report["routes_checked"] == 2
+
+
+def test_route_scoped_403_does_not_skip_its_pool(tmp_path):
+    """Catches one model's 403 being read as the whole pool refusing."""
+    calls = []
+    refusal = ProbeExchange(http_status=403, ok=False, detail="model bad/one is not permitted")
+    report = screen_inventory(
+        tmp_path,
+        calls,
+        [("bad/one", 1, 200_000, True), ("bad/two", 1, 200_000, True)],
+        transport=_refusing(calls, {"bad/one": refusal}),
+        max_routes=2,
+        max_per_pool=2,
+    )
+    assert probed(calls) == ["bad/one", "bad/two"]
+    assert results(report)["bad/two"] == "pass"
+
+
+def test_route_scoped_402_does_not_skip_its_pool(tmp_path):
+    """Route-scoped 402 (in-band credit refusal) must not mark the pool.
+
+    Catches OCR finding on PR #1172: a paid model's in-band payment refusal was
+    recorded with failure_scope='route' but _account_refusal() ignored that scope
+    and blocked free siblings in the same pool. Payment refusals must respect
+    failure_scope the same way auth refusals do.
+    """
+    calls = []
+    # _inband_refusal_exchange → ProbeExchange(http_status=200, CATEGORY_PAYMENT)
+    # The prober records this with failure_scope="route" (route's own pricing).
+    refusal = _inband_refusal_exchange(2, "bad/one")
+    report = screen_inventory(
+        tmp_path,
+        calls,
+        [("bad/one", 1, 200_000, True), ("bad/two", 1, 200_000, True)],
+        transport=_refusing(calls, {"bad/one": refusal}),
+        max_routes=2,
+        max_per_pool=2,
+    )
+    assert probed(calls) == ["bad/one", "bad/two"]
+    assert results(report)["bad/two"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "failure_scope,expected",
+    [
+        ("route", False),  # route-scoped: free sibling in the same pool is not blocked
+        (None, True),  # unscoped: pool is marked refusing (account-wide payment failure)
+        ("pool", True),  # pool-scoped: pool is marked refusing
+        ("account", True),  # account-scoped: pool is marked refusing
+    ],
+)
+def test_account_refusal_payment_honours_failure_scope(failure_scope, expected):
+    """_account_refusal() respects failure_scope for payment the same way it does for auth."""
+    entry = HealthEntry(
+        route_id="bad/one",
+        category=CATEGORY_PAYMENT,
+        checked_at=NOW,
+        until=NOW,
+        consecutive_failures=1,
+        chat_ok=False,
+        tool_ok=False,
+        http_status=402,
+        failure_scope=failure_scope,
+    )
+    row: dict[str, object] = {"turns_sent": 1}
+    assert identify._account_refusal(row, entry) == expected

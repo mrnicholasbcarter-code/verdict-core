@@ -896,12 +896,14 @@ class EligibilityLadder:
         for suffix in _EFFORT_SUFFIXES:
             if lowered.endswith(suffix) and route_id[: -len(suffix)] in self._rows:
                 return "effort_duplicate"
-        # Agentic gate: a FREE route qualifies as an implementation worker
-        # only when a FRESH AGENTIC probe PASS is in the health cache.
-        # A single-call PASS alone qualifies for chat/summary (frontier_worthy
-        # reasoning-only). Tool-requiring work needs agentic proof even when
-        # frontier_worthy is set.
-        if capacity == CapacityClass.FREE and (
+        # Agentic gate: FREE and UNKNOWN routes qualify as implementation workers
+        # only when a FRESH AGENTIC probe PASS is in the health cache. UNKNOWN
+        # routes must prove themselves the same way FREE routes do — the flag
+        # _allow_unknown gates opt-in to routing, but it does not waive the
+        # proof requirement. A single-call PASS alone qualifies for chat/summary
+        # (frontier_worthy reasoning-only). Tool-requiring work needs agentic
+        # proof even when frontier_worthy is set.
+        if capacity in {CapacityClass.FREE, CapacityClass.UNKNOWN} and (
             not req.frontier_worthy or "tools" in req.required_capabilities
         ):
             cache = getattr(self, "_health_cache", None)
