@@ -68,25 +68,12 @@ def _chart_sources() -> dict[str, tuple[str, ...]]:
 
 
 def test_readme_walkthrough_is_visible_and_truthfully_labelled() -> None:
+    # The offline UI walkthrough section has been removed from the README.
     text = _readme()
-    title = "### Watch the interface in action"
-    assert title in text
-    block = text.split(title, 1)[1].split("<!-- A future live-model", 1)[0]
-    assert 'src="docs/assets/demo-tui.svg"' in block
-    assert '(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-tui-poster.svg"' in block
-    assert (
-        "**Offline UI walkthrough — scripted workers and injected failures; no live model calls.**"
-        in block
-    )
-    assert "not model performance, savings or release certification" in block
-    assert "idle gaps over 1.5 seconds are capped" in block
-    assert "docs/guides/offline-demo.md#offline-tui-walkthrough" in block
-    assert "[Live-run evidence](#proof-from-a-live-run)" in block
-    # The walkthrough sits with the offline quick start, before the explanation of a run.
-    assert text.index("## Quick start") < text.index(title) < text.index("## How a run works")
+    assert "### Watch the interface in action" not in text
+    assert "docs/assets/demo-tui.svg" not in text
     for name in FIXTURE_MEDIA:
-        if name != "demo-tui.svg":
-            assert f"docs/assets/{name}" not in text, f"README embeds other fixture media: {name}"
+        assert f"docs/assets/{name}" not in text, f"README embeds fixture media: {name}"
     assert "CLAIMS VERIFIED" not in text
     assert "alpha/claude-a" not in text
     for target in _image_targets(text):
@@ -94,9 +81,7 @@ def test_readme_walkthrough_is_visible_and_truthfully_labelled() -> None:
         if local is None:
             continue
         assert local.is_file(), f"README image missing: {target}"
-        if target == "docs/assets/demo-tui.svg":
-            assert local.stat().st_size <= MAX_ASSET_BYTES
-        elif target == "docs/assets/live-run.svg":
+        if target == "docs/assets/live-run.svg":
             # The live recording must point at its evidence record next to it.
             assert "docs/proof/live-run-20261119T000727Z/README.md" in text
             assert local.stat().st_size <= MAX_ASSET_BYTES
