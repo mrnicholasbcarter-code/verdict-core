@@ -1,6 +1,9 @@
 {
-  "outcome": "BLOCKED",
-  "reason": "unknown receipt schema None",
+  "verified": false,
+  "outcome": "INTEGRITY_FAILED",
+  "reason": "receipt failed verification: unexpected schema None; events_digest mismatch: events.jsonl changed after receipt was written; cannot rebuild receipt: missing or empty graph.json for a run that was planned",
+  "recorded_outcome": "BLOCKED",
+  "recorded_reason": "unknown receipt schema None",
   "problems": [
     "unexpected schema None",
     "events_digest mismatch: events.jsonl changed after receipt was written",

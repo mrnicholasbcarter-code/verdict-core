@@ -29,6 +29,6 @@ CLI output said something other than the truth:
 
 - Code: `verdict/orchestration/cli.py` (`_receipt`, `_follow_console`, `_orchestrate`),
   `verdict/cli.py` (`cmd_route`, `_print_route_decision_json`).
-- Tests: `tests/test_cli_output_truth.py`; the `run_receipt__fixture` JSON golden is updated for
+- Tests: `tests/test_cli_output_truth.py`; the `run_receipt__fixture` JSON golden and the run-receipt wiring baselines are updated for
   the new integrity fields.
 - Docs: `docs/CLI_REFERENCE.md`.
