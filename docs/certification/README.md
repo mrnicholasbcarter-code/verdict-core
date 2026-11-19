@@ -329,31 +329,40 @@ the verdict-core root; replace paths and goals with real values.
    run. Chaos injects planning quota/no-final-answer and worker rate-limit faults.
    Before either run, a bounded FREE-only preflight
    (`verdict identify --screen --allow-live-probe --capacity free --max-per-provider 2
-   --max-routes 8 --max-capability-tier 2 --min-context-tokens 100000 --require-tools
+   --max-routes 13 --max-capability-tier 2 --min-context-tokens 100000 --require-tools
    --max-per-pool 1`) mints fresh agentic proof in the empty
    `VERDICT_HOME`. The tier ceiling, tools and 100k-context floor are the frontier
    planner's own constants; a route below the floor is skipped without a probe. One
-   probe per backend pool means the 8 probes cover up to 8 pools. The rehearsal stops
-   before orchestration unless at least one pass meets that floor ("no planner-eligible
-   FREE routes"). It also stops unless the planner-eligible passes sit in at least 3
-   backend pools ("Preflight screen proved planner-eligible FREE routes in N backend
-   pool(s); 3 are required"): a clean run whose workers are reassigned once uses two
-   pools, and the reviewer cannot use a route in an implementer's aliased pool, so
-   review needs a third. The chaos run may need more; that is not measured.
-   The chaos run works on a private copy of that proof. `verdict orchestrate --inject`
-   never reads the shared health cache, so that injected faults cannot cool down real
-   capacity. When the chaos run is about to start, the script copies
-   `$VERDICT_HOME/health-cache.json` byte for byte to
-   `$RUNNER_TEMP/verdict-certification-chaos/health-cache.json`, passes
-   `--state-file $RUNNER_TEMP/verdict-certification-chaos/chaos-health.json`, and sets
-   `VERDICT_HEALTH_CACHE` to the copy for the chaos command only. The copy holds the
-   preflight's proof and what the clean run really observed (cooldowns, failed routes);
-   no timestamp is rewritten and the preflight runs once. The chaos run's injected
-   failures go to the copy and to its own state file, never to the cache the preflight
-   and the clean run used. The passport store under `$VERDICT_HOME/prove-at-rest/` stays
-   shared: it records real confirmations only. The script stops before the chaos run
-   ("Chaos rehearsal cannot start: the preflight health cache ...") when the shared cache
-   is missing or unreadable, is not a valid health cache, or holds no fresh agentic
+   probe per backend pool means the 13 probes cover up to 13 pools, at most 39 model
+   requests (3 agentic turns each). The rehearsal stops before orchestration unless at
+   least one pass meets that floor ("no planner-eligible FREE routes"). It also stops
+   unless the planner-eligible passes sit in at least 5 backend pools ("Preflight
+   screen proved planner-eligible FREE routes in N backend pool(s); 5 are required"):
+   that is what the chaos run consumes, measured offline with the real runtime on
+   2026-11-19 (3 and 4 pools ended `BLOCKED`, 5 `COMPLETE`). The quota fault cools one
+   pool for two hours, the no-final-answer fault drops a second pool's model, the
+   worker rate limit excludes the worker's pool and reassigns the node to a fourth,
+   and the reviewer excludes every implementer route and its aliased pools, so review
+   needs a fifth.
+   The two runs are independent: each starts from the state the preflight left.
+   `verdict orchestrate --inject` never reads the shared health cache, so that injected
+   faults cannot cool down real capacity. Right after the preflight passes, before the
+   clean run starts, the script copies `$VERDICT_HOME/health-cache.json` and
+   `$VERDICT_HOME/session-evidence.jsonl` byte for byte (mode 0600, never overwriting)
+   to `$RUNNER_TEMP/verdict-certification-chaos/`. A preflight that left no ledger gives
+   chaos an empty one. For the chaos command only, the script passes
+   `--state-file $RUNNER_TEMP/verdict-certification-chaos/chaos-health.json` and sets
+   `VERDICT_HEALTH_CACHE` and `VERDICT_SESSION_EVIDENCE` to the copies. So nothing the
+   clean run observes reaches chaos: not its cooldowns, and not the session outcomes
+   that score a route (on 2026-11-19 a real 429 in the clean run scored a proven route
+   0.4, under the 0.5 bar, and kept it out of chaos planning). No timestamp is
+   rewritten and the preflight runs once. The chaos run's injected failures and
+   outcomes go to the copies and to its own state file, never to the files the
+   preflight and the clean run use. The passport store under
+   `$VERDICT_HOME/prove-at-rest/` stays shared: it records real confirmations only.
+   The script stops before either run ("Chaos rehearsal cannot start: the preflight
+   health cache ...") when the shared cache is missing or unreadable, is not a valid
+   health cache, or holds no fresh agentic
    proof. The private directory is outside the run directories and is not uploaded. On failure,
    `certification-failure.json` holds only closed enums (`run_finished_reason`:
    `planning_none_eligible`, `gateway_auth`, `gateway_discovery`, `operator_policy`,

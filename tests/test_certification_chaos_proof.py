@@ -30,15 +30,23 @@ from verdict.orchestration import cli
 from verdict.orchestration import run as orch_run
 from verdict.orchestration.contracts import FailureClassification
 from verdict.orchestration.health_cache import HealthCache, ProbeResult, default_cache_path
+from verdict.orchestration.session_evidence import SessionLedger, SessionOutcome
 from verdict.prove_at_rest_legacy import default_state_path
 
 GATEWAY = "https://cert-gw-7f3a9c.example.invalid:8443"
 KEY = "test-key-canary-9d2e"
-PROVEN = ("groq/model-a", "nvidia/model-b", "cerebras/model-c")
+# Five pools: the preflight's floor (PREFLIGHT_MIN_PLANNER_POOLS).
+PROVEN = (
+    "groq/model-a",
+    "nvidia/model-b",
+    "cerebras/model-c",
+    "mistral/model-d",
+    "ollama-cloud/model-e",
+)
 SCREEN = {
     "mode": "screen",
-    "routes_checked": 3,
-    "passed": 3,
+    "routes_checked": len(PROVEN),
+    "passed": len(PROVEN),
     "routes": [
         {
             "route_id": route,
@@ -97,6 +105,18 @@ def _write_proof(home: Path, cache_path: Path | None = None) -> None:
     (home / "prove-at-rest" / "state.json").write_bytes(PASSPORTS)
 
 
+def _ledger_line(route: str, outcome: str) -> SessionOutcome:
+    return SessionOutcome(
+        route_id=route,
+        outcome=outcome,
+        kind="real_task",
+        failure_class=None if outcome == "pass" else "transport_error",
+        verified_by_controller=True,
+        at=datetime.now(timezone.utc),
+        source="verdict.orchestration.receipt",
+    )
+
+
 def _complete_run(argv: list[str], *, injected: bool) -> Path:
     runs = Path(argv[argv.index("--runs-dir") + 1])
     # The real cli._orchestrate (chaos, in process) has already made its run directory.
@@ -142,6 +162,8 @@ def _orchestrate_in_process(
             state_file.parent if state_file else None
         ).health_cache.resolve()
         seen["passport_store"] = default_state_path()
+        # Every SessionLedger() in the chaos process (selector gate, runtime writes).
+        seen["session_ledger"] = SessionLedger().path.resolve()
         seen["ladder_state"] = selector._state_path.resolve()
         now = datetime.now(timezone.utc)
         # An injected quota fault: the ladder cools the pool for two hours ...
@@ -200,11 +222,13 @@ class _Rehearsal:
         self.monkeypatch = monkeypatch
         self.shared_home = self.root / "verdict-certification"
         self.shared_cache = self.shared_home / "health-cache.json"
+        self.shared_ledger = self.shared_home / "session-evidence.jsonl"
         self.calls: dict[str, dict[str, Any]] = {}
         self.resolved: dict[str, dict[str, Any]] = {}
         self.digests: dict[str, str] = {}
         self.source_at_chaos_start = b""
         self.before_chaos: Any = lambda: None
+        self.after_preflight: Any = lambda: None
         monkeypatch.setenv("RUNNER_TEMP", str(self.root))
         monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", GATEWAY)
         monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", KEY)
@@ -222,7 +246,11 @@ class _Rehearsal:
             written = _cache_a_child_would_use(env, self.monkeypatch)
             assert written == self.shared_cache.resolve()
             _write_proof(Path(env["VERDICT_HOME"]), written)
+            # A ledger line already present when the preflight ends.
+            SessionLedger(self.shared_ledger).append(_ledger_line(PROVEN[1], "pass"))
             self.digests["after_preflight"] = _digest(self.shared_cache)
+            self.digests["ledger_after_preflight"] = _digest(self.shared_ledger)
+            self.after_preflight()
             return subprocess.CompletedProcess(argv, 0, json.dumps(SCREEN).encode(), b"")
         if "orchestrate" not in argv:
             return self.real_run(argv, **kwargs)  # git, on the fixture repository
@@ -241,6 +269,10 @@ class _Rehearsal:
             implicit = self.root / ".runs-chaos-chaos" / "chaos" / "health-cache.json"
             seeded = state.parent / "health-cache.json" if state else implicit
             self.digests["seeded_at_chaos_start"] = _digest(seeded)
+            ledger = env.get("VERDICT_SESSION_EVIDENCE")
+            self.digests["ledger_seeded_at_chaos_start"] = (
+                _digest(Path(ledger)) if ledger else "unset"
+            )
             self.resolved[name] = _orchestrate_in_process(
                 argv, env, self.monkeypatch, self.tmp_path
             )
@@ -345,29 +377,64 @@ def test_clean_rehearsal_command_and_environment_are_unchanged(rehearsal: _Rehea
     assert chaos_argv[chaos_argv.index("--capacity") + 1] == "free"
 
 
-def test_seeded_copy_is_the_source_bytes_with_no_injected_state(rehearsal: _Rehearsal) -> None:
-    """Catches a seed that re-stamps or extends proof, or that carries injected faults."""
-
-    def clean_run_observes_a_real_cooldown() -> None:
-        # What the clean run really saw (a 429) is kept: chaos inherits it.
-        HealthCache(rehearsal.shared_cache).merge_and_save(
-            lambda cache: cache.record(
-                PROVEN[2],
-                ProbeResult(category="rate_limited", chat_ok=False, tool_ok=False),
-                datetime.now(timezone.utc),
-            )
+def _clean_run_observes_a_real_429(rehearsal: _Rehearsal) -> None:
+    """What cert-fix8's clean run left behind: a real 429 in the cache and the ledger."""
+    HealthCache(rehearsal.shared_cache).merge_and_save(
+        lambda cache: cache.record(
+            PROVEN[2],
+            ProbeResult(category="rate_limited", chat_ok=False, tool_ok=False),
+            datetime.now(timezone.utc),
         )
+    )
+    SessionLedger(rehearsal.shared_ledger).append(_ledger_line(PROVEN[2], "fail"))
 
-    rehearsal.before_chaos = clean_run_observes_a_real_cooldown
+
+def test_chaos_cache_is_the_preflight_cache_not_the_clean_runs(rehearsal: _Rehearsal) -> None:
+    """Catches cert-fix8: chaos inheriting the clean run's state. The seed must be the
+    shared cache's bytes as the preflight left them (no re-stamp, no extension, no
+    injected fault), with nothing the clean run wrote."""
+    rehearsal.before_chaos = lambda: _clean_run_observes_a_real_429(rehearsal)
     rehearsal.script.run()
     assert rehearsal.digests["before_chaos"] != rehearsal.digests["after_preflight"]
-    # Byte-identical to the shared cache as it was when chaos was about to start,
-    # so every checked_at / agentic_checked_at / until equals the source's.
-    assert rehearsal.digests["seeded_at_chaos_start"] == rehearsal.digests["before_chaos"]
-    source = json.loads(rehearsal.source_at_chaos_start)
-    assert "fault-injected" not in rehearsal.source_at_chaos_start.decode()
-    assert source["routes"][PROVEN[2]]["category"] == "rate_limited"
-    assert {r for r, e in source["routes"].items() if e.get("agentic_ok")} >= set(PROVEN[:2])
+    assert rehearsal.digests["seeded_at_chaos_start"] == rehearsal.digests["after_preflight"]
+    assert "fault-injected" not in rehearsal.shared_cache.read_text()
+    # What the chaos selector saw when it started: every preflight pass, no 429.
+    assert rehearsal.resolved["chaos"]["selector_passes"] == set(PROVEN)
+
+
+def test_chaos_ledger_is_the_preflight_ledger_not_the_clean_runs(rehearsal: _Rehearsal) -> None:
+    """Catches cert-fix8 13:11Z: the clean run's real 429 in the shared session-evidence
+    ledger scored cerebras 0.4 (< 0.5) and gated it out of chaos planning."""
+    rehearsal.before_chaos = lambda: _clean_run_observes_a_real_429(rehearsal)
+    rehearsal.script.run()
+    chaos = rehearsal.resolved["chaos"]
+    assert (
+        rehearsal.digests["ledger_seeded_at_chaos_start"]
+        == (rehearsal.digests["ledger_after_preflight"])
+    )
+    # The product resolves the private copy, never the shared ledger.
+    assert chaos["session_ledger"] != rehearsal.shared_ledger.resolve()
+    assert chaos["session_ledger"].parent == chaos["selector_cache"].parent
+    seen = {(o.route_id, o.outcome) for o in SessionLedger(chaos["session_ledger"]).load()}
+    assert seen == {(PROVEN[1], "pass")}
+    # The clean run's write is still in the shared ledger; nothing was edited.
+    shared = {(o.route_id, o.outcome) for o in SessionLedger(rehearsal.shared_ledger).load()}
+    assert shared == {(PROVEN[1], "pass"), (PROVEN[2], "fail")}
+
+
+def test_chaos_ledger_seed_is_empty_when_the_preflight_left_none(
+    rehearsal: _Rehearsal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches a fresh home (no ledger after the preflight) letting chaos read the
+    clean run's ledger, or failing to start."""
+    monkeypatch.setattr(SessionLedger, "append", lambda self, outcome: None)
+    rehearsal.before_chaos = lambda: rehearsal.shared_ledger.write_text(
+        json.dumps({"route_id": PROVEN[2], "outcome": "fail"}) + "\n"
+    )
+    rehearsal.script.run()
+    private = rehearsal.resolved["chaos"]["session_ledger"]
+    assert private != rehearsal.shared_ledger.resolve()
+    assert private.read_bytes() == b""
 
 
 @pytest.mark.parametrize("damage", ["missing", "unreadable", "no_proof"])
@@ -383,7 +450,7 @@ def test_chaos_fails_closed_without_usable_proof(rehearsal: _Rehearsal, damage: 
         else:
             cache.write_text(json.dumps({"schema_version": 1, "routes": {}, "buckets": {}}))
 
-    rehearsal.before_chaos = damage_shared_cache
+    rehearsal.after_preflight = damage_shared_cache
     with pytest.raises(rehearsal.script.RehearsalConfigurationError) as error:
         rehearsal.script.run()
     assert (
@@ -395,7 +462,8 @@ def test_chaos_fails_closed_without_usable_proof(rehearsal: _Rehearsal, damage: 
             "no_proof": "holds no fresh agentic proof",
         }[damage]
     )
-    assert "chaos" not in rehearsal.calls
+    # The seed is taken before the clean run, so neither run starts.
+    assert "chaos" not in rehearsal.calls and "clean" not in rehearsal.calls
     assert not (rehearsal.root / "runs-chaos").exists()
     assert not (rehearsal.root / "attested-rehearsals" / "chaos").exists()
     for value in (GATEWAY, KEY, *PROVEN):
