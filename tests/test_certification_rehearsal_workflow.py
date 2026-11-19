@@ -609,9 +609,10 @@ def test_preflight_with_too_few_pools_fails_closed(tmp_path, monkeypatch, routes
     # Counts and enums only: no route id, pool name or other text.
     assert all(
         v is None or isinstance(v, int)
-        for v in data["preflight"].values()
-        if v != "metadata_unavailable"
+        for k, v in data["preflight"].items()
+        if v != "metadata_unavailable" and k != "source_errors"
     )
+    assert data["preflight"]["source_errors"] == {}
     assert not any(row["route_id"] in raw or row["route_id"].split("/")[0] in raw for row in routes)
 
 

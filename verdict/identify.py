@@ -165,6 +165,17 @@ def identify_models(
         "usable_connection_count": sum(c.usable for c in evidence.connections),
         "excluded_connection_count": sum(not c.usable for c in evidence.connections),
         "source_errors": list(evidence.source_errors),
+        # Only when they carry information, so the pinned default report is unchanged.
+        **(
+            {"source_error_kinds": dict(evidence.source_error_kinds)}
+            if evidence.source_error_kinds
+            else {}
+        ),
+        **(
+            {"connections_source": evidence.connections_source}
+            if evidence.connections_source != "management"
+            else {}
+        ),
         "sources": [
             {
                 "name": name,

@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
 from urllib.parse import urlencode
@@ -140,6 +142,11 @@ class OmniRouteEvidence:
     # Raw /v1/models rows by route id: the same shape the eligibility ladder
     # reads, so screens apply its capability-tier and context rules unchanged.
     inventory_rows: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    # "snapshot" when connection evidence came from a validated
+    # VERDICT_CONNECTIONS_SNAPSHOT instead of the management reads.
+    connections_source: str = "management"
+    # Source name -> HTTP status or exception class only (never URL, key, body).
+    source_error_kinds: Mapping[str, str] = field(default_factory=dict)
 
 
 def _date(value: Any) -> datetime | None:
@@ -395,6 +402,7 @@ def parse_omniroute_evidence(
     v1_models: Any,
     candidates: Any = None,
     now: datetime,
+    connections_snapshot: list[dict[str, Any]] | None = None,
 ) -> OmniRouteEvidence:
     """Parse audited API shapes; missing source payloads never grant availability.
 
@@ -403,7 +411,14 @@ def parse_omniroute_evidence(
     Model-scoped or unresolved windows remain the gateway's request-time concern.
     Catalog aliases are retained only when owned_by + root match exactly.
     A live candidate is reachable only when one of its rows is usable.
+
+    ``connections_snapshot`` is rows already validated by
+    ``read_connections_snapshot``. They stand in for providers, resilience,
+    limits and cooldowns; a row is live-healthy only when admission's own
+    rate-limit rule finds no current window, and quota stays unknown.
     """
+    if connections_snapshot is not None:
+        providers, resilience, limits, cooldowns = _snapshot_sources(connections_snapshot, now)
     sources = {
         "providers": (providers, "connections", list),
         "resilience": (resilience, "connections", list),
@@ -576,6 +591,49 @@ def parse_omniroute_evidence(
         ),
         model_cooldowns=tuple(model_cooldowns),
         inventory_rows=MappingProxyType(inventory_rows),
+        connections_source="snapshot" if connections_snapshot is not None else "management",
+    )
+
+
+def _snapshot_sources(
+    rows: list[dict[str, Any]], now: datetime
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Management-shaped payloads from validated snapshot rows; nothing is invented.
+
+    ``connectionStatus`` is derived from the row's own ``testStatus`` field:
+    ``"active"`` or ``"passed"`` (the same set ``_connection_reason`` accepts on
+    the providers row) maps to ``"healthy"``; everything else maps to
+    ``"unknown"``, which ``_connection_reason`` treats as not healthy.
+
+    Rate limiting is represented by passing the actual rate-limit timestamp
+    through ``rateLimitedUntil``, never as an invented millisecond count.
+    ``QuotaEvidence.blocked_until`` covers both a direct ``rateLimitedUntil``
+    window and a recent-429-error window.
+    """
+    from verdict.availability import QuotaEvidence
+
+    _healthy_test_status = frozenset({"active", "passed"})
+    live = []
+    for row in rows:
+        if not isinstance(row.get("id"), str):
+            continue
+        # connectionStatus from the row's own testStatus; never invent "healthy".
+        test_status = str(row.get("testStatus", "") or "").strip().lower()
+        live_row: dict[str, Any] = {
+            "id": row["id"],
+            "connectionStatus": "healthy" if test_status in _healthy_test_status else "unknown",
+        }
+        # Pass the actual rate-limit timestamp; never invent a millisecond count.
+        blocked = QuotaEvidence.from_connection(row).blocked_until(now)
+        if blocked is not None:
+            live_row["rateLimitedUntil"] = blocked.isoformat()
+        live.append(live_row)
+    # No quota cache: every connection's quota stays "unknown", never "available".
+    return (
+        {"connections": rows},
+        {"connections": live, "breakers": []},
+        {"caches": {}, "intervalMinutes": None},
+        {"items": []},
     )
 
 
@@ -664,10 +722,22 @@ def fetch_omniroute_evidence(
         "v1_models": "/v1/models",
         "candidates": "/v1/auto-combo/auto/candidates",
     }
+    snapshot = None
+    if "VERDICT_CONNECTIONS_SNAPSHOT" in os.environ:
+        # Same reader and freshness rule as orchestrate (run.fetch_connections).
+        # An invalid snapshot raises OrchestrationError: no management fallback.
+        from verdict.orchestration.connections_snapshot import read_connections_snapshot
+
+        snapshot = read_connections_snapshot(Path(os.environ["VERDICT_CONNECTIONS_SNAPSHOT"]))
     budget = _DecodedBudget(max(1, decoded_byte_budget))
     deadline = time.monotonic() + aggregate_deadline_seconds
     payloads: dict[str, Any] = {}
+    kinds: dict[str, str] = {}
     for name, path in paths.items():
+        if snapshot is not None and name not in _INFERENCE_SOURCES:
+            payloads[name] = None
+            kinds[name] = "not_read_snapshot"
+            continue
         try:
             inference = name in _INFERENCE_SOURCES
             if inference and not inference_key:
@@ -687,7 +757,20 @@ def fetch_omniroute_evidence(
                 deadline=deadline,
                 row_limit=raw_row_limit,
             )
-        except (OSError, ValueError, _BoundedReadError):
-            # Exception bodies and URLs can echo credentials. Retain only source names.
+        except (OSError, ValueError, _BoundedReadError) as exc:
+            # Exception bodies and URLs can echo credentials. Retain only source
+            # names plus the HTTP status or the exception class name.
             payloads[name] = None
-    return parse_omniroute_evidence(**payloads, now=datetime.now(timezone.utc))
+            code = getattr(exc, "code", None)
+            kinds[name] = f"http_{code}" if isinstance(code, int) else type(exc).__name__
+    evidence = parse_omniroute_evidence(
+        **payloads, now=datetime.now(timezone.utc), connections_snapshot=snapshot
+    )
+    errors = {
+        name: kinds.get(name, "invalid_payload")
+        for name in evidence.source_errors
+        if not (snapshot is not None and name in {"providers", "resilience", "limits", "cooldowns"})
+    }
+    return replace(
+        evidence, source_errors=tuple(errors), source_error_kinds=MappingProxyType(errors)
+    )
