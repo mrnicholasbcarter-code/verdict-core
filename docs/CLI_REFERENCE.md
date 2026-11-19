@@ -618,6 +618,8 @@ Network probes require the explicit `--allow-live-probe` consent flag.
 verdict identify --passive --json                 # read-only; zero model calls
 verdict identify --passive --json --save-report   # also writes $VERDICT_HOME/identify-latest.json (0600)
 verdict identify --screen --allow-live-probe --max-per-provider 1 --max-routes 8 --json
+verdict identify --screen --allow-live-probe --capacity free --max-per-provider 2 --max-routes 8 \
+  --max-capability-tier 2 --json                  # only routes the frontier planner can admit
 verdict identify install-service [--dry-run]      # passive and six-hourly screen timers
 ```
 
@@ -630,6 +632,13 @@ slots are unavailable and are not fetched. A failed or malformed source is liste
 `source_errors`. Passive mode reads tool proof from `health-cache.json` without
 writing it; an unreadable cache gives `tool_proof_error: health_cache_unavailable`.
 Schedules and screen bounds: [identify-maintenance.md](guides/identify-maintenance.md).
+
+`--max-capability-tier N` (0 = frontier to 3 = small; `--screen` only) skips,
+without a probe, every route whose capability tier is unknown
+(`skipped_unknown_tier`) or above N (`skipped_capability_tier`). The tier is
+the eligibility ladder's own rule, and skipped routes take no slot of
+`--max-routes` or `--max-per-provider`. Each screen row reports
+`capability_tier`, `supports_tools` and `context_window` (`null` when unknown).
 
 The candidate pool is OmniRoute's live view: active connections with valid
 credentials, decorated with breaker state, connection cooldown, model lockout and

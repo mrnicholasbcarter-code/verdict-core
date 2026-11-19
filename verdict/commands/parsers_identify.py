@@ -43,6 +43,14 @@ def register(subparsers: Any) -> None:
     parser.add_argument("--allow-live-probe", action="store_true")
     parser.add_argument("--max-per-provider", type=int)
     parser.add_argument("--max-routes", type=int)
+    parser.add_argument(
+        "--max-capability-tier",
+        type=int,
+        choices=range(4),
+        metavar="{0,1,2,3}",
+        help="With --screen: skip, without probing, routes whose capability tier "
+        "is unknown or above N (0 = frontier, 3 = small)",
+    )
     parser.add_argument("--provider", action="append", default=[], dest="providers")
     parser.add_argument(
         "--capacity", action="extend", type=_capacities, default=[], dest="capacities"

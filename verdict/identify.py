@@ -19,6 +19,7 @@ from verdict.metadata.records import ModelMetadataError
 from verdict.metadata.store import MetadataSnapshot, load_store
 from verdict.omniroute_evidence import OmniRouteEvidence, fetch_omniroute_evidence
 from verdict.orchestration.credential_pools import canonical_route, pool_of
+from verdict.orchestration.eligibility import _capability_facts, _capability_tier
 from verdict.orchestration.health_cache import (
     STATE_NEGATIVE,
     USABLE_SECONDS,
@@ -202,9 +203,14 @@ def screen_models(
     all_excluded: bool = False,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     monotonic: Callable[[], float] = time.monotonic,
+    max_capability_tier: int | None = None,
 ) -> dict[str, Any]:
-    """Screen strongest task rating first; capacity class is a filter, not an order."""
-    _screen_options(allow_live_probe, max_per_provider, max_routes)
+    """Screen strongest task rating first; capacity class is a filter, not an order.
+
+    ``max_capability_tier`` skips, without probing, every route whose tier
+    (the eligibility ladder's own rule) is unknown or above it, before caps apply.
+    """
+    _screen_options(allow_live_probe, max_per_provider, max_routes, max_capability_tier)
     report = identify_models(
         evidence,
         metadata=metadata,
@@ -311,15 +317,29 @@ def screen_models(
                 continue
             fallback = canonical_route(route_id).split("/", 1)
             family = evidence.route_identities.get(route_id, (fallback[0], fallback[-1]))
+            inventory_row = evidence.inventory_rows.get(route_id, {})
+            tier = _capability_tier(inventory_row, route_id)
+            context_window, supports_tools, _ = _capability_facts(inventory_row)
             row: dict[str, Any] = {
                 **asdict(rating),
                 "provider": provider,
                 "capacity": capacity,
                 "capacity_evidence": evidence.route_capacity_evidence.get(route_id),
+                "capability_tier": tier,
+                "supports_tools": supports_tools,
+                "context_window": context_window,
                 "turns_sent": 0,
                 "rescreen_requested": route_id in requested,
                 "latency_ms": None,
             }
+            if max_capability_tier is not None and (tier is None or tier > max_capability_tier):
+                # Unknown is never sufficient; the route neither probes nor
+                # claims an alias slot or a cap slot.
+                row["result"] = (
+                    "skipped_unknown_tier" if tier is None else "skipped_capability_tier"
+                )
+                rows.append(row)
+                continue
             now = clock()
             cache.reload()
             lookup = cache.lookup(route_id, now)
@@ -390,7 +410,10 @@ def screen_models(
 
 
 def _screen_options(
-    allow_live_probe: bool, max_per_provider: int | None, max_routes: int | None
+    allow_live_probe: bool,
+    max_per_provider: int | None,
+    max_routes: int | None,
+    max_capability_tier: int | None = None,
 ) -> None:
     if not allow_live_probe:
         raise ValueError("live_probe_consent_required: use --allow-live-probe")
@@ -398,6 +421,8 @@ def _screen_options(
         raise ValueError(
             "screen_caps_required: positive --max-per-provider and --max-routes required"
         )
+    if max_capability_tier is not None and not 0 <= max_capability_tier <= 3:
+        raise ValueError("invalid_max_capability_tier: --max-capability-tier must be 0 to 3")
 
 
 def identify_report(
@@ -410,6 +435,7 @@ def identify_report(
     capacities: Sequence[str] = (),
     all_excluded: bool = False,
     refresh_health_cache: bool = False,
+    max_capability_tier: int | None = None,
 ) -> dict[str, Any]:
     """Read the seven passive OmniRoute sources and local metadata into one report.
 
@@ -417,7 +443,9 @@ def identify_report(
     liveness and availability negatives from observed traffic.
     """
     if screen:
-        _screen_options(allow_live_probe, max_per_provider, max_routes)
+        _screen_options(allow_live_probe, max_per_provider, max_routes, max_capability_tier)
+    elif max_capability_tier is not None:
+        raise ValueError("--max-capability-tier requires --screen")
     base_url, key = resolve_gateway_binding()
     evidence = fetch_omniroute_evidence(
         normalize_omniroute_origin(base_url),
@@ -451,6 +479,7 @@ def identify_report(
             providers=providers,
             capacities=capacities,
             all_excluded=all_excluded,
+            max_capability_tier=max_capability_tier,
         )
     else:
         tool_proof: Mapping[str, HealthEntry] | None
@@ -496,6 +525,7 @@ def cmd_identify(
     capacities: Sequence[str] = (),
     all_excluded: bool = False,
     refresh_health_cache: bool = False,
+    max_capability_tier: int | None = None,
 ) -> None:
     try:
         report = (
@@ -507,6 +537,7 @@ def cmd_identify(
                 providers=providers,
                 capacities=capacities,
                 all_excluded=all_excluded,
+                max_capability_tier=max_capability_tier,
             )
             if screen
             else identify_report(all_excluded=all_excluded, refresh_health_cache=True)
