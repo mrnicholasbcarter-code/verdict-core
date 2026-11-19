@@ -25,6 +25,11 @@ jobs:
         shell: bash -euo pipefail {0}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The suite validates docs/proof/dod/*.json, whose merged_sha must be a
+          # commit in this repository (scripts/check_dod.py); a depth-1 checkout
+          # cannot see the merge commit of an earlier squash-merged PR.
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -55,8 +60,25 @@ jobs:
       - name: Offline smoke, fixture only (G7.2; not live evidence)
         run: python scripts/flagship_demo.py > evidence/flagship_demo_output.json
 
+      # G7.1 needs an operator-supplied RouteRequest with live offers, which a hosted
+      # runner cannot provide. The repository variable VERDICT_ACCEPTANCE_WAIVE_G71
+      # (operator waiver for the uncertified 1.0.0 release, 2026-11-19) records a
+      # failed quickstart as RESULT: WAIVED instead of stopping the job. The report
+      # and the verifier accept WAIVED for G7.1 only, and only while it is "true".
       - name: Record the quickstart (G7.1 evidence)
-        run: python scripts/quickstart.py 2>&1 | tee evidence/quickstart_test.log
+        env:
+          VERDICT_ACCEPTANCE_WAIVE_G71: ${{ vars.VERDICT_ACCEPTANCE_WAIVE_G71 }}
+        run: |
+          # Explicit, so tee can never mask a quickstart failure whatever the job's shell.
+          set -o pipefail
+          if python scripts/quickstart.py 2>&1 | tee evidence/quickstart_test.log; then
+            exit 0
+          elif [ "${VERDICT_ACCEPTANCE_WAIVE_G71:-}" = "true" ]; then
+            echo "RESULT: WAIVED (VERDICT_ACCEPTANCE_WAIVE_G71=true; operator waiver)" \
+              | tee -a evidence/quickstart_test.log
+          else
+            exit 1
+          fi
 
       - name: Record the committed-credential scan (G5.4 evidence)
         run: python scripts/scan_committed_credentials.py 2>&1 | tee evidence/secrets_scan_results.txt
@@ -112,6 +134,8 @@ jobs:
       # --- Report and verify. Neither of these is advisory. --------------------
 
       - name: Generate the gate report
+        env:
+          VERDICT_ACCEPTANCE_WAIVE_G71: ${{ vars.VERDICT_ACCEPTANCE_WAIVE_G71 }}
         run: python scripts/generate_gates_report.py --evidence-dir evidence
 
       - name: Upload the evidence
@@ -125,4 +149,6 @@ jobs:
           retention-days: 30
 
       - name: Verify the acceptance gates
+        env:
+          VERDICT_ACCEPTANCE_WAIVE_G71: ${{ vars.VERDICT_ACCEPTANCE_WAIVE_G71 }}
         run: python scripts/verify_gates.py --evidence-dir evidence --json
