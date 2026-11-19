@@ -26,6 +26,9 @@ PyPI or npm yet.
 - Between 0.5.0 and #1049, among others: an Anthropic Messages relay surface (#997), served-identity verification on every worker and relay attempt (#970), versioned operator policy authority with fail-closed execution boundaries (#1000), qualification producers behind one shared coordinator (#1002), and a definition-of-done gate that checks an orchestrate run against its own result (#1042).
 
 ### Changed
+- `verdict run-receipt` on a receipt whose event log changed prints `INTEGRITY FAILED` first and labels the stored outcome `recorded (unverified)`. Its `--json` output gains `verified`; on failure `outcome` is `INTEGRITY_FAILED` and the stored outcome moves to `recorded_outcome` (#1141).
+- `verdict route --json` prints exactly one JSON document on stdout (#1141).
+- `verdict orchestrate --plain` prints the plain narrative on a terminal too, not the live view (#1141).
 - An HTTP 200 reply that is an in-band credit refusal (zero output tokens, no tool call, "not enough credits" or "top up" text) is a payment failure, not a success. Probes, the relay and the acceptance serve check all treat it that way (#1130). The ladder health probe scopes it to the route, without a pool or provider cooldown (#1134).
 - Routes from prepaid-credit providers without explicit free evidence are classified UNKNOWN capacity, not FREE. `:free` community routes and priced models are unchanged (#1133).
 - After an in-band refusal the relay may fail over to the next admitted candidate without an idempotency key. Every other failure still needs the key (#1134).

@@ -181,11 +181,13 @@ verdict run-receipt /tmp/tampered
 COMPLETE: all implement/integrate nodes validated, barrier ok, review PASS
 integrity: OK (events digest verified)
 ...
-COMPLETE: all implement/integrate nodes validated, barrier ok, review PASS
-integrity: events_digest mismatch: events.jsonl changed after receipt was written
+INTEGRITY FAILED: events_digest mismatch: events.jsonl changed after receipt was written
+recorded (unverified): COMPLETE: all implement/integrate nodes validated, barrier ok, review PASS
+...
 ```
 
-The first command exits 0. The second exits 1 and names the digest mismatch.
+The first command exits 0. The second exits 1, names the digest mismatch first, and labels the
+stored outcome as recorded but unverified.
 
 ## Proof from a live run
 
