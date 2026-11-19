@@ -923,10 +923,18 @@ class ReviewResult:
     observed_model: str = ""  # model actually reported by the reviewer payload (may be empty)
     # Every reviewer attempt (route, status, failure category/scope/cooldown).
     attempts: tuple[dict[str, object], ...] = ()
+    # Issue #1137: comment-posting tool calls the reviewer made that OCR dropped
+    # (for example malformed JSON). Their findings are unknown, so a review with
+    # any lost call is never a clean PASS.
+    findings_lost: int = 0
 
     @property
     def passed(self) -> bool:
-        return self.status == "PASS" and not any(f.blocking() for f in self.findings)
+        return (
+            self.status == "PASS"
+            and self.findings_lost == 0
+            and not any(f.blocking() for f in self.findings)
+        )
 
 
 def require_launchable(selector: Any, route_id: str, *, surface: str) -> None:

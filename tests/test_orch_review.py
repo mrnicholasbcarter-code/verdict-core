@@ -1157,3 +1157,132 @@ def test_summary_alone_without_reported_model_is_unobserved(
     assert not result.passed
     assert result.detail.startswith("identity_unobserved:")
     assert reviewer._provider_failure(result)
+
+
+# --------------------------------------------------------------------------- #
+# Issue #1137: findings the review tool dropped are never a clean PASS
+# --------------------------------------------------------------------------- #
+
+
+class PayloadSequenceRunner(FakeRunner):
+    """Each review call writes the next payload in order (the last one repeats)."""
+
+    def __init__(self, payloads: list[str]) -> None:
+        super().__init__(OcrRun(exit_code=0))
+        self._payloads = payloads
+        self.reviews = 0
+
+    def __call__(self, argv: Sequence[str], *, env: Mapping[str, str], timeout: float) -> OcrRun:
+        argv = list(argv)
+        if "--version" in argv:
+            return OcrRun(exit_code=0, stdout="open-code-review v1.12.9\n")
+        payload = self._payloads[min(self.reviews, len(self._payloads) - 1)]
+        self.reviews += 1
+        self.calls.append({"argv": argv, "env": dict(env), "timeout": timeout})
+        out_path = Path(argv[argv.index("--output") + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(_as_ocr_writes(payload, argv))
+        return OcrRun(exit_code=0)
+
+
+def test_dropped_code_comment_call_is_not_a_clean_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches: live run 20261119T000727Z recorded PASS/0 findings after OCR
+    dropped a malformed ``code_comment`` call carrying two non-blocking comments."""
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    runner = PayloadSequenceRunner([_load_fixture("sample-findings-lost.json")])
+    result = _run(_reviewer(tmp_path, FakeSelector(_verdict()), runner))
+    assert result.status == "ERROR"
+    assert not result.passed
+    assert result.detail.startswith("findings_lost")
+    assert result.findings_lost == 1
+    assert result.findings == ()  # never invented
+    # Retried once, then failed closed: bounded, never a reviewer-pool walk.
+    assert runner.reviews == 2
+    assert [a["category"] for a in result.attempts] == ["findings_lost", "findings_lost"]
+    assert all(a["findings_lost"] == 1 for a in result.attempts)
+
+
+def test_findings_lost_retry_recovers_with_a_clean_second_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches: a transient malformed tool call permanently blocking the run."""
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    selector = PoolSelector(["cx/reviewer-a", "cc/reviewer-b"])
+    runner = PayloadSequenceRunner(
+        [_load_fixture("sample-findings-lost.json"), _load_fixture("sample-clean.json")]
+    )
+    result = _run(_reviewer(tmp_path, selector, runner))
+    assert result.status == "PASS" and result.findings_lost == 0
+    assert selector.failed == []  # lost findings are not a provider failure; no cooldown
+    assert [a["category"] for a in result.attempts] == ["findings_lost", ""]
+
+
+def test_findings_lost_retry_respects_max_reviewer_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches: the findings_lost retry escaping the bounded attempt budget."""
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    runner = PayloadSequenceRunner([_load_fixture("sample-findings-lost.json")])
+    reviewer = _reviewer(tmp_path, FakeSelector(_verdict()), runner, max_reviewer_attempts=1)
+    result = _run(reviewer)
+    assert result.status == "ERROR" and result.findings_lost == 1
+    assert runner.reviews == 1
+
+
+def test_parsed_nonblocking_findings_without_drops_still_pass_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches: over-correction that treats any comment tool use as lost findings."""
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    payload = json.loads(_load_fixture("sample-clean.json"))
+    payload["comments"] = [
+        {"path": "x.py", "content": "add edge case", "start_line": 1, "severity": "medium"},
+        {"path": "x.py", "content": "rename test", "start_line": 2, "severity": "low"},
+    ]
+    payload["tool_calls"] = {
+        "total": 2,
+        "by_tool": {"code_comment": 1, "file_read": 1},
+        "failure": 0,
+        "failure_by_tool": {},
+        "failure_details": [],
+    }
+    runner = PayloadSequenceRunner([json.dumps(payload)])
+    result = _run(_reviewer(tmp_path, FakeSelector(_verdict()), runner))
+    assert result.status == "PASS" and result.passed
+    assert len(result.findings) == 2 and result.findings_lost == 0
+    assert runner.reviews == 1
+
+
+def test_non_comment_tool_failure_does_not_mark_findings_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches: a failed file_read (no findings carried) being reported as lost findings."""
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    payload = json.loads(_load_fixture("sample-clean.json"))
+    payload["tool_calls"] = {
+        "total": 2,
+        "by_tool": {"file_read": 2},
+        "failure": 1,
+        "failure_by_tool": {"file_read": 1},
+        "failure_details": [{"tool_name": "file_read", "error": "not found"}],
+    }
+    runner = PayloadSequenceRunner([json.dumps(payload)])
+    result = _run(_reviewer(tmp_path, FakeSelector(_verdict()), runner))
+    assert result.status == "PASS" and result.findings_lost == 0
+
+
+def test_dropped_comments_beside_parsed_blocking_finding_stay_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches: lost findings downgrading a real blocking FAIL, or the loss going unrecorded."""
+    monkeypatch.setenv("TEST_OCR_KEY", "k")
+    payload = json.loads(_load_fixture("sample-findings-lost.json"))
+    payload["comments"] = [
+        {"path": "x.py", "content": "bug", "start_line": 1, "severity": "critical"}
+    ]
+    runner = PayloadSequenceRunner([json.dumps(payload)])
+    result = _run(_reviewer(tmp_path, FakeSelector(_verdict()), runner))
+    assert result.status == "FAIL" and result.findings_lost == 1
+    assert runner.reviews == 1

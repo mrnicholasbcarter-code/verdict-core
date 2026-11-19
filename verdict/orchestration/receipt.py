@@ -539,6 +539,7 @@ def _review_block(run_dir: Path, events: list[RunEvent]) -> dict[str, Any]:
                 "cooldown_seconds",
                 "duration_seconds",
                 "detail",
+                "findings_lost",
             )
             if e.data.get(key) is not None
         }
@@ -564,6 +565,11 @@ def _review_block(run_dir: Path, events: list[RunEvent]) -> dict[str, Any]:
         blocking = raw_blocking
     else:
         blocking = 0
+    # Issue #1137: dropped comment calls, recorded only when present so older
+    # receipts recompute byte-for-byte.
+    lost = source.get("findings_lost")
+    if isinstance(lost, int) and not isinstance(lost, bool) and lost > 0:
+        extra["findings_lost"] = lost
     return {
         "status": str(source.get("status") or "ERROR").upper(),
         "reviewer": str(source.get("reviewer", "")),
