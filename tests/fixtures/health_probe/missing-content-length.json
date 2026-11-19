@@ -1,0 +1,37 @@
+{
+  "_note": "Shape of two 1-token probe replies from cerebras/gpt-oss-120b in the gateway call log, 2026-11-19 04:08Z and 05:35Z. Ids, fingerprint and timings are redacted; keys, types, finish_reason and token counts are as logged. The assistant message has no content key.",
+  "id": "redacted",
+  "object": "chat.completion",
+  "created": 0,
+  "model": "gpt-oss-120b",
+  "system_fingerprint": "redacted",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "length",
+      "message": {
+        "role": "assistant"
+      }
+    }
+  ],
+  "usage": {
+    "total_tokens": 72,
+    "completion_tokens": 1,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 71,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "time_info": {
+    "created": 0.0,
+    "queue_time": 0.0,
+    "prompt_time": 0.0,
+    "completion_time": 0.0,
+    "total_time": 0.0
+  }
+}
