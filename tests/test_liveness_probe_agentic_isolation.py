@@ -381,7 +381,8 @@ _ID = _headers("groq", "openai/gpt-oss-20b")
             ]
         },
         # 6. assistant message with no content key at all and nothing else to explain it
-        # (no content key is not null: only an explicit null or empty string is accepted)
+        # (no usage here, so the output token count cannot be read: still malformed; the
+        # accepted missing-content shape is in tests/test_health_probe_missing_content.py)
         {"choices": [{"message": {"role": "assistant"}, "finish_reason": "length"}]},
         # empty text with finish_reason stop
         {"choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}]},
