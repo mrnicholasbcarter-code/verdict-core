@@ -4,6 +4,30 @@
 > XDG. A separate TOML path exists only for context-hydration settings.
 > Environment variables listed below are those the current code actually reads.
 
+## First run
+
+On a new install, before anything is set up:
+
+1. `verdict setup` writes the configuration. Until then `verdict doctor` starts
+   with "Verdict is installed but not set up yet. Start with: verdict setup" and
+   marks parts that do not exist yet as `NOT-CONFIGURED`, each with its next
+   command. These rows are not `OK`, and doctor keeps exiting 1 while they remain.
+   A part that exists but is broken is still `FAILED`.
+2. `verdict orchestrate` needs a free route with a recorded tool-use (agentic)
+   check. A new state directory has none, so the run ends BLOCKED with the reason
+   `no_agentic_probe` and prints the command that records the check. Run it once
+   (it makes a small, bounded number of model calls and needs your consent flag):
+
+   ```bash
+   verdict identify --screen --allow-live-probe --capacity free --max-per-provider 1 --max-routes 8
+   ```
+
+   Then run `verdict orchestrate` again. `verdict identify install-service`
+   installs the timers that keep this evidence fresh. Admission rules do not
+   change: routes without a fresh check are never used.
+3. `verdict serve` needs `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB`; see
+   [Serve authentication and receipts](#serve-authentication-and-receipts).
+
 ## Configuration surfaces
 
 | Surface | Path | Owns |
@@ -506,6 +530,9 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 
 | Variable | Meaning |
 |----------|---------|
+| `LLMGATE_AUTH_TOKEN` | Bearer token for protected endpoints. Required: without it (and without `LLMGATE_ALLOW_ANONYMOUS`) `verdict serve` refuses to start. See [Serve authentication and receipts](#serve-authentication-and-receipts) |
+| `LLMGATE_ALLOW_ANONYMOUS` | `1` allows an unauthenticated server, loopback hosts only, with a non-durable in-memory receipts store. Development only |
+| `VERDICT_RECEIPTS_DB` | Durable receipts SQLite path. Required with `LLMGATE_AUTH_TOKEN` (ADR-017); no default is assumed |
 | `LLMGATE_PRIMARY` | Preferred upstream identity string |
 | `LLMGATE_UPSTREAM_BASE_URL` | Upstream base URL (defaults may derive from OmniRoute) |
 | `LLMGATE_UPSTREAM_API_KEY` | Upstream API key |
@@ -524,6 +551,29 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `VERDICT_ALLOW_UNVERIFIED_DEV` | Opt-in (`1`/`true`) to admit unverified (unknown/error/timeout) candidates for non-protected work when the intelligence profile is `development`. Default off: unknown-state models are excluded as `runtime_truth_absent` |
 | `VERDICT_OUTCOME_SHADOW_ROOTS` | BOD-304/BOD-426 outcome-shadow run directories (OS path-separator list, or one manifest file with one run dir per line). Default unset: shadow disabled and nothing persisted. When set, every admission receipt's `outcome_shadow` block is also appended to `outcome_shadow.jsonl` next to the first entry; see [Outcome shadow sink](#outcome-shadow-sink) |
 | `VERDICT_WORKER_IDLE_SECONDS` | BOD-312 idle-output bound for `verdict orchestrate` Prime headless workers: a worker that writes nothing to stdout or stderr for this many seconds has its process group killed, the attempt ends `stalled`, and recovery moves the node to a different route within the attempt budget. Default `300`; an empty, zero, negative or non-numeric value keeps the default |
+
+#### Serve authentication and receipts
+
+`verdict serve` fails closed. It needs both of these before it starts:
+
+- `LLMGATE_AUTH_TOKEN`: the bearer token clients send.
+- `VERDICT_RECEIPTS_DB`: the durable receipts file. ADR-017 requires it in
+  authenticated mode, so Verdict does not pick a path for you.
+
+If either is missing, `verdict serve` prints one line naming the setting and the
+fix, and exits 2. The simplest fix is `verdict setup --apply --allow host.serve`:
+it installs the `verdict-serve` user unit and writes both settings to
+`~/.config/verdict/serve.env` (mode 0600), with the receipts file at
+`$VERDICT_HOME/receipts.db`. To run it by hand:
+
+```bash
+export LLMGATE_AUTH_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export VERDICT_RECEIPTS_DB="$HOME/.verdict/receipts.db"
+verdict serve --host 127.0.0.1 --port 8000
+```
+
+For local development only, `LLMGATE_ALLOW_ANONYMOUS=1` starts without a token
+on a loopback host and keeps receipts in memory (lost on restart).
 
 ### Outcome shadow sink
 

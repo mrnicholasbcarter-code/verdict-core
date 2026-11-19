@@ -200,4 +200,28 @@ def explain_selection(verdicts: Sequence[RouteVerdict]) -> dict[str, Any]:
     }
 
 
-__all__ = ["explain_selection"]
+#: Ladder reasons that mean "no agentic proof recorded yet", typical of a new state directory.
+_MISSING_PROOF_REASONS = frozenset({"no_agentic_probe", "no_health_cache"})
+#: Bounded, consented screen that records the missing agentic proof (``verdict identify``).
+SCREEN_COMMAND = (
+    "verdict identify --screen --allow-live-probe --capacity free "
+    "--max-per-provider 1 --max-routes 8"
+)
+
+
+def missing_proof_hint(verdicts: Sequence[RouteVerdict]) -> str:
+    """Plain-words reason and next command when routes lack agentic proof, else ``""``.
+
+    Wording only: it never changes which routes were admitted.
+    """
+    count = sum(1 for v in verdicts if v.reason in _MISSING_PROOF_REASONS)
+    if not count:
+        return ""
+    return (
+        f"{count} free route(s) have no recorded tool-use (agentic) check yet, so none may "
+        f"run this work; this is normal for a new Verdict state directory. Run: {SCREEN_COMMAND}"
+        " (see docs/CONFIGURATION.md#first-run)"
+    )
+
+
+__all__ = ["SCREEN_COMMAND", "explain_selection", "missing_proof_hint"]
