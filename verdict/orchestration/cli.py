@@ -856,9 +856,12 @@ def _orchestrate(args: argparse.Namespace) -> int:
     # BOD-433: every worker send needs a permit proven by a stored, fresh passport.
     # Each worker executor must report this origin (Prime: its launch's models.json
     # baseUrl; direct-gateway: --gateway), or its send is denied.
+    from verdict.orchestration.runtime import REDACT_GATEWAY_ORIGIN_ENV
+
     dispatch_authority = DispatchAuthority(
         gateway_origin=args.gateway.rstrip("/"),
         confirm=lambda route_ids, now: passport_confirmation(route_ids, now=now),
+        record_gateway_origin=os.environ.get(REDACT_GATEWAY_ORIGIN_ENV) != "1",
     )
     events_path = run_dir / "events.jsonl"
     events_path.touch()
