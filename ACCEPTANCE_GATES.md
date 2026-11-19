@@ -116,6 +116,16 @@ so partial evidence is preserved even when a producer fails.
 The report and verify steps are not advisory. The verifier fails the run when
 any gate is not PASS.
 
+**One operator waiver exists: G7.1.** G7.1 needs an operator-supplied RouteRequest
+with live offers (`VERDICT_QUICKSTART_ROUTE_REQUEST`), which a hosted runner cannot
+provide. While the repository variable `VERDICT_ACCEPTANCE_WAIVE_G71` is `true`, a
+failed quickstart appends `RESULT: WAIVED` to `quickstart_test.log` and does not stop
+the job. The report then records G7.1 as `WAIVED`, and the verifier counts it toward
+the release. The verifier rejects the report as invalid if any other gate is
+`WAIVED`, or if G7.1 is `WAIVED` while the variable is not `true`. The operator set
+this waiver for the uncertified 1.0.0 release on 2026-11-19, and the variable is
+switched back off after that release run.
+
 `scripts/generate_gates_report.py` decides each gate from evidence alone. A
 test-backed gate passes only when the named test is present in the JUnit report
 and every matching case passed; an artifact-backed gate passes only when its

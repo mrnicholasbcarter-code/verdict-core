@@ -15,7 +15,10 @@ The generator observes only.  It never runs a check and never invents a result:
   satisfies the documented condition.
 
 Anything else is ``BLOCKED`` (evidence absent) or ``FAIL`` (evidence present and
-negative).  Every gate also gets a note file recording what was inspected, so a
+negative).  The one exception is an operator waiver: a gate in ``WAIVABLE_GATES``
+whose text artifact ends ``RESULT: WAIVED`` is ``WAIVED`` only while ``WAIVER_ENV``
+is ``true``; otherwise that artifact is ``FAIL``.  Every gate also gets a note file
+recording what was inspected, so a
 blocked gate still cites real evidence and the verifier can report on it instead
 of rejecting a structurally incomplete report.
 """
@@ -24,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -39,6 +43,12 @@ REPORT_NAME = "gates_status.json"
 NOTES_DIR = "notes"
 DERIVED_DIR = "derived"
 JUNIT_NAME = "pytest_results.xml"
+
+# Operator waiver (2026-11-19, the uncertified 1.0.0 release): G7.1 needs an
+# operator-supplied RouteRequest with live offers, which a hosted runner cannot
+# provide.  Only these gates can be WAIVED, and only while WAIVER_ENV is "true".
+WAIVER_ENV = "VERDICT_ACCEPTANCE_WAIVE_G71"
+WAIVABLE_GATES = frozenset({"G7.1"})
 
 _STEP_START = re.compile(r"^\s*- (name|uses):")
 
@@ -315,10 +325,17 @@ def _resolve_tests(gate: Gate, outcomes: dict[str, list[bool]] | None) -> Derive
     return Derived("PASS", "\n".join(lines))
 
 
-def _resolve_artifacts(gate: Gate, evidence_dir: Path) -> Derived:
+def waiver_active(gate_id: str) -> bool:
+    """True only for a waivable gate while the operator waiver variable is set."""
+
+    return gate_id in WAIVABLE_GATES and os.environ.get(WAIVER_ENV) == "true"
+
+
+def _resolve_artifacts(gate: Gate, evidence_dir: Path, *, waivable: bool = False) -> Derived:
     lines = []
     missing = False
     invalid = False
+    waived = False
     for artifact in gate.artifacts:
         path = evidence_dir / artifact
         if path.is_file() and not path.is_symlink():
@@ -343,6 +360,10 @@ def _resolve_artifacts(gate: Gate, evidence_dir: Path) -> Derived:
                     invalid = True
                     continue
                 last_result = result_lines[-1].strip()
+                if waivable and last_result.startswith("RESULT: WAIVED"):
+                    lines.append(f"WAIVED: {artifact} ({last_result}; {WAIVER_ENV}=true)")
+                    waived = True
+                    continue
                 if not last_result.startswith("RESULT: PASS"):
                     lines.append(f"FAIL: {artifact} last RESULT is not PASS: {last_result}")
                     invalid = True
@@ -363,7 +384,9 @@ def _resolve_artifacts(gate: Gate, evidence_dir: Path) -> Derived:
             missing = True
     if invalid:
         return Derived("FAIL", "\n".join(lines))
-    return Derived("BLOCKED" if missing else "PASS", "\n".join(lines))
+    if missing:
+        return Derived("BLOCKED", "\n".join(lines))
+    return Derived("WAIVED" if waived else "PASS", "\n".join(lines))
 
 
 def _git_commit(repo_root: Path) -> str:
@@ -407,7 +430,7 @@ def build_report(evidence_dir: Path, repo_root: Path) -> dict[str, Any]:
             if outcomes is not None:
                 evidence.append(JUNIT_NAME)
         else:
-            result = _resolve_artifacts(gate, evidence_dir)
+            result = _resolve_artifacts(gate, evidence_dir, waivable=waiver_active(gate.gate_id))
             evidence.extend(
                 artifact
                 for artifact in gate.artifacts
@@ -444,12 +467,13 @@ def main(argv: list[str] | None = None) -> int:
     report = build_report(evidence_dir, args.repo_root)
     (evidence_dir / REPORT_NAME).write_bytes(_canonical_json(report))
 
-    counts = {status: 0 for status in ("PASS", "FAIL", "BLOCKED")}
+    counts = {status: 0 for status in ("PASS", "FAIL", "BLOCKED", "WAIVED")}
     for gate in report["gates"]:
         counts[gate["status"]] += 1
     print(
         f"wrote {evidence_dir / REPORT_NAME}: "
-        f"{counts['PASS']} pass, {counts['FAIL']} fail, {counts['BLOCKED']} blocked",
+        f"{counts['PASS']} pass, {counts['FAIL']} fail, {counts['BLOCKED']} blocked, "
+        f"{counts['WAIVED']} waived",
         file=sys.stderr,
     )
     return 0

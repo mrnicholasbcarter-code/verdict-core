@@ -16,6 +16,9 @@ PyPI or npm yet.
 This release is not certified: the attested certification rehearsal has not passed yet (see #1168 and #1169).
 It is published with the release workflow's bundle requirement switched off for this one
 tag and switched back on afterwards; every other release check still runs.
+Acceptance gate G7.1 (the quickstart's live route probe) is waived for this release: it
+needs an operator-supplied route request with live offers, which the hosted release
+runner cannot provide. The other 28 acceptance gates passed.
 
 ### Upgrade notes (read first)
 - **Behaviour change: `verdict orchestrate` runs workers on `direct-gateway` by default.** Each worker request goes straight to the gateway; no agent harness is needed. Prime Agent is an optional harness: select it with `--executor prime-headless` (the alias `prime` still works). Route visibility follows the executor, so plain eligibility reads the live gateway catalog instead of Prime's `models.json`; `--sync-visibility` still selects Prime, and an `--executor-map` with any Prime node keeps Prime visibility. Without Prime installed, `verdict setup` plans no Prime action, `verdict doctor` shows the Prime rows as `not-installed`, and live acceptance reports `harness-prime` as skipped with its reason, never as passed (#1148).

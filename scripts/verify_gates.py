@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import stat
 import sys
 from pathlib import Path, PurePosixPath
@@ -19,7 +20,13 @@ from typing import Any
 SCHEMA_VERSION = 1
 REPOSITORY = "mrnicholasbcarter-code/verdict-core"
 REPORT_NAME = "gates_status.json"
-STATUSES = frozenset({"PASS", "FAIL", "BLOCKED"})
+STATUSES = frozenset({"PASS", "FAIL", "BLOCKED", "WAIVED"})
+
+# Operator waiver (2026-11-19, the uncertified 1.0.0 release).  WAIVED is valid
+# only for these gates and only while WAIVER_ENV is "true" in the verifier's own
+# environment; anywhere else a WAIVED gate makes the report invalid.
+WAIVER_ENV = "VERDICT_ACCEPTANCE_WAIVE_G71"
+WAIVABLE_GATES = frozenset({"G7.1"})
 
 # Keep this list aligned with the G1-G7 IDs in ACCEPTANCE_GATES.md.  The
 # verifier deliberately requires the complete set rather than accepting a
@@ -144,6 +151,13 @@ def _validate_report(root: Path, report: dict[str, Any]) -> dict[str, Any]:
             raise GateValidationError(f"gate {index} has an invalid ID")
         if not isinstance(status, str) or status not in STATUSES:
             raise GateValidationError(f"{gate_id} has an invalid status")
+        if status == "WAIVED" and (
+            gate_id not in WAIVABLE_GATES or os.environ.get(WAIVER_ENV) != "true"
+        ):
+            raise GateValidationError(
+                f"{gate_id} is WAIVED but only {', '.join(sorted(WAIVABLE_GATES))} "
+                f"can be waived, and only while {WAIVER_ENV}=true"
+            )
         if not isinstance(evidence, list) or not evidence:
             raise GateValidationError(f"{gate_id} must cite at least one evidence file")
         seen: set[str] = set()
@@ -163,7 +177,8 @@ def _validate_report(root: Path, report: dict[str, Any]) -> dict[str, Any]:
         "passed": counts["PASS"],
         "failed": counts["FAIL"],
         "blocked": counts["BLOCKED"],
-        "all_passed": counts["PASS"] == len(GATE_IDS),
+        "waived": counts["WAIVED"],
+        "all_passed": counts["PASS"] + counts["WAIVED"] == len(GATE_IDS),
     }
 
 
@@ -186,7 +201,8 @@ def _emit(summary: dict[str, Any], *, as_json: bool) -> None:
             state = "BLOCKED"
         print(
             f"{state}: validated {summary['gate_count']} gates "
-            f"({summary['passed']} pass, {summary['failed']} fail, {summary['blocked']} blocked)"
+            f"({summary['passed']} pass, {summary['failed']} fail, {summary['blocked']} blocked, "
+            f"{summary['waived']} waived)"
         )
 
 
