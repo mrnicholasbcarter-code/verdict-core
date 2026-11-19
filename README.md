@@ -90,15 +90,6 @@ OFFLINE SCENARIO: scripted workers (1.5 s each), injected faults
 
 `verdict demo` is an **offline self-test**: scripted workers, fixture routes and injected faults, with no model calls. It runs the real orchestration pipeline (planner, admission, DAG runtime, failure handling, integration barrier, review-route policy, receipt writer) against fixture data. It shows the mechanics. It is not evidence of live behaviour. The full trace and the offline recordings are in the [offline demo guide](docs/guides/offline-demo.md). <!-- claim:C-029 -->
 
-### Watch the interface in action
-
-<picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/demo-tui-poster.svg"><img src="docs/assets/demo-tui.svg" alt="Offline UI walkthrough with scripted workers: a task DAG, injected rate-limit recovery, a scripted review, receipt verification and rejection of a tampered receipt" width="860"></picture>
-
-**Offline UI walkthrough — scripted workers and injected failures; no live model calls.**
-Shows the interface and receipt verification, not model performance, savings or release certification.
-Recorded terminal replay at 1x; idle gaps over 1.5 seconds are capped.
-[Recording details and full cast](docs/guides/offline-demo.md#offline-tui-walkthrough) | [Live-run evidence](#proof-from-a-live-run)
-
 ## How a run works
 
 1. **Plan.** A planner model splits the goal into a small graph of work items, called nodes. Each node owns its files and has a command that checks the work.
