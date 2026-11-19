@@ -25,6 +25,11 @@ jobs:
         shell: bash -euo pipefail {0}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The suite validates docs/proof/dod/*.json, whose merged_sha must be a
+          # commit in this repository (scripts/check_dod.py); a depth-1 checkout
+          # cannot see the merge commit of an earlier squash-merged PR.
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
