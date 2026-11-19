@@ -486,7 +486,7 @@ def _action_doctor(**kwargs: Any) -> ActionResult:
         "shared_memory": diag.shared_memory,
         "capability_bootstrap": diag.capability_report,
         "acceptance": diag.acceptance,
-        "first_run": None if diag.config_loaded else FIRST_RUN_LINE,
+        "first_run": FIRST_RUN_LINE if getattr(diag, "config_loaded", True) is False else None,
     }
     return ActionResult(data=data, ok=not diag.issues, exit_code=1 if diag.issues else 0)
 
