@@ -472,3 +472,38 @@ def test_pr_watcher_timer_row_omits_fields_when_unit_missing() -> None:
     assert "repos=" not in row["detail"]
     assert "state dir=" not in row["detail"]
     assert "repair:" in row["detail"]
+
+
+# --- Prime Agent is optional --------------------------------------------------------
+
+
+def test_prime_rows_without_prime_are_not_installed_never_ok_or_failed(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fails if a host without prime-agent reports the Prime registry as FAILED (or OK)."""
+    bare = FakeHost(tmp_path, monkeypatch, prime=False)
+    object.__setattr__(bare.env, "unit_result", lambda unit: "exit-code")
+    rows = {row["label"]: row for row in setup_host.doctor_rows(bare.env)}
+    row = rows["Prime registry"]
+    assert row["status"] == setup_host.NOT_INSTALLED == "not-installed"
+    assert "optional harness" in row["detail"] and "--executor prime-headless" in row["detail"]
+    assert "Prime-sync service" not in rows
+    assert row["status"] not in dd.BLOCKING_ROW_STATES
+
+
+@pytest.mark.usefixtures("_isolated")
+def test_missing_prime_sync_timer_without_prime_is_not_installed() -> None:
+    states = {"verdict-prime-sync.timer": "missing"}
+    absent = {
+        r["label"]: r
+        for r in dd.installed_service_rows(
+            timer_state=_timer(states), prime_installed=lambda: False
+        )
+    }["Prime-sync timer"]
+    assert absent["status"] == "not-installed" and "optional harness" in absent["detail"]
+    present = {
+        r["label"]: r
+        for r in dd.installed_service_rows(timer_state=_timer(states), prime_installed=lambda: True)
+    }["Prime-sync timer"]
+    assert present["status"] == "failed"
+    assert repair_command(present["detail"]) == "verdict harness prime install-service"

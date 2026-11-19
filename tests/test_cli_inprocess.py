@@ -3063,3 +3063,34 @@ def test_cli_doctor_failed_host_prerequisite_names_its_repair_both_modes(
         cli.cmd_doctor()
     assert exc.value.code == 1
     assert "Repair: verdict setup --apply --allow host.ocr" in capsys.readouterr().out
+
+
+def test_cli_doctor_optional_prime_not_installed_is_not_an_issue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fails if an absent optional Prime harness makes doctor exit 1 or reads as OK."""
+    import sys
+
+    from verdict.setup_host import NOT_INSTALLED, PRIME_OPTIONAL_DETAIL
+
+    _doctor_healthy_fixture(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+    monkeypatch.setattr(
+        dd,
+        "host_prerequisite_rows",
+        lambda: [
+            {"label": "Prime registry", "status": NOT_INSTALLED, "detail": PRIME_OPTIONAL_DETAIL}
+        ],
+    )
+    monkeypatch.setattr(sys, "argv", ["verdict", "doctor", "--json"])
+    try:
+        cli.main()
+        code = 0
+    except SystemExit as exc:
+        code = exc.code
+    report = json.loads(capsys.readouterr().out)
+    assert PRIME_OPTIONAL_DETAIL not in report["issues"]
+    assert code == 0, report["issues"]
+    [row] = [s for s in report["sections"] if s["label"] == "Prime registry"]
+    assert row["state"] == "not-installed"

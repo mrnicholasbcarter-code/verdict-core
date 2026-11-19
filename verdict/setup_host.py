@@ -277,6 +277,22 @@ def _pr_watch_problem() -> str:
     return f"no repositories configured: write VERDICT_PR_WATCH_REPOS to {_pr_watch_config_path()}"
 
 
+#: Doctor row state for an optional part that is absent: never ok, never an issue.
+NOT_INSTALLED = "not-installed"
+PRIME_OPTIONAL_DETAIL = (
+    "Prime Agent not installed (optional harness); the default worker executor is "
+    "direct-gateway. To use Prime, install prime-agent, run verdict setup, then "
+    "pass --executor prime-headless"
+)
+
+
+def prime_installed(env: HostEnvironment) -> bool:
+    """The Prime Agent binary is on this host's PATH (``prime-agent`` or ``prime``)."""
+    from verdict.harness_prime import discover
+
+    return discover(prime_home=env.prime_home, which=env.which).installed
+
+
 def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
     """What is wrong with one prerequisite; empty when it is satisfied."""
     if provider_id == OCR:
@@ -343,6 +359,9 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
         return problems + inactive
     from verdict.harness_prime import resolve_paths
 
+    if not prime_installed(env):
+        # Prime Agent is an optional harness: nothing to set up without it.
+        return []
     models = resolve_paths(prime_home=env.prime_home).models
     return [] if models.exists() else [f"{models} is missing"]
 
@@ -714,6 +733,8 @@ def _prime_rows(env: HostEnvironment) -> list[dict[str, str]]:
     from verdict.harness_prime import omniroute_registry_state
 
     label = "Prime registry"
+    if not prime_installed(env):
+        return [_row(label, NOT_INSTALLED, PRIME_OPTIONAL_DETAIL)]
     registry = omniroute_registry_state(prime_home=env.prime_home)
     path, state = registry["path"], registry["state"]
     sync = "repair: verdict harness prime sync-models"
