@@ -189,10 +189,23 @@ class DispatchAuthority:
     ``gateway_origin`` is the gateway the run's workers are sent through.
     ``confirm(route_ids, now)`` returns a read-only passport confirmation in the
     shape ``relay.admission_proof`` consumes.
+
+    ``record_gateway_origin`` False keeps the origin out of the run's evidence:
+    ``dispatch_permit`` events then carry :data:`REDACTED_GATEWAY_ORIGIN`. The
+    permit check itself always uses ``gateway_origin``.
     """
 
     gateway_origin: str
     confirm: Callable[[Sequence[str], datetime], dict[str, Any]]
+    record_gateway_origin: bool = True
+
+
+#: Recorded in place of the gateway origin when the run asks for redaction.
+#: A plain marker, not a hash: a likely hostname could be guessed and hashed.
+REDACTED_GATEWAY_ORIGIN = "redacted"
+#: Set to ``1`` to keep the gateway origin out of an orchestrate run's evidence
+#: (the certification rehearsal sets it: its gateway address is a secret).
+REDACT_GATEWAY_ORIGIN_ENV = "VERDICT_REDACT_GATEWAY_ORIGIN"
 
 
 def node_profile_digest(node: WorkNode) -> str:
@@ -1843,6 +1856,12 @@ class DagRuntime:
 
         permit = await asyncio.to_thread(commit)
         if permit is not None:
+            assert self.dispatch_authority is not None
+            recorded_origin = (
+                permit.scope.gateway_origin
+                if self.dispatch_authority.record_gateway_origin
+                else REDACTED_GATEWAY_ORIGIN
+            )
             self.events.emit(
                 "controller",
                 run.node.node_id,
@@ -1851,7 +1870,7 @@ class DagRuntime:
                 attempt_id=attempt_id,
                 permit_id=permit.permit_id,
                 epoch=permit.epoch,
-                gateway_origin=permit.scope.gateway_origin,
+                gateway_origin=recorded_origin,
             )
         return permit
 

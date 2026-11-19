@@ -20,6 +20,7 @@ from verdict.orchestration.contracts import (
     OrchestrationError,
 )
 from verdict.orchestration.receipt import verify_run_receipt
+from verdict.orchestration.runtime import REDACT_GATEWAY_ORIGIN_ENV
 
 GOALS = {
     "clean": (
@@ -225,6 +226,9 @@ def run() -> None:
     # Set VERDICT_HOME for the preflight and orchestrate to share the health cache
     verdict_home = root / "verdict-certification"
     env["VERDICT_HOME"] = str(verdict_home)
+    # The gateway address is a protected secret: the run must not write it into
+    # its evidence. The scan below still refuses any file that contains it.
+    env[REDACT_GATEWAY_ORIGIN_ENV] = "1"
 
     # Bounded FREE-only preflight: produce genuine fresh agentic proof
     # before attempting orchestration. Fail-closed if no route qualifies.
