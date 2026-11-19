@@ -4603,7 +4603,8 @@ def cmd_acceptance_run(
         ui = TerminalUI(console)
         ui.header("Live acceptance")
         for check in result["checks"]:
-            ui.doctor_finding(check["name"], "ok" if check["passed"] else "failed", check["reason"])
+            state = "skipped" if check.get("skipped") else "ok" if check["passed"] else "failed"
+            ui.doctor_finding(check["name"], state, check["reason"])
         ui.status("result", result["status"], result["path"])
         notification = result.get("notification") or {}
         if notification.get("event"):

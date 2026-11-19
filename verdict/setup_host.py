@@ -277,6 +277,22 @@ def _pr_watch_problem() -> str:
     return f"no repositories configured: write VERDICT_PR_WATCH_REPOS to {_pr_watch_config_path()}"
 
 
+#: Doctor row state for an optional part that is absent: never ok, never an issue.
+NOT_INSTALLED = "not-installed"
+PRIME_OPTIONAL_DETAIL = (
+    "Prime Agent not installed (optional harness); the default worker executor is "
+    "direct-gateway. To use Prime, install prime-agent, run verdict setup, then "
+    "pass --executor prime-headless"
+)
+
+
+def prime_installed(env: HostEnvironment) -> bool:
+    """The Prime Agent binary is on this host's PATH (``prime-agent`` or ``prime``)."""
+    from verdict.harness_prime import binary_installed
+
+    return binary_installed(env.which)
+
+
 def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
     """What is wrong with one prerequisite; empty when it is satisfied."""
     if provider_id == OCR:
@@ -343,6 +359,9 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
         return problems + inactive
     from verdict.harness_prime import resolve_paths
 
+    if not prime_installed(env):
+        # Prime Agent is an optional harness: nothing to set up without it.
+        return []
     models = resolve_paths(prime_home=env.prime_home).models
     return [] if models.exists() else [f"{models} is missing"]
 
@@ -710,10 +729,45 @@ def _serve_rows(env: HostEnvironment) -> list[dict[str, str]]:
     return [_row(label, "ok", f"{SERVICE} is active"), health]
 
 
+def _prime_harness_row(env: HostEnvironment) -> dict[str, str]:
+    """Prime is installed: is its Verdict harness enabled?
+
+    Not enabled is a ``warning`` (shown with its repair, not an issue): live
+    acceptance skips ``harness-prime`` then, so this row is where it shows.
+    """
+    from verdict.harness_prime import status
+
+    label = "Prime harness"
+    try:
+        report = status(prime_home=env.prime_home)
+    except (ValueError, OSError) as exc:  # JSONDecodeError is a ValueError
+        # "unknown" is never ok and is a PROBLEM_STATE (shown with a repair), but
+        # not blocking: the Prime registry row already fails for the same file.
+        return _row(
+            label,
+            "unknown",
+            f"harness state unknown: Prime config is unreadable ({type(exc).__name__}); "
+            "fix the Prime registry row first, then "
+            f"repair: {setup_repair(PRIME)}",
+        )
+    if report.enabled:
+        return _row(
+            label, "ok", f"{report.config_path}: Prime uses verdict serve {report.base_url}"
+        )
+    return _row(
+        label,
+        "warning",
+        "Prime Agent installed but not enabled (optional harness); live acceptance "
+        "skips harness-prime; repair: verdict harness prime enable",
+    )
+
+
 def _prime_rows(env: HostEnvironment) -> list[dict[str, str]]:
     from verdict.harness_prime import omniroute_registry_state
 
     label = "Prime registry"
+    if not prime_installed(env):
+        return [_row(label, NOT_INSTALLED, PRIME_OPTIONAL_DETAIL)]
     registry = omniroute_registry_state(prime_home=env.prime_home)
     path, state = registry["path"], registry["state"]
     sync = "repair: verdict harness prime sync-models"
@@ -737,7 +791,7 @@ def _prime_rows(env: HostEnvironment) -> list[dict[str, str]]:
         row = _row(label, "failed", f"{path} providers.omniroute has no models; {sync}")
     else:
         row = _row(label, "ok", f"{path}: providers.omniroute has {registry['models']} model(s)")
-    rows = [row]
+    rows = [row, _prime_harness_row(env)]
     result = env.unit_result(PRIME_SYNC_UNIT)
     if result is not None:
         detail = f"{PRIME_SYNC_UNIT} last result {result}"

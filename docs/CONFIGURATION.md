@@ -28,6 +28,31 @@ On a new install, before anything is set up:
 3. `verdict serve` needs `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB`; see
    [Serve authentication and receipts](#serve-authentication-and-receipts).
 
+## Worker executor and optional harnesses
+
+`verdict orchestrate` runs workers with the `direct-gateway` executor by
+default: each worker request goes straight to the gateway, so no agent harness
+has to be installed. Prime Agent is an optional harness. Select it with
+`--executor prime-headless` (alias `prime`), or per node with
+`--executor-map node-1=prime-headless`.
+
+- Route visibility follows the executor. Plain `verdict eligibility` and the
+  default run read the live gateway catalog; Prime's model registry
+  (`models.json`) is read only when Prime is selected or with
+  `verdict eligibility --sync-visibility`.
+- On a host without the Prime Agent binary, `verdict setup` plans no Prime
+  registry action, `verdict doctor` shows the Prime rows as `not-installed`
+  (optional, not an issue), and the hourly live acceptance job reports the
+  `harness-prime` check as skipped with the reason
+  `Prime Agent not installed (optional harness)`. A skipped check is never
+  counted as passed.
+- On a host with the Prime binary whose Verdict harness is not enabled, the
+  check is skipped with the reason
+  `Prime Agent installed but not enabled (optional harness)`, and
+  `verdict doctor` shows a `Prime harness` WARNING row (not an issue) with
+  `repair: verdict harness prime enable`. When Prime is installed and enabled, all three behave as
+  before and can fail.
+
 ## Configuration surfaces
 
 | Surface | Path | Owns |

@@ -132,10 +132,11 @@ def add_parsers(subparsers: Any) -> None:
     orch.add_argument(
         "--executor",
         choices=tuple(DEFAULT_REGISTRY.names()),
-        default="prime-headless",
-        help="Worker executor backend (default: prime-headless). Backends are the "
-        "registered HarnessAdapter names; the legacy alias 'prime' resolves to "
-        "prime-headless.",
+        default=DEFAULT_REGISTRY.default_name(),
+        help=f"Worker executor backend (default: {DEFAULT_REGISTRY.default_name()}). "
+        "Backends are the registered HarnessAdapter names. Prime Agent is an "
+        "optional harness: select it with --executor prime-headless (the legacy "
+        "alias 'prime' resolves to prime-headless).",
     )
     orch.add_argument(
         "--planner-executor",
@@ -499,19 +500,20 @@ def _parse_executor_map(raw: str) -> dict[str, str]:
 def _selector_visibility_executor(args: argparse.Namespace) -> str:
     """Map CLI executor selection onto the harness name that owns visibility.
 
-    Historically the ladder's spawn-visibility gate was bound to the *default*
-    worker backend only when no ``--executor-map`` was given: any node mapping
-    meant mixed dispatch and the strict Prime visibility check stayed in force.
-    Preserve that rule on top of the registry: ``direct-gateway`` selects the
-    live-gateway visibility adapter; everything else (including the ``prime``
-    alias and any future harness) uses the default adapter's visibility.
-    When a map is present the result is always ``DEFAULT_REGISTRY.default_name()``
-    (``prime-headless`` today), regardless of the ``--executor`` value.
+    Without ``--executor-map`` the chosen ``--executor`` owns visibility.
+    With a map, any node (or the unmapped default) that runs on Prime keeps
+    the strict Prime visibility for the whole ladder, because the ladder is
+    shared by every node; a map that uses no Prime backend keeps the
+    ``--executor`` visibility.
     """
     default = getattr(args, "executor", "") or DEFAULT_REGISTRY.default_name()
     mapping = getattr(args, "executor_map", "") or ""
-    if mapping.strip():
-        return DEFAULT_REGISTRY.default_name()
+    if not mapping.strip():
+        return default
+    prime = DEFAULT_REGISTRY.resolve("prime-headless")
+    backends = [default, *_parse_executor_map(mapping).values()]
+    if any(DEFAULT_REGISTRY.resolve(name) is prime for name in backends):
+        return prime.name
     return default
 
 
@@ -534,7 +536,7 @@ def _worker_executor(args: argparse.Namespace) -> WorkerExecutor:
     raw_map = getattr(args, "executor_map", "") or ""
     node_backend_map = _parse_executor_map(raw_map)
 
-    default_name = getattr(args, "executor", "prime") or "prime"
+    default_name = getattr(args, "executor", "") or DEFAULT_REGISTRY.default_name()
     default_executor = _build_single_executor(default_name, gateway=args.gateway, api_key=api_key)
 
     if node_backend_map:

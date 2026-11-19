@@ -45,10 +45,18 @@ HOST_IDS = [
 class FakeHost:
     """A host with nothing installed; ``~/.local/bin`` is on its PATH."""
 
-    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, prime: bool = True
+    ) -> None:
         self.root = tmp_path
         self.home = tmp_path / "home"
         self.home.mkdir()
+        if prime:
+            # Prime Agent is optional; the default fake host has it so the
+            # Prime-registry behaviour stays pinned. ``prime=False`` hosts lack it.
+            binary = self.home / ".local" / "bin" / "prime-agent"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("#!/bin/sh\n")
         monkeypatch.setenv("HOME", str(self.home))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(self.home / ".config"))
         monkeypatch.setenv("VERDICT_HOME", str(self.home / ".verdict"))
@@ -806,3 +814,26 @@ def test_docs_repair_hint_names_the_command_that_refreshes_the_index() -> None:
     assert command.startswith("verdict memory docs --fix --repo-root ")
     finding = f"authoritative documentation preflight did not pass; repair: {command}"
     assert repair_command(finding) == command
+
+
+# --- Prime Agent is optional -----------------------------------------------------
+
+
+def test_recommended_setup_without_prime_never_plans_or_installs_prime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fails if a host without prime-agent is asked to create Prime's registry."""
+    import verdict.capability_bootstrap as bootstrap
+    from verdict import cli
+
+    bare = FakeHost(tmp_path, monkeypatch, prime=False)
+    monkeypatch.setattr(bootstrap, "discover_providers", lambda **kwargs: ())
+    monkeypatch.setattr(setup_host.HostEnvironment, "from_host", classmethod(lambda cls: bare.env))
+    without_prime = [pid for pid in HOST_IDS if pid != "host.prime-registry"]
+    cli.cmd_setup(recommended=True, output_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert [a["provider_id"] for a in _host_actions(payload["bootstrap"])] == without_prime
+    report = bare.apply()
+    assert "bootstrap:host:prime-registry" not in _results(report)
+    assert not bare.models.exists() and bare.syncs == []
+    assert not any("prime" in " ".join(call) for call in bare.systemctl_calls)

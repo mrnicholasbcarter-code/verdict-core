@@ -58,7 +58,7 @@ verdict orchestrate "Implement the feature" --repo . --json
 | `--state-file STATE_FILE` | Health/cooldown state file (default `$VERDICT_HOME/orchestration-health.json`). When set, the run also uses `health-cache.json` in the same directory |
 | `--plain` | ASCII narrative instead of live view, also on a terminal (same as `VERDICT_PLAIN=1`) |
 | `--json` | Print final receipt JSON |
-| `--executor BACKEND` | Worker executor backend: `prime` (default) or `direct-gateway` |
+| `--executor BACKEND` | Worker executor backend: `direct-gateway` (default: sends each worker to the gateway, no agent harness needed) or `prime-headless` (alias `prime`; the optional Prime Agent harness). Eligibility visibility follows this choice: `direct-gateway` uses the live gateway catalog, `prime-headless` uses Prime's model registry |
 | `--executor-map NODE=BACKEND[,...]` | Route specific nodes to a named backend; unmapped nodes use `--executor`. See [Mixed-harness runs](#mixed-harness-runs) |
 
 ### Mixed-harness runs
@@ -68,12 +68,15 @@ executor backends by combining `--executor` (the default fallback) with
 `--executor-map`:
 
 ```bash
-verdict orchestrate "goal"     --executor prime     --executor-map "node-1=direct-gateway,node-2=direct-gateway"
+verdict orchestrate "goal" --executor direct-gateway --executor-map "node-1=prime-headless"
 ```
 
 `--executor-map` takes comma-separated `node_id=backend` pairs. Valid backend
-names are `prime` and `direct-gateway`. Unmapped nodes use the `--executor`
-default. An unknown backend name exits with a clear error before the run starts.
+names are `direct-gateway`, `prime-headless` and its alias `prime`. Unmapped
+nodes use the `--executor` default. An unknown backend name exits with a clear
+error before the run starts. When any node (or the default) runs on Prime, the
+whole run uses Prime's visibility, so every selected route is one Prime can
+spawn.
 
 The `run_started` event records `executor: "mixed"` (without `--inject`; with `--inject` the outer label is `"fault-injecting"`). Each `terminal` event
 carries two provenance fields:

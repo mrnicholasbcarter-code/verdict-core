@@ -207,7 +207,7 @@ def doctor_check(
         failed = ", ".join(
             f"{c.get('name')} ({c.get('reason')})"
             for c in newest.get("checks", [])
-            if not c.get("passed")
+            if not c.get("passed") and not c.get("skipped")
         )
         issues.append(f"{ISSUE_PREFIX} is red ({files[-1].name}): {failed or 'unreadable result'}")
     if age is None or age > 2 * INTERVAL_SECONDS:

@@ -1003,8 +1003,12 @@ def installed_service_rows(
     now: datetime | None = None,
     timer_state: Callable[[str], dict[str, Any]] | None = None,
     ref_docs_status: Callable[[], list[dict[str, Any]]] | None = None,
+    prime_installed: Callable[[], bool] | None = None,
 ) -> list[dict[str, str]]:
     """Doctor rows for each background systemd unit and the health cache.
+
+    Prime Agent is optional: a missing prime-sync timer on a host without the
+    Prime binary is ``not-installed`` (never ok, never an issue).
 
     A missing or inactive timer, an ``is-failed`` unit, or a health cache
     that is too stale or empty to be useful are all reported with ``status:
@@ -1051,6 +1055,11 @@ def installed_service_rows(
             )
             if failed:
                 facts += "; repair: verdict identify install-service"
+        elif state.get("state") == "missing" and not _prime_present(prime_installed):
+            from verdict.setup_host import NOT_INSTALLED, PRIME_OPTIONAL_DETAIL
+
+            rows.append({"label": label, "status": NOT_INSTALLED, "detail": PRIME_OPTIONAL_DETAIL})
+            continue
         elif failed:
             facts += _prime_sync_timer_repair(str(state.get("state", "unknown")))
         rows.append({"label": label, "status": "failed" if failed else "ok", "detail": facts})
@@ -1171,6 +1180,14 @@ def installed_service_rows(
 
     rows.append(health_cache_row(now=now))
     return rows
+
+
+def _prime_present(probe: Callable[[], bool] | None) -> bool:
+    if probe is not None:
+        return probe()
+    from verdict.harness_prime import binary_installed
+
+    return binary_installed()
 
 
 def _prime_sync_timer_repair(state: str) -> str:
