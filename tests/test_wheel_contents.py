@@ -9,8 +9,10 @@ against an allowlist of roots and file types, and then against a deny-list.
 from __future__ import annotations
 
 import fnmatch
+import re
 import shutil
 import subprocess
+import tarfile
 import zipfile
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
@@ -259,3 +261,93 @@ def test_wheel_ships_verdict_memory_parity_vectors(wheel_entries: list[PurePosix
     }
     missing = required - names
     assert not missing, f"wheel missing verdict_memory parity data: {sorted(missing)}"
+
+
+# A literal operator home directory (``/home/<name>``) in shipped code or data
+# leaks the build host's layout and makes path logic look at another user's home.
+_HOST_HOME = re.compile(rb"/home/[A-Za-z0-9_][A-Za-z0-9_.-]*")
+
+
+def test_wheel_package_files_have_no_host_home_paths(built_wheel: Path) -> None:
+    with zipfile.ZipFile(built_wheel) as archive:
+        leaks = [
+            name
+            for name in archive.namelist()
+            if name.startswith(("verdict/", "verdict_memory/"))
+            and _HOST_HOME.search(archive.read(name))
+        ]
+    assert not leaks, f"wheel files contain a /home/<name>/ literal: {leaks}"
+
+
+# The sdist holds the package and the sources the wheel force-includes, plus the
+# readme, license and changelog. Everything else is repository-only.
+ALLOWED_SDIST_ROOTS = {
+    "verdict",
+    "benchmarks",
+    "packages",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "pyproject.toml",
+    ".gitignore",
+    "PKG-INFO",
+}
+ALLOWED_SDIST_PREFIXES = (
+    "benchmarks/fixtures/",
+    "packages/verdict-memory/src/verdict_memory/",
+    "packages/verdict-memory/vectors/golden/",
+    "packages/verdict-memory/scripts/gen_golden_vectors.py",
+)
+# Today the sdist unpacks to about 7.6 MB; it once shipped 150 MB of repository content.
+MAX_SDIST_UNPACKED_BYTES = 15_000_000
+
+
+@pytest.fixture(scope="module")
+def built_sdist(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    if shutil.which("uv") is None:
+        pytest.skip("uv is required to build the sdist")
+    out_dir = tmp_path_factory.mktemp("sdist")
+    subprocess.run(
+        ["uv", "build", "--sdist", "--out-dir", str(out_dir), str(ROOT)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (sdist,) = out_dir.glob("verdict_core-*.tar.gz")
+    return sdist
+
+
+def test_sdist_ships_only_package_sources(built_sdist: Path) -> None:
+    with tarfile.open(built_sdist) as archive:
+        members = [m for m in archive.getmembers() if m.isfile()]
+    paths = [PurePosixPath(*PurePosixPath(m.name).parts[1:]) for m in members]
+    unexpected = [
+        str(path)
+        for path in paths
+        if path.parts[0] not in ALLOWED_SDIST_ROOTS
+        or (
+            path.parts[0] in {"benchmarks", "packages"}
+            and not str(path).startswith(ALLOWED_SDIST_PREFIXES)
+        )
+        or path.parts[:2] == ("verdict", "client-sdk")
+    ]
+    assert not unexpected, f"sdist ships repository-only files: {unexpected[:20]}"
+    total = sum(m.size for m in members)
+    assert total < MAX_SDIST_UNPACKED_BYTES, f"sdist unpacks to {total} bytes"
+
+
+def test_wheel_built_from_the_sdist_matches_the_direct_wheel(
+    built_sdist: Path, wheel_entries: list[PurePosixPath], tmp_path: Path
+) -> None:
+    """The sdist must carry every source the wheel force-includes."""
+    out_dir = tmp_path / "from-sdist"
+    subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(out_dir), str(built_sdist)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (wheel,) = out_dir.glob("verdict_core-*.whl")
+    with zipfile.ZipFile(wheel) as archive:
+        from_sdist = sorted(name for name in archive.namelist() if not name.endswith("/"))
+    assert from_sdist == sorted(str(path) for path in wheel_entries)
