@@ -24,9 +24,7 @@ from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
-from verdict.paths import verdict_home
 from verdict.runtime_contract import (
-    DEFAULT_RUNTIME_STATE_DIR,
     RUNTIME_CONTRACT_VERSION,
     OwnershipRecord,
     ProcessInspector,
@@ -35,6 +33,7 @@ from verdict.runtime_contract import (
     RuntimePlan,
     RuntimeProcess,
     RuntimeServiceSpec,
+    default_runtime_state_dir,
     default_service_specs,
 )
 from verdict.security import redact_text
@@ -77,8 +76,7 @@ class ProcfsInspector:
 
 
 def _default_state_dir() -> Path:
-    configured = os.getenv("VERDICT_RUNTIME_STATE_DIR")
-    return Path(configured).expanduser() if configured else verdict_home() / "runtime"
+    return default_runtime_state_dir()
 
 
 class RuntimeManager:
@@ -475,7 +473,6 @@ def _version_from_argv(argv: Sequence[str]) -> str | None:
 
 
 __all__ = [
-    "DEFAULT_RUNTIME_STATE_DIR",
     "RUNTIME_CONTRACT_VERSION",
     "OwnershipRecord",
     "ProcessInspector",

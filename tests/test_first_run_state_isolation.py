@@ -97,11 +97,19 @@ def test_decision_log_default_and_override(tmp_path: Path) -> None:
     assert custom.log_path == "x.jsonl"
 
 
-_HOME_STATE = re.compile(r"Path\.home\(\)\)?\s*/\s*\"\.verdict\"")
+# Only call forms that build a path. Help text and docstrings that merely
+# mention "~/.verdict/..." are plain strings and do not match.
+_HOME_STATE = re.compile(
+    r"Path\.home\(\)\)?\s*/\s*\"\.verdict\""
+    r"|Path\(\s*[\"']~/\.verdict"
+    r"|expanduser\(\s*[\"']~/\.verdict"
+    r"|os\.path\.join\([^)]*[\"']\.verdict[\"']"
+)
 
 
 def test_no_module_builds_state_path_from_path_home() -> None:
-    """Catches a new ``Path.home() / ".verdict"`` default that bypasses verdict_home()."""
+    """Catches a ``~/.verdict`` default (``Path.home() / ".verdict"``, ``Path("~/.verdict")``,
+    ``expanduser("~/.verdict")``, ``os.path.join(..., ".verdict")``) that bypasses verdict_home()."""
     offenders = [
         f"{path.relative_to(ROOT)}:{n}"
         for path in sorted((ROOT / "verdict").rglob("*.py"))
@@ -110,3 +118,92 @@ def test_no_module_builds_state_path_from_path_home() -> None:
         if _HOME_STATE.search(line) and not line.lstrip().startswith("#")
     ]
     assert offenders == [], f"use verdict.paths.verdict_home(): {offenders}"
+
+
+def test_runtime_state_dir_default_follows_verdict_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches the runtime state default ignoring VERDICT_HOME (was ``Path("~/.verdict/runtime")``)."""
+    from verdict.runtime_contract import default_runtime_state_dir
+
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("VERDICT_RUNTIME_STATE_DIR", raising=False)
+    assert default_runtime_state_dir() == tmp_path / "state" / "runtime"
+    monkeypatch.setenv("VERDICT_RUNTIME_STATE_DIR", str(tmp_path / "rt"))
+    assert default_runtime_state_dir() == tmp_path / "rt"
+
+
+def _decision_log_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    import verdict.paths as paths
+
+    monkeypatch.setattr(paths, "_legacy_notice_done", False)
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("VERDICT_HOME", str(state))
+    return cwd / "verdict-decisions.jsonl", state / "verdict-decisions.jsonl"
+
+
+_ROW = json.dumps({"decision": {"tier": 0, "model": "m"}, "effective_tier": 0}) + "\n"
+
+
+def test_both_logs_reads_state_dir_and_notices_once_on_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Catches a user's older ./verdict-decisions.jsonl history vanishing from reports silently."""
+    from verdict.paths import resolve_decision_log_for_read
+
+    legacy, state = _decision_log_setup(tmp_path, monkeypatch)
+    legacy.write_text(_ROW)
+    state.write_text(_ROW)
+    assert resolve_decision_log_for_read(None) == str(state)
+    assert resolve_decision_log_for_read(None) == str(state)
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.count("\n") == 1
+    assert "not being read" in err
+    assert "--log_path ./verdict-decisions.jsonl" in err
+    assert "LLMGATE_LOG_PATH=./verdict-decisions.jsonl" in err
+
+
+def test_stats_cli_with_both_logs_keeps_stdout_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The notice goes to stderr only; stdout is the report from the state-dir log."""
+    from verdict.cli import cmd_stats
+
+    legacy, state = _decision_log_setup(tmp_path, monkeypatch)
+    legacy.write_text(_ROW * 3)
+    state.write_text(_ROW)
+    cmd_stats(None)
+    out, err = capsys.readouterr()
+    assert "legacy decision log" not in out
+    assert "verdict-decisions.jsonl" in err
+    assert "Total Requests" in out and " 1 " in out
+
+
+@pytest.mark.parametrize("case", ["legacy_only", "explicit", "env", "neither"])
+def test_no_notice_without_a_hidden_legacy_log(
+    case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only-legacy reads legacy; an explicit path or no log at all prints nothing."""
+    from verdict.paths import resolve_decision_log_for_read
+
+    legacy, state = _decision_log_setup(tmp_path, monkeypatch)
+    if case == "legacy_only":
+        legacy.write_text(_ROW)
+        assert resolve_decision_log_for_read(None) == "verdict-decisions.jsonl"
+    elif case == "explicit":
+        legacy.write_text(_ROW)
+        state.write_text(_ROW)
+        assert resolve_decision_log_for_read("custom.jsonl") == "custom.jsonl"
+    elif case == "env":
+        legacy.write_text(_ROW)
+        state.write_text(_ROW)
+        monkeypatch.setenv("LLMGATE_LOG_PATH", "./verdict-decisions.jsonl")
+        assert resolve_decision_log_for_read(None) == "./verdict-decisions.jsonl"
+    else:
+        assert resolve_decision_log_for_read(None) == str(state)
+    assert capsys.readouterr().err == ""

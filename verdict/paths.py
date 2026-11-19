@@ -7,6 +7,7 @@ must not import verdict modules or third-party packages.
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -46,16 +47,40 @@ def default_decision_log_path(env: Mapping[str, str] | None = None) -> str:
 def resolve_decision_log_for_read(log_path: str | None) -> str:
     """Decision log a reader (stats, cost-report, suggest) should open.
 
-    An explicit path wins. Otherwise the state-directory log, unless only a
-    legacy ``./verdict-decisions.jsonl`` from an older release exists.
+    An explicit path wins, then ``LLMGATE_LOG_PATH`` (the writers' override, so
+    readers open the log the writers write). Otherwise the state-directory log,
+    unless only a legacy ``./verdict-decisions.jsonl`` from an older release
+    exists. When both exist the state-directory log is read and one stderr
+    notice names the legacy log; the two are never merged or migrated.
     """
-    if log_path:
-        return log_path
+    explicit = log_path or (os.environ.get("LLMGATE_LOG_PATH") or "").strip()
+    if explicit:
+        return explicit
     default = default_decision_log_path()
     legacy = Path.cwd() / DECISION_LOG_NAME
-    if not Path(default).exists() and legacy.is_file():
+    if not legacy.is_file() or Path(default).resolve() == legacy.resolve():
+        return default
+    if not Path(default).exists():
         return DECISION_LOG_NAME
+    _notice_hidden_legacy_log(default)
     return default
+
+
+LEGACY_LOG_NOTICE = (
+    "verdict: a legacy decision log ./{name} exists and is not being read; reports use {default}."
+    " To read it: verdict stats --log_path ./{name}, verdict suggest --log_path ./{name},"
+    " or LLMGATE_LOG_PATH=./{name} for any command (cost-report and ui have no flag)."
+)
+_legacy_notice_done = False
+
+
+def _notice_hidden_legacy_log(default: str) -> None:
+    """One stderr line per process; never stdout, which may carry one JSON document."""
+    global _legacy_notice_done
+    if _legacy_notice_done:
+        return
+    _legacy_notice_done = True
+    print(LEGACY_LOG_NOTICE.format(name=DECISION_LOG_NAME, default=default), file=sys.stderr)
 
 
 def scoped_state_env(root: Path) -> dict[str, str]:
