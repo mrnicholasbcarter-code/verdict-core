@@ -38,9 +38,5 @@
   {
     "qualified_name": "verdict.routing_demo_mock",
     "reason": "Imported only by verdict.routing_demo, the documented demo entry point (examples/routing-demo/README.md)."
-  },
-  {
-    "qualified_name": "verdict.workflows",
-    "reason": "DELETE candidate: package shell remains after superseded verdict.workflows.autodev was removed; no production importer."
   }
 ]
