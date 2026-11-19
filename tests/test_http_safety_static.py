@@ -15,7 +15,7 @@ _ALLOWED = {
     ): "Local auto-detection health Request has only an Accept header.",
     (
         "doctor_diagnostics.py",
-        "_collect_doctor_diagnostics",
+        "gateway_health_failure",
         "health_req",
     ): "Configured gateway health Request has only an Accept header.",
     (
