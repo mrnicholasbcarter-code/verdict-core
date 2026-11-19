@@ -322,7 +322,7 @@ def test_doctor_probe_carries_the_configured_gateway_key(monkeypatch: pytest.Mon
     monkeypatch.setenv("OMNIROUTE_API_KEY", "sk-DOCTORKEY")
     seen: list[dict[str, Any]] = []
 
-    def fake_probe(url: str, *, timeout: float = 2.0, api_key: str | None = None) -> Any:
+    def fake_probe(url: str, *, timeout: float = 2.0, api_key: str | None = None, **_: Any) -> Any:
         seen.append({"url": url, "api_key": api_key})
         return HEALTHY
 
@@ -345,7 +345,7 @@ def test_the_gateway_probe_sends_no_key_when_none_is_configured(
     monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
     seen: list[str | None] = []
 
-    def fake_probe(url: str, *, timeout: float = 2.0, api_key: str | None = None) -> Any:
+    def fake_probe(url: str, *, timeout: float = 2.0, api_key: str | None = None, **_: Any) -> Any:
         seen.append(api_key)
         return HEALTHY
 
