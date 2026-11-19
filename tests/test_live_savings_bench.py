@@ -298,6 +298,7 @@ class TestVerdictArm:
                 return None
 
         gate = object()
+        monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
         monkeypatch.setattr(api, "_build_intelligence", lambda: Svc())
         monkeypatch.setattr(api, "_build_availability_cache", lambda: (object(), gate))
         router = bench.LiveRouter()
@@ -309,6 +310,11 @@ class TestVerdictArm:
         from verdict import api
 
         monkeypatch.setattr(api, "_build_intelligence", lambda: object())
+        monkeypatch.setattr(api, "_build_availability_cache", lambda: (object(), object()))
+        monkeypatch.delenv("OMNIROUTE_BASE_URL", raising=False)
+        with pytest.raises(SystemExit):
+            bench.LiveRouter()
+        monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
         monkeypatch.setattr(api, "_build_availability_cache", lambda: None)
         with pytest.raises(SystemExit):
             bench.LiveRouter()

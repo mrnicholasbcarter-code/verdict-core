@@ -51,3 +51,51 @@ Method: [`scripts/live_savings_bench.py`](../../scripts/live_savings_bench.py);
 run with `VERDICT_LIVE_SMOKE=1` (opt-in, spends real capacity).</sub>
 
 Observed data, not a fixture. It is kept to show a negative result, not a saving.
+That run used an earlier version of the script; the method below replaces it.
+
+## Paired usage bench (method; no result yet)
+
+**No saving is claimed yet.** This section describes how the next live run is measured.
+It holds no result and no number.
+
+[`scripts/live_savings_bench.py`](../../scripts/live_savings_bench.py) runs every task in
+`benchmarks/fixtures/live_savings/tasks.json` in two arms:
+
+- **Baseline**: the task prompt only, no context pack, sent to the frontier model you name
+  with `--baseline-model`. The flag is required and has no default.
+- **Verdict**: the route Verdict picks on the live eligibility ladder, built the same way
+  `verdict serve` builds it (the live routing service with the `EligibilityGate` attached).
+  This arm sends Verdict's context pack plus the same prompt. It may use only free and
+  subscription capacity and never an opaque `auto/*` or `combo/*` route. If Verdict denies
+  the task, or picks a route outside that capacity, the task counts as a Verdict miss.
+  The bench never falls back to the baseline model.
+
+A task is accepted only when its own test file passes. The bench never edits tasks, tests
+or acceptance criteria; it hashes them before and after the run, and a change blocks any claim.
+
+For every call the bench records the model that served it and its request id (from the
+`X-OmniRoute-*` response headers), the provider-reported input, cached-input and output
+tokens, and the route's capacity class. Routing confirm probes and retries count against
+the arm that caused them.
+
+The report gives, per arm and per task group, the accepted-work rate and the tokens split by
+capacity class. Tokens are the headline measure. The report refuses a savings claim when:
+
+- the Verdict arm accepted fewer tasks than the baseline;
+- no pair is comparable. A pair is comparable only when both arms passed and different
+  models served them. A pair where one model served both arms shows no saving, and a failed
+  pair never counts as one;
+- the Verdict arm did not use fewer uncached tokens on the comparable pairs;
+- the tasks or tests changed during the run, or the run hit its time limit.
+
+Cached-input tokens are reported apart from the model-choice comparison, so a cache hit
+never reads as a routing saving. Dollars appear only when you pass `--list-prices`, as one
+secondary line labelled "list-price equivalent, not an invoice".
+
+Run it (opt-in; it spends real capacity, and `--out-dir` must be outside the repository):
+
+```bash
+VERDICT_LIVE_SMOKE=1 OMNIROUTE_BASE_URL=http://127.0.0.1:20128 \
+  uv run python scripts/live_savings_bench.py \
+  --baseline-model <frontier route> --out-dir /tmp/<run-dir> --repeats 1 --max-wall-seconds 3600
+```

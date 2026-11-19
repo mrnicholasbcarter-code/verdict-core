@@ -544,7 +544,9 @@ class LiveRouter:
     def __init__(self) -> None:
         from verdict import api
 
-        built = api._build_availability_cache()
+        # The admit ladder only runs with an explicit OmniRoute endpoint; without it the
+        # service falls back to the catalog path, which is not what this bench measures.
+        built = api._build_availability_cache() if os.environ.get("OMNIROUTE_BASE_URL") else None
         if built is None:
             print(
                 "refusing: no live eligibility gate (set OMNIROUTE_BASE_URL); "
@@ -589,7 +591,8 @@ class LiveRouter:
 
             return transport
 
-        self.service._resolve_confirm_transport = _counting_resolve
+        # Instance-level override of one bound method; the service class is unchanged.
+        setattr(self.service, "_resolve_confirm_transport", _counting_resolve)  # noqa: B010
 
     def capacity_of(self, model: str) -> str:
         snapshot = self.service._load_admit_snapshot()[0]
