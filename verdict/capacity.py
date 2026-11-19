@@ -84,16 +84,15 @@ def classify_route_capacity(
     if auth_type == "oauth":
         return CapacityClass.SUBSCRIPTION, plan_label, "oauth_subscription"
 
-    # The gateway's own free-tier membership (/api/free-tier/summary perModel),
-    # attached to the row by the caller that read it.
-    if row.get("gateway_free_tier") is True:
-        return CapacityClass.FREE, plan_label, "gateway_free_tier"
-
     # Rule 0.2 on the declared price: nonzero is paid, explicit 0/0 is free,
     # absent fails closed.
     status = classify_free(route_id, _route_price(row), None)
     if status is FreeStatus.NOT_FREE or _any_positive_price(row):
         return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
+    # The gateway's own free-tier membership (/api/free-tier/summary perModel),
+    # attached to the row by the caller that read it. A nonzero price wins.
+    if row.get("gateway_free_tier") is True:
+        return CapacityClass.FREE, plan_label, "gateway_free_tier"
     if status is FreeStatus.FREE:
         return CapacityClass.FREE, plan_label, "all_zero_pricing"
     return CapacityClass.UNKNOWN, plan_label, "no_free_evidence"
