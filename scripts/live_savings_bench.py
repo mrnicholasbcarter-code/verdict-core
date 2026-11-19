@@ -1,24 +1,39 @@
 #!/usr/bin/env python3
-"""Live savings benchmark: real models, real tokens, published list prices.
+"""Paired live usage bench: does context-first plus free-first use fewer tokens?
 
-Opt-in only: refuses to run without VERDICT_LIVE_SMOKE=1.
-Uses the OmniRoute gateway at localhost:20128 for API calls.
-Verdict arm calls the real Gate.route() path (legacy feed / offline catalog).
+Each task in ``benchmarks/fixtures/live_savings/tasks.json`` runs in two arms:
 
-Prices are fetched at run time from https://www.anthropic.com/pricing and parsed
-from the HTML. The fetched page text and its SHA-256 are stored alongside the
-report so results can be audited.
+- **baseline**: the task prompt only, no context pack, sent to the frontier model
+  named by ``--baseline-model`` (required, no default).
+- **verdict**: the route Verdict chooses on the live eligibility ladder, built the
+  way ``verdict serve`` builds it (``verdict.api._build_intelligence`` plus the
+  ``EligibilityGate`` from ``verdict.api._build_availability_cache``). The arm
+  sends the decision's context pack plus the task prompt. Only free and
+  subscription capacity is used, never an opaque ``auto/*`` or ``combo/*`` route.
+  A deny, or a route outside that capacity, is a Verdict-arm miss; there is no
+  fallback to the baseline model.
 
-Usage (from project root, with gateway credentials sourced):
-    set -a; . /tmp/.dogfood-env; set +a
-    VERDICT_LIVE_SMOKE=1 PYTHONPATH=/tmp/vsav .venv/bin/python scripts/live_savings_bench.py
+Every call (routing confirm probes, the task call, its retry) is recorded against
+the arm that caused it, with the served model and request id from the
+``X-OmniRoute-*`` response headers, provider-reported usage including cached input
+tokens, and the route's capacity class. Acceptance is by running the task's own
+test file. Tokens are the headline metric; dollars appear only as an optional
+secondary line, labelled "list-price equivalent, not an invoice".
 
-Token counters are validated before the benchmark; models with non-proportional
-counters are excluded from cost math and named in the report.
+The bench never edits tasks, tests or acceptance criteria: their SHA-256 is taken
+before and after the run, and a change blocks every claim.
+
+Opt-in only: refuses to run without ``VERDICT_LIVE_SMOKE=1``. Usage::
+
+    VERDICT_LIVE_SMOKE=1 OMNIROUTE_BASE_URL=http://127.0.0.1:20128 \\
+        uv run python scripts/live_savings_bench.py \\
+        --baseline-model <frontier route> --out-dir /tmp/<run> [--repeats 1]
 """
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -27,144 +42,88 @@ import subprocess
 import sys
 import tempfile
 import time
-import uuid
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
-import httpx
-
-# ── Configuration ──────────────────────────────────────────────────────
-GATEWAY = os.environ.get("OMNIROUTE_GATEWAY", "http://localhost:20128/v1")
-TASKS_JSON = (
-    Path(__file__).resolve().parent.parent
-    / "benchmarks"
-    / "fixtures"
-    / "live_savings"
-    / "tasks.json"
-)
-PROOF_DIR = Path(__file__).resolve().parent.parent / "docs" / "proof" / "live-savings-2026-09-28"
-REPEATS = 2
+REPO_ROOT = Path(__file__).resolve().parent.parent
+TASKS_JSON = REPO_ROOT / "benchmarks" / "fixtures" / "live_savings" / "tasks.json"
 EXECUTE_TIMEOUT = 120.0
+MAX_EXECUTE_ATTEMPTS = 2
+ALLOWED_CAPACITY = frozenset({"free", "subscription"})
+NO_ELIGIBLE_TARGET = "no_eligible_target"
+LIST_PRICE_LABEL = "list-price equivalent, not an invoice"
+ARMS = ("baseline", "verdict")
 
-BASELINE_MODEL = "cc/claude-opus-5"
-VERDICT_CANDIDATES = ["cc/claude-sonnet-4-5-20250929", "cc/claude-haiku-4-5-20251001"]
-
-# Price URL
-PRICING_URL = "https://www.anthropic.com/pricing"
-
-# Model name -> display name mapping for parsing
-MODEL_PRICE_KEYS: dict[str, str] = {
-    "cc/claude-opus-5": "Opus 5",
-    "cc/claude-sonnet-4-5-20250929": "Sonnet 4.5",
-    "cc/claude-haiku-4-5-20251001": "Haiku 4.5",
-}
+# (status, headers, body) for one chat completion.
+Exchange = tuple[int, Mapping[str, str], Mapping[str, Any]]
+Transport = Callable[[str, list[dict[str, str]], float], Exchange]
+Grader = Callable[[Mapping[str, Any], str], bool]
 
 
-# ── Price fetching ─────────────────────────────────────────────────────
-def fetch_prices() -> tuple[dict[str, dict[str, Any]], str, str]:
-    """Fetch and parse prices from anthropic.com/pricing.
-
-    Returns (price_table, page_sha256, access_timestamp).
-    Raises RuntimeError if a model price cannot be found.
-    """
-    resp = httpx.get(PRICING_URL, timeout=30, follow_redirects=True)
-    resp.raise_for_status()
-    page_text = resp.text
-    page_sha256 = hashlib.sha256(page_text.encode()).hexdigest()
-    access_ts = datetime.now(timezone.utc).isoformat()
-
-    # Store snapshot for auditability
-    PROOF_DIR.mkdir(parents=True, exist_ok=True)
-    snapshot_path = PROOF_DIR / "pricing-page-snapshot.txt"
-    # Write a trimmed version (strip large SVG/style blocks but keep pricing text)
-    # Actually store the sha256 and key extracted text, not the full 1MB page
-    extracted: list[str] = []
-
-    price_table: dict[str, dict[str, Any]] = {}
-
-    for model_id, display_name in MODEL_PRICE_KEYS.items():
-        # Find model card section: "Opus 5" followed by Input $X / MTok and Output $Y / MTok
-        # Escape for regex, handle "Opus 5" not matching "Opus 5.5"
-        if display_name.endswith("5"):
-            pattern = re.escape(display_name) + r"(?![\.\d])"
-        else:
-            pattern = re.escape(display_name)
-
-        found = False
-        for m in re.finditer(pattern, page_text, re.IGNORECASE):
-            end = min(len(page_text), m.end() + 3000)
-            chunk = page_text[m.start() : end]
-            # Strip HTML tags for easier parsing
-            clean = re.sub(r"<[^>]+>", "|", chunk)
-            clean = re.sub(r"\|+", "|", clean)
-
-            input_match = re.search(r"Input[\|\s]*\$(\d+(?:\.\d+)?)[\s\|]*/\s*MTok", clean)
-            output_match = re.search(r"Output[\|\s]*\$(\d+(?:\.\d+)?)[\s\|]*/\s*MTok", clean)
-            if input_match and output_match:
-                input_price = float(input_match.group(1))
-                output_price = float(output_match.group(1))
-                price_table[model_id] = {
-                    "input_per_1m": input_price,
-                    "output_per_1m": output_price,
-                    "source_url": PRICING_URL,
-                    "access_date": access_ts,
-                    "parsed_from": display_name,
-                }
-                extracted.append(
-                    f"{display_name}: Input ${input_price}/MTok, Output ${output_price}/MTok"
-                )
-                found = True
-                break
-
-        if not found:
-            raise RuntimeError(
-                f"Cannot find price for {display_name} ({model_id}) on {PRICING_URL}. "
-                f"Page SHA-256: {page_sha256}"
-            )
-
-    # Write audit file
-    snapshot_path.write_text(
-        f"# Pricing page snapshot\n"
-        f"URL: {PRICING_URL}\n"
-        f"Fetched: {access_ts}\n"
-        f"SHA-256: {page_sha256}\n"
-        f"Page size: {len(page_text)} chars\n\n"
-        f"## Extracted prices\n" + "\n".join(extracted) + "\n",
-        encoding="utf-8",
-    )
-
-    return price_table, page_sha256, access_ts
-
-
-# ── Data classes ───────────────────────────────────────────────────────
+# ── Records ────────────────────────────────────────────────────────────
 @dataclass
-class TokenCounter:
-    """Validate token counter proportionality."""
+class Call:
+    """One model call, attributed to the arm that caused it."""
 
-    model: str
-    short_tokens: list[int] = field(default_factory=list)
-    long_tokens: list[int] = field(default_factory=list)
-    proportional: bool = True
-    note: str = ""
+    arm: str
+    kind: str  # probe | execute | retry
+    requested_model: str
+    served_model: str
+    request_id: str | None
+    capacity: str
+    status: int
+    input_tokens: int | None
+    cached_input_tokens: int | None
+    output_tokens: int | None
+    error: str | None = None
 
 
 @dataclass
-class TaskResult:
-    """Result of one task arm run."""
+class RouteResult:
+    """What the Verdict router decided for one task."""
+
+    model: str | None
+    decision: str
+    reason: str
+    context_pack_prompt: str | None
+    capacity: str
+    probe_calls: list[Call] = field(default_factory=list)
+    receipt: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ArmRun:
+    """One arm of one (task, repeat) pair."""
 
     task_id: str
-    arm: str  # "baseline" or "verdict"
-    model: str
+    task_group: str
+    arm: str
     repeat: int
-    passed: bool
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    latency_ms: float
-    error: str | None = None
-    routing_receipt: dict[str, Any] | None = None
+    requested_model: str | None
+    accepted: bool
+    calls: list[Call] = field(default_factory=list)
+    miss_reason: str | None = None
+    route: dict[str, Any] | None = None
+
+    @property
+    def served_model(self) -> str | None:
+        executed = [c for c in self.calls if c.kind in ("execute", "retry") and c.status == 200]
+        return executed[-1].served_model if executed else None
+
+
+@dataclass
+class PairsResult:
+    runs: list[ArmRun]
+    stopped_early: bool
+
+
+class Router(Protocol):
+    def route(self, prompt: str, criticality: str) -> RouteResult: ...
+
+    def capacity_of(self, model: str) -> str: ...
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -172,23 +131,6 @@ def _refuse_without_opt_in() -> None:
     if os.environ.get("VERDICT_LIVE_SMOKE") != "1":
         print("refusing: set VERDICT_LIVE_SMOKE=1 (this spends real capacity)", file=sys.stderr)
         raise SystemExit(2)
-
-
-def _chat(model: str, prompt: str, *, timeout: float = EXECUTE_TIMEOUT) -> dict[str, Any]:
-    """Send a chat completion to the gateway and return the full response."""
-    url = f"{GATEWAY}/chat/completions"
-    resp = httpx.post(
-        url,
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 4096,
-            "temperature": 0.0,
-        },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    return resp.json()
 
 
 def _extract_code(text: str) -> str:
@@ -202,13 +144,11 @@ def _extract_code(text: str) -> str:
     return text
 
 
-def _grade_solution(task: dict[str, Any], code: str) -> bool:
+def _grade_solution(task: Mapping[str, Any], code: str) -> bool:
     """Run the task's test file against the solution in a temp sandbox."""
-    test_dir = TASKS_JSON.parent
-    test_file = test_dir / task["test_file"]
+    test_file = TASKS_JSON.parent / task["test_file"]
     if not test_file.exists():
         return False
-
     with tempfile.TemporaryDirectory() as sandbox:
         sandbox_path = Path(sandbox)
         (sandbox_path / "solution.py").write_text(code, encoding="utf-8")
@@ -216,15 +156,7 @@ def _grade_solution(task: dict[str, Any], code: str) -> bool:
             test_file.read_text(encoding="utf-8"), encoding="utf-8"
         )
         result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                str(sandbox_path / task["test_file"]),
-                "-v",
-                "--tb=short",
-                "--no-header",
-            ],
+            [sys.executable, "-m", "pytest", str(sandbox_path / task["test_file"]), "-q"],
             capture_output=True,
             text=True,
             cwd=str(sandbox_path),
@@ -233,542 +165,615 @@ def _grade_solution(task: dict[str, Any], code: str) -> bool:
         return result.returncode == 0
 
 
-def validate_token_counters() -> dict[str, TokenCounter]:
-    """Validate each model's token counter with short and long prompts."""
-    results: dict[str, TokenCounter] = {}
-    models = [BASELINE_MODEL, *VERDICT_CANDIDATES]
+def _is_opaque(model: str) -> bool:
+    from verdict.admission import is_opaque
 
-    for model in models:
-        tc = TokenCounter(model=model)
-        short_prompt = "x"
-        long_prompt = "a " * 5000
+    return is_opaque(model)
 
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def usage_of(body: Mapping[str, Any]) -> tuple[int | None, int | None, int | None]:
+    """Provider-reported (input, cached_input, output); ``None`` when not reported."""
+    usage = body.get("usage") if isinstance(body, Mapping) else None
+    if not isinstance(usage, Mapping):
+        return None, None, None
+    details = usage.get("prompt_tokens_details")
+    cached = _int_or_none(details.get("cached_tokens")) if isinstance(details, Mapping) else None
+    if cached is None:
+        cached = _int_or_none(usage.get("cache_read_input_tokens"))
+    return (
+        _int_or_none(usage.get("prompt_tokens")),
+        cached,
+        _int_or_none(usage.get("completion_tokens")),
+    )
+
+
+def _header(headers: Mapping[str, str], *names: str) -> str | None:
+    lowered = {str(k).lower(): str(v) for k, v in headers.items()}
+    for name in names:
+        value = lowered.get(name.lower())
+        if value:
+            return value
+    return None
+
+
+def _content(body: Mapping[str, Any]) -> str:
+    choices = body.get("choices") or []
+    if not choices or not isinstance(choices[0], Mapping):
+        return ""
+    message = choices[0].get("message") or {}
+    return str(message.get("content") or "") if isinstance(message, Mapping) else ""
+
+
+def _criticality(task: Mapping[str, Any]) -> str:
+    return "low" if "simple" in str(task.get("task_class", "")) else "medium"
+
+
+def _execute(
+    *,
+    arm: str,
+    model: str,
+    messages: list[dict[str, str]],
+    capacity: str,
+    transport: Transport,
+    router: Router,
+) -> tuple[list[Call], Mapping[str, Any] | None]:
+    """Send the task; retry once on failure. Every attempt is a recorded call."""
+    calls: list[Call] = []
+    for attempt in range(MAX_EXECUTE_ATTEMPTS):
+        kind = "execute" if attempt == 0 else "retry"
         try:
-            for _i in range(3):
-                tag = uuid.uuid4().hex[:8]
-                r = _chat(model, f"{short_prompt} [{tag}]", timeout=30.0)
-                usage = r.get("usage", {})
-                tc.short_tokens.append(usage.get("prompt_tokens", 0))
+            status, headers, body = transport(model, messages, EXECUTE_TIMEOUT)
+            error = None if status == 200 else f"http {status}"
+        except Exception as exc:
+            status, headers, body, error = 0, {}, {}, f"{type(exc).__name__}: {exc}"
+        served = (
+            _header(headers, "x-omniroute-model", "x-omniroute-completed-with")
+            or str(body.get("model") or "")
+            or model
+        )
+        in_tok, cached_tok, out_tok = usage_of(body)
+        calls.append(
+            Call(
+                arm=arm,
+                kind=kind,
+                requested_model=model,
+                served_model=served,
+                request_id=_header(headers, "x-omniroute-request-id", "x-request-id"),
+                # A gateway fallback can serve another route; classify what was served.
+                capacity=capacity if served == model else router.capacity_of(served),
+                status=status,
+                input_tokens=in_tok,
+                cached_input_tokens=cached_tok,
+                output_tokens=out_tok,
+                error=error,
+            )
+        )
+        if status == 200:
+            return calls, body
+    return calls, None
 
-                tag = uuid.uuid4().hex[:8]
-                r = _chat(model, f"{long_prompt} [{tag}]", timeout=30.0)
-                usage = r.get("usage", {})
-                tc.long_tokens.append(usage.get("prompt_tokens", 0))
 
-            avg_short = sum(tc.short_tokens) / len(tc.short_tokens) if tc.short_tokens else 0
-            avg_long = sum(tc.long_tokens) / len(tc.long_tokens) if tc.long_tokens else 0
+def _run_baseline(
+    task: Mapping[str, Any],
+    repeat: int,
+    *,
+    model: str,
+    router: Router,
+    transport: Transport,
+    grader: Grader,
+) -> ArmRun:
+    run = ArmRun(
+        str(task["id"]), str(task.get("task_group", "standalone")), "baseline", repeat, model, False
+    )
+    capacity = router.capacity_of(model)
+    if capacity not in ALLOWED_CAPACITY:
+        run.miss_reason = f"capacity {capacity} not allowed (free,subscription only)"
+        return run
+    calls, body = _execute(
+        arm="baseline",
+        model=model,
+        messages=[{"role": "user", "content": str(task["prompt"])}],
+        capacity=capacity,
+        transport=transport,
+        router=router,
+    )
+    run.calls = calls
+    if body is None:
+        run.miss_reason = "no successful response"
+        return run
+    run.accepted = grader(task, _extract_code(_content(body)))
+    return run
 
-            if avg_short == 0 or avg_long == 0:
-                tc.proportional = False
-                tc.note = f"zero tokens reported (short={avg_short}, long={avg_long})"
-            elif avg_long / avg_short < 5.0:
-                tc.proportional = False
-                tc.note = (
-                    f"not proportional: short_avg={avg_short:.0f}, "
-                    f"long_avg={avg_long:.0f}, ratio={avg_long / avg_short:.1f}x"
+
+def _run_verdict(
+    task: Mapping[str, Any], repeat: int, *, router: Router, transport: Transport, grader: Grader
+) -> ArmRun:
+    prompt = str(task["prompt"])
+    route = router.route(prompt, _criticality(task))
+    run = ArmRun(
+        str(task["id"]),
+        str(task.get("task_group", "standalone")),
+        "verdict",
+        repeat,
+        route.model,
+        False,
+        calls=list(route.probe_calls),
+        route={"decision": route.decision, "reason": route.reason, **route.receipt},
+    )
+    model = route.model
+    if route.decision == "denied" or not model or model == NO_ELIGIBLE_TARGET:
+        run.miss_reason = f"denied: {route.reason}"
+        return run
+    if _is_opaque(model):
+        run.miss_reason = f"opaque route {model} is never a candidate"
+        return run
+    if route.capacity not in ALLOWED_CAPACITY:
+        run.miss_reason = f"capacity {route.capacity} not allowed (free,subscription only)"
+        return run
+    messages = [{"role": "user", "content": prompt}]
+    if route.context_pack_prompt:
+        messages.insert(0, {"role": "system", "content": route.context_pack_prompt})
+    calls, body = _execute(
+        arm="verdict",
+        model=model,
+        messages=messages,
+        capacity=route.capacity,
+        transport=transport,
+        router=router,
+    )
+    run.calls.extend(calls)
+    if body is None:
+        run.miss_reason = "no successful response"
+        return run
+    run.accepted = grader(task, _extract_code(_content(body)))
+    return run
+
+
+def run_pairs(
+    tasks: Sequence[Mapping[str, Any]],
+    *,
+    router: Router,
+    transport: Transport,
+    baseline_model: str,
+    repeats: int,
+    grader: Grader = _grade_solution,
+    max_wall_seconds: float,
+    clock: Callable[[], float] = time.monotonic,
+) -> PairsResult:
+    """Run both arms for every (task, repeat); stop before a pair once over the bound."""
+    runs: list[ArmRun] = []
+    start = clock()
+    for repeat in range(1, repeats + 1):
+        for task in tasks:
+            if clock() - start > max_wall_seconds:
+                return PairsResult(runs, stopped_early=True)
+            runs.append(
+                _run_baseline(
+                    task,
+                    repeat,
+                    model=baseline_model,
+                    router=router,
+                    transport=transport,
+                    grader=grader,
                 )
-            else:
-                tc.note = (
-                    f"OK: short_avg={avg_short:.0f}, "
-                    f"long_avg={avg_long:.0f}, ratio={avg_long / avg_short:.1f}x"
-                )
-        except Exception as e:
-            tc.proportional = False
-            tc.note = f"error: {e}"
-
-        results[model] = tc
-        print(f"  counter {model}: {tc.note}")
-
-    return results
+            )
+            runs.append(
+                _run_verdict(task, repeat, router=router, transport=transport, grader=grader)
+            )
+    return PairsResult(runs, stopped_early=False)
 
 
-# ── Verdict routing (real Gate.route path) ─────────────────────────────
-def select_verdict_model(
-    task: dict[str, Any],
-    counter_results: dict[str, TokenCounter],
-    price_table: dict[str, dict[str, Any]],
-) -> tuple[str, dict[str, Any]]:
-    """Use the real Verdict Gate.route() to select a model.
+# ── Report ─────────────────────────────────────────────────────────────
+def _empty_tokens() -> dict[str, int]:
+    return {"input": 0, "cached_input": 0, "output": 0}
 
-    Returns (model_id, routing_receipt_dict).
-    The routing receipt records the decision reason, tier, alternatives, etc.
-    Candidate pool is limited to models with validated token counters and sourced prices.
-    """
-    from verdict.gate import Gate
 
-    # Build a Gate with allow_offline=True (static catalog, no probe I/O)
-    # and only the models we have valid counters + prices for
-    valid_models = {BASELINE_MODEL} | {
-        m
-        for m in VERDICT_CANDIDATES
-        if m in counter_results and counter_results[m].proportional and m in price_table
+def _tokens(calls: Iterable[Call]) -> dict[str, Any]:
+    total = _empty_tokens()
+    by_capacity: dict[str, dict[str, int]] = {}
+    missing = 0
+    for call in calls:
+        if call.input_tokens is None and call.output_tokens is None:
+            missing += 1
+        bucket = by_capacity.setdefault(call.capacity, _empty_tokens())
+        for key, value in (
+            ("input", call.input_tokens),
+            ("cached_input", call.cached_input_tokens),
+            ("output", call.output_tokens),
+        ):
+            total[key] += value or 0
+            bucket[key] += value or 0
+    return {"total": total, "by_capacity": by_capacity, "calls_without_usage": missing}
+
+
+def _arm_summary(runs: Sequence[ArmRun]) -> dict[str, Any]:
+    calls = [c for r in runs for c in r.calls]
+    accepted = sum(1 for r in runs if r.accepted)
+    misses: dict[str, int] = {}
+    for r in runs:
+        if r.miss_reason:
+            key = r.miss_reason.split(":", 1)[0]
+            misses[key] = misses.get(key, 0) + 1
+    kinds: dict[str, int] = {}
+    for c in calls:
+        kinds[c.kind] = kinds.get(c.kind, 0) + 1
+    return {
+        "attempted": len(runs),
+        "accepted": accepted,
+        "accepted_rate": (accepted / len(runs)) if runs else 0.0,
+        "misses": misses,
+        "calls": kinds,
+        "tokens": _tokens(calls),
     }
 
-    gate = Gate(primary_model=BASELINE_MODEL, allow_offline=True)
 
-    task_prompt = task.get("prompt", "")
-    task_class = task.get("task_class", "medium-code")
-
-    # Map task_class to criticality for the router
-    criticality = "medium"
-    if "simple" in task_class:
-        criticality = "low"
-
-    try:
-        decision = gate.route(task_prompt[:500], criticality=criticality)
-
-        # Build receipt
-        receipt: dict[str, Any] = {
-            "selected_model": decision.model,
-            "provider": decision.provider,
-            "tier": decision.tier,
-            "reason": decision.reason,
-            "decision": decision.decision,
-            "alternatives": decision.alternatives[:3] if decision.alternatives else [],
-            "task_class": decision.task_class,
-            "safety_flags": decision.safety_flags,
-        }
-
-        model = decision.model
-        # If the routed model is not in our valid pool, fall back to baseline
-        if model not in valid_models:
-            receipt["fallback_reason"] = f"routed model {model} not in valid pool {valid_models}"
-            model = BASELINE_MODEL
-
-        return model, receipt
-
-    except Exception as e:
-        receipt = {"error": str(e), "fallback": "baseline"}
-        return BASELINE_MODEL, receipt
+def _uncached(calls: Iterable[Call]) -> tuple[int, int, int]:
+    calls = list(calls)
+    input_total = sum(c.input_tokens or 0 for c in calls)
+    cached = sum(c.cached_input_tokens or 0 for c in calls)
+    output = sum(c.output_tokens or 0 for c in calls)
+    return input_total - cached, cached, output
 
 
-def compute_cost(result: TaskResult, price_table: dict[str, dict[str, Any]]) -> float | None:
-    """Compute cost from token usage and published list price."""
-    price = price_table.get(result.model)
-    if not price:
-        return None
-    input_cost = result.prompt_tokens * price["input_per_1m"] / 1_000_000
-    output_cost = result.completion_tokens * price["output_per_1m"] / 1_000_000
-    return input_cost + output_cost
-
-
-def run_task_arm(
-    task: dict[str, Any],
-    model: str,
-    arm: str,
-    repeat: int,
-    routing_receipt: dict[str, Any] | None = None,
-) -> TaskResult:
-    """Run one task on one model and grade it."""
-    tag = uuid.uuid4().hex[:8]
-    prompt = task["prompt"] + f"\n\n<!-- run-{tag} -->"
-
-    start = time.perf_counter()
-    try:
-        resp = _chat(model, prompt)
-        latency = (time.perf_counter() - start) * 1000
-
-        usage = resp.get("usage", {})
-        content = ""
-        choices = resp.get("choices", [])
-        if choices:
-            content = (choices[0].get("message") or {}).get("content", "")
-
-        code = _extract_code(content)
-        passed = _grade_solution(task, code)
-
-        return TaskResult(
-            task_id=task["id"],
-            arm=arm,
-            model=model,
-            repeat=repeat,
-            passed=passed,
-            prompt_tokens=usage.get("prompt_tokens", 0),
-            completion_tokens=usage.get("completion_tokens", 0),
-            total_tokens=usage.get("total_tokens", 0),
-            latency_ms=latency,
-            routing_receipt=routing_receipt,
-        )
-    except Exception as e:
-        latency = (time.perf_counter() - start) * 1000
-        return TaskResult(
-            task_id=task["id"],
-            arm=arm,
-            model=model,
-            repeat=repeat,
-            passed=False,
-            prompt_tokens=0,
-            completion_tokens=0,
-            total_tokens=0,
-            latency_ms=latency,
-            error=str(e),
-            routing_receipt=routing_receipt,
-        )
+def _list_price(
+    calls: Iterable[Call], prices: Mapping[str, Mapping[str, float]], unpriced: set[str]
+) -> float:
+    total = 0.0
+    for c in calls:
+        price = prices.get(c.served_model)
+        if price is None:
+            unpriced.add(c.served_model)
+            continue
+        total += (c.input_tokens or 0) * float(price["input_per_1m"]) / 1_000_000
+        total += (c.output_tokens or 0) * float(price["output_per_1m"]) / 1_000_000
+    return total
 
 
 def build_report(
-    results: list[TaskResult],
-    counter_results: dict[str, TokenCounter],
-    tasks: list[dict[str, Any]],
-    price_table: dict[str, dict[str, Any]],
-    price_sha256: str,
-    price_access_ts: str,
+    runs: Sequence[ArmRun],
+    *,
+    config: Mapping[str, Any],
+    list_prices: Mapping[str, Mapping[str, float]] | None = None,
+    integrity: Mapping[str, str] | None = None,
+    stopped_early: bool = False,
 ) -> dict[str, Any]:
-    """Build the final report JSON with per-(task,repeat) eligibility and per-group results."""
-    ts = datetime.now(timezone.utc).isoformat()
-    baseline_results = [r for r in results if r.arm == "baseline"]
-    verdict_results = [r for r in results if r.arm == "verdict"]
-    baseline_passes = sum(1 for r in baseline_results if r.passed)
-    verdict_passes = sum(1 for r in verdict_results if r.passed)
-    valid_counter_models = {m for m, tc in counter_results.items() if tc.proportional}
+    """Per-arm and per-group accepted work and tokens; refuse claims the evidence cannot carry."""
+    by_arm = {arm: [r for r in runs if r.arm == arm] for arm in ARMS}
+    groups: dict[str, dict[str, Any]] = {}
+    for group in sorted({r.task_group for r in runs}):
+        groups[group] = {
+            arm: _arm_summary([r for r in by_arm[arm] if r.task_group == group]) for arm in ARMS
+        }
 
-    # Per-(task, repeat) eligibility: both arms must pass for that specific pair
-    baseline_cost = 0.0
-    verdict_cost = 0.0
-    cost_eligible_pairs: list[dict[str, Any]] = []
-    cost_excluded_pairs: list[dict[str, Any]] = []
+    index = {(r.arm, r.task_id, r.repeat): r for r in runs}
+    pairs: list[dict[str, Any]] = []
+    comparable: list[tuple[ArmRun, ArmRun]] = []
+    for task_id, repeat in sorted({(r.task_id, r.repeat) for r in runs}):
+        b = index.get(("baseline", task_id, repeat))
+        v = index.get(("verdict", task_id, repeat))
+        entry: dict[str, Any] = {
+            "pair": f"{task_id}/r{repeat}",
+            "baseline_served": b.served_model if b else None,
+            "verdict_served": v.served_model if v else None,
+            "token_delta": None,
+        }
+        if b is None or v is None:
+            entry["status"], entry["reason"] = "failed_pair", "missing arm run"
+        elif not (b.accepted and v.accepted):
+            failed = [r.arm for r in (b, v) if not r.accepted]
+            entry["status"], entry["reason"] = "failed_pair", f"not accepted: {','.join(failed)}"
+        elif b.served_model == v.served_model:
+            # Same model in both arms: any token difference is run variance, not routing.
+            entry["status"], entry["reason"] = "same_model", "both arms served by one model"
+        else:
+            entry["status"] = "comparable"
+            bu, _, bo = _uncached(b.calls)
+            vu, _, vo = _uncached(v.calls)
+            entry["token_delta"] = (bu + bo) - (vu + vo)
+            comparable.append((b, v))
+        pairs.append(entry)
 
-    task_ids = sorted({r.task_id for r in results})
-    repeats = sorted({r.repeat for r in results})
+    b_calls = [c for b, _ in comparable for c in b.calls]
+    v_calls = [c for _, v in comparable for c in v.calls]
+    bu, bc, bo = _uncached(b_calls)
+    vu, vc, vo = _uncached(v_calls)
+    delta = (bu + bo) - (vu + vo)
+    arms = {arm: _arm_summary(by_arm[arm]) for arm in ARMS}
 
-    for task_id in task_ids:
-        for repeat in repeats:
-            b_run = next(
-                (r for r in baseline_results if r.task_id == task_id and r.repeat == repeat), None
+    reasons: list[str] = []
+    if arms["verdict"]["accepted"] < arms["baseline"]["accepted"]:
+        reasons.append(
+            f"Verdict arm accepted fewer tasks ({arms['verdict']['accepted']}) than the "
+            f"baseline ({arms['baseline']['accepted']}): no savings claim is allowed at "
+            "lower accepted work"
+        )
+    if not comparable:
+        reasons.append("no comparable pair (both arms accepted, different served models)")
+    if delta <= 0 and comparable:
+        reasons.append("Verdict arm did not use fewer uncached tokens on comparable pairs")
+    if integrity and integrity.get("before") != integrity.get("after"):
+        reasons.append("tasks or tests changed during the run")
+    if stopped_early:
+        reasons.append("run stopped at the wall-clock bound before every pair ran")
+
+    report: dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "headline_metric": "tokens",
+        "config": dict(config),
+        "stopped_early": stopped_early,
+        "integrity": dict(integrity) if integrity else None,
+        "arms": arms,
+        "groups": groups,
+        "pairs": pairs,
+        "savings": {
+            "comparable_pairs": len(comparable),
+            "claim_allowed": not reasons,
+            "reasons": reasons,
+            # Model choice: uncached input plus output, so a cache hit never reads as routing.
+            "model_choice": {
+                "baseline_uncached_input": bu,
+                "verdict_uncached_input": vu,
+                "baseline_output": bo,
+                "verdict_output": vo,
+                "delta_tokens": delta,
+            },
+            "cached_input": {"baseline": bc, "verdict": vc, "delta_tokens": bc - vc},
+        },
+        "list_price_equivalent": None,
+    }
+    if list_prices is not None:
+        unpriced: set[str] = set()
+        report["list_price_equivalent"] = {
+            "label": LIST_PRICE_LABEL,
+            "scope": "comparable pairs only",
+            "baseline": round(_list_price(b_calls, list_prices, unpriced), 6),
+            "verdict": round(_list_price(v_calls, list_prices, unpriced), 6),
+            "unpriced_models": sorted(unpriced),
+        }
+    return report
+
+
+# ── Live wiring (not exercised by unit tests) ──────────────────────────
+class LiveRouter:
+    """The live IntelligenceService with the EligibilityGate attached as ``verdict serve`` does."""
+
+    def __init__(self) -> None:
+        from verdict import api
+
+        built = api._build_availability_cache()
+        if built is None:
+            print(
+                "refusing: no live eligibility gate (set OMNIROUTE_BASE_URL); "
+                "the catalog-only path is not the live ladder",
+                file=sys.stderr,
             )
-            v_run = next(
-                (r for r in verdict_results if r.task_id == task_id and r.repeat == repeat), None
-            )
-            pair_key = f"{task_id}/r{repeat}"
+            raise SystemExit(2)
+        _cache, gate = built
+        self.service: Any = api._build_intelligence()
+        self.service.eligibility_gate = gate
+        self._probes: list[Call] = []
+        # Wrap the resolved confirm transport rather than injecting one: an injected
+        # transport switches the ladder to its offline-consent branch. Wrapping keeps
+        # the live behaviour and lets every confirm probe be charged to the Verdict arm.
+        resolve = self.service._resolve_confirm_transport
 
-            if b_run is None or v_run is None:
-                cost_excluded_pairs.append({"pair": pair_key, "reason": "missing arm run"})
-                continue
-            if not b_run.passed:
-                cost_excluded_pairs.append({"pair": pair_key, "reason": "baseline failed"})
-                continue
-            if not v_run.passed:
-                cost_excluded_pairs.append({"pair": pair_key, "reason": "verdict failed"})
-                continue
-            if b_run.model not in valid_counter_models:
-                cost_excluded_pairs.append(
-                    {
-                        "pair": pair_key,
-                        "reason": f"baseline model {b_run.model} counter not proportional",
-                    }
+        def _counting_resolve(endpoint: Any) -> Any:
+            inner = resolve(endpoint)
+            if inner is None:
+                return None
+
+            def transport(model_id: str, payload: Mapping[str, Any], timeout: float) -> Any:
+                result = inner(model_id, payload, timeout)
+                body = result.get("body") if isinstance(result, Mapping) else None
+                body = body if isinstance(body, Mapping) else {}
+                in_tok, cached_tok, out_tok = usage_of(body)
+                self._probes.append(
+                    Call(
+                        arm="verdict",
+                        kind="probe",
+                        requested_model=model_id,
+                        served_model=str(body.get("model") or model_id),
+                        request_id=None,
+                        capacity=self.capacity_of(model_id),
+                        status=int(result.get("status_code") or 0),
+                        input_tokens=in_tok,
+                        cached_input_tokens=cached_tok,
+                        output_tokens=out_tok,
+                    )
                 )
-                continue
-            if v_run.model not in valid_counter_models:
-                cost_excluded_pairs.append(
-                    {
-                        "pair": pair_key,
-                        "reason": f"verdict model {v_run.model} counter not proportional",
-                    }
-                )
-                continue
+                return result
 
-            b_cost = compute_cost(b_run, price_table)
-            v_cost = compute_cost(v_run, price_table)
-            if b_cost is None or v_cost is None:
-                cost_excluded_pairs.append({"pair": pair_key, "reason": "no list price for model"})
-                continue
+            return transport
 
-            baseline_cost += b_cost
-            verdict_cost += v_cost
-            cost_eligible_pairs.append(
-                {
-                    "pair": pair_key,
-                    "baseline_cost": round(b_cost, 6),
-                    "verdict_cost": round(v_cost, 6),
-                }
-            )
+        self.service._resolve_confirm_transport = _counting_resolve
 
-    savings_pct = (
-        ((baseline_cost - verdict_cost) / baseline_cost * 100) if baseline_cost > 0 else 0.0
+    def capacity_of(self, model: str) -> str:
+        snapshot = self.service._load_admit_snapshot()[0]
+        if snapshot is None:
+            return "unknown"
+        capacity = self.service._route_capacity(snapshot, [model]).get(model)
+        return str(getattr(capacity, "value", capacity) or "unknown")
+
+    def route(self, prompt: str, criticality: str) -> RouteResult:
+        self._probes = []
+        decision = asyncio.run(self.service.route(prompt, criticality=criticality))
+        receipt = decision.admit_receipt if isinstance(decision.admit_receipt, dict) else {}
+        model = decision.model
+        concrete = bool(model) and model != NO_ELIGIBLE_TARGET and not _is_opaque(model)
+        return RouteResult(
+            model=model,
+            decision=decision.decision,
+            reason=decision.reason,
+            context_pack_prompt=decision.context_pack_prompt,
+            capacity=self.capacity_of(model) if concrete else "unknown",
+            probe_calls=list(self._probes),
+            receipt={
+                "alternatives": list(decision.alternatives[:8]),
+                "safety_flags": list(decision.safety_flags),
+                "pack_digest": receipt.get("pack_digest"),
+                "prompt_digest": receipt.get("prompt_digest"),
+                "pack_state": receipt.get("pack_state"),
+            },
+        )
+
+
+def live_transport() -> Transport:
+    """OpenAI-compatible chat call through OmniRoute; returns status, headers, body."""
+    import httpx
+
+    from verdict.credentials_store import resolve_api_key
+    from verdict.free_tier_admit import normalize_omniroute_origin
+    from verdict.http_safety import omniroute_evidence_headers
+
+    origin = normalize_omniroute_origin(os.environ.get("OMNIROUTE_BASE_URL", ""))
+    url = f"{origin}/v1/chat/completions"
+    api_key = resolve_api_key()
+
+    def transport(model: str, messages: list[dict[str, str]], timeout: float) -> Exchange:
+        headers = {"Content-Type": "application/json", **omniroute_evidence_headers()}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        resp = httpx.post(
+            url,
+            json={"model": model, "messages": messages, "max_tokens": 4096, "temperature": 0.0},
+            headers=headers,
+            timeout=timeout,
+        )
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {}
+        return resp.status_code, dict(resp.headers), body if isinstance(body, dict) else {}
+
+    return transport
+
+
+def fixture_digest() -> str:
+    """SHA-256 over tasks.json and every task test file, to detect edits during a run."""
+    digest = hashlib.sha256()
+    for path in sorted(TASKS_JSON.parent.iterdir()):
+        if path.is_file():
+            digest.update(path.name.encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+# ── CLI ────────────────────────────────────────────────────────────────
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
+    parser.add_argument(
+        "--baseline-model",
+        required=True,
+        help=(
+            "Concrete frontier route for the baseline arm, on free or subscription "
+            "capacity (for example a cc/* subscription model). Required; there is no default."
+        ),
+    )
+    parser.add_argument(
+        "--out-dir",
+        required=True,
+        type=Path,
+        help="Directory for report.json and calls.jsonl. Must be outside the repository.",
+    )
+    parser.add_argument("--repeats", type=int, default=1, help="Runs per arm per task.")
+    parser.add_argument(
+        "--max-wall-seconds",
+        type=float,
+        default=3600.0,
+        help="Wall-clock bound, checked before each pair; the report marks an early stop.",
+    )
+    parser.add_argument(
+        "--list-prices",
+        type=Path,
+        default=None,
+        help=(
+            "Optional JSON {model: {input_per_1m, output_per_1m}} for the secondary "
+            "list-price-equivalent line. Never an invoice."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    out_dir = Path(args.out_dir).expanduser().resolve()
+    if out_dir == REPO_ROOT or out_dir.is_relative_to(REPO_ROOT):
+        raise SystemExit(f"refusing: --out-dir {out_dir} is inside the repository")
+    if (out_dir / "report.json").exists():
+        raise SystemExit(f"refusing: {out_dir / 'report.json'} already exists")
+    if _is_opaque(args.baseline_model):
+        raise SystemExit(f"refusing: --baseline-model {args.baseline_model} is an opaque route")
+    if args.repeats < 1:
+        raise SystemExit("refusing: --repeats must be at least 1")
+    if args.max_wall_seconds <= 0:
+        raise SystemExit("refusing: --max-wall-seconds must be positive")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    validate_args(args)
+    _refuse_without_opt_in()
+    out_dir = Path(args.out_dir).expanduser().resolve()
+    tasks = json.loads(TASKS_JSON.read_text(encoding="utf-8"))["tasks"]
+    list_prices = (
+        json.loads(args.list_prices.read_text(encoding="utf-8")) if args.list_prices else None
     )
 
-    # Per-group breakdown
-    task_groups: dict[str, list[str]] = {}
-    for t in tasks:
-        g = t.get("task_group", "standalone")
-        task_groups.setdefault(g, []).append(t["id"])
-
-    group_summaries: dict[str, dict[str, Any]] = {}
-    for group, group_task_ids in sorted(task_groups.items()):
-        g_baseline = 0.0
-        g_verdict = 0.0
-        g_eligible = 0
-        g_total_pairs = 0
-        g_baseline_pass = 0
-        g_verdict_pass = 0
-        g_baseline_total = 0
-        g_verdict_total = 0
-        for task_id in group_task_ids:
-            b_runs = [r for r in baseline_results if r.task_id == task_id]
-            v_runs = [r for r in verdict_results if r.task_id == task_id]
-            g_baseline_pass += sum(1 for r in b_runs if r.passed)
-            g_verdict_pass += sum(1 for r in v_runs if r.passed)
-            g_baseline_total += len(b_runs)
-            g_verdict_total += len(v_runs)
-            for p in cost_eligible_pairs:
-                if p["pair"].split("/")[0] == task_id:
-                    g_baseline += p["baseline_cost"]
-                    g_verdict += p["verdict_cost"]
-                    g_eligible += 1
-            for _repeat in repeats:
-                g_total_pairs += 1
-
-        g_savings = ((g_baseline - g_verdict) / g_baseline * 100) if g_baseline > 0 else 0.0
-        group_summaries[group] = {
-            "tasks": group_task_ids,
-            "eligible_pairs": g_eligible,
-            "total_pairs": g_total_pairs,
-            "baseline_cost_usd": round(g_baseline, 6),
-            "verdict_cost_usd": round(g_verdict, 6),
-            "savings_pct": round(g_savings, 1),
-            "baseline_pass_rate": f"{g_baseline_pass}/{g_baseline_total}",
-            "verdict_pass_rate": f"{g_verdict_pass}/{g_verdict_total}",
-        }
-
-    per_task: list[dict[str, Any]] = []
-    for task_id in sorted({r.task_id for r in results}):
-        task_results = [r for r in results if r.task_id == task_id]
-        entry: dict[str, Any] = {"task_id": task_id, "runs": []}
-        for tr in task_results:
-            cost = compute_cost(tr, price_table)
-            run_entry: dict[str, Any] = {
-                "arm": tr.arm,
-                "model": tr.model,
-                "repeat": tr.repeat,
-                "passed": tr.passed,
-                "prompt_tokens": tr.prompt_tokens,
-                "completion_tokens": tr.completion_tokens,
-                "total_tokens": tr.total_tokens,
-                "latency_ms": round(tr.latency_ms, 1),
-            }
-            if cost is not None:
-                run_entry["cost_usd"] = round(cost, 6)
-            if tr.error:
-                run_entry["error"] = tr.error
-            if tr.routing_receipt:
-                run_entry["routing_receipt"] = tr.routing_receipt
-            entry["runs"].append(run_entry)
-        per_task.append(entry)
-
-    counter_detail = {}
-    for model, tc in counter_results.items():
-        counter_detail[model] = {
-            "proportional": tc.proportional,
-            "short_prompt_tokens": tc.short_tokens,
-            "long_prompt_tokens": tc.long_tokens,
-            "note": tc.note,
-        }
-
-    failures: list[dict[str, str]] = []
-    for r in results:
-        if not r.passed:
-            fail: dict[str, str] = {
-                "task_id": r.task_id,
-                "arm": r.arm,
-                "model": r.model,
-                "repeat": str(r.repeat),
-            }
-            if r.error:
-                fail["error"] = r.error
-            failures.append(fail)
-
-    return {
-        "schema_version": "2",
-        "generated_at": ts,
-        "label": (
-            "Measured cost comparison using real model runs, real observed token usage, "
-            "priced at the provider's published per-token list prices. "
-            "Verdict arm uses Gate.route() (legacy feed / offline catalog). "
-            "Subscription capacity; no invoice — costs are computed, not billed."
-        ),
-        "methodology": {
-            "baseline_model": BASELINE_MODEL,
-            "verdict_routing": "Gate.route() with allow_offline=True (real planner + catalog ranker)",
-            "grading": "unit tests in temp sandbox",
-            "repeats": REPEATS,
-            "eligibility": "per (task, repeat) pair — both arms must pass",
-            "note": "Small n; two repeats per arm per task.",
-        },
-        "pricing_source": {
-            "url": PRICING_URL,
-            "page_sha256": price_sha256,
-            "fetched_at": price_access_ts,
-        },
-        "token_counter_validation": counter_detail,
-        "price_table": price_table,
-        "summary": {
-            "total_runs": len(results),
-            "baseline_pass_rate": f"{baseline_passes}/{len(baseline_results)}",
-            "verdict_pass_rate": f"{verdict_passes}/{len(verdict_results)}",
-            "cost_eligible_pairs": [p["pair"] for p in cost_eligible_pairs],
-            "cost_excluded_pairs": cost_excluded_pairs,
-            "baseline_cost_usd": round(baseline_cost, 6),
-            "verdict_cost_usd": round(verdict_cost, 6),
-            "savings_pct": round(savings_pct, 1),
-            "savings_label": (
-                "Savings computed only over (task, repeat) pairs where both arms passed, "
-                "using models with validated token counters and published list prices."
+    router = LiveRouter()
+    baseline_capacity = router.capacity_of(args.baseline_model)
+    if baseline_capacity not in ALLOWED_CAPACITY:
+        raise SystemExit(
+            f"refusing: baseline {args.baseline_model} capacity is {baseline_capacity}"
+        )
+    before = fixture_digest()
+    result = run_pairs(
+        tasks,
+        router=router,
+        transport=live_transport(),
+        baseline_model=args.baseline_model,
+        repeats=args.repeats,
+        max_wall_seconds=args.max_wall_seconds,
+    )
+    report = build_report(
+        result.runs,
+        config={
+            "baseline_model": args.baseline_model,
+            "baseline_capacity": baseline_capacity,
+            "repeats": args.repeats,
+            "max_wall_seconds": args.max_wall_seconds,
+            "tasks": len(tasks),
+            "allowed_capacity": sorted(ALLOWED_CAPACITY),
+            "unattributed": (
+                "availability probes made inside the EligibilityGate adapter "
+                "(production profile only) are not visible to the bench"
             ),
         },
-        "group_summaries": group_summaries,
-        "failures": failures,
-        "per_task": per_task,
-    }
-
-
-def sanitize_receipt(result: TaskResult) -> dict[str, Any]:
-    """Create a sanitized per-call receipt (no prompts, outputs, keys, headers)."""
-    entry: dict[str, Any] = {
-        "task_id": result.task_id,
-        "arm": result.arm,
-        "model": result.model,
-        "repeat": result.repeat,
-        "passed": result.passed,
-        "prompt_tokens": result.prompt_tokens,
-        "completion_tokens": result.completion_tokens,
-        "total_tokens": result.total_tokens,
-        "latency_ms": round(result.latency_ms, 1),
-    }
-    if result.routing_receipt:
-        entry["routing_receipt"] = result.routing_receipt
-    if result.error:
-        entry["error"] = result.error
-    return entry
-
-
-def main() -> None:
-    _refuse_without_opt_in()
-
-    # Step 0: Fetch prices from the live page
-    print("--- Fetching prices from anthropic.com/pricing ---")
-    price_table, price_sha256, price_access_ts = fetch_prices()
-    for model_id, prices in price_table.items():
-        print(
-            f"  {model_id}: ${prices['input_per_1m']}/MTok in, ${prices['output_per_1m']}/MTok out"
-        )
-    print(f"  Page SHA-256: {price_sha256[:16]}...")
-    print()
-
-    tasks_data = json.loads(TASKS_JSON.read_text(encoding="utf-8"))
-    tasks = tasks_data["tasks"]
-
-    print("=== Live savings benchmark ===")
-    print(
-        f"Tasks: {len(tasks)} ({sum(1 for t in tasks if t.get('task_group') == 'standalone')} standalone, "
-        f"{sum(1 for t in tasks if t.get('task_group') == 'repo-context')} repo-context)"
+        list_prices=list_prices,
+        integrity={"before": before, "after": fixture_digest()},
+        stopped_early=result.stopped_early,
     )
-    print(f"Baseline: {BASELINE_MODEL}")
-    print(f"Repeats per arm: {REPEATS}")
-    print()
-
-    # Step 1: Validate token counters
-    print("--- Token counter validation ---")
-    counter_results = validate_token_counters()
-    excluded_models = {m for m, tc in counter_results.items() if not tc.proportional}
-    if excluded_models:
-        print(f"  EXCLUDED from cost math: {excluded_models}")
-    print()
-
-    # Step 2: Run tasks
-    print("--- Running tasks ---")
-    all_results: list[TaskResult] = []
-    for task in tasks:
-        verdict_model, routing_receipt = select_verdict_model(task, counter_results, price_table)
-        group = task.get("task_group", "standalone")
-        print(f"  {task['id']} [{group}]: baseline={BASELINE_MODEL}, verdict={verdict_model}")
-        if routing_receipt:
-            reason = routing_receipt.get("reason", "?")
-            print(f"    route: {reason[:80]}")
-
-        for repeat in range(1, REPEATS + 1):
-            print(f"    repeat {repeat} baseline...", end=" ", flush=True)
-            br = run_task_arm(task, BASELINE_MODEL, "baseline", repeat)
-            print(
-                f"{'PASS' if br.passed else 'FAIL'} "
-                f"({br.prompt_tokens}+{br.completion_tokens} tok, "
-                f"{br.latency_ms:.0f}ms)"
-            )
-            all_results.append(br)
-
-            print(f"    repeat {repeat} verdict...", end=" ", flush=True)
-            vr = run_task_arm(task, verdict_model, "verdict", repeat, routing_receipt)
-            print(
-                f"{'PASS' if vr.passed else 'FAIL'} "
-                f"({vr.prompt_tokens}+{vr.completion_tokens} tok, "
-                f"{vr.latency_ms:.0f}ms)"
-            )
-            all_results.append(vr)
-    print()
-
-    # Step 3: Build report
-    report = build_report(
-        all_results, counter_results, tasks, price_table, price_sha256, price_access_ts
-    )
-
-    # Step 4: Write outputs
-    PROOF_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = PROOF_DIR / "report.json"
-    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote {report_path}")
-
-    receipts_path = PROOF_DIR / "receipts.json"
-    receipts = [sanitize_receipt(r) for r in all_results]
-    receipts_path.write_text(json.dumps(receipts, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote {receipts_path}")
-
-    # Summary
-    s = report["summary"]
-    print()
-    print("=== Summary ===")
-    print(f"Baseline pass rate: {s['baseline_pass_rate']}")
-    print(f"Verdict pass rate:  {s['verdict_pass_rate']}")
-    print(f"Cost-eligible pairs: {len(s['cost_eligible_pairs'])}")
-    if s["cost_excluded_pairs"]:
-        print(f"Cost-excluded pairs: {len(s['cost_excluded_pairs'])}")
-        for ex in s["cost_excluded_pairs"]:
-            print(f"  {ex['pair']}: {ex['reason']}")
-    print(f"Baseline cost (list price): ${s['baseline_cost_usd']:.4f}")
-    print(f"Verdict cost (list price):  ${s['verdict_cost_usd']:.4f}")
-    if s["baseline_cost_usd"] > 0 and s["savings_pct"] > 0:
-        print(f"Savings: {s['savings_pct']}%")
-    elif s["baseline_cost_usd"] > 0:
-        print("No savings (or quality loss)")
-    else:
-        print("No cost-eligible pairs")
-
-    # Per-group
-    print()
-    print("=== Per-group results ===")
-    for group, gs in report.get("group_summaries", {}).items():
-        print(f"  {group} ({len(gs['tasks'])} tasks):")
-        print(
-            f"    Baseline pass: {gs['baseline_pass_rate']}, Verdict pass: {gs['verdict_pass_rate']}"
-        )
-        print(f"    Eligible pairs: {gs['eligible_pairs']}/{gs['total_pairs']}")
-        print(
-            f"    Baseline cost: ${gs['baseline_cost_usd']:.4f}, Verdict cost: ${gs['verdict_cost_usd']:.4f}"
-        )
-        if gs["baseline_cost_usd"] > 0:
-            print(f"    Savings: {gs['savings_pct']}%")
-
-    print()
-    print("Note: Subscription capacity — no invoice. Costs computed from published")
-    print("list prices applied to observed token usage, not billed amounts.")
-
-    if report["failures"]:
-        print()
-        print("=== Failures ===")
-        for f in report["failures"]:
-            parts = [f"  {f['task_id']} {f['arm']} r{f['repeat']} ({f.get('model', '?')})"]
-            if "error" in f:
-                parts.append(f": {f['error'][:80]}")
-            print("".join(parts))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    with (out_dir / "calls.jsonl").open("w", encoding="utf-8") as fh:
+        for run in result.runs:
+            row = {k: v for k, v in asdict(run).items() if k != "calls"}
+            for call in run.calls:
+                fh.write(json.dumps({**row, "call": asdict(call)}) + "\n")
+    savings = report["savings"]
+    for arm in ARMS:
+        summary = report["arms"][arm]
+        print(f"{arm}: accepted {summary['accepted']}/{summary['attempted']}")
+        print(f"  tokens {summary['tokens']['total']}")
+    print(f"comparable pairs: {savings['comparable_pairs']}")
+    print(f"claim allowed: {savings['claim_allowed']}")
+    for reason in savings["reasons"]:
+        print(f"  - {reason}")
+    print(f"report: {out_dir / 'report.json'}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
