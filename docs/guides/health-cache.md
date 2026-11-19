@@ -173,6 +173,27 @@ the HEALTHY stage, so a failed liveness probe removes the route. A 429 during
 the agentic probe records nothing (not tested). It uses the same redaction and
 atomic writes as the single-call probe.
 
+### Liveness probe (HEALTHY stage)
+
+The ladder confirmation and the worker launch probe send one chat request with `max_tokens: 1`
+(`openai_health_probe` in `verdict/subagent_selection.py`). A reply with text or reasoning text
+is alive. A reply with neither is alive only when all of these hold; anything else is
+`malformed_response`:
+
+- HTTP 200, no top-level `error`, exactly one choice, `finish_reason` is `length` (`stop` is
+  not accepted);
+- the message has role `assistant`, and `refusal`, `tool_calls` and `function_call` are each
+  absent or null;
+- the served identity verifies as the requested route, with no cache hit or other anomaly;
+- the text is one of two shapes, each reported under its own flag in the result:
+  - `empty_content`: the `content` key is present and is null, empty or whitespace;
+  - `missing_content`: the `content` key is absent. This shape also needs
+    `usage.completion_tokens` to be an integer of 0 or more, and `reasoning` and
+    `reasoning_content` to be absent, null or blank.
+
+`zero_output_tokens` is added to either flag when usage reports 0 completion tokens. The probe
+is chat liveness only: it never grants or clears tool or agentic proof.
+
 ## Legacy state
 
 `~/.verdict/prove-at-rest/state.json` (override
