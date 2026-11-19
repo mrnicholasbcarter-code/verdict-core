@@ -523,3 +523,22 @@ def test_prime_installed_but_not_enabled_is_a_warning_row_with_enable_repair(
 
     harness_prime.enable(health_check=lambda base_url: True)
     assert _rows(host)["Prime harness"]["status"] == "ok"
+
+
+def test_damaged_prime_config_never_crashes_doctor_and_harness_is_not_ok(host: FakeHost) -> None:
+    """Fails if a truncated models.json raises out of doctor_rows (regression vs main)."""
+    harness_prime.create_omniroute_registry(gateway=GATEWAY)
+    host.sync(GATEWAY)
+    host.models.write_text('{"providers": {"omniroute": ')
+    rows = _rows(host)
+    assert rows["Prime registry"]["status"] == "failed"
+    harness = rows["Prime harness"]
+    assert harness["status"] == "unknown"
+    assert "unreadable" in harness["detail"] and "Prime registry" in harness["detail"]
+    assert harness["status"] not in dd.BLOCKING_ROW_STATES
+
+
+def test_damaged_prime_config_never_crashes_setup_planning(host: FakeHost) -> None:
+    host.models.parent.mkdir(parents=True)
+    host.models.write_text('{"providers": ')
+    setup_host.plan_host_actions(host.env)

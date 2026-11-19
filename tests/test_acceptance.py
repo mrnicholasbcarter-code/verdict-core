@@ -1118,3 +1118,31 @@ def test_red_doctor_issue_never_names_a_skipped_optional_check(tmp_path: Path) -
     (directory / "20261013T115500Z.json").write_text(json.dumps({**body, "checks": checks}))
     issues = acceptance_state.doctor_check(home=tmp_path, now=NOW)[1]
     assert issues and "route (no route)" in issues[0] and "harness-prime" not in issues[0]
+
+
+def _raise_decode() -> bool:
+    raise json.JSONDecodeError("truncated", "{", 1)
+
+
+def test_unreadable_prime_status_runs_the_check_never_skips_or_crashes() -> None:
+    """Fails if a damaged Prime config crashes acceptance or is treated as absent."""
+    assert (
+        acceptance.prime_absent_reason(
+            which=lambda name: "/usr/bin/prime-agent", enabled=_raise_decode
+        )
+        is None
+    )
+    real = acceptance.optional_prime_check(_prime_cli(1, {}), absent=lambda: None)
+    assert real.skipped is False and real.passed is False
+    assert real.reason == "harness prime status failed (exit 1)"
+
+
+def test_prime_absent_reason_with_damaged_config_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default status() path: binary present, models.json truncated."""
+    agent = tmp_path / "prime" / "agent"
+    agent.mkdir(parents=True)
+    (agent / "models.json").write_text('{"providers": {"omniroute": ')
+    monkeypatch.setenv("PRIME_AGENT_CODING_AGENT_DIR", str(agent))
+    assert acceptance.prime_absent_reason(which=lambda name: "/usr/bin/prime-agent") is None

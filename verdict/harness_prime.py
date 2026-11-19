@@ -147,6 +147,12 @@ def resolve_paths(*, prime_home: Path | None = None, home: Path | None = None) -
     return PrimeHarnessPaths(agent_home=root, models=models, backup=models.parent / BACKUP_NAME)
 
 
+def binary_installed(which: Callable[[str], str | None] | None = None) -> bool:
+    """Prime Agent is on PATH. Reads no config, so a damaged models.json cannot raise."""
+    finder = which or shutil.which
+    return any(finder(name) for name in _BINARY_NAMES)
+
+
 def discover(
     *, prime_home: Path | None = None, which: Callable[[str], str | None] | None = None
 ) -> DiscoverReport:

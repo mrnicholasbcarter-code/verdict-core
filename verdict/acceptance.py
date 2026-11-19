@@ -79,9 +79,15 @@ def prime_absent_reason(
     """
     from verdict import harness_prime
 
-    if not harness_prime.discover(which=which).installed:
+    if not harness_prime.binary_installed(which):
         return PRIME_NOT_INSTALLED
-    if not (enabled() if enabled is not None else harness_prime.status().enabled):
+    try:
+        is_enabled = enabled() if enabled is not None else harness_prime.status().enabled
+    except (ValueError, OSError):  # JSONDecodeError is a ValueError
+        # Unknown is neither absent nor healthy: run the real check, which fails
+        # the normal way (as it did when it was only a child process).
+        return None
+    if not is_enabled:
         # Doctor's "Prime harness" row shows this state with its enable command.
         return PRIME_NOT_ENABLED
     return None

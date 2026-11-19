@@ -1185,9 +1185,9 @@ def installed_service_rows(
 def _prime_present(probe: Callable[[], bool] | None) -> bool:
     if probe is not None:
         return probe()
-    from verdict.harness_prime import discover
+    from verdict.harness_prime import binary_installed
 
-    return discover().installed
+    return binary_installed()
 
 
 def _prime_sync_timer_repair(state: str) -> str:

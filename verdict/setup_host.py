@@ -288,9 +288,9 @@ PRIME_OPTIONAL_DETAIL = (
 
 def prime_installed(env: HostEnvironment) -> bool:
     """The Prime Agent binary is on this host's PATH (``prime-agent`` or ``prime``)."""
-    from verdict.harness_prime import discover
+    from verdict.harness_prime import binary_installed
 
-    return discover(prime_home=env.prime_home, which=env.which).installed
+    return binary_installed(env.which)
 
 
 def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
@@ -738,7 +738,18 @@ def _prime_harness_row(env: HostEnvironment) -> dict[str, str]:
     from verdict.harness_prime import status
 
     label = "Prime harness"
-    report = status(prime_home=env.prime_home)
+    try:
+        report = status(prime_home=env.prime_home)
+    except (ValueError, OSError) as exc:  # JSONDecodeError is a ValueError
+        # "unknown" is never ok and is a PROBLEM_STATE (shown with a repair), but
+        # not blocking: the Prime registry row already fails for the same file.
+        return _row(
+            label,
+            "unknown",
+            f"harness state unknown: Prime config is unreadable ({type(exc).__name__}); "
+            "fix the Prime registry row first, then "
+            f"repair: {setup_repair(PRIME)}",
+        )
     if report.enabled:
         return _row(
             label, "ok", f"{report.config_path}: Prime uses verdict serve {report.base_url}"
