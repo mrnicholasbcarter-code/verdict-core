@@ -170,9 +170,11 @@ each with `receipt.json`, `events.jsonl`, `graph.json`, and `attestation.json`.
 The signed bundle is retained beside the copied evidence. This path also verifies
 GitHub OIDC/Sigstore provenance before it can pass; see [attested CI](#attested-ci-rehearsals).
 
-Rehearsal evidence never contains the gateway address or the gateway key. In CI
-both are protected secrets and the run directory is uploaded as an artifact.
-`scripts/run_certification_rehearsals.py` enforces this in two ways:
+The rehearsal does not write the gateway address into its dispatch-permit events
+or receipt, and the script refuses to upload any run evidence that contains the
+gateway address or the gateway key. In CI both are protected secrets and the run
+directory is uploaded as an artifact. `scripts/run_certification_rehearsals.py`
+does this in two steps:
 
 - It runs `verdict orchestrate` with `VERDICT_REDACT_GATEWAY_ORIGIN=1`, so each
   `dispatch_permit` controller event (and the receipt's `controller_events`)

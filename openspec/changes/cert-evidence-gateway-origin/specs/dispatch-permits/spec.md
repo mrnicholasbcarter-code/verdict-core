@@ -1,6 +1,6 @@
 ## ADDED Requirements
 
-### Requirement: A run can keep its gateway origin out of its evidence
+### Requirement: A run can keep its gateway origin out of its dispatch-permit events
 
 `DispatchAuthority.record_gateway_origin` SHALL default to true, and then each
 `dispatch_permit` controller event SHALL record the permit scope's gateway
@@ -16,7 +16,7 @@ mismatched or missing origin is denied.
 #### Scenario: Redacted rehearsal evidence
 
 - **WHEN** a run with a non-loopback gateway origin is made with `record_gateway_origin` false
-- **THEN** no file under the run directory contains that origin, its `dispatch_permit` events record `redacted`, and its receipt verifies
+- **THEN** its `dispatch_permit` events and receipt do not contain that origin, the events record `redacted`, and its receipt verifies
 
 #### Scenario: Default unchanged
 

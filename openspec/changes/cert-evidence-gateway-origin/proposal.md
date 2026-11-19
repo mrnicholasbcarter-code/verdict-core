@@ -1,15 +1,20 @@
-# cert-evidence-gateway-origin: rehearsal evidence never holds the gateway address
+# cert-evidence-gateway-origin: keep the gateway address out of rehearsal permit events
+
+The rehearsal does not write the gateway address into its dispatch-permit events
+or receipt, and the script refuses to upload any run evidence that contains the
+gateway address or the gateway key.
 
 ## Why
 
-A clean certification rehearsal now completes from empty state, but
-`scripts/run_certification_rehearsals.py` then refuses its evidence with "Run
+A clean certification rehearsal completed once from empty state (03:21Z on
+2026-11-19), but `scripts/run_certification_rehearsals.py` then refused its
+evidence with "Run
 evidence contains protected configuration; refusing upload". Every
 `dispatch_permit` controller event records the run's gateway origin, and the
 receipt projects those events into `controller_events`. On GitHub that address
 is a protected secret and the run directory is uploaded as a workflow artifact,
-so the scan is right to refuse. The run must not write the address in the first
-place.
+so the scan is right to refuse. The run must not write the address into those events in
+the first place.
 
 ## What Changes
 
