@@ -378,7 +378,7 @@ class TestCapacityAndRanking:
         assert verdicts["cc/claude-sonnet-5"].capacity_class is CapacityClass.SUBSCRIPTION
         assert verdicts["gl/glm-5"].capacity_class is CapacityClass.FREE
         assert verdicts["op/qwen3-coder"].capacity_class is CapacityClass.METERED
-        assert verdicts["mm/minimax-m2"].capacity_class is CapacityClass.FREE
+        assert verdicts["mm/minimax-m2"].capacity_class is CapacityClass.UNKNOWN
 
     def test_free_route_needs_agentic_proof_and_ranks_without_price(self, tmp_path: Path) -> None:
         """Implementation workers: cheapest qualified capacity tier orders ranking.

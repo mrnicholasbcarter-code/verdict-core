@@ -358,8 +358,8 @@ def test_declared_zero_price_makes_any_route_free():
     route = "pol/community/CloudCompile/nvidia-nemotron-3-ultra-550b-a55b:free"
     cls, evidence = _classify("pol", route, pricing={"input": 0, "output": 0})
     assert (cls, evidence) == (CapacityClass.FREE, "all_zero_pricing")
-    # Half a price is not a declared zero price (rule 0.2).
-    assert _classify("pol", route, pricing={"input": 0})[0] is CapacityClass.UNKNOWN
+    # A single declared zero price is enough: all declared values are zero (at least one).
+    assert _classify("pol", route, pricing={"input": 0})[0] is CapacityClass.FREE
 
 
 def test_positive_price_is_metered_whatever_the_name():

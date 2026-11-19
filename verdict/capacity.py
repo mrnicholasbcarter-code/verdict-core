@@ -95,6 +95,19 @@ def classify_route_capacity(
         return CapacityClass.FREE, plan_label, "gateway_free_tier"
     if status is FreeStatus.FREE:
         return CapacityClass.FREE, plan_label, "all_zero_pricing"
+    # Fact-based rule: at least one numeric pricing value is declared and all
+    # declared values are zero (brief, 2026-11-19: "a zero prompt or input
+    # price" is evidence of free). A blank or bool-only pricing dict has no
+    # declared facts and falls through to UNKNOWN.
+    _pricing = row.get("pricing")
+    if isinstance(_pricing, Mapping):
+        _declared = [
+            float(v)
+            for v in _pricing.values()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        ]
+        if _declared and all(p == 0 for p in _declared):
+            return CapacityClass.FREE, plan_label, "all_zero_pricing"
     return CapacityClass.UNKNOWN, plan_label, "no_free_evidence"
 
 

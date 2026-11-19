@@ -911,8 +911,8 @@ the health cache is separate from selection, which is unchanged).
 ## Capacity classification
 
 Verdict classifies route capacity into `FREE`, `SUBSCRIPTION`, `METERED`, and `UNKNOWN` from facts
-only, never from a name (operator, 2026-11-19). A route is `FREE` on an explicit 0/0 inventory price
-(rule 0.2, `verdict/omniroute_pipeline/free_rule.py`), OpenRouter public 0/0 membership, the
+only, never from a name (operator, 2026-11-19). A route is `FREE` when all declared inventory prices
+are zero (at least one numeric price declared), OpenRouter public 0/0 membership, the
 gateway's free-tier membership, or a connection free signal (`importFreeModelsOnly`, a free plan or
 tier). oauth without a free signal is `SUBSCRIPTION`; a positive price or an observed billing 402
 is `METERED`. A `:free` suffix or a provider name decides nothing: with no fact the route is

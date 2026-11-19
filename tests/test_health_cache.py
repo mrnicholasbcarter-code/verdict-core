@@ -645,9 +645,9 @@ def test_capacity_class_matches_the_ladder() -> None:
             CapacityClass.METERED,
         ),
         ({"authType": "apikey", "plan_label": ""}, {"pricing": {"prompt": 0}}, CapacityClass.FREE),
-        ({"authType": "apikey", "plan_label": ""}, {}, CapacityClass.FREE),
+        ({"authType": "apikey", "plan_label": ""}, {}, CapacityClass.UNKNOWN),
         # Bool pricing values must NOT be treated as prices (True == 1 in Python).
-        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"p": True}}, CapacityClass.FREE),
+        ({"authType": "apikey", "plan_label": ""}, {"pricing": {"p": True}}, CapacityClass.UNKNOWN),
     ]
     for conn, row, expected_class in shared_shapes:
         via_standalone = capacity_class_of(conn, row)
@@ -661,18 +661,20 @@ def test_capacity_class_matches_the_ladder() -> None:
             f"expected {expected_class} for conn={conn!r} row={row!r}, got {via_standalone[0]}"
         )
 
-    # Extra cases the ladder handles via :free suffix / connection signals that
-    # capacity_class_of intentionally skips (document their divergence).
+    # Operator rule 2026-11-19: capacity from facts only, never from names.
+    # The :free suffix is no longer a signal in either path; both classify
+    # an oauth/pro connection as SUBSCRIPTION regardless of route name.
     suffix_conn = {"authType": "oauth", "plan_label": "pro"}
     suffix_row: dict[str, object] = {}
-    # :free suffix → FREE in ladder, but capacity_class_of returns SUBSCRIPTION.
     ladder_class, _, rule = ladder._capacity_class(
         suffix_conn, suffix_row, route_id="cc/model:free"
     )
-    assert ladder_class == CapacityClass.FREE, f"ladder should classify :free as FREE, got {rule}"
+    assert ladder_class == CapacityClass.SUBSCRIPTION, (
+        f"ladder must NOT use :free suffix (name-based rule removed), got {rule}"
+    )
     standalone_class, _ = capacity_class_of(suffix_conn, suffix_row)
     assert standalone_class == CapacityClass.SUBSCRIPTION, (
-        "capacity_class_of must NOT classify :free suffix (it is a documented omission)"
+        "capacity_class_of must classify oauth/pro as SUBSCRIPTION"
     )
 
 

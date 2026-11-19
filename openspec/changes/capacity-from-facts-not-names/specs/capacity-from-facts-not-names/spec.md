@@ -13,7 +13,7 @@ provider-name list SHALL NOT make a route FREE or not-FREE. With no such signal 
 - **THEN** its capacity class is `UNKNOWN` and evidence is `no_free_evidence`
 
 #### Scenario: A declared zero price
-- **WHEN** the route's inventory price is explicitly 0 for input and output
+- **WHEN** at least one numeric price is declared in the route's inventory and all declared prices are zero
 - **THEN** its capacity class is `FREE` and evidence is `all_zero_pricing`, whatever its name
 
 #### Scenario: Gateway free-tier membership
