@@ -81,11 +81,12 @@ def read_pty_events(
     rows: int,
     cols: int,
     read_timeout: float = READ_TIMEOUT,
+    cwd: Path | None = None,
 ) -> tuple[list[tuple[float, bytes]], int]:
     """Run argv in a sized PTY. Return (monotonic-offset, bytes) per read plus exit code."""
     pid, fd = pty.fork()
     if pid == 0:  # child
-        os.chdir(ROOT)
+        os.chdir(cwd or ROOT)
         os.execvpe(argv[0], argv, env)
     set_pty_size(fd, rows, cols)
     chunks: list[tuple[float, bytes]] = []
@@ -201,17 +202,20 @@ def to_asciicast(
     height: int,
     title: str,
     idle_trimmed: float = 0.0,
+    idle_time_limit: float | None = None,
 ) -> str:
     """Asciicast v2 document. Timestamps are real read times, rounded to milliseconds.
 
-    ``idle_time_limit`` records seconds removed before the first output event.
+    ``idle_time_limit`` defaults to the seconds removed before the first output
+    event (the historical behaviour). Players and svg-term read it as the cap on
+    every gap, so a caller that needs real pauses passes the cap explicitly.
     """
     header = {
         "version": 2,
         "width": width,
         "height": height,
         "title": title,
-        "idle_time_limit": round(idle_trimmed, 3),
+        "idle_time_limit": round(idle_trimmed if idle_time_limit is None else idle_time_limit, 3),
         "env": {"TERM": "xterm-256color", "SHELL": "/bin/bash"},
     }
     lines = [json.dumps(header)]
@@ -426,6 +430,125 @@ def scenario_session(speed: float, *, short: bool = False) -> None:
         time.sleep(2)
 
 
+# The cockpit of a 4-node run fits in 64 rows at 128+ columns; 132 also fits the
+# longest receipt line, so nothing wraps.
+LIVE_WIDTH, LIVE_HEIGHT = 132, 68
+LIVE_MAX_GAP = 1.5  # Seconds of run time; follow_replay's own cap.
+LIVE_FINAL_HOLD = 4.0  # Seconds the verified receipt stays on screen.
+
+
+def live_session(run_id: str, speed: float) -> None:
+    """Replay a completed live run, then verify its receipt, inside the captured PTY.
+
+    The PTY's working directory is the run's parent, so the run is named by its
+    id only and no host path is printed. Cockpit frames, the integrity line and
+    the receipt text come from the production commands unchanged; this driver
+    only prints the two command lines it runs and the observed exit status.
+    """
+    import subprocess
+
+    from rich.console import Console
+
+    from verdict.orchestration.tui import follow_replay
+
+    console = Console()
+    sys.stdout.write(f"$ verdict watch {run_id} --replay --speed {speed:g}\n")
+    sys.stdout.flush()
+    time.sleep(1.5)
+    view = follow_replay(Path(run_id) / "events.jsonl", console=console, speed=speed)
+    if getattr(view, "outcome", "") != "COMPLETE":
+        raise CaptureError(f"replay ended {getattr(view, 'outcome', '')!r}, not COMPLETE")
+    time.sleep(2.5)
+    receipt = subprocess.run(
+        [sys.executable, "-m", "verdict", "run-receipt", run_id],
+        check=False,
+        capture_output=True,
+        timeout=60,
+    )
+    # No clear: the receipt scrolls in under the final cockpit, so the last frame
+    # shows the workers, failures, review and the verified receipt together.
+    sys.stdout.buffer.write(
+        f"\n$ verdict run-receipt {run_id}\n".encode()
+        + receipt.stdout
+        + f"exit status: {receipt.returncode}\n".encode()
+    )
+    sys.stdout.buffer.flush()
+    # Players cap every gap at idle_time_limit, so the final hold is made of
+    # invisible writes (cursor hide) one second apart instead of one long sleep.
+    for _ in range(int(LIVE_FINAL_HOLD)):
+        time.sleep(1.0)
+        sys.stdout.write("\x1b[?25l")
+        sys.stdout.flush()
+    if receipt.returncode != 0:
+        raise SystemExit(receipt.returncode)
+
+
+def record_live(run_dir: Path, speed: float, output: Path, date: str, commit: str) -> None:
+    """Capture a labelled cockpit replay of one completed live run plus its receipt check."""
+    if speed <= 0:
+        raise CaptureError("speed must be positive")
+    if not (run_dir / "events.jsonl").is_file():
+        raise CaptureError(f"no events.jsonl in {run_dir}")
+    run_dir = run_dir.resolve()
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "PYTHONPATH": str(ROOT),
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        # A 64-row redraw spans several PTY reads. Naming a terminal that supports
+        # DEC 2026 makes each redraw one synchronized block, which
+        # coalesce_atomic keeps whole, so no frame of the cast is half drawn.
+        "TERM_PROGRAM": "WezTerm",
+        "COLUMNS": str(LIVE_WIDTH),
+        "LINES": str(LIVE_HEIGHT),
+        "PYTHONUNBUFFERED": "1",
+    }
+    chunks, exit_code = read_pty_events(
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--live-session",
+            run_dir.name,
+            "--speed",
+            str(speed),
+        ],
+        env,
+        rows=LIVE_HEIGHT,
+        cols=LIVE_WIDTH,
+        cwd=run_dir.parent,
+    )
+    atomic = coalesce_atomic(chunks)
+    # The last reads are the invisible hold writes; the marker is checked on the whole capture.
+    validate_capture(atomic[:-int(LIVE_FINAL_HOLD)], exit_code, marker="exit status: 0")
+    text = visible_text(b"".join(data for _, data in atomic))
+    for required in ("COMPLETE", "REASSIGN", COMPLETION_MARKER, "review: PASS"):
+        if required.casefold() not in text.casefold():
+            raise CaptureError(f"live capture lacks {required!r}")
+    for leak in (str(run_dir.parent), "/home/", "/tmp/", "Bearer ", "sk-"):
+        if leak in text:
+            raise CaptureError(f"live capture shows {leak!r}")
+    atomic, idle_trimmed = trim_leading_idle(atomic)
+    body = to_asciicast(
+        atomic,
+        width=LIVE_WIDTH,
+        height=LIVE_HEIGHT,
+        title=(
+            f"Verdict: replay of one live verdict orchestrate run ({run_dir.name}, {date}, "
+            f"main {commit}, free capacity) at {speed:g}x; event gaps over "
+            f"{LIVE_MAX_GAP:g}s of run time capped; recorded with "
+            "scripts/record_tui_demo.py --live"
+        ),
+        idle_trimmed=idle_trimmed,
+        # Replay gaps are already capped by follow_replay; this cap must not cut them
+        # shorter, nor the 2.5 s pauses this driver adds around the receipt check.
+        idle_time_limit=max(LIVE_MAX_GAP / speed, 2.5),
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(body, encoding="utf-8")
+    print(f"wrote {output} ({len(atomic)} frames, {atomic[-1][0]:.1f}s)", file=sys.stderr)
+
+
 def tamper_events(path: Path) -> None:
     """Change exactly one goal byte while keeping the copied event log valid JSON."""
     raw = path.read_bytes()
@@ -496,6 +619,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--scenario-session", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Record a completed live run's cockpit replay and its receipt check",
+    )
+    parser.add_argument("--live-session", metavar="RUN_ID", help=argparse.SUPPRESS)
+    parser.add_argument("--date", default="", help="Run date for the --live cast title")
+    parser.add_argument("--commit", default="", help="Producer commit for the --live cast title")
+    parser.add_argument(
         "--short", action="store_true", help="Omit home from the scenario recording"
     )
     parser.add_argument("--speed", type=float, default=1.0, help="Replay speed (default 1)")
@@ -504,7 +635,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        if args.scenario_session:
+        if args.live_session:
+            live_session(args.live_session, args.speed)
+        elif args.live:
+            if args.run_dir is None or args.output is None or not (args.date and args.commit):
+                parser.error("--live needs a run directory, --output, --date and --commit")
+            record_live(args.run_dir, args.speed, args.output, args.date, args.commit)
+        elif args.scenario_session:
             scenario_session(args.speed, short=args.short)
         elif args.scenario:
             record_scenario(speed=args.speed, output=args.output, short=args.short)
