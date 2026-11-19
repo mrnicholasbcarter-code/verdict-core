@@ -1076,7 +1076,16 @@ def test_prime_installed_but_not_enabled_is_skipped() -> None:
     absent = acceptance.prime_absent_reason(
         which=lambda name: "/usr/bin/prime-agent", enabled=lambda: False
     )
-    assert absent == acceptance.PRIME_NOT_INSTALLED
+    assert absent == acceptance.PRIME_NOT_ENABLED
+    assert absent == "Prime Agent installed but not enabled (optional harness)"
+    check = acceptance.optional_prime_check(_prime_cli(0, {}), absent=lambda: absent)
+    assert check.skipped is True and check.passed is False and check.reason == absent
+
+
+def test_not_installed_and_not_enabled_reasons_differ() -> None:
+    """Fails if the two skip causes are merged into one (false "not installed")."""
+    assert acceptance.PRIME_NOT_INSTALLED != acceptance.PRIME_NOT_ENABLED
+    assert "not installed" not in acceptance.PRIME_NOT_ENABLED
 
 
 def test_prime_installed_and_enabled_still_runs_and_can_fail() -> None:

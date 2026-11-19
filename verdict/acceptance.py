@@ -66,6 +66,7 @@ class Check:
 
 
 PRIME_NOT_INSTALLED = "Prime Agent not installed (optional harness)"
+PRIME_NOT_ENABLED = "Prime Agent installed but not enabled (optional harness)"
 
 
 def prime_absent_reason(
@@ -81,7 +82,8 @@ def prime_absent_reason(
     if not harness_prime.discover(which=which).installed:
         return PRIME_NOT_INSTALLED
     if not (enabled() if enabled is not None else harness_prime.status().enabled):
-        return PRIME_NOT_INSTALLED
+        # Doctor's "Prime harness" row shows this state with its enable command.
+        return PRIME_NOT_ENABLED
     return None
 
 

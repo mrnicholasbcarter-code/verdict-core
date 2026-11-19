@@ -45,7 +45,12 @@ has to be installed. Prime Agent is an optional harness. Select it with
   (optional, not an issue), and the hourly live acceptance job reports the
   `harness-prime` check as skipped with the reason
   `Prime Agent not installed (optional harness)`. A skipped check is never
-  counted as passed. When Prime is installed and enabled, all three behave as
+  counted as passed.
+- On a host with the Prime binary whose Verdict harness is not enabled, the
+  check is skipped with the reason
+  `Prime Agent installed but not enabled (optional harness)`, and
+  `verdict doctor` shows a `Prime harness` WARNING row (not an issue) with
+  `repair: verdict harness prime enable`. When Prime is installed and enabled, all three behave as
   before and can fail.
 
 ## Configuration surfaces

@@ -23,8 +23,11 @@ The direct-gateway executor is proven live (run 20261119T000727Z).
   `--executor-map` sends any node to Prime, or with `--sync-visibility`.
 - Live acceptance: `harness-prime` is skipped (never passed, never failed) with
   the reason `Prime Agent not installed (optional harness)` when the Prime
-  binary is absent or its Verdict harness is not enabled. Otherwise it runs as
-  before.
+  binary is absent, and `Prime Agent installed but not enabled (optional
+  harness)` when the binary is present but its Verdict harness is not enabled.
+  Otherwise it runs as before. Doctor then shows a `Prime harness` warning row
+  with `repair: verdict harness prime enable`, so a disabled harness is visible
+  even though the acceptance run stays green.
 - Setup plans no `host.prime-registry` action without the Prime binary.
   Doctor reports the Prime registry and a missing prime-sync timer as
   `not-installed` (optional, not an issue) without the Prime binary.

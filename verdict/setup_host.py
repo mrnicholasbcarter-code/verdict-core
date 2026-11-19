@@ -729,6 +729,28 @@ def _serve_rows(env: HostEnvironment) -> list[dict[str, str]]:
     return [_row(label, "ok", f"{SERVICE} is active"), health]
 
 
+def _prime_harness_row(env: HostEnvironment) -> dict[str, str]:
+    """Prime is installed: is its Verdict harness enabled?
+
+    Not enabled is a ``warning`` (shown with its repair, not an issue): live
+    acceptance skips ``harness-prime`` then, so this row is where it shows.
+    """
+    from verdict.harness_prime import status
+
+    label = "Prime harness"
+    report = status(prime_home=env.prime_home)
+    if report.enabled:
+        return _row(
+            label, "ok", f"{report.config_path}: Prime uses verdict serve {report.base_url}"
+        )
+    return _row(
+        label,
+        "warning",
+        "Prime Agent installed but not enabled (optional harness); live acceptance "
+        "skips harness-prime; repair: verdict harness prime enable",
+    )
+
+
 def _prime_rows(env: HostEnvironment) -> list[dict[str, str]]:
     from verdict.harness_prime import omniroute_registry_state
 
@@ -758,7 +780,7 @@ def _prime_rows(env: HostEnvironment) -> list[dict[str, str]]:
         row = _row(label, "failed", f"{path} providers.omniroute has no models; {sync}")
     else:
         row = _row(label, "ok", f"{path}: providers.omniroute has {registry['models']} model(s)")
-    rows = [row]
+    rows = [row, _prime_harness_row(env)]
     result = env.unit_result(PRIME_SYNC_UNIT)
     if result is not None:
         detail = f"{PRIME_SYNC_UNIT} last result {result}"

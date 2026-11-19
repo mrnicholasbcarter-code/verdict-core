@@ -43,8 +43,10 @@ and when none is given, the registry default.
 ### Requirement: Live acceptance treats Prime as optional
 
 The hourly live acceptance job SHALL report the `harness-prime` check as
-skipped, with the reason `Prime Agent not installed (optional harness)`, when
-the Prime Agent binary is absent or its Verdict harness is not enabled. A
+skipped when Prime does not apply: with the reason
+`Prime Agent not installed (optional harness)` when the Prime Agent binary is
+absent, and `Prime Agent installed but not enabled (optional harness)` when the
+binary is present but its Verdict harness is not enabled. A
 skipped check SHALL NOT count as a failure and SHALL NOT be reported as
 passed. When Prime is installed and enabled, the check SHALL run as before and
 MAY fail.
@@ -54,8 +56,15 @@ MAY fail.
 - **WHEN** no Prime Agent binary is on PATH
 - **THEN** `harness-prime` is skipped with that reason, `passed` is false, and the run can be green
 - **TEST** `tests/test_acceptance.py::test_prime_absent_is_skipped_never_passed_and_keeps_acceptance_green`,
-  `::test_prime_installed_but_not_enabled_is_skipped`,
   `::test_red_doctor_issue_never_names_a_skipped_optional_check`
+
+#### Scenario: Prime installed but not enabled
+
+- **WHEN** the Prime Agent binary is on PATH but its Verdict harness is not enabled
+- **THEN** `harness-prime` is skipped with the not-enabled reason, which differs from the not-installed reason, and doctor shows a `Prime harness` warning row naming `verdict harness prime enable`
+- **TEST** `tests/test_acceptance.py::test_prime_installed_but_not_enabled_is_skipped`,
+  `::test_not_installed_and_not_enabled_reasons_differ`,
+  `tests/test_doctor_host_prerequisites.py::test_prime_installed_but_not_enabled_is_a_warning_row_with_enable_repair`
 
 #### Scenario: Prime installed and enabled
 

@@ -144,7 +144,7 @@ def test_doctor_rows_use_the_host_environment(
 ) -> None:
     monkeypatch.setattr(setup_host.HostEnvironment, "from_host", classmethod(lambda cls: host.env))
     labels = [row["label"] for row in dd.host_prerequisite_rows()]
-    assert labels == ["Review tool (ocr)", "Verdict serve unit", "Prime registry"]
+    assert labels == ["Review tool (ocr)", "Verdict serve unit", "Prime registry", "Prime harness"]
 
 
 # --- rows in installed_service_rows ---------------------------------------------------
@@ -507,3 +507,19 @@ def test_missing_prime_sync_timer_without_prime_is_not_installed() -> None:
     }["Prime-sync timer"]
     assert present["status"] == "failed"
     assert repair_command(present["detail"]) == "verdict harness prime install-service"
+
+
+def test_prime_installed_but_not_enabled_is_a_warning_row_with_enable_repair(
+    host: FakeHost,
+) -> None:
+    """Fails if a disabled Prime harness (acceptance now skips it) shows nowhere, or as ok."""
+    harness_prime.create_omniroute_registry(gateway=GATEWAY)
+    host.sync(GATEWAY)
+    row = _rows(host)["Prime harness"]
+    assert row["status"] == "warning"
+    assert "installed but not enabled" in row["detail"]
+    assert repair_command(row["detail"]) == "verdict harness prime enable"
+    assert row["status"] not in dd.BLOCKING_ROW_STATES
+
+    harness_prime.enable(health_check=lambda base_url: True)
+    assert _rows(host)["Prime harness"]["status"] == "ok"
