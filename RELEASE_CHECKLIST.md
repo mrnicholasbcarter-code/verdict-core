@@ -35,18 +35,17 @@ Launch decision: **PENDING EVIDENCE**
 ### TypeScript Packages
 - [ ] verdict-contracts: `npm run build && npm test`
 - [ ] verdict-client: `npm run build && npm test`
-- [ ] verdict-node: `npm run build && npm test && npm run format:check`
 - [ ] Clean install: `npm ci` succeeds
 - [ ] npm pack dry-run: `npm pack --dry-run` produces expected files
 
 ### Cross-Language Parity
 - [ ] Contract tests pass in both Python and TypeScript
 - [ ] Contract fixtures validate identically in both languages
-- [ ] Parity report generated: `npx tsx scripts/parity.ts` passes
+- [ ] Parity report reviewed: [`CONTRACT_PARITY.md`](CONTRACT_PARITY.md) matches `contracts/src/index.ts`
 
 ### Benchmarks
 - [ ] Reproducible benchmarks pass: `python -m verdict.benchmarking`
-- [ ] Benchmark results committed to evidence/
+- [ ] Benchmark results indexed in `docs/benchmarks/README.md`
 
 ### Evidence & Documentation
 - [ ] Evidence bundle generated: `python scripts/evidence_bundle.py`
@@ -56,7 +55,8 @@ Launch decision: **PENDING EVIDENCE**
 - [ ] README claims match verified behavior
 
 ### Release Artifacts
-- [ ] Version bumped in pyproject.toml, package.json files
+- [ ] Version bumped in every location in [VERSIONING.md](VERSIONING.md#version-locations); `python scripts/verify_release_versions.py --tag vX.Y.Z` passes
+- [ ] `install.sh` pin updated with real PyPI digests after publication (not before)
 - [ ] CHANGELOG.md updated with Keep a Changelog format
 - [ ] Git tag created: `vX.Y.Z`
 - [ ] GitHub Release created with artifacts

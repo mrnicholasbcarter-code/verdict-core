@@ -4,13 +4,6 @@
 - **Date:** 2026-07-28
 - **Scope:** Complete lifecycle hook architecture across Codex, Claude Code, Pi, and custom AI runtimes.
 
-> Historical note: earlier revisions of this specification also listed
-> Ruflo/Claude Flow and swarm coordination as hook targets. That integration
-> was removed from Core; see
-> [ADR-023](../adr/ADR-023-governed-swarm-supervision.md) (superseded) and
-> [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) (current
-> orchestration).
-
 ## 1. Overview
 Verdict Core provides a platform-neutral, local-first execution and memory control plane. To ensure complete context capture, policy enforcement, and seamless cross-tool memory recall, Verdict defines an extensible 6-category lifecycle hook matrix.
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-__version__ = "0.5.0"
+__version__ = "1.0.0"
 
 # BOD-321: lazy public re-exports via PEP 562 module __getattr__.
 # Importing `verdict` must not eagerly import heavy submodules (httpx, benchmarking,

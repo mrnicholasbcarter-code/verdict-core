@@ -23,7 +23,7 @@ set -euo pipefail
 # Policy: this default pin is updated only AFTER a release is published on
 # PyPI, using real digests pulled from the PyPI JSON API (see pypi_sha256()
 # below) — never invented or pre-computed ahead of publication. That is why
-# this stays at 0.4.2 until the next release (0.5.0) actually exists on
+# this stays at 0.4.2 until the next release (1.0.0) actually exists on
 # PyPI; an override via VERDICT_VERSION already fetches its own hashes
 # unpinned.
 VERDICT_VERSION="${VERDICT_VERSION:-0.4.2}"

@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-The current development series is **0.5.x** (see [pyproject.toml](pyproject.toml)).
+The current release series is **1.0.x** (see [pyproject.toml](pyproject.toml)).
 Security fixes target the latest released version and the default branch, as
 stated in [SECURITY.md](SECURITY.md). Older releases do not have a promised
 maintenance window. Upgrade to the latest release before reporting a bug when

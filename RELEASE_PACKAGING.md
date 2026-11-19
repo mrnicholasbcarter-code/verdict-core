@@ -30,7 +30,8 @@ We follow [Semantic Versioning](https://semver.org/):
 
 1. **Prepare Release**
    ```bash
-   # Update version in pyproject.toml, package.json files
+   # Update the version in every location listed in VERSIONING.md
+   python scripts/verify_release_versions.py --tag vX.Y.Z
    # Update CHANGELOG.md
    # Run full test suite
    python -m pytest tests/ --ignore=tests/test_vcr_fallback.py -x
@@ -56,7 +57,7 @@ We follow [Semantic Versioning](https://semver.org/):
    ```
 
 4. **Publish** (via GitHub Release)
-   - Create tag: `git tag v0.1.0 && git push origin v0.1.0`
+   - Create tag: `git tag vX.Y.Z && git push origin vX.Y.Z`
    - GitHub Actions handles PyPI and npm publishing
    - Artifacts attached to GitHub Release
 

@@ -56,27 +56,39 @@ MAJOR.MINOR.PATCH
 
 ## Version Locations
 
-### Python (verdict-core)
-- `pyproject.toml`: `version = "0.1.0"`
-- `__init__.py`: `__version__ = "0.1.0"`
+One release version is written in every place below. `scripts/verify_release_versions.py --tag vX.Y.Z`
+checks the Python, runtime, contracts and client versions and the client's peer range;
+`tests/test_release_workflow.py::test_every_release_version_location_matches_pyproject`
+checks all of them, including both lock files.
 
-### TypeScript Packages
-- `contracts/package.json`: `"version": "0.1.0"`
-- `verdict/client-sdk/package.json`: `"version": "0.1.0"`
-- `verdict-node/package.json`: `"version": "0.1.0"`
+### Python (verdict-core)
+- `pyproject.toml`: `version = "X.Y.Z"`
+- `verdict/__init__.py`: `__version__ = "X.Y.Z"`
+- `uv.lock`: the `verdict-core` package entry
+
+### TypeScript packages
+- `package.json` (workspace root): `"version": "X.Y.Z"`
+- `contracts/package.json` (`@bodanglin/verdict-contracts`): `"version": "X.Y.Z"`
+- `verdict/client-sdk/package.json` (`@bodanglin/verdict-client`): `"version": "X.Y.Z"`, and
+  `"@bodanglin/verdict-contracts": "^X.Y.Z"` in `peerDependencies` and `devDependencies`
+- `package-lock.json`: the root, `contracts` and `verdict/client-sdk` entries
+
+### Not bumped with the release
+- `install.sh` pins the newest version that is already published on PyPI, with its real
+  SHA-256 digests. It is updated only after the release is published.
 
 ## Version Bumping
 
 ### Automated (Release Workflow)
 Triggered by Git tag push:
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 ### Manual
 ```bash
 # Python
-uv version 0.1.1
+uv version X.Y.Z
 
 # TypeScript (in each package)
 npm version patch  # or minor/major
@@ -101,11 +113,11 @@ npm version patch  # or minor/major
 ## Version Constraints
 
 ### Python Dependencies
-- Use compatible version ranges: `>=0.1.0,<0.2.0`
-- Pin exact versions in requirements-lock.txt
+- Use compatible version ranges, for example `>=1.0.0,<2.0.0`
+- Exact versions are pinned in `uv.lock`
 
 ### TypeScript Dependencies
-- Use caret ranges: `^0.1.0`
+- Use caret ranges, for example `^1.0.0`
 - Peer dependencies for shared types: `peerDependencies`
 
 ## Changelog Format
@@ -113,7 +125,7 @@ npm version patch  # or minor/major
 Follow [Keep a Changelog](https://keepachangelog.com/):
 
 ```markdown
-## [0.1.1] - 2026-07-26
+## [X.Y.Z] - YYYY-MM-DD
 ### Added
 - New feature X
 ### Fixed
@@ -121,7 +133,7 @@ Follow [Keep a Changelog](https://keepachangelog.com/):
 ### Changed
 - Modified behavior Z
 ### Deprecated
-- Feature A (will be removed in 0.2.0)
+- Feature A (will be removed in a later major version)
 ### Removed
 - Old feature B
 ### Security
@@ -130,14 +142,14 @@ Follow [Keep a Changelog](https://keepachangelog.com/):
 
 ## Tagging Convention
 
-- Release tags: `vMAJOR.MINOR.PATCH` (e.g., `v0.1.0`)
+- Release tags: `vMAJOR.MINOR.PATCH` (e.g., `v1.0.0`)
 - Pre-release: `vMAJOR.MINOR.PATCH-alpha.1`, `vMAJOR.MINOR.PATCH-beta.1`, `vMAJOR.MINOR.PATCH-rc.1`
 - Annotated tags with release notes
 
 ## Compatibility Matrix
 
-| Verdict Core | Verdict Contracts | Verdict Client | Verdict Node |
-|--------------|-------------------|----------------|--------------|
-| 0.1.x        | 0.1.x             | 0.1.x          | 0.1.x        |
+| Verdict Core | Verdict Contracts | Verdict Client |
+|--------------|-------------------|----------------|
+| 1.0.x        | 1.0.x             | 1.0.x          |
 
-All packages in a release share the same version prefix.
+All packages in a release share the same version.

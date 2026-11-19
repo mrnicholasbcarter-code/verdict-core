@@ -251,7 +251,7 @@ def test_animated_first_frame_is_not_blank() -> None:
 
 
 def test_verified_models_cast_is_valid_asciinema_v2() -> None:
-    """Offline 0.5.0 feature demo: fixture evidence only, no live calls."""
+    """Offline verified-model demo: fixture evidence only, no live calls."""
     lines = (ASSETS / "verified-models.cast").read_text(encoding="utf-8").splitlines()
     header = json.loads(lines[0])
     assert header["version"] == 2

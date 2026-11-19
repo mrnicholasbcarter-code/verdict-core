@@ -54,8 +54,7 @@ LLMGATE_ALLOW_ANONYMOUS=true verdict serve --host 127.0.0.1 --port 8000
 
 Anonymous mode is rejected on non-loopback addresses and is not a production
 configuration. Review the [acceptance gates](ACCEPTANCE_GATES.md) and the
-[planned v0.3.0 release boundary](docs/proof/RELEASE_BOUNDARY_0.3.0.md)
-before using real provider credentials.
+[evidence index](docs/proof/EVIDENCE_INDEX.md) before using real provider credentials.
 
 ## Upstream and transport controls
 

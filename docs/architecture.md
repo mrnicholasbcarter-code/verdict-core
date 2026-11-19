@@ -74,8 +74,7 @@ protected work when fail-closed mode is enabled.
 **Advisory ranking only** — cannot bypass hard gates. Orders already-eligible
 candidates using historical MemoryPlane signals and expected-value estimates. <!-- claim:C-035 -->
 
-Canonical durable memory is MemoryPlane (`verdict/memory_*`). Ruflo/swarm
-learning is not part of Core after the Ruflo/swarm/hivemind removal (see ADR-023, superseded).
+Canonical durable memory is MemoryPlane (`verdict/memory_*`).
 
 ### 4. Availability Cache (`verdict/availability_cache.py`)
 
@@ -96,9 +95,9 @@ authority when `require_execution_path_authority` is set (the ADR-035 legacy-sel
 ### 6. Dispatcher (`verdict/dispatcher.py`)
 
 Binds an authorized `selected_route`, hydrates the execution plan, and emits
-assignment explanation. `SwarmDispatcher` is a legacy class name for the
-authorize-only dispatcher after the Ruflo/swarm removal. It is not Ruflo swarm supervision and
-does not supervise a swarm. <!-- claim:C-038 -->
+assignment explanation. `SwarmDispatcher` is a historical class name for this
+authorize-only dispatcher. It binds the route it is given and does not supervise
+workers. <!-- claim:C-038 -->
 
 ### 7. [OmniRoute transport (`verdict/omniroute.py`)](../verdict/omniroute.py)
 
@@ -153,8 +152,8 @@ Implementation roles are split as follows:
   controller; `tui` renders live state; `cli` provides the command handlers.
 
 The Prime Agent is the execution harness, not the orchestration authority.
-OmniRoute supplies inventory and transport only. The legacy [ADR-023](adr/ADR-023-governed-swarm-supervision.md)
-is superseded in orchestration scope; ADR-036 is current.
+OmniRoute supplies inventory and transport only. Orchestration is specified in
+[ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md).
 
 ## Implementation references
 
@@ -238,7 +237,6 @@ omit it; any declared version other than `"1"` is rejected.
 | `RoutingDecisionContract` | Gate → Eligibility → Intelligence output |
 | `AvailabilitySnapshot` | Cache entry with metadata |
 | `OutcomeEpisode` | Feedback / outcome episode record |
-| `LearningEvent` | **Removed / superseded** — was Ruflo learning; use MemoryPlane |
 | `VerificationPlan` | Post-deployment verification |
 
 ---
@@ -266,9 +264,8 @@ Use [`proof/EVIDENCE_INDEX.md`](proof/EVIDENCE_INDEX.md) for what is actually ce
 - [ADR-004 Local-first MemoryPlane](adr/ADR-004-local-first-memory-plane.md)
 - [ADR-010 Fail-closed capability passports] <!-- claim:C-030 -->(adr/ADR-010-fail-closed-capability-passports.md)
 - [ADR-032 Core model metadata store](adr/ADR-032-core-model-metadata-store.md)
-- [ADR-023 Governed swarm supervision](adr/ADR-023-governed-swarm-supervision.md) — **SUPERSEDED** by [ADR-035](adr/ADR-035-authorized-selected-route-dispatch.md)
-- [ADR-035 Authorized selected-route dispatch](adr/ADR-035-authorized-selected-route-dispatch.md) — execution-path authority + authorized dispatcher binding (post-swarm path)
-- [ADR Orchestrator Routing](adr/ADR-ORCHESTRATOR-ROUTING.md) — **SUPERSEDED** (Ruflo/swarm removal and legacy selector demotion → ADR-035)
+- [ADR-035 Authorized selected-route dispatch](adr/ADR-035-authorized-selected-route-dispatch.md) — execution-path authority + authorized dispatcher binding
+- [ADR Orchestrator Routing](adr/ADR-ORCHESTRATOR-ROUTING.md) — **SUPERSEDED** by ADR-035 (legacy selector demotion)
 - Cross-repo evidence: [verdict-ecosystem ADR_LIFECYCLE](https://github.com/mrnicholasbcarter-code/verdict-ecosystem/blob/main/docs/ADR_LIFECYCLE.md)
 - [Unknown ≠ healthy](guides/unknown-not-healthy.md)
 - [Worker context packs](guides/worker-context.md)

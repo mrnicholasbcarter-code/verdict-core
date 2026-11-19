@@ -1,7 +1,7 @@
 # Feature Lifecycle Gate — Release-Readiness Policy
 
 **Status:** Approved (release-gating policy)
-**Date:** 2026-08-03 (revised for the Ruflo/swarm/hivemind removal: swarm/Ruflo references removed)
+**Date:** 2026-08-03
 **Applies to:** Every parent-level Verdict feature (EPIC-level), before any
 semantic release, after the foundational primitives are stable.
 
@@ -52,12 +52,3 @@ then applies the static/QA/security gates on top.
 | `RELEASE_CHECKLIST.md` (repo root) | Static/QA/security release gates |
 | [`ADR-036`](../adr/ADR-036-goal-to-receipt-orchestration.md) | Current orchestration model for feature execution |
 | **`FEATURE_LIFECYCLE_GATE.md`** | The per-feature lifecycle that *produces* the evidence those gates check |
-
-## Historical Note
-
-Earlier revisions of this policy directed research toward Code Review Graph,
-OpenViking, and Ruflo/RuVector memory, and reused a tool-audit comparing those
-systems. That tooling was removed from Core; see
-[ADR-023](../adr/ADR-023-governed-swarm-supervision.md) (superseded) and
-[ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md) (current
-orchestration).

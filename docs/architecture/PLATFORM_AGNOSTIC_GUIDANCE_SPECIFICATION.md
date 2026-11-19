@@ -3,12 +3,6 @@
 > Live decision record: [ADR-003 — Platform-Neutral Guidance Boundary](../adr/ADR-003-platform-neutral-guidance-boundary.md)
 > (status: proposed). Guidance is optional and disabled by default
 > (`VERDICT_GUIDANCE_ENABLED`).
->
-> Historical note: earlier revisions of this specification listed Ruflo /
-> Claude Flow as a supported guidance platform. That integration was removed
-> from Core; see [ADR-023](../adr/ADR-023-governed-swarm-supervision.md)
-> (superseded) and [ADR-036](../adr/ADR-036-goal-to-receipt-orchestration.md)
-> (current orchestration).
 
 ## Overview
 

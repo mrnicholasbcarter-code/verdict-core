@@ -7,20 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - Unreleased
+
+The first complete version. It also carries the 0.5.0 changes below, which were never
+published. The date is set when the `v1.0.0` tag is pushed; nothing in this entry is on
+PyPI or npm yet.
+
 ### Added
-- `verdict doctor` checks a loaded `verdict-prime-sync.service` in the Installed services section, under the label `Prime-sync code path`. With the unit's ExecStart interpreter it imports `verdict` from a neutral directory and from the unit `WorkingDirectory`, and sets the row to `failed` when those package directories differ: `verdict-prime-sync.service: cwd <WorkingDirectory> imports package <imported>, not the configured checkout <configured>`. A match is `ok`: `verdict-prime-sync.service: cwd <WorkingDirectory>, package <package>`. A failed row is an issue, so text and `--json` modes exit 1. Only a unit whose `LoadState` is `loaded` produces a row. The check tracks `verdict-prime-sync.service` only (#903).
+- `verdict metrics` computes accepted tasks, dollars, accepted tasks per dollar and capacity shares (free, subscription, metered, unknown) from digest-verified run receipts. Dollars are reported as unknown when any attempt has no cost, and accepted tasks per dollar is then undefined (#1066).
+- `verdict prove-at-rest once --reprobe ROUTE` (repeatable) re-runs the agentic probe for an admitted FREE route even when its proof is fresh. Named routes do not count against `--agentic-max-routes`, but do count against `--max-requests` (#1134).
+- `verdict ladder --role planner --json`: a read-only, fail-closed role ladder for planner selection (#1059).
+- `verdict pr-watch`: polls open pull requests, classifies CI at the exact head SHA, and reruns a failed required job at most once per key. It never merges, pushes or edits source (#1060).
+- `POST /v1/route` honours `execution_path_request.hard_spend_budget` and can return its routing trace with `?include_routing_trace=true`. Any value other than a finite number above 0 returns 400 (#1062).
+- A worker that writes nothing for `VERDICT_WORKER_IDLE_SECONDS` (default 300) is killed as `stalled` and its node is rerouted within the attempt budget (#1064).
+- Certification rehearsals run a bounded FREE-only preflight first and fail closed when no route qualifies (#1067).
+- The docs-refresh setup action starts `verdict-docs-refresh.service` once when the docs index is not ready (#1134).
+- `verdict doctor` checks a loaded `verdict-prime-sync.service` under `Prime-sync code path` and fails the row when the unit imports `verdict` from a different checkout than the one it is configured for (#903).
+- Between 0.5.0 and #1049, among others: an Anthropic Messages relay surface (#997), served-identity verification on every worker and relay attempt (#970), versioned operator policy authority with fail-closed execution boundaries (#1000), qualification producers behind one shared coordinator (#1002), and a definition-of-done gate that checks an orchestrate run against its own result (#1042).
+
+### Changed
+- An HTTP 200 reply that is an in-band credit refusal (zero output tokens, no tool call, "not enough credits" or "top up" text) is a payment failure, not a success. Probes, the relay and the acceptance serve check all treat it that way (#1130). The ladder health probe scopes it to the route, without a pool or provider cooldown (#1134).
+- Routes from prepaid-credit providers without explicit free evidence are classified UNKNOWN capacity, not FREE. `:free` community routes and priced models are unchanged (#1133).
+- After an in-band refusal the relay may fail over to the next admitted candidate without an idempotency key. Every other failure still needs the key (#1134).
+- A held refresh lease is reported as `lease_held` (exit 75) by `route` and `choose`, apart from `no_eligible_route`. Acceptance waits for the lease for at most 10 minutes and retries once. `verdict-identify-screen.timer` runs at `00/6:20:00` (#1134).
+- When the shared coordinator lease is held, selection admits routes with fresh proof and skips probes and confirmations, and still fails closed without fresh proof (#1055).
+- Read-only `choose --no-confirm` selects routes with a valid, unexpired exact-route proof even when that proof is older than the 10-minute permit window; invalid or expired proof gets a named reason (#1061).
+- Autodev selects its planner from the live eligibility ladder instead of a hardcoded model (#1057).
+- `install.sh` works on Debian 12 and Ubuntu 24.04 without pipx: it prefers `uv tool install`, then `pipx`, then a private venv (#1063).
+- `verdict doctor` names `verdict harness prime install-service` for a missing `verdict-prime-sync.timer`, and that command renders both units from the installed package. It takes `--dry-run` and `--uninstall`. The `deploy/systemd/verdict-prime-sync.*` templates are removed.
+- **Format change:** bootstrap diagnostic lines (`verdict route` notes, `verdict serve` startup lines, `describe_bootstrap_failure`) separate the field from the detail with ` - ` instead of `: `. A parser that splits these lines on `field=<name>:` must split on ` - `. `describe()` also redacts its field, detail and remediation part by part.
+- A manual model refresh plan asks once per capacity class (FREE, SUBSCRIPTION, UNKNOWN, METERED), or "free only", instead of once per route. UNKNOWN and METERED default to no and show an estimated spend. Without a terminal, `verdict eligibility --verified --refresh` probes UNKNOWN or METERED routes only with `--include-unknown` or `--allow-metered` (BOD-331).
+- **Behaviour change:** the health cache default path follows `VERDICT_HOME`. With `VERDICT_HOME` set, an older `~/.verdict/health-cache.json` is no longer read; route health rebuilds on the next refresh or prove cycle.
+- With `--state-file` or `--inject`, `verdict orchestrate` reads `health-cache.json` next to the state file, so isolated and chaos runs start from their own evidence.
 
 ### Fixed
-- `verdict doctor` names `verdict harness prime install-service` for a missing `verdict-prime-sync.timer`. The old repair copied `<package_root>/deploy/systemd/verdict-prime-sync.{service,timer}`, a path that does not exist in an installed package. The new command renders both units from the installed package, as `verdict acceptance install-service` does: this interpreter runs `-m verdict harness prime sync-models`, `WorkingDirectory` is the directory that holds the package, and the timer fires 2 minutes after boot and then every 15 minutes. It takes `--dry-run` and `--uninstall`. The `deploy/systemd/verdict-prime-sync.*` templates are removed.
-- Bootstrap diagnostic lines (`verdict route` notes, `verdict serve` startup lines, `describe_bootstrap_failure`) separate the field from the detail with ` - ` instead of `: `. The old `field=OMNIROUTE_API_KEY: provider ...` read as a key and value to the shared redactor, so `scripts/check_dod.py` refused gate logs that held no credential. The shared redactor is unchanged. `describe()` now also redacts its field, detail and remediation part by part, so an `sk-` key, a `Bearer` token or a `token=<value>` that reached a detail is printed as `[redacted]`; URL userinfo keeps the `***:***@` form. **Format change:** a parser that splits these lines on `field=<name>:` must split on ` - ` instead.
-- `verdict harness prime sync-models` keeps the pinned OmniRoute combo `prime-free-chain` in `~/.prime/agent/models.json` across later syncs. Rows with `owned_by` of `combo` stay excluded, except ids in the private allowlist `_PINNED_COMBOS`, which is `prime-free-chain` only. A newly added `prime-free-chain` entry takes `contextWindow` from the catalog row (`max_input_tokens` when set, otherwise `context_length`; 1000000 for that combo). An id that is already present keeps its existing settings (#902).
-- A manual model refresh plan no longer asks one `[y/N]` for every route. It groups routes by capacity class (FREE, SUBSCRIPTION, UNKNOWN, METERED) and asks about each group, or "free only"; UNKNOWN and METERED default to no and show an estimated spend. `verdict eligibility --verified --refresh` without a terminal probes UNKNOWN or METERED routes only with `--include-unknown` or `--allow-metered` (BOD-331).
-- Planner selection no longer ends with "none eligible" when cold catalog routes would use the whole confirmation budget: fresh cache-positive routes are confirmed first, one slot is reserved for a fresh healthy subscription fallback, and routes refreshed during selection are used in the same selection. Found by live certification rehearsals.
-- The health cache default path follows `VERDICT_HOME` like every other store. **Behaviour change:** with `VERDICT_HOME` set, an older `~/.verdict/health-cache.json` is no longer read; route health rebuilds on the next refresh or prove cycle, and session evidence can be re-imported with `verdict prove-at-rest import-sessions`.
-- With `--state-file` or `--inject`, `verdict orchestrate` reads `health-cache.json` next to the state file (the file its refresh job writes), not the default cache. Isolated and chaos runs therefore start from their own evidence.
-- Invalid planner output is saved (redacted, at most 64 KiB) in the run directory; redaction now also covers bare `Bearer` tokens and unlabelled provider key prefixes.
+- Auto-routers behind a provider prefix (for example `kilocode/kilo-auto/free`, `kilocode/openrouter/free`) are opaque and never candidates (#1053).
+- `/v1/route` requests with execution-path candidates use a timezone-aware clock (#1049).
+- `verdict harness prime sync-models` keeps the pinned OmniRoute combo `prime-free-chain` in `~/.prime/agent/models.json` across later syncs (#902).
+- Planner selection no longer ends with "none eligible" when cold catalog routes would use the whole confirmation budget: fresh cache-positive routes are confirmed first and one slot is kept for a fresh healthy subscription fallback.
+- Invalid planner output is saved (redacted, at most 64 KiB) in the run directory; redaction also covers bare `Bearer` tokens and unlabelled provider key prefixes.
+
+### Removed
+- The Ruflo and RuVector integrations (#804). Documentation preflight no longer depends on them.
+
+### Known limitations
+- No CERTIFIED release bundle exists; releases are not certification-gated.
+- No cost saving is claimed. The only live cost run chose the same model in both arms.
+- `install.sh` keeps installing 0.4.2 until 1.0.0 is published to PyPI; its pin is updated after publication with real digests.
+- A real HTTP 402 from the ladder health probe still cools the pool and provider; only the HTTP 200 in-band refusal is route-scoped.
 
 ## [0.5.0] - 2026-10-09
+
+Not published: no `v0.5.0` tag or PyPI release was made. These changes first ship in 1.0.0.
 
 ### Added
 - A verified-model view projects per-route VERIFIED/UNVERIFIED/FAILED status from local health-cache evidence, with a bounded refresh that can spend prepaid quota only on exact, consented ids (#791, #792).
