@@ -1,5 +1,7 @@
 # Root controller recovery: BOD-313 phase-1 boundary audit
 
+> **Historical, not current authority.** Archived 2026-11-19: point-in-time audit of `integration/bod-296` at `36160f4e`. It describes no current behaviour.
+
 **Scope (2026-10-09):** This describes `integration/bod-296` at `36160f4e` and
 Prime Agent 0.9.8 local docs. BOD-264 already provides **Verdict-supervised,
 Verdict-launched** generations. Prime's own daemon supervisor is a *different*

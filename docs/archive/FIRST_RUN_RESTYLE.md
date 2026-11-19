@@ -1,5 +1,7 @@
 # First-run visual system adoption
 
+> **Historical, not current authority.** Archived 2026-11-19: change note for one restyle. The living page is [Verdict visual system](../design/VISUAL_SYSTEM.md).
+
 Home, setup and doctor share `verdict.design` panels, spacing and semantic tokens.
 The Verdict wordmark stays static. The previous timed wordmark reveal is removed.
 Only observed operations animate: a gateway probe or a bootstrap running event.

@@ -151,7 +151,9 @@ Implementation roles are split as follows:
 - `receipt` persists the run result; `supervisor` watches and resumes a
   controller; `tui` renders live state; `cli` provides the command handlers.
 
-The Prime Agent is the execution harness, not the orchestration authority.
+Workers run on the built-in `direct-gateway` executor by default. Prime Agent is
+an optional worker harness (`--executor prime-headless`); no harness is the
+orchestration authority.
 OmniRoute supplies inventory and transport only. Orchestration is specified in
 [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md).
 

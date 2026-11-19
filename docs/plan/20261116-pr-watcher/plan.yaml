@@ -25,7 +25,7 @@ assumptions:
   - 'The common verdict-prime state directory is available to the watcher and controller.'
   - 'Configured repositories are allowlisted under github.com/mrnicholasbcarter-code.'
   - 'Existing setup and doctor abstractions remain the host integration boundary.'
-  - 'The implementation branch is /home/nick/dev/verdict-core-worktrees/pr-watcher at the requested base commit.'
+  - 'The implementation branch is <worktrees>/pr-watcher at the requested base commit.'
 shared_context:
   watcher_contract:
     - 'OpenSpec: openspec/changes/bod358-pr-watcher/{proposal.md,design.md,tasks.md,specs/pr-watcher/spec.md}'

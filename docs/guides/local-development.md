@@ -25,13 +25,11 @@ git clone https://github.com/mrnicholasbcarter-code/verdict-cockpit.git
 
 ```bash
 cd verdict-core
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev,server,dashboard]'
+uv sync --frozen --extra dev --extra server --extra dashboard
 
 # Verify
-verdict --help
-pytest -v
+uv run verdict --help
+uv run python -m pytest -q
 ```
 
 ### 3. Recommended Tooling
@@ -124,14 +122,14 @@ curl -X POST http://127.0.0.1:8000/v1/route \
 ## Running Tests
 
 ```bash
-# All tests (2907 at the time of writing; run the command for the current count)
-pytest -v
+# All tests
+uv run python -m pytest -q
 
 # Specific test file
-pytest tests/test_availability_cache.py -v
+uv run python -m pytest -q tests/test_availability_cache.py
 
 # With coverage
-pytest --cov=verdict --cov-report=html
+uv run python -m pytest --cov=verdict --cov-report=html
 
 # Type checking
 uv run --extra dev --extra dashboard --extra server mypy verdict --strict
@@ -167,14 +165,6 @@ npm run dev  # http://localhost:3000
 
 ## Debugging
 
-### Enable Debug Logging
-
-```bash
-VERDICT_DEBUG=1 verdict route "test"
-export VERDICT_LOG_PATH=./verdict-debug.jsonl
-verdict serve
-```
-
 ### Inspect Decision Log
 
 ```bash
@@ -187,7 +177,7 @@ cat ~/.verdict/verdict-decisions.jsonl | jq .   # or $VERDICT_HOME/verdict-decis
 
 1. Create feature branch: `git checkout -b feat/your-feature`
 2. Make changes with tests
-3. Run full test suite: `pytest && mypy verdict --strict && ruff check .`
+3. Run the checks listed in [AGENTS.md](../../AGENTS.md#commands)
 4. Submit PR
 
 ---
@@ -196,7 +186,7 @@ cat ~/.verdict/verdict-decisions.jsonl | jq .   # or $VERDICT_HOME/verdict-decis
 
 ### "Module not found: verdict"
 ```bash
-pip install -e .  # From verdict-core root
+uv sync --frozen --extra dev  # From verdict-core root
 ```
 
 ### OmniRoute connection refused
@@ -206,6 +196,5 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:20128/v1/models   # ex
 ```
 
 ### Tests failing on import
-```bash
-PYTHONPATH=. pytest tests/
-```
+Run tests through the project environment (`uv run python -m pytest`); system
+Python lacks the test dependencies.

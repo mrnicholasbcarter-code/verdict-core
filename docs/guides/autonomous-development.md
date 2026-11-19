@@ -42,8 +42,10 @@ plans a validated work graph, runs ready nodes up to `--max-parallel`, verifies
 nodes and integration, performs review unless `--no-review` is supplied, and
 writes run artifacts. `--no-review` deliberately leaves the run blocked.
 
-The orchestration executor launches one exact, selected route through the
-Prime headless CLI. It does not let a worker choose a replacement model.
+The orchestration executor launches one exact, selected route: through the
+built-in `direct-gateway` executor by default, or through the Prime headless CLI
+when the optional Prime harness is selected (`--executor prime-headless`). It
+does not let a worker choose a replacement model.
 `verdict.subagent_selection` and `verdict.worker_runtime` provide the
 lower-level Prime/RLM dispatch boundary: they intersect OmniRoute inventory
 with Prime-visible selectors, use cached bounded health probes, launch an
@@ -71,9 +73,9 @@ verification failures do not mark the provider unhealthy.
 
 OmniRoute is the inventory and execution boundary. A catalog row does not prove
 that a route is entitled, healthy, available, or allowed for the task. The
-ADR-036 ladder checks those conditions before selecting a route. In its Prime
-configuration, a route also has to be visible in Prime's model registry before
-it can be launched.
+ADR-036 ladder checks those conditions before selecting a route. When the
+optional Prime harness is selected, a route also has to be visible in
+Prime's model registry before it can be launched.
 
 Do not add static provider allowlists, credentials, or private gateway database
 access to Verdict. See [OmniRoute workers](omniroute-workers.md) and the

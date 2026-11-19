@@ -1,5 +1,7 @@
 # Autonomous Development Loop — Operational Contract
 
+> **Historical, not current authority.** Archived 2026-11-19: internal operating contract of the build swarm, not product documentation. The current definition of done is in [AGENTS.md](../../AGENTS.md).
+
 **Status:** Approved (operational contract)
 **Date:** 2026-08-03
 **Applies to:** Every backlog issue worked by the Verdict autonomous development
