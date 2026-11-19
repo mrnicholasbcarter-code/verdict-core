@@ -112,7 +112,7 @@ verdict hook claude-gate; echo $?   # 0 = admitted, 2 = blocked
 Every `/v1/messages` admission emits a receipt recorded on the route-bound
 evidence path:
 
-- Decision log: `verdict-decisions.jsonl` (override via `LLMGATE_LOG_PATH`)
+- Decision log: `$VERDICT_HOME/verdict-decisions.jsonl`, default `~/.verdict/` (override via `LLMGATE_LOG_PATH`)
 - Outcome receipts beside the decision log (`VERDICT_RECEIPTS_DB` or
   `verdict-decisions.jsonl` outcome file)
 - `verdict run-receipt <run-id>` verifies the digest-bound receipt tied to the
