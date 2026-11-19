@@ -531,8 +531,54 @@ def test_cli_parser_exposes_planner_executor_role() -> None:
     add_parsers(parser.add_subparsers(dest="command"))
     args = parser.parse_args(["orchestrate", "ship", "--planner-executor", "direct-gateway"])
 
-    assert args.executor == "prime-headless"
+    assert args.executor == "direct-gateway"
     assert args.planner_executor == "direct-gateway"
+
+
+def test_default_executor_builds_direct_gateway_not_prime() -> None:
+    """Fails if a no-value or missing --executor silently falls back to Prime."""
+    import argparse
+
+    from verdict.orchestration.cli import _worker_executor, add_parsers
+    from verdict.orchestration.executors import DirectGatewayExecutor
+
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    parsed = parser.parse_args(["orchestrate", "ship", "--gateway", "http://gateway.invalid"])
+    assert isinstance(_worker_executor(parsed), DirectGatewayExecutor)
+    bare = argparse.Namespace(executor_map="", gateway="http://gateway.invalid")
+    assert isinstance(_worker_executor(bare), DirectGatewayExecutor)
+    empty = argparse.Namespace(executor="", executor_map="", gateway="http://gateway.invalid")
+    assert isinstance(_worker_executor(empty), DirectGatewayExecutor)
+
+
+@pytest.mark.parametrize("name", ["prime", "prime-headless"])
+def test_explicit_prime_executor_still_builds_prime(name: str) -> None:
+    import argparse
+
+    from verdict.orchestration.cli import _worker_executor, add_parsers
+
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    parsed = parser.parse_args(
+        ["orchestrate", "ship", "--executor", name, "--gateway", "http://gateway.invalid"]
+    )
+    assert isinstance(_worker_executor(parsed), PrimeHeadlessExecutor)
+
+
+def test_executor_map_still_mixes_backends_under_the_new_default() -> None:
+    import argparse
+
+    from verdict.orchestration.cli import _worker_executor
+    from verdict.orchestration.executors import DirectGatewayExecutor, MixedExecutor
+
+    args = argparse.Namespace(
+        executor="direct-gateway", executor_map="node-1=prime-headless", gateway="http://g.invalid"
+    )
+    mixed = _worker_executor(args)
+    assert isinstance(mixed, MixedExecutor)
+    assert isinstance(mixed._default, DirectGatewayExecutor)
+    assert isinstance(mixed._map["node-1"], PrimeHeadlessExecutor)
 
 
 async def test_cli_planner_and_worker_faults_share_call_count() -> None:

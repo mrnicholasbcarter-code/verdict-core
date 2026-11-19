@@ -688,6 +688,9 @@ def _action_eligibility(**kwargs: Any) -> ActionResult:
         required_capabilities=requirements.required_capabilities,
         min_context_tokens=requirements.min_context_tokens,
         sync_visibility=sync_visibility,
+        # --sync-visibility exists to write and read Prime's registry; without it
+        # visibility follows the default executor (the live gateway catalog).
+        visibility_executor="prime-headless" if sync_visibility else None,
         **({"refresh_hook": refresh_hook} if refresh_hook is not None else {}),
     )
     now = datetime.now(timezone.utc)

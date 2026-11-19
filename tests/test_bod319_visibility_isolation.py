@@ -64,8 +64,14 @@ def test_build_selector_honours_prime_agent_home_and_never_touches_home(
     monkeypatch.setattr(orch_run, "resolve_api_key", lambda *a, **k: None)
     monkeypatch.delenv("VERDICT_ACTIVE_CONTROLLER_ROUTE", raising=False)
 
+    # Prime visibility applies when the Prime harness is selected; the default
+    # (direct-gateway) reads the live catalog instead.
     ladder = build_selector(
-        "http://127.0.0.1:1", scope="", prefer="", state_file=tmp_path / "state.json"
+        "http://127.0.0.1:1",
+        scope="",
+        prefer="",
+        state_file=tmp_path / "state.json",
+        visibility_executor="prime-headless",
     )
     verdicts = {v.route_id: v for v in ladder.evaluate(REQ, now=NOW)}
     # The registry at PRIME_AGENT_HOME is the one consulted: the listed id is

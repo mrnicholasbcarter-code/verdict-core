@@ -1037,3 +1037,112 @@ def test_judge_choose_skips_outcome_history_lines() -> None:
     ok, reason, _detail = acceptance.judge_choose(1, '{"selected": "cc/claude-sonnet-5"}', "")
     assert ok is False, "nonzero exit must always fail even with selected in stdout"
     assert "no route selected" in reason or "not implemented" in reason
+
+
+# -- optional Prime harness check ----------------------------------------------
+
+
+def _prime_cli(code: int, payload: dict[str, Any]) -> Any:
+    def run() -> Check:
+        return acceptance._cli_check(
+            "harness-prime",
+            ["harness", "prime", "status", "--json"],
+            60,
+            acceptance.judge_prime,
+            "http://gw",
+            _run_cli=lambda args, timeout, env=None: (code, json.dumps(payload), ""),
+        )
+
+    return run
+
+
+def _eligible() -> Check:
+    return Check("eligibility", [], True, "ok", detail={"eligible_free": 1})
+
+
+def test_prime_absent_is_skipped_never_passed_and_keeps_acceptance_green() -> None:
+    """Fails if a host without the prime-agent binary turns live acceptance red,
+    or if the skipped optional check is reported as passed."""
+    calls: list[str] = []
+    absent = acceptance.prime_absent_reason(which=lambda name: calls.append(name) or None)
+    assert absent == "Prime Agent not installed (optional harness)" and calls
+    check = acceptance.optional_prime_check(_prime_cli(1, {}), absent=lambda: absent)
+    assert check.skipped is True and check.passed is False
+    assert check.reason == "Prime Agent not installed (optional harness)"
+    assert acceptance.is_green([_eligible(), check]) is True
+
+
+def test_prime_installed_but_not_enabled_is_skipped() -> None:
+    absent = acceptance.prime_absent_reason(
+        which=lambda name: "/usr/bin/prime-agent", enabled=lambda: False
+    )
+    assert absent == acceptance.PRIME_NOT_ENABLED
+    assert absent == "Prime Agent installed but not enabled (optional harness)"
+    check = acceptance.optional_prime_check(_prime_cli(0, {}), absent=lambda: absent)
+    assert check.skipped is True and check.passed is False and check.reason == absent
+
+
+def test_not_installed_and_not_enabled_reasons_differ() -> None:
+    """Fails if the two skip causes are merged into one (false "not installed")."""
+    assert acceptance.PRIME_NOT_INSTALLED != acceptance.PRIME_NOT_ENABLED
+    assert "not installed" not in acceptance.PRIME_NOT_ENABLED
+
+
+def test_prime_installed_and_enabled_still_runs_and_can_fail() -> None:
+    """Fails if the optional-harness skip hides a real Prime misconfiguration."""
+    assert (
+        acceptance.prime_absent_reason(
+            which=lambda name: "/usr/bin/prime-agent", enabled=lambda: True
+        )
+        is None
+    )
+    failing = acceptance.optional_prime_check(
+        _prime_cli(0, {"enabled": False}), absent=lambda: None
+    )
+    assert failing.skipped is False and failing.passed is False
+    assert failing.reason == "Prime is not pointed at verdict serve"
+    assert acceptance.is_green([_eligible(), failing]) is False
+    passing = acceptance.optional_prime_check(_prime_cli(0, {"enabled": True}), absent=lambda: None)
+    assert passing.passed is True and passing.skipped is False
+
+
+def test_red_doctor_issue_never_names_a_skipped_optional_check(tmp_path: Path) -> None:
+    """Fails if the doctor issue blames the skipped Prime check for a red run."""
+    directory = tmp_path / "acceptance"
+    directory.mkdir(parents=True)
+    checks = [
+        {"name": "harness-prime", "passed": False, "skipped": True, "reason": "absent"},
+        {"name": "route", "passed": False, "reason": "no route"},
+    ]
+    body = {"status": "red", "finished_at": (NOW - timedelta(minutes=5)).isoformat()}
+    (directory / "20261013T115500Z.json").write_text(json.dumps({**body, "checks": checks}))
+    issues = acceptance_state.doctor_check(home=tmp_path, now=NOW)[1]
+    assert issues and "route (no route)" in issues[0] and "harness-prime" not in issues[0]
+
+
+def _raise_decode() -> bool:
+    raise json.JSONDecodeError("truncated", "{", 1)
+
+
+def test_unreadable_prime_status_runs_the_check_never_skips_or_crashes() -> None:
+    """Fails if a damaged Prime config crashes acceptance or is treated as absent."""
+    assert (
+        acceptance.prime_absent_reason(
+            which=lambda name: "/usr/bin/prime-agent", enabled=_raise_decode
+        )
+        is None
+    )
+    real = acceptance.optional_prime_check(_prime_cli(1, {}), absent=lambda: None)
+    assert real.skipped is False and real.passed is False
+    assert real.reason == "harness prime status failed (exit 1)"
+
+
+def test_prime_absent_reason_with_damaged_config_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default status() path: binary present, models.json truncated."""
+    agent = tmp_path / "prime" / "agent"
+    agent.mkdir(parents=True)
+    (agent / "models.json").write_text('{"providers": {"omniroute": ')
+    monkeypatch.setenv("PRIME_AGENT_CODING_AGENT_DIR", str(agent))
+    assert acceptance.prime_absent_reason(which=lambda name: "/usr/bin/prime-agent") is None

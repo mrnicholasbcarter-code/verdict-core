@@ -61,6 +61,52 @@ class Check:
     stdout_sha256: str | None = None
     stderr_sha256: str | None = None
     detail: dict[str, Any] = field(default_factory=dict)
+    #: An optional part that is absent on this host. Never passed, never failed.
+    skipped: bool = False
+
+
+PRIME_NOT_INSTALLED = "Prime Agent not installed (optional harness)"
+PRIME_NOT_ENABLED = "Prime Agent installed but not enabled (optional harness)"
+
+
+def prime_absent_reason(
+    which: Callable[[str], str | None] | None = None, enabled: Callable[[], bool] | None = None
+) -> str | None:
+    """Why the optional Prime check does not apply here, or None when it does.
+
+    Prime applies only when its binary is on PATH and its Verdict harness is
+    enabled; then ``harness-prime`` runs as before and can still fail.
+    """
+    from verdict import harness_prime
+
+    if not harness_prime.binary_installed(which):
+        return PRIME_NOT_INSTALLED
+    try:
+        is_enabled = enabled() if enabled is not None else harness_prime.status().enabled
+    except (ValueError, OSError):  # JSONDecodeError is a ValueError
+        # Unknown is neither absent nor healthy: run the real check, which fails
+        # the normal way (as it did when it was only a child process).
+        return None
+    if not is_enabled:
+        # Doctor's "Prime harness" row shows this state with its enable command.
+        return PRIME_NOT_ENABLED
+    return None
+
+
+def optional_prime_check(
+    run: Callable[[], Check], absent: Callable[[], str | None] = prime_absent_reason
+) -> Check:
+    """``harness-prime`` is skipped, not failed, on a host without Prime."""
+    reason = absent()
+    if reason is not None:
+        return Check(
+            "harness-prime",
+            ["verdict", "harness", "prime", "status", "--json"],
+            False,
+            reason,
+            skipped=True,
+        )
+    return run()
 
 
 def _digest(text: str) -> str:
@@ -815,19 +861,21 @@ def run_checks(gateway: str, api_key: str | None, *, seed: str) -> list[Check]:
         ("serve", lambda: serve_check(gateway)),
         (
             "harness-prime",
-            cli("harness-prime", ["harness", "prime", "status", "--json"], 60, judge_prime),
+            lambda: optional_prime_check(
+                cli("harness-prime", ["harness", "prime", "status", "--json"], 60, judge_prime)
+            ),
         ),
     ]
     return [_guarded(name, run) for name, run in plan]
 
 
 def is_green(checks: Sequence[Check]) -> bool:
-    """Every check passed, and the eligibility check saw an eligible FREE route."""
+    """Every check passed or was a skipped optional part, and eligibility saw a FREE route."""
     eligibility = next((c for c in checks if c.name == "eligibility"), None)
     return (
         eligibility is not None
         and int(eligibility.detail.get("eligible_free") or 0) > 0
-        and all(c.passed for c in checks)
+        and all(c.passed or c.skipped for c in checks)
     )
 
 
@@ -860,7 +908,8 @@ def run_acceptance(
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "status": "green" if green else "red",
             "eligible_free": int(eligibility.detail.get("eligible_free") or 0),
-            "failed": [c.name for c in checks if not c.passed],
+            "failed": [c.name for c in checks if not c.passed and not c.skipped],
+            "skipped": [c.name for c in checks if c.skipped],
             "verdict_version": __version__,
             "source_sha": _source_sha(),
             "python": sys.executable,
