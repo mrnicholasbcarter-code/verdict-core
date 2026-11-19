@@ -18,6 +18,7 @@ from verdict.actions.base import (
     ActionSpec,
     LaunchSpec,
 )
+from verdict.paths import resolve_decision_log_for_read, verdict_home
 
 # ---------------------------------------------------------------------------
 # Registry storage
@@ -566,7 +567,7 @@ def _action_receipt_show(**kwargs: Any) -> ActionResult:
         db = _Path(db_path)
     else:
         repo_db = _Path.cwd() / ".verdict" / "receipts.db"
-        db = repo_db if repo_db.exists() else (_Path.home() / ".verdict" / "receipts.db")
+        db = repo_db if repo_db.exists() else (verdict_home() / "receipts.db")
     store = (
         ReceiptStore(db, strict_scope=False)
         if action == "list" and scope is None
@@ -1210,7 +1211,7 @@ def _action_stats(**kwargs: Any) -> ActionResult:
     import json as _json
     from pathlib import Path
 
-    log_path: str = kwargs.get("log_path", "verdict-decisions.jsonl")
+    log_path: str = resolve_decision_log_for_read(kwargs.get("log_path"))
     path = Path(log_path)
     if not path.exists():
         return ActionResult(data={"missing": True, "log_path": log_path})
@@ -1261,7 +1262,7 @@ def _action_suggest(**kwargs: Any) -> ActionResult:
 
     from verdict.suggestions import SuggestionService
 
-    log_path: str = kwargs.get("log_path", "verdict-decisions.jsonl")
+    log_path: str = resolve_decision_log_for_read(kwargs.get("log_path"))
     svc = SuggestionService(log_path=log_path)
     suggestions = svc.generate_suggestions()
     return ActionResult(data={"suggestions": [asdict(s) for s in suggestions]})
@@ -1277,7 +1278,7 @@ def _action_cost_report(**kwargs: Any) -> ActionResult:
     import json as _json
     from pathlib import Path
 
-    log_path: str = kwargs.get("log_path", "verdict-decisions.jsonl")
+    log_path: str = resolve_decision_log_for_read(kwargs.get("log_path"))
     path = Path(log_path)
     if not path.exists():
         return ActionResult(data={"missing": True, "log_path": log_path})
@@ -1321,7 +1322,6 @@ def _action_replay(**kwargs: Any) -> ActionResult:
       * ``{"status": "ok", "session_id": ..., "record": <session.to_dict()>}``
     """
     import os as _os
-    from pathlib import Path as _Path
 
     session_id: str = kwargs["session_id"]
     try:
@@ -1335,7 +1335,7 @@ def _action_replay(**kwargs: Any) -> ActionResult:
         return ActionResult(
             data={"status": "unavailable", "message": message}, ok=False, exit_code=3
         )
-    db_path = _os.environ.get("VERDICT_MEMORY_DB", str(_Path.home() / ".verdict" / "memory.db"))
+    db_path = _os.environ.get("VERDICT_MEMORY_DB", str(verdict_home() / "memory.db"))
     try:
         session = ExecutionSession.resume(session_id, MemoryPlane(db_path))
     except ExecutionSessionError as exc:

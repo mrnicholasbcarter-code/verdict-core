@@ -33,6 +33,7 @@ from verdict.orchestration.review import OcrRun, OpenCodeReviewer
 from verdict.orchestration.run import run_golden_path
 from verdict.orchestration.runtime import RuntimePolicy
 from verdict.outcome_shadow import ENV_ROOTS as OUTCOME_SHADOW_ENV
+from verdict.paths import scoped_state_env
 from verdict.subagent_selection import HealthResult
 
 FLAGSHIP_GOAL = "flagship failover test"
@@ -290,7 +291,13 @@ def run_flagship_scenario(
 
     # Scripted scenario: fixed OCR key, and no learned outcome history (an empty
     # roots value disables it) so host or prior-run state cannot reorder routes.
-    scenario_env = {_OFFLINE_OCR_ENV: "offline-scripted-no-network", OUTCOME_SHADOW_ENV: ""}
+    # Fixture state lives inside the scenario workspace, never in the user's
+    # VERDICT_HOME: fixture data must not satisfy live proof (AGENTS.md).
+    scenario_env = {
+        _OFFLINE_OCR_ENV: "offline-scripted-no-network",
+        OUTCOME_SHADOW_ENV: "",
+        **scoped_state_env(workspace_root / "fixture-state"),
+    }
     saved_env = {key: os.environ.get(key) for key in scenario_env}
     os.environ.update(scenario_env)
     try:

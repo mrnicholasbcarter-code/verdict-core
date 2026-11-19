@@ -17,6 +17,7 @@ from typing import Any, BinaryIO, Literal
 
 from verdict.orchestration.health_cache import format_datetime, parse_datetime
 from verdict.orchestration.provider_catalog import backend_pool
+from verdict.paths import verdict_home
 
 FAILURE_CLASSES = frozenset(
     {
@@ -107,7 +108,7 @@ class SessionLedger:
             path
             if path is not None
             else os.environ.get(
-                "VERDICT_SESSION_EVIDENCE", str(Path.home() / ".verdict" / "session-evidence.jsonl")
+                "VERDICT_SESSION_EVIDENCE", str(verdict_home() / "session-evidence.jsonl")
             )
         ).expanduser()
         self.last_load_skipped = 0

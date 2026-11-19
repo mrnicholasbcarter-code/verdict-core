@@ -32,6 +32,7 @@ from verdict.memory_harness.hermes import install_hermes_bridge
 from verdict.memory_harness.prime import install_prime_bridge
 from verdict.memory_plane import MemoryPlane
 from verdict.memory_session_adapter import SessionAdapter, session_record_to_memory_record
+from verdict.paths import verdict_home
 from verdict.receipt_store import ReceiptStore
 
 
@@ -687,7 +688,7 @@ def run_doctor_diagnostics(home_dir: Path, cwd: Path, fix: bool = False) -> dict
     repaired: list[str] = []
 
     # Check for .verdict directory
-    verdict_dir = home_dir / ".verdict"
+    verdict_dir = verdict_home({**os.environ, "HOME": str(home_dir)})
     if not verdict_dir.exists():
         warnings.append("missing_memory_db")
         if fix:
@@ -771,7 +772,7 @@ def uninstall_memory_bridge(home_dir: Path, cwd: Path, purge_data: bool = False)
 
     # Remove .verdict directory if purge_data
     if purge_data:
-        verdict_dir = home_dir / ".verdict"
+        verdict_dir = verdict_home({**os.environ, "HOME": str(home_dir)})
         if verdict_dir.exists():
             shutil.rmtree(verdict_dir)
             uninstalled.append(".verdict")

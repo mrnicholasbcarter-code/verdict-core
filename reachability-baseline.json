@@ -333,11 +333,11 @@
   },
   {
     "qualified_name": "verdict.memory_gate.MemoryGovernor",
-    "reason": "UNTRIAGED: MemoryGovernor has no resolved reference; Durable, provenance-aware write gate for the local MemoryPlane (verdict/memory_gate.py)."
+    "reason": "Public SDK/library API: MemoryGovernor is a lazy top-level export (verdict.__init__ __all__) of the MemoryPlane write gate; local callers are tests."
   },
   {
     "qualified_name": "verdict.memory_gate.MemoryNamespace",
-    "reason": "UNTRIAGED: MemoryNamespace has no resolved reference; Durable, provenance-aware write gate for the local MemoryPlane (verdict/memory_gate.py)."
+    "reason": "Public SDK/library API: MemoryNamespace is a lazy top-level export (verdict.__init__ __all__) of the MemoryPlane write gate; local callers are tests."
   },
   {
     "qualified_name": "verdict.memory_migration.archive_legacy_memory",
@@ -721,7 +721,7 @@
   },
   {
     "qualified_name": "verdict.runtime_contract.ProcfsInspector",
-    "reason": "UNTRIAGED: ProcfsInspector has no resolved reference; Versioned, privacy-safe contracts for global runtime ownership (verdict/runtime_contract.py)."
+    "reason": "Deferred: public name in verdict.runtime_contract __all__; production uses the duplicate verdict.runtime_daemons.ProcfsInspector (the one verdict exports). Merge or remove the duplicate in a dedicated change, not in first-run-state-isolation."
   },
   {
     "qualified_name": "verdict.trusted_change_report.utc_now_iso",

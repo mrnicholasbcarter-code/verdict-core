@@ -1,0 +1,103 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "verdict-omniroute",
+    "model": "cx/reviewer-model"
+  },
+  "message": "Review complete: 0 finding(s) across 2 selected item(s).",
+  "summary": {
+    "files_reviewed": 2,
+    "comments": 0,
+    "total_tokens": 44026,
+    "input_tokens": 40119,
+    "output_tokens": 3907,
+    "elapsed": "1m4s"
+  },
+  "tool_calls": {
+    "total": 4,
+    "by_tool": {
+      "code_comment": 1,
+      "file_read": 3
+    },
+    "failure": 1,
+    "failure_by_tool": {
+      "code_comment": 1
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 3,
+        "tool_name": "code_comment",
+        "file_path": "math_utils.py,tests/test_interview_subtract.py",
+        "arguments": "{\"comments\": [{\"category\": \"test\", \"content\": \"Test coverage is incomplete. Missing edge cases like large integers, integer overflow scenarios, and mixed sign operations (e.g., 5 - (-3)).\", \"existing_code\": \"def test_subtract_positive() -> None:\\n    assert subtract(5, 3) == 2\", \"path\": \"tests/test_interview_subtract.py\", \"severity\": \"medium\", \"suggestion_code\": \"def test_subtract_mixed_sign() -> None:\\n    assert subtract(5, -3) == 8\\n\\ndef test_subtract_large_numbers() -> None:\\n    import sys\\n    assert subtract(sys.maxsize, 1) == sys.maxsize - 1\\n\\ndef test_subtract_overflow() -> None:\\n    import sys\\n    assert subtract(-sys.maxsize - 1, -1) == -sys.maxsize\"}, {\"category\": \"documentation\", \"content\": \"Test function name is misleading. 'test_subtract_negative' tests subtraction with negative inputs, not testing for negative results. This could confuse reviewers about what the test actually validates.\", \"existing_code\": \"def test_subtract_negative() -> None:\\n    assert subtract(-2, -3) == 1\", \"path\": \"tests/test_interview_subtract.py\", \"severity\": \"low\", \"suggestion_code\": \"def test_subtract_negative_inputs() -> None:\\n    assert subtract(-2, -3) == 1\"}}\n]",
+        "error": "Error parsing tool arguments for code_comment: invalid character '}' after array element"
+      }
+    ]
+  },
+  "comments": [],
+  "groups": [
+    {
+      "label": "small change set",
+      "files": [
+        "math_utils.py",
+        "tests/test_interview_subtract.py"
+      ]
+    }
+  ],
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "00000000-0000-4000-8000-000000000000",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "d5e88ee801577ac2f55ea564c3b49734eacde732",
+      "requested_head": "136c396b19ce9e9909df0d28544866160bb9c473",
+      "resolved_base": "d5e88ee801577ac2f55ea564c3b49734eacde732",
+      "resolved_head": "136c396b19ce9e9909df0d28544866160bb9c473",
+      "exact_range": "d5e88ee801577ac2f55ea564c3b49734eacde732..136c396b19ce9e9909df0d28544866160bb9c473",
+      "source_artifact_sha256": "1b2dc86d974608cd97455ff93fd983f00534a0a7ac83acbc5b470636298bc26f"
+    },
+    "execution": {
+      "ocr_version": "v1.12.9",
+      "provider": "verdict-omniroute",
+      "model": "cx/reviewer-model",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "75ce7b4a9ced9560ada941807cf57d102f719917a0bbb6d946f0583847eecb0a",
+      "runtime_config_sha256": "641ccbda944439d3ea1d31f1b01801a5921989e418cfa6441a2b60d759e86445"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "6f81defa023a904a986ce4038c9cec7190bb9a18b59c4a92d38978439b89ddf0",
+          "path": "tests/test_interview_subtract.py",
+          "fingerprint": "9bf608a58ecc5615b238d9ec8b85d74a40610f6a4a6f645cef37fe02d2607c52"
+        },
+        {
+          "item_id": "8e888607bc364c631e08002172ac00b22ef93df01147027b98b48f80562bf2f0",
+          "path": "math_utils.py",
+          "fingerprint": "655799830265345b4d728c43a4f1f2160b8feec9ec857873fb2da41afaa7cbfb"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "6f81defa023a904a986ce4038c9cec7190bb9a18b59c4a92d38978439b89ddf0",
+          "path": "tests/test_interview_subtract.py",
+          "fingerprint": "9bf608a58ecc5615b238d9ec8b85d74a40610f6a4a6f645cef37fe02d2607c52"
+        },
+        {
+          "item_id": "8e888607bc364c631e08002172ac00b22ef93df01147027b98b48f80562bf2f0",
+          "path": "math_utils.py",
+          "fingerprint": "655799830265345b4d728c43a4f1f2160b8feec9ec857873fb2da41afaa7cbfb"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 63861
+  }
+}

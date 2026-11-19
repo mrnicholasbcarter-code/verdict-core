@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.memory_harness._hook_ownership import is_legacy_tmp_prompt_hook, is_module_hook
+from verdict.paths import verdict_home
 
 CODEX_HOOK_EVENTS: tuple[str, ...] = (
     "SessionStart",
@@ -216,7 +217,7 @@ def default_outbox_dir() -> Path:
     configured = os.environ.get(OUTBOX_DIR_ENV)
     if configured:
         return Path(configured)
-    return Path.home() / ".verdict" / "outbox" / "codex"
+    return verdict_home() / "outbox" / "codex"
 
 
 def launch_gate(event: str, payload: Mapping[str, Any]) -> None:
