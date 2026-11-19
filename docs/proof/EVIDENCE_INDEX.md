@@ -77,6 +77,14 @@ publication.
   failover exists for other recorded faults, not a live context-overflow chain.
 - Multi-story governor behavior applies only when `VERDICT_MULTI_STORY=on`.
   Node outcome sidecar JSONL is not digest-bound by the run receipt.
+- [Live orchestrate run 20261119T000727Z](live-run-20261119T000727Z/README.md)
+  (LIVE, 2026-11-19, source `d5e88ee8`): one free worker attempt, open-code-review
+  PASS on a different family, receipt integrity OK. Evidence record only: the
+  digest-bound event log and receipt hold host paths and are retained privately,
+  with their digests recorded. It used existing route-health state, the
+  reviewer's two non-blocking comments were dropped (#1137), and it is one run
+  with no speed or savings claim. Demo replay:
+  [`live-run.svg`](../assets/live-run.svg).
 
 ## Explicitly not approved
 
