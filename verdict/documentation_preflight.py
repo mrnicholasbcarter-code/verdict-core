@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from verdict.memory_plane import SCHEMA_VERSION, MemoryPlane, MemoryRecord
+from verdict.paths import verdict_home
 
 DOCUMENT_PREFLIGHT_VERSION = "1"
 DEFAULT_FRESHNESS_SECONDS = 86_400
@@ -138,7 +139,7 @@ def shared_memory_path(home: Path | None = None) -> Path:
     return (
         Path(configured).expanduser()
         if configured
-        else (home or Path.home()) / ".verdict" / "memory.db"
+        else (home / ".verdict" if home is not None else verdict_home()) / "memory.db"
     )
 
 

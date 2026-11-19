@@ -19,6 +19,7 @@ from typing import Any
 
 from verdict.context_pack import ContextUnit, SlotType, unit_prompt_token_cost
 from verdict.documentation_preflight import _is_adr_path
+from verdict.paths import verdict_home
 
 CHEAP_PATH_EPOCH = "1970-01-01T00:00:00Z"
 DEFAULT_CONTEXT_ROOTS: tuple[str, ...] = ("docs", "docs/architecture", "docs/adr")
@@ -595,7 +596,7 @@ def _is_under(path: Path, root: Path) -> bool:
 
 
 def _config_paths(workspace_root: Path) -> tuple[Path, ...]:
-    return (workspace_root / ".verdict" / "config.toml", Path.home() / ".verdict" / "config.toml")
+    return (workspace_root / ".verdict" / "config.toml", verdict_home() / "config.toml")
 
 
 def _load_toml(path: Path) -> dict[str, Any] | None:

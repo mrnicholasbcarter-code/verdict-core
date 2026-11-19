@@ -21,6 +21,7 @@ from typing import Any
 from verdict.enforcement import EnforcementContext, check_enforcement
 from verdict.guidance import GuidanceControlPlane
 from verdict.memory_plane import MemoryPlane, MemoryRecord
+from verdict.paths import verdict_home
 
 GATE_VERSION = "1"
 _SECRET_KEY = re.compile(
@@ -614,7 +615,7 @@ def _default_memory_path() -> Path:
     import os
 
     return Path(
-        os.getenv("VERDICT_MEMORY_PLANE_PATH", str(Path.home() / ".verdict" / "memory.db"))
+        os.getenv("VERDICT_MEMORY_PLANE_PATH", str(verdict_home() / "memory.db"))
     ).expanduser()
 
 

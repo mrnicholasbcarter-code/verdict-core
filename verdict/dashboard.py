@@ -31,6 +31,7 @@ from verdict.outcome_log import (
     measured_spend_for,
     outcome_log_path,
 )
+from verdict.paths import resolve_decision_log_for_read
 
 st.set_page_config(page_title="verdict Analytics", page_icon="⚙️", layout="wide")
 
@@ -40,7 +41,7 @@ st.markdown("Live routing dashboard for evaluating heuristic fallbacks and quota
 # Outcome receipts live beside the decision log and share its extension; they
 # are joined *into* a decision log, never offered as one.
 available_logs = sorted(path for path in Path.cwd().glob("*.jsonl") if not is_outcome_log(path))
-default_log = Path.cwd() / "verdict-decisions.jsonl"
+default_log = Path(resolve_decision_log_for_read(None)).absolute()
 if default_log not in available_logs:
     available_logs.insert(0, default_log)
 log_path = st.selectbox("Decision log", available_logs, format_func=str)

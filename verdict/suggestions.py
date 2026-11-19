@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from verdict.paths import resolve_decision_log_for_read
+
 
 @dataclass
 class Suggestion:
@@ -22,8 +24,8 @@ class Suggestion:
 
 
 class SuggestionService:
-    def __init__(self, log_path: str = "verdict-decisions.jsonl"):
-        self.log_path = Path(log_path)
+    def __init__(self, log_path: str | None = None):
+        self.log_path = Path(resolve_decision_log_for_read(log_path))
 
     def generate_suggestions(self) -> list[Suggestion]:
         if not self.log_path.exists():

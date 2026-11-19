@@ -24,6 +24,7 @@ from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
+from verdict.paths import verdict_home
 from verdict.runtime_contract import (
     DEFAULT_RUNTIME_STATE_DIR,
     RUNTIME_CONTRACT_VERSION,
@@ -77,7 +78,7 @@ class ProcfsInspector:
 
 def _default_state_dir() -> Path:
     configured = os.getenv("VERDICT_RUNTIME_STATE_DIR")
-    return Path(configured).expanduser() if configured else DEFAULT_RUNTIME_STATE_DIR.expanduser()
+    return Path(configured).expanduser() if configured else verdict_home() / "runtime"
 
 
 class RuntimeManager:

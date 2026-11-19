@@ -36,6 +36,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from verdict.harness_codex import DEFAULT_BASE_URL, DEFAULT_TOKEN_ENV, HealthCheck, probe_health
+from verdict.paths import verdict_home
 
 BACKUP_NAME = "settings.json.verdict.bak"
 CLAUDE_GATE_ARGS = ["hook", "claude-gate"]
@@ -575,7 +576,7 @@ def default_outbox_dir() -> Path:
     configured = os.environ.get(OUTBOX_DIR_ENV)
     if configured:
         return Path(configured)
-    return Path.home() / ".verdict" / "outbox" / "claude"
+    return verdict_home() / "outbox" / "claude"
 
 
 def _hook_error(message: str) -> int:

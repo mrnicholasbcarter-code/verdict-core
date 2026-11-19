@@ -28,3 +28,46 @@ def verdict_home(env: Mapping[str, str] | None = None) -> Path:
     if path.parts[:1] == ("~",):
         return home_dir.joinpath(*path.parts[1:])
     return path.expanduser()
+
+
+DECISION_LOG_NAME = "verdict-decisions.jsonl"
+
+
+def default_decision_log_path(env: Mapping[str, str] | None = None) -> str:
+    """Default routing decision log: ``<verdict_home()>/verdict-decisions.jsonl``.
+
+    Never the working directory: a user running Verdict inside a repository
+    must not get an untracked log file there. ``LLMGATE_LOG_PATH`` and an
+    explicit ``log_path`` still override this at their call sites.
+    """
+    return str(verdict_home(env) / DECISION_LOG_NAME)
+
+
+def resolve_decision_log_for_read(log_path: str | None) -> str:
+    """Decision log a reader (stats, cost-report, suggest) should open.
+
+    An explicit path wins. Otherwise the state-directory log, unless only a
+    legacy ``./verdict-decisions.jsonl`` from an older release exists.
+    """
+    if log_path:
+        return log_path
+    default = default_decision_log_path()
+    legacy = Path.cwd() / DECISION_LOG_NAME
+    if not Path(default).exists() and legacy.is_file():
+        return DECISION_LOG_NAME
+    return default
+
+
+def scoped_state_env(root: Path) -> dict[str, str]:
+    """Environment that points every state store at ``root``.
+
+    For fixture runs (``verdict demo``): the scripted scenario must never write
+    passports, health, session evidence, attempt records or the verified-run
+    index into the user's state, where admission and proof would read them.
+    """
+    return {
+        "VERDICT_HOME": str(root),
+        "VERDICT_SESSION_EVIDENCE": str(root / "session-evidence.jsonl"),
+        "VERDICT_HEALTH_CACHE": str(root / "health-cache.json"),
+        "VERDICT_PROVE_AT_REST_STATE": str(root / "prove-at-rest" / "state.json"),
+    }
