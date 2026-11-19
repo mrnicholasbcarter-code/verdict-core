@@ -281,7 +281,12 @@ def gateway_lock_path(gateway_url: str, *, state_dir: Path | None = None) -> Pat
 
 
 def http_gateway_probe(
-    gateway_url: str, *, timeout: float = 2.0, api_key: str | None = None
+    gateway_url: str,
+    *,
+    timeout: float = 2.0,
+    api_key: str | None = None,
+    timeout_retries: int = 0,
+    timeout_hint: str = "",
 ) -> GatewayHealth:
     """Read-only inventory probe: ``GET {gateway_url}/models``.
 
@@ -294,17 +299,39 @@ def http_gateway_probe(
     reported as unhealthy — so ``doctor`` would call a perfectly healthy gateway
     broken, and ensure would fail closed against it. The key is never echoed: only
     the status code and the URL reach the detail.
+
+    ``timeout_retries`` repeats the request only after a timeout. A gateway
+    under load can answer its first catalog call slowly; an answer of any
+    status (401, 403, 5xx) is a real answer and is never retried. A probe that
+    still times out reports the timeout and ``timeout_hint`` (how to raise it).
     """
     import httpx
 
     url = f"{gateway_url.rstrip('/')}/models"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    try:
-        response = httpx.get(url, timeout=timeout, headers=headers)
-    except Exception as exc:
-        return GatewayHealth(
-            reachable=False, responded=False, detail=f"{type(exc).__name__}: {exc}"
-        )
+    attempts = 1 + max(timeout_retries, 0)
+    response = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = httpx.get(url, timeout=timeout, headers=headers)
+            break
+        except httpx.TimeoutException as exc:
+            if attempt < attempts:
+                continue
+            hint = f"; {timeout_hint}" if timeout_hint else ""
+            return GatewayHealth(
+                reachable=False,
+                responded=False,
+                detail=(
+                    f"{type(exc).__name__}: no answer from {url} within {timeout:g}s "
+                    f"({attempts} attempt{'s' if attempts > 1 else ''}){hint}"
+                ),
+            )
+        except Exception as exc:
+            return GatewayHealth(
+                reachable=False, responded=False, detail=f"{type(exc).__name__}: {exc}"
+            )
+    assert response is not None  # the loop either breaks with a response or returns
     if 200 <= response.status_code < 300:
         return GatewayHealth(reachable=True, responded=True, detail="inventory reachable")
     if response.status_code in {401, 403}:
@@ -321,16 +348,23 @@ def http_gateway_probe(
 
 
 def authenticated_gateway_probe(
-    api_key: str | None, *, timeout: float = 2.0
+    api_key: str | None, *, timeout: float = 2.0, timeout_retries: int = 0, timeout_hint: str = ""
 ) -> Callable[[str], GatewayHealth]:
     """Bind a credential to :func:`http_gateway_probe` for the lifecycle's seam.
 
     The lifecycle calls a probe as ``probe(url)``, and this module reads no
-    configuration, so the caller resolves the credential and binds it here.
+    configuration, so the caller resolves the credential (and any timeout
+    setting) and binds it here.
     """
 
     def probe(gateway_url: str) -> GatewayHealth:
-        return http_gateway_probe(gateway_url, timeout=timeout, api_key=api_key)
+        return http_gateway_probe(
+            gateway_url,
+            timeout=timeout,
+            api_key=api_key,
+            timeout_retries=timeout_retries,
+            timeout_hint=timeout_hint,
+        )
 
     return probe
 
