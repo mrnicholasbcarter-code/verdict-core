@@ -69,6 +69,8 @@ jobs:
         env:
           VERDICT_ACCEPTANCE_WAIVE_G71: ${{ vars.VERDICT_ACCEPTANCE_WAIVE_G71 }}
         run: |
+          # Explicit, so tee can never mask a quickstart failure whatever the job's shell.
+          set -o pipefail
           if python scripts/quickstart.py 2>&1 | tee evidence/quickstart_test.log; then
             exit 0
           elif [ "${VERDICT_ACCEPTANCE_WAIVE_G71:-}" = "true" ]; then

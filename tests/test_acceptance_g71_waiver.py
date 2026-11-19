@@ -134,6 +134,7 @@ def test_quickstart_step_waives_only_through_the_variable_and_is_not_advisory() 
     assert len(steps) == 1
     step = steps[0]
     assert "vars.VERDICT_ACCEPTANCE_WAIVE_G71" in step
+    assert "set -o pipefail" in step
     assert "RESULT: WAIVED" in step
     assert "exit 1" in step
     assert not generator._is_advisory(step)
