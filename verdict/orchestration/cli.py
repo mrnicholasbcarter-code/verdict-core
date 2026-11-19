@@ -701,6 +701,21 @@ def _public_effort_rows(selector: object) -> Mapping[str, Mapping[str, Any]] | N
     }
 
 
+def _follow_console(*, plain: bool, stream: Any = None) -> Any:
+    """Console for the orchestrate progress view.
+
+    ``--plain`` must win over terminal detection: a pseudo-terminal would
+    otherwise get the coloured live view. ``VERDICT_PLAIN=1`` is honoured by
+    :func:`verdict.orchestration.tui.plain_mode` itself.
+    """
+    from rich.console import Console
+
+    target = sys.stdout if stream is None else stream
+    if plain:
+        return Console(file=target, force_terminal=False, no_color=True)
+    return Console(file=target)
+
+
 def _orchestrate(args: argparse.Namespace) -> int:
     from verdict.orchestration.contracts import WorkGraph
     from verdict.orchestration.recovery import FailureIntelligence
@@ -849,11 +864,16 @@ def _orchestrate(args: argparse.Namespace) -> int:
     stop = threading.Event()
     viewer = None
     if not args.json:
+        view_console = _follow_console(plain=bool(getattr(args, "plain", False)))
         viewer = threading.Thread(
             # Background progress view: never interactive (it must not read stdin
             # or change terminal mode while the orchestration loop runs).
             target=lambda: follow(
-                events_path, stop_when_final=True, start_seq=prior_seq, interactive=False
+                events_path,
+                console=view_console,
+                stop_when_final=True,
+                start_seq=prior_seq,
+                interactive=False,
             ),
             daemon=True,
         )
@@ -1088,19 +1108,30 @@ def _receipt(args: argparse.Namespace) -> int:
     reason = data["reason"]
     problems = data["problems"]
     receipt = data["receipt"]
+    # A receipt that fails verification must never lead with its recorded
+    # outcome: a reader of the first line (or of --json "outcome") would see
+    # success. The recorded outcome is still shown, labelled unverified.
+    verified = not problems
     if args.json:
-        print(
-            json.dumps(
-                {"outcome": outcome, "reason": reason, "problems": problems, "receipt": receipt},
-                indent=2,
-                default=str,
+        payload: dict[str, Any] = {"verified": verified}
+        if verified:
+            payload.update(outcome=outcome, reason=reason)
+        else:
+            payload.update(
+                outcome="INTEGRITY_FAILED",
+                reason="receipt failed verification: " + "; ".join(problems),
+                recorded_outcome=outcome,
+                recorded_reason=reason,
             )
-        )
+        payload.update(problems=problems, receipt=receipt)
+        print(json.dumps(payload, indent=2, default=str))
     else:
-        print(f"{outcome}: {reason}")
-        print(
-            "integrity: " + ("OK (events digest verified)" if not problems else "; ".join(problems))
-        )
+        if verified:
+            print(f"{outcome}: {reason}")
+            print("integrity: OK (events digest verified)")
+        else:
+            print("INTEGRITY FAILED: " + "; ".join(problems))
+            print(f"recorded (unverified): {outcome}: {reason}")
         for node in receipt.get("nodes", []):
             attempts = " -> ".join(
                 f"{a.get('route_id') or 'merge'}[{a.get('outcome')}"
@@ -1119,7 +1150,7 @@ def _receipt(args: argparse.Namespace) -> int:
         print(
             f"  review: {review.get('status')} by {review.get('reviewer')} on {review.get('route_id')}"
         )
-    return 0 if outcome == "COMPLETE" and not problems else 1
+    return 0 if outcome == "COMPLETE" and verified else 1
 
 
 _STAGE_ORDER = ("DISCOVERED", "ENTITLED", "HEALTHY", "AVAILABLE", "TASK_ELIGIBLE", "SELECTED")
