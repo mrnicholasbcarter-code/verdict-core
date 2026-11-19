@@ -304,8 +304,15 @@ class TestG2FreeSetInjection:
 
         conn = _conn()
         row = {"id": PAID, "owned_by": "openrouter"}
-        cls, evidence = _capacity_for_row(row, conn)
+        cls, evidence = _capacity_for_row(row, conn, openrouter_free_set=_free_set())
         assert cls is CapacityClass.METERED, (cls, evidence)
+
+    def test_verified_models_without_free_set_is_not_free(self) -> None:
+        """Catches the provider name standing in for the missing public price check."""
+        from verdict.orchestration.verified_models import _capacity_for_row
+
+        cls, evidence = _capacity_for_row({"id": PAID, "owned_by": "openrouter"}, _conn())
+        assert cls is CapacityClass.UNKNOWN, (cls, evidence)
 
 
 # ---------------------------------------------------------------------------

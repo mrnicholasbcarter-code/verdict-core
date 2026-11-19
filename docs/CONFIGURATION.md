@@ -906,11 +906,15 @@ identities proved in the background with
 [`verdict prove-at-rest`](guides/health-cache.md) (every admitted route;
 the health cache is separate from selection, which is unchanged).
 
-## Capacity classification and credit providers
+## Capacity classification
 
-Verdict classifies route capacity into `FREE`, `SUBSCRIPTION`, `METERED`, and `UNKNOWN`. Models billed against prepaid credit balances (such as Pollinations / `pollinations/*`, `pol/*`) must never be counted as `FREE` capacity by assumption when pricing is unknown.
-
-The set of credit providers is configurable via the `VERDICT_CREDIT_PROVIDERS` environment variable (comma-separated list of provider names or prefixes, case-insensitive; defaults to `pollinations,pol,g4f-pollinations`; an empty string disables credit provider classification). Credit provider routes without explicit free evidence (`:free` suffix, free connection signals, or all-zero inventory pricing) and without positive pricing are classified as `CapacityClass.UNKNOWN` (`credit_provider_unknown_pricing`).
+Verdict classifies route capacity into `FREE`, `SUBSCRIPTION`, `METERED`, and `UNKNOWN` from facts
+only, never from a name (operator, 2026-11-19). A route is `FREE` on an explicit 0/0 inventory price
+(rule 0.2, `verdict/omniroute_pipeline/free_rule.py`), OpenRouter public 0/0 membership, the
+gateway's free-tier membership, or a connection free signal (`importFreeModelsOnly`, a free plan or
+tier). oauth without a free signal is `SUBSCRIPTION`; a positive price or an observed billing 402
+is `METERED`. A `:free` suffix or a provider name decides nothing: with no fact the route is
+`UNKNOWN` (`no_free_evidence`), and unknown is never free.
 
 ---
 

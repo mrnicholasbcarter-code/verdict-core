@@ -22,6 +22,7 @@ from verdict.prove_at_rest import (
     AGENTIC_TOOL_EDIT,
     AGENTIC_TOOL_READ,
     ProbeExchange,
+    _inband_refusal_exchange,
 )
 
 NOW = datetime(2026, 10, 21, 12, tzinfo=timezone.utc)
@@ -781,3 +782,84 @@ def test_floor_and_pool_cap_require_screen_mode(option):
     """Catches a passive report silently ignoring a screen-only option."""
     with pytest.raises(ValueError, match="requires --screen"):
         identify.identify_report(**option)
+
+
+def _refusing(calls, refusals):
+    """Pass every route except those in ``refusals``, which return their exchange."""
+    good = passing(calls)
+
+    def send(route, payload, timeout):
+        if route in refusals:
+            calls.append((route, payload))
+            return refusals[route]
+        return good(route, payload, timeout)
+
+    return send
+
+
+INBAND_CREDIT = {
+    "usage": {"prompt_tokens": 10, "completion_tokens": 0},
+    "choices": [
+        {
+            "message": {
+                "role": "assistant",
+                "content": "Insufficient credits. Please add credits to your account to continue.",
+            }
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        ProbeExchange(http_status=401, ok=False, detail="bad credentials"),
+        ProbeExchange(http_status=402, ok=False, detail="payment required"),
+        # What live_agentic_transport returns for an HTTP 200 credit refusal.
+        _inband_refusal_exchange(2, "bad/one"),
+    ],
+    ids=["auth_401", "payment_402", "payment_inband"],
+)
+def test_pool_seen_refusing_takes_no_more_cap_slots(tmp_path, refusal):
+    """Catches cert-fix10: slots spent on pools that already refused auth or payment.
+
+    The refusing pool's second route is skipped without a probe and the cap
+    reaches a later good pool instead.
+    """
+    from verdict.prove_at_rest import is_inband_billing_refusal
+
+    assert is_inband_billing_refusal(INBAND_CREDIT)
+    calls = []
+    specs = [
+        ("bad/one", 1, 200_000, True),
+        ("bad/two", 1, 200_000, True),
+        ("good/one", 1, 200_000, True),
+    ]
+    report = screen_inventory(
+        tmp_path,
+        calls,
+        specs,
+        transport=_refusing(calls, {"bad/one": refusal, "bad/two": refusal}),
+        max_routes=2,
+        max_per_pool=2,
+    )
+    assert probed(calls) == ["bad/one", "good/one"]
+    assert results(report)["bad/two"] == "skipped_pool_refused"
+    assert results(report)["good/one"] == "pass"
+    assert report["routes_checked"] == 2
+
+
+def test_route_scoped_403_does_not_skip_its_pool(tmp_path):
+    """Catches one model's 403 being read as the whole pool refusing."""
+    calls = []
+    refusal = ProbeExchange(http_status=403, ok=False, detail="model bad/one is not permitted")
+    report = screen_inventory(
+        tmp_path,
+        calls,
+        [("bad/one", 1, 200_000, True), ("bad/two", 1, 200_000, True)],
+        transport=_refusing(calls, {"bad/one": refusal}),
+        max_routes=2,
+        max_per_pool=2,
+    )
+    assert probed(calls) == ["bad/one", "bad/two"]
+    assert results(report)["bad/two"] == "pass"

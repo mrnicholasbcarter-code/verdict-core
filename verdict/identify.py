@@ -21,6 +21,9 @@ from verdict.omniroute_evidence import OmniRouteEvidence, fetch_omniroute_eviden
 from verdict.orchestration.credential_pools import canonical_route, pool_of
 from verdict.orchestration.eligibility import _capability_facts, _capability_tier
 from verdict.orchestration.health_cache import (
+    CATEGORY_AUTH,
+    CATEGORY_PAYMENT,
+    CATEGORY_PERMISSION,
     STATE_NEGATIVE,
     USABLE_SECONDS,
     HealthCache,
@@ -322,6 +325,10 @@ def screen_models(
             "stopped_reason": stopped_reason,
         }
     pool_counts: Counter[str] = Counter()
+    # Pools this screen saw refuse on account grounds (auth or payment, HTTP
+    # or in-band). A later route in the same pool would fail the same way, so
+    # it takes no cap slot. Decided on this run's own probe, never on a name.
+    refused_pools: set[str] = set()
 
     def decide(
         route_id: str,
@@ -357,6 +364,8 @@ def screen_models(
             row["result"] = "skipped_fresh"
         elif provider in stopped_providers:
             row["result"] = "skipped_provider_stopped"
+        elif pool in refused_pools:
+            row["result"] = "skipped_pool_refused"
         elif (
             pool_of(route_id) in _cooled_pools(cache, now)
             or cache.cooldown_for(f"provider:{provider}", now) is not None
@@ -391,6 +400,8 @@ def screen_models(
             passed += int(row["result"] == "pass")
             if row["result"] == "rate_limited":
                 stopped_providers.add(provider)
+            if _account_refusal(row, cache.entry(route_id)):
+                refused_pools.add(pool)
         return True
 
     deferred: list[tuple[str, str, str, tuple[str, str], dict[str, Any]]] = []
@@ -469,6 +480,23 @@ def screen_models(
         "model_requests_sent": requests,
         "stopped_reason": stopped_reason,
     }
+
+
+def _account_refusal(row: Mapping[str, Any], entry: HealthEntry | None) -> bool:
+    """This probe was refused on account grounds, so its pool would refuse again.
+
+    Payment (HTTP 402 or an in-band credit refusal) always counts. Auth counts
+    unless the cache scoped it to the route (a 403 for one model only).
+    """
+    if not row.get("turns_sent") or entry is None or entry.healthy:
+        return False
+    if entry.category == CATEGORY_PAYMENT or entry.http_status == 402:
+        return True
+    auth = row.get("result") == "auth_failed" or entry.category in {
+        CATEGORY_AUTH,
+        CATEGORY_PERMISSION,
+    }
+    return auth and entry.failure_scope != "route"
 
 
 def _screen_options(

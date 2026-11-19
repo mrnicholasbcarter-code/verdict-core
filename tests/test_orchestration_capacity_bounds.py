@@ -37,7 +37,7 @@ def test_invalid_bounds_rejected(option, value):
 @pytest.mark.parametrize("capacity", [(), ("free", "subscription")])
 def test_capacity_is_canonical_narrowing_before_probe(tmp_path, monkeypatch, capacity):
     rows = [
-        {"id": "free/model", "owned_by": "free", "pricing": {"input": 0}},
+        {"id": "free/model", "owned_by": "free", "pricing": {"input": 0, "output": 0}},
         {"id": "sub/model", "owned_by": "sub", "pricing": {"input": 1}},
         {"id": "paid/model", "owned_by": "paid", "pricing": {"input": 1}},
         {"id": "unknown/model", "owned_by": "unknown"},
@@ -73,8 +73,9 @@ def test_capacity_is_canonical_narrowing_before_probe(tmp_path, monkeypatch, cap
     assert probes == []
     assert selector.admitted is not None
     if capacity:
-        assert selector.admitted.ids == {"free/model", "sub/model", "unknown/model"}
-        for route in ("paid/model",):
+        # No price and no free flag is UNKNOWN, never free (capacity-from-facts).
+        assert selector.admitted.ids == {"free/model", "sub/model"}
+        for route in ("paid/model", "unknown/model"):
             assert selector.admitted.first_failure(route).reason == "outside_capacity_filter"
             assert not selector.admitted.launchable(route)
     else:
