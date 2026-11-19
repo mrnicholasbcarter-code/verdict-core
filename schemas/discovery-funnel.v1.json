@@ -1,0 +1,107 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "verdict.discovery.funnel/v1",
+  "title": "Verdict discovery funnel report",
+  "description": "Read-only model-discovery funnel from catalog → selection (plan 20261119-model-discovery S0).",
+  "type": "object",
+  "required": ["schema", "generated_at", "stages", "caps"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "verdict.discovery.funnel/v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sources": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "caps": {
+      "type": "object",
+      "description": "Named cap constants and their values.",
+      "additionalProperties": {"type": "integer"}
+    },
+    "stages": {
+      "type": "object",
+      "required": [
+        "listed",
+        "free_by_fact",
+        "free_by_rule",
+        "probed",
+        "answered",
+        "tool_ok",
+        "admitted",
+        "considered",
+        "selected"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "listed": {"$ref": "#/definitions/countStage"},
+        "free_by_fact": {"$ref": "#/definitions/countStage"},
+        "free_by_rule": {
+          "type": "object",
+          "description": "Count of free routes per classifier-reason string.",
+          "additionalProperties": {"type": "integer"}
+        },
+        "probed": {"$ref": "#/definitions/countStage"},
+        "answered": {"$ref": "#/definitions/countStage"},
+        "tool_ok": {"$ref": "#/definitions/countStage"},
+        "admitted": {"$ref": "#/definitions/countStage"},
+        "considered": {
+          "type": "object",
+          "description": "Per-selection cap: count is always null here.",
+          "required": ["count", "cap", "cap_value", "note"],
+          "additionalProperties": false,
+          "properties": {
+            "count": {"type": "null"},
+            "cap": {"type": "string"},
+            "cap_value": {"type": ["integer", "null"]},
+            "note": {"type": "string"},
+            "admits_from": {"type": ["integer", "null"]}
+          }
+        },
+        "selected": {
+          "type": "object",
+          "required": ["count", "note"],
+          "additionalProperties": false,
+          "properties": {
+            "count": {"type": "null"},
+            "note": {"type": "string"}
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "countStage": {
+      "type": "object",
+      "required": ["count"],
+      "additionalProperties": true,
+      "properties": {
+        "count": {
+          "type": ["integer", "null"],
+          "description": "Route count at this stage, or null when evidence is absent."
+        },
+        "cap": {
+          "type": ["string", "null"],
+          "description": "Named cap constant that limits this stage."
+        },
+        "drops": {
+          "type": "object",
+          "description": "Named reasons for drops at this stage.",
+          "additionalProperties": {"type": "integer"}
+        },
+        "raw": {
+          "type": ["integer", "null"],
+          "description": "Raw count before this stage's filter (context for drops)."
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

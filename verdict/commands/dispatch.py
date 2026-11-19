@@ -1040,6 +1040,19 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         )
     elif args.command == "pr-watch":
         _cmd_pr_watch(parser, args)
+    elif args.command == "discovery":
+        if args.discovery_command == "funnel":
+            import json as _json
+
+            from verdict.discovery_funnel import render_plain, run_funnel
+
+            funnel = run_funnel()
+            if getattr(args, "output_json", False):
+                print(_json.dumps(funnel, indent=2, sort_keys=True))
+            else:
+                print(render_plain(funnel))
+        else:
+            parser.print_help()
     elif args.command == "openspec":
         # OpenSpec lifecycle commands use func-based dispatch
         if hasattr(args, "func"):
