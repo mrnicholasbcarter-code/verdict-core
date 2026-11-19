@@ -58,7 +58,7 @@ PREFLIGHT_MAX_PER_POOL = 1
 PREFLIGHT_MIN_PLANNER_POOLS = 3
 # The chaos run's private state, beside the run directories and outside the
 # uploaded evidence: its state file and its own copy of the health cache.
-CHAOS_STATE_DIR = "chaos-state"
+CHAOS_STATE_DIR = "verdict-certification-chaos"
 
 # Fixed, credential-free substrings of run_finished reasons, first match wins.
 # The artifact only ever carries the enum, never the reason text.

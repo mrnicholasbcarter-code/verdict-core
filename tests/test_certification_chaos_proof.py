@@ -63,7 +63,17 @@ def _agentic_passes(path: Path) -> set[str]:
     return {route for route, entry in HealthCache(path).routes().items() if entry.agentic_ok}
 
 
-def _write_proof(home: Path) -> None:
+def _cache_a_child_would_use(env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> Path:
+    """``default_cache_path()`` as a child started with ``env`` resolves it."""
+    with monkeypatch.context() as patch:
+        for name in list(os.environ):
+            patch.delenv(name)
+        for name, value in env.items():
+            patch.setenv(name, value)
+        return default_cache_path()
+
+
+def _write_proof(home: Path, cache_path: Path | None = None) -> None:
     """What the preflight leaves: agentic passes in the cache, and a passport store."""
     now = datetime.now(timezone.utc)
 
@@ -82,7 +92,7 @@ def _write_proof(home: Path) -> None:
             )
 
     home.mkdir(parents=True, exist_ok=True)
-    HealthCache(home / "health-cache.json").merge_and_save(record)
+    HealthCache(cache_path or home / "health-cache.json").merge_and_save(record)
     (home / "prove-at-rest").mkdir(exist_ok=True)
     (home / "prove-at-rest" / "state.json").write_bytes(PASSPORTS)
 
@@ -207,7 +217,11 @@ class _Rehearsal:
     def _child(self, argv: list[str], **kwargs: Any) -> Any:
         env = dict(kwargs.get("env") or {})
         if "identify" in argv:
-            _write_proof(Path(env["VERDICT_HOME"]))
+            # Written where `identify --screen` writes: default_cache_path() under
+            # the child's environment. The script must look for its source there.
+            written = _cache_a_child_would_use(env, self.monkeypatch)
+            assert written == self.shared_cache.resolve()
+            _write_proof(Path(env["VERDICT_HOME"]), written)
             self.digests["after_preflight"] = _digest(self.shared_cache)
             return subprocess.CompletedProcess(argv, 0, json.dumps(SCREEN).encode(), b"")
         if "orchestrate" not in argv:
@@ -215,6 +229,8 @@ class _Rehearsal:
         name = "chaos" if "--inject" in argv else "clean"
         self.calls[name] = {"argv": list(argv), "env": env}
         if name == "clean":
+            # The clean run uses the cache the preflight wrote.
+            assert _cache_a_child_would_use(env, self.monkeypatch) == self.shared_cache.resolve()
             self.before_chaos()
             self.digests["before_chaos"] = _digest(self.shared_cache)
             self.source_at_chaos_start = (
