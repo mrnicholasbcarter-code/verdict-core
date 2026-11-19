@@ -29,7 +29,7 @@
 | C-021 | "Independent review requires ocr on PATH" | README.md:213 | proposed | verdict/orchestration/review.py |
 | C-022 | "Receipt integrity covers event logs, not LLM or OCR output" | README.md:214 | proposed | verdict/receipt_verifier.py, docs/THREAT_MODEL_RECEIPTS.md |
 | C-023 | "No static fallback chains; OpenTelemetry is optional" | README.md:216 | proposed | verdict/orchestration/recovery.py, verdict/tracing.py |
-| C-024 | "Version 0.5.0, active development" | README.md:217 |  proposed  | pyproject.toml, README.md |
+| C-024 | "Version 1.0.0, active development" | README.md:217 |  proposed  | pyproject.toml, README.md |
 | C-025 | "pip install verdict-core" | README.md:226 | proposed | pyproject.toml, .github/workflows/fresh-install.yml |
 | C-026 | "verdict detect --json" | README.md:237 | proposed | verdict/commands/parsers_models.py |
 | C-027 | "verdict probe task-coding --base-url ... --allow-live-probe --json" | README.md:238 | proposed | verdict/commands/parsers_models.py |

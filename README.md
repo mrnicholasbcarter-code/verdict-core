@@ -4,14 +4,19 @@
 
 **A control plane for coding agents that shows its work.** <!-- claim:C-001 -->
 
+Verdict decides which model may run each piece of a coding task, checks the work, has a different model review it, and writes a receipt you can verify.<br>
 Model admission, bounded recovery, a separate review route and receipts you can verify, around the coding agent you already use. <!-- claim:C-002 -->
 
 [![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
 [![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
 [![coverage gate 70%](https://img.shields.io/badge/coverage%20gate-70%25-blue.svg)](.github/workflows/ci.yml)
-[![version 0.5.0](https://img.shields.io/badge/version-0.5.0-blue.svg)](pyproject.toml)
+[![version 1.0.0](https://img.shields.io/badge/version-1.0.0-blue.svg)](pyproject.toml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+<p align="center"><img src="docs/assets/live-run.svg" alt="Replay of one live verdict orchestrate run (20261119T000727Z): a free worker on antigravity/gemini-3-flash passes verification, open-code-review on a different model family returns PASS, and verdict run-receipt reports integrity OK. Idle time capped at 1.5 s." width="860"></p>
+
+*One live run on the operator's gateway (main d5e88ee8), not a fixture. Idle time capped at 1.5 s. [GIF](docs/assets/live-run.gif) | [asciicast](docs/assets/live-run.cast) | [evidence record](docs/proof/live-run-20261119T000727Z/README.md)*
 
 ### Watch the interface in action
 
@@ -21,9 +26,6 @@ Model admission, bounded recovery, a separate review route and receipts you can 
 Shows the interface and receipt verification, not model performance, savings or release certification.
 Recorded terminal replay at 1×; idle gaps over 1.5 seconds are capped.
 [Recording details and full cast](docs/guides/offline-demo.md#offline-tui-walkthrough) · [Live-run evidence](#proof-from-a-live-run)
-
-<!-- A future live-model recording must include its committed proof bundle and truthful provenance. -->
-<!-- TODO(Train B, badges row 2, gated): "live runs on record" (dynamic JSON from committed receipts) · Codespaces "dev sandbox". -->
 
 [Get started](#try-it-without-api-keys) · [How a run works](#how-it-works) · [Live runs](#proof-from-a-live-run) · [Docs](#documentation)
 
@@ -45,9 +47,10 @@ an admission check cannot be ranked back in.
 
 - [Why Verdict](#why-verdict)
 - [Try it without API keys](#try-it-without-api-keys)
-- [What's new in 0.5.0](#whats-new-in-050)
+- [What's in 1.0](#whats-in-10)
 - [Quick start](#quick-start)
 - [Proof from a live run](#proof-from-a-live-run)
+- [What a receipt proves, and what it does not](#what-a-receipt-proves-and-what-it-does-not)
 - [How it works](#how-it-works)
 - [How Verdict differs](#how-verdict-differs)
 - [What it does](#what-it-does)
@@ -91,16 +94,14 @@ without a persistent install:
 uvx --from verdict-core verdict quickstart --non-interactive --dry-run
 ```
 
-`pip install verdict-core` followed by `verdict demo` is also supported. The [fresh-install workflow](.github/workflows/fresh-install.yml) is configured to check
-`pipx`, `uvx --from verdict-core verdict demo --speed 0`, and the
-integrity-verified `install.sh` on Linux Python 3.12 and 3.13 containers.
-The linked [v0.4.2 run](https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/36956585091)
-and a separate published-package `uvx` quickstart transcript are not retained here, so
-their results are not independently verified from this checkout. The retained
-[fresh-install bundle](docs/proof/fresh-install-0.4.1-2026-09-30/README.md) covers 0.4.1.
-These are offline scripted demonstrations, not live provider runs.
+`pip install verdict-core` followed by `verdict demo` is also supported. Before this release
+was tagged, the 1.0.0 wheel and sdist were installed in a clean virtual environment, and
+`verdict demo` and `verdict quickstart --non-interactive --dry-run` both exited 0. Upgrading
+from 0.4.2 kept an old receipt verifiable. The [fresh-install workflow](.github/workflows/fresh-install.yml)
+checks `pipx`, `uvx` and the integrity-verified `install.sh` in clean Linux Python 3.12 and 3.13
+containers. These are offline scripted demonstrations, not live provider runs.
 
-`verdict demo` ships in `verdict-core` on PyPI (since 0.4.0). From a source checkout, `pip install -e .`
+`verdict demo` ships in `verdict-core` on PyPI (since 0.4.0; the newest version on PyPI is 0.4.2 until 1.0.0 is published). From a source checkout, `pip install -e .`
 gives the same command. <!-- claim:C-009 -->
 
 `verdict demo` is an **offline self-test**: scripted workers, fixture routes and injected
@@ -110,55 +111,25 @@ fixture data. It shows the mechanics. It is not evidence of live behavior. The f
 committed fixture run and the offline recordings are in the
 [offline demo guide](docs/guides/offline-demo.md). <!-- claim:C-029 -->
 
-## What's new in 0.5.0
+## What's in 1.0
 
-Verdict 0.5.0 adds new ways to inspect model evidence, refresh it safely, and set up a supported coding agent.
+Verdict 1.0 is the first complete version: goal to plan, admitted models, parallel workers,
+bounded recovery, independent review and a verifiable receipt, from one command. Besides the
+loop described in [How it works](#how-it-works), it includes:
 
-**See which models are verified, stale or failing.**
+| Area | What you get |
+|---|---|
+| Model evidence | `verdict eligibility --verified` shows each listed model's evidence-backed status (VERIFIED, STALE, FAILED, UNAVAILABLE, UNVERIFIED, INVENTORY_ONLY, EXCLUDED) with the recorded reason; `/eligibility` in the TUI prompt. <!-- claim:C-010 --> |
+| Safe refresh | `/eligibility refresh` shows a bounded request plan grouped by capacity class (FREE, SUBSCRIPTION, UNKNOWN, METERED) and asks about each group. UNKNOWN and METERED default to no and show an estimated spend. From a script, `verdict eligibility --verified --refresh` probes only FREE and SUBSCRIPTION routes unless you add `--include-unknown` or `--allow-metered`. <!-- claim:C-011 --> |
+| Prime Agent setup | `verdict harness prime select` previews the change to `~/.prime/agent/settings.json`, asks you to confirm and backs the file up; `verdict harness prime restore` puts the backup back. <!-- claim:C-012 --> |
+| Claude Code report | `/bootstrap claude` is read-only: it tells you what would work if Claude Code pointed at Verdict, and changes nothing. <!-- claim:C-013 --> |
+| Prompt completion | Commands, flags, model ids and run ids complete as you type; see [docs/guides/tui-completion.md](docs/guides/tui-completion.md). <!-- claim:C-014 --> |
+| Payment failures | A reply that says the account has no credits is a payment failure, even with HTTP 200, and routes billed against prepaid credit are not assumed free. |
+| Stalled workers | A worker that prints nothing for `VERDICT_WORKER_IDLE_SECONDS` (default 300) is killed as `stalled` and its node goes to another admitted route. |
+| Run metrics | `verdict metrics` reports accepted tasks, dollars (unknown when any attempt has no cost) and capacity shares from verified receipts. |
+| Route re-checks | `verdict prove-at-rest once --reprobe ROUTE` re-checks a free route even when its proof is fresh. |
 
-```bash
-verdict eligibility --verified
-```
-
-Shows each listed model's evidence-backed status (VERIFIED, STALE, FAILED, UNAVAILABLE,
-UNVERIFIED, INVENTORY_ONLY, EXCLUDED) with the recorded reason. In the TUI prompt, the same
-view is `/eligibility`. <!-- claim:C-010 -->
-
-**Refresh that list safely, with a cost cap and your confirmation.**
-
-```text
-/eligibility refresh
-```
-
-For a manual refresh, Verdict shows a bounded request plan grouped by capacity class (FREE,
-SUBSCRIPTION, UNKNOWN, METERED) and asks about each group separately, or "free only". UNKNOWN
-and METERED routes can cost money: they default to no and show an estimated spend. From a
-script, `verdict eligibility --verified --refresh` probes only FREE and SUBSCRIPTION routes
-unless you add `--include-unknown` or `--allow-metered`. Automatic refresh only touches free
-or already-paid routes. <!-- claim:C-011 -->
-
-**Pick your Prime Agent models with a preview and a one-step undo.**
-
-```bash
-verdict harness prime select
-verdict harness prime restore
-```
-
-`select` previews the change to `~/.prime/agent/settings.json` (your enabled-model list), asks
-you to confirm, backs the file up, then applies it; `restore` puts the backup back if its safety
-checks pass. In the TUI prompt: `/bootstrap prime`. <!-- claim:C-012 -->
-
-**An honest Claude Code compatibility report.**
-
-```text
-/bootstrap claude
-```
-
-Read-only: it tells you what would work if Claude Code pointed at Verdict, and changes nothing. <!-- claim:C-013 -->
-
-**Smart Tab-completion in the prompt.** Commands, flags, model ids and run ids all complete as
-you type — see [docs/guides/tui-completion.md](docs/guides/tui-completion.md). <!-- claim:C-014 -->
-
+The full list is in the [changelog](CHANGELOG.md).
 
 ## Quick start
 
@@ -194,9 +165,42 @@ uv sync --extra dev
 uv run python -m verdict quickstart --non-interactive --dry-run
 ```
 
+### Verify a receipt yourself
+
+From a clone of this repository, check a tracked live-run receipt, then a copy with one byte
+added to its event log:
+
+```bash
+git clone https://github.com/mrnicholasbcarter-code/verdict-core && cd verdict-core
+verdict run-receipt docs/proof/dogfood-bod-225-live-2026-09-29
+cp -r docs/proof/dogfood-bod-225-live-2026-09-29 /tmp/tampered && printf ' ' >> /tmp/tampered/events.jsonl
+verdict run-receipt /tmp/tampered
+```
+
+```text
+COMPLETE: all implement/integrate nodes validated, barrier ok, review PASS
+integrity: OK (events digest verified)
+...
+COMPLETE: all implement/integrate nodes validated, barrier ok, review PASS
+integrity: events_digest mismatch: events.jsonl changed after receipt was written
+```
+
+The first command exits 0. The second exits 1 and names the digest mismatch.
+
 ## Proof from a live run
 
-The [`docs/proof/dogfood-bod-225-live-2026-09-29/`](docs/proof/dogfood-bod-225-live-2026-09-29)
+**Latest live run.** The recording at the top is one `verdict orchestrate` run from main
+`d5e88ee8` on 2026-11-19: one node on a free route, review by `open-code-review` on a route
+from another model family, receipt integrity OK. Its
+[evidence record](docs/proof/live-run-20261119T000727Z/README.md) quotes the run's digests and
+`verdict run-receipt` output. It is an evidence record, not a verifiable bundle: the raw event
+log is kept privately because it holds host paths.
+
+**Verdict building Verdict.** [PR #1115](https://github.com/mrnicholasbcarter-code/verdict-core/pull/1115)
+was produced by a `verdict orchestrate` run (20261118T101448Z) on free workers and merged into
+main after review.
+
+**A verifiable live bundle.** The [`docs/proof/dogfood-bod-225-live-2026-09-29/`](docs/proof/dogfood-bod-225-live-2026-09-29)
 directory contains a live `verdict orchestrate` run for a real Linear story (BOD-225), with
 real providers reached through [OmniRoute](#how-it-works) (a local OpenAI-compatible gateway that
 lists the available models and runs model calls). It is **not** a fixture.
@@ -230,13 +234,21 @@ which is also the controller-family model used by the session's merge captain (n
 workers). It is a single run. The VM reboot and its cause are operator-reported; the
 retained events prove resume and validated-node reuse, not the reboot cause.
 
-Verify locally:
+Verify locally (from a clone; see [Verify a receipt yourself](#verify-a-receipt-yourself)):
 
 ```bash
-verdict run-receipt --runs-dir . docs/proof/dogfood-bod-225-live-2026-09-29
+verdict run-receipt docs/proof/dogfood-bod-225-live-2026-09-29
 ```
 
-See the full proof bundle in [`docs/proof/dogfood-bod-225-live-2026-09-29/`](docs/proof/dogfood-bod-225-live-2026-09-29/).
+## What a receipt proves, and what it does not
+
+| A verified receipt proves | It does not prove |
+|---|---|
+| The event log is byte-for-byte the one the receipt was written from (SHA-256 digest). | That nobody replaced both the log and the receipt. Neither is signed or externally anchored. |
+| Every field of the receipt can be rebuilt from that log: nodes, attempts, routes, failures, reassignments, review status. | That the model output or the code is correct. Each node's own check and the review decide that. |
+| A reviewer on a route that did not implement the final work recorded PASS. | That the review was thorough. Raw `ocr` output must show non-skipped coverage to count as semantic review. |
+| Which routes were tried, refused or cooled down, and why. | The capacity class or cost a provider actually billed. |
+
 
 ## How it works
 
@@ -685,9 +697,9 @@ Planning, controller and review tasks use subscription, then free, then metered,
 Implementation workers use free, then subscription, then metered, then unknown, but a free route
 qualifies as a worker only with a fresh agentic probe PASS in the health cache, and unknown
 capacity needs an explicit opt-in ([`:596-625`](verdict/orchestration/eligibility.py#L596-L625);
-[health cache guide](docs/guides/health-cache.md)). `verdict orchestrate` builds its ladder without a
-health cache ([`eligibility_report.py:158`](verdict/orchestration/eligibility_report.py#L158)), so
-`verdict orchestrate` admits no free route as a worker yet. Within a class the ladder ranks by
+[health cache guide](docs/guides/health-cache.md)). `verdict orchestrate` reads that health cache
+([`verdict/orchestration/eligibility_report.py`](verdict/orchestration/eligibility_report.py)); with
+`--state-file` it reads the `health-cache.json` next to the state file. Within a class the ladder ranks by
 capability slack (tiers above the task floor), price, provider preference, load and task fit
 ([`:706`](verdict/orchestration/eligibility.py#L706)). Capacity class comes from account evidence,
 never from a model name. Probes go round-robin across providers within a class, so one failing provider
@@ -763,9 +775,7 @@ The demo run records one `SHADOW` signal from a fixture provider in its receipt.
 
 These are not done at this commit. They are listed so nothing above is read as covering them.
 
-The items below and the rest of the open issue backlog are planned after the alpha.
-Open work is tracked in Linear under `phase:post-alpha`; alpha-blocking work is tracked
-under `phase:alpha-gate`.
+The items below and the rest of the open issue backlog are planned after 1.0.
 
 - **Cross-provider fencing on the first worker failure.** Today a failure cools down only the failed route or its own provider. Other providers stay eligible until they fail themselves.
 - **A single retry authority.** Node recovery, the relay and the reviewer each keep their own bounded retry loop today.
@@ -808,7 +818,10 @@ that they are **NOT certification-gated**; no CERTIFIED status is implied.
 pip install verdict-core
 ``` <!-- claim:C-025 -->
 
-Python 3.10+. The offline proof path above needs no API key or gateway.
+Python 3.10, 3.11, 3.12 and 3.13, tested in CI on Linux (Ubuntu). `install.sh` is also
+checked in clean Debian-based Python 3.12 and 3.13 containers. macOS and Windows are not
+tested in CI. The offline proof path above needs no API key or gateway. To run
+`verdict serve`, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 Optional Linux/macOS installer (review the script first):
 
@@ -960,7 +973,7 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
   Neither the receipt nor the log is signed or externally anchored against replacing both files. <!-- claim:C-022 -->
 - **No static fallback chains (retries stay inside the admitted set); OpenTelemetry is optional (`verdict-core[tracing]`).** See
   [How Verdict differs](#how-verdict-differs). <!-- claim:C-023 -->
-- **Version 0.5.0, active development.** Contracts, schemas, and receipt formats are
+- **Version 1.0.0, active development.** Contracts, schemas, and receipt formats are
   versioned. Breaking changes require an ADR. <!-- claim:C-024 -->
 
 ## License

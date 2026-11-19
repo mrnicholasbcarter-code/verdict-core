@@ -95,6 +95,10 @@ def test_readme_walkthrough_is_visible_and_truthfully_labelled() -> None:
         assert local.is_file(), f"README image missing: {target}"
         if target == "docs/assets/demo-tui.svg":
             assert local.stat().st_size <= MAX_ASSET_BYTES
+        elif target == "docs/assets/live-run.svg":
+            # The live recording must point at its evidence record next to it.
+            assert "docs/proof/live-run-20261119T000727Z/README.md" in text
+            assert local.stat().st_size <= MAX_ASSET_BYTES
         else:
             assert target.startswith("docs/proof/") and "live" in target
 
