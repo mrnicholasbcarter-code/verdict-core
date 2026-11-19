@@ -15,7 +15,7 @@ Fixture route names such as `alpha/claude-a`, `beta/gpt-b`, `gamma/gemini-c`,
 - [`verdict demo` trace](#verdict-demo-trace)
 - [Committed fixture run](#committed-fixture-run)
 - [Offline TUI walkthrough](#offline-tui-walkthrough)
-- [Offline 0.5.0 feature recording](#offline-050-feature-recording)
+- [Offline verified-model recording](#offline-verified-model-recording)
 - [Fixture charts](#fixture-charts)
 - [Deterministic mock and offline failover](#deterministic-mock-and-offline-failover)
 - [Regenerating the demo assets](#regenerating-the-demo-assets)
@@ -139,7 +139,7 @@ Test: [`tests/test_readme_assets.py`](../../tests/test_readme_assets.py).
 
 <sub>Offline scenario, no model calls: scripted workers, a scripted reviewer, and an injected rate limit, replayed at 1x from the recorded terminal timing (gaps over 1.5 s capped). It opens on the Verdict home, plays the cockpit to COMPLETE, then runs `verdict run-receipt` on the run (integrity OK, exit 0) and on a copy with one event byte changed (digest mismatch, exit 1). Recorded with `python scripts/record_tui_demo.py --scenario --speed 1`. The live-model evidence is the [proof bundle above](../../README.md#proof-from-a-live-run); replay a real run yourself with `verdict watch docs/proof/live-controller-run --replay --speed 1`. Still frame: [`docs/assets/demo-tui-poster.svg`](../assets/demo-tui-poster.svg).</sub>
 
-## Offline 0.5.0 feature recording
+## Offline verified-model recording
 
 <picture><source media="(prefers-reduced-motion: reduce)" srcset="../assets/verified-models-poster.svg"><img src="../assets/verified-models.svg" alt="Terminal recording: the verified-model eligibility view with mixed VERIFIED/STALE/FAILED statuses, Tab-completion of /bootstrap prime, a Prime picker preview answered N, and an honest /bootstrap claude compatibility report" width="860"></picture>
 

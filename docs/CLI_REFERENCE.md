@@ -900,11 +900,10 @@ Empty eligibility is reported in the receipt / command output and typically exit
 non-zero via the general error path rather than a dedicated code.
 
 
-### Removed integrations and runtime compatibility
+### Documentation preflight
 
-Ruflo and RuVector integrations are removed. Documentation preflight inventories
-only the current project's authoritative docs. It does not require external
-checkouts, root/ref settings, or network access for those removed products.
+Documentation preflight inventories only the current project's authoritative
+docs. It does not require external checkouts, root/ref settings, or network access.
 Use `verdict memory docs --fix` or `verdict doctor --fix` to ingest local docs.
 A fresh memory database still needs ingestion; real missing/stale docs fail closed.
 

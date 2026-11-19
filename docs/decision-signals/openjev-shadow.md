@@ -7,7 +7,7 @@ Verdict can send a scrubbed, truncated description of each task to
 probability signals — *complexity*, *frontier_worthy*, *security_sensitive*,
 and four others — before the planning step runs.
 
-Two opt-in modes are supported in v0.3.0:
+Two opt-in modes are supported:
 
 | Mode | When signals are collected | Effect on routing |
 |------|---------------------------|-------------------|

@@ -95,6 +95,10 @@ def test_readme_walkthrough_is_visible_and_truthfully_labelled() -> None:
         assert local.is_file(), f"README image missing: {target}"
         if target == "docs/assets/demo-tui.svg":
             assert local.stat().st_size <= MAX_ASSET_BYTES
+        elif target == "docs/assets/live-run.svg":
+            # The live recording must point at its evidence record next to it.
+            assert "docs/proof/live-run-20261119T000727Z/README.md" in text
+            assert local.stat().st_size <= MAX_ASSET_BYTES
         else:
             assert target.startswith("docs/proof/") and "live" in target
 
@@ -251,7 +255,7 @@ def test_animated_first_frame_is_not_blank() -> None:
 
 
 def test_verified_models_cast_is_valid_asciinema_v2() -> None:
-    """Offline 0.5.0 feature demo: fixture evidence only, no live calls."""
+    """Offline verified-model demo: fixture evidence only, no live calls."""
     lines = (ASSETS / "verified-models.cast").read_text(encoding="utf-8").splitlines()
     header = json.loads(lines[0])
     assert header["version"] == 2

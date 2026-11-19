@@ -2,7 +2,8 @@
 
 This index lists every benchmark in this repository and what it does and does not show.
 
-**No cost saving is claimed yet.** The only live cost run found no routing saving (see below).
+**No cost saving is claimed yet.** The 2026-09-28 live cost check found no routing saving (see below),
+and one paired usage run on 2026-11-19 did not support a claim (see [Paired usage bench](#paired-usage-bench-method-one-run-no-claim-supported)).
 A savings claim returns only with paired live evidence on held-out tasks.
 
 | Benchmark | Kind | Result | Details |
@@ -53,10 +54,13 @@ run with `VERDICT_LIVE_SMOKE=1` (opt-in, spends real capacity).</sub>
 Observed data, not a fixture. It is kept to show a negative result, not a saving.
 That run used an earlier version of the script; the method below replaces it.
 
-## Paired usage bench (method; no result yet)
+## Paired usage bench (method; one run, no claim supported)
 
-**No saving is claimed yet.** This section describes how the next live run is measured.
+**No saving is claimed yet.** This section describes how a live run is measured.
 It holds no result and no number.
+
+One paired usage run on 2026-11-19 did not support a claim: the Verdict arm completed fewer
+tasks than the baseline, so the bench refused it. Its evidence is not published yet.
 
 [`scripts/live_savings_bench.py`](../../scripts/live_savings_bench.py) runs every task in
 `benchmarks/fixtures/live_savings/tasks.json` in two arms:

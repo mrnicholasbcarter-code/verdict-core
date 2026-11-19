@@ -279,4 +279,3 @@ The Python `ExecutionEnvelope` dataclass is now the single source of truth, and 
 
 - Node adoption of canonical fixtures (separate story)
 - Cockpit adoption of canonical fixtures (separate story)
-- Earlier Ruflo references removed; Core → Node/Cockpit is the current model

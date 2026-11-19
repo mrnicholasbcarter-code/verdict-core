@@ -47,7 +47,7 @@ exclude = ["verdict/client-sdk"]
 
 [project]
 name = "verdict-core"
-version = "0.5.0"
+version = "1.0.0"
 description = "Fail-closed LLM routing control plane: cheapest qualified model, named drop reasons, receipts."
 # <!-- claim:C-107 -->
 readme = "README.md"
