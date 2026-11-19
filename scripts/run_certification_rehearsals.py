@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from verdict.orchestration.contracts import (
     PLANNER_REQUIRED_CAPABILITIES,
     OrchestrationError,
 )
+from verdict.orchestration.health_cache import ENV_CACHE_PATH, HealthCache, agentic_capability
 from verdict.orchestration.provider_catalog import backend_pool
 from verdict.orchestration.receipt import verify_run_receipt
 from verdict.orchestration.runtime import REDACT_GATEWAY_ORIGIN_ENV
@@ -54,6 +56,9 @@ PREFLIGHT_MAX_PER_POOL = 1
 # excludes the implementers' routes and aliased pools, so review needs a third.
 # The chaos rehearsal may need more; that has not been measured.
 PREFLIGHT_MIN_PLANNER_POOLS = 3
+# The chaos run's private state, beside the run directories and outside the
+# uploaded evidence: its state file and its own copy of the health cache.
+CHAOS_STATE_DIR = "chaos-state"
 
 # Fixed, credential-free substrings of run_finished reasons, first match wins.
 # The artifact only ever carries the enum, never the reason text.
@@ -254,6 +259,46 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict[str, Any]:
     return summary
 
 
+def _shared_health_cache(env: dict[str, str]) -> Path:
+    """The cache the preflight and the clean run use: ``default_cache_path()`` over ``env``."""
+    configured = (env.get(ENV_CACHE_PATH) or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path(env["VERDICT_HOME"]) / "health-cache.json"
+
+
+def _seed_chaos_state(root: Path, env: dict[str, str]) -> tuple[Path, Path]:
+    """Give the chaos run a private byte copy of the shared proof; fail closed without one.
+
+    Returns ``(state_file, health_cache)`` in a directory this script owns. An
+    ``--inject`` run reads ``health-cache.json`` beside its state file, never the
+    shared cache, so without the copy it has no agentic proof and blocks at
+    planning. The copy is taken when chaos is about to start, so it also holds
+    what the clean run really observed (cooldowns, failed routes). Its bytes are
+    written unchanged: proof is neither re-stamped nor extended. Injected faults
+    land in the copy, never in the cache the preflight and the clean run used.
+    """
+    refused = "Chaos rehearsal cannot start: the preflight health cache "
+    try:
+        body = _shared_health_cache(env).read_bytes()
+    except OSError as exc:
+        raise RehearsalConfigurationError(refused + "is missing or unreadable") from exc
+    state_dir = root / CHAOS_STATE_DIR
+    state_dir.mkdir(exist_ok=False)
+    cache = state_dir / "health-cache.json"
+    with os.fdopen(os.open(cache, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+        stream.write(body)
+    # Judge the copy with the product's own parser and proof TTL, at this moment.
+    now = datetime.now(timezone.utc)
+    try:
+        entries = HealthCache(cache).routes().values()
+    except ValueError as exc:  # HealthCacheError: not a valid health cache
+        raise RehearsalConfigurationError(refused + "is not a valid health cache") from exc
+    if not any(agentic_capability(entry, now)["qualified"] for entry in entries):
+        raise RehearsalConfigurationError(refused + "holds no fresh agentic proof")
+    return state_dir / "chaos-health.json", cache
+
+
 def run() -> None:
     root = Path(os.environ["RUNNER_TEMP"])
     snapshot_path = _connections_snapshot(root)
@@ -324,9 +369,17 @@ def run() -> None:
             "1500",
             "--json",
         ]
+        run_env = env
         if name == "chaos":
+            state_file, chaos_cache = _seed_chaos_state(root, env)
+            # Every health-cache reader in the chaos process (the selector beside
+            # --state-file, and dispatch permits through VERDICT_HEALTH_CACHE)
+            # resolves to the one private copy.
+            run_env = {**env, ENV_CACHE_PATH: str(chaos_cache)}
             command.extend(
                 [
+                    "--state-file",
+                    str(state_file),
                     "--inject",
                     "#1=quota",
                     "--inject",
@@ -335,7 +388,7 @@ def run() -> None:
                     "worker#1=rate_limit",
                 ]
             )
-        result = subprocess.run(command, env=env, capture_output=True, timeout=1800)
+        result = subprocess.run(command, env=run_env, capture_output=True, timeout=1800)
         if result.returncode:
             run_finished_outcome = None
             run_finished_reason = "unclassified"

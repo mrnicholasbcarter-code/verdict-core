@@ -260,8 +260,13 @@ def test_chaos_resolves_one_private_cache_and_never_writes_the_shared_one(
     caches = {chaos["selector_cache"], chaos["permit_cache"], chaos["refresh_cache"]}
     assert shared not in caches
     assert len(caches) == 1  # selector, dispatch permits and refresh agree on one file
-    assert rehearsal.shared_home.resolve() not in chaos["passport_store"].parents
+    assert chaos["selector_cache"] == chaos["ladder_state"].parent / "health-cache.json"
     assert rehearsal.shared_home.resolve() not in chaos["ladder_state"].parents
+    # Deliberately shared: dispatch permits need the passports the preflight and
+    # the live confirmations wrote, and an injected terminal never reaches that store.
+    assert (
+        chaos["passport_store"] == rehearsal.shared_home.resolve() / "prove-at-rest" / "state.json"
+    )
     # The simulated injected writes went somewhere, and not into the shared files.
     assert json.loads(chaos["ladder_state"].read_text())["cooldowns"]
     assert rehearsal.digests["after_chaos"] == rehearsal.digests["before_chaos"]
@@ -365,7 +370,15 @@ def test_chaos_fails_closed_without_usable_proof(rehearsal: _Rehearsal, damage: 
     rehearsal.before_chaos = damage_shared_cache
     with pytest.raises(rehearsal.script.RehearsalConfigurationError) as error:
         rehearsal.script.run()
-    assert "Chaos rehearsal cannot start" in str(error.value)
+    assert (
+        str(error.value)
+        == "Chaos rehearsal cannot start: the preflight health cache "
+        + {
+            "missing": "is missing or unreadable",
+            "unreadable": "is not a valid health cache",
+            "no_proof": "holds no fresh agentic proof",
+        }[damage]
+    )
     assert "chaos" not in rehearsal.calls
     assert not (rehearsal.root / "runs-chaos").exists()
     assert not (rehearsal.root / "attested-rehearsals" / "chaos").exists()
