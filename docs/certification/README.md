@@ -308,10 +308,20 @@ the verdict-core root; replace paths and goals with real values.
    and a scoped gateway key are prerequisites; this feature does not create them.
 2. The job checks out the exact event SHA and syncs frozen dependencies. It builds
    two isolated fixture repositories. It uses direct-gateway workers and a pinned,
-   SHA256-checked OCR binary. All model selection is narrowed to `free,subscription`
+   SHA256-checked OCR binary. All model selection is narrowed to `free`
    in canonical admission. Workers have four attempts per node, 300-second attempt
    timeouts, and a 1500-second run deadline. An outer 1800-second timeout bounds each
    run. Chaos injects planning quota/no-final-answer and worker rate-limit faults.
+   Before either run, a bounded FREE-only preflight
+   (`verdict identify --screen --allow-live-probe --capacity free --max-per-provider 2
+   --max-routes 8 --max-capability-tier 2`) mints fresh agentic proof in the empty
+   `VERDICT_HOME`. The tier ceiling, tools and 100k-context floor are the frontier
+   planner's own constants. The rehearsal stops before orchestration unless at least
+   one pass meets that floor ("no planner-eligible FREE routes"). On failure,
+   `certification-failure.json` holds only closed enums (`run_finished_reason`:
+   `planning_none_eligible`, `gateway_auth`, `gateway_discovery`, `operator_policy`,
+   `harness_inventory_unavailable`, `startup`, `unclassified`) and the preflight
+   counts `routes_checked`, `passed`, `planner_eligible_passed` and `metadata_error`.
 3. Both receipts must be `COMPLETE`, pass `verify_run_receipt`, and record the exact
    checkout SHA. The workflow signs each receipt with `actions/attest-build-provenance`.
    It uploads run evidence and signed bundles as `certify-rehearsals-<sha>-<run_id>`.

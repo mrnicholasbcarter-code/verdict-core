@@ -39,7 +39,9 @@ class RehearsalConfigurationError(ValueError):
 
 # Bounded preflight configuration: strictly FREE, small explicit bounds.
 PREFLIGHT_MAX_PER_PROVIDER = 2
-PREFLIGHT_MAX_ROUTES = 4
+# 8, not 4: with 4 the local empty-home proof (2026-11-19) planned but then
+# exhausted the worker pool on 3 proven routes.
+PREFLIGHT_MAX_ROUTES = 8
 PREFLIGHT_WALL_SECONDS = 600  # 10 minutes
 
 # Fixed, credential-free substrings of run_finished reasons, first match wins.
