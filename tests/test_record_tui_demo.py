@@ -291,7 +291,7 @@ def test_live_recording_rejects_missing_run_and_bad_speed(tmp_path: Path) -> Non
     out = tmp_path / "x.cast"
     with pytest.raises(rec.CaptureError, match="speed"):
         rec.record_live(tmp_path, 0, out, "2026-11-19", "abc")
-    with pytest.raises(rec.CaptureError, match="events.jsonl"):
+    with pytest.raises(rec.CaptureError, match=r"events\.jsonl"):
         rec.record_live(tmp_path, 0.5, out, "2026-11-19", "abc")
     assert not out.exists()
 
