@@ -179,3 +179,61 @@ def test_cli_invalid_snapshot_exits_nonzero_with_named_error(tmp_path, monkeypat
         identify.cmd_identify(output_json=True)
     assert "Invalid connections snapshot" in str(error.value)
     assert SECRET not in str(error.value)
+
+
+def test_snapshot_connection_health_uses_test_status_not_fabricated():
+    """Catches setting connectionStatus: 'healthy' for every row regardless of testStatus.
+
+    A snapshot-derived live row must reflect the row's own testStatus; it must
+    never label a connection healthy when testStatus is absent or unknown.
+    Rows that pass testStatus should map to healthy; rows that do not should not.
+    """
+    from datetime import timezone
+
+    from verdict.omniroute_evidence import _snapshot_sources
+
+    now = datetime.now(timezone.utc)
+
+    # Row with testStatus "active": maps to "healthy".
+    _, resilience, _, _ = _snapshot_sources(
+        [{"id": "c-active", "provider": "p", "isActive": True, "testStatus": "active"}], now
+    )
+    live_by_id = {r["id"]: r for r in resilience["connections"]}
+    assert live_by_id["c-active"]["connectionStatus"] == "healthy"
+
+    # Row with no testStatus: health is unknown — must NOT be "healthy".
+    _, resilience, _, _ = _snapshot_sources(
+        [{"id": "c-unknown", "provider": "p", "isActive": True}], now
+    )
+    live_by_id = {r["id"]: r for r in resilience["connections"]}
+    assert live_by_id["c-unknown"]["connectionStatus"] != "healthy"
+
+
+def test_snapshot_rate_limited_row_uses_passthrough_not_invented_ms_cooldown():
+    """Catches int(bool)=1 inventing a 1 ms cooldown for rate-limited connections.
+
+    A rate-limited snapshot row must pass the actual rate-limit timestamp
+    through to the live row via rateLimitedUntil; cooldownRemainingMs must not
+    be set to int(True)=1.
+    """
+    from datetime import timezone
+
+    from verdict.omniroute_evidence import _snapshot_sources
+
+    now = datetime.now(timezone.utc)
+    future = (now + timedelta(hours=1)).isoformat()
+    rate_limited_row = {
+        "id": "c1",
+        "provider": "p",
+        "isActive": True,
+        "testStatus": "active",
+        "rateLimitedUntil": future,
+    }
+    _, resilience, _, _ = _snapshot_sources([rate_limited_row], now)
+    live_row = resilience["connections"][0]
+
+    # Must NOT invent a millisecond count (int(True) = 1).
+    assert live_row.get("cooldownRemainingMs") != 1
+    # Must pass through the actual rate-limit timestamp so _connection_reason
+    # returns "cooling_down" from a real window, not a fabricated ms value.
+    assert "rateLimitedUntil" in live_row

@@ -598,17 +598,36 @@ def parse_omniroute_evidence(
 def _snapshot_sources(
     rows: list[dict[str, Any]], now: datetime
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
-    """Management-shaped payloads from validated snapshot rows; nothing is invented."""
-    from verdict.admission import _connection_is_rate_limited
+    """Management-shaped payloads from validated snapshot rows; nothing is invented.
 
+    ``connectionStatus`` is derived from the row's own ``testStatus`` field:
+    ``"active"`` or ``"passed"`` (the same set ``_connection_reason`` accepts on
+    the providers row) maps to ``"healthy"``; everything else maps to
+    ``"unknown"``, which ``_connection_reason`` treats as not healthy.
+
+    Rate limiting is represented by passing the actual rate-limit timestamp
+    through ``rateLimitedUntil``, never as an invented millisecond count.
+    ``QuotaEvidence.blocked_until`` covers both a direct ``rateLimitedUntil``
+    window and a recent-429-error window.
+    """
+    from verdict.availability import QuotaEvidence
+
+    _healthy_test_status = frozenset({"active", "passed"})
     live = []
     for row in rows:
         if not isinstance(row.get("id"), str):
             continue
-        limited = _connection_is_rate_limited(row, route_id="", now=now)
-        live.append(
-            {"id": row["id"], "connectionStatus": "healthy", "cooldownRemainingMs": int(limited)}
-        )
+        # connectionStatus from the row's own testStatus; never invent "healthy".
+        test_status = str(row.get("testStatus", "") or "").strip().lower()
+        live_row: dict[str, Any] = {
+            "id": row["id"],
+            "connectionStatus": "healthy" if test_status in _healthy_test_status else "unknown",
+        }
+        # Pass the actual rate-limit timestamp; never invent a millisecond count.
+        blocked = QuotaEvidence.from_connection(row).blocked_until(now)
+        if blocked is not None:
+            live_row["rateLimitedUntil"] = blocked.isoformat()
+        live.append(live_row)
     # No quota cache: every connection's quota stays "unknown", never "available".
     return (
         {"connections": rows},
