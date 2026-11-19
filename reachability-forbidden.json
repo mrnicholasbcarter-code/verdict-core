@@ -2,7 +2,6 @@
   {
     "symbol": "verdict.gate.Gate",
     "allowed_modules": [
-      "scripts.live_savings_bench",
       "scripts.produce_assignment_log_evidence",
       "verdict.actions.helpers",
       "verdict.api",
