@@ -3,7 +3,7 @@
 Generated: 2026-08-01
 
 ## Overview
-This document provides field-by-field comparison between the canonical Python contracts in `verdict-core/contracts.py` and the TypeScript contracts in `@bodanglin/verdict-contracts`.
+This document provides field-by-field comparison between the canonical Python contracts in `verdict/contracts.py` and the TypeScript contracts in `@bodanglin/verdict-contracts`.
 
 ## Contracts Compared
 
@@ -84,23 +84,22 @@ Core no longer claims parity for this envelope.
 
 ### Python Side
 ```bash
-cd /home/nick/dev/verdict-core
+# from the repository root
 python -m pytest tests/test_contracts.py tests/test_compatibility_manifest.py -v
 # SwarmTaskEnvelope / test_swarm_contracts.py removed (BOD-17)
 ```
 
 ### TypeScript Side
 ```bash
-cd /home/nick/dev/verdict-core/contracts
+cd contracts
 npm test
 # 7 tests passed
 ```
 
 ### Cross-Language Validation
 ```bash
-cd /home/nick/dev/verdict-core/contracts
-npx tsx scripts/parity.ts
-# 8/8 fixtures validated, 0 failures
+cd contracts
+npm test  # includes tests/parity.test.ts (fixtures in test_fixtures/parity/)
 ```
 
 ## Parity Check Report
@@ -130,15 +129,14 @@ npx tsx scripts/parity.ts
 
 ```bash
 # Full parity check
-cd /home/nick/dev/verdict-core
+# from the repository root
 python -m pytest tests/test_contracts.py tests/test_compatibility_manifest.py -v
 
-cd /home/nick/dev/verdict-core/contracts
-npm test
-npx tsx scripts/parity.ts
+cd contracts
+npm test  # includes tests/parity.test.ts
 
 # Run all tests
-cd /home/nick/dev/verdict-core
+cd ..
 python -m pytest tests/ --ignore=tests/test_vcr_fallback.py -x
 ```
 

@@ -27,6 +27,7 @@ Launch decision: **PENDING EVIDENCE**
 - [ ] Code quality: `ruff check . && mypy --strict verdict/`
 - [ ] Security scan: `bandit -r verdict/`
 - [ ] Package builds: `uv build` produces wheel and sdist
+- [ ] Package metadata: `python -m twine check dist/*` (as in the `ci.yml` build job)
 - [ ] Clean install: `pip install dist/*.whl` in fresh venv works
 - [ ] CLI works: `verdict --help` after install
 - [ ] API server: `verdict serve` starts without errors
@@ -44,7 +45,7 @@ Launch decision: **PENDING EVIDENCE**
 - [ ] Parity report reviewed: [`CONTRACT_PARITY.md`](CONTRACT_PARITY.md) matches `contracts/src/index.ts`
 
 ### Benchmarks
-- [ ] Reproducible benchmarks pass: `python -m verdict.benchmarking`
+- [ ] Reproducible benchmarks pass: `uv run verdict benchmark`
 - [ ] Benchmark results indexed in `docs/benchmarks/README.md`
 
 ### Evidence & Documentation
@@ -63,6 +64,12 @@ Launch decision: **PENDING EVIDENCE**
 - [ ] PyPI publish: `uv publish` or trusted publishing
 - [ ] npm publish: `npm publish --access public --provenance`
 - [ ] Docker image built and pushed (if applicable)
+
+## Issue templates
+
+Public issue forms live in `.github/ISSUE_TEMPLATE/`: `bug_report.yml`,
+`feature_request.yml`, `documentation.yml`, `question.yml`, `reproducibility.yml`
+and `security_vulnerability.yml`. Support policy: [SUPPORT.md](SUPPORT.md).
 
 ## Post-Release
 - [ ] Verify installations work from PyPI/npm
