@@ -184,13 +184,15 @@ def build_funnel(
 
     # Pull capacity facts from the health cache (each entry stores
     # capacity_evidence recorded during the screen probe).
+    hc_free: set[str] | None = None
+    _free_from_pools: set[str] | None = None  # sentinel: pool_free was the source
     if health_cache is not None:
         hc_routes = health_cache.routes()
         sources.append("health-cache.json (capacity_evidence)")
         # Build the free set from health cache entries that carry a capacity.
         # This under-counts (only screened routes have entries), so we
-        # supplement with the admission candidates below.
-        hc_free: set[str] = set()
+        # supplement with the task_pools data below when available.
+        hc_free = set()
         for route_id, entry in hc_routes.items():
             ce = entry.capacity_evidence
             if ce and ce not in ("", "unknown"):
@@ -246,17 +248,32 @@ def build_funnel(
                 # pool-eligible routes appear); report it with this note.
                 free_routes = pool_free
                 free_by_rule = pool_free_by_rule
+                _free_from_pools = pool_free  # record sentinel
+
+    # Fallback: use the health-cache free set when task_pools produced no data.
+    # hc_free is None only when health_cache was absent (evidence missing →
+    # unknown, never 0); hc_free is an empty set when the cache had routes but
+    # none carried FREE evidence (a valid lower-bound 0 from real evidence).
+    if free_routes is None and hc_free is not None:
+        free_routes = hc_free
+        # free_by_rule was already populated from health cache entries above.
 
     # Note: for a full count we would need OmniRoute evidence (all routes with
-    # capacity classification).  The task_pools give us a lower bound over the
-    # pool-eligible set.  Stage 2 is therefore a lower bound when task_pools are
-    # the only source; the output labels this.
+    # capacity classification).  task_pools and hc_free are both lower bounds.
     free_count: int | None = len(free_routes) if free_routes is not None else None
-    free_note: str | None = (
-        "lower bound: task_pools only cover pool-eligible routes; full count requires a live fetch"
-        if free_routes is not None and identify_report is not None
-        else None
-    )
+    if free_routes is None:
+        free_note: str | None = None
+    elif free_routes is _free_from_pools:  # pool_free was the source
+        free_note = (
+            "lower bound: task_pools only cover pool-eligible routes;"
+            " full count requires a live fetch"
+        )
+    else:
+        # hc_free was the fallback source (health-cache screened routes only)
+        free_note = (
+            "lower bound: health-cache only covers screened routes;"
+            " full count requires a live fetch"
+        )
 
     # Drops from listed → free_by_fact (approximate)
     free_drops: dict[str, int] = {}

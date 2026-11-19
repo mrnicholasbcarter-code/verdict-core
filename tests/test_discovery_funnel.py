@@ -300,6 +300,27 @@ class TestBuildFunnelHealthCacheOnlyNoAdmission:
         result = build_funnel(identify_report=None, health_cache=self.hc, admission=None, now=NOW)
         assert result["stages"]["admitted"]["count"] is None
 
+    def test_free_by_fact_uses_hc_free_when_no_task_pools(self) -> None:
+        """hc_free must become free_routes when task_pools are absent (bug fix).
+
+        When identify_report has no task_pools (or pool_free is empty), the
+        health-cache free set must be used instead of leaving free_by_fact
+        as unknown.  Missing evidence is None, not 0 — but present evidence
+        (the health cache has a FREE-evidenced route) must be reported.
+        """
+        # identify_report with no task_pools; health cache has one FREE route.
+        result = build_funnel(
+            identify_report={"inventory_route_count": 10, "task_pools": {}},
+            health_cache=self.hc,
+            admission=None,
+            now=NOW,
+        )
+        free_count = result["stages"]["free_by_fact"]["count"]
+        assert free_count is not None, (
+            "free_by_fact should report a count from hc_free when task_pools are empty"
+        )
+        assert free_count == 1, f"expected 1 FREE route from health cache, got {free_count}"
+
 
 # ---------------------------------------------------------------------------
 # No-writes assertion
