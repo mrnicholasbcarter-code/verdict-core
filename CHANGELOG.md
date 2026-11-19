@@ -13,6 +13,10 @@ The first complete version. It also carries the 0.5.0 changes below, which were 
 published. The date is set when the `v1.0.0` tag is pushed; nothing in this entry is on
 PyPI or npm yet.
 
+This release is not certified: the attested certification rehearsal has not passed yet (see #1168 and #1169).
+It is published with the release workflow's bundle requirement switched off for this one
+tag and switched back on afterwards; every other release check still runs.
+
 ### Upgrade notes (read first)
 - **Behaviour change: `verdict orchestrate` runs workers on `direct-gateway` by default.** Each worker request goes straight to the gateway; no agent harness is needed. Prime Agent is an optional harness: select it with `--executor prime-headless` (the alias `prime` still works). Route visibility follows the executor, so plain eligibility reads the live gateway catalog instead of Prime's `models.json`; `--sync-visibility` still selects Prime, and an `--executor-map` with any Prime node keeps Prime visibility. Without Prime installed, `verdict setup` plans no Prime action, `verdict doctor` shows the Prime rows as `not-installed`, and live acceptance reports `harness-prime` as skipped with its reason, never as passed (#1148).
 - **Breaking for library users: `DEFAULT_RUNTIME_STATE_DIR` is removed.** Use `verdict.runtime_contract.default_runtime_state_dir()`, which follows `VERDICT_HOME` on each call (#1143).
@@ -28,6 +32,7 @@ PyPI or npm yet.
 - A worker that writes nothing for `VERDICT_WORKER_IDLE_SECONDS` (default 300) is killed as `stalled` and its node is rerouted within the attempt budget (#1064).
 - Certification rehearsals run a bounded FREE-only preflight first and fail closed when no route qualifies (#1067).
 - The docs-refresh setup action starts `verdict-docs-refresh.service` once when the docs index is not ready (#1134).
+- `verdict identify --screen --min-context-tokens N`, `--require-tools` and `--max-per-pool N` skip, without probing and without using a probe slot, routes below a caller's floor (`skipped_task_floor`; unknown never meets the floor), and cap probes per backend pool, covering pools breadth-first. Without the options the screen output is unchanged (#1151, #1155).
 - `verdict doctor` checks a loaded `verdict-prime-sync.service` under `Prime-sync code path` and fails the row when the unit imports `verdict` from a different checkout than the one it is configured for (#903).
 - Between 0.5.0 and #1049, among others: an Anthropic Messages relay surface (#997), served-identity verification on every worker and relay attempt (#970), versioned operator policy authority with fail-closed execution boundaries (#1000), qualification producers behind one shared coordinator (#1002), and a definition-of-done gate that checks an orchestrate run against its own result (#1042).
 
@@ -40,6 +45,11 @@ PyPI or npm yet.
 - Verdict state follows `VERDICT_HOME` everywhere: the offline demo, session ledger, passports and attempt records no longer write to `~/.verdict` when `VERDICT_HOME` is set (#1143).
 - The certification rehearsal's preflight screens only routes the planner can admit (`--max-capability-tier 2`), counts only planner-eligible passes, and its failure artifact names the failure class from a closed vocabulary, never raw text (#1147). The rehearsal does not pass yet.
 - The certification rehearsal no longer writes the gateway address into its run evidence: it runs `verdict orchestrate` with `VERDICT_REDACT_GATEWAY_ORIGIN=1`, so each `dispatch_permit` controller event, and the receipt's `controller_events`, records the literal `redacted`. The permit check still compares against the real gateway, and the script still refuses to upload run evidence that contains the gateway address or key. Without that variable, `verdict orchestrate` records the origin as before (#1152).
+- The certification rehearsal's preflight passes the planner's context and tool floor, probes at most one route per backend pool, screens up to 13 routes (at most 39 model requests) and needs passes in 5 distinct pools (#1155, #1165).
+- The chaos rehearsal starts from private copies of the health cache and session-evidence ledger taken right after the preflight, so a 429 in the clean run cannot remove a proven route from chaos, and it fails closed when that proof is missing, invalid or stale (#1157, #1165).
+- `verdict doctor` gateway probes wait up to 10 s for `/models` (`VERDICT_DOCTOR_GATEWAY_TIMEOUT_S`) and 3 s for `/api/health` (`VERDICT_DOCTOR_HEALTH_TIMEOUT_S`), retry once on a timeout only (never on an HTTP answer), and name the setting when they give up (#1166).
+- CI jobs have timeouts, and the pytest steps dump all thread tracebacks when one test runs over five minutes (#1159).
+- The README is rewritten around a two-minute first run, with a replay of a real run's live view as its first image (#1156, #1164). The docs were audited for the public launch (#1162).
 - `scripts/live_savings_bench.py` is rewritten as a paired usage bench: the Verdict arm routes through Verdict's own eligibility-gated routing (free and subscription only, no opaque routes, no fallback to the baseline), the baseline model is a required flag, tokens are the headline measure, and same-model pairs or less accepted work block any claim. No result is claimed (#1146).
 - An HTTP 200 reply that is an in-band credit refusal (zero output tokens, no tool call, "not enough credits" or "top up" text) is a payment failure, not a success. Probes, the relay and the acceptance serve check all treat it that way (#1130). The ladder health probe scopes it to the route, without a pool or provider cooldown (#1134).
 - Routes from prepaid-credit providers without explicit free evidence are classified UNKNOWN capacity, not FREE. `:free` community routes and priced models are unchanged (#1133).
@@ -60,13 +70,16 @@ PyPI or npm yet.
 - `/v1/route` requests with execution-path candidates use a timezone-aware clock (#1049).
 - `verdict harness prime sync-models` keeps the pinned OmniRoute combo `prime-free-chain` in `~/.prime/agent/models.json` across later syncs (#902).
 - Planner selection no longer ends with "none eligible" when cold catalog routes would use the whole confirmation budget: fresh cache-positive routes are confirmed first and one slot is kept for a fresh healthy subscription fallback.
+- The 1-token health probe treats an HTTP 200 reply with one choice, `finish_reason` `length`, an integer `completion_tokens` and a message with no `content` key as alive, flagged `missing_content` (never `empty_content`), instead of `malformed_response` (#1154).
+- On Python before 3.12, `verdict serve` shutdown no longer hangs when the public-models refresh cancel is lost (bpo-42130): a stop flag set before the cancel ends the loop (#1167).
 - Invalid planner output is saved (redacted, at most 64 KiB) in the run directory; redaction also covers bare `Bearer` tokens and unlabelled provider key prefixes.
 
 ### Removed
 - The Ruflo and RuVector integrations (#804). Documentation preflight no longer depends on them.
+- Unused scripts and files: six uncalled one-off scripts, the empty `verdict.workflows` package (#1163), `uninstall.sh` (use `verdict uninstall`) and `RELEASE_PACKAGING.md` (folded into `RELEASE_CHECKLIST.md`) (#1161), and 17 duplicate files under `docs/proof/dod` (#1160).
 
 ### Known limitations
-- No CERTIFIED release bundle exists yet: the certification rehearsal does not pass. This repository's release workflow requires one (`VERDICT_REQUIRE_CERTIFIED_BUNDLE` is `true`), so 1.0.0 is not published until a certification run passes on the tag commit.
+- The release has no attested certification bundle: the certification rehearsal does not pass yet (#1168, #1169).
 - No cost or token saving is claimed. The 2026-09-28 live cost check chose the same model in both arms. One paired usage run on 2026-11-19 did not support a claim: the Verdict arm completed fewer tasks than the baseline, so the bench refused it. Its evidence is not published yet.
 - `install.sh` keeps installing 0.4.2 until 1.0.0 is published to PyPI; its pin is updated after publication with real digests.
 - A real HTTP 402 from the ladder health probe still cools the pool and provider; only the HTTP 200 in-band refusal is route-scoped.
