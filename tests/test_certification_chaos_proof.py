@@ -35,7 +35,7 @@ from verdict.prove_at_rest_legacy import default_state_path
 
 GATEWAY = "https://cert-gw-7f3a9c.example.invalid:8443"
 KEY = "test-key-canary-9d2e"
-# Five pools: the preflight's floor (PREFLIGHT_MIN_PLANNER_POOLS).
+# Five pools for the chaos scenario (D2: floor is PREFLIGHT_MIN_PLANNER_POOLS=2).
 PROVEN = (
     "groq/model-a",
     "nvidia/model-b",

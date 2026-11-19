@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from verdict.omniroute_pipeline.free_rule import FreeStatus, classify_free
 from verdict.openrouter_free_set import (
     OpenRouterFreeSet,
     is_openrouter_catalog_route,
@@ -16,11 +16,7 @@ from verdict.orchestration.contracts import CapacityClass as CapacityClass
 
 if TYPE_CHECKING:
     from verdict.orchestration.health_cache import HealthCache
-from verdict.orchestration.provider_catalog import (
-    connection_signals_free,
-    has_free_suffix,
-    sanitized_plan_label,
-)
+from verdict.orchestration.provider_catalog import connection_signals_free, sanitized_plan_label
 
 # D6: prefer the cheapest capacity tier that passed every admission gate.
 CAPACITY_ORDER: Mapping[CapacityClass, int] = {
@@ -30,25 +26,23 @@ CAPACITY_ORDER: Mapping[CapacityClass, int] = {
     CapacityClass.UNKNOWN: 3,
 }
 
-DEFAULT_CREDIT_PROVIDERS: frozenset[str] = frozenset({"pollinations", "pol", "g4f-pollinations"})
+
+def _route_price(row: Mapping[str, Any]) -> dict[str, object] | None:
+    """The row's declared price in the shape rule 0.2 reads, or None when absent."""
+    pricing = row.get("pricing")
+    if not isinstance(pricing, Mapping):
+        return None
+    return {
+        "input": pricing.get("input", pricing.get("prompt")),
+        "output": pricing.get("output", pricing.get("completion")),
+    }
 
 
-def get_credit_providers() -> frozenset[str]:
-    raw = os.getenv("VERDICT_CREDIT_PROVIDERS")
-    if raw is not None:
-        return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
-    return DEFAULT_CREDIT_PROVIDERS
-
-
-def is_credit_provider_route(route_id: str, conn: Mapping[str, Any] | None) -> bool:
-    providers = get_credit_providers()
-    if not providers:
-        return False
-    provider = str(conn.get("provider", "")).strip().lower() if conn else ""
-    if provider in providers:
-        return True
-    lower_id = route_id.lower()
-    return any(lower_id.startswith(f"{p}/") for p in providers)
+def _any_positive_price(row: Mapping[str, Any]) -> bool:
+    pricing = row.get("pricing")
+    return isinstance(pricing, Mapping) and any(
+        isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in pricing.values()
+    )
 
 
 def classify_route_capacity(
@@ -58,76 +52,63 @@ def classify_route_capacity(
     route_id: str,
     openrouter_free_set: OpenRouterFreeSet | None,
 ) -> tuple[CapacityClass, str, str]:
-    """D7 account evidence shared by live selection and at-rest classification."""
+    """D7 account evidence shared by live selection and at-rest classification.
+
+    Capacity comes only from declared facts or observations, never from a
+    name (operator, 2026-11-19 14:38Z: "no names should never determine if
+    something is a free route or not"). Price facts go through rule 0.2
+    (``free_rule.classify_free``); OpenRouter membership through the public
+    0/0 set (BOD-418); connection facts through ``connection_signals_free``.
+    A ``:free`` suffix, a provider prefix or a provider-name list decides
+    nothing. Without a signal the route is UNKNOWN, and unknown is never free.
+    """
     if conn is None:
         return CapacityClass.UNKNOWN, "", "no_connection"
     plan_label = sanitized_plan_label(conn.get("plan_label", ""))
     auth_type = str(conn.get("authType", "")).strip().lower()
 
-    # BOD-418: openrouter-family FREE requires public 0/0 membership.
-    # Suffix / connection free signals alone must not mark paid OpenRouter
-    # routes FREE (they previously cooled the whole openrouter-free pool).
+    # BOD-418: the OpenRouter catalog decides by public 0/0 membership; the
+    # id only selects which published catalog to consult.
     if route_id and is_openrouter_catalog_route(route_id):
-        free_set = openrouter_free_set
-        if openrouter_route_is_public_free(route_id, free_set):
+        if openrouter_route_is_public_free(route_id, openrouter_free_set):
             return CapacityClass.FREE, plan_label, "openrouter_public_zero"
-        # Fall through: never treat openrouter-family as FREE from suffix
-        # or import_free_only. Inventory pricing / oauth rules still apply.
+        if openrouter_free_set is not None:
+            return CapacityClass.METERED, plan_label, "openrouter_not_in_public_free_set"
+        return CapacityClass.UNKNOWN, plan_label, "openrouter_free_set_unavailable"
 
-    # D7: public non-free OpenRouter catalog membership and the Anthropic
-    # API-key connection are specific paid evidence even without local pricing.
-    if (route_id and is_openrouter_catalog_route(route_id)) or str(
-        conn.get("provider", "")
-    ).lower() == "openrouter":
-        return CapacityClass.METERED, plan_label, "openrouter_not_in_public_free_set"
-    if str(conn.get("provider", "")).lower() == "anthropic" and auth_type == "apikey":
-        return CapacityClass.METERED, plan_label, "anthropic_apikey"
-
-    # (a) :free suffix overrides oauth → subscription (fixes D5: 72
-    # kilocode :free misclassed as SUBSCRIPTION). Openrouter-family is
-    # handled above and must not take this shortcut.
-    if route_id and has_free_suffix(route_id) and not is_openrouter_catalog_route(route_id):
-        return CapacityClass.FREE, plan_label, "free_suffix"
-
-    # (b) Connection-level free signals. Openrouter-family is excluded:
-    # OmniRoute may set importFreeModelsOnly on a free-only key while the
-    # catalog still lists paid models.
+    # Declared connection facts (connections snapshot / /api/providers).
     is_free, signal = connection_signals_free(conn)
-    if is_free and not (route_id and is_openrouter_catalog_route(route_id)):
+    if is_free:
         return CapacityClass.FREE, plan_label, signal
 
-    # (c) oauth without a free signal → SUBSCRIPTION.
     if auth_type == "oauth":
         return CapacityClass.SUBSCRIPTION, plan_label, "oauth_subscription"
 
-    # Pricing evidence for apikey connections.
-    pricing = row.get("pricing")
-    prices: list[float] = []
-    if isinstance(pricing, Mapping):
-        for value in pricing.values():
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                prices.append(float(value))
-    all_zero = bool(prices) and all(p == 0 for p in prices)
-    positive = any(p > 0 for p in prices)
-
-    # All-zero explicit inventory pricing is FREE even for apikey, but not
-    # for openrouter-family when a public free set is available (public
-    # catalog is authoritative there). Without a free set we still refuse
-    # to assert FREE for openrouter-family from inventory alone.
-    if all_zero and not (route_id and is_openrouter_catalog_route(route_id)):
-        return CapacityClass.FREE, plan_label, "all_zero_pricing"
-
-    # (e) apikey with positive pricing → METERED.
-    if positive:
+    # Rule 0.2 on the declared price: nonzero is paid, explicit 0/0 is free,
+    # absent fails closed.
+    status = classify_free(route_id, _route_price(row), None)
+    if status is FreeStatus.NOT_FREE or _any_positive_price(row):
         return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
-
-    # Credit providers without free evidence or pricing stay UNKNOWN.
-    if is_credit_provider_route(route_id, conn):
-        return CapacityClass.UNKNOWN, plan_label, "credit_provider_unknown_pricing"
-
-    # D7: absence of specific paid/subscription evidence is assumed free,
-    # not proof of capability. The same agentic gate still applies.
-    return CapacityClass.FREE, plan_label, "assumed_free_no_paid_evidence"
+    # The gateway's own free-tier membership (/api/free-tier/summary perModel),
+    # attached to the row by the caller that read it. A nonzero price wins.
+    if row.get("gateway_free_tier") is True:
+        return CapacityClass.FREE, plan_label, "gateway_free_tier"
+    if status is FreeStatus.FREE:
+        return CapacityClass.FREE, plan_label, "all_zero_pricing"
+    # Fact-based rule: at least one numeric pricing value is declared and all
+    # declared values are zero (brief, 2026-11-19: "a zero prompt or input
+    # price" is evidence of free). A blank or bool-only pricing dict has no
+    # declared facts and falls through to UNKNOWN.
+    _pricing = row.get("pricing")
+    if isinstance(_pricing, Mapping):
+        _declared = [
+            float(v)
+            for v in _pricing.values()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        ]
+        if _declared and all(p == 0 for p in _declared):
+            return CapacityClass.FREE, plan_label, "all_zero_pricing"
+    return CapacityClass.UNKNOWN, plan_label, "no_free_evidence"
 
 
 def billing_capacity_override(cache: HealthCache, route_id: str, now: datetime) -> bool:

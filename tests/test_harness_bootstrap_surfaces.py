@@ -284,9 +284,6 @@ def test_separate_spend_consent_executes_exact_ids_then_reloads(
         row(rid, pricing={"input": 1.0} if capacity == "metered" else {}) for rid in IDS
     ]
     adapter.connections = [conn("cc", auth="apikey", plan="")]
-    if capacity == "unknown":
-        # D7: connected missing-price is now assumed-free and uses prepaid refresh.
-        fixture["config"] = RefreshConfig(auto_refresh=True)
     adapter.paths.health_cache.unlink()
     calls = []
 
@@ -309,12 +306,12 @@ def test_separate_spend_consent_executes_exact_ids_then_reloads(
 
     result = consume(fixture, read_line=answer, transport=transport, preview_only=True)
     if capacity == "unknown":
-        assert sorted(calls) == sorted((rid, phase) for rid in IDS for phase in ("chat", "tool"))
+        # UNKNOWN capacity (pricing={}) requires consent and gets a chat-only liveness probe.
+        assert sorted(calls) == sorted((rid, "chat") for rid in IDS)
         assert result.ok, result.data
-        assert all(
-            item["status"] == "VERIFIED" and item["coding_ok"] for item in result.data["rows"]
-        )
-        assert prompts == []  # no unknown-cost consent prompt for assumed-free
+        assert all(item["status"] == "VERIFIED" for item in result.data["rows"])
+        assert all(not item["coding_ok"] for item in result.data["rows"])
+        assert len(prompts) == 2 and "[y/N]" in prompts[1]
     elif consent == "y":
         # "y" to the plan, then "y" to the one costly group (its default is no).
         assert sorted(calls) == sorted((rid, "chat") for rid in IDS)

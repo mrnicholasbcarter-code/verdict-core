@@ -1146,6 +1146,7 @@ class IntelligenceService:
         cache = HealthCache(default_cache_path())
         connections = _provider_connections_by_name(snapshot.connections)
         catalog = {item.identity_id: item for item in snapshot.catalog}
+        gateway_free = {f"{row.provider}/{row.model_id}" for row in snapshot.free_tier}
         capacity: dict[str, CapacityClass] = {}
         for route_id in route_ids:
             if billing_capacity_override(cache, route_id, now):
@@ -1166,11 +1167,13 @@ class IntelligenceService:
                     "import_free_only": connection.import_free_only,
                 }
             )
-            row = (
+            row: dict[str, Any] = (
                 {}
                 if identity is None or not identity.price_known
                 else {"pricing": {"input": identity.input_cost, "output": identity.output_cost}}
             )
+            if route_id in gateway_free:
+                row["gateway_free_tier"] = True
             capacity[route_id] = classify_route_capacity(
                 conn, row, route_id=route_id, openrouter_free_set=free_set
             )[0]

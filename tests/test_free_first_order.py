@@ -259,15 +259,15 @@ class TestAgenticGate:
 
 class TestUnknownOptIn:
     def test_unknown_economic_class_allowed_without_opt_in(self, tmp_path: Path) -> None:
-        """D7: auth=apikey with no pricing -> assumed FREE, still needs tool proof."""
+        """D7: auth=apikey with no pricing -> UNKNOWN (no facts), still needs agentic proof."""
         rows = [_row("unk/model-a", owned_by="unknown_provider", pricing=None)]
-        # Remove pricing to exercise D7 assumed-free classification
+        # Remove pricing: no declared price facts → capacity is UNKNOWN (not assumed-free).
         rows[0].pop("pricing", None)
         conns = [_conn("unknown_provider", auth="apikey", plan="")]
         ladder, _ = _make(tmp_path, rows, conns, allow_unknown=False)
         verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
         by_id = {v.route_id: v for v in verdicts}
-        assert by_id["unk/model-a"].capacity_class is CapacityClass.FREE
+        assert by_id["unk/model-a"].capacity_class is CapacityClass.UNKNOWN
         assert by_id["unk/model-a"].reason == "no_health_cache"
         assert by_id["unk/model-a"].rank is None
 

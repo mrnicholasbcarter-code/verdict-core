@@ -165,11 +165,6 @@ def aliased_pools_for(route_ids: frozenset[str] | set[str]) -> frozenset[str]:
 # ---------------------------------------------------------------------------
 
 
-def has_free_suffix(route_id: str) -> bool:
-    """True when the route id ends with ``:free``."""
-    return route_id.endswith(":free")
-
-
 _EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 
 

@@ -34,7 +34,6 @@ from verdict.orchestration.provider_catalog import (
     aliased_pools_for,
     backend_pool,
     connection_signals_free,
-    has_free_suffix,
     is_catalog_stale_error,
     is_not_free_overridden,
     is_not_free_signal,
@@ -175,15 +174,16 @@ class TestBackendPool:
 
 
 class TestCapacityClassification:
-    def test_free_suffix_overrides_oauth(self) -> None:
-        """Fixes D5: 72 kilocode :free misclassed as SUBSCRIPTION."""
+    def test_free_suffix_does_not_override_oauth(self) -> None:
+        """A `:free` suffix is a name, not a fact: oauth kilocode stays SUBSCRIPTION."""
         ladder = _make_ladder()
         req = TaskRequirements(required_capabilities=frozenset({"tools"}))
         verdicts = ladder.evaluate(req, now=NOW)
         kilo_free = [v for v in verdicts if ":free" in v.route_id and "kilocode" in v.route_id]
+        assert kilo_free
         for v in kilo_free:
-            assert v.capacity_class == CapacityClass.FREE, (
-                f"{v.route_id} should be FREE, got {v.capacity_class}"
+            assert v.capacity_class == CapacityClass.SUBSCRIPTION, (
+                f"{v.route_id} should be SUBSCRIPTION, got {v.capacity_class}"
             )
 
     def test_oauth_with_free_tier_signal_is_free(self) -> None:
@@ -218,15 +218,16 @@ class TestCapacityClassification:
                 f"{v.route_id} should be METERED, got {v.capacity_class}"
             )
 
-    def test_apikey_no_pricing_is_assumed_free(self) -> None:
-        """D7: command-code has no specific paid evidence → assumed FREE."""
+    def test_apikey_no_pricing_is_unknown(self) -> None:
+        """No price and no free flag is UNKNOWN; unknown is never free."""
         ladder = _make_ladder()
         req = TaskRequirements(required_capabilities=frozenset({"tools"}))
         verdicts = ladder.evaluate(req, now=NOW)
         cmd = [v for v in verdicts if v.route_id == "command-code/gpt-5.3-codex"]
+        assert cmd
         for v in cmd:
-            assert v.capacity_class == CapacityClass.FREE, (
-                f"{v.route_id} should be FREE, got {v.capacity_class}"
+            assert v.capacity_class == CapacityClass.UNKNOWN, (
+                f"{v.route_id} should be UNKNOWN, got {v.capacity_class}"
             )
 
     def test_import_free_models_only_is_free(self) -> None:
@@ -344,11 +345,6 @@ class TestCapacityClassification:
         assert is_free
         assert rule == expected_rule
         assert "user@secret.example.com" not in rule
-
-    def test_has_free_suffix(self) -> None:
-        assert has_free_suffix("kilocode/model:free")
-        assert not has_free_suffix("kilocode/model")
-        assert not has_free_suffix("kilocode/model-free")
 
 
 # -----------------------------------------------------------------------
@@ -568,23 +564,9 @@ def _ranking_openrouter_free_set(inventory: list[dict[str, Any]]) -> OpenRouterF
 def _expected_class_changes() -> dict[str, tuple[CapacityClass, CapacityClass, str]]:
     """Every route whose class differs from origin/main, with the new rule."""
     out: dict[str, tuple[CapacityClass, CapacityClass, str]] = {}
-    for tail in _KILOCODE_FREE_TAILS:
-        for prefix in ("kc", "kilocode"):
-            out[f"{prefix}/{tail}"] = (
-                CapacityClass.SUBSCRIPTION,
-                CapacityClass.FREE,
-                "free_suffix",
-            )
-    out["cmd/inclusionai/ling-3.0-flash-sante:free"] = (
-        CapacityClass.UNKNOWN,
-        CapacityClass.FREE,
-        "free_suffix",
-    )
-    out["command-code/inclusionai/ling-3.0-flash-sante:free"] = (
-        CapacityClass.UNKNOWN,
-        CapacityClass.FREE,
-        "free_suffix",
-    )
+    # The `:free` suffix no longer changes a class (capacity from facts, never
+    # names, operator 2026-11-19): kilocode `:free` stays SUBSCRIPTION and
+    # command-code `:free` stays UNKNOWN, as on the legacy fixture.
     # BOD-418: openrouter/ FREE requires public 0/0 membership; import_free_only
     # alone no longer classifies these routes FREE.
     out["openrouter/auto"] = (
@@ -996,24 +978,9 @@ class TestRankingParityAgainstOriginMain:
         assert set(old_verdicts) == set(new_verdicts)
 
         expected = _expected_class_changes()
-        # D7 deliberately reclassifies every connected legacy UNKNOWN route.
-        # Derive this set from the legacy fixture and account facts, never the
-        # new classifier's output. No-connection UNKNOWN remains unchanged.
-        for rid, previous in old_verdicts.items():
-            connection = old._connection_for(previous.provider)
-            if previous.capacity_class is CapacityClass.UNKNOWN and connection is not None:
-                if str(connection.get("provider", "")).lower() == "anthropic":
-                    expected[rid] = (
-                        CapacityClass.UNKNOWN,
-                        CapacityClass.METERED,
-                        "anthropic_apikey",
-                    )
-                elif rid not in expected:
-                    expected[rid] = (
-                        CapacityClass.UNKNOWN,
-                        CapacityClass.FREE,
-                        "assumed_free_no_paid_evidence",
-                    )
+        # Capacity from facts, never names (operator, 2026-11-19): a connected
+        # legacy UNKNOWN route with no fact stays UNKNOWN; neither the old D7
+        # "assumed free" default nor a provider-name METERED rule applies.
         observed: dict[str, tuple[CapacityClass, CapacityClass]] = {}
         for rid, nv in new_verdicts.items():
             ov = old_verdicts[rid]

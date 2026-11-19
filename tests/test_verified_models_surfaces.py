@@ -384,7 +384,8 @@ def test_auto_mixed_capacity_probes_prepaid_only(tmp_path: Path) -> None:
     inventory = [
         row("cc/prepaid"),
         row("ap/metered", pricing={"input": 1.0, "output": 2.0}),
-        row("zz/unknown"),
+        # A declared 0/0 price: a blank price is UNKNOWN, never free.
+        row("zz/unknown", pricing={"input": 0, "output": 0}),
     ]
     connections = [
         conn("cc"),
@@ -906,7 +907,10 @@ def test_manual_plan_metered_liveness_and_assumed_free_tool_screen(
         tmp_path,
         ("ap/metered", "zz/unknown"),
         age=None,
-        inventory=[row("ap/metered", pricing={"input": 1.0, "output": 2.0}), row("zz/unknown")],
+        inventory=[
+            row("ap/metered", pricing={"input": 1.0, "output": 2.0}),
+            row("zz/unknown", pricing={"input": 0, "output": 0}),
+        ],
         connections=[conn("ap", auth="apikey", plan="PAYG"), conn("zz", auth="apikey", plan="")],
     )
     transport = RecordingTransport()
@@ -1314,7 +1318,7 @@ def test_public_source_authority_expires_independently_of_fresh_model_proof(
 def test_assumed_free_refresh_records_capacity_evidence(tmp_path):
     from verdict.orchestration.health_cache import HealthCache
 
-    inventory = [row("zz/unknown")]
+    inventory = [row("zz/unknown", pricing={"input": 0, "output": 0})]
     adapter = adapter_for(
         tmp_path,
         ("zz/unknown",),
@@ -1330,4 +1334,4 @@ def test_assumed_free_refresh_records_capacity_evidence(tmp_path):
         ("zz/unknown", "tool"),
     ]
     entry = HealthCache(adapter.paths.health_cache).entry("zz/unknown")
-    assert entry.capacity_evidence == "assumed_free_no_paid_evidence"
+    assert entry.capacity_evidence == "all_zero_pricing"
