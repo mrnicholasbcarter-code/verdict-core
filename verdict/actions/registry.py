@@ -466,7 +466,6 @@ def _action_route(**kwargs: Any) -> ActionResult:
 def _action_doctor(**kwargs: Any) -> ActionResult:
     """Scan Verdict setup and connections."""
     from verdict.actions.helpers import collect_doctor_diagnostics
-    from verdict.doctor_diagnostics import FIRST_RUN_LINE
 
     preflight_timeout: float = kwargs.get("preflight_timeout", 120.0)
     fix: bool = kwargs.get("fix", False)
@@ -486,7 +485,6 @@ def _action_doctor(**kwargs: Any) -> ActionResult:
         "shared_memory": diag.shared_memory,
         "capability_bootstrap": diag.capability_report,
         "acceptance": diag.acceptance,
-        "first_run": FIRST_RUN_LINE if getattr(diag, "config_loaded", True) is False else None,
     }
     return ActionResult(data=data, ok=not diag.issues, exit_code=1 if diag.issues else 0)
 
