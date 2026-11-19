@@ -721,7 +721,7 @@
   },
   {
     "qualified_name": "verdict.runtime_contract.ProcfsInspector",
-    "reason": "UNTRIAGED: ProcfsInspector has no resolved reference; Versioned, privacy-safe contracts for global runtime ownership (verdict/runtime_contract.py)."
+    "reason": "Deferred: public name in verdict.runtime_contract __all__; production uses the duplicate verdict.runtime_daemons.ProcfsInspector (the one verdict exports). Merge or remove the duplicate in a dedicated change, not in first-run-state-isolation."
   },
   {
     "qualified_name": "verdict.trusted_change_report.utc_now_iso",
