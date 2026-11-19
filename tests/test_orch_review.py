@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1286,3 +1286,215 @@ def test_dropped_comments_beside_parsed_blocking_finding_stay_fail(
     result = _run(_reviewer(tmp_path, FakeSelector(_verdict()), runner))
     assert result.status == "FAIL" and result.findings_lost == 1
     assert runner.reviews == 1
+
+
+# --------------------------------------------------------------------------- #
+# Reviewer waits out one short cooldown (review-short-cooldown-wait)
+# --------------------------------------------------------------------------- #
+
+
+class CoolingSelector(FakeSelector):
+    """One candidate route under a cooldown; selectable once ``now`` passes it.
+
+    ``future_reject`` makes the route fail a non-cooldown rule even after the
+    cooldown (for example insufficient_context), like the real ladder would.
+    """
+
+    def __init__(
+        self,
+        route_id: str,
+        until: datetime,
+        *,
+        future_reject: str = "",
+        still_cooling: bool = False,
+        blocker: str | None = None,
+    ) -> None:
+        super().__init__(None)
+        self.route_id, self.until = route_id, until
+        self.future_reject, self.still_cooling, self.blocker = (
+            future_reject,
+            still_cooling,
+            blocker,
+        )
+        self.selects: list[datetime] = []
+        self.evaluations: list[datetime] = []
+
+    def _verdicts(self, requirements: TaskRequirements, now: datetime) -> tuple[RouteVerdict, ...]:
+        rid = self.route_id
+        provider = rid.split("/", 1)[0]
+        if now < self.until or self.still_cooling and self.selects[1:]:
+            return (
+                RouteVerdict(
+                    rid,
+                    provider,
+                    EligibilityStage.HEALTHY,
+                    EligibilityStage.AVAILABLE,
+                    "cooldown:route",
+                    CapacityClass.FREE,
+                    cooldown_until=self.until.isoformat(),
+                ),
+            )
+        if rid in requirements.exclude_routes:
+            reason = "excluded_route"
+        else:
+            reason = self.future_reject
+        if reason:
+            return (
+                RouteVerdict(
+                    rid,
+                    provider,
+                    EligibilityStage.AVAILABLE,
+                    EligibilityStage.TASK_ELIGIBLE,
+                    reason,
+                    CapacityClass.FREE,
+                ),
+            )
+        return (_verdict(rid),)
+
+    def evaluate(
+        self, requirements: TaskRequirements, *, now: datetime
+    ) -> tuple[RouteVerdict, ...]:
+        self.evaluations.append(now)
+        return self._verdicts(requirements, now)
+
+    def select(
+        self, requirements: TaskRequirements, *, now: datetime
+    ) -> tuple[RouteVerdict | None, tuple[RouteVerdict, ...]]:
+        self.requirements = requirements
+        self.selects.append(now)
+        verdicts = self._verdicts(requirements, now)
+        chosen = next((v for v in verdicts if v.failed_stage is None), None)
+        return chosen, verdicts
+
+    def dispatch_blocker(self, route_id: str, *, now: datetime) -> str | None:
+        return self.blocker
+
+
+class FakeWait:
+    """Stands in for the runtime's wait: records the call, never really sleeps."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, datetime]] = []
+
+    async def __call__(self, route_id: str, until: datetime) -> datetime | None:
+        self.calls.append((route_id, until))
+        return until + timedelta(seconds=1)
+
+
+def _cooling_run(
+    tmp_path: Path,
+    selector: CoolingSelector,
+    wait: FakeWait,
+    *,
+    limit: float = 120.0,
+    runner: FakeRunner | None = None,
+    **overrides: object,
+):
+    runner = runner or FakeRunner(
+        OcrRun(exit_code=0), review_payload=_load_fixture("sample-clean.json")
+    )
+    ctor = {k: overrides.pop(k) for k in ("timeout_seconds", "max_reviewer_attempts") if k in overrides}
+    reviewer = _reviewer(tmp_path, selector, runner, **ctor)
+    return (
+        _run(reviewer, capacity_wait=wait, max_cooldown_wait_seconds=limit, **overrides),
+        runner,
+    )
+
+
+def _soon(seconds: float) -> datetime:
+    return datetime.now(timezone.utc) + timedelta(seconds=seconds)
+
+
+def test_short_cooldown_reviewer_waits_once_then_reviews(tmp_path: Path, monkeypatch) -> None:
+    """Failure caught: the only reviewer 7 s from the end of a cooldown ended the run BLOCKED."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    until = _soon(5)
+    selector, wait = CoolingSelector("cerebras/gpt-oss-120b", until), FakeWait()
+    result, runner = _cooling_run(tmp_path, selector, wait, max_reviewer_attempts=1)
+    assert wait.calls == [("cerebras/gpt-oss-120b", until)]
+    assert result.status == "PASS" and result.route_id == "cerebras/gpt-oss-120b"
+    # the reselection used the time after the wait, not the stale start time.
+    assert selector.selects[-1] > until
+    assert any("--model" in c["argv"] for c in runner.calls)
+
+
+def test_long_cooldown_errors_immediately_without_wait(tmp_path: Path, monkeypatch) -> None:
+    """Failure caught: waiting for a cooldown longer than the policy limit (a hang risk)."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    selector, wait = CoolingSelector("cerebras/gpt-oss-120b", _soon(600)), FakeWait()
+    result, runner = _cooling_run(tmp_path, selector, wait)
+    assert result.status == "ERROR" and result.detail == "no independent reviewer eligible"
+    assert wait.calls == [] and runner.calls == []
+
+
+def test_cooldown_past_review_deadline_errors_without_wait(tmp_path: Path, monkeypatch) -> None:
+    """Failure caught: a wait that would outlive the review deadline."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    selector, wait = CoolingSelector("cerebras/gpt-oss-120b", _soon(30)), FakeWait()
+    result, _ = _cooling_run(tmp_path, selector, wait, timeout_seconds=10)
+    assert result.status == "ERROR" and result.detail == "no independent reviewer eligible"
+    assert wait.calls == []
+
+
+@pytest.mark.parametrize("reason", ["excluded_family", "insufficient_context"])
+def test_cooling_route_that_fails_the_floor_is_not_waited_for(
+    tmp_path: Path, monkeypatch, reason: str
+) -> None:
+    """Failure caught: waiting for a route the reviewer floor rejects anyway."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    selector = CoolingSelector("cf/llama", _soon(5), future_reject=reason)
+    wait = FakeWait()
+    result, _ = _cooling_run(tmp_path, selector, wait)
+    assert result.status == "ERROR" and result.detail == "no independent reviewer eligible"
+    assert wait.calls == []
+
+
+def test_route_still_cooling_after_wait_errors_after_one_wait(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Failure caught: an unbounded wait/reselect loop."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    selector = CoolingSelector("cerebras/gpt-oss-120b", _soon(5), still_cooling=True)
+    wait = FakeWait()
+    result, runner = _cooling_run(tmp_path, selector, wait)
+    assert result.status == "ERROR" and result.detail == "no independent reviewer eligible"
+    assert len(wait.calls) == 1 and runner.calls == []
+
+
+def test_route_failing_launch_recheck_after_wait_errors_after_one_wait(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Failure caught: the wait bypassing the pre-dispatch launch re-check."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    selector = CoolingSelector(
+        "cerebras/gpt-oss-120b", _soon(5), blocker="route:cerebras/gpt-oss-120b"
+    )
+    wait = FakeWait()
+    result, runner = _cooling_run(tmp_path, selector, wait)
+    assert result.status == "ERROR" and result.detail == "no independent reviewer eligible"
+    assert len(wait.calls) == 1 and runner.calls == []
+    assert [a["category"] for a in result.attempts] == ["pre_dispatch_revoked"]
+
+
+def test_no_wait_when_a_reviewer_is_available(tmp_path: Path, monkeypatch) -> None:
+    """Failure caught: delaying a review that could start now."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    selector = CoolingSelector("cerebras/gpt-oss-120b", _soon(-1))
+    wait = FakeWait()
+    result, _ = _cooling_run(tmp_path, selector, wait)
+    assert result.status == "PASS" and wait.calls == []
+    assert selector.evaluations == []
+
+
+def test_implementer_route_in_short_cooldown_is_never_waited_for(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Failure caught: self-review via waiting for the implementer's own route."""
+    monkeypatch.setenv("TEST_OCR_KEY", "sk-secret-value")
+    selector = CoolingSelector("cerebras/gpt-oss-120b", _soon(5))
+    wait = FakeWait()
+    result, runner = _cooling_run(
+        tmp_path, selector, wait, exclude_routes=frozenset({"cerebras/gpt-oss-120b"})
+    )
+    assert result.status == "ERROR" and result.detail == "no independent reviewer eligible"
+    assert wait.calls == [] and runner.calls == []

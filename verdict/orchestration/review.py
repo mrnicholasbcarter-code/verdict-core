@@ -31,14 +31,15 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol, cast
 
 from verdict.credentials_store import resolve_gateway_key
 from verdict.orchestration.contracts import (
+    EligibilityStage,
     FailureClassification,
     ModelSelector,
     ReviewFinding,
@@ -252,6 +253,27 @@ async def _select_bounded(
         return None
 
 
+# Waits until ``until`` for the route named first and returns the time after the
+# wait. The runtime supplies it so the wait uses its clock, sleep and event log.
+CapacityWait = Callable[[str, datetime], Awaitable[datetime]]
+
+# Stages where the ladder reports a cooldown before it checks the task floor.
+_COOLDOWN_STAGES = frozenset({EligibilityStage.HEALTHY, EligibilityStage.AVAILABLE})
+
+
+def _cooldown_end(verdict: Any, now: datetime) -> datetime | None:
+    if getattr(verdict, "failed_stage", None) not in _COOLDOWN_STAGES:
+        return None
+    raw = getattr(verdict, "cooldown_until", None)
+    try:
+        until = datetime.fromisoformat(str(raw).replace("Z", "+00:00")) if raw else None
+    except ValueError:
+        return None
+    if until is not None and until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    return until if until is not None and until > now else None
+
+
 async def _run_runner_bounded(
     runner: OcrRunner, argv: Sequence[str], *, env: Mapping[str, str], timeout_seconds: float
 ) -> OcrRun:
@@ -459,6 +481,8 @@ class OpenCodeReviewer:
         exclude_routes: frozenset[str],
         exclude_families: frozenset[str],
         timeout_seconds: float | None = None,
+        capacity_wait: CapacityWait | None = None,
+        max_cooldown_wait_seconds: float = 0.0,
     ) -> ReviewResult:
         now = datetime.now(timezone.utc)
         budget = self._timeout_seconds
@@ -477,7 +501,10 @@ class OpenCodeReviewer:
         last: ReviewResult | None = None
         attempts: list[dict[str, object]] = []
         lost_retried = False
-        for _attempt in range(self._max_reviewer_attempts):
+        waited = False
+        attempt = 0
+        while attempt < self._max_reviewer_attempts:
+            attempt += 1
             started = time.monotonic()
             remaining = review_deadline - started
             if remaining <= 0:
@@ -518,9 +545,27 @@ class OpenCodeReviewer:
                         },
                     ),
                 )
-            chosen, _verdicts = selection
+            chosen, verdicts = selection
             if chosen is None:
-                break
+                if waited or capacity_wait is None:
+                    break
+                current = replace(requirements, exclude_routes=frozenset(exclude_routes | tried))
+                target = await self._short_cooldown_target(
+                    verdicts,
+                    current,
+                    now=datetime.now(timezone.utc),
+                    limit_seconds=min(
+                        float(max_cooldown_wait_seconds), review_deadline - time.monotonic()
+                    ),
+                )
+                if target is None:
+                    break
+                # One wait per review level. It is not a reviewer attempt: no
+                # reviewer ran. The reselection and launch gates below still apply.
+                waited = True
+                now = await capacity_wait(*target)
+                attempt -= 1
+                continue
             # Launch gate: the reviewer route must be proven healthy or confirmed
             # live before OCR runs on it. Raises AdmissionBypassError on violation.
             require_launchable(self._selector, chosen.route_id, surface="OpenCodeReviewer.launch")
@@ -572,7 +617,7 @@ class OpenCodeReviewer:
                 # Issue #1137: OCR dropped comment calls, so findings are unknown.
                 # That is not a provider failure (no cooldown, no reselection):
                 # rerun the review once within the bounded attempts, then fail closed.
-                if lost and not lost_retried and _attempt + 1 < self._max_reviewer_attempts:
+                if lost and not lost_retried and attempt < self._max_reviewer_attempts:
                     lost_retried = True
                     continue
                 return replace(result, attempts=tuple(attempts))
@@ -608,6 +653,41 @@ class OpenCodeReviewer:
             detail="no independent reviewer eligible",
             attempts=tuple(attempts),
         )
+
+    async def _short_cooldown_target(
+        self,
+        verdicts: Sequence[Any],
+        requirements: TaskRequirements,
+        *,
+        now: datetime,
+        limit_seconds: float,
+    ) -> tuple[str, datetime] | None:
+        """The route worth waiting for and when its cooldown ends, or None.
+
+        A route qualifies only when a cooldown ending within ``limit_seconds``
+        is its sole rejection: the selector re-assesses it, unchanged
+        requirements, at the cooldown's end. The ladder reports a cooldown
+        before the task floor, so this is what keeps implementer routes,
+        excluded families or pools and sub-floor routes from being waited for.
+        """
+        ends = sorted(
+            (until, str(v.route_id))
+            for v in verdicts
+            for until in [_cooldown_end(v, now)]
+            if until is not None and (until - now).total_seconds() <= limit_seconds
+        )
+        for until, route_id in ends:
+            at = until + timedelta(seconds=1)
+            try:
+                future = await asyncio.wait_for(
+                    asyncio.to_thread(self._selector.evaluate, requirements, now=at),
+                    executor_timeout_within(limit_seconds),
+                )
+            except asyncio.TimeoutError:
+                return None
+            if any(v.route_id == route_id and v.failed_stage is None for v in future):
+                return route_id, until
+        return None
 
     @staticmethod
     def _classify_failure(
