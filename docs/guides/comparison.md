@@ -45,7 +45,7 @@ You can run Verdict with OmniRoute (or another OpenAI-compatible gateway) as the
 
 ## What we do not claim
 
-- We do not claim a percent cost cut here. Demo estimates live in the README with a caveat; they are not a comparison metric.
+- We do not claim a percent cost cut. No cost saving is claimed at all: see [Limits](../../README.md#limits).
 - We do not claim more models than OpenRouter. Catalog size is theirs. Qualification is ours.
 - We do not claim to be a coding agent (Claude Code, Codex, OpenCode).
 

@@ -103,8 +103,8 @@ Recorded terminal replay at 1x; idle gaps over 1.5 seconds are capped.
 
 1. **Plan.** A planner model splits the goal into a small graph of work items, called nodes. Each node owns its files and has a command that checks the work.
 2. **Admit.** Verdict builds one list of models that may be used now, from live gateway evidence: inventory, accounts, health, cooldowns and quota. Every dropped model gets a named reason. A model with no runtime evidence stays `unknown`. It is never counted as healthy.
-3. **Run.** Each node runs as its own worker, in parallel where the graph allows. Workers use the built-in `direct-gateway` executor: each worker request goes straight to the gateway.
-4. **Recover.** A quota limit, rate limit, timeout or empty answer cools the route down, and the node goes to another admitted model. When none is left, or the attempt budget is spent, the node stops with a named `FAIL_CLOSED` and the run ends `BLOCKED`.
+3. **Run.** Each node runs as its own worker, in parallel where the graph allows. By default workers use the built-in `direct-gateway` executor: each worker request goes straight to the gateway, so no agent has to be installed.
+4. **Recover.** A quota limit, rate limit, timeout or empty answer cools down the route or its provider, and the node goes to another admitted model. When none is left, or the attempt budget is spent, the node stops with a named `FAIL_CLOSED` and the run ends `BLOCKED`.
 5. **Check and review.** Each node must pass its own check. The merged result must pass an integration check. Then `ocr` reviews the diff on a route that no final implementer used.
 6. **Receipt.** The run writes a receipt that holds a SHA-256 digest of its event log.
 
@@ -114,21 +114,21 @@ Recorded terminal replay at 1x; idle gaps over 1.5 seconds are capped.
 %%   verdict/orchestration/planner.py (FrontierPlanner)
 %%   verdict/orchestration/eligibility.py (EligibilityLadder)
 %%   verdict/orchestration/runtime.py (DagRuntime)
-%%   verdict/orchestration/recovery.py (FailureIntelligence)
 %%   verdict/orchestration/review.py (OpenCodeReviewer)
 %%   verdict/orchestration/receipt.py (verify_run_receipt)
-%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#101014','fontSize':'15px','primaryColor':'#18181b','primaryTextColor':'#f4f4f5','primaryBorderColor':'#52525b','secondaryColor':'#18181b','secondaryTextColor':'#f4f4f5','secondaryBorderColor':'#52525b','tertiaryColor':'#101014','tertiaryTextColor':'#f4f4f5','tertiaryBorderColor':'#52525b','lineColor':'#7c7c88','textColor':'#f4f4f5','mainBkg':'#18181b','nodeTextColor':'#f4f4f5','nodeBorder':'#52525b','clusterBkg':'#101014','clusterBorder':'#52525b','titleColor':'#f4f4f5','edgeLabelBackground':'#18181b','noteBkgColor':'#18181b','noteTextColor':'#f4f4f5','noteBorderColor':'#52525b','actorBkg':'#18181b','actorBorder':'#a78bfa','actorTextColor':'#f4f4f5','actorLineColor':'#7c7c88','signalColor':'#7c7c88','signalTextColor':'#f4f4f5','labelBoxBkgColor':'#18181b','labelTextColor':'#f4f4f5','loopTextColor':'#f4f4f5','activationBkgColor':'#101014','activationBorderColor':'#22b8eb','sequenceNumberColor':'#101014'}}%%
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#101014','fontSize':'15px','primaryColor':'#18181b','primaryTextColor':'#f4f4f5','primaryBorderColor':'#52525b','secondaryColor':'#18181b','secondaryTextColor':'#f4f4f5','secondaryBorderColor':'#52525b','tertiaryColor':'#101014','tertiaryTextColor':'#f4f4f5','tertiaryBorderColor':'#52525b','lineColor':'#7c7c88','textColor':'#f4f4f5','mainBkg':'#18181b','nodeTextColor':'#f4f4f5','nodeBorder':'#52525b','clusterBkg':'#101014','clusterBorder':'#52525b','titleColor':'#f4f4f5','edgeLabelBackground':'#18181b','noteBkgColor':'#18181b','noteTextColor':'#f4f4f5','noteBorderColor':'#52525b','actorBkg':'#18181b','actorBorder':'#a78bfa','actorTextColor':'#f4f4f5','actorLineColor':'#7c7c88','signalColor':'#7c7c88','signalTextColor':'#f4f4f5','labelBoxBkgColor':'#18181b','labelTextColor':'#f4f4f5','loopTextColor':'#f4f4f5','activationBkgColor':'#101014','activationBorderColor':'#22b8eb','sequenceNumberColor':'#101014'}}}%%
 flowchart TD
     G["Goal and a git repository"] --> P["Plan: nodes, each with owned files and a check"]
     P --> A{"Admit: live evidence for each model"}
     A -- "dropped, with a named reason" --> D["Not a candidate"]
     A -- admitted --> W["Run: one worker per node, in parallel"]
     W --> V{"Node check passes?"}
-    V -- "no: cool down the route" --> R{"Admitted model and attempts left?"}
+    V -- "no, or the worker failed" --> R{"Admitted model and attempts left?"}
     R -- "yes: reassign" --> W
     R -- no --> B["BLOCKED, with a named reason"]
-    V -- yes --> I["Integrate: the merged result passes its check"]
-    I --> O{"Review by ocr on a separate route"}
+    V -- yes --> I{"Integration check on the merged result passes?"}
+    I -- no --> B
+    I -- yes --> O{"Review by ocr on a separate route"}
     O -- "no PASS" --> B
     O -- PASS --> C["COMPLETE: receipt holds the SHA-256 of the event log"]
 classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
@@ -137,7 +137,7 @@ classDef cooldown fill:#18181b,stroke:#f5b00b,color:#f4f4f5,stroke-width:2px
 classDef failed fill:#18181b,stroke:#f87171,color:#f4f4f5,stroke-width:2px
 classDef validated fill:#18181b,stroke:#4ade80,color:#f4f4f5,stroke-width:2px
 classDef muted fill:#18181b,stroke:#52525b,color:#a1a1aa,stroke-width:1px
-class P,W,I active
+class P,W active
 class C validated
 ```
 
@@ -205,28 +205,41 @@ Python 3.10, 3.11, 3.12 and 3.13, tested in CI on Linux (Ubuntu). macOS and Wind
 
 ## A live run
 
-A live run needs three things: an OmniRoute gateway at `http://localhost:20128` with at least one provider account, `ocr` on your PATH, and a git repository to change.
+A live run needs four things: an OmniRoute gateway at `http://localhost:20128` with at least one provider account, its key exported as `VERDICT_OMNIROUTE_API_KEY`, `ocr` on your PATH, and a git repository to change.
 
 ```bash
-verdict doctor                                  # checks config and gateway; prints a repair command for each failure
+verdict doctor                                  # health check, with a repair command for each failure
 verdict orchestrate "your goal, in a sentence" --repo .
 verdict watch <run-id>                          # live view of the run
 verdict run-receipt <run-id>                    # show and verify its receipt
 ```
 
-`verdict serve` exposes the same decisions over HTTP (`POST /v1/route`, and an OpenAI-compatible relay). It needs `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB` before it starts; `verdict setup --apply --allow host.serve` sets both. See [first run](docs/CONFIGURATION.md#first-run).
+`verdict serve` is the HTTP service (install it with `pip install -e '.[server]'`). `POST /v1/route` returns a route decision for a request that carries an `execution_path_request`. `POST /v1/chat/completions` routes a call and relays it upstream. It needs `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB` before it starts; `verdict setup --apply --allow host.serve` sets both. See [first run](docs/CONFIGURATION.md#first-run).
 
-Claude Code, Codex, Cursor, Cline and OpenCode can use that relay as their model endpoint: `verdict harness <tool> enable`. That makes the tool a client of Verdict. It does not make it a worker: `verdict orchestrate` cannot run a worker on any of them. See the [harness guide](docs/guides/harnesses.md).
+Claude Code, Codex, Cursor, Cline and OpenCode can be pointed at that relay as their model endpoint: `verdict harness <tool> enable`. That makes the tool a client of Verdict. It does not make it a worker: `verdict orchestrate` cannot run a worker on any of them. See the [harness guide](docs/guides/harnesses.md).
+
+## Architecture
+
+Verdict is the control plane. Other tools do the execution, and Verdict only calls them.
+
+| Part | What it does |
+|---|---|
+| **Verdict** | Plans, admits and selects models, recovers from failures, verifies, writes receipts. Never runs a model itself. |
+| **OmniRoute** | The gateway: lists the models (`/v1/models`) and carries every model call (`/v1/chat/completions`). |
+| **Worker executor** | Runs one node. `direct-gateway` by default. It never selects a model: Verdict passes it the exact admitted route. |
+| **`ocr`** | The reviewer CLI (open-code-review). Runs on a route no implementer used. |
+
+Component map and data flow: [`docs/architecture.md`](docs/architecture.md). The design decision behind the loop: [ADR-036](docs/adr/ADR-036-goal-to-receipt-orchestration.md).
 
 ## Limits
 
-- **1.0.0 is not released.** The release workflow requires a CERTIFIED evidence bundle (repository variable `VERDICT_REQUIRE_CERTIFIED_BUNDLE` is `true`). None exists, because the certification rehearsal does not pass yet. Until it does, no tag and no PyPI upload.
+- **1.0.0 is not released.** The release workflow requires a CERTIFIED evidence bundle (repository variable `VERDICT_REQUIRE_CERTIFIED_BUNDLE` is `true`). None exists, because the certification rehearsal does not pass yet. Until one exists the workflow refuses to publish.
 - **No cost saving is claimed yet.** No token saving is claimed either. The 2026-09-28 live cost check chose the same model in both arms, so it measured no routing saving. One paired usage run on 2026-11-19 did not support a claim: the Verdict arm completed fewer tasks than the baseline, so the bench refused it. Its evidence is not published. See [`docs/benchmarks/README.md`](docs/benchmarks/README.md). <!-- claim:C-018 -->
 - **Context packing: one dated live observation, not offline proof.** One recorded paired run, n=1, on a live gateway. See [`docs/benchmarks/context-lift.md`](docs/benchmarks/context-lift.md). A blocked or skipped live run makes no lift claim.
 - **Self-hosting is early.** One story built by Verdict itself, in six runs, five of them `BLOCKED`.
 - **Live orchestration requires a gateway.** OmniRoute must be running at `http://localhost:20128`. The credential-free quickstart and benchmark paths need no gateway. <!-- claim:C-019 -->
 - **Worker model availability is external.** Verdict combines gateway inventory and account evidence with its own runtime health and admission evidence before selection. Quota, rate limits, and provider outages are not under Verdict's control. It recovers from them, but cannot prevent them. <!-- claim:C-020 -->
-- **Workers run on `direct-gateway`.** There is no worker executor for OpenCode, Claude Code or Codex.
+- **Workers run on `direct-gateway` by default.** There is no worker executor for OpenCode, Claude Code or Codex.
 - **Independent review requires `ocr` on PATH.** `open-code-review` is a separate binary. `--no-review` skips it and ends the run `BLOCKED`. <!-- claim:C-021 -->
 - **Receipt integrity covers event logs, not LLM or OCR output.** Verification detects event-log changes against the retained receipt. Recorded reviewer PASS alone can lack semantic coverage. Neither the receipt nor the log is signed or externally anchored against replacing both files. <!-- claim:C-022 -->
 - **No static fallback chains (retries stay inside the admitted set); OpenTelemetry is optional (`verdict-core[tracing]`).** See [How Verdict differs](docs/guides/comparison.md#how-verdict-differs). <!-- claim:C-023 -->
@@ -247,6 +260,7 @@ Claude Code, Codex, Cursor, Cline and OpenCode can use that relay as their model
 | How Verdict differs; LiteLLM, OpenRouter, Portkey | [`docs/guides/comparison.md`](docs/guides/comparison.md) |
 | Architecture and decisions | [`docs/architecture.md`](docs/architecture.md), [ADR index](docs/adr/README.md) |
 | Evidence: index, benchmarks, claim ledger | [`docs/proof/EVIDENCE_INDEX.md`](docs/proof/EVIDENCE_INDEX.md), [`docs/benchmarks/README.md`](docs/benchmarks/README.md), [`docs/CLAIMS.md`](docs/CLAIMS.md) |
+| Unknown is not healthy: fail-closed drops | [`docs/guides/unknown-not-healthy.md`](docs/guides/unknown-not-healthy.md) |
 | Receipt threat model | [`docs/THREAT_MODEL_RECEIPTS.md`](docs/THREAT_MODEL_RECEIPTS.md) |
 | User journey and maturity of each step | [`docs/USER_JOURNEY.md`](docs/USER_JOURNEY.md) |
 | Changelog and upgrade notes | [`CHANGELOG.md`](CHANGELOG.md) |

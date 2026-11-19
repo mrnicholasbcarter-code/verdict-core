@@ -69,7 +69,8 @@ The following boundaries apply to the stated paths (not every routing entry poin
 Orchestration is specified in [ADR-036](adr/ADR-036-goal-to-receipt-orchestration.md).
 ADR-023 (governed swarm supervision) is superseded.
 
-Three of the nine verified diagrams are embedded below. The other six
+Three of the ten verified diagrams are embedded below. One ([run-overview](../diagrams/run-overview.mmd)) is
+embedded in the README. The other six
 ([ecosystem](../diagrams/ecosystem.mmd), [explain-flow](../diagrams/explain-flow.mmd),
 [setup-detection-flow](../diagrams/setup-detection-flow.mmd),
 [failover-sequence](../diagrams/failover-sequence.mmd),
@@ -534,6 +535,10 @@ The demo run records one `SHADOW` signal from a fixture provider in its receipt.
 | Historical operator-reported scenario A–J observations; no retained public certification packet | [`docs/proof/GOLDEN_PATH_CERTIFICATION.md`](proof/GOLDEN_PATH_CERTIFICATION.md) |
 | Evidence index | [`docs/proof/EVIDENCE_INDEX.md`](proof/EVIDENCE_INDEX.md) |
 | Claims audit | [`docs/proof/CLAIMS_AUDIT_2026-09-06.md`](proof/CLAIMS_AUDIT_2026-09-06.md) |
+
+**Install checks.** The [fresh-install workflow](../.github/workflows/fresh-install.yml) runs `pipx`, `uvx` and
+the integrity-verified `install.sh` in clean Linux Python 3.12 and 3.13 containers. It installs the
+published release, which is 0.4.2 until 1.0.0 is published.
 
 **Test and gate status.** CI runs the repository's test, lint, format, type, security,
 CodeQL, OSV, install, build and contract-parity checks. The current claim boundary and

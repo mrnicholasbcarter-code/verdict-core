@@ -22,13 +22,10 @@ JOURNEY_COMMANDS = (
     "verdict failover-proof",
     "verdict replay",
 )
-# P1-1 (README rewrite): the credential-free quickstart is now the first thing
-# after the hero, ahead of Install -- a reviewer sees the "it refuses" proof
-# before any setup instructions. This intentionally changes the prior
-# ordering (which put Install before Quick start); the new order matches the
-# repository's actual reading path and is asserted just as strictly.
-# Docs Train A: the cost comparison moved to docs/benchmarks/README.md (no saving is
-# claimed), so the README order now ends with the Limits line that links it.
+# The credential-free quickstart comes before Install: a reader sees the refusal
+# proof before any setup instructions. Install comes before Architecture, and the
+# Limits line that says no saving is claimed (it links docs/benchmarks/README.md)
+# comes last.
 README_REQUIRED_ORDER = (
     "A model that fails\nan admission check cannot be ranked back in.",
     "## Quick start",
@@ -141,11 +138,15 @@ def test_readme_reader_path_is_ordered_and_local_links_resolve() -> None:
 
     install_section = _section("## Install")
     proof_section = _section("## Quick start")
-    # Install now documents both `pip install` and the optional installer
-    # script (moved out of Quick start during the P1-1 reorder), so it holds
-    # two bash blocks rather than one; the pip command must be the first.
     assert install_section.count("```bash") == 2
-    assert "pip install verdict-core" in install_section.split("```bash", 2)[1]
+    # 1.0.0 is not published, so the first install command is the one that gives
+    # the version this README describes: an editable install from a clone. The
+    # PyPI command comes second and must say which version it installs.
+    first_block, second_block = install_section.split("```bash", 2)[1:]
+    assert "pip install -e ." in first_block.split("```", 1)[0]
+    assert "pip install verdict-core" in second_block.split("```", 1)[0]
+    assert "**not published**" in install_section
+    assert "That installs 0.4.2, not 1.0.0." in install_section
     assert "verdict quickstart --non-interactive --dry-run" in proof_section
 
     markdown_links = re.findall(r"(?<!!)\[[^]]+\]\(([^)]+)\)", readme)
