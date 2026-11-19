@@ -7,11 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-11-19
 
 The first complete version. It also carries the 0.5.0 changes below, which were never
-published. The date is set when the `v1.0.0` tag is pushed; nothing in this entry is on
-PyPI or npm yet.
+published.
 
 This release is not certified: the attested certification rehearsal has not passed yet (see #1168 and #1169).
 It is published with the release workflow's bundle requirement switched off for this one
@@ -84,7 +83,6 @@ runner cannot provide. The other 28 acceptance gates passed.
 ### Known limitations
 - The release has no attested certification bundle: the certification rehearsal does not pass yet (#1168, #1169).
 - No cost or token saving is claimed. The 2026-09-28 live cost check chose the same model in both arms. One paired usage run on 2026-11-19 did not support a claim: the Verdict arm completed fewer tasks than the baseline, so the bench refused it. Its evidence is not published yet.
-- `install.sh` keeps installing 0.4.2 until 1.0.0 is published to PyPI; its pin is updated after publication with real digests.
 - A real HTTP 402 from the ladder health probe still cools the pool and provider; only the HTTP 200 in-band refusal is route-scoped.
 
 ## [0.5.0] - 2026-10-09

@@ -142,6 +142,7 @@ def test_failed_child_retains_only_safe_diagnostics(
         "planner_eligible_pools": 5,
         "planner_eligible_pools_required": 2,
         "metadata_error": None,
+        "source_errors": {},
     }
     assert len(raw) < 2048
     assert not list((tmp_path / "attested-rehearsals").iterdir())
@@ -194,6 +195,43 @@ def test_preflight_counts_never_carry_raw_text(tmp_path, monkeypatch):
         "planner_eligible_pools": 0,
         "planner_eligible_pools_required": 2,
         "metadata_error": "unclassified",
+        "source_errors": {},
+    }
+
+
+def test_preflight_names_failing_sources_without_secrets(tmp_path, monkeypatch):
+    """Catches a preflight failure that cannot say which read failed, or leaks text."""
+    secret, url = "provider-secret", "https://private.invalid"
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", url)
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", secret)
+    monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "s.json")
+    screen = {
+        "mode": "screen",
+        "routes": [],
+        "routes_checked": 0,
+        "passed": 0,
+        "source_errors": ["providers", "v1_models", "candidates", f"{url}/{secret}"],
+        "source_error_kinds": {
+            "providers": "http_401",
+            "v1_models": "URLError",
+            "candidates": f"{url} {secret}",
+            f"{url}/{secret}": "http_500",
+        },
+    }
+
+    def child(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, json.dumps(screen).encode(), b"")
+
+    monkeypatch.setattr(script.subprocess, "run", child)
+    with pytest.raises(script.RehearsalConfigurationError):
+        script.run()
+    raw = (tmp_path / "certification-failure.json").read_text()
+    assert secret not in raw and url not in raw
+    assert json.loads(raw)["preflight"]["source_errors"] == {
+        "providers": "http_401",
+        "v1_models": "URLError",
+        "candidates": "unclassified",
     }
 
 
@@ -238,4 +276,9 @@ def test_pool_count_never_carries_route_or_pool_text(tmp_path, monkeypatch):
     # The reported pool name is ignored: the pool is derived from the route id.
     assert preflight["planner_eligible_pools"] == 0
     assert preflight["planner_eligible_pools_required"] == 2
-    assert all(value is None or type(value) is int for value in preflight.values())
+    assert all(
+        value is None or type(value) is int
+        for key, value in preflight.items()
+        if key != "source_errors"
+    )
+    assert preflight["source_errors"] == {}

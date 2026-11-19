@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -124,6 +125,32 @@ def _planner_eligible_pools(rows: list[Any]) -> int:
     )
 
 
+# Closed vocabularies: the uploaded summary names the failing read, nothing else.
+_SOURCE_NAMES = frozenset(
+    {"providers", "resilience", "limits", "cooldowns", "health_matrix", "v1_models", "candidates"}
+)
+_SOURCE_ERROR_KIND = re.compile(
+    r"http_[1-5][0-9]{2}|not_read_snapshot|invalid_payload"
+    r"|[A-Z][A-Za-z]{0,63}(?:Error|Exception|Refused|Timeout)"
+)
+
+
+def _source_errors(report: dict[str, Any]) -> dict[str, str]:
+    """Source name -> HTTP status or exception class; anything else is "unclassified"."""
+    names = report.get("source_errors")
+    kinds = report.get("source_error_kinds")
+    kinds = kinds if isinstance(kinds, dict) else {}
+    out: dict[str, str] = {}
+    for name in names if isinstance(names, list) else []:
+        if name not in _SOURCE_NAMES:
+            continue
+        kind = kinds.get(name)
+        out[name] = (
+            kind if isinstance(kind, str) and _SOURCE_ERROR_KIND.fullmatch(kind) else "unclassified"
+        )
+    return out
+
+
 def preflight_summary(report: Any) -> dict[str, Any]:
     """Counts and enums only, safe to upload."""
     report = report if isinstance(report, dict) else {}
@@ -143,6 +170,7 @@ def preflight_summary(report: Any) -> dict[str, Any]:
             if metadata_error in _METADATA_ERRORS
             else "unclassified"
         ),
+        "source_errors": _source_errors(report),
     }
 
 

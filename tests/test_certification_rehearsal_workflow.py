@@ -565,7 +565,6 @@ def test_preflight_argv_carries_planner_floor_and_pool_cap(tmp_path, monkeypatch
 
 def test_preflight_min_planner_pools_is_two(tmp_path, monkeypatch):
     """D2 (2026-11-19): pool floor is 2 — two proven pools are sufficient to start.
-
     Two distinct provider pools passing the floor check proceeds to orchestration.
     The check ensures an implementer pool and an independent reviewer pool are
     both proven before the run starts.

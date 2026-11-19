@@ -9,7 +9,7 @@
 #   bash install.sh
 #
 # Override the version:
-#   VERDICT_VERSION=0.4.2 bash install.sh
+#   VERDICT_VERSION=1.0.0 bash install.sh
 #
 # Install from a local source tree (bypasses PyPI download and hash checks):
 #   VERDICT_SOURCE=/path/to/verdict-core bash install.sh
@@ -22,14 +22,12 @@ set -euo pipefail
 # ── Pinned version & expected hashes ────────────────────────────────
 # Policy: this default pin is updated only AFTER a release is published on
 # PyPI, using real digests pulled from the PyPI JSON API (see pypi_sha256()
-# below) — never invented or pre-computed ahead of publication. That is why
-# this stays at 0.4.2 until the next release (1.0.0) actually exists on
-# PyPI; an override via VERDICT_VERSION already fetches its own hashes
-# unpinned.
-VERDICT_VERSION="${VERDICT_VERSION:-0.4.2}"
-# SHA-256 digests from PyPI JSON API for verdict-core 0.4.2
-VERDICT_WHL_SHA256="202496d4235d9b810d5f62e4b31e364809df9cc2333ce039d6637ab6cd2bb15d"
-VERDICT_SDIST_SHA256="b59e3858b4f29ca65f7261fcdbf3ec456bc2116885542af81407b9284484745c"
+# below) — never invented or pre-computed ahead of publication. An override
+# via VERDICT_VERSION fetches its own hashes from PyPI at run time.
+VERDICT_VERSION="${VERDICT_VERSION:-1.0.0}"
+# SHA-256 digests from PyPI JSON API for verdict-core 1.0.0
+VERDICT_WHL_SHA256="06cde9649e4a634a23bd8747345b2c7b746f821b49d4d162bcdddef9bf0ea10b"
+VERDICT_SDIST_SHA256="b460750c85e76d667b7204483b7e8ea67b6175e940e32ae70d854e7d0eaa81b4"
 
 # Optional: install from a local source checkout (skips PyPI download + hash check)
 VERDICT_SOURCE="${VERDICT_SOURCE:-}"
@@ -74,7 +72,7 @@ sys.exit(1)
 # For an overridden version fetch the hash from PyPI first.
 resolve_expected_hash() {
   local ver="$1"
-  if [[ "$ver" == "0.4.2" ]]; then
+  if [[ "$ver" == "1.0.0" ]]; then
     EXPECTED_WHL_SHA256="$VERDICT_WHL_SHA256"
     EXPECTED_SDIST_SHA256="$VERDICT_SDIST_SHA256"
   else
