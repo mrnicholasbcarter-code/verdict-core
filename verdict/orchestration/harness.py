@@ -255,15 +255,19 @@ from verdict.orchestration.executors import (  # noqa: E402
     ScriptedExecutor,
 )
 
+# direct-gateway is the default worker backend (1.0): it needs only the gateway.
+# Prime Agent is an optional harness selected with ``--executor prime-headless``.
 DEFAULT_REGISTRY.register(
     PrimeHeadlessAdapter(),
-    default=True,
     aliases=("prime",),
     executor_class=PrimeHeadlessExecutor,
     executor_label="prime-headless",
 )
 DEFAULT_REGISTRY.register(
-    DirectGatewayAdapter(), executor_class=DirectGatewayExecutor, executor_label="direct-gateway"
+    DirectGatewayAdapter(),
+    default=True,
+    executor_class=DirectGatewayExecutor,
+    executor_label="direct-gateway",
 )
 # Wrapper labels so run.py's receipt table can be fully delegated to the registry.
 DEFAULT_REGISTRY._executor_labels[FaultInjectingExecutor] = "fault-injecting"
