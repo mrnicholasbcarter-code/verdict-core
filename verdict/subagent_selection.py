@@ -753,15 +753,20 @@ def _empty_but_alive_flags(payload: Any, *, requested: str, headers: Any) -> str
 
     * the body is an object whose top-level ``error`` is absent or null;
     * there is exactly one choice, and its ``finish_reason`` is ``length``;
-    * the message is an assistant message whose ``content`` key is present and is null, an
-      empty string or whitespace only, with no refusal and no tool-call payload of any kind:
+    * the message is an assistant message with no refusal and no tool-call payload of any kind:
       ``refusal``, ``tool_calls`` and the legacy ``function_call`` are each absent or null (any
       other value, even an empty list, string, 0 or false, is rejected; the captured
       ``beam-free`` body carries ``refusal: null``);
+    * its text is one of two shapes. ``empty_content``: the ``content`` key is present and is
+      null, an empty string or whitespace only. ``missing_content``: the ``content`` key is
+      absent (the captured ``cerebras/gpt-oss-120b`` message holds only ``role``), and then
+      ``_missing_content_is_readable`` must also hold, because such a message says nothing
+      itself about the completion;
     * the gateway's served identity verifies as the requested route.
 
-    ``stop`` is deliberately not accepted: a reply that stopped on its own with no text is not a
-    truncated completion.
+    The two shapes are never reported under each other's flag. ``stop`` is deliberately not
+    accepted for either: a reply that stopped on its own with no text is not a truncated
+    completion.
     """
     from verdict.served_identity import check_served, served_identity_from_headers
 
@@ -780,20 +785,41 @@ def _empty_but_alive_flags(payload: Any, *, requested: str, headers: Any) -> str
     message = choice.get("message")
     if not (isinstance(message, Mapping) and message.get("role") == "assistant"):
         return None
-    if "content" not in message:
-        return None
-    content = message["content"]
-    if content is not None and not (isinstance(content, str) and not content.strip()):
+    missing = "content" not in message
+    if missing:
+        if not _missing_content_is_readable(payload, message):
+            return None
+    elif not _blank_or_null(message["content"]):
         return None
     if any(message.get(key) is not None for key in ("refusal", "tool_calls", "function_call")):
         return None
     if check_served(requested, served_identity_from_headers(headers)).status != "verified":
         return None
-    flags = ["empty_content"]
+    flags = ["missing_content" if missing else "empty_content"]
     usage = payload.get("usage")
     if isinstance(usage, Mapping) and usage.get("completion_tokens") == 0:
         flags.append("zero_output_tokens")
     return ",".join(flags)
+
+
+def _blank_or_null(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _missing_content_is_readable(payload: Mapping[str, Any], message: Mapping[str, Any]) -> bool:
+    """Extra conditions for a truncated reply whose message has no ``content`` key.
+
+    With no ``content`` key the message carries no statement about the completion, so the
+    reply must say so elsewhere: ``usage.completion_tokens`` is an integer of 0 or more (a
+    missing, null, boolean, float or text count cannot be read, and unknown is never healthy),
+    and ``reasoning`` and ``reasoning_content`` are each absent, null or blank. Reasoning text
+    is inference output and never reaches this rule; any other reasoning value is unreadable.
+    """
+    usage = payload.get("usage")
+    tokens = usage.get("completion_tokens") if isinstance(usage, Mapping) else None
+    if type(tokens) is not int or tokens < 0:
+        return False
+    return all(_blank_or_null(message.get(key)) for key in ("reasoning", "reasoning_content"))
 
 
 def _has_inference_output(payload: Any) -> bool:
