@@ -56,7 +56,7 @@ verdict orchestrate "Implement the feature" --repo . --json
 | `--no-review` | Skip OCR review; run ends BLOCKED |
 | `--inject ROUTE=FAULT[,FAULT]` | Inject a named chaos fault (`route`, `cc/*`, `@node`, `#N`, `worker#N`, `*`) |
 | `--state-file STATE_FILE` | Health/cooldown state file (default `$VERDICT_HOME/orchestration-health.json`). When set, the run also uses `health-cache.json` in the same directory |
-| `--plain` | ASCII narrative instead of live view |
+| `--plain` | ASCII narrative instead of live view, also on a terminal (same as `VERDICT_PLAIN=1`) |
 | `--json` | Print final receipt JSON |
 | `--executor BACKEND` | Worker executor backend: `prime` (default) or `direct-gateway` |
 | `--executor-map NODE=BACKEND[,...]` | Route specific nodes to a named backend; unmapped nodes use `--executor`. See [Mixed-harness runs](#mixed-harness-runs) |
@@ -253,6 +253,10 @@ verdict run-receipt RUN_ID --runs-dir .verdict/runs --json
 | `--runs-dir RUNS_DIR` | Run directory root |
 | `--json` | Print JSON |
 
+When integrity fails, the first line is `INTEGRITY FAILED: <problems>` and the
+recorded outcome follows as `recorded (unverified): ...`; `--json` then reports
+`"verified": false`, `"outcome": "INTEGRITY_FAILED"` and `recorded_outcome`.
+
 Text output includes outcome, integrity, per-node attempts, and, when present,
 how many implement nodes changed no files (`no_change_nodes` on the receipt).
 That field is omitted when empty so committed receipts still verify.
@@ -419,6 +423,7 @@ verdict route "your task prompt" [flags]
 | `--criticality <level>` | `low` \| `medium` \| `high` \| `critical` |
 | `--allow-offline` | Disable network discovery/probes; does not enable the legacy selector |
 | `--allow-legacy-selector` | Explicit migration escape to the selector that predates the execution-path authority optimizer |
+| `--json` | Print exactly one JSON document on stdout; diagnostics go to stderr. Exit 0 when a route decision is returned (with `--allow-offline` the decision is not executed: `"executed": false`); non-zero with an `error` field when there is none |
 
 **Examples:**
 ```bash
