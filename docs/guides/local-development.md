@@ -178,7 +178,7 @@ verdict serve
 ### Inspect Decision Log
 
 ```bash
-cat verdict-decisions.jsonl | jq .
+cat ~/.verdict/verdict-decisions.jsonl | jq .   # or $VERDICT_HOME/verdict-decisions.jsonl
 ```
 
 ---

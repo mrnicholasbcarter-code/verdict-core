@@ -150,7 +150,7 @@ Highest source first. Only the sources listed below are consulted.
 | `gateway_ready_timeout_s` | config file `gateway_ready_timeout_s` | env `VERDICT_GATEWAY_READY_TIMEOUT_S` | `30.0` |
 | `primary_model` | config file `primary_model` | env `LLMGATE_PRIMARY` | `verdict.contracts.DEFAULT_PRIMARY_MODEL` |
 | `profile` | config file `profile` | env `LLMGATE_INTELLIGENCE_PROFILE` | `development` |
-| `log_path` | config file `log_path` | env `LLMGATE_LOG_PATH` | `verdict-decisions.jsonl` |
+| `log_path` | config file `log_path` | env `LLMGATE_LOG_PATH` | `$VERDICT_HOME/verdict-decisions.jsonl` (default `~/.verdict`) |
 | any env name | exported process environment | credential store (`credentials.env`) | — |
 
 The credential store is **not** a source for `gateway_start_command` or
@@ -167,6 +167,25 @@ diagnostic naming both values.
 `BootstrapResult.field_sources` records which source won for every field, so a
 value is never applied without a traceable origin.
 
+#### Decision log location
+
+The routing decision log defaults to `$VERDICT_HOME/verdict-decisions.jsonl`
+(`~/.verdict/verdict-decisions.jsonl` when `VERDICT_HOME` is unset). Earlier
+releases wrote `./verdict-decisions.jsonl` in the working directory.
+`LLMGATE_LOG_PATH`, the config file `log_path` and `--log_path` override the
+default.
+
+The readers (`verdict stats`, `verdict suggest`, `verdict cost-report`,
+`verdict ui`) open `--log_path` when given, then `LLMGATE_LOG_PATH`, then the
+state-directory log. When only a legacy `./verdict-decisions.jsonl` exists they
+read it. When both exist they read the state-directory log and print one line on
+stderr, once per process, naming the legacy log and how to read it:
+`verdict stats --log_path ./verdict-decisions.jsonl`,
+`verdict suggest --log_path ./verdict-decisions.jsonl`, or
+`LLMGATE_LOG_PATH=./verdict-decisions.jsonl` for any command (`cost-report` and
+`ui` have no flag). Nothing is printed when a path was given. The two logs are
+never merged or migrated.
+
 #### `verdict serve` precedence
 
 `verdict serve` resolves three fields on its own, because a long-running server
@@ -177,7 +196,7 @@ appears on disk:
 |---|---|---|---|
 | `primary_model` | env `LLMGATE_PRIMARY` | `verdict.contracts.DEFAULT_PRIMARY_MODEL` | — (routing config not read) |
 | `profile` | env `LLMGATE_INTELLIGENCE_PROFILE` | `development` | — (routing config not read) |
-| `log_path` | env `LLMGATE_LOG_PATH` | `verdict-decisions.jsonl` | — (routing config not read) |
+| `log_path` | env `LLMGATE_LOG_PATH` | `$VERDICT_HOME/verdict-decisions.jsonl` | — (routing config not read) |
 
 The routing config is still read at serve startup, only to detect disagreement.
 When `verdict.yaml` asks for a different value than the serve path applies, a
@@ -615,7 +634,8 @@ needs a restart to pick up a change.
 ### Session evidence (orchestration, phase 1)
 
 `SessionLedger` stores controller-verified worker-session outcomes separately
-from probe health. Its default path is `~/.verdict/session-evidence.jsonl`.
+from probe health. Its default path is `$VERDICT_HOME/session-evidence.jsonl`
+(`~/.verdict/session-evidence.jsonl` when `VERDICT_HOME` is unset).
 `VERDICT_SESSION_EVIDENCE` overrides that path. An explicit constructor path
 wins over the environment. Reading an absent ledger does not create it.
 

@@ -576,7 +576,8 @@ def test_serve_intelligence_resolves_identity_from_environment_then_default(
 
     assert service.primary_model == DEFAULT_PRIMARY_MODEL
     assert service.profile == DEFAULT_PROFILE
-    assert service.log_path == "verdict-decisions.jsonl"
+    # Default decision log lives in the state directory, never the cwd (G6b).
+    assert service.log_path == str(tmp_path / "home" / ".verdict" / "verdict-decisions.jsonl")
     assert service.providers == {}
 
     err = capsys.readouterr().err

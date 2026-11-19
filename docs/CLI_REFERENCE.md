@@ -533,8 +533,8 @@ verdict ui
 Requires Python 3.11 or newer and the dashboard extras (`pip install "verdict-core[dashboard]"` or
 `"verdict-core[all]"`). On Python 3.10 these extras omit Streamlit and Pillow;
 core Verdict remains supported, but `verdict ui` exits with an upgrade message.
-The dashboard reads `verdict-decisions.jsonl` from the
-current directory and joins it to `verdict-outcomes.jsonl` beside it. Spend is
+The dashboard reads `$VERDICT_HOME/verdict-decisions.jsonl` (a legacy
+`./verdict-decisions.jsonl` is still read when the state-directory log does not exist) and joins it to `verdict-outcomes.jsonl` beside it. Spend is
 shown only from those post-execution outcome receipts; any per-model price
 assumption is an opt-in view explicitly labelled *synthetic* and is never
 presented as measured spend.

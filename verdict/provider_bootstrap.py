@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 
 from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.models import ProviderConfig
+from verdict.paths import default_decision_log_path
 from verdict.security import redact_text
 
 __all__ = [
@@ -68,7 +69,7 @@ DiagnosticClass = Literal["configuration", "gateway_health", "model_eligibility"
 #: Default intelligence profile. Mirrors ``verdict.intelligence.DEFAULT_PROFILE``
 #: without importing that module (bootstrap must stay import-cheap).
 DEFAULT_BOOTSTRAP_PROFILE = "development"
-DEFAULT_BOOTSTRAP_LOG_PATH = "verdict-decisions.jsonl"
+DEFAULT_BOOTSTRAP_LOG_PATH = "verdict-decisions.jsonl"  # name only; the path is resolved per call
 
 #: Profile under which a defaulted provider set is refused outright.
 PRODUCTION_PROFILE = "production"
@@ -748,7 +749,7 @@ def resolve_provider_bootstrap(
         profile = str(raw["profile"]).strip()
         field_sources["profile"] = "config_file"
 
-    log_path = DEFAULT_BOOTSTRAP_LOG_PATH
+    log_path = default_decision_log_path(exported)
     field_sources["log_path"] = "default"
     env_log = _text(merged, _LOG_PATH_ENV)
     if env_log:
