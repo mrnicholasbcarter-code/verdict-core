@@ -167,6 +167,25 @@ diagnostic naming both values.
 `BootstrapResult.field_sources` records which source won for every field, so a
 value is never applied without a traceable origin.
 
+#### Decision log location
+
+The routing decision log defaults to `$VERDICT_HOME/verdict-decisions.jsonl`
+(`~/.verdict/verdict-decisions.jsonl` when `VERDICT_HOME` is unset). Earlier
+releases wrote `./verdict-decisions.jsonl` in the working directory.
+`LLMGATE_LOG_PATH`, the config file `log_path` and `--log_path` override the
+default.
+
+The readers (`verdict stats`, `verdict suggest`, `verdict cost-report`,
+`verdict ui`) open `--log_path` when given, then `LLMGATE_LOG_PATH`, then the
+state-directory log. When only a legacy `./verdict-decisions.jsonl` exists they
+read it. When both exist they read the state-directory log and print one line on
+stderr, once per process, naming the legacy log and how to read it:
+`verdict stats --log_path ./verdict-decisions.jsonl`,
+`verdict suggest --log_path ./verdict-decisions.jsonl`, or
+`LLMGATE_LOG_PATH=./verdict-decisions.jsonl` for any command (`cost-report` and
+`ui` have no flag). Nothing is printed when a path was given. The two logs are
+never merged or migrated.
+
 #### `verdict serve` precedence
 
 `verdict serve` resolves three fields on its own, because a long-running server

@@ -20,7 +20,10 @@ place:
 - Every default `~/.verdict` path is built with `verdict.paths.verdict_home()`.
 - The default decision log is `$VERDICT_HOME/verdict-decisions.jsonl`. `LLMGATE_LOG_PATH`, the
   config file `log_path` and `--log_path` still override it. Readers fall back to a legacy
-  `./verdict-decisions.jsonl` only when the state-directory log does not exist.
+  `./verdict-decisions.jsonl` only when the state-directory log does not exist. When both exist,
+  they print one stderr notice naming the legacy log and how to read it.
+- `DEFAULT_RUNTIME_STATE_DIR` (`~/.verdict/runtime`, fixed at import, ignored `VERDICT_HOME`) is
+  replaced by `default_runtime_state_dir()`. Nothing outside its own re-exports read the constant.
 
 ## Safety
 

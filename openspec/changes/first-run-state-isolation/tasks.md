@@ -14,6 +14,9 @@
 - [x] 2.2 State defaults use `verdict_home()`
 - [x] 2.3 Decision log default under the state directory, legacy read fallback
 - [x] 2.4 Docs updated (CONFIGURATION, CLI_REFERENCE, guides)
+- [x] 2.5 One stderr notice when a legacy ./verdict-decisions.jsonl is not being read (tests: both, legacy only, explicit, env, neither)
+- [x] 2.6 Replace DEFAULT_RUNTIME_STATE_DIR with default_runtime_state_dir() following VERDICT_HOME
+- [x] 2.7 Widen the guard to Path("~/.verdict"), expanduser("~/.verdict") and os.path.join(..., ".verdict")
 
 ## 3. Live checks
 

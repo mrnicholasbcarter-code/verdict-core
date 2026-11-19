@@ -46,3 +46,21 @@ working directory. `LLMGATE_LOG_PATH` and an explicit `log_path` SHALL override 
 - **WHEN** `LLMGATE_LOG_PATH` is set
 - **THEN** the bootstrap log path is that value
 - **TEST** `tests/test_first_run_state_isolation.py::test_decision_log_default_and_override`
+
+#### Scenario: Legacy log in the working directory
+
+- **WHEN** a reader (stats, suggest, cost-report, ui) is given no path, `LLMGATE_LOG_PATH` is unset, and both `$VERDICT_HOME/verdict-decisions.jsonl` and `./verdict-decisions.jsonl` exist
+- **THEN** it reads the state-directory log, prints one notice on stderr per process naming the legacy log and how to read it, and prints nothing extra on stdout
+- **TEST** `tests/test_first_run_state_isolation.py::test_both_logs_reads_state_dir_and_notices_once_on_stderr`
+
+#### Scenario: No hidden legacy log
+
+- **WHEN** only the legacy log exists, a path is given, or neither log exists
+- **THEN** no notice is printed, and with only the legacy log present it is read
+- **TEST** `tests/test_first_run_state_isolation.py::test_no_notice_without_a_hidden_legacy_log`
+
+#### Scenario: Runtime state directory
+
+- **WHEN** `VERDICT_HOME` is set and `VERDICT_RUNTIME_STATE_DIR` is unset
+- **THEN** the default runtime state directory is `$VERDICT_HOME/runtime`
+- **TEST** `tests/test_first_run_state_isolation.py::test_runtime_state_dir_default_follows_verdict_home`
