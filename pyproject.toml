@@ -27,6 +27,24 @@ artifacts = ["schemas/contracts.v1.json", "schemas/evaluation.v1.json", "schemas
 "packages/verdict-memory/vectors/golden" = "verdict_memory/vectors/golden"
 "packages/verdict-memory/scripts/gen_golden_vectors.py" = "verdict_memory/scripts/gen_golden_vectors.py"
 
+# The sdist holds what a wheel build from it needs (the package, the wheel
+# force-include sources above) plus the license, readme and changelog. Repository-only
+# content (docs, proof bundles, specs, tests, CI, agent files, TypeScript workspaces)
+# stays out. hatch always adds pyproject.toml, .gitignore and the readme.
+# tests/test_wheel_contents.py enforces the sdist contents.
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "verdict",
+    "benchmarks/fixtures",
+    "packages/verdict-memory/src/verdict_memory",
+    "packages/verdict-memory/vectors/golden",
+    "packages/verdict-memory/scripts/gen_golden_vectors.py",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+]
+exclude = ["verdict/client-sdk"]
+
 [project]
 name = "verdict-core"
 version = "1.0.0"
