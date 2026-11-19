@@ -100,6 +100,10 @@ def test_readme_walkthrough_is_visible_and_truthfully_labelled() -> None:
             # The live recording must point at its evidence record next to it.
             assert "docs/proof/live-run-20261119T000727Z/README.md" in text
             assert local.stat().st_size <= MAX_ASSET_BYTES
+        elif target == "docs/assets/live-cockpit.svg":
+            # The live cockpit recording must point at its evidence record next to it.
+            assert "docs/proof/live-cockpit-20261119T130739Z/README.md" in text
+            assert local.stat().st_size <= MAX_ASSET_BYTES
         else:
             assert target.startswith("docs/proof/") and "live" in target
 
@@ -317,7 +321,14 @@ def test_offline_guide_demo_block_matches_committed_run_receipt() -> None:
 
 
 def test_recording_svgs_are_small_and_use_portable_fonts() -> None:
-    for name in ("demo.svg", "demo-tui.svg", "demo-poster.svg", "demo-tui-poster.svg"):
+    for name in (
+        "demo.svg",
+        "demo-tui.svg",
+        "demo-poster.svg",
+        "demo-tui-poster.svg",
+        "live-cockpit.svg",
+        "live-cockpit-poster.svg",
+    ):
         path = ASSETS / name
         assert path.stat().st_size < 1024 * 1024, f"recording exceeds 1 MiB: {name}"
         svg = path.read_text(encoding="utf-8")
@@ -326,3 +337,38 @@ def test_recording_svgs_are_small_and_use_portable_fonts() -> None:
         assert all(family.split(",")[-1].strip() == "monospace" for family in families)
         assert "Powerline" not in svg and "Nerd" not in svg
         assert not any(0xE000 <= ord(char) <= 0xF8FF for char in svg)
+
+
+def test_live_cockpit_recording_is_labelled_complete_and_reduced_motion_safe() -> None:
+    """The README hero is a labelled live replay that ends on a verified receipt.
+
+    Catches: a fixture or unlabelled cast replacing the live one, a recording
+    that stops before the receipt check, a failing receipt (exit 1), host paths
+    in frames, and a hero without its static reduced-motion poster.
+    """
+    lines = (ASSETS / "live-cockpit.cast").read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    assert header["version"] == 2
+    assert "replay of one live verdict orchestrate run" in header["title"]
+    assert "free capacity" in header["title"] and "capped" in header["title"]
+    events = [json.loads(line) for line in lines[1:] if line.strip()]
+    last = -1.0
+    for at, kind, data in events:
+        assert at >= last and kind == "o" and isinstance(data, str)
+        last = float(at)
+    output = "".join(e[2] for e in events)
+    tail = "".join(e[2] for e in events[-12:])
+    assert "REASSIGN" in output and "rate_limited" in output
+    assert "integrity: OK (events digest verified)" in tail
+    assert tail.rstrip("\x1b[?25l\r\n").endswith("exit status: 0")
+    assert events[-1][0] - next(e[0] for e in events if "exit status: 0" in e[2]) >= 3
+    for leak in ("/home/", "/tmp/", "API_KEY", "Bearer ", "sk-"):
+        assert leak not in output
+    poster = (ASSETS / "live-cockpit-poster.svg").read_text(encoding="utf-8")
+    assert "<animate" not in poster and "@keyframes" not in poster
+    assert "VALIDATED" in _visible_svg_text(poster)
+    assert "@keyframes" in (ASSETS / "live-cockpit.svg").read_text(encoding="utf-8")
+    assert (
+        '(prefers-reduced-motion: reduce)" srcset="docs/assets/live-cockpit-poster.svg"'
+        in _readme()
+    )

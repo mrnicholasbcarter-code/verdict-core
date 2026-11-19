@@ -14,9 +14,9 @@ Model admission, bounded recovery, a separate review route and receipts you can 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-<p align="center"><img src="docs/assets/live-run.svg" alt="Replay of one live verdict orchestrate run (20261119T000727Z): a free worker on antigravity/gemini-3-flash passes verification, open-code-review on a different model family returns PASS, and verdict run-receipt reports integrity OK. Idle time capped at 1.5 s." width="860"></p>
+<p align="center"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/live-cockpit-poster.svg"><img src="docs/assets/live-cockpit.svg" alt="Replay of one live verdict orchestrate run (20261119T130739Z, 2026-11-19, main 35c110c1, free capacity) in the Verdict cockpit: workers on cerebras/gpt-oss-120b hit a real HTTP 429 rate limit and a failed test, both nodes are reassigned to nvidia/google/gemma-4-31b-it and pass, open-code-review on a different model family returns PASS, and verdict run-receipt reports integrity OK with exit status 0. Gaps between events capped at 1.5 s." width="860"></picture></p>
 
-*One live run on the operator's gateway (main d5e88ee8), not a fixture. Idle time capped at 1.5 s. [GIF](docs/assets/live-run.gif) | [asciicast](docs/assets/live-run.cast) | [evidence record](docs/proof/live-run-20261119T000727Z/README.md)*
+*Replay of one live `verdict orchestrate` run on the operator's gateway (2026-11-19, main `35c110c1`, FREE capacity only), not a fixture and not a benchmark. Idle time is capped: gaps between events over 1.5 s are shortened. [asciicast](docs/assets/live-cockpit.cast) | [evidence record](docs/proof/live-cockpit-20261119T130739Z/README.md)*
 
 [Quick start](#quick-start-no-api-keys) | [How a run works](#how-a-run-works) | [Verify a receipt](#verify-a-receipt-yourself) | [Limits](#limits) | [Docs](#documentation)
 
@@ -179,7 +179,7 @@ The first command exits 0. The second exits 1, names the digest mismatch first, 
 
 **A bundle you can verify.** [`docs/proof/dogfood-bod-225-live-2026-09-29/`](docs/proof/dogfood-bod-225-live-2026-09-29) holds a live `verdict orchestrate` run for a real story (BOD-225), with real providers reached through OmniRoute. It is not a fixture. It records one injected fault and two real worker faults, a controller restart and resume, and a reviewer PASS on a route no final worker used. It is a single run. The raw `ocr` output was not retained, so the review itself cannot be re-audited from the bundle. Its [README](docs/proof/dogfood-bod-225-live-2026-09-29/README.md) says what it proves and what it does not.
 
-**The recording at the top.** One `verdict orchestrate` run from main `d5e88ee8` on 2026-11-19: one node on a free route, review by `ocr` on a route from another model family, receipt integrity OK. Its [evidence record](docs/proof/live-run-20261119T000727Z/README.md) quotes the run's digests and `verdict run-receipt` output. It is an evidence record, not a verifiable bundle: the raw event log is kept privately because it holds host paths.
+**The recording at the top.** One `verdict orchestrate` run from main `35c110c1` on 2026-11-19, on free routes only: a real HTTP 429 and a failed test on `cerebras/gpt-oss-120b`, both nodes reassigned to `nvidia/google/gemma-4-31b-it`, review PASS by `ocr` on a route from another model family, receipt integrity OK. Its [evidence record](docs/proof/live-cockpit-20261119T130739Z/README.md) quotes the run's digests and `verdict run-receipt` output. It is an evidence record, not a verifiable bundle: the raw event log is kept privately because it holds host paths. An earlier one-node run has its own [evidence record](docs/proof/live-run-20261119T000727Z/README.md).
 
 **Verdict building Verdict.** Verdict has built one story of its own: BOD-305, merged as [PR #1115](https://github.com/mrnicholasbcarter-code/verdict-core/pull/1115). It took six runs and five of them ended `BLOCKED`. This is not routine yet.
 

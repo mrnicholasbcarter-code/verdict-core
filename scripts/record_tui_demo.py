@@ -520,7 +520,7 @@ def record_live(run_dir: Path, speed: float, output: Path, date: str, commit: st
     )
     atomic = coalesce_atomic(chunks)
     # The last reads are the invisible hold writes; the marker is checked on the whole capture.
-    validate_capture(atomic[:-int(LIVE_FINAL_HOLD)], exit_code, marker="exit status: 0")
+    validate_capture(atomic[: -int(LIVE_FINAL_HOLD)], exit_code, marker="exit status: 0")
     text = visible_text(b"".join(data for _, data in atomic))
     for required in ("COMPLETE", "REASSIGN", COMPLETION_MARKER, "review: PASS"):
         if required.casefold() not in text.casefold():
