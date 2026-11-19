@@ -457,6 +457,7 @@ def _rehearsal_with_run_file(tmp_path, monkeypatch, leak):
     import subprocess
 
     from scripts import run_certification_rehearsals as script
+    from tests.test_certification_chaos_proof import _write_proof
 
     gateway, key = "https://cert-gw-7f3a9c.example.invalid:8443", "test-key-canary-9d2e"
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
@@ -486,6 +487,9 @@ def _rehearsal_with_run_file(tmp_path, monkeypatch, leak):
             (run_dir / "events.jsonl").write_text(json.dumps({"gateway_origin": text}) + "\n")
             return subprocess.CompletedProcess(argv, 0, b"", b"")
         if "identify" in argv:
+            # The real preflight leaves its proof in the shared health cache;
+            # the chaos run refuses to start without it.
+            _write_proof(Path(kwargs["env"]["VERDICT_HOME"]))
             report = _screen(ELIGIBLE_PASSES)
             return subprocess.CompletedProcess(argv, 0, json.dumps(report).encode(), b"")
         return subprocess.CompletedProcess(argv, 0, b"", b"")
