@@ -329,14 +329,22 @@ the verdict-core root; replace paths and goals with real values.
    run. Chaos injects planning quota/no-final-answer and worker rate-limit faults.
    Before either run, a bounded FREE-only preflight
    (`verdict identify --screen --allow-live-probe --capacity free --max-per-provider 2
-   --max-routes 8 --max-capability-tier 2`) mints fresh agentic proof in the empty
+   --max-routes 8 --max-capability-tier 2 --min-context-tokens 100000 --require-tools
+   --max-per-pool 1`) mints fresh agentic proof in the empty
    `VERDICT_HOME`. The tier ceiling, tools and 100k-context floor are the frontier
-   planner's own constants. The rehearsal stops before orchestration unless at least
-   one pass meets that floor ("no planner-eligible FREE routes"). On failure,
+   planner's own constants; a route below the floor is skipped without a probe. One
+   probe per backend pool means the 8 probes cover up to 8 pools. The rehearsal stops
+   before orchestration unless at least one pass meets that floor ("no planner-eligible
+   FREE routes"). It also stops unless the planner-eligible passes sit in at least 3
+   backend pools ("Preflight screen proved planner-eligible FREE routes in N backend
+   pool(s); 3 are required"): a clean run whose workers are reassigned once uses two
+   pools, and the reviewer cannot use a route in an implementer's aliased pool, so
+   review needs a third. The chaos run may need more; that is not measured. On failure,
    `certification-failure.json` holds only closed enums (`run_finished_reason`:
    `planning_none_eligible`, `gateway_auth`, `gateway_discovery`, `operator_policy`,
    `harness_inventory_unavailable`, `startup`, `unclassified`) and the preflight
-   counts `routes_checked`, `passed`, `planner_eligible_passed` and `metadata_error`.
+   counts `routes_checked`, `passed`, `planner_eligible_passed`,
+   `planner_eligible_pools`, `planner_eligible_pools_required` and `metadata_error`.
 3. Both receipts must be `COMPLETE`, pass `verify_run_receipt`, and record the exact
    checkout SHA. The workflow signs each receipt with `actions/attest-build-provenance`.
    It uploads run evidence and signed bundles as `certify-rehearsals-<sha>-<run_id>`.
