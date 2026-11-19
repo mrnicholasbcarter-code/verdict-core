@@ -83,6 +83,7 @@ from verdict.orchestration.effort import (
     effort_reason,
     task_kind_for_node,
 )
+from verdict.orchestration.explain import missing_proof_hint
 from verdict.orchestration.health_cache import (
     PERMIT_PROOF_MAX_VALIDITY_SECONDS,
     DispatchPermit,
@@ -946,7 +947,13 @@ class DagRuntime:
                         continue
 
                 # Otherwise, fail closed as before
-                run.reason = "no eligible model: " + _explain_exhaustion(considered)
+                hint = missing_proof_hint(considered)
+                # Hint first: run summaries may truncate the long ladder detail.
+                run.reason = (
+                    "no eligible model: "
+                    + (f"{hint}; " if hint else "")
+                    + _explain_exhaustion(considered)
+                )
                 self.events.emit("eligibility", node_id, **counts, **_evidence, selected=None)
                 self._set(run, NodeState.BLOCKED, reason=run.reason)
                 self.events.emit(

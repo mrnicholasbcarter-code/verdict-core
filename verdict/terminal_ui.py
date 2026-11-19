@@ -172,7 +172,7 @@ class TerminalUI:
             else "MUTED"
             if state == "skipped"
             else "WARNING"
-            if state in {"warning", "missing", "partial", "degraded"}
+            if state in {"warning", "missing", "partial", "degraded", "not-configured"}
             else "INFO"
         )
         marker = "+" if state in _GOOD else "!" if state in _BAD else "-"
@@ -183,7 +183,7 @@ class TerminalUI:
                 else "✗"
                 if state in _BAD
                 else "○"
-                if state in {"missing", "skipped"}
+                if state in {"missing", "skipped", "not-configured"}
                 else "◆"
             )
         text = Text(f"  {marker} ", style=tone)

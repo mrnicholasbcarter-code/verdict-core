@@ -1,3 +1,3 @@
-BLOCKED: unknown receipt schema None
-integrity: unexpected schema None; events_digest mismatch: events.jsonl changed after receipt was written; cannot rebuild receipt: missing or empty graph.json for a run that was planned
+INTEGRITY FAILED: unexpected schema None; events_digest mismatch: events.jsonl changed after receipt was written; cannot rebuild receipt: missing or empty graph.json for a run that was planned
+recorded (unverified): BLOCKED: unknown receipt schema None
   review: N/A by None on None
