@@ -644,6 +644,13 @@ def _action_identify(**kwargs: Any) -> ActionResult:
     return ActionResult(data=identify_report())
 
 
+def _action_discovery_funnel(**kwargs: Any) -> ActionResult:
+    """Read-only model-discovery funnel: cached evidence, no model calls, no writes."""
+    from verdict.discovery_funnel import run_funnel
+
+    return ActionResult(data=run_funnel())
+
+
 def _action_eligibility(**kwargs: Any) -> ActionResult:
     """Evaluate the DISCOVERED→SELECTED eligibility ladder."""
     import os
@@ -1750,6 +1757,16 @@ def _register_builtins() -> None:
                 "Health",
             ),
             _action_identify,
+        ),
+        (
+            ActionSpec(
+                "discovery.funnel",
+                "health",
+                "read",
+                "Read-only model-discovery pipeline funnel report",
+                "Health",
+            ),
+            _action_discovery_funnel,
         ),
         (
             ActionSpec(
