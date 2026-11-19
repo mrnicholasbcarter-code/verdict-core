@@ -51,6 +51,25 @@ def register(subparsers: Any) -> None:
         help="With --screen: skip, without probing, routes whose capability tier "
         "is unknown or above N (0 = frontier, 3 = small)",
     )
+    parser.add_argument(
+        "--min-context-tokens",
+        type=int,
+        metavar="N",
+        help="With --screen: skip, without probing, routes whose context window "
+        "is unknown or below N tokens",
+    )
+    parser.add_argument(
+        "--require-tools",
+        action="store_true",
+        help="With --screen: skip, without probing, routes whose tools support is not known",
+    )
+    parser.add_argument(
+        "--max-per-pool",
+        type=int,
+        metavar="N",
+        help="With --screen: probe at most N routes per backend pool (prefixes "
+        "sharing one quota count together); pools are covered breadth-first",
+    )
     parser.add_argument("--provider", action="append", default=[], dest="providers")
     parser.add_argument(
         "--capacity", action="extend", type=_capacities, default=[], dest="capacities"
