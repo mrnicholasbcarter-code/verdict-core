@@ -308,6 +308,7 @@ def screen_models(
                     "rating_unknown_reason": (
                         "missing_or_stale_task_rating" if rating.basis == "unknown" else None
                     ),
+                    **({} if max_per_pool is None else {"backend_pool": backend_pool(route_id)}),
                 }
             )
         return {

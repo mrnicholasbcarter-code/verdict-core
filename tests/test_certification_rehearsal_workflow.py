@@ -17,6 +17,14 @@ ELIGIBLE_PASS = {
 }
 
 
+def _pass(route_id):
+    return {**ELIGIBLE_PASS, "route_id": route_id}
+
+
+# Planner-eligible passes in three backend pools: what the rehearsal needs to start.
+ELIGIBLE_PASSES = [_pass("groq/model-a"), _pass("nvidia/model-b"), _pass("cerebras/model-c")]
+
+
 def test_rehearsal_main_only_oidc_permissions_and_protected_environment():
     workflow = yaml.load(
         (ROOT / ".github/workflows/certify-rehearsal.yml").read_text(), Loader=yaml.BaseLoader
@@ -208,12 +216,12 @@ def test_live_rehearsal_dispatch_is_free_only_without_subscription_escape(tmp_pa
                 0,
                 json.dumps(
                     {
-                        "routes_checked": 1,
-                        "passed": 1,
-                        "model_calls": 3,
-                        "model_requests_sent": 3,
+                        "routes_checked": 3,
+                        "passed": 3,
+                        "model_calls": 9,
+                        "model_requests_sent": 9,
                         "stopped_reason": "complete",
-                        "routes": [ELIGIBLE_PASS],
+                        "routes": ELIGIBLE_PASSES,
                         "mode": "screen",
                     }
                 ).encode(),
@@ -478,7 +486,7 @@ def _rehearsal_with_run_file(tmp_path, monkeypatch, leak):
             (run_dir / "events.jsonl").write_text(json.dumps({"gateway_origin": text}) + "\n")
             return subprocess.CompletedProcess(argv, 0, b"", b"")
         if "identify" in argv:
-            report = _screen([ELIGIBLE_PASS])
+            report = _screen(ELIGIBLE_PASSES)
             return subprocess.CompletedProcess(argv, 0, json.dumps(report).encode(), b"")
         return subprocess.CompletedProcess(argv, 0, b"", b"")
 
@@ -505,3 +513,85 @@ def test_rehearsal_scan_still_refuses_evidence_holding_a_protected_value(
     with pytest.raises(ValueError, match="protected configuration; refusing upload"):
         script.run()
     assert not (tmp_path / "attested-rehearsals" / "clean").exists()
+
+
+def test_preflight_argv_carries_planner_floor_and_pool_cap(tmp_path, monkeypatch):
+    """Catches #1151: the preflight probing routes below the planner floor, or
+    spending two probes in one quota pool."""
+    from verdict.orchestration.contracts import (
+        PLANNER_MIN_CONTEXT_TOKENS,
+        PLANNER_REQUIRED_CAPABILITIES,
+    )
+
+    script, seen = _preflight_only(tmp_path, monkeypatch, _screen(ELIGIBLE_PASSES))
+    with pytest.raises(ValueError):
+        script.run()
+    argv = seen["preflight"][0]
+    floor = (
+        argv[argv.index("--min-context-tokens") + 1 :][:1] if "--min-context-tokens" in argv else []
+    )
+    assert floor == [str(PLANNER_MIN_CONTEXT_TOKENS)] == ["100000"]
+    assert ("--require-tools" in argv) is ("tools" in PLANNER_REQUIRED_CAPABILITIES) is True
+    pool_cap = argv[argv.index("--max-per-pool") + 1 :][:1] if "--max-per-pool" in argv else []
+    assert pool_cap == [str(script.PREFLIGHT_MAX_PER_POOL)] == ["1"]
+    # The existing bounds and consent are untouched.
+    assert argv[argv.index("--max-routes") + 1] == str(script.PREFLIGHT_MAX_ROUTES) == "8"
+    assert argv[argv.index("--max-per-provider") + 1] == str(script.PREFLIGHT_MAX_PER_PROVIDER)
+    assert argv[argv.index("--capacity") + 1] == "free"
+    assert "--allow-live-probe" in argv
+
+
+@pytest.mark.parametrize(
+    "routes,pools",
+    [
+        # Two pools only.
+        ([_pass("groq/model-a"), _pass("nvidia/model-b")], 2),
+        # agy/* and antigravity/* are one quota: three passes, two pools.
+        ([_pass("agy/model-a"), _pass("antigravity/model-b"), _pass("cerebras/model-c")], 2),
+        # kc and openrouter `:free` are one quota.
+        ([_pass("kc/a:free"), _pass("openrouter/b:free"), _pass("groq/model-c")], 2),
+        # A pass the planner rejects proves nothing for its pool.
+        (
+            [
+                _pass("groq/model-a"),
+                _pass("nvidia/model-b"),
+                {**_pass("cerebras/model-c"), "context_window": 24_000},
+                {**_pass("cf/model-d"), "result": "fail"},
+            ],
+            2,
+        ),
+    ],
+)
+def test_preflight_with_too_few_pools_fails_closed(tmp_path, monkeypatch, routes, pools):
+    """Catches a rehearsal starting with no independent pool left for review."""
+    script, seen = _preflight_only(tmp_path, monkeypatch, _screen(routes))
+    assert script.PREFLIGHT_MIN_PLANNER_POOLS == 3
+    with pytest.raises(script.RehearsalConfigurationError) as error:
+        script.run()
+    assert seen["orchestrate"] == []
+    assert f"in {pools} backend pool(s); 3 are required" in str(error.value)
+    assert not any(row["route_id"] in str(error.value) for row in routes)
+    raw = (tmp_path / "certification-failure.json").read_text()
+    data = json.loads(raw)
+    assert data["stage"] == "preflight"
+    assert data["preflight"].get("planner_eligible_pools") == pools
+    assert data["preflight"].get("planner_eligible_pools_required") == 3
+    # Counts and enums only: no route id, pool name or other text.
+    assert all(
+        v is None or isinstance(v, int)
+        for v in data["preflight"].values()
+        if v != "metadata_unavailable"
+    )
+    assert not any(row["route_id"] in raw or row["route_id"].split("/")[0] in raw for row in routes)
+
+
+def test_preflight_with_three_pools_proceeds_to_orchestrate(tmp_path, monkeypatch):
+    """Catches the pool requirement blocking a preflight that met it."""
+    script, seen = _preflight_only(tmp_path, monkeypatch, _screen(ELIGIBLE_PASSES))
+    with pytest.raises(ValueError, match="clean rehearsal orchestration failed"):
+        script.run()
+    assert len(seen["orchestrate"]) == 1
+    data = json.loads((tmp_path / "certification-failure.json").read_text())
+    assert data["stage"] == "orchestration"
+    assert data["preflight"].get("planner_eligible_pools") == 3
+    assert data["preflight"].get("planner_eligible_pools_required") == 3

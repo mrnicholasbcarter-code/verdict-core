@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 from scripts import run_certification_rehearsals as script
-from tests.test_certification_rehearsal_workflow import ELIGIBLE_PASS, ROOT
+from tests.test_certification_rehearsal_workflow import ELIGIBLE_PASS, ELIGIBLE_PASSES, ROOT
 
 
 @pytest.mark.parametrize(
@@ -89,11 +89,11 @@ def test_failed_child_retains_only_safe_diagnostics(
             # so this test still reaches the orchestration failure it covers.
             screen = {
                 "mode": "screen",
-                "routes": [ELIGIBLE_PASS],
-                "routes_checked": 1,
-                "passed": 1,
-                "model_calls": 3,
-                "model_requests_sent": 3,
+                "routes": ELIGIBLE_PASSES,
+                "routes_checked": 3,
+                "passed": 3,
+                "model_calls": 9,
+                "model_requests_sent": 9,
                 "stopped_reason": "complete",
             }
             return subprocess.CompletedProcess(command, 0, json.dumps(screen).encode(), b"")
@@ -133,9 +133,11 @@ def test_failed_child_retains_only_safe_diagnostics(
     assert data["run_finished_outcome"] == expected_outcome
     # The preflight's counts travel with every orchestration failure.
     assert data["preflight"] == {
-        "routes_checked": 1,
-        "passed": 1,
-        "planner_eligible_passed": 1,
+        "routes_checked": 3,
+        "passed": 3,
+        "planner_eligible_passed": 3,
+        "planner_eligible_pools": 3,
+        "planner_eligible_pools_required": 3,
         "metadata_error": None,
     }
     assert len(raw) < 2048
@@ -186,5 +188,44 @@ def test_preflight_counts_never_carry_raw_text(tmp_path, monkeypatch):
         "routes_checked": None,
         "passed": 1,
         "planner_eligible_passed": 0,
+        "planner_eligible_pools": 0,
+        "planner_eligible_pools_required": 3,
         "metadata_error": "unclassified",
     }
+
+
+def test_pool_count_never_carries_route_or_pool_text(tmp_path, monkeypatch):
+    """Catches a route id or pool name (report text) reaching the artifact with the pool count."""
+    secret, url = "provider-secret", "https://private.invalid"
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", url)
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", secret)
+    monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "s.json")
+    screen = {
+        "mode": "screen",
+        "routes": [
+            {**ELIGIBLE_PASS, "route_id": f"{url}/{secret}", "backend_pool": url + secret},
+            {**ELIGIBLE_PASS, "route_id": "agy/model-a", "backend_pool": secret},
+            {**ELIGIBLE_PASS, "route_id": "antigravity/model-b", "backend_pool": url},
+            {**ELIGIBLE_PASS, "route_id": ["not", "text"]},
+        ],
+        "routes_checked": 4,
+        "passed": 4,
+    }
+
+    def child(command, **kwargs):
+        assert "orchestrate" not in command
+        return subprocess.CompletedProcess(command, 0, json.dumps(screen).encode(), b"")
+
+    monkeypatch.setattr(script.subprocess, "run", child)
+    with pytest.raises(script.RehearsalConfigurationError, match="in 2 backend pool") as error:
+        script.run()
+    raw = (tmp_path / "certification-failure.json").read_text()
+    for sensitive in (secret, url, "agy", "antigravity", "private"):
+        assert sensitive not in raw
+        assert sensitive not in str(error.value)
+    preflight = json.loads(raw)["preflight"]
+    # The reported pool name is ignored: the pool is derived from the route id.
+    assert preflight["planner_eligible_pools"] == 2
+    assert preflight["planner_eligible_pools_required"] == 3
+    assert all(value is None or type(value) is int for value in preflight.values())
