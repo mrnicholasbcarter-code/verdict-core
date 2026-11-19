@@ -333,11 +333,11 @@
   },
   {
     "qualified_name": "verdict.memory_gate.MemoryGovernor",
-    "reason": "UNTRIAGED: MemoryGovernor has no resolved reference; Durable, provenance-aware write gate for the local MemoryPlane (verdict/memory_gate.py)."
+    "reason": "Public SDK/library API: MemoryGovernor is a lazy top-level export (verdict.__init__ __all__) of the MemoryPlane write gate; local callers are tests."
   },
   {
     "qualified_name": "verdict.memory_gate.MemoryNamespace",
-    "reason": "UNTRIAGED: MemoryNamespace has no resolved reference; Durable, provenance-aware write gate for the local MemoryPlane (verdict/memory_gate.py)."
+    "reason": "Public SDK/library API: MemoryNamespace is a lazy top-level export (verdict.__init__ __all__) of the MemoryPlane write gate; local callers are tests."
   },
   {
     "qualified_name": "verdict.memory_migration.archive_legacy_memory",
