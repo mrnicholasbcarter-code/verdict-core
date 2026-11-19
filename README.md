@@ -813,6 +813,7 @@ clean tree, and passing steps. Current manual runs only publish artifacts named
 `certification-evidence-incomplete-...`, so enabling the variable now blocks
 releases. With the variable unset, releases continue with an explicit warning
 that they are **NOT certification-gated**; no CERTIFIED status is implied.
+For this repository the variable is set to `true`, so a release is blocked until a CERTIFIED bundle exists.
 
 ## Install
 

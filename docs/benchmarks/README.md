@@ -53,10 +53,13 @@ run with `VERDICT_LIVE_SMOKE=1` (opt-in, spends real capacity).</sub>
 Observed data, not a fixture. It is kept to show a negative result, not a saving.
 That run used an earlier version of the script; the method below replaces it.
 
-## Paired usage bench (method; no result yet)
+## Paired usage bench (method; one run, no claim supported)
 
-**No saving is claimed yet.** This section describes how the next live run is measured.
+**No saving is claimed yet.** This section describes how a live run is measured.
 It holds no result and no number.
+
+One paired usage run on 2026-11-19 did not support a claim: the Verdict arm completed fewer
+tasks than the baseline, so the bench refused it. Its evidence is not published yet.
 
 [`scripts/live_savings_bench.py`](../../scripts/live_savings_bench.py) runs every task in
 `benchmarks/fixtures/live_savings/tasks.json` in two arms:

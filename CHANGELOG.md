@@ -39,6 +39,7 @@ PyPI or npm yet.
 - A review whose comment calls were dropped by the review tool is `ERROR` with `findings_lost`, rerun once within the bounded attempts, and never a clean `PASS`. The receipt's review block carries `findings_lost` when it is above zero (#1145).
 - Verdict state follows `VERDICT_HOME` everywhere: the offline demo, session ledger, passports and attempt records no longer write to `~/.verdict` when `VERDICT_HOME` is set (#1143).
 - The certification rehearsal's preflight screens only routes the planner can admit (`--max-capability-tier 2`), counts only planner-eligible passes, and its failure artifact names the failure class from a closed vocabulary, never raw text (#1147). The rehearsal does not pass yet.
+- The certification rehearsal no longer writes the gateway address into its run evidence: it runs `verdict orchestrate` with `VERDICT_REDACT_GATEWAY_ORIGIN=1`, so each `dispatch_permit` controller event, and the receipt's `controller_events`, records the literal `redacted`. The permit check still compares against the real gateway, and the script still refuses to upload run evidence that contains the gateway address or key. Without that variable, `verdict orchestrate` records the origin as before (#1152).
 - `scripts/live_savings_bench.py` is rewritten as a paired usage bench: the Verdict arm routes through Verdict's own eligibility-gated routing (free and subscription only, no opaque routes, no fallback to the baseline), the baseline model is a required flag, tokens are the headline measure, and same-model pairs or less accepted work block any claim. No result is claimed (#1146).
 - An HTTP 200 reply that is an in-band credit refusal (zero output tokens, no tool call, "not enough credits" or "top up" text) is a payment failure, not a success. Probes, the relay and the acceptance serve check all treat it that way (#1130). The ladder health probe scopes it to the route, without a pool or provider cooldown (#1134).
 - Routes from prepaid-credit providers without explicit free evidence are classified UNKNOWN capacity, not FREE. `:free` community routes and priced models are unchanged (#1133).
@@ -65,8 +66,8 @@ PyPI or npm yet.
 - The Ruflo and RuVector integrations (#804). Documentation preflight no longer depends on them.
 
 ### Known limitations
-- No CERTIFIED release bundle exists; releases are not certification-gated.
-- No cost saving is claimed. The only live cost run chose the same model in both arms.
+- No CERTIFIED release bundle exists yet: the certification rehearsal does not pass. This repository's release workflow requires one (`VERDICT_REQUIRE_CERTIFIED_BUNDLE` is `true`), so 1.0.0 is not published until a certification run passes on the tag commit.
+- No cost or token saving is claimed. The 2026-09-28 live cost check chose the same model in both arms. One paired usage run on 2026-11-19 did not support a claim: the Verdict arm completed fewer tasks than the baseline, so the bench refused it. Its evidence is not published yet.
 - `install.sh` keeps installing 0.4.2 until 1.0.0 is published to PyPI; its pin is updated after publication with real digests.
 - A real HTTP 402 from the ladder health probe still cools the pool and provider; only the HTTP 200 in-band refusal is route-scoped.
 
