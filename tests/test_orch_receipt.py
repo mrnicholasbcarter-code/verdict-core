@@ -439,6 +439,29 @@ def test_receipt_review_without_attempts_is_unchanged(tmp_path: Path) -> None:
     assert "attempts" not in review
 
 
+def test_receipt_records_lost_review_findings(tmp_path: Path) -> None:
+    """Issue #1137. Catches: a receipt that hides how many comment calls OCR dropped."""
+    from verdict.orchestration.receipt import build_run_receipt
+
+    lost = {**PASS, "status": "ERROR", "findings_lost": 1}
+    run_dir = _run(tmp_path, review=lost)
+    log = EventLog(run_dir / "events.jsonl", clock=_clock)
+    log.emit(
+        "review_attempt",
+        attempt=1,
+        route_id="gm/gemini-3",
+        status="ERROR",
+        category="findings_lost",
+        findings_lost=1,
+    )
+    review = build_run_receipt(run_dir)["review"]
+    assert review["status"] == "ERROR" and review["findings_lost"] == 1
+    assert review["attempts"][0]["findings_lost"] == 1
+    clean_dir = tmp_path / "clean"
+    clean_dir.mkdir()
+    assert "findings_lost" not in build_run_receipt(_run(clean_dir, review=PASS))["review"]
+
+
 # ---- BOD-90: outcome-records sidecar write is guarded ----
 
 

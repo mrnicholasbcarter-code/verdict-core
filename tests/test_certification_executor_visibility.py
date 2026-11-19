@@ -110,13 +110,11 @@ def test_cli_threads_visibility_policy():
 
 
 def test_selector_visibility_executor_preserves_mixed_map_rule() -> None:
-    """Any --executor-map keeps the strict default visibility, matching main.
+    """A map that sends any node to Prime keeps strict Prime visibility.
 
-    On main, ``_selector_visibility_executor`` returned ``prime`` whenever an
-    executor map was present (mixed dispatch), and ``direct-gateway`` only for a
-    pure direct-gateway run.  The registry-backed version must keep that rule:
-    a map forces the default adapter's visibility regardless of the default
-    backend name.
+    The ladder is shared by every node, so one Prime node means every route
+    must be Prime-visible. Fails if the default change (direct-gateway) let a
+    mixed Prime run pick routes Prime cannot spawn.
     """
     import argparse
 
@@ -128,7 +126,7 @@ def test_selector_visibility_executor_preserves_mixed_map_rule() -> None:
     # Pure prime / alias runs -> prime-headless visibility
     assert cli._selector_visibility_executor(ns("prime")) == "prime"
     assert cli._selector_visibility_executor(ns("prime-headless")) == "prime-headless"
-    # Any executor map -> default adapter visibility (prime-headless)
+    # Any executor map with a Prime backend -> Prime visibility
     assert (
         cli._selector_visibility_executor(ns("direct-gateway", "node-1=prime-headless"))
         == "prime-headless"
@@ -141,3 +139,45 @@ def test_selector_visibility_executor_preserves_mixed_map_rule() -> None:
         cli._selector_visibility_executor(ns("prime", "node-1=prime,node-2=direct-gateway"))
         == "prime-headless"
     )
+    # A map with no Prime backend keeps the --executor visibility
+    assert (
+        cli._selector_visibility_executor(ns("direct-gateway", "node-1=direct-gateway"))
+        == "direct-gateway"
+    )
+
+
+def test_default_visibility_sees_live_routes_missing_from_the_prime_registry(tmp_path, monkeypatch):
+    """Fails if plain eligibility (build_selector default) still reads Prime's registry.
+
+    A route new in the live catalog but not yet synced into a (stubbed) Prime
+    registry must be visible by default; with Prime selected it stays refused.
+    """
+    import json
+
+    agent = tmp_path / "prime" / "agent"
+    agent.mkdir(parents=True)
+    (agent / "models.json").write_text(
+        json.dumps({"providers": {"omniroute": {"models": [{"id": "cc/claude-sonnet-5"}]}}})
+    )
+    monkeypatch.setenv("PRIME_AGENT_CODING_AGENT_DIR", str(agent))
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "home"))
+    rows = [
+        row("cc/claude-sonnet-5", owned_by="anthropic"),
+        row("cc/claude-new-6", owned_by="anthropic"),
+    ]
+    monkeypatch.setattr(run, "fetch_inventory", lambda *a, **k: rows)
+    monkeypatch.setattr(run, "fetch_connections", lambda *a, **k: [conn("cc")])
+    monkeypatch.setattr(run, "resolve_api_key", lambda: None)
+
+    def ladder(**kw):
+        return build_selector(
+            "http://127.0.0.1:1", scope="", prefer="", state_file=tmp_path / "s.json", **kw
+        )
+
+    default = ladder()
+    assert default._harness_visible.source == "live-gateway"
+    assert default._harness_visible("cc/claude-new-6") is True
+    prime = ladder(visibility_executor="prime-headless")
+    assert prime._harness_visible.source == "models.json"
+    assert prime._harness_visible("cc/claude-sonnet-5") is True
+    assert prime._harness_visible("cc/claude-new-6") is False

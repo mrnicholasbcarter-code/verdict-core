@@ -4,6 +4,55 @@
 > XDG. A separate TOML path exists only for context-hydration settings.
 > Environment variables listed below are those the current code actually reads.
 
+## First run
+
+On a new install, before anything is set up:
+
+1. `verdict setup` writes the configuration. Until then `verdict doctor` starts
+   with "Verdict is installed but not set up yet. Start with: verdict setup" and
+   marks parts that do not exist yet as `NOT-CONFIGURED`, each with its next
+   command. These rows are not `OK`, and doctor keeps exiting 1 while they remain.
+   A part that exists but is broken is still `FAILED`.
+2. `verdict orchestrate` needs a free route with a recorded tool-use (agentic)
+   check. A new state directory has none, so the run ends BLOCKED with the reason
+   `no_agentic_probe` and prints the command that records the check. Run it once
+   (it makes a small, bounded number of model calls and needs your consent flag):
+
+   ```bash
+   verdict identify --screen --allow-live-probe --capacity free --max-per-provider 1 --max-routes 8
+   ```
+
+   Then run `verdict orchestrate` again. `verdict identify install-service`
+   installs the timers that keep this evidence fresh. Admission rules do not
+   change: routes without a fresh check are never used.
+3. `verdict serve` needs `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB`; see
+   [Serve authentication and receipts](#serve-authentication-and-receipts).
+
+## Worker executor and optional harnesses
+
+`verdict orchestrate` runs workers with the `direct-gateway` executor by
+default: each worker request goes straight to the gateway, so no agent harness
+has to be installed. Prime Agent is an optional harness. Select it with
+`--executor prime-headless` (alias `prime`), or per node with
+`--executor-map node-1=prime-headless`.
+
+- Route visibility follows the executor. Plain `verdict eligibility` and the
+  default run read the live gateway catalog; Prime's model registry
+  (`models.json`) is read only when Prime is selected or with
+  `verdict eligibility --sync-visibility`.
+- On a host without the Prime Agent binary, `verdict setup` plans no Prime
+  registry action, `verdict doctor` shows the Prime rows as `not-installed`
+  (optional, not an issue), and the hourly live acceptance job reports the
+  `harness-prime` check as skipped with the reason
+  `Prime Agent not installed (optional harness)`. A skipped check is never
+  counted as passed.
+- On a host with the Prime binary whose Verdict harness is not enabled, the
+  check is skipped with the reason
+  `Prime Agent installed but not enabled (optional harness)`, and
+  `verdict doctor` shows a `Prime harness` WARNING row (not an issue) with
+  `repair: verdict harness prime enable`. When Prime is installed and enabled, all three behave as
+  before and can fail.
+
 ## Configuration surfaces
 
 | Surface | Path | Owns |
@@ -126,7 +175,7 @@ Highest source first. Only the sources listed below are consulted.
 | `gateway_ready_timeout_s` | config file `gateway_ready_timeout_s` | env `VERDICT_GATEWAY_READY_TIMEOUT_S` | `30.0` |
 | `primary_model` | config file `primary_model` | env `LLMGATE_PRIMARY` | `verdict.contracts.DEFAULT_PRIMARY_MODEL` |
 | `profile` | config file `profile` | env `LLMGATE_INTELLIGENCE_PROFILE` | `development` |
-| `log_path` | config file `log_path` | env `LLMGATE_LOG_PATH` | `verdict-decisions.jsonl` |
+| `log_path` | config file `log_path` | env `LLMGATE_LOG_PATH` | `$VERDICT_HOME/verdict-decisions.jsonl` (default `~/.verdict`) |
 | any env name | exported process environment | credential store (`credentials.env`) | — |
 
 The credential store is **not** a source for `gateway_start_command` or
@@ -143,6 +192,25 @@ diagnostic naming both values.
 `BootstrapResult.field_sources` records which source won for every field, so a
 value is never applied without a traceable origin.
 
+#### Decision log location
+
+The routing decision log defaults to `$VERDICT_HOME/verdict-decisions.jsonl`
+(`~/.verdict/verdict-decisions.jsonl` when `VERDICT_HOME` is unset). Earlier
+releases wrote `./verdict-decisions.jsonl` in the working directory.
+`LLMGATE_LOG_PATH`, the config file `log_path` and `--log_path` override the
+default.
+
+The readers (`verdict stats`, `verdict suggest`, `verdict cost-report`,
+`verdict ui`) open `--log_path` when given, then `LLMGATE_LOG_PATH`, then the
+state-directory log. When only a legacy `./verdict-decisions.jsonl` exists they
+read it. When both exist they read the state-directory log and print one line on
+stderr, once per process, naming the legacy log and how to read it:
+`verdict stats --log_path ./verdict-decisions.jsonl`,
+`verdict suggest --log_path ./verdict-decisions.jsonl`, or
+`LLMGATE_LOG_PATH=./verdict-decisions.jsonl` for any command (`cost-report` and
+`ui` have no flag). Nothing is printed when a path was given. The two logs are
+never merged or migrated.
+
 #### `verdict serve` precedence
 
 `verdict serve` resolves three fields on its own, because a long-running server
@@ -153,7 +221,7 @@ appears on disk:
 |---|---|---|---|
 | `primary_model` | env `LLMGATE_PRIMARY` | `verdict.contracts.DEFAULT_PRIMARY_MODEL` | — (routing config not read) |
 | `profile` | env `LLMGATE_INTELLIGENCE_PROFILE` | `development` | — (routing config not read) |
-| `log_path` | env `LLMGATE_LOG_PATH` | `verdict-decisions.jsonl` | — (routing config not read) |
+| `log_path` | env `LLMGATE_LOG_PATH` | `$VERDICT_HOME/verdict-decisions.jsonl` | — (routing config not read) |
 
 The routing config is still read at serve startup, only to detect disagreement.
 When `verdict.yaml` asks for a different value than the serve path applies, a
@@ -506,6 +574,9 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 
 | Variable | Meaning |
 |----------|---------|
+| `LLMGATE_AUTH_TOKEN` | Bearer token for protected endpoints. Required: without it (and without `LLMGATE_ALLOW_ANONYMOUS`) `verdict serve` refuses to start. See [Serve authentication and receipts](#serve-authentication-and-receipts) |
+| `LLMGATE_ALLOW_ANONYMOUS` | `1` allows an unauthenticated server, loopback hosts only, with a non-durable in-memory receipts store. Development only |
+| `VERDICT_RECEIPTS_DB` | Durable receipts SQLite path. Required with `LLMGATE_AUTH_TOKEN` (ADR-017); no default is assumed |
 | `LLMGATE_PRIMARY` | Preferred upstream identity string |
 | `LLMGATE_UPSTREAM_BASE_URL` | Upstream base URL (defaults may derive from OmniRoute) |
 | `LLMGATE_UPSTREAM_API_KEY` | Upstream API key |
@@ -524,6 +595,29 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `VERDICT_ALLOW_UNVERIFIED_DEV` | Opt-in (`1`/`true`) to admit unverified (unknown/error/timeout) candidates for non-protected work when the intelligence profile is `development`. Default off: unknown-state models are excluded as `runtime_truth_absent` |
 | `VERDICT_OUTCOME_SHADOW_ROOTS` | BOD-304/BOD-426 outcome-shadow run directories (OS path-separator list, or one manifest file with one run dir per line). Default unset: shadow disabled and nothing persisted. When set, every admission receipt's `outcome_shadow` block is also appended to `outcome_shadow.jsonl` next to the first entry; see [Outcome shadow sink](#outcome-shadow-sink) |
 | `VERDICT_WORKER_IDLE_SECONDS` | BOD-312 idle-output bound for `verdict orchestrate` Prime headless workers: a worker that writes nothing to stdout or stderr for this many seconds has its process group killed, the attempt ends `stalled`, and recovery moves the node to a different route within the attempt budget. Default `300`; an empty, zero, negative or non-numeric value keeps the default |
+
+#### Serve authentication and receipts
+
+`verdict serve` fails closed. It needs both of these before it starts:
+
+- `LLMGATE_AUTH_TOKEN`: the bearer token clients send.
+- `VERDICT_RECEIPTS_DB`: the durable receipts file. ADR-017 requires it in
+  authenticated mode, so Verdict does not pick a path for you.
+
+If either is missing, `verdict serve` prints one line naming the setting and the
+fix, and exits 2. The simplest fix is `verdict setup --apply --allow host.serve`:
+it installs the `verdict-serve` user unit and writes both settings to
+`~/.config/verdict/serve.env` (mode 0600), with the receipts file at
+`$VERDICT_HOME/receipts.db`. To run it by hand:
+
+```bash
+export LLMGATE_AUTH_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export VERDICT_RECEIPTS_DB="$HOME/.verdict/receipts.db"
+verdict serve --host 127.0.0.1 --port 8000
+```
+
+For local development only, `LLMGATE_ALLOW_ANONYMOUS=1` starts without a token
+on a loopback host and keeps receipts in memory (lost on restart).
 
 ### Outcome shadow sink
 
@@ -565,7 +659,8 @@ needs a restart to pick up a change.
 ### Session evidence (orchestration, phase 1)
 
 `SessionLedger` stores controller-verified worker-session outcomes separately
-from probe health. Its default path is `~/.verdict/session-evidence.jsonl`.
+from probe health. Its default path is `$VERDICT_HOME/session-evidence.jsonl`
+(`~/.verdict/session-evidence.jsonl` when `VERDICT_HOME` is unset).
 `VERDICT_SESSION_EVIDENCE` overrides that path. An explicit constructor path
 wins over the environment. Reading an absent ledger does not create it.
 

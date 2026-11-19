@@ -36,6 +36,9 @@ from verdict.availability import opaque_connection_token
 from verdict.context_pack import ContextPlan, estimate_tokens
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import (
+    PLANNER_MAX_CAPABILITY_TIER,
+    PLANNER_MIN_CONTEXT_TOKENS,
+    PLANNER_REQUIRED_CAPABILITIES,
     FailureClassification,
     FailureClassifier,
     ModelSelector,
@@ -50,6 +53,7 @@ from verdict.orchestration.contracts import (
     WorkNode,
 )
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, backend_model, pool_of
+from verdict.orchestration.explain import missing_proof_hint
 from verdict.orchestration.harness import DEFAULT_REGISTRY
 from verdict.orchestration.planner import FrontierPlanner, PlanValidationError, hydrate_node_prompt
 from verdict.orchestration.worker_context import (
@@ -431,20 +435,22 @@ async def plan_with_failover(
     tried: set[str] = set()
     tried_pools: set[str] = set()
     last = ""
+    hint = ""
     for attempt in range(1, max_attempts + 1):
         requirements = TaskRequirements(
-            required_capabilities=frozenset({"tools"}),
+            required_capabilities=PLANNER_REQUIRED_CAPABILITIES,
             coding=True,
             reasoning=True,
             frontier_worthy=True,
-            min_context_tokens=100_000,
+            min_context_tokens=PLANNER_MIN_CONTEXT_TOKENS,
             exclude_routes=frozenset(tried),
             exclude_pools=frozenset(tried_pools),
-            max_capability_tier=2,
+            max_capability_tier=PLANNER_MAX_CAPABILITY_TIER,
             task_family=task_family,
         )
         choice, considered = selector.select(requirements, now=now())
         if choice is None:
+            hint = missing_proof_hint(considered)
             break
         events.emit(
             "plan_started",
@@ -616,6 +622,7 @@ async def plan_with_failover(
         return graph
     raise OrchestrationError(
         f"planning failed on every eligible frontier model; last: {last or 'none eligible'}"
+        + (f"; {hint}" if hint else "")
     )
 
 

@@ -37,6 +37,7 @@ from verdict.harness_prime import DEFAULT_BASE_URL as PRIME_HARNESS_DEFAULT_BASE
 from verdict.harness_prime import DEFAULT_TOKEN_ENV as PRIME_HARNESS_DEFAULT_TOKEN_ENV
 from verdict.models import ModelInfo, ProviderConfig
 from verdict.patch_executor import DEFAULT_BASE_URL
+from verdict.paths import verdict_home
 from verdict.terminal_ui import TerminalUI
 
 if TYPE_CHECKING:
@@ -218,7 +219,7 @@ def cmd_setup(
     from verdict.setup_presentation import present_bootstrap
 
     if rollback:
-        resolved = Path(state_dir) if state_dir else Path.home() / ".verdict" / "bootstrap"
+        resolved = Path(state_dir) if state_dir else verdict_home() / "bootstrap"
         stage = rollback_bootstrap_actions(
             state_dir=resolved, action_ids=tuple(rollback_actions) if rollback_actions else None
         )
@@ -1067,7 +1068,7 @@ def cmd_compare(task: str, criticality: str = "medium", allow_offline: bool = Fa
     print(json.dumps(result.data, sort_keys=True, indent=2))
 
 
-def cmd_stats(log_path: str = "verdict-decisions.jsonl") -> None:
+def cmd_stats(log_path: str | None = None) -> None:
     """Parse JSONL logs and build analytics."""
     from verdict import present
     from verdict.actions.registry import run_action
@@ -1208,7 +1209,7 @@ def cmd_cost_report() -> None:
     from verdict.actions.registry import run_action
 
     present.header("Cost and Usage Report")
-    result = run_action("cost-report", {"log_path": "verdict-decisions.jsonl"})
+    result = run_action("cost-report", {})
     data = result.data
     if data.get("missing"):
         present.warn("log", "No routing telemetry found (Verdict decision log missing).")
@@ -2278,7 +2279,7 @@ def cmd_catalog(
         sys.exit(1)
 
 
-def cmd_suggest(log_path: str = "verdict-decisions.jsonl") -> None:
+def cmd_suggest(log_path: str | None = None) -> None:
     """Run the SuggestionService to propose evidence-backed improvements."""
     from verdict import present
     from verdict.actions.registry import run_action
@@ -2360,6 +2361,8 @@ def cmd_doctor(
     diag = _doctor_diag._collect_doctor_diagnostics(
         fix, interactive=True, preflight_timeout=preflight_timeout, progress=_doctor_progress
     )
+    if not diag.config_loaded:
+        ui.console.print(Text(f"  {_doctor_diag.FIRST_RUN_LINE}", style="WARNING"))
     ui.doctor(diag.capability_report)
     for label, state, detail in diag.sections:
         if state == "header":
@@ -2909,7 +2912,7 @@ def cmd_memory(args: Any) -> None:
     """Handle memory subcommands: put, search, export, import, masterdocs, graph."""
     from verdict.actions.registry import run_action
 
-    db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
+    db_path = getattr(args, "db_path", None) or str(verdict_home() / "memory.db")
     sub = getattr(args, "memory_command", None)
     if sub == "ref-docs":
         _cmd_memory_ref_docs(args)
@@ -3281,7 +3284,7 @@ def cmd_hook(args: Any) -> None:
     from verdict.actions.registry import run_action
 
     hook_cmd = getattr(args, "hook_command", None)
-    db_path = getattr(args, "db_path", None) or str(Path.home() / ".verdict" / "memory.db")
+    db_path = getattr(args, "db_path", None) or str(verdict_home() / "memory.db")
 
     if hook_cmd != "claude-gate" and not (
         hook_cmd in {"recall", "configure", "status"} and getattr(args, "json", False)
@@ -4600,7 +4603,8 @@ def cmd_acceptance_run(
         ui = TerminalUI(console)
         ui.header("Live acceptance")
         for check in result["checks"]:
-            ui.doctor_finding(check["name"], "ok" if check["passed"] else "failed", check["reason"])
+            state = "skipped" if check.get("skipped") else "ok" if check["passed"] else "failed"
+            ui.doctor_finding(check["name"], state, check["reason"])
         ui.status("result", result["status"], result["path"])
         notification = result.get("notification") or {}
         if notification.get("event"):

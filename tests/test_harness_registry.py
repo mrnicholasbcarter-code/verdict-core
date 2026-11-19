@@ -87,7 +87,8 @@ def test_registry_resolves_production_adapters_and_aliases() -> None:
     assert "prime-headless" in DEFAULT_REGISTRY.names()
     assert "direct-gateway" in DEFAULT_REGISTRY.names()
     assert "prime" in DEFAULT_REGISTRY.names()
-    assert DEFAULT_REGISTRY.default_name() == "prime-headless"
+    # 1.0: direct-gateway is the default; Prime is an optional, explicit harness.
+    assert DEFAULT_REGISTRY.default_name() == "direct-gateway"
 
 
 def test_unknown_adapter_raises() -> None:

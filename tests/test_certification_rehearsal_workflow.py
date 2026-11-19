@@ -1,10 +1,20 @@
 """Static contracts for protected independent rehearsal production."""
 
+import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+# A screen row the frontier planner can admit: known tier <= 2, tools, 100k context.
+ELIGIBLE_PASS = {
+    "route_id": "p/claude-sonnet-4.5",
+    "result": "pass",
+    "capability_tier": 1,
+    "supports_tools": True,
+    "context_window": 200_000,
+}
 
 
 def test_rehearsal_main_only_oidc_permissions_and_protected_environment():
@@ -203,7 +213,7 @@ def test_live_rehearsal_dispatch_is_free_only_without_subscription_escape(tmp_pa
                         "model_calls": 3,
                         "model_requests_sent": 3,
                         "stopped_reason": "complete",
-                        "routes": [],
+                        "routes": [ELIGIBLE_PASS],
                         "mode": "screen",
                     }
                 ).encode(),
@@ -246,7 +256,17 @@ def test_preflight_argv_is_free_only_and_bounded(tmp_path, monkeypatch):
             return subprocess.CompletedProcess(
                 argv,
                 0,
-                b'{"routes_checked": 1, "passed": 1, "model_calls": 3, "model_requests_sent": 3, "stopped_reason": "complete", "routes": [], "mode": "screen"}',
+                json.dumps(
+                    {
+                        "routes_checked": 1,
+                        "passed": 1,
+                        "model_calls": 3,
+                        "model_requests_sent": 3,
+                        "stopped_reason": "complete",
+                        "routes": [ELIGIBLE_PASS],
+                        "mode": "screen",
+                    }
+                ).encode(),
                 b"",
             )
         return subprocess.CompletedProcess(argv, 1, b"", b"")
@@ -337,3 +357,87 @@ def test_preflight_failure_message_never_echoes_child_output(tmp_path, monkeypat
     assert "test-key-canary" not in str(error.value)
     assert "gateway.invalid" not in str(error.value)
     assert orchestrated == []
+
+
+def _preflight_only(tmp_path, monkeypatch, screen_report):
+    """Run the script with a stubbed preflight; returns orchestrate argvs seen."""
+    import subprocess
+
+    from scripts import run_certification_rehearsals as script
+
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", "https://gateway.invalid")
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "test-key-canary")
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "snapshot.json")
+    seen = {"orchestrate": [], "preflight": []}
+
+    def child(argv, **kwargs):
+        if "orchestrate" in argv:
+            seen["orchestrate"].append(argv)
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+        if "identify" in argv:
+            seen["preflight"].append(argv)
+            return subprocess.CompletedProcess(argv, 0, json.dumps(screen_report).encode(), b"")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(script.subprocess, "run", child)
+    return script, seen
+
+
+def _screen(routes, **extra):
+    return {
+        "mode": "screen",
+        "routes": routes,
+        "routes_checked": sum(r["result"] in {"pass", "fail"} for r in routes),
+        "passed": sum(r["result"] == "pass" for r in routes),
+        "model_calls": 3,
+        "model_requests_sent": 3,
+        "stopped_reason": "complete",
+        "metadata_error": "metadata_unavailable",
+        **extra,
+    }
+
+
+def test_preflight_argv_asks_for_planner_tier(tmp_path, monkeypatch):
+    """Catches the preflight screening tiers the planner can never admit."""
+    import pytest
+
+    from verdict.orchestration.contracts import PLANNER_MAX_CAPABILITY_TIER
+
+    script, seen = _preflight_only(tmp_path, monkeypatch, _screen([ELIGIBLE_PASS]))
+    with pytest.raises(ValueError):
+        script.run()
+    argv = seen["preflight"][0]
+    assert argv[argv.index("--max-capability-tier") + 1] == str(PLANNER_MAX_CAPABILITY_TIER) == "2"
+    assert script.PREFLIGHT_MAX_ROUTES <= 8
+
+
+def _bad(**overrides):
+    return {**ELIGIBLE_PASS, **overrides}
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [_bad(capability_tier=3), _bad(route_id="cf/gemma", capability_tier=3)],
+        [_bad(capability_tier=None)],
+        [_bad(supports_tools=False)],
+        [_bad(context_window=32_000)],
+        [_bad(context_window=None)],
+        [_bad(result="fail"), _bad(route_id="cf/gemma", capability_tier=3)],
+    ],
+)
+def test_preflight_passes_the_planner_rejects_fail_closed(tmp_path, monkeypatch, rows):
+    """Catches #1067's `passed > 0` check being met by routes the planner rejects."""
+    script, seen = _preflight_only(tmp_path, monkeypatch, _screen(rows))
+    with pytest.raises(
+        script.RehearsalConfigurationError,
+        match=r"no planner-eligible FREE routes \(tier<=2, tools, 100k context\)",
+    ):
+        script.run()
+    assert seen["orchestrate"] == []
+    data = json.loads((tmp_path / "certification-failure.json").read_text())
+    assert data["stage"] == "preflight"
+    assert data["preflight"]["planner_eligible_passed"] == 0
+    assert data["preflight"]["metadata_error"] == "metadata_unavailable"

@@ -83,6 +83,7 @@ from verdict.orchestration.effort import (
     effort_reason,
     task_kind_for_node,
 )
+from verdict.orchestration.explain import missing_proof_hint
 from verdict.orchestration.health_cache import (
     PERMIT_PROOF_MAX_VALIDITY_SECONDS,
     DispatchPermit,
@@ -946,7 +947,13 @@ class DagRuntime:
                         continue
 
                 # Otherwise, fail closed as before
-                run.reason = "no eligible model: " + _explain_exhaustion(considered)
+                hint = missing_proof_hint(considered)
+                # Hint first: run summaries may truncate the long ladder detail.
+                run.reason = (
+                    "no eligible model: "
+                    + (f"{hint}; " if hint else "")
+                    + _explain_exhaustion(considered)
+                )
                 self.events.emit("eligibility", node_id, **counts, **_evidence, selected=None)
                 self._set(run, NodeState.BLOCKED, reason=run.reason)
                 self.events.emit(
@@ -2582,6 +2589,11 @@ class DagRuntime:
                 # BOD-224: every reviewer attempt is evidence, not only the last.
                 record: dict[str, Any] = dict(attempt)
                 self.events.emit("review_attempt", attempt=number, **record)
+            # Issue #1137: findings_lost only when OCR dropped comment calls, so
+            # earlier event shapes are unchanged.
+            lost_extra: dict[str, Any] = (
+                {"findings_lost": review.findings_lost} if review.findings_lost else {}
+            )
             self.events.emit(
                 "review",
                 status=review.status,
@@ -2592,6 +2604,7 @@ class DagRuntime:
                 findings=len(review.findings),
                 detail=review.detail[:300],
                 raw_ref=review.raw_ref,
+                **lost_extra,
             )
             if not review.passed:
                 return await self._finish(

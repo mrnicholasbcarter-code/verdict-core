@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.intelligence import DEGRADED_PROFILE, IntelligenceService
 from verdict.models import ProviderConfig, RoutingDecision
+from verdict.paths import default_decision_log_path
 
 COMPLEXITY_MAP = {"critical": 0.9, "high": 0.7, "medium": 0.5, "low": 0.2}
 
@@ -150,7 +151,7 @@ class Gate:
         self,
         primary_model: str = DEFAULT_PRIMARY_MODEL,
         providers: dict[str, ProviderConfig] | None = None,
-        log_path: str = "verdict-decisions.jsonl",
+        log_path: str | None = None,
         log_full_task: bool = False,
         discovery_ttl: int = 60,
         profile: str = DEGRADED_PROFILE,
@@ -167,6 +168,8 @@ class Gate:
 
         self.primary_model = primary_model
         self.providers = providers
+        if log_path is None:
+            log_path = default_decision_log_path()
         self.log_path = log_path
         self.log_full_task = log_full_task
         self.discovery_ttl = discovery_ttl

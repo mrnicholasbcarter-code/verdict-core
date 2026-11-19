@@ -144,7 +144,7 @@ def test_doctor_rows_use_the_host_environment(
 ) -> None:
     monkeypatch.setattr(setup_host.HostEnvironment, "from_host", classmethod(lambda cls: host.env))
     labels = [row["label"] for row in dd.host_prerequisite_rows()]
-    assert labels == ["Review tool (ocr)", "Verdict serve unit", "Prime registry"]
+    assert labels == ["Review tool (ocr)", "Verdict serve unit", "Prime registry", "Prime harness"]
 
 
 # --- rows in installed_service_rows ---------------------------------------------------
@@ -472,3 +472,73 @@ def test_pr_watcher_timer_row_omits_fields_when_unit_missing() -> None:
     assert "repos=" not in row["detail"]
     assert "state dir=" not in row["detail"]
     assert "repair:" in row["detail"]
+
+
+# --- Prime Agent is optional --------------------------------------------------------
+
+
+def test_prime_rows_without_prime_are_not_installed_never_ok_or_failed(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fails if a host without prime-agent reports the Prime registry as FAILED (or OK)."""
+    bare = FakeHost(tmp_path, monkeypatch, prime=False)
+    object.__setattr__(bare.env, "unit_result", lambda unit: "exit-code")
+    rows = {row["label"]: row for row in setup_host.doctor_rows(bare.env)}
+    row = rows["Prime registry"]
+    assert row["status"] == setup_host.NOT_INSTALLED == "not-installed"
+    assert "optional harness" in row["detail"] and "--executor prime-headless" in row["detail"]
+    assert "Prime-sync service" not in rows
+    assert row["status"] not in dd.BLOCKING_ROW_STATES
+
+
+@pytest.mark.usefixtures("_isolated")
+def test_missing_prime_sync_timer_without_prime_is_not_installed() -> None:
+    states = {"verdict-prime-sync.timer": "missing"}
+    absent = {
+        r["label"]: r
+        for r in dd.installed_service_rows(
+            timer_state=_timer(states), prime_installed=lambda: False
+        )
+    }["Prime-sync timer"]
+    assert absent["status"] == "not-installed" and "optional harness" in absent["detail"]
+    present = {
+        r["label"]: r
+        for r in dd.installed_service_rows(timer_state=_timer(states), prime_installed=lambda: True)
+    }["Prime-sync timer"]
+    assert present["status"] == "failed"
+    assert repair_command(present["detail"]) == "verdict harness prime install-service"
+
+
+def test_prime_installed_but_not_enabled_is_a_warning_row_with_enable_repair(
+    host: FakeHost,
+) -> None:
+    """Fails if a disabled Prime harness (acceptance now skips it) shows nowhere, or as ok."""
+    harness_prime.create_omniroute_registry(gateway=GATEWAY)
+    host.sync(GATEWAY)
+    row = _rows(host)["Prime harness"]
+    assert row["status"] == "warning"
+    assert "installed but not enabled" in row["detail"]
+    assert repair_command(row["detail"]) == "verdict harness prime enable"
+    assert row["status"] not in dd.BLOCKING_ROW_STATES
+
+    harness_prime.enable(health_check=lambda base_url: True)
+    assert _rows(host)["Prime harness"]["status"] == "ok"
+
+
+def test_damaged_prime_config_never_crashes_doctor_and_harness_is_not_ok(host: FakeHost) -> None:
+    """Fails if a truncated models.json raises out of doctor_rows (regression vs main)."""
+    harness_prime.create_omniroute_registry(gateway=GATEWAY)
+    host.sync(GATEWAY)
+    host.models.write_text('{"providers": {"omniroute": ')
+    rows = _rows(host)
+    assert rows["Prime registry"]["status"] == "failed"
+    harness = rows["Prime harness"]
+    assert harness["status"] == "unknown"
+    assert "unreadable" in harness["detail"] and "Prime registry" in harness["detail"]
+    assert harness["status"] not in dd.BLOCKING_ROW_STATES
+
+
+def test_damaged_prime_config_never_crashes_setup_planning(host: FakeHost) -> None:
+    host.models.parent.mkdir(parents=True)
+    host.models.write_text('{"providers": ')
+    setup_host.plan_host_actions(host.env)

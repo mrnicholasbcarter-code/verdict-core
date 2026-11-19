@@ -89,6 +89,7 @@ from verdict.orchestration.health_cache import (
 from verdict.orchestration.provider_catalog import is_inband_billing_refusal
 from verdict.orchestration.verified_models import public_model_entry
 from verdict.outcome_log import build_outcome_record, log_outcome, omniroute_anomaly_names
+from verdict.paths import default_decision_log_path
 from verdict.proxy import BufferedUpstreamResponse, StreamedUpstreamResponse, UpstreamProxy
 from verdict.relay import (
     build_attempts,
@@ -748,7 +749,7 @@ def _build_proxy() -> UpstreamProxy:
 _SERVE_ENV_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("primary_model", "LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL),
     ("profile", "LLMGATE_INTELLIGENCE_PROFILE", DEFAULT_PROFILE),
-    ("log_path", "LLMGATE_LOG_PATH", "verdict-decisions.jsonl"),
+    ("log_path", "LLMGATE_LOG_PATH", ""),
 )
 
 
@@ -766,7 +767,8 @@ def _serve_field_resolution(bootstrap: Any | None) -> tuple[dict[str, str], list
     conflicts: list[Any] = []
     for field_name, env_name, default in _SERVE_ENV_FIELDS:
         exported = (os.getenv(env_name) or "").strip()
-        applied = exported or default
+        # The decision log default is resolved per call so it follows VERDICT_HOME.
+        applied = exported or default or default_decision_log_path()
         applied_source: BootstrapSource = "environment" if exported else "default"
         values[field_name] = applied
         if bootstrap is None or bootstrap.source_of(field_name) != "config_file":
@@ -3000,6 +3002,12 @@ def start_server(port: int = 8000, host: str | None = None, reload: bool = False
         allow_anonymous=allow_anonymous,
         unix_socket=unix_socket,
     )
+    # Same rule as ``lifespan`` (ADR-017), checked before uvicorn starts so a
+    # missing path is one clear error instead of a lifespan traceback.
+    if not allow_anonymous and not (
+        os.getenv("VERDICT_RECEIPTS_DB") or os.getenv("VERDICT_EVIDENCE_DB")
+    ):
+        raise ValueError("VERDICT_RECEIPTS_DB must be configured for authenticated API mode")
     kwargs: dict[str, Any] = {"port": port}
     if unix_socket:
         kwargs["uds"] = unix_socket

@@ -12,7 +12,20 @@ from typing import Any, Protocol
 from verdict.security import redact_text
 
 RUNTIME_CONTRACT_VERSION = "1"
-DEFAULT_RUNTIME_STATE_DIR = Path("~/.verdict/runtime")
+
+
+def default_runtime_state_dir() -> Path:
+    """``VERDICT_RUNTIME_STATE_DIR``, else ``<verdict_home()>/runtime``, resolved per call.
+
+    Replaces the import-time constant ``DEFAULT_RUNTIME_STATE_DIR``
+    (``~/.verdict/runtime``), which ignored ``VERDICT_HOME``.
+    """
+    import os
+
+    from verdict.paths import verdict_home
+
+    configured = (os.getenv("VERDICT_RUNTIME_STATE_DIR") or "").strip()
+    return Path(configured).expanduser() if configured else verdict_home() / "runtime"
 
 
 class RuntimeManagerError(RuntimeError):
@@ -225,7 +238,6 @@ def default_service_specs(home: Path | None = None) -> tuple[RuntimeServiceSpec,
 
 
 __all__ = [
-    "DEFAULT_RUNTIME_STATE_DIR",
     "RUNTIME_CONTRACT_VERSION",
     "OwnershipRecord",
     "ProcessInspector",
@@ -235,5 +247,6 @@ __all__ = [
     "RuntimePlan",
     "RuntimeProcess",
     "RuntimeServiceSpec",
+    "default_runtime_state_dir",
     "default_service_specs",
 ]

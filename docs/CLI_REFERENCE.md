@@ -58,7 +58,7 @@ verdict orchestrate "Implement the feature" --repo . --json
 | `--state-file STATE_FILE` | Health/cooldown state file (default `$VERDICT_HOME/orchestration-health.json`). When set, the run also uses `health-cache.json` in the same directory |
 | `--plain` | ASCII narrative instead of live view, also on a terminal (same as `VERDICT_PLAIN=1`) |
 | `--json` | Print final receipt JSON |
-| `--executor BACKEND` | Worker executor backend: `prime` (default) or `direct-gateway` |
+| `--executor BACKEND` | Worker executor backend: `direct-gateway` (default: sends each worker to the gateway, no agent harness needed) or `prime-headless` (alias `prime`; the optional Prime Agent harness). Eligibility visibility follows this choice: `direct-gateway` uses the live gateway catalog, `prime-headless` uses Prime's model registry |
 | `--executor-map NODE=BACKEND[,...]` | Route specific nodes to a named backend; unmapped nodes use `--executor`. See [Mixed-harness runs](#mixed-harness-runs) |
 
 ### Mixed-harness runs
@@ -68,12 +68,15 @@ executor backends by combining `--executor` (the default fallback) with
 `--executor-map`:
 
 ```bash
-verdict orchestrate "goal"     --executor prime     --executor-map "node-1=direct-gateway,node-2=direct-gateway"
+verdict orchestrate "goal" --executor direct-gateway --executor-map "node-1=prime-headless"
 ```
 
 `--executor-map` takes comma-separated `node_id=backend` pairs. Valid backend
-names are `prime` and `direct-gateway`. Unmapped nodes use the `--executor`
-default. An unknown backend name exits with a clear error before the run starts.
+names are `direct-gateway`, `prime-headless` and its alias `prime`. Unmapped
+nodes use the `--executor` default. An unknown backend name exits with a clear
+error before the run starts. When any node (or the default) runs on Prime, the
+whole run uses Prime's visibility, so every selected route is one Prime can
+spawn.
 
 The `run_started` event records `executor: "mixed"` (without `--inject`; with `--inject` the outer label is `"fault-injecting"`). Each `terminal` event
 carries two provenance fields:
@@ -533,8 +536,8 @@ verdict ui
 Requires Python 3.11 or newer and the dashboard extras (`pip install "verdict-core[dashboard]"` or
 `"verdict-core[all]"`). On Python 3.10 these extras omit Streamlit and Pillow;
 core Verdict remains supported, but `verdict ui` exits with an upgrade message.
-The dashboard reads `verdict-decisions.jsonl` from the
-current directory and joins it to `verdict-outcomes.jsonl` beside it. Spend is
+The dashboard reads `$VERDICT_HOME/verdict-decisions.jsonl` (a legacy
+`./verdict-decisions.jsonl` is still read when the state-directory log does not exist) and joins it to `verdict-outcomes.jsonl` beside it. Spend is
 shown only from those post-execution outcome receipts; any per-model price
 assumption is an opt-in view explicitly labelled *synthetic* and is never
 presented as measured spend.
@@ -618,6 +621,8 @@ Network probes require the explicit `--allow-live-probe` consent flag.
 verdict identify --passive --json                 # read-only; zero model calls
 verdict identify --passive --json --save-report   # also writes $VERDICT_HOME/identify-latest.json (0600)
 verdict identify --screen --allow-live-probe --max-per-provider 1 --max-routes 8 --json
+verdict identify --screen --allow-live-probe --capacity free --max-per-provider 2 --max-routes 8 \
+  --max-capability-tier 2 --json                  # only routes the frontier planner can admit
 verdict identify install-service [--dry-run]      # passive and six-hourly screen timers
 ```
 
@@ -630,6 +635,13 @@ slots are unavailable and are not fetched. A failed or malformed source is liste
 `source_errors`. Passive mode reads tool proof from `health-cache.json` without
 writing it; an unreadable cache gives `tool_proof_error: health_cache_unavailable`.
 Schedules and screen bounds: [identify-maintenance.md](guides/identify-maintenance.md).
+
+`--max-capability-tier N` (0 = frontier to 3 = small; `--screen` only) skips,
+without a probe, every route whose capability tier is unknown
+(`skipped_unknown_tier`) or above N (`skipped_capability_tier`). The tier is
+the eligibility ladder's own rule, and skipped routes take no slot of
+`--max-routes` or `--max-per-provider`. Each screen row reports
+`capability_tier`, `supports_tools` and `context_window` (`null` when unknown).
 
 The candidate pool is OmniRoute's live view: active connections with valid
 credentials, decorated with breaker state, connection cooldown, model lockout and

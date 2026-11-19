@@ -19,7 +19,7 @@ def register(subparsers: Any) -> None:
     golden_p.add_argument("--json", action="store_true")
 
     stats_p = subparsers.add_parser("stats", help="View routing analytics")
-    stats_p.add_argument("--log_path", default="verdict-decisions.jsonl")
+    stats_p.add_argument("--log_path", default=None)
 
     benchmark_p = subparsers.add_parser(
         "benchmark", help="Run the reproducible local benchmark harness"
@@ -203,7 +203,7 @@ def register(subparsers: Any) -> None:
     suggest_p = subparsers.add_parser(
         "suggest", help="Review intelligence suggestions from past outcomes"
     )
-    suggest_p.add_argument("--log_path", default="verdict-decisions.jsonl")
+    suggest_p.add_argument("--log_path", default=None)
 
     # --- Trace + Demo (BOD-279) ---
     trace_p = subparsers.add_parser("trace", help="Human-readable trace of an orchestration run")

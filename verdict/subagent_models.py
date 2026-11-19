@@ -29,6 +29,7 @@ from verdict.contracts import DEFAULT_PRIMARY_MODEL
 from verdict.eligibility import EligibilityGate
 from verdict.intelligence import IntelligenceService
 from verdict.models import ModelInfo
+from verdict.paths import default_decision_log_path
 
 # ─── Role Requirements Policy ──────────────────────────────────────────────
 # Maps pi-subagent role → CandidateRequirements
@@ -217,7 +218,7 @@ class SubagentModelSelector:
             primary_model=os.getenv("LLMGATE_PRIMARY", DEFAULT_PRIMARY_MODEL),
             providers={},
             profile=os.getenv("LLMGATE_INTELLIGENCE_PROFILE", "development"),
-            log_path=os.getenv("LLMGATE_LOG_PATH", "verdict-decisions.jsonl"),
+            log_path=os.getenv("LLMGATE_LOG_PATH") or default_decision_log_path(),
             log_full_task=False,
             discovery_ttl=60,
             eligibility_gate=gate,

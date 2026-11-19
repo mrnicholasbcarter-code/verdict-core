@@ -476,6 +476,7 @@ class OpenCodeReviewer:
         tried: set[str] = set()
         last: ReviewResult | None = None
         attempts: list[dict[str, object]] = []
+        lost_retried = False
         for _attempt in range(self._max_reviewer_attempts):
             started = time.monotonic()
             remaining = review_deadline - started
@@ -556,16 +557,24 @@ class OpenCodeReviewer:
                 background=background,
                 timeout_seconds=remaining,
             )
-            if result.status != "ERROR" or not self._provider_failure(result):
-                attempts.append(
-                    {
-                        "route_id": chosen.route_id,
-                        "status": result.status,
-                        "category": "",
-                        "scope": "none",
-                        "duration_seconds": round(time.monotonic() - started, 3),
-                    }
-                )
+            lost = result.status == "ERROR" and result.findings_lost > 0
+            if result.status != "ERROR" or lost or not self._provider_failure(result):
+                record: dict[str, object] = {
+                    "route_id": chosen.route_id,
+                    "status": result.status,
+                    "category": "findings_lost" if lost else "",
+                    "scope": "none",
+                    "duration_seconds": round(time.monotonic() - started, 3),
+                }
+                if result.findings_lost:
+                    record["findings_lost"] = result.findings_lost
+                attempts.append(record)
+                # Issue #1137: OCR dropped comment calls, so findings are unknown.
+                # That is not a provider failure (no cooldown, no reselection):
+                # rerun the review once within the bounded attempts, then fail closed.
+                if lost and not lost_retried and _attempt + 1 < self._max_reviewer_attempts:
+                    lost_retried = True
+                    continue
                 return replace(result, attempts=tuple(attempts))
             # The REVIEWER's provider failed (504/timeout/quota/identity), not the
             # review: classify it with the shared failure policy, cool the
@@ -781,15 +790,53 @@ class OpenCodeReviewer:
             )
         findings = self._parse_findings(payload)
         reviewer = self._reviewer_label(payload)
-        status = "FAIL" if any(f.blocking() for f in findings) else "PASS"
+        lost = self._lost_comment_calls(payload)
+        if any(f.blocking() for f in findings):
+            status, detail = "FAIL", ""
+        elif lost:
+            # Never PASS with unknown findings, never invent them, and never
+            # count them as blocking: the review is incomplete, so it errors.
+            status = "ERROR"
+            detail = f"findings_lost: {lost} code_comment call(s) dropped by the review tool"
+        else:
+            status, detail = "PASS", ""
         return ReviewResult(
             status=status,
             reviewer=reviewer,
             route_id=route_id,
             findings=tuple(findings),
             raw_ref=raw_ref,
+            detail=detail,
             observed_model=observed or "",
+            findings_lost=lost,
         )
+
+    @staticmethod
+    def _lost_comment_calls(payload: Mapping[str, object]) -> int:
+        """Count ``code_comment`` tool calls OCR recorded as failed.
+
+        OCR reports a call whose arguments it could not parse under
+        ``tool_calls.failure_by_tool`` and ``tool_calls.failure_details`` and
+        then drops it, so its comments never reach ``comments``. The larger of
+        the two counts is used so a partial report cannot hide a loss.
+        """
+        tool_calls = payload.get("tool_calls")
+        if not isinstance(tool_calls, Mapping):
+            return 0
+        by_tool = tool_calls.get("failure_by_tool")
+        raw = by_tool.get("code_comment") if isinstance(by_tool, Mapping) else None
+        counted = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
+        details = tool_calls.get("failure_details")
+        listed = (
+            sum(
+                1
+                for item in details
+                if isinstance(item, Mapping) and item.get("tool_name") == "code_comment"
+            )
+            if isinstance(details, list)
+            else 0
+        )
+        return max(counted, listed)
 
     @staticmethod
     def _observed_model(payload: Mapping[str, object]) -> str | None:

@@ -13,7 +13,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -952,17 +952,50 @@ def _collect_doctor_diagnostics(
 
     sections.append(("Installed services", "header", ""))
     for row in (*installed_service_rows(), *service_code_path_rows(), *installed_runtime_rows()):
-        sections.append((row["label"], row["status"], row["detail"]))
-        if row["status"] == "failed":
+        status = first_run_status(row, configured=diag.config_loaded)
+        sections.append((row["label"], status, row["detail"]))
+        if status in BLOCKING_ROW_STATES:
             issues_found.append(row["detail"])
 
     sections.append(("Host prerequisites", "header", ""))
     for row in host_prerequisite_rows():
-        sections.append((row["label"], row["status"], row["detail"]))
-        if row["status"] == "failed":
+        status = first_run_status(row, configured=diag.config_loaded)
+        sections.append((row["label"], status, row["detail"]))
+        if status in BLOCKING_ROW_STATES:
             issues_found.append(row["detail"])
 
     return diag
+
+
+#: Doctor row state for a part that was never set up (distinct from failed, never ok).
+NOT_CONFIGURED = "not-configured"
+#: Row states that keep ``verdict doctor`` exiting non-zero.
+BLOCKING_ROW_STATES = frozenset({"failed", NOT_CONFIGURED})
+#: Details that say a part is absent, not broken. Anything else stays failed.
+_ABSENT_DETAIL = re.compile(
+    r"\bis missing\b|\bis not installed\b|\bdoes not exist\b|\bnever synced\b|^not on PATH;"
+)
+FIRST_RUN_LINE = "Verdict is installed but not set up yet. Start with: verdict setup"
+
+
+def first_run_status(row: Mapping[str, str], *, configured: bool) -> str:
+    """``not-configured`` for a failed row that only reports an absent part before setup.
+
+    Applies only while ``verdict.yaml`` is absent (setup never ran). A part that
+    exists but is broken, or any row after setup, keeps its own status.
+    """
+    status = row["status"]
+    if configured or status != "failed":
+        return status
+    detail = row.get("detail", "")
+    if _ABSENT_DETAIL.search(detail):
+        return NOT_CONFIGURED
+    if row.get("label") == "Identify passive report" and "missing or unreadable" in detail:
+        from verdict.identify_service import latest_report_path
+
+        # Unreadable is a real failure; only an absent report is "not set up".
+        return status if latest_report_path().exists() else NOT_CONFIGURED
+    return status
 
 
 def installed_service_rows(
@@ -970,8 +1003,12 @@ def installed_service_rows(
     now: datetime | None = None,
     timer_state: Callable[[str], dict[str, Any]] | None = None,
     ref_docs_status: Callable[[], list[dict[str, Any]]] | None = None,
+    prime_installed: Callable[[], bool] | None = None,
 ) -> list[dict[str, str]]:
     """Doctor rows for each background systemd unit and the health cache.
+
+    Prime Agent is optional: a missing prime-sync timer on a host without the
+    Prime binary is ``not-installed`` (never ok, never an issue).
 
     A missing or inactive timer, an ``is-failed`` unit, or a health cache
     that is too stale or empty to be useful are all reported with ``status:
@@ -1018,6 +1055,11 @@ def installed_service_rows(
             )
             if failed:
                 facts += "; repair: verdict identify install-service"
+        elif state.get("state") == "missing" and not _prime_present(prime_installed):
+            from verdict.setup_host import NOT_INSTALLED, PRIME_OPTIONAL_DETAIL
+
+            rows.append({"label": label, "status": NOT_INSTALLED, "detail": PRIME_OPTIONAL_DETAIL})
+            continue
         elif failed:
             facts += _prime_sync_timer_repair(str(state.get("state", "unknown")))
         rows.append({"label": label, "status": "failed" if failed else "ok", "detail": facts})
@@ -1138,6 +1180,14 @@ def installed_service_rows(
 
     rows.append(health_cache_row(now=now))
     return rows
+
+
+def _prime_present(probe: Callable[[], bool] | None) -> bool:
+    if probe is not None:
+        return probe()
+    from verdict.harness_prime import binary_installed
+
+    return binary_installed()
 
 
 def _prime_sync_timer_repair(state: str) -> str:

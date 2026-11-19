@@ -631,6 +631,12 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                     "hot-reload enabled (LLMGATE_AVAILABILITY_PROFILE=development)",
                 )
             start_server(args.port, args.host, reload=args.dev)
+        except ValueError as exc:
+            # Startup refused (fail closed): one line naming the setting and its fix.
+            from verdict.serve_service import startup_fix
+
+            print(f"verdict serve: {exc}. {startup_fix()}", file=sys.stderr)
+            sys.exit(2)
         except ImportError:
             from verdict import present
 
@@ -873,6 +879,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             max_routes=args.max_routes,
             providers=args.providers,
             capacities=args.capacities,
+            max_capability_tier=args.max_capability_tier,
         )
     elif args.command == "census":
         from verdict.census_passports import cmd_census
