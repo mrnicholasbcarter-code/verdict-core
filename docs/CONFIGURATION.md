@@ -564,6 +564,8 @@ example `blocked_private`) and never changes that setting.
 | `OMNIROUTE_USAGE_API_KEY_ID` | Id (not secret) of the inference key whose usage/budget Verdict reads; from `/api/keys` |
 | `VERDICT_GATEWAY_START_COMMAND` | Explicit command that starts a local gateway (shlex-split into an argv list; never run through a shell; the launched gateway inherits the exported environment) |
 | `VERDICT_GATEWAY_READY_TIMEOUT_S` | Readiness budget in seconds for the bounded gateway wait (default `30`; must be finite, positive and at most `600`) |
+| `VERDICT_DOCTOR_GATEWAY_TIMEOUT_S` | Seconds `verdict doctor` waits for the authenticated `GET /models` readiness probe (default `10`; must be finite, positive and at most `120`, otherwise the default applies). Retried once after a timeout only, never after an HTTP answer; healthy needs a 2xx |
+| `VERDICT_DOCTOR_HEALTH_TIMEOUT_S` | Seconds `verdict doctor` waits for `GET /api/health` (default `3`; same bounds). Retried once after a timeout only; healthy needs a 200 |
 | `VERDICT_ENSURE_GATEWAY` | Opt in to ensuring the gateway is ready before CLI execution (default off) |
 | `VERDICT_SERVE_ENSURE_GATEWAY` | Opt in to ensuring the gateway is ready at `verdict serve` startup (default off) |
 

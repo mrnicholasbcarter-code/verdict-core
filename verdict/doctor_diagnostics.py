@@ -7,6 +7,7 @@ logic without a back-edge into the CLI layer.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shlex
@@ -251,7 +252,82 @@ def _gateway_probe_for(bootstrap: Any) -> Any:
             api_key = (store.get(str(name)) or "").strip() or None
         if api_key is not None:
             break
-    return authenticated_gateway_probe(api_key)
+    timeout = doctor_probe_timeout(DOCTOR_GATEWAY_TIMEOUT_ENV, DEFAULT_DOCTOR_GATEWAY_TIMEOUT_S)
+    return authenticated_gateway_probe(
+        api_key,
+        timeout=timeout,
+        timeout_retries=1,
+        timeout_hint=f"raise {DOCTOR_GATEWAY_TIMEOUT_ENV} (now {timeout:g}s)",
+    )
+
+
+DOCTOR_GATEWAY_TIMEOUT_ENV = "VERDICT_DOCTOR_GATEWAY_TIMEOUT_S"
+DEFAULT_DOCTOR_GATEWAY_TIMEOUT_S = 10.0
+DOCTOR_HEALTH_TIMEOUT_ENV = "VERDICT_DOCTOR_HEALTH_TIMEOUT_S"
+DEFAULT_DOCTOR_HEALTH_TIMEOUT_S = 3.0
+_MAX_DOCTOR_PROBE_TIMEOUT_S = 120.0
+
+
+def doctor_probe_timeout(env_name: str, default: float) -> float:
+    """Seconds one doctor gateway probe waits, from ``env_name`` or ``default``.
+
+    A value that is not a finite number in (0, 120] is ignored, so a typo can
+    neither hang doctor nor make every probe fail instantly.
+    """
+    raw = (os.getenv(env_name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(value) or value <= 0 or value > _MAX_DOCTOR_PROBE_TIMEOUT_S:
+        return default
+    return value
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    from urllib.error import URLError
+
+    if isinstance(exc, TimeoutError):
+        return True
+    return isinstance(exc, URLError) and isinstance(exc.reason, TimeoutError)
+
+
+def gateway_health_failure(gateway_url: str, *, timeout: float) -> str | None:
+    """``GET {gateway_url}/api/health``; ``None`` on HTTP 200, else why it failed.
+
+    Retried exactly once, and only after a timeout: any answer, including an
+    error status, is final. Healthy needs a 200; nothing else counts.
+    """
+    import urllib.request
+    from urllib.error import URLError
+
+    # Credential-free: no Authorization header, so the default opener is safe.
+    health_req = urllib.request.Request(
+        gateway_url.rstrip("/") + "/api/health",
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+    attempts = 2
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(health_req, timeout=timeout) as resp:  # nosec B310
+                if resp.status != 200:
+                    return f"HTTP {resp.status}"
+                return None
+        except Exception as exc:
+            if _is_timeout(exc):
+                if attempt < attempts:
+                    continue
+                return (
+                    f"no answer within {timeout:g}s ({attempts} attempts); "
+                    f"raise {DOCTOR_HEALTH_TIMEOUT_ENV} (now {timeout:g}s)"
+                )
+            if isinstance(exc, URLError):
+                return f"{type(exc).__name__}: {exc.reason}"
+            return f"{type(exc).__name__}: {exc}"
+    return "no answer"  # pragma: no cover - the loop always returns
 
 
 def _doctor_gateway_lifecycle(diag: DoctorDiagnostics) -> None:
@@ -778,21 +854,15 @@ def _collect_doctor_diagnostics(
             "No gateway URL configured. Run 'verdict detect' or set OMNIROUTE_BASE_URL."
         )
     else:
-        try:
-            import urllib.request
-            from urllib.error import URLError
-
-            health_req = urllib.request.Request(
-                gateway_url.rstrip("/") + "/api/health",
-                headers={"Accept": "application/json"},
-                method="GET",
-            )
-            with urllib.request.urlopen(health_req, timeout=2) as resp:  # nosec B310
-                if resp.status != 200:
-                    raise URLError(f"status {resp.status}")
-        except Exception:
+        failure = gateway_health_failure(
+            gateway_url,
+            timeout=doctor_probe_timeout(
+                DOCTOR_HEALTH_TIMEOUT_ENV, DEFAULT_DOCTOR_HEALTH_TIMEOUT_S
+            ),
+        )
+        if failure is not None:
             issues_found.append(
-                f"Gateway unreachable at {gateway_url}. "
+                f"Gateway unreachable at {gateway_url} ({failure}). "
                 "Run 'verdict detect' to find a running gateway."
             )
 
