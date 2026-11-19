@@ -1,5 +1,7 @@
 # Feature Lifecycle Gate — Release-Readiness Policy
 
+> **Historical, not current authority.** Archived 2026-11-19: internal release-gating policy of the build swarm. The current definition of done is in [AGENTS.md](../../AGENTS.md).
+
 **Status:** Approved (release-gating policy)
 **Date:** 2026-08-03
 **Applies to:** Every parent-level Verdict feature (EPIC-level), before any
