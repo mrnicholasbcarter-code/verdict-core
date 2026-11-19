@@ -308,9 +308,7 @@ def build_selector(
     # when a caller selects the Prime harness.
     harness_visible = DEFAULT_REGISTRY.resolve(
         visibility_executor or DEFAULT_REGISTRY.default_name()
-    ).harness_visibility(
-        catalog_rows=catalog_rows, sync_visibility=sync_visibility
-    )
+    ).harness_visibility(catalog_rows=catalog_rows, sync_visibility=sync_visibility)
 
     # BOD-417: optional OmniRoute advisory rankings as task-aware tie-break among
     # already-admitted routes. Rankings are provider-level; map provider+topModel

@@ -146,9 +146,7 @@ def test_selector_visibility_executor_preserves_mixed_map_rule() -> None:
     )
 
 
-def test_default_visibility_sees_live_routes_missing_from_the_prime_registry(
-    tmp_path, monkeypatch
-):
+def test_default_visibility_sees_live_routes_missing_from_the_prime_registry(tmp_path, monkeypatch):
     """Fails if plain eligibility (build_selector default) still reads Prime's registry.
 
     A route new in the live catalog but not yet synced into a (stubbed) Prime
