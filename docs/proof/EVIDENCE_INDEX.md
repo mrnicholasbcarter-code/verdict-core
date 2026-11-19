@@ -85,6 +85,14 @@ publication.
   reviewer's two non-blocking comments were dropped (#1137), and it is one run
   with no speed or savings claim. Demo replay:
   [`live-run.svg`](../assets/live-run.svg).
+- [Live orchestrate run 20261119T130739Z](live-cockpit-20261119T130739Z/README.md)
+  (LIVE, 2026-11-19, source `35c110c1`, free capacity): four nodes; a real
+  HTTP 429 and a failed test on `cerebras/gpt-oss-120b`, both nodes reassigned
+  to `nvidia/google/gemma-4-31b-it`; open-code-review PASS on a different
+  family; receipt integrity OK. Evidence record only (the digest-bound event log
+  holds host paths and is retained privately, digests recorded). One run, no
+  speed or savings claim. Cockpit replay (README hero):
+  [`live-cockpit.svg`](../assets/live-cockpit.svg).
 
 ## Explicitly not approved
 

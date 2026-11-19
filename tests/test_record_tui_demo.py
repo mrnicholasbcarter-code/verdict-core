@@ -272,3 +272,31 @@ def test_trailing_partial_bytes_are_flushed() -> None:
     cast = rec.to_asciicast([(0.1, b"ok \xe2\x94")], width=20, height=5, title="t")
     events = [json.loads(line) for line in cast.splitlines()[1:]]
     assert events == [[0.1, "o", "ok "], [0.1, "o", "\ufffd"]]
+
+
+def test_explicit_idle_limit_is_written_instead_of_the_leading_trim() -> None:
+    """Players cap every gap at idle_time_limit; a tiny leading trim would cut real pauses."""
+    cast = rec.to_asciicast(
+        [(0.0, b"a"), (2.0, b"b")],
+        width=20,
+        height=5,
+        title="t",
+        idle_trimmed=0.2,
+        idle_time_limit=3.0,
+    )
+    assert json.loads(cast.splitlines()[0])["idle_time_limit"] == 3.0
+
+
+def test_live_recording_rejects_missing_run_and_bad_speed(tmp_path: Path) -> None:
+    out = tmp_path / "x.cast"
+    with pytest.raises(rec.CaptureError, match="speed"):
+        rec.record_live(tmp_path, 0, out, "2026-11-19", "abc")
+    with pytest.raises(rec.CaptureError, match=r"events\.jsonl"):
+        rec.record_live(tmp_path, 0.5, out, "2026-11-19", "abc")
+    assert not out.exists()
+
+
+def test_live_cli_requires_provenance_labels(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        rec.main(["--live", "run"])
+    assert "--date and --commit" in capsys.readouterr().err
