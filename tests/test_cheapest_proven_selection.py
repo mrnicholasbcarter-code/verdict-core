@@ -52,12 +52,6 @@ def test_subscription_selected_when_free_has_no_tool_screen(tmp_path):
     assert next(v for v in verdicts if v.route_id == "free/unrated").reason == "no_agentic_probe"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BLOCKER for admission owner: the ladder admits UNKNOWN capacity without the "
-    "FREE agentic-proof gate (_allow_unknown is assigned but never read); fixing it "
-    "changes admission and is out of this PR's scope",
-)
 def test_missing_price_is_unknown_never_free(tmp_path):
     """Catches a missing price being read as free (capacity from facts, never names)."""
     ladder = EligibilityLadder(
