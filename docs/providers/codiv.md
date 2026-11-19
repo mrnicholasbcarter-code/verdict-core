@@ -158,7 +158,7 @@ CODIV_API_KEY = os.getenv("CODIV_API_KEY")  # Optional, absence is safe
 
 ## References
 
-- **OpenSpec change:** `openspec/changes/bod-198-codiv-candidate/`
+- **OpenSpec change:** `openspec/changes/archive/2026-10-09-bod-198-codiv-candidate/`
 - **Failure classification:** `verdict/gateway_adapters.py` (`NormalizedFailureClass`)
 - **Eligibility gates:** `verdict/eligibility.py`
 - **Receipt schema:** `verdict/orchestration/receipt.py`

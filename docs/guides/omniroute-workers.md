@@ -38,14 +38,17 @@ Only transient request failures receive bounded retries: connection failures,
 timeouts, HTTP 408, 409, 425, 429, and 5xx responses. Authentication and
 malformed-request responses do not retry.
 
-## ADR-036 worker selection and Prime dispatch
+## ADR-036 worker selection and dispatch
 
 The ADR-036 path uses a stricter execution boundary than the general worker
 client. Before a node launch, `EligibilityLadder` evaluates live inventory,
 provider connection evidence, probe health, cooldowns, task requirements, and
-current load. A route must also be visible in Prime's OmniRoute model registry
-when that registry is present. The selected concrete route is passed to
-`PrimeHeadlessExecutor`, which invokes `prime-agent` with `--model <route>`.
+current load. The selected concrete route is passed to the
+worker executor: `direct-gateway` by default, which sends the worker request
+straight to the gateway. With the optional Prime Agent harness
+(`--executor prime-headless`), the route must also be visible in Prime's
+OmniRoute model registry, and `PrimeHeadlessExecutor` invokes `prime-agent`
+with `--model <route>`.
 
 The lower-level `verdict.subagent_selection` and `verdict.worker_runtime`
 modules support bounded Prime/RLM worker attempts. They select only the
