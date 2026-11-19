@@ -38,7 +38,7 @@ an admission check cannot be ranked back in.
 
 **Who it is for**
 
-- You supervise Claude Code, Codex or Prime Agent workers and want each model choice and refusal on record.
+- You supervise coding-agent work (Verdict's built-in direct-gateway worker by default, or the optional Prime Agent harness; Claude Code, Codex and other agents can also point at Verdict as clients) and want each model choice and refusal on record.
 - You use the free and paid capacity behind an OmniRoute gateway and want it used in a fixed, explainable order.
 - You need an audit trail of every model that was used or refused, with a receipt you can verify.
 
@@ -75,7 +75,7 @@ an admission check cannot be ranked back in.
 - **Recovers on its own when a model fails.** A quota limit, rate limit, timeout or failed verification can retry the same work, sometimes on another admitted model, within a bounded number of tries. <!-- claim:C-005 -->
 - **Gets a separate review route.** A reviewer on a route that did not implement the work must approve the result. Another model family is preferred; when none has capacity, review falls back to route-level independence ([runtime policy](verdict/orchestration/runtime.py), [review tests](tests/test_orch_runtime.py)). <!-- claim:C-006 -->
 - **Hands you a receipt you can verify.** A completed run's receipt stores a digest of its event log; `verdict run-receipt` checks that log against the receipt and flags any change. <!-- claim:C-007 -->
-- **Asks before risky actions.** A manual model refresh that could hit metered models shows you its plan and waits for your yes, and Prime Agent model selection previews the change, asks before editing `settings.json`, and keeps a backup you can restore. <!-- claim:C-008 -->
+- **Asks before risky actions.** A manual model refresh that could hit metered models shows you its plan and waits for your yes, and, if you use the optional Prime Agent harness, Prime model selection previews the change, asks before editing `settings.json`, and keeps a backup you can restore. <!-- claim:C-008 -->
 
 ## Try it without API keys
 
@@ -121,7 +121,7 @@ loop described in [How it works](#how-it-works), it includes:
 |---|---|
 | Model evidence | `verdict eligibility --verified` shows each listed model's evidence-backed status (VERIFIED, STALE, FAILED, UNAVAILABLE, UNVERIFIED, INVENTORY_ONLY, EXCLUDED) with the recorded reason; `/eligibility` in the TUI prompt. <!-- claim:C-010 --> |
 | Safe refresh | `/eligibility refresh` shows a bounded request plan grouped by capacity class (FREE, SUBSCRIPTION, UNKNOWN, METERED) and asks about each group. UNKNOWN and METERED default to no and show an estimated spend. From a script, `verdict eligibility --verified --refresh` probes only FREE and SUBSCRIPTION routes unless you add `--include-unknown` or `--allow-metered`. <!-- claim:C-011 --> |
-| Prime Agent setup | `verdict harness prime select` previews the change to `~/.prime/agent/settings.json`, asks you to confirm and backs the file up; `verdict harness prime restore` puts the backup back. <!-- claim:C-012 --> |
+| Prime Agent setup (optional harness) | `verdict harness prime select` previews the change to `~/.prime/agent/settings.json`, asks you to confirm and backs the file up; `verdict harness prime restore` puts the backup back. <!-- claim:C-012 --> |
 | Claude Code report | `/bootstrap claude` is read-only: it tells you what would work if Claude Code pointed at Verdict, and changes nothing. <!-- claim:C-013 --> |
 | Prompt completion | Commands, flags, model ids and run ids complete as you type; see [docs/guides/tui-completion.md](docs/guides/tui-completion.md). <!-- claim:C-014 --> |
 | Payment failures | A reply that says the account has no credits is a payment failure, even with HTTP 200, and routes billed against prepaid credit are not assumed free. |
@@ -280,11 +280,11 @@ cooldowns. A bare controller launch has no automatic replacement
 [`docs/guides/controller-routing.md`](docs/guides/controller-routing.md#root-controller-failover-generations),
 [`tests/test_root_controller_failover.py`](tests/test_root_controller_failover.py)).
 
-This repository is the control plane: planning, admission, assignment, recovery and proof. Three
-external tools do the execution, and Verdict only calls them:
+This repository is the control plane: planning, admission, assignment, recovery and proof. External
+tools do the execution, and Verdict only calls them:
 
 - **OmniRoute** is a local OpenAI-compatible gateway. It supplies the model inventory and runs model calls ([`verdict/omniroute.py`](verdict/omniroute.py)).
-- **Prime Agent** is a headless coding-agent CLI. It runs each worker process (`prime-agent -p --model <exact route>`) and does not select models.
+- **Workers** run on the built-in `direct-gateway` executor by default: each worker request goes straight to the gateway, so no agent harness is needed. **Prime Agent** is an optional headless coding-agent CLI; select it with `--executor prime-headless` and it runs each worker process (`prime-agent -p --model <exact route>`). Neither selects models.
 - **`ocr`** (open-code-review) is the reviewer CLI ([`verdict/orchestration/review.py`](verdict/orchestration/review.py)).
 
 Three-role split:
@@ -292,7 +292,7 @@ Three-role split:
 | Role | Responsibility |
 |---|---|
 | **Verdict** | plans, selects models, recovers from faults, verifies, writes receipts |
-| **Prime Agent harness** | runs worker processes (`prime-agent -p --model <exact route>`); does not select models |
+| **Worker executor** | `direct-gateway` by default (gateway call per worker); optional Prime Agent harness with `--executor prime-headless` (`prime-agent -p --model <exact route>`); never selects models |
 | **OmniRoute transport** | provides `/v1/models` inventory and `/v1/chat/completions` execution; is not a metadata source of truth |
 
 The following boundaries apply to the stated paths (not every routing entry point):
@@ -822,8 +822,9 @@ pip install verdict-core
 
 Python 3.10, 3.11, 3.12 and 3.13, tested in CI on Linux (Ubuntu). `install.sh` is also
 checked in clean Debian-based Python 3.12 and 3.13 containers. macOS and Windows are not
-tested in CI. The offline proof path above needs no API key or gateway. To run
-`verdict serve`, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+tested in CI. The offline proof path above needs no API key or gateway. `verdict serve` needs
+`LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB` before it starts; `verdict setup --apply --allow host.serve`
+sets both. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#first-run).
 
 Optional Linux/macOS installer (review the script first):
 

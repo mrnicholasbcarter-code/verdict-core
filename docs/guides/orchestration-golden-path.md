@@ -18,9 +18,11 @@ GOAL -> CONTROLLER (frontier planner) -> PLAN / DAG -> SELECT (eligibility ladde
 Roles:
 
 - **Verdict:** plans, selects models, recovers, verifies and writes receipts.
-- **Prime Agent:** is the default harness for bounded planner and worker calls
-  (`prime-agent -p --model <exact route>`). Verdict also supports direct-gateway
-  execution and mixed worker backends; these do not change Verdict's orchestration ownership.
+- **Worker executor:** `direct-gateway` by default (one gateway call per worker,
+  no agent harness). Prime Agent is an optional harness, selected with
+  `--executor prime-headless` (`prime-agent -p --model <exact route>`), and
+  `--executor-map` mixes backends per node. None of these change Verdict's
+  orchestration ownership.
 - **OmniRoute:** only provides inventory and transport.
 
 ## Prerequisites
