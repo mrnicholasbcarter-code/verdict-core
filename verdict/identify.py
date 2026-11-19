@@ -336,9 +336,10 @@ def screen_models(
             "stopped_reason": stopped_reason,
         }
     pool_counts: Counter[str] = Counter()
-    # Pools this screen saw refuse on account grounds (auth or payment, HTTP
-    # or in-band). A later route in the same pool would fail the same way, so
-    # it takes no cap slot. Decided on this run's own probe, never on a name.
+    # Pools this screen saw refuse on account grounds (auth or payment, HTTP or
+    # in-band), excluding route-scoped failures. A later route in the same pool
+    # would fail the same way, so it takes no cap slot. Decided on this run's
+    # own probe, never on a name.
     refused_pools: set[str] = set()
 
     def decide(
@@ -496,13 +497,15 @@ def screen_models(
 def _account_refusal(row: Mapping[str, Any], entry: HealthEntry | None) -> bool:
     """This probe was refused on account grounds, so its pool would refuse again.
 
-    Payment (HTTP 402 or an in-band credit refusal) always counts. Auth counts
-    unless the cache scoped it to the route (a 403 for one model only).
+    Payment (HTTP 402 or an in-band credit refusal) counts unless the cache
+    scoped it to the route (a paid model on a key that still serves free
+    community routes). Auth and permission refusals respect this scope the same
+    way.
     """
     if not row.get("turns_sent") or entry is None or entry.healthy:
         return False
     if entry.category == CATEGORY_PAYMENT or entry.http_status == 402:
-        return True
+        return entry.failure_scope != "route"
     auth = row.get("result") == "auth_failed" or entry.category in {
         CATEGORY_AUTH,
         CATEGORY_PERMISSION,
