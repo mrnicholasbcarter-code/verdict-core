@@ -42,6 +42,22 @@ class ServeServiceError(Exception):
     """The serve unit cannot be rendered safely; nothing was written."""
 
 
+def startup_fix() -> str:
+    """The exact remedy printed when ``verdict serve`` refuses to start."""
+    from verdict.paths import verdict_home
+
+    return (
+        f"Fix: run 'verdict setup --apply --allow {SERVE_SETUP_ID}' (installs the unit and "
+        f"writes both settings), or export {TOKEN_ENV}=<token> and "
+        f"{RECEIPTS_ENV}={verdict_home() / 'receipts.db'}; "
+        "see docs/CONFIGURATION.md#serve-authentication-and-receipts"
+    )
+
+
+#: The ``verdict setup`` action id that installs this unit (``setup_host.SERVE``).
+SERVE_SETUP_ID = "host.serve"
+
+
 def env_file_path(home: Path | None = None) -> Path:
     """``~/.config/verdict/serve.env``: the path the unit's ``%h`` form names."""
     return (home or Path.home()) / ".config" / "verdict" / ENV_FILE_NAME

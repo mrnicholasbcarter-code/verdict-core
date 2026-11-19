@@ -2323,6 +2323,8 @@ def cmd_doctor(
     diag = _doctor_diag._collect_doctor_diagnostics(
         fix, interactive=True, preflight_timeout=preflight_timeout, progress=_doctor_progress
     )
+    if not diag.config_loaded:
+        ui.console.print(Text(f"  {_doctor_diag.FIRST_RUN_LINE}", style="WARNING"))
     ui.doctor(diag.capability_report)
     for label, state, detail in diag.sections:
         if state == "header":

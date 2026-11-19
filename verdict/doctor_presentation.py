@@ -23,6 +23,7 @@ PROBLEM_STATES = frozenset(
         "unknown",
         "auth_failed",
         "not_installed",
+        "not-configured",
         "uncovered",
     }
 )

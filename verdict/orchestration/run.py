@@ -50,6 +50,7 @@ from verdict.orchestration.contracts import (
     WorkNode,
 )
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, backend_model, pool_of
+from verdict.orchestration.explain import missing_proof_hint
 from verdict.orchestration.harness import DEFAULT_REGISTRY
 from verdict.orchestration.planner import FrontierPlanner, PlanValidationError, hydrate_node_prompt
 from verdict.orchestration.worker_context import (
@@ -431,6 +432,7 @@ async def plan_with_failover(
     tried: set[str] = set()
     tried_pools: set[str] = set()
     last = ""
+    hint = ""
     for attempt in range(1, max_attempts + 1):
         requirements = TaskRequirements(
             required_capabilities=frozenset({"tools"}),
@@ -445,6 +447,7 @@ async def plan_with_failover(
         )
         choice, considered = selector.select(requirements, now=now())
         if choice is None:
+            hint = missing_proof_hint(considered)
             break
         events.emit(
             "plan_started",
@@ -616,6 +619,7 @@ async def plan_with_failover(
         return graph
     raise OrchestrationError(
         f"planning failed on every eligible frontier model; last: {last or 'none eligible'}"
+        + (f"; {hint}" if hint else "")
     )
 
 

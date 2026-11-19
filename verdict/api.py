@@ -3000,6 +3000,12 @@ def start_server(port: int = 8000, host: str | None = None, reload: bool = False
         allow_anonymous=allow_anonymous,
         unix_socket=unix_socket,
     )
+    # Same rule as ``lifespan`` (ADR-017), checked before uvicorn starts so a
+    # missing path is one clear error instead of a lifespan traceback.
+    if not allow_anonymous and not (
+        os.getenv("VERDICT_RECEIPTS_DB") or os.getenv("VERDICT_EVIDENCE_DB")
+    ):
+        raise ValueError("VERDICT_RECEIPTS_DB must be configured for authenticated API mode")
     kwargs: dict[str, Any] = {"port": port}
     if unix_socket:
         kwargs["uds"] = unix_socket
