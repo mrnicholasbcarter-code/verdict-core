@@ -2582,6 +2582,11 @@ class DagRuntime:
                 # BOD-224: every reviewer attempt is evidence, not only the last.
                 record: dict[str, Any] = dict(attempt)
                 self.events.emit("review_attempt", attempt=number, **record)
+            # Issue #1137: findings_lost only when OCR dropped comment calls, so
+            # earlier event shapes are unchanged.
+            lost_extra: dict[str, Any] = (
+                {"findings_lost": review.findings_lost} if review.findings_lost else {}
+            )
             self.events.emit(
                 "review",
                 status=review.status,
@@ -2592,9 +2597,7 @@ class DagRuntime:
                 findings=len(review.findings),
                 detail=review.detail[:300],
                 raw_ref=review.raw_ref,
-                # Issue #1137: only when OCR dropped comment calls, so earlier
-                # event shapes are unchanged.
-                **({"findings_lost": review.findings_lost} if review.findings_lost else {}),
+                **lost_extra,
             )
             if not review.passed:
                 return await self._finish(
