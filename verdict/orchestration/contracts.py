@@ -21,6 +21,12 @@ from typing import Any
 
 SCHEMA_VERSION = "verdict.orchestration/v1"
 
+# Frontier-planner floor. plan_with_failover and the certification preflight
+# both read these, so the proof the preflight mints is proof the planner admits.
+PLANNER_REQUIRED_CAPABILITIES: frozenset[str] = frozenset({"tools"})
+PLANNER_MIN_CONTEXT_TOKENS = 100_000
+PLANNER_MAX_CAPABILITY_TIER = 2
+
 # Barrier names the runtime actually emits.  ``barrier`` on a WorkNode must be
 # one of these (or empty).  Anything else is planner prose that would be treated
 # as an unrecorded barrier by completion_verdict, failing the run.

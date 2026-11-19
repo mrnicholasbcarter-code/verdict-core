@@ -459,3 +459,75 @@ def test_assumed_free_screen_records_capacity_evidence(tmp_path):
     assert row["result"] == "pass"
     assert row["capacity_evidence"] == "assumed_free_no_paid_evidence"
     assert cache.entry("p/weak").capacity_evidence == "assumed_free_no_paid_evidence"
+
+
+def tiered_snapshot():
+    """Free routes with known tier 1, tier 3 and unknown tier, all strongest-rated."""
+    ids = ["p/claude-sonnet-4.5", "p/gemma-4-26b-a4b-it", "q/zzqx-blob"]
+    rows = {
+        r: {"id": r, "capabilities": {"tool_calling": True}, "context_length": 200_000}
+        for r in ids
+    }
+    return OmniRouteEvidence(
+        fetched_at=NOW,
+        connections=(),
+        usable_providers=frozenset({"p", "q"}),
+        proven_by_traffic={
+            r: TrafficEvidence(r, r.split("/", 1)[0], "healthy", 2, 2, NOW) for r in ids
+        },
+        cooled_models=frozenset(),
+        source_errors=(),
+        route_identities={r: (r.split("/", 1)[0], r.split("/", 1)[1]) for r in ids},
+        route_capacities=dict.fromkeys(ids, "free"),
+        inventory_rows=rows,
+    )
+
+
+def test_tier_cap_never_probes_insufficient_or_unknown_tier(tmp_path):
+    """Catches the cert preflight spending its cap on routes the planner rejects."""
+    calls = []
+    report = identify.screen_models(
+        tiered_snapshot(),
+        metadata=None,
+        cache=HealthCache(tmp_path / "health.json"),
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=2,
+        max_routes=1,
+        clock=lambda: NOW,
+        capacities=("free",),
+        max_capability_tier=2,
+    )
+    assert {r[0] for r in calls} == {"p/claude-sonnet-4.5"}
+    by_id = {r["route_id"]: r for r in report["routes"]}
+    assert by_id["p/gemma-4-26b-a4b-it"]["result"] == "skipped_capability_tier"
+    assert by_id["q/zzqx-blob"]["result"] == "skipped_unknown_tier"
+    assert by_id["p/claude-sonnet-4.5"]["capability_tier"] == 1
+    assert by_id["p/claude-sonnet-4.5"]["supports_tools"] is True
+    assert by_id["p/claude-sonnet-4.5"]["context_window"] == 200_000
+    # Skipped routes do not consume the route cap.
+    assert report["routes_checked"] == report["passed"] == 1
+    assert report["stopped_reason"] == "complete"
+
+
+def test_without_tier_cap_screen_order_and_membership_are_unchanged(tmp_path):
+    """Catches the tier filter leaking into screens that did not ask for it."""
+    calls = []
+    report = identify.screen_models(
+        tiered_snapshot(),
+        metadata=None,
+        cache=HealthCache(tmp_path / "health.json"),
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=2,
+        max_routes=3,
+        clock=lambda: NOW,
+        capacities=("free",),
+    )
+    assert report["routes_checked"] == 3
+    assert not any(r["result"].startswith("skipped_") for r in report["routes"])
+
+
+def test_tier_cap_outside_known_tiers_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="max_capability_tier"):
+        screen(tmp_path, [], max_capability_tier=4)

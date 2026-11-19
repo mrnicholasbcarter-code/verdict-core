@@ -36,6 +36,9 @@ from verdict.availability import opaque_connection_token
 from verdict.context_pack import ContextPlan, estimate_tokens
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import (
+    PLANNER_MAX_CAPABILITY_TIER,
+    PLANNER_MIN_CONTEXT_TOKENS,
+    PLANNER_REQUIRED_CAPABILITIES,
     FailureClassification,
     FailureClassifier,
     ModelSelector,
@@ -433,14 +436,14 @@ async def plan_with_failover(
     last = ""
     for attempt in range(1, max_attempts + 1):
         requirements = TaskRequirements(
-            required_capabilities=frozenset({"tools"}),
+            required_capabilities=PLANNER_REQUIRED_CAPABILITIES,
             coding=True,
             reasoning=True,
             frontier_worthy=True,
-            min_context_tokens=100_000,
+            min_context_tokens=PLANNER_MIN_CONTEXT_TOKENS,
             exclude_routes=frozenset(tried),
             exclude_pools=frozenset(tried_pools),
-            max_capability_tier=2,
+            max_capability_tier=PLANNER_MAX_CAPABILITY_TIER,
             task_family=task_family,
         )
         choice, considered = selector.select(requirements, now=now())

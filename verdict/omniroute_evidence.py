@@ -137,6 +137,9 @@ class OmniRouteEvidence:
     route_capacity_evidence: Mapping[str, str] = field(default_factory=dict)
     live_candidates: Mapping[str, LiveCandidate] = field(default_factory=dict)
     model_cooldowns: tuple[Mapping[str, Any], ...] = ()
+    # Raw /v1/models rows by route id: the same shape the eligibility ladder
+    # reads, so screens apply its capability-tier and context rules unchanged.
+    inventory_rows: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 def _date(value: Any) -> datetime | None:
@@ -474,11 +477,13 @@ def parse_omniroute_evidence(
     capacity_rules: dict[str, str] = {}
     routes: dict[tuple[str, str], list[str]] = {}
     inventory: set[str] = set()
+    inventory_rows: dict[str, Mapping[str, Any]] = {}
     free_set = load_openrouter_free_set(refresh=False)
     for row in _rows(v1_models.get("data")) if "v1_models" not in errors else []:
         route_id, provider = row.get("id"), row.get("owned_by", row.get("provider"))
         if isinstance(route_id, str) and route_id:
             inventory.add(route_id)
+            inventory_rows[route_id] = row
         if not isinstance(route_id, str) or not isinstance(provider, str):
             continue
         model = row.get("root") or route_id.partition("/")[2]
@@ -570,6 +575,7 @@ def parse_omniroute_evidence(
             _live_candidates(candidates["candidates"]) if "candidates" not in errors else {}
         ),
         model_cooldowns=tuple(model_cooldowns),
+        inventory_rows=MappingProxyType(inventory_rows),
     )
 
 
