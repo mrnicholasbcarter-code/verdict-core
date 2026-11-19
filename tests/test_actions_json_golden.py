@@ -60,6 +60,14 @@ def _base_env() -> dict[str, str]:
     }
 
 
+def _log_env() -> dict[str, str]:
+    """Hermetic env with an empty state dir: the decision log defaults there (G6b),
+    and the shared golden HOME may already hold a log written by route tests."""
+    env = _base_env()
+    env["VERDICT_HOME"] = tempfile.mkdtemp(prefix="/tmp/vg_state_")
+    return env
+
+
 def _run_cli(
     argv: list[str], extra_env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
@@ -271,17 +279,19 @@ def test_stats_no_log_golden() -> None:
     """stats with no log file produces deterministic 'no log file' warning."""
     import subprocess as _sp
 
+    env = _log_env()
     result = _sp.run(
         [sys.executable, "-m", "verdict", "stats"],
         cwd=_clean_workdir(),
-        env=_base_env(),
+        env=env,
         capture_output=True,
         text=True,
         timeout=60,
     )
     fixture = _load_fixture("stats__no_log")
     assert result.returncode == fixture["exit_code"], result.stderr[-200:]
-    assert result.stdout == fixture["stdout"], (
+    stdout = result.stdout.replace(env["VERDICT_HOME"], "<VERDICT_HOME>")
+    assert stdout == fixture["stdout"], (
         f"stdout mismatch:\ngot:  {result.stdout[:300]!r}\nwant: {fixture['stdout'][:300]!r}"
     )
 
@@ -294,7 +304,7 @@ def test_cost_report_no_log_golden() -> None:
     result = _sp.run(
         [sys.executable, "-m", "verdict", "cost-report"],
         cwd=cwd,
-        env=_base_env(),
+        env=_log_env(),
         capture_output=True,
         text=True,
         timeout=60,
@@ -314,7 +324,7 @@ def test_suggest_no_log_golden() -> None:
     result = _sp.run(
         [sys.executable, "-m", "verdict", "suggest"],
         cwd=cwd,
-        env=_base_env(),
+        env=_log_env(),
         capture_output=True,
         text=True,
         timeout=60,
@@ -603,7 +613,7 @@ def test_stats_with_log_golden() -> None:
     result = _sp.run(
         [sys.executable, "-m", "verdict", "stats", f"--log_path={_FIXTURE_LOG}"],
         cwd=_clean_workdir(),
-        env=_base_env(),
+        env=_log_env(),
         capture_output=True,
         text=True,
         timeout=60,
@@ -626,7 +636,7 @@ def test_cost_report_with_log_golden() -> None:
     result = _sp.run(
         [sys.executable, "-m", "verdict", "cost-report"],
         cwd=cwd,
-        env=_base_env(),
+        env=_log_env(),
         capture_output=True,
         text=True,
         timeout=60,
@@ -645,7 +655,7 @@ def test_suggest_with_log_golden() -> None:
     result = _sp.run(
         [sys.executable, "-m", "verdict", "suggest", f"--log_path={_FIXTURE_LOG}"],
         cwd=_clean_workdir(),
-        env=_base_env(),
+        env=_log_env(),
         capture_output=True,
         text=True,
         timeout=60,
