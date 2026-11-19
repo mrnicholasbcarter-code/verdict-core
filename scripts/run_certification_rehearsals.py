@@ -292,7 +292,7 @@ def _seed_chaos_state(root: Path, env: dict[str, str]) -> tuple[Path, Path]:
     now = datetime.now(timezone.utc)
     try:
         entries = HealthCache(cache).routes().values()
-    except ValueError as exc:  # HealthCacheError: not a valid health cache
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:  # HealthCacheError et al.
         raise RehearsalConfigurationError(refused + "is not a valid health cache") from exc
     if not any(agentic_capability(entry, now)["qualified"] for entry in entries):
         raise RehearsalConfigurationError(refused + "holds no fresh agentic proof")
