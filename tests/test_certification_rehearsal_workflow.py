@@ -430,10 +430,13 @@ def test_preflight_argv_asks_for_planner_tier(tmp_path, monkeypatch):
         script.run()
     argv = seen["preflight"][0]
     assert argv[argv.index("--max-capability-tier") + 1] == str(PLANNER_MAX_CAPABILITY_TIER) == "2"
-    # Bounded spend: every probed route costs at most AGENTIC_TURNS requests.
+    # Bounded spend: the cap reaches the screen, and every probed route costs at
+    # most AGENTIC_TURNS requests (caps do not matter for free capacity,
+    # operator 2026-11-05, but the probe set stays bounded).
     from verdict.prove_at_rest import AGENTIC_TURNS
 
-    assert script.PREFLIGHT_MAX_ROUTES * AGENTIC_TURNS < 40
+    assert argv[argv.index("--max-routes") + 1] == str(script.PREFLIGHT_MAX_ROUTES) == "30"
+    assert script.PREFLIGHT_MAX_ROUTES * AGENTIC_TURNS <= 30 * AGENTIC_TURNS
 
 
 def _bad(**overrides):
@@ -553,9 +556,8 @@ def test_preflight_argv_carries_planner_floor_and_pool_cap(tmp_path, monkeypatch
     pool_cap = argv[argv.index("--max-per-pool") + 1 :][:1] if "--max-per-pool" in argv else []
     assert pool_cap == [str(script.PREFLIGHT_MAX_PER_POOL)] == ["1"]
     # The existing bounds and consent are untouched.
-    # 13 routes, one per pool, reach pools the 8-route cap never did (cert-fix8),
-    # and 13 x 3 turns = 39 model requests at most, under the 40-request bound.
-    assert argv[argv.index("--max-routes") + 1] == str(script.PREFLIGHT_MAX_ROUTES) == "13"
+    # 30 routes, one per pool, reach pools the 13-route cap never did (cert-fix10).
+    assert argv[argv.index("--max-routes") + 1] == str(script.PREFLIGHT_MAX_ROUTES) == "30"
     assert argv[argv.index("--max-per-provider") + 1] == str(script.PREFLIGHT_MAX_PER_PROVIDER)
     assert argv[argv.index("--capacity") + 1] == "free"
     assert "--allow-live-probe" in argv

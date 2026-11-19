@@ -43,15 +43,16 @@ class RehearsalConfigurationError(ValueError):
 
 # Bounded preflight configuration: strictly FREE, small explicit bounds.
 PREFLIGHT_MAX_PER_PROVIDER = 2
-# 13 routes, one per backend pool: at most 13 x 3 agentic turns = 39 model
-# requests per run, under the 40-request bound. With 8 (cert-fix8, 2026-11-19
-# 13:06Z) half the slots went to pools that failed (auth, 402, tool check) and
-# pools with candidates (freemodel-dev, groq, lmarena, mistral, ollama-cloud)
-# were never reached.
-PREFLIGHT_MAX_ROUTES = 13
+# 30 routes, one per backend pool. Request caps do not matter for free and
+# subscription capacity (operator decision 2026-11-05, ai-memory
+# decisions/verdict-caps-subscription-free-2026-11-05.md); the earlier 13 (and
+# its "under 40 requests" bound) had no basis. With 13 (cert-fix10, 2026-11-19
+# 14:12Z, about 75 s) 8 slots went to failing pools; 30 is about 3 minutes and
+# still bounded: at most 30 x AGENTIC_TURNS model requests.
+PREFLIGHT_MAX_ROUTES = 30
 PREFLIGHT_WALL_SECONDS = 600  # 10 minutes
 # One probe per backend pool: prefixes that share a quota (agy/antigravity,
-# the three `:free` prefixes) are one pool, so 13 probes cover up to 13 pools.
+# the three `:free` prefixes) are one pool, so 30 probes cover up to 30 pools.
 PREFLIGHT_MAX_PER_POOL = 1
 # Distinct backend pools that must hold a planner-eligible pass: what the chaos
 # rehearsal consumes, measured offline with the real runtime (CHAOS-DIAGNOSIS,
