@@ -3,6 +3,7 @@
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -530,3 +531,253 @@ def test_without_tier_cap_screen_order_and_membership_are_unchanged(tmp_path):
 def test_tier_cap_outside_known_tiers_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="max_capability_tier"):
         screen(tmp_path, [], max_capability_tier=4)
+
+
+def inventory_snapshot(specs):
+    """Free routes from ``(route_id, tier, context_window, tools)``; ``None`` leaves a fact unknown."""
+    rows = {}
+    for route_id, tier, context, tools in specs:
+        row = {"id": route_id}
+        if tier is not None:
+            row["capability_tier"] = tier
+        if context is not None:
+            row["context_length"] = context
+        if tools is not None:
+            row["capabilities"] = {"tool_calling": tools}
+        rows[route_id] = row
+    ids = list(rows)
+    prefixes = frozenset(r.split("/", 1)[0] for r in ids)
+    return OmniRouteEvidence(
+        fetched_at=NOW,
+        connections=(),
+        usable_providers=prefixes,
+        proven_by_traffic={
+            r: TrafficEvidence(r, r.split("/", 1)[0], "healthy", 2, 2, NOW) for r in ids
+        },
+        cooled_models=frozenset(),
+        source_errors=(),
+        route_identities={r: (r.split("/", 1)[0], r.split("/", 1)[1]) for r in ids},
+        route_capacities=dict.fromkeys(ids, "free"),
+        inventory_rows=rows,
+    )
+
+
+def screen_inventory(tmp_path, calls, specs, **kwargs):
+    options = dict(
+        metadata=None,
+        cache=HealthCache(tmp_path / "health.json"),
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=2,
+        max_routes=8,
+        clock=lambda: NOW,
+        capacities=("free",),
+    )
+    options.update(kwargs)
+    return identify.screen_models(inventory_snapshot(specs), **options)
+
+
+def probed(calls):
+    """Route ids in first-probe order."""
+    return list(dict.fromkeys(route for route, _ in calls))
+
+
+# Two aliased pools (google-antigravity, openrouter-free), routes below and
+# without the planner floor, and more candidates than the caps admit.
+GOLDEN_INVENTORY = [
+    ("agy/alpha", 1, 200_000, True),
+    ("antigravity/beta", 1, 200_000, True),
+    ("cerebras/zeta", 2, 131_072, True),
+    ("cf/small-context", 2, 24_000, True),
+    ("cf/unknown-context", 2, None, True),
+    ("groq/tools-unknown", 1, 200_000, None),
+    ("groq/tools-false", 1, 200_000, False),
+    ("kc/gamma:free", 2, 131_072, True),
+    ("nvidia/epsilon", 1, 128_000, True),
+    ("openrouter/delta:free", 2, 131_072, True),
+    ("zz/unknown-tier", None, 200_000, True),
+]
+GOLDEN_PATH = (
+    Path(__file__).parent / "fixtures" / "identify_screen" / "no_new_flags_main_59cfc45d.json"
+)
+PLANNER_FLOOR = dict(max_capability_tier=2, min_context_tokens=100_000, require_tools=True)
+
+
+def results(report):
+    return {row["route_id"]: row["result"] for row in report["routes"]}
+
+
+def test_route_below_context_floor_is_never_probed_and_takes_no_slot(tmp_path):
+    """Catches #1151: cap slots spent on routes below the caller's context floor."""
+    calls = []
+    report = screen_inventory(
+        tmp_path,
+        calls,
+        [
+            ("cf/context-24k", 2, 24_000, True),
+            ("cf/context-80k", 2, 80_000, True),
+            ("groq/context-200k", 1, 200_000, True),
+        ],
+        max_routes=1,
+        min_context_tokens=100_000,
+    )
+    assert probed(calls) == ["groq/context-200k"]
+    assert results(report) == {
+        "cf/context-24k": "skipped_task_floor",
+        "cf/context-80k": "skipped_task_floor",
+        "groq/context-200k": "pass",
+    }
+    assert report["routes_checked"] == report["passed"] == 1
+    assert report["stopped_reason"] == "complete"
+
+
+def test_unknown_context_and_unknown_tools_are_below_the_floor(tmp_path):
+    """Catches an unknown fact being treated as meeting the floor."""
+    specs = [
+        ("a/context-unknown", 1, None, True),
+        ("b/tools-unknown", 1, 200_000, None),
+        ("c/tools-false", 1, 200_000, False),
+        ("d/meets-floor", 1, 200_000, True),
+    ]
+    calls = []
+    report = screen_inventory(
+        tmp_path / "both", calls, specs, min_context_tokens=100_000, require_tools=True
+    )
+    assert probed(calls) == ["d/meets-floor"]
+    assert results(report) == {
+        "a/context-unknown": "skipped_task_floor",
+        "b/tools-unknown": "skipped_task_floor",
+        "c/tools-false": "skipped_task_floor",
+        "d/meets-floor": "pass",
+    }
+    # Each half of the floor applies only when asked for.
+    calls = []
+    screen_inventory(tmp_path / "tools", calls, specs, require_tools=True)
+    assert probed(calls) == ["a/context-unknown", "d/meets-floor"]
+    calls = []
+    screen_inventory(tmp_path / "context", calls, specs, min_context_tokens=100_000)
+    assert probed(calls) == ["b/tools-unknown", "c/tools-false", "d/meets-floor"]
+
+
+@pytest.mark.parametrize(
+    "first,second,pool",
+    [
+        ("agy/alpha", "antigravity/beta", "google-antigravity"),
+        ("kc/alpha:free", "openrouter/beta:free", "openrouter-free"),
+    ],
+)
+def test_pool_cap_counts_aliased_prefixes_as_one_pool(tmp_path, first, second, pool):
+    """Catches two probes landing in one quota pool while another pool goes unproven."""
+    calls = []
+    report = screen_inventory(
+        tmp_path,
+        calls,
+        [(first, 1, 200_000, True), (second, 1, 200_000, True), ("zz/other", 1, 200_000, True)],
+        max_routes=2,
+        max_per_pool=1,
+    )
+    assert probed(calls) == [first, "zz/other"]
+    assert results(report) == {first: "pass", second: "skipped_pool_cap", "zz/other": "pass"}
+    assert {r["route_id"]: r["backend_pool"] for r in report["routes"]} == {
+        first: pool,
+        second: pool,
+        "zz/other": "zz",
+    }
+    assert report["routes_checked"] == 2
+    assert report["stopped_reason"] == "pool_cap"
+
+
+def test_pool_cap_covers_every_pool_before_any_pool_gets_a_second_probe(tmp_path):
+    """Catches the total cap being spent inside the first pools in rating order."""
+    specs = [
+        ("a/one", 1, 200_000, True),
+        ("a/two", 1, 200_000, True),
+        ("b/one", 1, 200_000, True),
+        ("b/two", 1, 200_000, True),
+        ("c/one", 1, 200_000, True),
+    ]
+    calls = []
+    report = screen_inventory(tmp_path / "three", calls, specs, max_routes=3, max_per_pool=2)
+    assert probed(calls) == ["a/one", "b/one", "c/one"]
+    assert report["stopped_reason"] == "route_cap"
+    # Rows keep the screen's own order whatever order the probes ran in.
+    assert [r["route_id"] for r in report["routes"]] == [s[0] for s in specs]
+    calls = []
+    screen_inventory(tmp_path / "five", calls, specs, max_routes=5, max_per_pool=2)
+    assert probed(calls) == ["a/one", "b/one", "c/one", "a/two", "b/two"]
+
+
+def test_skipped_route_takes_no_pool_slot(tmp_path):
+    """Catches a floor skip using up its pool's first-round probe."""
+    calls = []
+    report = screen_inventory(
+        tmp_path,
+        calls,
+        [
+            ("a/one", 1, 200_000, True),
+            ("a/two", 1, 200_000, True),
+            ("b/context-24k", 1, 24_000, True),
+            ("b/two", 1, 200_000, True),
+        ],
+        max_routes=3,
+        max_per_pool=2,
+        min_context_tokens=100_000,
+    )
+    assert probed(calls) == ["a/one", "b/two", "a/two"]
+    assert results(report)["b/context-24k"] == "skipped_task_floor"
+
+
+def test_without_new_options_the_screen_matches_main(tmp_path):
+    """Catches the floor or the pool cap leaking into screens that did not ask for them.
+
+    The golden file is this screen's JSON as produced by main at 59cfc45d.
+    """
+    calls = []
+    report = screen_inventory(tmp_path, calls, GOLDEN_INVENTORY, max_per_provider=1, max_routes=4)
+    assert json.dumps(report, sort_keys=True, indent=1, default=str) + "\n" == (
+        GOLDEN_PATH.read_text()
+    )
+    assert probed(calls) == ["agy/alpha", "antigravity/beta", "cerebras/zeta", "cf/small-context"]
+
+
+def test_new_options_only_remove_routes_from_the_probed_set(tmp_path):
+    """Catches an option adding a candidate or probing a route the plain screen would not."""
+    plain_calls, calls = [], []
+    plain = screen_inventory(tmp_path / "plain", plain_calls, GOLDEN_INVENTORY, max_routes=99)
+    report = screen_inventory(
+        tmp_path / "floor", calls, GOLDEN_INVENTORY, max_routes=99, max_per_pool=1, **PLANNER_FLOOR
+    )
+    assert [r["route_id"] for r in report["routes"]] == [r["route_id"] for r in plain["routes"]]
+    assert probed(calls) == ["agy/alpha", "cerebras/zeta", "kc/gamma:free", "nvidia/epsilon"]
+    assert set(probed(calls)) < set(probed(plain_calls))
+    assert results(report) == {
+        "agy/alpha": "pass",
+        "antigravity/beta": "skipped_pool_cap",
+        "cerebras/zeta": "pass",
+        "cf/small-context": "skipped_task_floor",
+        "cf/unknown-context": "skipped_task_floor",
+        "groq/tools-false": "skipped_task_floor",
+        "groq/tools-unknown": "skipped_task_floor",
+        "kc/gamma:free": "pass",
+        "nvidia/epsilon": "pass",
+        "openrouter/delta:free": "skipped_pool_cap",
+        "zz/unknown-tier": "skipped_unknown_tier",
+    }
+
+
+@pytest.mark.parametrize("option", [{"max_per_pool": 0}, {"min_context_tokens": 0}])
+def test_non_positive_floor_or_pool_cap_is_rejected(tmp_path, option):
+    """Catches a zero cap or floor being read as 'not set'."""
+    calls = []
+    with pytest.raises(ValueError, match="invalid_" + next(iter(option))):
+        screen(tmp_path, calls, **option)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "option", [{"max_per_pool": 1}, {"min_context_tokens": 100_000}, {"require_tools": True}]
+)
+def test_floor_and_pool_cap_require_screen_mode(option):
+    """Catches a passive report silently ignoring a screen-only option."""
+    with pytest.raises(ValueError, match="requires --screen"):
+        identify.identify_report(**option)

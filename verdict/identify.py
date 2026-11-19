@@ -30,6 +30,7 @@ from verdict.orchestration.health_cache import (
     agentic_capability,
     default_cache_path,
 )
+from verdict.orchestration.provider_catalog import backend_pool
 from verdict.orchestration.verified_refresh import _JobLock
 from verdict.passive_health import refresh_health_from_traffic
 from verdict.prove_at_rest import (
@@ -204,13 +205,29 @@ def screen_models(
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     monotonic: Callable[[], float] = time.monotonic,
     max_capability_tier: int | None = None,
+    min_context_tokens: int | None = None,
+    require_tools: bool = False,
+    max_per_pool: int | None = None,
 ) -> dict[str, Any]:
     """Screen strongest task rating first; capacity class is a filter, not an order.
 
     ``max_capability_tier`` skips, without probing, every route whose tier
     (the eligibility ladder's own rule) is unknown or above it, before caps apply.
+    ``min_context_tokens`` and ``require_tools`` skip, the same way, every route
+    whose context window is unknown or below the minimum, or whose tools support
+    is not known to be true. ``max_per_pool`` caps probes per backend pool
+    (aliased prefixes share one count) and covers pools breadth-first. All four
+    only remove routes from the probed set or change which admissible route is
+    probed first; none adds a candidate or grants eligibility.
     """
-    _screen_options(allow_live_probe, max_per_provider, max_routes, max_capability_tier)
+    _screen_options(
+        allow_live_probe,
+        max_per_provider,
+        max_routes,
+        max_capability_tier,
+        min_context_tokens,
+        max_per_pool,
+    )
     report = identify_models(
         evidence,
         metadata=metadata,
@@ -291,6 +308,7 @@ def screen_models(
                     "rating_unknown_reason": (
                         "missing_or_stale_task_rating" if rating.basis == "unknown" else None
                     ),
+                    **({} if max_per_pool is None else {"backend_pool": backend_pool(route_id)}),
                 }
             )
         return {
@@ -303,6 +321,79 @@ def screen_models(
             "model_requests_sent": 0,
             "stopped_reason": stopped_reason,
         }
+    pool_counts: Counter[str] = Counter()
+
+    def decide(
+        route_id: str,
+        provider: str,
+        capacity: str,
+        family: tuple[str, str],
+        row: dict[str, Any],
+        pool_round: int,
+    ) -> bool:
+        """Give ``row`` its result; False defers it to the next pool round.
+
+        Only a route whose pool already had ``pool_round`` probes is deferred,
+        so every pool gets its Nth probe before any pool gets its N+1th.
+        Without ``max_per_pool`` nothing is ever deferred.
+        """
+        nonlocal checked, passed, requests
+        now = clock()
+        cache.reload()
+        lookup = cache.lookup(route_id, now)
+        if pool_round == 1:
+            if family in families:
+                row.update(result="skipped_alias", alias_of=families[family])
+                return True
+            families[family] = route_id
+        pool = backend_pool(route_id)
+        # A fresh alias proof avoids repeating the same underlying model.
+        siblings = [r for r in candidates if evidence.route_identities.get(r) == family]
+        if lookup.state == STATE_NEGATIVE:
+            row["result"] = "skipped_negative"
+        elif any(
+            agentic_capability(cache.entry(r), now)["qualified"] for r in [route_id, *siblings]
+        ):
+            row["result"] = "skipped_fresh"
+        elif provider in stopped_providers:
+            row["result"] = "skipped_provider_stopped"
+        elif (
+            pool_of(route_id) in _cooled_pools(cache, now)
+            or cache.cooldown_for(f"provider:{provider}", now) is not None
+        ):
+            row["result"] = "skipped_cooldown"
+        elif checked >= max_routes or counts[provider] >= max_per_provider:
+            row["result"] = "skipped_cap"
+        elif max_per_pool is not None and pool_counts[pool] >= max_per_pool:
+            row["result"] = "skipped_pool_cap"
+        elif max_per_pool is not None and pool_counts[pool] >= pool_round:
+            return False
+        else:
+            row.update(
+                prober.screen_route(
+                    AdmittedRoute(
+                        route_id,
+                        provider,
+                        capacity,
+                        pool=pool_of(route_id),
+                        capacity_evidence=evidence.route_capacity_evidence.get(route_id),
+                    ),
+                    deadline=deadline,
+                )
+            )
+            if row["turns_sent"]:
+                if route_id in requested:
+                    cache.complete_rescreen(route_id)
+                checked += 1
+                counts[provider] += 1
+                pool_counts[pool] += 1
+            requests += row["turns_sent"]
+            passed += int(row["result"] == "pass")
+            if row["result"] == "rate_limited":
+                stopped_providers.add(provider)
+        return True
+
+    deferred: list[tuple[str, str, str, tuple[str, str], dict[str, Any]]] = []
     try:
         for rating in all_ratings:
             route_id = rating.route_id
@@ -332,62 +423,31 @@ def screen_models(
                 "rescreen_requested": route_id in requested,
                 "latency_ms": None,
             }
+            if max_per_pool is not None:
+                row["backend_pool"] = backend_pool(route_id)
+            rows.append(row)
             if max_capability_tier is not None and (tier is None or tier > max_capability_tier):
                 # Unknown is never sufficient; the route neither probes nor
                 # claims an alias slot or a cap slot.
                 row["result"] = (
                     "skipped_unknown_tier" if tier is None else "skipped_capability_tier"
                 )
-                rows.append(row)
                 continue
-            now = clock()
-            cache.reload()
-            lookup = cache.lookup(route_id, now)
-            if family in families:
-                row.update(result="skipped_alias", alias_of=families[family])
-            else:
-                families[family] = route_id
-                # A fresh alias proof avoids repeating the same underlying model.
-                siblings = [r for r in candidates if evidence.route_identities.get(r) == family]
-                if lookup.state == STATE_NEGATIVE:
-                    row["result"] = "skipped_negative"
-                elif any(
-                    agentic_capability(cache.entry(r), now)["qualified"]
-                    for r in [route_id, *siblings]
-                ):
-                    row["result"] = "skipped_fresh"
-                elif provider in stopped_providers:
-                    row["result"] = "skipped_provider_stopped"
-                elif (
-                    pool_of(route_id) in _cooled_pools(cache, now)
-                    or cache.cooldown_for(f"provider:{provider}", now) is not None
-                ):
-                    row["result"] = "skipped_cooldown"
-                elif checked >= max_routes or counts[provider] >= max_per_provider:
-                    row["result"] = "skipped_cap"
-                else:
-                    row.update(
-                        prober.screen_route(
-                            AdmittedRoute(
-                                route_id,
-                                provider,
-                                capacity,
-                                pool=pool_of(route_id),
-                                capacity_evidence=evidence.route_capacity_evidence.get(route_id),
-                            ),
-                            deadline=deadline,
-                        )
-                    )
-                    if row["turns_sent"]:
-                        if route_id in requested:
-                            cache.complete_rescreen(route_id)
-                        checked += 1
-                        counts[provider] += 1
-                    requests += row["turns_sent"]
-                    passed += int(row["result"] == "pass")
-                    if row["result"] == "rate_limited":
-                        stopped_providers.add(provider)
-            rows.append(row)
+            if (
+                min_context_tokens is not None
+                and (context_window is None or context_window < min_context_tokens)
+            ) or (require_tools and supports_tools is not True):
+                # Same treatment as the tier skip: an unknown fact never meets
+                # a floor, and the route takes no alias, cap or pool slot.
+                row["result"] = "skipped_task_floor"
+                continue
+            if not decide(route_id, provider, capacity, family, row, 1):
+                deferred.append((route_id, provider, capacity, family, row))
+        pool_round = 1
+        while deferred:
+            # Ends by round ``max_per_pool``: a pool at its cap is not deferred.
+            pool_round += 1
+            deferred = [item for item in deferred if not decide(*item, pool_round)]
     finally:
         lock.release()
     stopped_reason = "complete"
@@ -395,6 +455,8 @@ def screen_models(
         stopped_reason = "wall_cap"
     elif any(row["result"] == "skipped_cap" for row in rows):
         stopped_reason = "route_cap" if checked >= max_routes else "provider_cap"
+    elif any(row["result"] == "skipped_pool_cap" for row in rows):
+        stopped_reason = "pool_cap"
     elif stopped_providers:
         stopped_reason = "provider_rate_limited"
     return {
@@ -414,6 +476,8 @@ def _screen_options(
     max_per_provider: int | None,
     max_routes: int | None,
     max_capability_tier: int | None = None,
+    min_context_tokens: int | None = None,
+    max_per_pool: int | None = None,
 ) -> None:
     if not allow_live_probe:
         raise ValueError("live_probe_consent_required: use --allow-live-probe")
@@ -423,6 +487,10 @@ def _screen_options(
         )
     if max_capability_tier is not None and not 0 <= max_capability_tier <= 3:
         raise ValueError("invalid_max_capability_tier: --max-capability-tier must be 0 to 3")
+    if min_context_tokens is not None and min_context_tokens < 1:
+        raise ValueError("invalid_min_context_tokens: --min-context-tokens must be positive")
+    if max_per_pool is not None and max_per_pool < 1:
+        raise ValueError("invalid_max_per_pool: --max-per-pool must be positive")
 
 
 def identify_report(
@@ -436,6 +504,9 @@ def identify_report(
     all_excluded: bool = False,
     refresh_health_cache: bool = False,
     max_capability_tier: int | None = None,
+    min_context_tokens: int | None = None,
+    require_tools: bool = False,
+    max_per_pool: int | None = None,
 ) -> dict[str, Any]:
     """Read the seven passive OmniRoute sources and local metadata into one report.
 
@@ -443,9 +514,23 @@ def identify_report(
     liveness and availability negatives from observed traffic.
     """
     if screen:
-        _screen_options(allow_live_probe, max_per_provider, max_routes, max_capability_tier)
-    elif max_capability_tier is not None:
-        raise ValueError("--max-capability-tier requires --screen")
+        _screen_options(
+            allow_live_probe,
+            max_per_provider,
+            max_routes,
+            max_capability_tier,
+            min_context_tokens,
+            max_per_pool,
+        )
+    else:
+        for flag, given in (
+            ("--max-capability-tier", max_capability_tier is not None),
+            ("--min-context-tokens", min_context_tokens is not None),
+            ("--require-tools", require_tools),
+            ("--max-per-pool", max_per_pool is not None),
+        ):
+            if given:
+                raise ValueError(f"{flag} requires --screen")
     base_url, key = resolve_gateway_binding()
     evidence = fetch_omniroute_evidence(
         normalize_omniroute_origin(base_url),
@@ -480,6 +565,9 @@ def identify_report(
             capacities=capacities,
             all_excluded=all_excluded,
             max_capability_tier=max_capability_tier,
+            min_context_tokens=min_context_tokens,
+            require_tools=require_tools,
+            max_per_pool=max_per_pool,
         )
     else:
         tool_proof: Mapping[str, HealthEntry] | None
@@ -526,6 +614,9 @@ def cmd_identify(
     all_excluded: bool = False,
     refresh_health_cache: bool = False,
     max_capability_tier: int | None = None,
+    min_context_tokens: int | None = None,
+    require_tools: bool = False,
+    max_per_pool: int | None = None,
 ) -> None:
     try:
         report = (
@@ -538,6 +629,9 @@ def cmd_identify(
                 capacities=capacities,
                 all_excluded=all_excluded,
                 max_capability_tier=max_capability_tier,
+                min_context_tokens=min_context_tokens,
+                require_tools=require_tools,
+                max_per_pool=max_per_pool,
             )
             if screen
             else identify_report(all_excluded=all_excluded, refresh_health_cache=True)

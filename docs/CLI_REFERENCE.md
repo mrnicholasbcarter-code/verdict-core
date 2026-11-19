@@ -643,6 +643,22 @@ the eligibility ladder's own rule, and skipped routes take no slot of
 `--max-routes` or `--max-per-provider`. Each screen row reports
 `capability_tier`, `supports_tools` and `context_window` (`null` when unknown).
 
+`--min-context-tokens N` and `--require-tools` (`--screen` only) skip, without
+a probe, every route whose context window is unknown or below N tokens, or
+whose tools support is not known to be true (`skipped_task_floor`). Like the
+tier skip, these routes take no cap slot, and an unknown fact never meets the
+floor.
+
+`--max-per-pool N` (`--screen` only) probes at most N routes per backend pool,
+in addition to `--max-per-provider`. Prefixes that share one quota are one
+pool: `agy/*` with `antigravity/*`, and the `:free` routes of `kc`, `kilocode`
+and `openrouter`. Pools are covered breadth-first: every pool gets its first
+probe before any pool gets a second, in the screen's usual order inside a
+pool. A route left out by this cap is `skipped_pool_cap` (`stopped_reason`
+`pool_cap` when no other cap was reached), and each row reports
+`backend_pool`. These options only remove routes from the probed set or change
+which route is probed first. Without them the screen is unchanged.
+
 The candidate pool is OmniRoute's live view: active connections with valid
 credentials, decorated with breaker state, connection cooldown, model lockout and
 this key's exclusions. A candidate row is usable only when it is reachable, not

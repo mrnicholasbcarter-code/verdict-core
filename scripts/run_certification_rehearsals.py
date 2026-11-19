@@ -19,6 +19,7 @@ from verdict.orchestration.contracts import (
     PLANNER_REQUIRED_CAPABILITIES,
     OrchestrationError,
 )
+from verdict.orchestration.provider_catalog import backend_pool
 from verdict.orchestration.receipt import verify_run_receipt
 from verdict.orchestration.runtime import REDACT_GATEWAY_ORIGIN_ENV
 
@@ -44,6 +45,15 @@ PREFLIGHT_MAX_PER_PROVIDER = 2
 # exhausted the worker pool on 3 proven routes.
 PREFLIGHT_MAX_ROUTES = 8
 PREFLIGHT_WALL_SECONDS = 600  # 10 minutes
+# One probe per backend pool: prefixes that share a quota (agy/antigravity,
+# the three `:free` prefixes) are one pool, so 8 probes cover up to 8 pools.
+PREFLIGHT_MAX_PER_POOL = 1
+# Distinct backend pools that must hold a planner-eligible pass. 3 is what the
+# local empty-state rehearsals of 2026-11-19 support: a clean run whose workers
+# start in one pool and are reassigned once uses two pools, and the reviewer
+# excludes the implementers' routes and aliased pools, so review needs a third.
+# The chaos rehearsal may need more; that has not been measured.
+PREFLIGHT_MIN_PLANNER_POOLS = 3
 
 # Fixed, credential-free substrings of run_finished reasons, first match wins.
 # The artifact only ever carries the enum, never the reason text.
@@ -88,6 +98,21 @@ def _planner_eligible(row: Any) -> bool:
     )
 
 
+def _planner_eligible_pools(rows: list[Any]) -> int:
+    """Distinct backend pools holding a planner-eligible pass; aliased prefixes count once.
+
+    The pool comes from the route id through ``backend_pool``, never from
+    report text, and a pass without a route id proves no pool.
+    """
+    return len(
+        {
+            backend_pool(row["route_id"])
+            for row in rows
+            if _planner_eligible(row) and isinstance(row.get("route_id"), str)
+        }
+    )
+
+
 def preflight_summary(report: Any) -> dict[str, Any]:
     """Counts and enums only, safe to upload."""
     report = report if isinstance(report, dict) else {}
@@ -98,6 +123,8 @@ def preflight_summary(report: Any) -> dict[str, Any]:
         "routes_checked": _count(report.get("routes_checked")),
         "passed": _count(report.get("passed")),
         "planner_eligible_passed": sum(_planner_eligible(row) for row in rows),
+        "planner_eligible_pools": _planner_eligible_pools(rows),
+        "planner_eligible_pools_required": PREFLIGHT_MIN_PLANNER_POOLS,
         "metadata_error": (
             None
             if metadata_error is None
@@ -139,7 +166,9 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict[str, Any]:
 
     Returns the safe preflight summary on success. Raises
     RehearsalConfigurationError when no pass is one the planner can admit
-    (fail-closed): a tier-3 pass satisfies nothing the planner needs.
+    (fail-closed): a tier-3 pass satisfies nothing the planner needs. Raises it
+    too when the planner-eligible passes sit in fewer than
+    PREFLIGHT_MIN_PLANNER_POOLS backend pools.
     """
     verdict_home = env.get("VERDICT_HOME")
     if not verdict_home:
@@ -160,6 +189,13 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict[str, Any]:
         str(PREFLIGHT_MAX_ROUTES),
         "--max-capability-tier",
         str(PLANNER_MAX_CAPABILITY_TIER),
+        # The rest of the planner floor: a route below it is skipped without
+        # a probe, so no cap slot goes to a route the planner cannot admit.
+        "--min-context-tokens",
+        str(PLANNER_MIN_CONTEXT_TOKENS),
+        *(["--require-tools"] if "tools" in PLANNER_REQUIRED_CAPABILITIES else []),
+        "--max-per-pool",
+        str(PREFLIGHT_MAX_PER_POOL),
         "--json",
     ]
 
@@ -206,6 +242,14 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict[str, Any]:
             f"(tier<={PLANNER_MAX_CAPABILITY_TIER}, tools, "
             f"{PLANNER_MIN_CONTEXT_TOKENS // 1000}k context): "
             f"routes_checked={summary['routes_checked']}, passed={summary['passed']}."
+        )
+    if summary["planner_eligible_pools"] < PREFLIGHT_MIN_PLANNER_POOLS:
+        _write_failure(root, {"stage": "preflight", "preflight": summary})
+        raise RehearsalConfigurationError(
+            "Preflight screen proved planner-eligible FREE routes in "
+            f"{summary['planner_eligible_pools']} backend pool(s); "
+            f"{PREFLIGHT_MIN_PLANNER_POOLS} are required "
+            "(workers can use two pools and review needs a third)."
         )
     return summary
 
