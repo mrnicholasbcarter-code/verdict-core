@@ -99,8 +99,6 @@ def abbreviate_home(path: str, home: str | None = None) -> str:
         expanded = os.path.expanduser("~")
         if expanded and expanded != "~":
             candidates.append(expanded)
-        # Common local-dev fallback observed in proof fixtures
-        candidates.append("/home/nick")
     seen: set[str] = set()
     for home_path in candidates:
         if not home_path or home_path in seen:
