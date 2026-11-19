@@ -2,11 +2,13 @@
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 import yaml
 
 from scripts import run_certification_rehearsals as script
+from tests.test_certification_chaos_proof import _write_proof
 from tests.test_certification_rehearsal_workflow import ELIGIBLE_PASS, ELIGIBLE_PASSES, ROOT
 
 
@@ -87,11 +89,12 @@ def test_failed_child_retains_only_safe_diagnostics(
         if "identify" in command and "--screen" in command:
             # Passing preflight in the real `identify --screen --json` schema,
             # so this test still reaches the orchestration failure it covers.
+            _write_proof(Path(kwargs["env"]["VERDICT_HOME"]))
             screen = {
                 "mode": "screen",
                 "routes": ELIGIBLE_PASSES,
-                "routes_checked": 3,
-                "passed": 3,
+                "routes_checked": 5,
+                "passed": 5,
                 "model_calls": 9,
                 "model_requests_sent": 9,
                 "stopped_reason": "complete",
@@ -133,11 +136,11 @@ def test_failed_child_retains_only_safe_diagnostics(
     assert data["run_finished_outcome"] == expected_outcome
     # The preflight's counts travel with every orchestration failure.
     assert data["preflight"] == {
-        "routes_checked": 3,
-        "passed": 3,
-        "planner_eligible_passed": 3,
-        "planner_eligible_pools": 3,
-        "planner_eligible_pools_required": 3,
+        "routes_checked": 5,
+        "passed": 5,
+        "planner_eligible_passed": 5,
+        "planner_eligible_pools": 5,
+        "planner_eligible_pools_required": 5,
         "metadata_error": None,
     }
     assert len(raw) < 2048
@@ -189,7 +192,7 @@ def test_preflight_counts_never_carry_raw_text(tmp_path, monkeypatch):
         "passed": 1,
         "planner_eligible_passed": 0,
         "planner_eligible_pools": 0,
-        "planner_eligible_pools_required": 3,
+        "planner_eligible_pools_required": 5,
         "metadata_error": "unclassified",
     }
 
@@ -227,5 +230,5 @@ def test_pool_count_never_carries_route_or_pool_text(tmp_path, monkeypatch):
     preflight = json.loads(raw)["preflight"]
     # The reported pool name is ignored: the pool is derived from the route id.
     assert preflight["planner_eligible_pools"] == 2
-    assert preflight["planner_eligible_pools_required"] == 3
+    assert preflight["planner_eligible_pools_required"] == 5
     assert all(value is None or type(value) is int for value in preflight.values())

@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.test_certification_chaos_proof import _write_proof
+
 ROOT = Path(__file__).resolve().parents[1]
 # A screen row the frontier planner can admit: known tier <= 2, tools, 100k context.
 ELIGIBLE_PASS = {
@@ -21,8 +23,14 @@ def _pass(route_id):
     return {**ELIGIBLE_PASS, "route_id": route_id}
 
 
-# Planner-eligible passes in three backend pools: what the rehearsal needs to start.
-ELIGIBLE_PASSES = [_pass("groq/model-a"), _pass("nvidia/model-b"), _pass("cerebras/model-c")]
+# Planner-eligible passes in five backend pools: what the rehearsal needs to start.
+ELIGIBLE_PASSES = [
+    _pass("groq/model-a"),
+    _pass("nvidia/model-b"),
+    _pass("cerebras/model-c"),
+    _pass("mistral/model-d"),
+    _pass("ollama-cloud/model-e"),
+]
 
 
 def test_rehearsal_main_only_oidc_permissions_and_protected_environment():
@@ -211,13 +219,14 @@ def test_live_rehearsal_dispatch_is_free_only_without_subscription_escape(tmp_pa
             return subprocess.CompletedProcess(argv, 1, b"", b"")
         # Preflight screen: return minimal valid proof so orchestrate runs
         if "identify" in argv and "--screen" in argv:
+            _write_proof(Path(kwargs["env"]["VERDICT_HOME"]))
             return subprocess.CompletedProcess(
                 argv,
                 0,
                 json.dumps(
                     {
-                        "routes_checked": 3,
-                        "passed": 3,
+                        "routes_checked": 5,
+                        "passed": 5,
                         "model_calls": 9,
                         "model_requests_sent": 9,
                         "stopped_reason": "complete",
@@ -386,6 +395,9 @@ def _preflight_only(tmp_path, monkeypatch, screen_report):
             return subprocess.CompletedProcess(argv, 1, b"", b"")
         if "identify" in argv:
             seen["preflight"].append(argv)
+            # The real preflight leaves its proof in the shared cache, which the
+            # chaos seed (taken before the clean run) requires.
+            _write_proof(Path(kwargs["env"]["VERDICT_HOME"]))
             return subprocess.CompletedProcess(argv, 0, json.dumps(screen_report).encode(), b"")
         return subprocess.CompletedProcess(argv, 0, b"", b"")
 
@@ -418,7 +430,10 @@ def test_preflight_argv_asks_for_planner_tier(tmp_path, monkeypatch):
         script.run()
     argv = seen["preflight"][0]
     assert argv[argv.index("--max-capability-tier") + 1] == str(PLANNER_MAX_CAPABILITY_TIER) == "2"
-    assert script.PREFLIGHT_MAX_ROUTES <= 8
+    # Bounded spend: every probed route costs at most AGENTIC_TURNS requests.
+    from verdict.prove_at_rest import AGENTIC_TURNS
+
+    assert script.PREFLIGHT_MAX_ROUTES * AGENTIC_TURNS < 40
 
 
 def _bad(**overrides):
@@ -457,7 +472,6 @@ def _rehearsal_with_run_file(tmp_path, monkeypatch, leak):
     import subprocess
 
     from scripts import run_certification_rehearsals as script
-    from tests.test_certification_chaos_proof import _write_proof
 
     gateway, key = "https://cert-gw-7f3a9c.example.invalid:8443", "test-key-canary-9d2e"
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
@@ -539,7 +553,9 @@ def test_preflight_argv_carries_planner_floor_and_pool_cap(tmp_path, monkeypatch
     pool_cap = argv[argv.index("--max-per-pool") + 1 :][:1] if "--max-per-pool" in argv else []
     assert pool_cap == [str(script.PREFLIGHT_MAX_PER_POOL)] == ["1"]
     # The existing bounds and consent are untouched.
-    assert argv[argv.index("--max-routes") + 1] == str(script.PREFLIGHT_MAX_ROUTES) == "8"
+    # 13 routes, one per pool, reach pools the 8-route cap never did (cert-fix8),
+    # and 13 x 3 turns = 39 model requests at most, under the 40-request bound.
+    assert argv[argv.index("--max-routes") + 1] == str(script.PREFLIGHT_MAX_ROUTES) == "13"
     assert argv[argv.index("--max-per-provider") + 1] == str(script.PREFLIGHT_MAX_PER_PROVIDER)
     assert argv[argv.index("--capacity") + 1] == "free"
     assert "--allow-live-probe" in argv
@@ -554,6 +570,16 @@ def test_preflight_argv_carries_planner_floor_and_pool_cap(tmp_path, monkeypatch
         ([_pass("agy/model-a"), _pass("antigravity/model-b"), _pass("cerebras/model-c")], 2),
         # kc and openrouter `:free` are one quota.
         ([_pass("kc/a:free"), _pass("openrouter/b:free"), _pass("groq/model-c")], 2),
+        # cert-fix8 13:06Z: four pools proved; chaos then ran out of planner routes.
+        (
+            [
+                _pass("cerebras/gpt-oss-120b"),
+                _pass("kc/nvidia/nemotron-3-ultra-550b-a55b:free"),
+                _pass("nvidia/google/gemma-4-31b-it"),
+                _pass("pol/community/model:free"),
+            ],
+            4,
+        ),
         # A pass the planner rejects proves nothing for its pool.
         (
             [
@@ -569,17 +595,17 @@ def test_preflight_argv_carries_planner_floor_and_pool_cap(tmp_path, monkeypatch
 def test_preflight_with_too_few_pools_fails_closed(tmp_path, monkeypatch, routes, pools):
     """Catches a rehearsal starting with no independent pool left for review."""
     script, seen = _preflight_only(tmp_path, monkeypatch, _screen(routes))
-    assert script.PREFLIGHT_MIN_PLANNER_POOLS == 3
+    assert script.PREFLIGHT_MIN_PLANNER_POOLS == 5
     with pytest.raises(script.RehearsalConfigurationError) as error:
         script.run()
     assert seen["orchestrate"] == []
-    assert f"in {pools} backend pool(s); 3 are required" in str(error.value)
+    assert f"in {pools} backend pool(s); 5 are required" in str(error.value)
     assert not any(row["route_id"] in str(error.value) for row in routes)
     raw = (tmp_path / "certification-failure.json").read_text()
     data = json.loads(raw)
     assert data["stage"] == "preflight"
     assert data["preflight"].get("planner_eligible_pools") == pools
-    assert data["preflight"].get("planner_eligible_pools_required") == 3
+    assert data["preflight"].get("planner_eligible_pools_required") == 5
     # Counts and enums only: no route id, pool name or other text.
     assert all(
         v is None or isinstance(v, int)
@@ -589,7 +615,7 @@ def test_preflight_with_too_few_pools_fails_closed(tmp_path, monkeypatch, routes
     assert not any(row["route_id"] in raw or row["route_id"].split("/")[0] in raw for row in routes)
 
 
-def test_preflight_with_three_pools_proceeds_to_orchestrate(tmp_path, monkeypatch):
+def test_preflight_with_five_pools_proceeds_to_orchestrate(tmp_path, monkeypatch):
     """Catches the pool requirement blocking a preflight that met it."""
     script, seen = _preflight_only(tmp_path, monkeypatch, _screen(ELIGIBLE_PASSES))
     with pytest.raises(ValueError, match="clean rehearsal orchestration failed"):
@@ -597,5 +623,5 @@ def test_preflight_with_three_pools_proceeds_to_orchestrate(tmp_path, monkeypatc
     assert len(seen["orchestrate"]) == 1
     data = json.loads((tmp_path / "certification-failure.json").read_text())
     assert data["stage"] == "orchestration"
-    assert data["preflight"].get("planner_eligible_pools") == 3
-    assert data["preflight"].get("planner_eligible_pools_required") == 3
+    assert data["preflight"].get("planner_eligible_pools") == 5
+    assert data["preflight"].get("planner_eligible_pools_required") == 5

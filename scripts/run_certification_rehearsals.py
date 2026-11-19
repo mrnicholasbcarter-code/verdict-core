@@ -43,22 +43,30 @@ class RehearsalConfigurationError(ValueError):
 
 # Bounded preflight configuration: strictly FREE, small explicit bounds.
 PREFLIGHT_MAX_PER_PROVIDER = 2
-# 8, not 4: with 4 the local empty-home proof (2026-11-19) planned but then
-# exhausted the worker pool on 3 proven routes.
-PREFLIGHT_MAX_ROUTES = 8
+# 13 routes, one per backend pool: at most 13 x 3 agentic turns = 39 model
+# requests per run, under the 40-request bound. With 8 (cert-fix8, 2026-11-19
+# 13:06Z) half the slots went to pools that failed (auth, 402, tool check) and
+# pools with candidates (freemodel-dev, groq, lmarena, mistral, ollama-cloud)
+# were never reached.
+PREFLIGHT_MAX_ROUTES = 13
 PREFLIGHT_WALL_SECONDS = 600  # 10 minutes
 # One probe per backend pool: prefixes that share a quota (agy/antigravity,
-# the three `:free` prefixes) are one pool, so 8 probes cover up to 8 pools.
+# the three `:free` prefixes) are one pool, so 13 probes cover up to 13 pools.
 PREFLIGHT_MAX_PER_POOL = 1
-# Distinct backend pools that must hold a planner-eligible pass. 3 is what the
-# local empty-state rehearsals of 2026-11-19 support: a clean run whose workers
-# start in one pool and are reassigned once uses two pools, and the reviewer
-# excludes the implementers' routes and aliased pools, so review needs a third.
-# The chaos rehearsal may need more; that has not been measured.
-PREFLIGHT_MIN_PLANNER_POOLS = 3
+# Distinct backend pools that must hold a planner-eligible pass: what the chaos
+# rehearsal consumes, measured offline with the real runtime (CHAOS-DIAGNOSIS,
+# 2026-11-19: N=3 and N=4 BLOCKED, N=5 COMPLETE from the preflight's state).
+# #1=quota cools one pool for two hours, #2=no_final drops a second pool's
+# model, worker#1=rate_limit excludes the worker's pool and reassigns to a
+# fourth, and review excludes implementer routes and their aliased pools, so
+# it needs a fifth. The clean run needs fewer, so this one floor covers both.
+PREFLIGHT_MIN_PLANNER_POOLS = 5
 # The chaos run's private state, beside the run directories and outside the
-# uploaded evidence: its state file and its own copy of the health cache.
+# uploaded evidence: its state file and its own copies of the health cache and
+# the session-evidence ledger.
 CHAOS_STATE_DIR = "verdict-certification-chaos"
+# The path override SessionLedger() reads (verdict/orchestration/session_evidence.py).
+ENV_SESSION_EVIDENCE = "VERDICT_SESSION_EVIDENCE"
 
 # Fixed, credential-free substrings of run_finished reasons, first match wins.
 # The artifact only ever carries the enum, never the reason text.
@@ -254,7 +262,8 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict[str, Any]:
             "Preflight screen proved planner-eligible FREE routes in "
             f"{summary['planner_eligible_pools']} backend pool(s); "
             f"{PREFLIGHT_MIN_PLANNER_POOLS} are required "
-            "(workers can use two pools and review needs a third)."
+            "(two injected planner faults, a rate-limited worker pool, its "
+            "replacement and an independent reviewer)."
         )
     return summary
 
@@ -267,27 +276,53 @@ def _shared_health_cache(env: dict[str, str]) -> Path:
     return Path(env["VERDICT_HOME"]) / "health-cache.json"
 
 
-def _seed_chaos_state(root: Path, env: dict[str, str]) -> tuple[Path, Path]:
-    """Give the chaos run a private byte copy of the shared proof; fail closed without one.
+def _shared_session_ledger(env: dict[str, str]) -> Path:
+    """The ledger the clean run uses: ``SessionLedger()``'s default over ``env``."""
+    configured = (env.get(ENV_SESSION_EVIDENCE) or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path(env["VERDICT_HOME"]) / "session-evidence.jsonl"
 
-    Returns ``(state_file, health_cache)`` in a directory this script owns. An
-    ``--inject`` run reads ``health-cache.json`` beside its state file, never the
-    shared cache, so without the copy it has no agentic proof and blocks at
-    planning. The copy is taken when chaos is about to start, so it also holds
-    what the clean run really observed (cooldowns, failed routes). Its bytes are
-    written unchanged: proof is neither re-stamped nor extended. Injected faults
-    land in the copy, never in the cache the preflight and the clean run used.
+
+def _private_copy(target: Path, body: bytes) -> None:
+    with os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+        stream.write(body)
+
+
+def _seed_chaos_state(root: Path, env: dict[str, str]) -> tuple[Path, Path, Path]:
+    """Give the chaos run private byte copies of the preflight's state; fail closed without proof.
+
+    Returns ``(state_file, health_cache, session_ledger)`` in a directory this
+    script owns. It is called once the preflight has passed and before the clean
+    run starts, so chaos starts from the same proven state the clean run
+    started from and the two runs are independent: nothing the clean run
+    observes (cooldowns, session outcomes that score a route) reaches chaos.
+    An ``--inject`` run reads ``health-cache.json`` beside its state file, never
+    the shared cache, and every ``SessionLedger()`` in the chaos process honours
+    ``VERDICT_SESSION_EVIDENCE``. Bytes are written unchanged: proof is neither
+    re-stamped nor extended. Injected faults and chaos outcomes land in the
+    copies, never in the files the preflight and the clean run use. A preflight
+    that left no ledger gives chaos an empty one.
     """
     refused = "Chaos rehearsal cannot start: the preflight health cache "
     try:
         body = _shared_health_cache(env).read_bytes()
     except OSError as exc:
         raise RehearsalConfigurationError(refused + "is missing or unreadable") from exc
+    try:
+        ledger_body = _shared_session_ledger(env).read_bytes()
+    except FileNotFoundError:
+        ledger_body = b""
+    except OSError as exc:
+        raise RehearsalConfigurationError(
+            "Chaos rehearsal cannot start: the preflight session-evidence ledger is unreadable"
+        ) from exc
     state_dir = root / CHAOS_STATE_DIR
     state_dir.mkdir(exist_ok=False)
     cache = state_dir / "health-cache.json"
-    with os.fdopen(os.open(cache, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
-        stream.write(body)
+    _private_copy(cache, body)
+    ledger = state_dir / "session-evidence.jsonl"
+    _private_copy(ledger, ledger_body)
     # Judge the copy with the product's own parser and proof TTL, at this moment.
     now = datetime.now(timezone.utc)
     try:
@@ -296,7 +331,7 @@ def _seed_chaos_state(root: Path, env: dict[str, str]) -> tuple[Path, Path]:
         raise RehearsalConfigurationError(refused + "is not a valid health cache") from exc
     if not any(agentic_capability(entry, now)["qualified"] for entry in entries):
         raise RehearsalConfigurationError(refused + "holds no fresh agentic proof")
-    return state_dir / "chaos-health.json", cache
+    return state_dir / "chaos-health.json", cache, ledger
 
 
 def run() -> None:
@@ -322,6 +357,8 @@ def run() -> None:
     # Bounded FREE-only preflight: produce genuine fresh agentic proof
     # before attempting orchestration. Fail-closed if no route qualifies.
     preflight = _run_preflight(root, env)
+    # Seed chaos now, before the clean run writes to the shared cache and ledger.
+    state_file, chaos_cache, chaos_ledger = _seed_chaos_state(root, env)
 
     for name, goal in GOALS.items():
         fixture = root / f"fixture-{name}"
@@ -371,11 +408,14 @@ def run() -> None:
         ]
         run_env = env
         if name == "chaos":
-            state_file, chaos_cache = _seed_chaos_state(root, env)
             # Every health-cache reader in the chaos process (the selector beside
             # --state-file, and dispatch permits through VERDICT_HEALTH_CACHE)
-            # resolves to the one private copy.
-            run_env = {**env, ENV_CACHE_PATH: str(chaos_cache)}
+            # resolves to the one private copy; every SessionLedger() to the other.
+            run_env = {
+                **env,
+                ENV_CACHE_PATH: str(chaos_cache),
+                ENV_SESSION_EVIDENCE: str(chaos_ledger),
+            }
             command.extend(
                 [
                     "--state-file",
