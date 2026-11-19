@@ -29,6 +29,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 DIAGRAMS_DIR = ROOT / "diagrams"
 README = ROOT / "README.md"
+HOW_IT_WORKS = ROOT / "docs" / "HOW_IT_WORKS.md"
+README_DIAGRAM_MAX_LINES = 30
 
 EXPECTED_DIAGRAMS = (
     "ecosystem",
@@ -39,6 +41,7 @@ EXPECTED_DIAGRAMS = (
     "orchestration-flow",
     "ownership-map",
     "route-flow",
+    "run-overview",
     "setup-detection-flow",
 )
 
@@ -116,11 +119,14 @@ def test_diagram_brackets_and_quotes_are_balanced(name: str) -> None:
     _check_balance(code)
 
 
+def _mermaid_blocks(path: Path) -> list[str]:
+    return re.findall(r"```mermaid\n(.*?)```", path.read_text(encoding="utf-8"), flags=re.DOTALL)
+
+
 def test_readme_mermaid_blocks_are_byte_identical_to_a_diagram_file() -> None:
     """Every ```mermaid fenced block in README.md must match one diagrams/*.mmd file exactly."""
-    readme_text = README.read_text(encoding="utf-8")
-    blocks = re.findall(r"```mermaid\n(.*?)```", readme_text, flags=re.DOTALL)
-    assert blocks, "README.md has no ```mermaid blocks; expected at least 3 embedded diagrams"
+    blocks = _mermaid_blocks(README)
+    assert blocks, "README.md has no ```mermaid block; expected the run overview"
 
     diagram_contents = {p.name: p.read_text(encoding="utf-8") for p in _diagram_paths()}
     unmatched: list[str] = []
@@ -133,14 +139,30 @@ def test_readme_mermaid_blocks_are_byte_identical_to_a_diagram_file() -> None:
     )
 
 
-def test_readme_embeds_at_least_three_diagrams() -> None:
-    readme_text = README.read_text(encoding="utf-8")
-    blocks = re.findall(r"```mermaid\n(.*?)```", readme_text, flags=re.DOTALL)
+def test_readme_embeds_only_the_short_run_overview() -> None:
+    """The README carries one diagram a newcomer can read: run-overview, at most 30 lines.
+
+    The three engineering diagrams moved to docs/HOW_IT_WORKS.md with the section
+    that explains them; the next test follows them there.
+    """
+    source = (DIAGRAMS_DIR / "run-overview.mmd").read_text(encoding="utf-8")
+    assert _mermaid_blocks(README) == [source]
+    assert len(source.splitlines()) <= README_DIAGRAM_MAX_LINES
+
+
+def test_how_it_works_embeds_the_three_engineering_diagrams() -> None:
+    """docs/HOW_IT_WORKS.md embeds route-flow, eligibility-ladder and orchestration-flow unchanged."""
+    blocks = _mermaid_blocks(HOW_IT_WORKS)
     diagram_contents = {p.name: p.read_text(encoding="utf-8") for p in _diagram_paths()}
+    unmatched = [block[:80] for block in blocks if block not in diagram_contents.values()]
+    assert not unmatched, (
+        "docs/HOW_IT_WORKS.md mermaid block(s) do not byte-match any diagrams/*.mmd file "
+        f"(first 80 chars shown): {unmatched}"
+    )
     embedded_names = {name for name, content in diagram_contents.items() if content in blocks}
     required = {"route-flow.mmd", "eligibility-ladder.mmd", "orchestration-flow.mmd"}
     missing = required - embedded_names
-    assert not missing, f"README.md is missing embedded diagram(s): {sorted(missing)}"
+    assert not missing, f"docs/HOW_IT_WORKS.md is missing embedded diagram(s): {sorted(missing)}"
 
 
 DOCS_DIAGRAMS = (

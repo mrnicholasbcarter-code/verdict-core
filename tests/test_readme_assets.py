@@ -82,7 +82,8 @@ def test_readme_walkthrough_is_visible_and_truthfully_labelled() -> None:
     assert "idle gaps over 1.5 seconds are capped" in block
     assert "docs/guides/offline-demo.md#offline-tui-walkthrough" in block
     assert "[Live-run evidence](#proof-from-a-live-run)" in block
-    assert text.index(title) < text.index("## Why Verdict")
+    # The walkthrough sits with the offline quick start, before the explanation of a run.
+    assert text.index("## Quick start") < text.index(title) < text.index("## How a run works")
     for name in FIXTURE_MEDIA:
         if name != "demo-tui.svg":
             assert f"docs/assets/{name}" not in text, f"README embeds other fixture media: {name}"
