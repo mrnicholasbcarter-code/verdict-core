@@ -538,7 +538,7 @@ The demo run records one `SHADOW` signal from a fixture provider in its receipt.
 
 **Install checks.** The [fresh-install workflow](../.github/workflows/fresh-install.yml) runs `pipx`, `uvx` and
 the integrity-verified `install.sh` in clean Linux Python 3.12 and 3.13 containers. It installs the
-published release, which is 0.4.2 until 1.0.0 is published.
+published release, which is 1.0.0.
 
 **Test and gate status.** CI runs the repository's test, lint, format, type, security,
 CodeQL, OSV, install, build and contract-parity checks. The current claim boundary and
