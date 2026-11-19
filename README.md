@@ -185,21 +185,15 @@ The first command exits 0. The second exits 1, names the digest mismatch first, 
 
 ## Install
 
-Version 1.0.0 is in this repository and is **not published**. There is no `v1.0.0` tag. PyPI and `install.sh` still give 0.4.2. To get 1.0.0 today, install from a clone, as the quick start does:
-
-```bash
-git clone https://github.com/mrnicholasbcarter-code/verdict-core && cd verdict-core
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
-```
-
-The published release is one command:
+Version 1.0.0 is on PyPI. <!-- claim:C-025 --> It is not certified: the attested certification rehearsal has not passed yet (see #1168 and #1169).
 
 ```bash
 pip install verdict-core
 ```
 
-That installs 0.4.2, not 1.0.0. <!-- claim:C-025 --> `verdict demo` ships in `verdict-core` on PyPI (since 0.4.0; the newest version on PyPI is 0.4.2 until 1.0.0 is published), and so does `verdict quickstart`. <!-- claim:C-009 --> The rest of this README describes 1.0.0.
+`verdict demo` and `verdict quickstart` ship in the package. <!-- claim:C-009 --> To work from source, clone the repository and run `pip install -e .`.
+
+The rest of this README describes 1.0.0.
 
 Python 3.10, 3.11, 3.12 and 3.13, tested in CI on Linux (Ubuntu). macOS and Windows are not tested in CI.
 

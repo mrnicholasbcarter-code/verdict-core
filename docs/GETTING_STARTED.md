@@ -6,10 +6,8 @@
 
 ## Quick Install
 
-> **Which version you get.** 1.0.0 is not published yet. `pipx`, `pip` and
-> `install.sh` install 0.4.2, the newest release on PyPI. For 1.0.0, use the
-> development install from a clone (last block below). See
-> [Install](../README.md#install).
+> **Which version you get.** 1.0.0 is on PyPI. `pipx`, `pip` and `install.sh`
+> all install 1.0.0. See [Install](../README.md#install).
 
 ```bash
 # Using pipx (recommended)
