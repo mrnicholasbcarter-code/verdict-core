@@ -963,8 +963,10 @@ Nine verified Mermaid diagrams live in [`diagrams/`](diagrams/); three are embed
 
 ## Limits
 
-- **No cost saving is claimed yet.** The only live cost run chose the same model in both arms,
-  so it measured no routing saving. See [`docs/benchmarks/README.md`](docs/benchmarks/README.md). <!-- claim:C-018 -->
+- **No cost saving is claimed yet.** The 2026-09-28 live cost check chose the same model in both arms,
+  so it measured no routing saving. One paired usage run on 2026-11-19 did not support a claim: the
+  Verdict arm completed fewer tasks than the baseline, so the bench refused it. Its evidence is not
+  published yet. See [`docs/benchmarks/README.md`](docs/benchmarks/README.md). <!-- claim:C-018 -->
 - **Live orchestration requires a gateway.** OmniRoute must be running at
   `http://localhost:20128`. The credential-free quickstart and benchmark paths need no gateway. <!-- claim:C-019 -->
 - **Worker model availability is external.** Verdict combines gateway inventory and account evidence with its own runtime health

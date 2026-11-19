@@ -2,7 +2,8 @@
 
 This index lists every benchmark in this repository and what it does and does not show.
 
-**No cost saving is claimed yet.** The only live cost run found no routing saving (see below).
+**No cost saving is claimed yet.** The 2026-09-28 live cost check found no routing saving (see below),
+and one paired usage run on 2026-11-19 did not support a claim (see [Paired usage bench](#paired-usage-bench-method-one-run-no-claim-supported)).
 A savings claim returns only with paired live evidence on held-out tasks.
 
 | Benchmark | Kind | Result | Details |
