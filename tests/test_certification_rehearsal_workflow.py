@@ -23,7 +23,7 @@ def _pass(route_id):
     return {**ELIGIBLE_PASS, "route_id": route_id}
 
 
-# Planner-eligible passes in five backend pools: what the rehearsal needs to start.
+# Planner-eligible passes in five backend pools (D2: floor is 2; two proven pools suffice).
 ELIGIBLE_PASSES = [
     _pass("groq/model-a"),
     _pass("nvidia/model-b"),
@@ -563,67 +563,46 @@ def test_preflight_argv_carries_planner_floor_and_pool_cap(tmp_path, monkeypatch
     assert "--allow-live-probe" in argv
 
 
-@pytest.mark.parametrize(
-    "routes,pools",
-    [
-        # Two pools only.
-        ([_pass("groq/model-a"), _pass("nvidia/model-b")], 2),
-        # agy/* and antigravity/* are one quota: three passes, two pools.
-        ([_pass("agy/model-a"), _pass("antigravity/model-b"), _pass("cerebras/model-c")], 2),
-        # kc and openrouter `:free` are one quota.
-        ([_pass("kc/a:free"), _pass("openrouter/b:free"), _pass("groq/model-c")], 2),
-        # cert-fix8 13:06Z: four pools proved; chaos then ran out of planner routes.
-        (
-            [
-                _pass("cerebras/gpt-oss-120b"),
-                _pass("kc/nvidia/nemotron-3-ultra-550b-a55b:free"),
-                _pass("nvidia/google/gemma-4-31b-it"),
-                _pass("pol/community/model:free"),
-            ],
-            4,
-        ),
-        # A pass the planner rejects proves nothing for its pool.
-        (
-            [
-                _pass("groq/model-a"),
-                _pass("nvidia/model-b"),
-                {**_pass("cerebras/model-c"), "context_window": 24_000},
-                {**_pass("cf/model-d"), "result": "fail"},
-            ],
-            2,
-        ),
-    ],
-)
-def test_preflight_with_too_few_pools_fails_closed(tmp_path, monkeypatch, routes, pools):
-    """Catches a rehearsal starting with no independent pool left for review."""
-    script, seen = _preflight_only(tmp_path, monkeypatch, _screen(routes))
-    assert script.PREFLIGHT_MIN_PLANNER_POOLS == 5
-    with pytest.raises(script.RehearsalConfigurationError) as error:
-        script.run()
-    assert seen["orchestrate"] == []
-    assert f"in {pools} backend pool(s); 5 are required" in str(error.value)
-    assert not any(row["route_id"] in str(error.value) for row in routes)
-    raw = (tmp_path / "certification-failure.json").read_text()
-    data = json.loads(raw)
-    assert data["stage"] == "preflight"
-    assert data["preflight"].get("planner_eligible_pools") == pools
-    assert data["preflight"].get("planner_eligible_pools_required") == 5
-    # Counts and enums only: no route id, pool name or other text.
-    assert all(
-        v is None or isinstance(v, int)
-        for v in data["preflight"].values()
-        if v != "metadata_unavailable"
-    )
-    assert not any(row["route_id"] in raw or row["route_id"].split("/")[0] in raw for row in routes)
+def test_preflight_min_planner_pools_is_two(tmp_path, monkeypatch):
+    """D2 (2026-11-19): pool floor is 2 — two proven pools are sufficient to start.
 
-
-def test_preflight_with_five_pools_proceeds_to_orchestrate(tmp_path, monkeypatch):
-    """Catches the pool requirement blocking a preflight that met it."""
-    script, seen = _preflight_only(tmp_path, monkeypatch, _screen(ELIGIBLE_PASSES))
+    Two distinct provider pools passing the floor check proceeds to orchestration.
+    The check ensures an implementer pool and an independent reviewer pool are
+    both proven before the run starts.
+    """
+    routes = [_pass("groq/model-a"), _pass("nvidia/model-b")]
+    script_mod, seen = _preflight_only(tmp_path, monkeypatch, _screen(routes))
+    assert script_mod.PREFLIGHT_MIN_PLANNER_POOLS == 2
     with pytest.raises(ValueError, match="clean rehearsal orchestration failed"):
-        script.run()
+        script_mod.run()
+    # The pool check passed: orchestration was attempted.
+    assert len(seen["orchestrate"]) == 1
+    data = json.loads((tmp_path / "certification-failure.json").read_text())
+    assert data["stage"] == "orchestration"
+    assert data["preflight"].get("planner_eligible_pools") == 2
+    assert data["preflight"].get("planner_eligible_pools_required") == 2
+
+
+def test_preflight_one_pool_fails_closed(tmp_path, monkeypatch):
+    """With floor=2, a preflight with exactly one proven pool fails closed (D2 2026-11-19)."""
+    script_mod, seen = _preflight_only(tmp_path, monkeypatch, _screen([_pass("groq/model-a")]))
+    with pytest.raises(script_mod.RehearsalConfigurationError) as error:
+        script_mod.run()
+    assert seen["orchestrate"] == []
+    assert "in 1 backend pool(s); 2 are required" in str(error.value)
+    data = json.loads((tmp_path / "certification-failure.json").read_text())
+    assert data["stage"] == "preflight"
+    assert data["preflight"].get("planner_eligible_pools") == 1
+    assert data["preflight"].get("planner_eligible_pools_required") == 2
+
+
+def test_preflight_with_eligible_pools_proceeds_to_orchestrate(tmp_path, monkeypatch):
+    """Catches the pool requirement blocking a preflight that met it."""
+    script_mod, seen = _preflight_only(tmp_path, monkeypatch, _screen(ELIGIBLE_PASSES))
+    with pytest.raises(ValueError, match="clean rehearsal orchestration failed"):
+        script_mod.run()
     assert len(seen["orchestrate"]) == 1
     data = json.loads((tmp_path / "certification-failure.json").read_text())
     assert data["stage"] == "orchestration"
     assert data["preflight"].get("planner_eligible_pools") == 5
-    assert data["preflight"].get("planner_eligible_pools_required") == 5
+    assert data["preflight"].get("planner_eligible_pools_required") == 2

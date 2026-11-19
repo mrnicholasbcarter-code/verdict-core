@@ -27,3 +27,18 @@ The certification preflight SHALL screen at most 30 routes, one per backend pool
 #### Scenario: Preflight arguments
 - **WHEN** the rehearsal runs its preflight
 - **THEN** the identify screen receives `--max-routes 30 --max-per-pool 1 --capacity free`
+
+### Requirement: Preflight pool floor
+
+The certification preflight SHALL require at least `PREFLIGHT_MIN_PLANNER_POOLS` = 2 distinct
+backend pools to hold a planner-eligible pass before orchestration starts (operator decision D2,
+2026-11-19). A preflight that proves fewer pools SHALL write a failure artifact and raise
+`RehearsalConfigurationError` without starting orchestration.
+
+#### Scenario: Two pools pass the floor
+- **WHEN** the preflight proves planner-eligible passes in at least two distinct backend pools
+- **THEN** orchestration is permitted to start
+
+#### Scenario: One pool fails the floor
+- **WHEN** the preflight proves planner-eligible passes in only one backend pool
+- **THEN** orchestration does not start and the failure artifact records `stage: preflight`

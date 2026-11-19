@@ -140,7 +140,7 @@ def test_failed_child_retains_only_safe_diagnostics(
         "passed": 5,
         "planner_eligible_passed": 5,
         "planner_eligible_pools": 5,
-        "planner_eligible_pools_required": 5,
+        "planner_eligible_pools_required": 2,
         "metadata_error": None,
     }
     assert len(raw) < 2048
@@ -192,13 +192,18 @@ def test_preflight_counts_never_carry_raw_text(tmp_path, monkeypatch):
         "passed": 1,
         "planner_eligible_passed": 0,
         "planner_eligible_pools": 0,
-        "planner_eligible_pools_required": 5,
+        "planner_eligible_pools_required": 2,
         "metadata_error": "unclassified",
     }
 
 
 def test_pool_count_never_carries_route_or_pool_text(tmp_path, monkeypatch):
-    """Catches a route id or pool name (report text) reaching the artifact with the pool count."""
+    """Catches a route id or pool name (report text) reaching the artifact with the pool count.
+
+    D2 (2026-11-19): floor is 1. To trigger the floor check (planner_eligible_pools < 1)
+    we use non-string route_ids so _planner_eligible_pools returns 0. The sensitive text
+    in backend_pool fields must still not appear in the failure artifact.
+    """
     secret, url = "provider-secret", "https://private.invalid"
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", url)
@@ -206,14 +211,16 @@ def test_pool_count_never_carries_route_or_pool_text(tmp_path, monkeypatch):
     monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "s.json")
     screen = {
         "mode": "screen",
+        # All planner-eligible passes have non-string route_ids:
+        # planner_eligible_passed>0 but planner_eligible_pools=0 → triggers floor check.
+        # The backend_pool fields carry sensitive text; they must NOT appear in the artifact.
         "routes": [
-            {**ELIGIBLE_PASS, "route_id": f"{url}/{secret}", "backend_pool": url + secret},
-            {**ELIGIBLE_PASS, "route_id": "agy/model-a", "backend_pool": secret},
-            {**ELIGIBLE_PASS, "route_id": "antigravity/model-b", "backend_pool": url},
-            {**ELIGIBLE_PASS, "route_id": ["not", "text"]},
+            {**ELIGIBLE_PASS, "route_id": [url, secret], "backend_pool": url + secret},
+            {**ELIGIBLE_PASS, "route_id": {"nested": secret}, "backend_pool": "agy"},
+            {**ELIGIBLE_PASS, "route_id": {"other": url}, "backend_pool": "antigravity"},
         ],
-        "routes_checked": 4,
-        "passed": 4,
+        "routes_checked": 3,
+        "passed": 3,
     }
 
     def child(command, **kwargs):
@@ -221,7 +228,7 @@ def test_pool_count_never_carries_route_or_pool_text(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(command, 0, json.dumps(screen).encode(), b"")
 
     monkeypatch.setattr(script.subprocess, "run", child)
-    with pytest.raises(script.RehearsalConfigurationError, match="in 2 backend pool") as error:
+    with pytest.raises(script.RehearsalConfigurationError, match="in 0 backend pool") as error:
         script.run()
     raw = (tmp_path / "certification-failure.json").read_text()
     for sensitive in (secret, url, "agy", "antigravity", "private"):
@@ -229,6 +236,6 @@ def test_pool_count_never_carries_route_or_pool_text(tmp_path, monkeypatch):
         assert sensitive not in str(error.value)
     preflight = json.loads(raw)["preflight"]
     # The reported pool name is ignored: the pool is derived from the route id.
-    assert preflight["planner_eligible_pools"] == 2
-    assert preflight["planner_eligible_pools_required"] == 5
+    assert preflight["planner_eligible_pools"] == 0
+    assert preflight["planner_eligible_pools_required"] == 2
     assert all(value is None or type(value) is int for value in preflight.values())

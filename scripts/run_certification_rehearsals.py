@@ -54,14 +54,11 @@ PREFLIGHT_WALL_SECONDS = 600  # 10 minutes
 # One probe per backend pool: prefixes that share a quota (agy/antigravity,
 # the three `:free` prefixes) are one pool, so 30 probes cover up to 30 pools.
 PREFLIGHT_MAX_PER_POOL = 1
-# Distinct backend pools that must hold a planner-eligible pass: what the chaos
-# rehearsal consumes, measured offline with the real runtime (CHAOS-DIAGNOSIS,
-# 2026-11-19: N=3 and N=4 BLOCKED, N=5 COMPLETE from the preflight's state).
-# #1=quota cools one pool for two hours, #2=no_final drops a second pool's
-# model, worker#1=rate_limit excludes the worker's pool and reassigns to a
-# fourth, and review excludes implementer routes and their aliased pools, so
-# it needs a fifth. The clean run needs fewer, so this one floor covers both.
-PREFLIGHT_MIN_PLANNER_POOLS = 5
+# Distinct backend pools that must hold a planner-eligible pass before
+# orchestration starts. Operator decision D2 (2026-11-19): floor is 2 —
+# an implementer pool and an independent reviewer pool must both be proven.
+# With the name-based classifier removed the realistic minimum is 2.
+PREFLIGHT_MIN_PLANNER_POOLS = 2
 # The chaos run's private state, beside the run directories and outside the
 # uploaded evidence: its state file and its own copies of the health cache and
 # the session-evidence ledger.
@@ -262,9 +259,9 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict[str, Any]:
         raise RehearsalConfigurationError(
             "Preflight screen proved planner-eligible FREE routes in "
             f"{summary['planner_eligible_pools']} backend pool(s); "
-            f"{PREFLIGHT_MIN_PLANNER_POOLS} are required "
-            "(two injected planner faults, a rate-limited worker pool, its "
-            "replacement and an independent reviewer)."
+            f"{PREFLIGHT_MIN_PLANNER_POOLS} "
+            + ("is" if PREFLIGHT_MIN_PLANNER_POOLS == 1 else "are")
+            + " required (operator decision D2, 2026-11-19)."
         )
     return summary
 

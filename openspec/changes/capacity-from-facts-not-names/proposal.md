@@ -30,6 +30,9 @@ provider's own flag; a `:free` suffix fails closed) and the gateway's free-tier 
 - Certification preflight: `PREFLIGHT_MAX_ROUTES` 13 -> 30. Request caps do not matter for free
   capacity (operator decision 2026-11-05, ai-memory
   `decisions/verdict-caps-subscription-free-2026-11-05.md`); the cap still bounds probes.
+- Certification preflight pool floor: `PREFLIGHT_MIN_PLANNER_POOLS` 5 -> 2 (operator decision D2,
+  2026-11-19). With the name-based classifier removed, fewer routes qualify as FREE; a floor of 2
+  requires at least two distinct proven pools (implementer and reviewer).
 
 ## Impact
 
