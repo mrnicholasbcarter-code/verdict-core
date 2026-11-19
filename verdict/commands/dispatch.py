@@ -879,6 +879,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             max_routes=args.max_routes,
             providers=args.providers,
             capacities=args.capacities,
+            max_capability_tier=args.max_capability_tier,
         )
     elif args.command == "census":
         from verdict.census_passports import cmd_census

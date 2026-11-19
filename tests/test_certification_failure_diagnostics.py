@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 from scripts import run_certification_rehearsals as script
-from tests.test_certification_rehearsal_workflow import ROOT
+from tests.test_certification_rehearsal_workflow import ELIGIBLE_PASS, ROOT
 
 
 @pytest.mark.parametrize(
@@ -31,6 +31,42 @@ from tests.test_certification_rehearsal_workflow import ROOT
             "provider-secret https://private.invalid snapshot-secret",
             None,
         ),
+        (
+            "planning failed on every eligible frontier model; last: none eligible",
+            "planning_none_eligible",
+            "BLOCKED",
+            "BLOCKED",
+        ),
+        (
+            "gateway /v1/models failed (HTTP 401); check --gateway and gateway credentials",
+            "gateway_auth",
+            "BLOCKED",
+            "BLOCKED",
+        ),
+        (
+            "gateway /v1/models failed (HTTP 403); check --gateway and gateway credentials",
+            "gateway_auth",
+            "BLOCKED",
+            "BLOCKED",
+        ),
+        (
+            "gateway /api/providers failed (HTTP 500); check --gateway and gateway credentials",
+            "gateway_discovery",
+            "BLOCKED",
+            "BLOCKED",
+        ),
+        (
+            "operator policy denied: provider-secret at https://private.invalid",
+            "operator_policy",
+            "BLOCKED",
+            "BLOCKED",
+        ),
+        (
+            "something new broke at startup: provider-secret https://private.invalid",
+            "startup",
+            "BLOCKED",
+            "BLOCKED",
+        ),
     ],
 )
 def test_failed_child_retains_only_safe_diagnostics(
@@ -53,7 +89,7 @@ def test_failed_child_retains_only_safe_diagnostics(
             # so this test still reaches the orchestration failure it covers.
             screen = {
                 "mode": "screen",
-                "routes": [],
+                "routes": [ELIGIBLE_PASS],
                 "routes_checked": 1,
                 "passed": 1,
                 "model_calls": 3,
@@ -70,6 +106,7 @@ def test_failed_child_retains_only_safe_diagnostics(
             "data": {
                 "outcome": outcome,
                 "reason": reason,
+                **({"phase": "startup"} if expected == "startup" else {}),
                 "secret": secret,
                 "url": url,
                 "snapshot": snapshot,
@@ -94,6 +131,13 @@ def test_failed_child_retains_only_safe_diagnostics(
     assert data["error_category"] == "child_exit"
     assert data["run_finished_reason"] == expected
     assert data["run_finished_outcome"] == expected_outcome
+    # The preflight's counts travel with every orchestration failure.
+    assert data["preflight"] == {
+        "routes_checked": 1,
+        "passed": 1,
+        "planner_eligible_passed": 1,
+        "metadata_error": None,
+    }
     assert len(raw) < 2048
     assert not list((tmp_path / "attested-rehearsals").iterdir())
 
@@ -110,3 +154,37 @@ def test_workflow_always_uploads_only_safe_failure_report():
     evidence = next(s for s in steps if s.get("name") == "Upload attested run evidence")
     assert evidence.get("if", "success()") == "success()"
     assert "runs-" not in upload["with"]["path"]
+
+
+def test_preflight_counts_never_carry_raw_text(tmp_path, monkeypatch):
+    """Catches a URL or key in a preflight field leaking into the uploaded artifact."""
+    secret, url = "provider-secret", "https://private.invalid"
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("VERDICT_CERT_GATEWAY_URL", url)
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", secret)
+    monkeypatch.setattr(script, "_connections_snapshot", lambda root: root / "s.json")
+    screen = {
+        "mode": "screen",
+        "routes": [{**ELIGIBLE_PASS, "capability_tier": 3, "error": url + secret}],
+        "routes_checked": f"{url} {secret}",
+        "passed": 1,
+        "metadata_error": f"metadata at {url} key {secret}",
+    }
+
+    def child(command, **kwargs):
+        assert "orchestrate" not in command
+        return subprocess.CompletedProcess(command, 0, json.dumps(screen).encode(), b"")
+
+    monkeypatch.setattr(script.subprocess, "run", child)
+    with pytest.raises(script.RehearsalConfigurationError) as error:
+        script.run()
+    raw = (tmp_path / "certification-failure.json").read_text()
+    for sensitive in (secret, url):
+        assert sensitive not in raw
+        assert sensitive not in str(error.value)
+    assert json.loads(raw)["preflight"] == {
+        "routes_checked": None,
+        "passed": 1,
+        "planner_eligible_passed": 0,
+        "metadata_error": "unclassified",
+    }
