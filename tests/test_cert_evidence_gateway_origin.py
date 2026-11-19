@@ -129,7 +129,7 @@ async def test_permit_rule_is_unchanged_when_the_origin_is_not_recorded(
     """Catches: redaction relaxing BOD-433 (another gateway's executor must stay denied)."""
     authority = _authority_for(record=record, qualified=NOW)
     ex = _WritingSpy("https://other-gateway.example.invalid")
-    rt, ev = _make(repo, ex, ["cc/s"], authority)
+    rt, _ = _make(repo, ex, ["cc/s"], authority)
     result = await rt.run()
     assert result.outcome is RunOutcome.BLOCKED
     assert ex.sends == []
