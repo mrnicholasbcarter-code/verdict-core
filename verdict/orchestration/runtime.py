@@ -2592,6 +2592,9 @@ class DagRuntime:
                 findings=len(review.findings),
                 detail=review.detail[:300],
                 raw_ref=review.raw_ref,
+                # Issue #1137: only when OCR dropped comment calls, so earlier
+                # event shapes are unchanged.
+                **({"findings_lost": review.findings_lost} if review.findings_lost else {}),
             )
             if not review.passed:
                 return await self._finish(
