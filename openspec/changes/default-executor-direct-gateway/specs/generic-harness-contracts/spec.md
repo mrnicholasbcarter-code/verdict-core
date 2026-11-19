@@ -66,6 +66,13 @@ MAY fail.
   `::test_not_installed_and_not_enabled_reasons_differ`,
   `tests/test_doctor_host_prerequisites.py::test_prime_installed_but_not_enabled_is_a_warning_row_with_enable_repair`
 
+#### Scenario: Prime enabled state unknown
+
+- **WHEN** the Prime binary is present but its harness state cannot be read (damaged `models.json`)
+- **THEN** the check is not skipped: `harness-prime` runs as before and fails the normal way, and the acceptance run does not crash
+- **TEST** `tests/test_acceptance.py::test_unreadable_prime_status_runs_the_check_never_skips_or_crashes`,
+  `::test_prime_absent_reason_with_damaged_config_on_disk`
+
 #### Scenario: Prime installed and enabled
 
 - **WHEN** Prime is installed and enabled but not pointed at `verdict serve`

@@ -24,3 +24,10 @@ MUST NOT be `ok`. With the binary present, setup and doctor behave as before.
 - **TEST** `tests/test_doctor_host_prerequisites.py::test_prime_rows_without_prime_are_not_installed_never_ok_or_failed`,
   `::test_missing_prime_sync_timer_without_prime_is_not_installed`,
   `tests/test_cli_inprocess.py::test_cli_doctor_optional_prime_not_installed_is_not_an_issue`
+
+#### Scenario: Damaged Prime config never crashes doctor
+
+- **WHEN** the Prime binary is present and `models.json` is unreadable
+- **THEN** doctor still returns rows: the Prime registry row fails, and the Prime harness row is `unknown` (never ok, not a second blocking row) and points at the registry repair
+- **TEST** `tests/test_doctor_host_prerequisites.py::test_damaged_prime_config_never_crashes_doctor_and_harness_is_not_ok`,
+  `::test_damaged_prime_config_never_crashes_setup_planning`
