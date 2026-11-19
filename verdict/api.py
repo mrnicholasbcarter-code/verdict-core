@@ -998,9 +998,17 @@ async def lifespan(app: FastAPI) -> Any:
             pending["admitted"] = state.admitted
             relay_cache.refresh(now=now, source_expires_at=state.source_expires_at)
 
+    # Cancel alone cannot stop this loop: before Python 3.12, asyncio.wait_for
+    # returns the inner result and drops a cancel that lands as the load
+    # finishes (bpo-42130), so the loop would run on and shutdown would hang
+    # (issue #1149). The flag ends the loop at its next check either way.
+    stopping = False
+
     async def public_models_loop() -> None:
-        while True:
+        while not stopping:
             await asyncio.sleep(PUBLIC_MODELS_REFRESH_SECONDS)
+            if stopping:
+                return
             await refresh_public_models()
 
     await refresh_public_models()
@@ -1008,6 +1016,7 @@ async def lifespan(app: FastAPI) -> Any:
     yield
     task, public_models_task = public_models_task, None
     if task is not None:
+        stopping = True
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task

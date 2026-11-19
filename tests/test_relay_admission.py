@@ -406,6 +406,65 @@ def test_lifespan_stop_closes_the_public_models_refresh_task(
     assert api.public_models_readiness is None
 
 
+def test_lifespan_stop_is_bounded_when_a_refresh_swallows_the_cancel(
+    monkeypatch: Any, tmp_path: _Path
+) -> None:
+    """Issue #1149: shutdown must end even if the cancel is lost mid-refresh.
+
+    On Python 3.10 ``asyncio.wait_for`` returns the inner result instead of
+    raising ``CancelledError`` when the cancel arrives as the inner load
+    finishes (bpo-42130). The refresh loop then kept running and the lifespan
+    ``await task`` never returned. This test reproduces that race on every
+    Python by swapping in a ``wait_for`` with the 3.10 behaviour.
+    """
+    import asyncio
+    import threading
+    import types
+
+    _configure_test_app(monkeypatch, RecordingTransport())
+    _s07_env(monkeypatch, tmp_path)
+    _s07_seed(tmp_path)
+
+    real_load = api.load_public_models
+    calls = {"n": 0}
+    entered, release = threading.Event(), threading.Event()
+
+    def blocking_load(**kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            entered.set()
+            release.wait(5.0)
+        return real_load(**kwargs)
+
+    async def wait_for_losing_cancel(aw: Any, timeout: float) -> Any:
+        inner = asyncio.ensure_future(aw)
+        try:
+            return await asyncio.shield(inner)
+        except asyncio.CancelledError:
+            return await inner  # the 3.10 race: result returned, cancel lost
+
+    monkeypatch.setattr(api, "load_public_models", blocking_load)
+    monkeypatch.setattr(
+        api,
+        "asyncio",
+        types.SimpleNamespace(**{**vars(asyncio), "wait_for": wait_for_losing_cancel}),
+    )
+    client = TestClient(api.app)
+    client.__enter__()
+    task = api.public_models_task
+    assert entered.wait(5.0), "refresh loop never started a second load"
+    done = threading.Event()
+    stopper = threading.Thread(
+        target=lambda: (client.__exit__(None, None, None), done.set()), daemon=True
+    )
+    stopper.start()
+    _time.sleep(0.05)  # the cancel is now pending inside the in-flight load
+    release.set()
+    assert done.wait(5.0), "lifespan shutdown hung after a swallowed cancel"
+    assert task is not None and task.done()
+    assert api.public_models_task is None
+
+
 def test_relay_admission_cache_recovers_from_local_source_and_never_outlives_it(
     monkeypatch: Any, tmp_path: _Path
 ) -> None:
