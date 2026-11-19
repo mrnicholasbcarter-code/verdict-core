@@ -81,7 +81,10 @@ harness. OmniRoute is only transport and inventory.
    implementer route, and a different model family when one has capacity. The OCR config is
    isolated per run, and the key never appears in argv or in artifacts. An error, timeout, empty
    output, or every-item-failed result is `ERROR`, never `PASS`. If a reviewer provider fails,
-   another independent reviewer is selected.
+   another independent reviewer is selected. If no reviewer is eligible only because a route that meets the
+   reviewer floor is in a cooldown ending within `max_cooldown_wait_seconds` and the review
+   deadline, the reviewer waits once for it (a `cooldown` event with scope `wait` and
+   `phase: review`) and selects again.
 6. **Receipt.** An append-only, fsynced, secret-scrubbed `events.jsonl` is the single source for
    both the terminal view and `receipt.json`. The receipt carries per-node attempts (route,
    provider, capacity class, outcome, fault injected, abandoned), cooldowns, reassignments, review
