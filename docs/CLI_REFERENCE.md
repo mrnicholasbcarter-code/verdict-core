@@ -22,6 +22,61 @@ The registered subcommands below are grouped by their primary use. Run
 | Reporting and review | `stats`, `benchmark`, `cost-report`, `receipt`, `suggest` |
 | Interface | `ui` |
 
+## Commands at a glance
+
+`verdict <command>` — or `uv run python -m verdict <command>` from a checkout. Full flags via `--help`.
+
+**Run**
+
+| Command | Purpose |
+|---|---|
+| `verdict` | Home screen: gateway status, recent runs, main commands |
+| `orchestrate` | Goal → frontier plan → DAG → eligibility → parallel workers → recovery → review → receipt (`--inject` adds chaos faults) |
+| `supervise` | Supervise an orchestration controller |
+| `watch` | Live TUI view of a running orchestration |
+| `run-receipt` | Show and verify an orchestration run receipt |
+| `eligibility` | Show the DISCOVERED → … → SELECTED ladder for a route |
+| `route` / `run` | Route a single prompt |
+| `simulate` | Forecast tokens, cost, risk, model — no paid call |
+| `compare` | Direct frontier call vs. Verdict route side-by-side |
+
+**Evidence**
+
+| Command | Purpose |
+|---|---|
+| `replay` | Reload a recorded execution session |
+| `failover-proof` | Offline forced-failover and replay proof |
+| `receipt` | Inspect durable `RoutingReceiptV1` records |
+| `stats` | Routing analytics |
+| `benchmark` | Reproducible local benchmark harness |
+| `certify` | Emit a runtime capability passport JSON; not release certification |
+
+**Models**
+
+| Command | Purpose |
+|---|---|
+| `models` | Qualified catalog with named drop reasons |
+| `inspect` | Inspect one model's catalog record |
+| `probe` | 1-token liveness probe |
+| `detect` | Detect available providers |
+| `catalog` | Qualify and snapshot the OmniRoute catalog |
+| `metadata` | Refresh and inspect the independent model metadata store |
+
+**Setup**
+
+| Command | Purpose |
+|---|---|
+| `setup` | Interactive setup wizard |
+| `harness` | Discover or configure supported coding-agent integrations; Prime model selection adds preview and guarded restore |
+| `doctor` | Scan and repair config / connectivity |
+| `check` | Validate config file syntax |
+| `quickstart` | Credential-free deterministic demo |
+| `compat` | Cross-repo contract compatibility gate (ADR-024) |
+| `hook` | Manage lifecycle hooks for Claude Code / Codex |
+| `memory` | Local-first unified memory management |
+| `serve` | FastAPI microservice |
+| `ui` | Streamlit analytics dashboard (Python 3.11+; core Verdict supports 3.10) |
+
 ## Bare `verdict` — Home screen
 
 Running `verdict` with no subcommand opens the home screen. It exits successfully

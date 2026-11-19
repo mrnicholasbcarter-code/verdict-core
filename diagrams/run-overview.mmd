@@ -1,0 +1,30 @@
+%% run-overview.mmd -- one verdict orchestrate run at reader level (README)
+%% Source (verified against code at this commit):
+%%   verdict/orchestration/planner.py (FrontierPlanner)
+%%   verdict/orchestration/eligibility.py (EligibilityLadder)
+%%   verdict/orchestration/runtime.py (DagRuntime)
+%%   verdict/orchestration/review.py (OpenCodeReviewer)
+%%   verdict/orchestration/receipt.py (verify_run_receipt)
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#101014','fontSize':'15px','primaryColor':'#18181b','primaryTextColor':'#f4f4f5','primaryBorderColor':'#52525b','secondaryColor':'#18181b','secondaryTextColor':'#f4f4f5','secondaryBorderColor':'#52525b','tertiaryColor':'#101014','tertiaryTextColor':'#f4f4f5','tertiaryBorderColor':'#52525b','lineColor':'#7c7c88','textColor':'#f4f4f5','mainBkg':'#18181b','nodeTextColor':'#f4f4f5','nodeBorder':'#52525b','clusterBkg':'#101014','clusterBorder':'#52525b','titleColor':'#f4f4f5','edgeLabelBackground':'#18181b','noteBkgColor':'#18181b','noteTextColor':'#f4f4f5','noteBorderColor':'#52525b','actorBkg':'#18181b','actorBorder':'#a78bfa','actorTextColor':'#f4f4f5','actorLineColor':'#7c7c88','signalColor':'#7c7c88','signalTextColor':'#f4f4f5','labelBoxBkgColor':'#18181b','labelTextColor':'#f4f4f5','loopTextColor':'#f4f4f5','activationBkgColor':'#101014','activationBorderColor':'#22b8eb','sequenceNumberColor':'#101014'}}}%%
+flowchart TD
+    G["Goal and a git repository"] --> P["Plan: nodes, each with owned files and a check"]
+    P --> A{"Admit: live evidence for each model"}
+    A -- "dropped, with a named reason" --> D["Not a candidate"]
+    A -- admitted --> W["Run: one worker per node, in parallel"]
+    W --> V{"Node check passes?"}
+    V -- "no, or the worker failed" --> R{"Admitted model and attempts left?"}
+    R -- "yes: reassign" --> W
+    R -- no --> B["BLOCKED, with a named reason"]
+    V -- yes --> I{"Integration check on the merged result passes?"}
+    I -- no --> B
+    I -- yes --> O{"Review by ocr on a separate route"}
+    O -- "no PASS" --> B
+    O -- PASS --> C["COMPLETE: receipt holds the SHA-256 of the event log"]
+classDef active fill:#18181b,stroke:#22b8eb,color:#f4f4f5,stroke-width:2px
+classDef selected fill:#18181b,stroke:#a78bfa,color:#f4f4f5,stroke-width:2px
+classDef cooldown fill:#18181b,stroke:#f5b00b,color:#f4f4f5,stroke-width:2px
+classDef failed fill:#18181b,stroke:#f87171,color:#f4f4f5,stroke-width:2px
+classDef validated fill:#18181b,stroke:#4ade80,color:#f4f4f5,stroke-width:2px
+classDef muted fill:#18181b,stroke:#52525b,color:#a1a1aa,stroke-width:1px
+class P,W active
+class C validated

@@ -883,6 +883,29 @@ verdict route "summarize the change" --terse
 An empty free∩active intersection fails closed. There is no automatic upgrade to
 a frontier model when eligibility returns nothing. <!-- claim:C-049 -->
 
+## Live gateway checks
+
+Only run these when a compatible gateway is already running at `http://localhost:20128`:
+
+```bash
+verdict detect --json
+verdict probe task-coding --base-url http://localhost:20128/v1 --allow-live-probe --json
+```
+
+`detect` must show `server_running: true`. `probe` must return `status: ready` for a
+**named** model. `auto/*` IDs are opaque and are not live proof. A catalog timeout is
+`blocked`, not success. See [`docs/guides/golden-path.md`](guides/golden-path.md) for the
+dated live observation and its limitations. <!-- claim:C-026 --><!-- claim:C-027 -->
+
+With `OMNIROUTE_BASE_URL` (and `OMNIROUTE_API_KEY` when required) a low-criticality `verdict
+route` admits a concrete **free-tier ∩ active-provider** identity, prints an `admit_receipt`
+of named drops, and executes through `/v1/chat/completions`. An empty intersection fails
+closed instead of falling back to Opus. See
+[`docs/guides/free-tier-admit-smoke.md`](guides/free-tier-admit-smoke.md). Keep those
+identities proved in the background with
+[`verdict prove-at-rest`](guides/health-cache.md) (every admitted route;
+the health cache is separate from selection, which is unchanged).
+
 ## Capacity classification and credit providers
 
 Verdict classifies route capacity into `FREE`, `SUBSCRIPTION`, `METERED`, and `UNKNOWN`. Models billed against prepaid credit balances (such as Pollinations / `pollinations/*`, `pol/*`) must never be counted as `FREE` capacity by assumption when pricing is unknown.

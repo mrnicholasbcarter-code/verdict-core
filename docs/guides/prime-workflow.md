@@ -5,6 +5,13 @@ This repository owns five workflows, discovered by Prime 0.9.4 at
 `/skill:verdict-resume`. Existing model chooser, Linear, GitHub, git, context,
 Spec Kit and documentation-and-adrs capabilities remain dependencies, not new skills.
 
+This page is about the repository's own development workflow under Prime. It is
+not how Verdict runs workers for you: `verdict orchestrate` uses the built-in
+`direct-gateway` executor by default, and Prime is an optional worker harness
+(`--executor prime-headless`). See
+[Prime Agent as a worker harness](harnesses.md#prime-agent-as-a-worker-harness)
+and [select and restore](harnesses.md#choosing-primes-models-select-and-restore).
+
 ## Start
 
 From a contributor checkout of this repository:

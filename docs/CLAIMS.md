@@ -6,35 +6,35 @@
 
 | ID | Claim (short quote) | Source file:line | Label | Evidence |
 |----|---------------------|------------------|-------|----------|
-| C-001 | "A control plane for coding agents that shows its work" | README.md:11 | proposed | verdict/orchestration/run.py |
-| C-002 | "Model admission, bounded recovery, a separate review route and receipts you can verify" | README.md:12 | proposed | verdict/eligibility.py, verdict/orchestration/recovery.py, verdict/orchestration/review.py, verdict/receipt_store.py |
-| C-003 | "Checks models before trusting them" | README.md:44 | shipped | verdict/eligibility.py, tests/test_eligibility_gate.py |
-| C-004 | "Uses eligible free and already-paid capacity first" | README.md:45 | proposed | verdict/intelligence.py, verdict/admission.py |
-| C-005 | "Recovers on its own when a model fails" | README.md:46 | shipped | verdict/orchestration/recovery.py, tests/test_orch_recovery.py |
-| C-006 | "Gets a separate review route" | README.md:47 | shipped | verdict/orchestration/runtime.py, tests/test_orch_runtime.py |
-| C-007 | "Hands you a receipt you can verify" | README.md:48 | shipped | verdict/orchestration/receipt.py, tests/test_orch_receipt.py |
-| C-008 | "Asks before risky actions" | README.md:49 | proposed | verdict/eligibility.py, verdict/commands/parsers_harness.py |
-| C-009 | "verdict demo ships in verdict-core on PyPI (since 0.4.0)" | README.md:68 | proposed | verdict/flagship_demo.py |
-| C-010 | "verdict eligibility --verified shows each listed model's evidence-backed status" | README.md:81 | proposed | verdict/commands/parsers_models.py, verdict/eligibility.py |
-| C-011 | "/eligibility refresh shows bounded request plan grouped by capacity class" | README.md:88 | proposed | verdict/eligibility.py, verdict/commands/parsers_models.py |
-| C-012 | "verdict harness prime select/restore previews change, asks confirm, backs up file" | README.md:97 | proposed | verdict/commands/parsers_harness.py, verdict/harness_prime.py |
-| C-013 | "/bootstrap claude gives honest Claude Code compatibility report" | README.md:103 | proposed | verdict/commands/parsers_harness.py, verdict/harness_claude.py |
-| C-014 | "Smart Tab-completion in the prompt" | README.md:106 | proposed | verdict/tui_completion.py |
-| C-015 | "verdict quickstart --non-interactive --dry-run makes one deterministic routing decision" | README.md:112 | proposed | verdict/flagship_demo.py |
-| C-016 | "The retained live run (dogfood-bod-225-live-2026-09-29) used subscription workers, not free workers" | README.md:51 | observed | docs/proof/dogfood-bod-225-live-2026-09-29/README.md, docs/proof/dogfood-bod-225-live-2026-09-29/receipt.json |
-| C-017 | "Free capacity still needs fresh admission evidence" | README.md:52 | proposed | verdict/eligibility.py, verdict/admission.py |
-| C-018 | "No cost saving is claimed yet" | README.md:206 |  proposed  | docs/benchmarks/README.md, README.md |
-| C-019 | "Live orchestration requires a gateway" | README.md:209 |  proposed  | docs/CONFIGURATION.md, verdict/orchestration/runtime.py |
-| C-020 | "Worker model availability is external" | README.md:210 | proposed | README.md, verdict/omniroute.py |
-| C-021 | "Independent review requires ocr on PATH" | README.md:213 | proposed | verdict/orchestration/review.py |
-| C-022 | "Receipt integrity covers event logs, not LLM or OCR output" | README.md:214 | proposed | verdict/receipt_verifier.py, docs/THREAT_MODEL_RECEIPTS.md |
-| C-023 | "No static fallback chains; OpenTelemetry is optional" | README.md:216 | proposed | verdict/orchestration/recovery.py, verdict/tracing.py |
-| C-024 | "Version 1.0.0, active development" | README.md:217 |  proposed  | pyproject.toml, README.md |
-| C-025 | "pip install verdict-core" | README.md:226 | proposed | pyproject.toml, .github/workflows/fresh-install.yml |
-| C-026 | "verdict detect --json" | README.md:237 | proposed | verdict/commands/parsers_models.py |
-| C-027 | "verdict probe task-coding --base-url ... --allow-live-probe --json" | README.md:238 | proposed | verdict/commands/parsers_models.py |
-| C-028 | "Nine verified Mermaid diagrams" | README.md:264 | proposed | diagrams/ |
-| C-029 | "Credential-free quickstart fixture with explicit exclusions" | README.md:268 | proposed | verdict/flagship_demo.py |
+| C-001 | "A control plane for coding agents that shows its work" | README.md:5 | proposed | verdict/orchestration/run.py |
+| C-002 | "Model admission, bounded recovery, a separate review route and receipts you can verify" | README.md:8 | proposed | verdict/eligibility.py, verdict/orchestration/recovery.py, verdict/orchestration/review.py, verdict/receipt_store.py |
+| C-003 | "Checks models before trusting them" | README.md:40 | shipped | verdict/eligibility.py, tests/test_eligibility_gate.py |
+| C-004 | "Uses eligible free and already-paid capacity first" | README.md:41 | proposed | verdict/intelligence.py, verdict/admission.py |
+| C-005 | "Recovers on its own when a model fails" | README.md:42 | shipped | verdict/orchestration/recovery.py, tests/test_orch_recovery.py |
+| C-006 | "Gets a separate review route" | README.md:43 | shipped | verdict/orchestration/runtime.py, tests/test_orch_runtime.py |
+| C-007 | "Hands you a receipt you can verify" | README.md:44 | shipped | verdict/orchestration/receipt.py, tests/test_orch_receipt.py |
+| C-008 | "Asks before risky actions" | docs/guides/harnesses.md:415 | proposed | verdict/eligibility.py, verdict/commands/parsers_harness.py |
+| C-009 | "verdict demo ships in verdict-core on PyPI (since 0.4.0)" | README.md:202 | proposed | verdict/flagship_demo.py |
+| C-010 | "verdict eligibility --verified shows each listed model's evidence-backed status" | docs/HOW_IT_WORKS.md:499 | proposed | verdict/commands/parsers_models.py, verdict/eligibility.py |
+| C-011 | "/eligibility refresh shows bounded request plan grouped by capacity class" | docs/HOW_IT_WORKS.md:500 | proposed | verdict/eligibility.py, verdict/commands/parsers_models.py |
+| C-012 | "verdict harness prime select/restore previews change, asks confirm, backs up file" | docs/guides/harnesses.md:416 | proposed | verdict/commands/parsers_harness.py, verdict/harness_prime.py |
+| C-013 | "/bootstrap claude gives honest Claude Code compatibility report" | docs/HOW_IT_WORKS.md:501 | proposed | verdict/commands/parsers_harness.py, verdict/harness_claude.py |
+| C-014 | "Smart Tab-completion in the prompt" | docs/HOW_IT_WORKS.md:502 | proposed | verdict/tui_completion.py |
+| C-015 | "verdict quickstart --non-interactive --dry-run makes one deterministic routing decision" | README.md:73 | proposed | verdict/flagship_demo.py |
+| C-016 | "The retained live run (dogfood-bod-225-live-2026-09-29) used subscription workers, not free workers" | README.md:41 | observed | docs/proof/dogfood-bod-225-live-2026-09-29/README.md, docs/proof/dogfood-bod-225-live-2026-09-29/receipt.json |
+| C-017 | "Free capacity still needs fresh admission evidence" | README.md:41 | proposed | verdict/eligibility.py, verdict/admission.py |
+| C-018 | "No cost saving is claimed yet" | README.md:237 |  proposed  | docs/benchmarks/README.md, README.md |
+| C-019 | "Live orchestration requires a gateway" | README.md:240 |  proposed  | docs/CONFIGURATION.md, verdict/orchestration/runtime.py |
+| C-020 | "Worker model availability is external" | README.md:241 | proposed | README.md, verdict/omniroute.py |
+| C-021 | "Independent review requires ocr on PATH" | README.md:243 | proposed | verdict/orchestration/review.py |
+| C-022 | "Receipt integrity covers event logs, not LLM or OCR output" | README.md:244 | proposed | verdict/receipt_verifier.py, docs/THREAT_MODEL_RECEIPTS.md |
+| C-023 | "No static fallback chains; OpenTelemetry is optional" | README.md:245 | proposed | verdict/orchestration/recovery.py, verdict/tracing.py |
+| C-024 | "Version 1.0.0, active development" | README.md:246 |  proposed  | pyproject.toml, README.md |
+| C-025 | "pip install verdict-core" | README.md:202 | proposed | pyproject.toml, .github/workflows/fresh-install.yml |
+| C-026 | "verdict detect --json" | docs/CONFIGURATION.md:898 | proposed | verdict/commands/parsers_models.py |
+| C-027 | "verdict probe task-coding --base-url ... --allow-live-probe --json" | docs/CONFIGURATION.md:898 | proposed | verdict/commands/parsers_models.py |
+| C-028 | "Ten verified Mermaid diagrams" | docs/HOW_IT_WORKS.md:577 | proposed | diagrams/ |
+| C-029 | "Credential-free quickstart fixture with explicit exclusions" | README.md:91 | proposed | verdict/flagship_demo.py |
 | C-030 | "Fail-closed capability passports" | README.md:269 | proposed | verdict/capability_passports.py, docs/CAPABILITY_PASSPORTS.md |
 | C-031 | "Adaptive/quality/cost claims: simulated only" | USER_JOURNEY.md:98 | proposed | verdict/benchmarking.py, docs/benchmarks/README.md |
 | C-032 | "Hard eligibility runs before advisory ranking" | docs/architecture.md:26 | proposed | verdict/eligibility.py, verdict/intelligence.py |

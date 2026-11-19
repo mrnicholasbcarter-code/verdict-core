@@ -6,6 +6,11 @@
 
 ## Quick Install
 
+> **Which version you get.** 1.0.0 is not published yet. `pipx`, `pip` and
+> `install.sh` install 0.4.2, the newest release on PyPI. For 1.0.0, use the
+> development install from a clone (last block below). See
+> [Install](../README.md#install).
+
 ```bash
 # Using pipx (recommended)
 pipx install verdict-core
@@ -27,6 +32,12 @@ git clone https://github.com/mrnicholasbcarter-code/verdict-core.git
 cd verdict-core
 uv sync --extra dev --extra server --extra dashboard
 ```
+
+The optional installer downloads the pinned release, checks its SHA-256 against PyPI, probes
+for a local gateway, runs setup, and runs the offline `verdict demo` to show the install works.
+It runs `verdict check` once a configuration file exists. `install.sh` is checked in clean
+Debian-based Python 3.12 and 3.13 containers. Live provider execution is separate from the
+credential-free path.
 
 ## First Run
 
