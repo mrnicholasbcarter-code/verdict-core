@@ -1,7 +1,5 @@
 """D6: selection, not just receipt ranks, prefers the cheapest qualified tier."""
 
-import pytest
-
 from tests.test_identify_rank import NOW, _conn, _ladder_row, _record, _score, _snapshot
 from verdict.orchestration.contracts import CapacityClass, TaskRequirements
 from verdict.orchestration.eligibility import EligibilityLadder
