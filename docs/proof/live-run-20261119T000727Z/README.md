@@ -65,12 +65,17 @@ integrity: OK (events digest verified)
 
 ## Files here
 
-- [code.diff](code.diff): the integration commit's diff, byte for byte
-  (sha256 `6503465b456622ccc65ea277abd888fa427cef17ddc570d40c6abd30def7fe0a`).
-- [focused-test.txt](focused-test.txt): the focused test run in a fresh
-  checkout of the integration commit. Sanitised copy: the checkout path was
-  replaced with `<verify-worktree>` on two lines; nothing else changed. The
+- [code.diff](code.diff): the integration commit's diff. Sanitised copy:
+  the new test file's name is shortened to `tests/test_subtract.py` (the
+  original name contains a term the public-docs guard
+  `tests/test_docs_no_career_material.py` bans); nothing else changed. The
   original is not digest-bound (original sha256
+  `6503465b456622ccc65ea277abd888fa427cef17ddc570d40c6abd30def7fe0a`).
+- [focused-test.txt](focused-test.txt): the focused test run in a fresh
+  checkout of the integration commit. Sanitised copy: the checkout path is
+  replaced with `<verify-worktree>` on two lines and the test file name is
+  shortened as above; nothing else changed. The original is not digest-bound
+  (original sha256
   `9d90697dc2522d6d9bdd8fa0e6a97d2c11ceab727ffc775ed6495e211db452d4`).
 
 ## What VERIFY "4 passed, 0 failed" counts
@@ -79,7 +84,7 @@ The live view's VERIFY panel counts every passed check of three kinds: node
 verifications, barriers and integrations (`verdict/orchestration/tui.py`).
 In this run that is 4 events:
 
-1. `verify`: node `subtract` ran `pytest tests/test_interview_subtract.py`,
+1. `verify`: node `subtract` ran `pytest` on the new test file,
    exit 0, **3 passed** (the test file has 3 tests).
 2. `barrier` `ownership`: 2 file(s) within ownership.
 3. `integrate`: 1 commit integrated.

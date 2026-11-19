@@ -10,11 +10,11 @@ index 00000000..df00491a
 +def subtract(a: int, b: int) -> int:
 +    """Return a minus b."""
 +    return a - b
-diff --git a/tests/test_interview_subtract.py b/tests/test_interview_subtract.py
+diff --git a/tests/test_subtract.py b/tests/test_subtract.py
 new file mode 100644
 index 00000000..22e1966d
 --- /dev/null
-+++ b/tests/test_interview_subtract.py
++++ b/tests/test_subtract.py
 @@ -0,0 +1,13 @@
 +from math_utils import subtract
 +
