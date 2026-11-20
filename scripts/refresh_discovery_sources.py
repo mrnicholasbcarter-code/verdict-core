@@ -180,6 +180,14 @@ def run(
         dsh_commit: Override the pinned commit for dsh-our-free-model.
     """
     enabled = set(sources or _ALL_SOURCES)
+    unknown = enabled - set(_ALL_SOURCES)
+    if unknown:
+        msg = (
+            f"Unknown source(s): {', '.join(sorted(unknown))}. "
+            f"Valid names: {', '.join(_ALL_SOURCES)}"
+        )
+        print(msg, file=sys.stderr, flush=True)
+        raise SystemExit(1)
     base_cfg = community or CommunityConfig()
     cfg = CommunityConfig(
         fcm_commit=fcm_commit if fcm_commit is not None else base_cfg.fcm_commit,

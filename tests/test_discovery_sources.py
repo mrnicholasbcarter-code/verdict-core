@@ -1246,3 +1246,237 @@ class TestFetcherExactByteLimit:
         assert all(n <= 6 for n in read_sizes), (
             f"read sizes {read_sizes} should all be ≤ 6 with max_bytes=5"
         )
+
+
+# ---------------------------------------------------------------------------
+# Round-4 findings
+# ---------------------------------------------------------------------------
+
+# Finding 1 ------------------------------------------------------------------
+
+
+class TestParsePriceFiniteOnly:
+    """Finding 1: parse_price must reject non-finite floats (inf, -inf, 1e999)."""
+
+    def test_float_inf_returns_none(self) -> None:
+        from verdict.discovery.sources._pricing import parse_price
+
+        assert parse_price(float("inf")) is None
+
+    def test_float_neg_inf_returns_none(self) -> None:
+        from verdict.discovery.sources._pricing import parse_price
+
+        assert parse_price(float("-inf")) is None
+
+    def test_string_infinity_returns_none(self) -> None:
+        from verdict.discovery.sources._pricing import parse_price
+
+        assert parse_price("infinity") is None
+
+    def test_string_neg_infinity_returns_none(self) -> None:
+        from verdict.discovery.sources._pricing import parse_price
+
+        assert parse_price("-infinity") is None
+
+    def test_string_1e999_returns_none(self) -> None:
+        from verdict.discovery.sources._pricing import parse_price
+
+        assert parse_price("1e999") is None
+
+    def test_zero_float_still_valid(self) -> None:
+        from verdict.discovery.sources._pricing import parse_price
+
+        assert parse_price(0.0) == 0.0
+
+    def test_finite_string_still_valid(self) -> None:
+        from verdict.discovery.sources._pricing import parse_price
+
+        assert parse_price("0.000001") == pytest.approx(0.000001)
+
+    def test_large_finite_still_valid(self) -> None:
+        from verdict.discovery.sources._pricing import parse_price
+
+        assert parse_price(1e100) == pytest.approx(1e100)
+
+
+# Finding 2 ------------------------------------------------------------------
+
+
+class TestRefreshRejectsUnknownSources:
+    """Finding 2: run() must reject unknown source names with a non-zero exit."""
+
+    def test_unknown_source_name_exits_nonzero(self, tmp_path: Path) -> None:
+        from scripts.refresh_discovery_sources import run as refresh_run
+
+        with pytest.raises(SystemExit) as exc_info:
+            refresh_run(sources=["not_a_real_source"], cache_dir=tmp_path)
+        assert exc_info.value.code != 0
+
+    def test_misspelled_source_name_exits_nonzero(self, tmp_path: Path) -> None:
+        from scripts.refresh_discovery_sources import run as refresh_run
+
+        with pytest.raises(SystemExit) as exc_info:
+            refresh_run(sources=["kilo", "openrouter", "typo_source"], cache_dir=tmp_path)
+        assert exc_info.value.code != 0
+
+    def test_error_message_lists_valid_names(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from scripts.refresh_discovery_sources import _ALL_SOURCES
+        from scripts.refresh_discovery_sources import run as refresh_run
+
+        with pytest.raises(SystemExit):
+            refresh_run(sources=["bad_source"], cache_dir=tmp_path)
+        # The error should name the invalid source and hint at valid ones
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "bad_source" in combined
+        for name in _ALL_SOURCES:
+            assert name in combined
+
+
+# Finding 3 ------------------------------------------------------------------
+
+
+class TestSanitizeExcMsgRedaction:
+    """Finding 3: _sanitize_exc_msg uses redact_text + URL query stripping."""
+
+    def test_bearer_token_is_redacted(self) -> None:
+        from verdict.discovery.collect import _sanitize_exc_msg
+
+        exc = OSError("failed: Authorization: Bearer eyJsecrettoken123abc456def")
+        result = _sanitize_exc_msg(exc)
+        assert "eyJsecrettoken123abc456def" not in result
+        assert "[redacted]" in result
+
+    def test_basic_auth_is_redacted(self) -> None:
+        from verdict.discovery.collect import _sanitize_exc_msg
+
+        exc = OSError("failed: Authorization: Basic dXNlcjpwYXNz")
+        result = _sanitize_exc_msg(exc)
+        assert "dXNlcjpwYXNz" not in result
+        assert "[redacted]" in result
+
+    def test_api_key_colon_is_redacted(self) -> None:
+        from verdict.discovery.collect import _sanitize_exc_msg
+
+        exc = OSError("failed: api_key: sk-super-secret-value")
+        result = _sanitize_exc_msg(exc)
+        assert "sk-super-secret-value" not in result
+        assert "[redacted]" in result
+
+    def test_url_query_key_param_is_redacted(self) -> None:
+        from verdict.discovery.collect import _sanitize_exc_msg
+
+        exc = OSError("HTTP error at https://api.example.com/v1/models?key=sk-secret-123")
+        result = _sanitize_exc_msg(exc)
+        assert "sk-secret-123" not in result
+        assert "[redacted]" in result
+
+    def test_safe_message_is_unchanged(self) -> None:
+        from verdict.discovery.collect import _sanitize_exc_msg
+
+        exc = OSError("connection timed out after 30s")
+        result = _sanitize_exc_msg(exc)
+        assert result == "connection timed out after 30s"
+
+
+# Finding 4 ------------------------------------------------------------------
+
+
+class TestAdapterBugLocation:
+    """Finding 4: adapter_bug SourceErrors record innermost traceback frame."""
+
+    def test_adapter_bug_has_location_field(self) -> None:
+        from verdict.discovery.collect import collect_sources
+
+        # Inject a fetcher that raises a non-outage exception (adapter_bug)
+        class _WeirdError(Exception):
+            pass
+
+        def _raises(*a: object, **kw: object) -> bytes:
+            raise _WeirdError("unexpected adapter failure")
+
+        result = collect_sources(
+            fetcher=_raises,
+            include_omniroute=False,
+            include_openrouter=False,
+            include_kilo=False,
+            include_models_dev=False,
+            include_fcm=True,
+            include_dsh=False,
+        )
+        assert len(result.errors) == 1
+        err = result.errors[0]
+        assert err.error_kind == "adapter_bug"
+        assert err.location is not None, "adapter_bug must have a location"
+
+    def test_location_has_file_line_function_format(self) -> None:
+        from verdict.discovery.collect import collect_sources
+
+        class _WeirdError(Exception):
+            pass
+
+        def _raises(*a: object, **kw: object) -> bytes:
+            raise _WeirdError("adapter failure")
+
+        result = collect_sources(
+            fetcher=_raises,
+            include_omniroute=False,
+            include_openrouter=False,
+            include_kilo=False,
+            include_models_dev=False,
+            include_fcm=True,
+            include_dsh=False,
+        )
+        err = result.errors[0]
+        assert err.location is not None
+        parts = err.location.split(":")
+        # file:line:function — at least 3 colon-separated parts
+        assert len(parts) >= 3, f"expected file:line:function, got {err.location!r}"
+        # Middle part should be a line number
+        assert parts[-2].isdigit(), f"expected line number, got {parts[-2]!r}"
+
+    def test_location_does_not_contain_exception_message(self) -> None:
+        """Innermost frame must not leak the exception message (which may carry secrets)."""
+        from verdict.discovery.collect import collect_sources
+
+        class _WeirdError(Exception):
+            pass
+
+        def _raises(*a: object, **kw: object) -> bytes:
+            raise _WeirdError("SECRET_PAYLOAD_should_not_appear")
+
+        result = collect_sources(
+            fetcher=_raises,
+            include_omniroute=False,
+            include_openrouter=False,
+            include_kilo=False,
+            include_models_dev=False,
+            include_fcm=True,
+            include_dsh=False,
+        )
+        err = result.errors[0]
+        assert err.location is not None
+        assert "SECRET_PAYLOAD_should_not_appear" not in err.location
+
+    def test_source_error_does_not_have_location(self) -> None:
+        """source_error entries must not have a location field populated."""
+        from verdict.discovery.collect import collect_sources
+
+        def _raises_os_error(*a: object, **kw: object) -> bytes:
+            raise OSError("connection refused")
+
+        result = collect_sources(
+            fetcher=_raises_os_error,
+            include_omniroute=False,
+            include_openrouter=False,
+            include_kilo=False,
+            include_models_dev=False,
+            include_fcm=True,
+            include_dsh=False,
+        )
+        assert len(result.errors) == 1
+        err = result.errors[0]
+        assert err.error_kind == "source_error"
+        assert err.location is None, "source_error must not have a location"

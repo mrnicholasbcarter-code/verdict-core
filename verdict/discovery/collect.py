@@ -35,21 +35,30 @@ from verdict.discovery.sources.openrouter import fetch_openrouter
 # a bug in the adapter code.
 _OUTAGE_EXC = (OSError, ValueError, UnicodeDecodeError)
 
-# Regex to strip credential-bearing query parameters from exception messages so
-# they are not accidentally leaked into error records.
-_CRED_PARAM_RE = re.compile(
-    r"""(?i)(?:api[-_]?key|token|key|secret|password|passwd|auth)\s*=\s*\S+"""
+# Top-up patterns applied after verdict.security.redact_text to cover gaps:
+#
+# 1. URL query-string credential params (e.g. ``?key=…``, ``&api_key=…``).
+#    redact_text covers user:pass@ URLs but not query params with bare key names.
+_URL_QUERY_CRED_RE = re.compile(
+    r"([?&](?:api[_-]?key|token|key|secret|password|auth)[^=&]*=)[^\s&,;#]+", re.IGNORECASE
 )
+# 2. ``Authorization: Basic <token>``.  redact_text's CREDENTIAL_SHAPES covers
+#    Bearer but not Basic.
+_AUTH_BASIC_RE = re.compile(r"(?i)(authorization\s*:\s*basic\s+)[^\s,;]+")
 
 
 def _sanitize_exc_msg(exc: BaseException, *, limit: int = 200) -> str:
     """Return a sanitized, truncated exception message.
 
-    Strips credential-shaped parameters (``key=…``, ``token=…``, etc.) and
-    limits the result to *limit* characters.
+    Uses :func:`~verdict.security.redact_text` as the primary credential
+    redactor, then applies two targeted top-up patterns that it does not cover:
+    URL query-string credential parameters and ``Authorization: Basic`` headers.
     """
-    raw = str(exc)
-    sanitized = _CRED_PARAM_RE.sub("<redacted>", raw)
+    from verdict.security import redact_text
+
+    sanitized = redact_text(str(exc))
+    sanitized = _URL_QUERY_CRED_RE.sub(r"\1[redacted]", sanitized)
+    sanitized = _AUTH_BASIC_RE.sub(r"\1[redacted]", sanitized)
     return sanitized[:limit]
 
 
@@ -63,12 +72,16 @@ class SourceError:
         message: A short, human-readable description; no secrets.
         error_kind: ``"source_error"`` for transient network / data failures;
             ``"adapter_bug"`` for unexpected exceptions in the adapter code.
+        location: For ``adapter_bug`` only — the innermost traceback frame as
+            ``"file:line:function"``.  ``None`` for ``source_error`` entries.
+            Never contains the exception message, which may carry secrets.
     """
 
     source: str
     error_type: str
     message: str
     error_kind: str = "source_error"
+    location: str | None = None
 
 
 @dataclass
@@ -141,12 +154,19 @@ def collect_sources(
                 )
             )
         except Exception as exc:
+            import traceback as _tb
+
+            loc: str | None = None
+            if exc.__traceback__ is not None:
+                frame = _tb.extract_tb(exc.__traceback__)[-1]
+                loc = f"{frame.filename}:{frame.lineno}:{frame.name}"
             result.errors.append(
                 SourceError(
                     source=source,
                     error_type=type(exc).__name__,
                     message=_sanitize_exc_msg(exc),
                     error_kind="adapter_bug",
+                    location=loc,
                 )
             )
 
@@ -172,12 +192,19 @@ def collect_sources(
                 )
             )
         except Exception as exc:
+            import traceback as _tb
+
+            loc_omni: str | None = None
+            if exc.__traceback__ is not None:
+                frame = _tb.extract_tb(exc.__traceback__)[-1]
+                loc_omni = f"{frame.filename}:{frame.lineno}:{frame.name}"
             result.errors.append(
                 SourceError(
                     source="omniroute",
                     error_type=type(exc).__name__,
                     message=_sanitize_exc_msg(exc),
                     error_kind="adapter_bug",
+                    location=loc_omni,
                 )
             )
 
