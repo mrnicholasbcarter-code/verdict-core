@@ -46,6 +46,7 @@ _CREDENTIAL_CATEGORIES = frozenset(
     {"rate_limited", "quota_exhausted", "authentication", "payment_required", "permission"}
 )
 _NON_AVAILABILITY_ERRORS = (
+    "environment_error",
     "verification_failed",
     "ownership_violation",
     "review_failed",

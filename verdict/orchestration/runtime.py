@@ -103,6 +103,9 @@ from verdict.orchestration.salvage import (
     restore_salvaged_files,
     salvage_owned_files,
 )
+from verdict.orchestration.verification import (
+    classify_verify_env_error as _classify_verify_env_error,
+)
 from verdict.orchestration.verification import resolve_gate_argv as _resolve_gate_argv
 from verdict.orchestration.verification import resolve_verify_argv as _resolve_verify_argv
 from verdict.orchestration.worker_context import (
@@ -913,6 +916,7 @@ class DagRuntime:
                     changed = True
 
     # ------------------------------------------------------------------ node
+
     async def _drive(self, node_id: str) -> None:
         run = self.nodes[node_id]
         if run.node.kind is NodeKind.REVIEW:
@@ -938,6 +942,7 @@ class DagRuntime:
         tried = run.excluded_routes
         waited_once = False
         revocations = 0
+
         while True:
             if run.attempt >= self.policy.max_attempts_per_node:
                 run.reason = (
@@ -1955,6 +1960,33 @@ class DagRuntime:
                 verdict = await self._validate(run, worktree, base)
                 if verdict is not None:
                     failed = WorkerTerminal(ok=False, model=run.route_id, error=verdict)
+                    if verdict.startswith("environment_error:"):
+                        # The verification command could not start (missing runner or
+                        # module).  This is an environment problem, not a route quality
+                        # issue: do not count against escalation, do not write a session
+                        # ledger row or health-cache entry, and fail closed immediately.
+                        #
+                        # State path: TERMINAL_SUCCESS → REJECTED (the only non-VALIDATED
+                        # transition from TERMINAL_SUCCESS) → BLOCKED (via _drive's
+                        # action=="BLOCK" check after attempt returns False).
+                        env_failure = FailureClassification(
+                            "environment_error", "BLOCK", 0, "none", verdict
+                        )
+                        failures.append(env_failure)
+                        # judged_failure_count is intentionally NOT incremented here.
+                        # scope="none" and cooldown=0 mean no health-cache or selector writes.
+                        self.events.emit(
+                            "failure",
+                            run.node.node_id,
+                            category=env_failure.category,
+                            action=env_failure.action,
+                            route_id=run.route_id,
+                            evidence=env_failure.evidence[:300],
+                            fault_injected=failed.executor_kind == "fault-injected",
+                            attempt=run.attempt,
+                        )
+                        self._set(run, NodeState.REJECTED, reason=env_failure.category)
+                        return False
                     self._persist_research_pack(
                         node,
                         hydrated,
@@ -2791,6 +2823,9 @@ class DagRuntime:
                 **verify_extra,
             )
             if code != 0:
+                env_err = _classify_verify_env_error(resolved, code, out)
+                if env_err is not None:
+                    return env_err
                 return f"verification_failed: exit {code}: {out[-300:]}"
             if node.kind is NodeKind.IMPLEMENT and changed:
                 # Declared repo gates also run here, so a lint or format slip goes back

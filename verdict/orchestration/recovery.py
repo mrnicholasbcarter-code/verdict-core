@@ -504,6 +504,19 @@ class FailureIntelligence:
                 evidence=_sanitize_error(error_text),
             )
 
+        # Environment error: the verification runner was missing or could not
+        # start (exit 126/127, or python -m MODULE with no MODULE installed).
+        # This is an environment problem, not a route quality issue: fail closed
+        # with no cooldown, no route-scope write, no escalation.
+        if terminal.error.startswith("environment_error"):
+            return FailureClassification(
+                category="environment_error",
+                action="BLOCK",
+                cooldown_seconds=0,
+                scope="none",
+                evidence=_sanitize_error(error_text),
+            )
+
         # Verification failed
         if terminal.error.startswith("verification_failed"):
             return FailureClassification(
