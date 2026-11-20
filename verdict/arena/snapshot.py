@@ -78,6 +78,7 @@ FLOOR_N: dict[str, float] = {
 }
 
 STALENESS_DAYS = 45  # days before leaderboard_publish_date makes source stale
+OVERDUE_HOURS = 48  # hours before fetched_at triggers an overdue warning
 
 
 @dataclass

@@ -95,19 +95,23 @@ def _get_lo(
     """Get the lower-bound value for a store_id+config, checking floors/staleness.
 
     Returns (lo, effort_slot, via, published) or None.
+
+    Walks effort slots from highest to lowest, using the first slot that passes
+    both the floor and staleness checks.  Never borrows from a higher effort
+    than available; never skips directly to None after the best slot fails.
     """
     record = snapshot.records.get(store_id, {})
     config_slots = record.get(config)
     if not config_slots:
         return None
-    best = _best_slot(config_slots)
-    if best is None:
-        return None
-    slot_name, arena_slot = best
-    usable, _reason = _is_usable(arena_slot, config, now)
-    if not usable:
-        return None
-    return arena_slot.lo, slot_name, arena_slot.via, arena_slot.published
+    for effort in reversed(_EFFORT_FALLBACK):
+        if effort not in config_slots:
+            continue
+        arena_slot = config_slots[effort]
+        usable, _reason = _is_usable(arena_slot, config, now)
+        if usable:
+            return arena_slot.lo, effort, arena_slot.via, arena_slot.published
+    return None
 
 
 def _build_reference_set(snapshot: ArenaSnapshot, config: str, now: datetime) -> dict[str, float]:
@@ -195,6 +199,25 @@ def _resolve_store_id(route_id: str, identity_map: IdentityMap | None) -> str | 
         return None
     store_id = identity_map.models_dev_id_for(route_id)
     return store_id  # None on miss
+
+
+def reference_set_sizes(snapshot: ArenaSnapshot, now: datetime | None = None) -> dict[str, int]:
+    """Return {role_key: ref_set_size} for all roles in ROLE_CHAINS.
+
+    Public interface for callers that only need the size, not the full set.
+    Returns 0 for any role whose chain has no config with |R| >= _MIN_REF_SET.
+    """
+    clock = now or datetime.now(timezone.utc)
+    result: dict[str, int] = {}
+    for role_key, chain in ROLE_CHAINS.items():
+        for config in chain:
+            ref = _build_reference_set(snapshot, config, clock)
+            if len(ref) >= _MIN_REF_SET:
+                result[role_key] = len(ref)
+                break
+        if role_key not in result:
+            result[role_key] = 0
+    return result
 
 
 def build_reference_sets(

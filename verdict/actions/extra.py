@@ -1205,9 +1205,9 @@ def _action_metadata_install_service(**kwargs: Any) -> ActionResult:
 
 def _action_metadata_arena_coverage(**kwargs: Any) -> ActionResult:
     """Report Arena leaderboard join coverage and reference-set sizes."""
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
-    from verdict.arena.rank import _MIN_REF_SET, ROLE_CHAINS, _build_reference_set
+    from verdict.arena.rank import reference_set_sizes
     from verdict.arena.snapshot import STALENESS_DAYS, load_snapshot
     from verdict.metadata.records import ModelMetadataError
     from verdict.metadata.store import load_store
@@ -1261,19 +1261,9 @@ def _action_metadata_arena_coverage(**kwargs: Any) -> ActionResult:
         by_config = {}
 
     # Reference set sizes per role
-    ref_sizes: dict[str, int] = {}
-    for role_key, chain in ROLE_CHAINS.items():
-        for config in chain:
-            ref = _build_reference_set(arena_snap, config, now)
-            if len(ref) >= _MIN_REF_SET:
-                ref_sizes[role_key] = len(ref)
-                break
-        if role_key not in ref_sizes:
-            ref_sizes[role_key] = 0
+    ref_sizes = reference_set_sizes(arena_snap, now)
 
     # Snapshot meta with staleness
-    from datetime import timedelta
-
     stale: dict[str, bool] = {}
     for cfg_name, pub_date in arena_snap.leaderboard_publish_date.items():
         try:

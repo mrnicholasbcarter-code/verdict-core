@@ -257,3 +257,46 @@ def test_arena_vr_does_not_affect_tier_unknown_routes(full_snapshot: ArenaSnapsh
     # vr.vr is used to set RatedModel.score — it cannot add or remove a route
     # from the admitted set, which is frozen before EligibilityLadder reaches
     # the Arena augmentation step.
+
+
+# ---- _get_lo walks down effort slots when the highest is unusable ---------------
+
+
+def test_get_lo_falls_back_to_lower_effort_when_best_is_stale() -> None:
+    """_get_lo must try lower effort slots when the highest-effort slot is stale.
+
+    Regression for the bug where _get_lo returned None immediately if the
+    best slot (highest effort) was stale, without trying lower effort slots.
+    """
+    # Build a minimal snapshot with 'max' stale and 'default' fresh
+    stale_date = (CLOCK - timedelta(days=STALENESS_DAYS + 10)).strftime("%Y-%m-%d")
+    fresh_date = (CLOCK - timedelta(days=5)).strftime("%Y-%m-%d")
+    stale_slot = ArenaSlot(
+        raw=1400.0, lo=1370.0, hi=1430.0, n=10000.0, published=stale_date, via="canonical"
+    )
+    fresh_slot = ArenaSlot(
+        raw=1300.0, lo=1280.0, hi=1320.0, n=10000.0, published=fresh_date, via="canonical"
+    )
+    snap = ArenaSnapshot(
+        schema_version="1",
+        fetched_at={CONFIG_TEXT: CLOCK_STR},
+        leaderboard_publish_date={CONFIG_TEXT: fresh_date},
+        reference_sets={"planner": [], "implement": [], "reviewer": []},
+        records={
+            "openai/gpt-test": {
+                CONFIG_TEXT: {
+                    "max": stale_slot,  # stale → must be skipped
+                    "default": fresh_slot,  # fresh → must be used
+                }
+            }
+        },
+    )
+
+    result = _get_lo(snap, "openai/gpt-test", CONFIG_TEXT, CLOCK)
+
+    assert result is not None, (
+        "_get_lo must fall back to 'default' slot when 'max' is stale, got None"
+    )
+    lo, effort_slot, _via, _published = result
+    assert effort_slot == "default", f"expected effort='default', got {effort_slot!r}"
+    assert lo == fresh_slot.lo

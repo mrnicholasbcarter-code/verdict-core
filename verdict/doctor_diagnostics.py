@@ -1715,11 +1715,13 @@ def arena_snapshot_row(*, now: datetime | None = None) -> dict[str, str]:
     - ``stale``: at least one leaderboard_publish_date is > 45 days old
       (data too old to use for ranking; metadata refresh can recover it)
     """
-    from datetime import datetime, timedelta, timezone
+    from verdict.arena.snapshot import (
+        OVERDUE_HOURS,
+        STALENESS_DAYS,
+        default_snapshot_path,
+        load_snapshot,
+    )
 
-    from verdict.arena.snapshot import STALENESS_DAYS, default_snapshot_path, load_snapshot
-
-    warning_hours = 48
     clock = now if now is not None else datetime.now(timezone.utc)
     snap = load_snapshot()
     if snap is None:
@@ -1733,15 +1735,31 @@ def arena_snapshot_row(*, now: datetime | None = None) -> dict[str, str]:
             ),
         }
 
+    # Malformed-date pre-pass: treat unparseable fields as an explicit error state
+    malformed_fields: list[str] = []
+    for cfg, pub_date in snap.leaderboard_publish_date.items():
+        try:
+            datetime.strptime(pub_date, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            malformed_fields.append(f"leaderboard_publish_date[{cfg!r}]={pub_date!r}")
+    for cfg, fetched in snap.fetched_at.items():
+        try:
+            datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            malformed_fields.append(f"fetched_at[{cfg!r}]={fetched!r}")
+    if malformed_fields:
+        return {
+            "label": "Arena ratings",
+            "status": "malformed",
+            "detail": "unparseable field(s): " + "; ".join(malformed_fields),
+        }
+
     # Staleness check: leaderboard_publish_date > STALENESS_DAYS old
     stale_configs: list[str] = []
     for cfg, pub_date in snap.leaderboard_publish_date.items():
-        try:
-            published = datetime.strptime(pub_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            if clock - published > timedelta(days=STALENESS_DAYS):
-                stale_configs.append(cfg)
-        except (ValueError, TypeError):
-            pass
+        published = datetime.strptime(pub_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        if clock - published > timedelta(days=STALENESS_DAYS):
+            stale_configs.append(cfg)
     if stale_configs:
         return {
             "label": "Arena ratings",
@@ -1753,21 +1771,18 @@ def arena_snapshot_row(*, now: datetime | None = None) -> dict[str, str]:
             ),
         }
 
-    # Warning: fetched_at > 48h old for any config
+    # Warning: fetched_at > OVERDUE_HOURS old for any config
     overdue_configs: list[str] = []
     for cfg, fetched in snap.fetched_at.items():
-        try:
-            ts = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
-            if (clock - ts) >= timedelta(hours=warning_hours):
-                overdue_configs.append(cfg)
-        except (ValueError, TypeError):
+        ts = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+        if (clock - ts) >= timedelta(hours=OVERDUE_HOURS):
             overdue_configs.append(cfg)
     if overdue_configs:
         return {
             "label": "Arena ratings",
             "status": "warning",
             "detail": (
-                f"fetched_at >= {warning_hours}h ago for: "
+                f"fetched_at >= {OVERDUE_HOURS}h ago for: "
                 + ", ".join(sorted(overdue_configs))
                 + "; run: verdict metadata refresh"
             ),

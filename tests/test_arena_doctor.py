@@ -24,14 +24,16 @@ from verdict.arena.snapshot import (  # noqa: E402
     CONFIG_AGENT,
     CONFIG_TEXT,
     CONFIG_WEBDEV,
+    OVERDUE_HOURS,
+    STALENESS_DAYS,
     ArenaSnapshot,
     save_snapshot,
 )
 
 # Pinned clock matches fixture publish dates.
 CLOCK = datetime(2026, 11, 20, tzinfo=timezone.utc)
-_STALENESS_DAYS = 45
-_WARNING_HOURS = 48
+_STALENESS_DAYS = STALENESS_DAYS
+_WARNING_HOURS = OVERDUE_HOURS
 
 
 def _ts(dt: datetime) -> str:
@@ -151,3 +153,42 @@ def test_staleness_boundary_one_day_over_limit_is_stale(
     )
     row = arena_snapshot_row(now=CLOCK)
     assert row["status"] == "stale", f"one day over limit must be stale, got {row['status']!r}"
+
+
+# ---- Malformed snapshot fields → "malformed" -----------------------------------
+
+
+def test_malformed_leaderboard_publish_date(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unparseable leaderboard_publish_date must yield status='malformed'."""
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    fetched_str = _ts(CLOCK - timedelta(hours=1))
+    snapshot = ArenaSnapshot(
+        schema_version="1",
+        fetched_at={CONFIG_TEXT: fetched_str},
+        leaderboard_publish_date={CONFIG_TEXT: "not-a-date"},  # unparseable
+        reference_sets={"planner": [], "implement": [], "reviewer": []},
+        records={},
+    )
+    save_snapshot(snapshot, tmp_path / "arena-snapshot.json")
+    row = arena_snapshot_row(now=CLOCK)
+    assert row["status"] == "malformed", f"unparseable publish date must be malformed, got {row!r}"
+    assert "leaderboard_publish_date" in row["detail"]
+
+
+def test_malformed_fetched_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unparseable fetched_at must yield status='malformed', not 'warning'."""
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    publish_str = (CLOCK - timedelta(days=1)).strftime("%Y-%m-%d")
+    snapshot = ArenaSnapshot(
+        schema_version="1",
+        fetched_at={CONFIG_TEXT: "not-a-timestamp"},  # unparseable
+        leaderboard_publish_date={CONFIG_TEXT: publish_str},
+        reference_sets={"planner": [], "implement": [], "reviewer": []},
+        records={},
+    )
+    save_snapshot(snapshot, tmp_path / "arena-snapshot.json")
+    row = arena_snapshot_row(now=CLOCK)
+    assert row["status"] == "malformed", f"unparseable fetched_at must be malformed, got {row!r}"
+    assert "fetched_at" in row["detail"]

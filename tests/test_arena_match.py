@@ -227,3 +227,71 @@ def test_collision_detection_covers_all_store_ids_for_twins() -> None:
     reasons = [d.reason for d in drops]
     assert DROP_VARIANT_COLLISION in reasons, f"expected variant_collision in drops={drops}"
     assert len(matches) == 0, f"expected 0 matches when collision detected, got {matches}"
+
+
+# ---- seen_per_sid must be cleaned up after collision removal -------------------
+
+
+def test_third_row_after_collision_does_not_false_collide() -> None:
+    """After rows A+B collide, row C sharing a store_id with A must NOT be
+    falsely dropped as a variant_collision.
+
+    Regression for the bug where seen_per_sid entries for the dropped match
+    (A) were not removed, causing C to hit A's stale (sid, config, effort) key.
+
+    Setup: store has two IDs — 'anthropic/model-a' and 'anthropic/model-b'.
+    Row 1 (default effort): resolves to model-a and model-b (twins, same slug).
+    Row 2 (default effort): resolves to model-a only (explicit map) → collides with row 1.
+    Row 3 (default effort): resolves to model-b only (explicit map, different name) →
+      must NOT collide; model-b's seen_per_sid entry must have been cleaned up.
+    """
+    from verdict.arena.crosswalk import Crosswalk, CrosswalkMapEntry
+
+    sid_a = "anthropic/model-ab"
+    sid_b = "anthropic/model-ab.0"
+    store_ids = frozenset({sid_a, sid_b})
+    index = build_store_index(store_ids)
+
+    mini_cw = Crosswalk(
+        schema_version="1",
+        org_providers={"Anthropic": ["anthropic"]},
+        map_entries={
+            # Row 2: explicit → only sid_a → collides with row 1 on sid_a
+            ("Anthropic", "model-ab-row2"): CrosswalkMapEntry(
+                arena_org="Anthropic",
+                arena_key="model-ab-row2",
+                arena_name="Model AB Row2",
+                models_dev_ids=(sid_a,),
+                source="test",
+                verified="2026-11-01",
+            ),
+            # Row 3: explicit → only sid_b → must NOT collide after cleanup
+            ("Anthropic", "model-ab-row3"): CrosswalkMapEntry(
+                arena_org="Anthropic",
+                arena_key="model-ab-row3",
+                arena_name="Model AB Row3",
+                models_dev_ids=(sid_b,),
+                source="test",
+                verified="2026-11-01",
+            ),
+        },
+        drop_entries={},
+        all_keys=(("Anthropic", "model-ab-row2"), ("Anthropic", "model-ab-row3")),
+    )
+
+    rows = [
+        # Row 1: canonical join → both twins (sid_a, sid_b)
+        _make_text_row("Model AB", "Anthropic", rank=1),
+        # Row 2: explicit → sid_a only → collides with row 1 on sid_a
+        _make_text_row("Model AB Row2", "Anthropic", rank=2),
+        # Row 3: explicit → sid_b only → must land as a valid match
+        _make_text_row("Model AB Row3", "Anthropic", rank=3),
+    ]
+    matches, drops = match_rows(rows, index, mini_cw)
+
+    # Rows 1 and 2 collide; row 3 must be a valid match (not a collision drop)
+    assert len(matches) == 1, f"expected 1 match (row 3), got {matches}"
+    assert matches[0].model_name == "Model AB Row3"
+    collision_drops = [d for d in drops if d.reason == DROP_VARIANT_COLLISION]
+    # Rows 1 and 2 each get a collision drop
+    assert len(collision_drops) == 2, f"expected 2 collision drops, got {collision_drops}"

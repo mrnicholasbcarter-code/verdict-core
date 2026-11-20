@@ -199,23 +199,28 @@ def match_rows(
             )
             # Retroactively drop the first match (any overlap in store_ids for same config+effort)
             new_sids = set(store_ids_found)
-            matches = [
+            to_remove = [
                 m
                 for m in matches
-                if not (
-                    bool(set(m.store_ids) & new_sids)
-                    and m._config == config
-                    and m.parsed.effort == parsed.effort
-                )
+                if bool(set(m.store_ids) & new_sids)
+                and m._config == config
+                and m.parsed.effort == parsed.effort
             ]
-            drops.append(
-                Drop(
-                    model_name=colliding_name,
-                    organization=organization,
-                    reason=DROP_VARIANT_COLLISION,
-                    detail=f"duplicate ({config!r}, {parsed.effort!r}) for {model_name!r}",
+            # Clean up seen_per_sid for removed matches so later rows do not false-collide
+            for rm in to_remove:
+                for sid in rm.store_ids:
+                    seen_per_sid.pop((sid, config, rm.parsed.effort), None)
+            remove_set = set(id(m) for m in to_remove)
+            matches = [m for m in matches if id(m) not in remove_set]
+            for rm in to_remove:
+                drops.append(
+                    Drop(
+                        model_name=rm.model_name,
+                        organization=organization,
+                        reason=DROP_VARIANT_COLLISION,
+                        detail=f"duplicate ({config!r}, {parsed.effort!r}) for {model_name!r}",
+                    )
                 )
-            )
 
         if not collision:
             for sid in store_ids_found:
