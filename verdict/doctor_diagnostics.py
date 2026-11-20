@@ -1745,7 +1745,7 @@ def arena_snapshot_row(*, now: datetime | None = None) -> dict[str, str]:
     for cfg, fetched in snap.fetched_at.items():
         try:
             datetime.fromisoformat(fetched.replace("Z", "+00:00"))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             malformed_fields.append(f"fetched_at[{cfg!r}]={fetched!r}")
     if malformed_fields:
         return {

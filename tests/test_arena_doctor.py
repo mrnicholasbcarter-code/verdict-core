@@ -192,3 +192,23 @@ def test_malformed_fetched_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     row = arena_snapshot_row(now=CLOCK)
     assert row["status"] == "malformed", f"unparseable fetched_at must be malformed, got {row!r}"
     assert "fetched_at" in row["detail"]
+
+
+@pytest.mark.parametrize("bad_value", [None, 12345])
+def test_non_string_fetched_at_is_malformed_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_value: object
+) -> None:
+    """A null or numeric fetched_at in the file must yield status='malformed', never raise."""
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    publish_str = (CLOCK - timedelta(days=1)).strftime("%Y-%m-%d")
+    snapshot = ArenaSnapshot(
+        schema_version="1",
+        fetched_at={CONFIG_TEXT: bad_value},  # type: ignore[dict-item]
+        leaderboard_publish_date={CONFIG_TEXT: publish_str},
+        reference_sets={"planner": [], "implement": [], "reviewer": []},
+        records={},
+    )
+    save_snapshot(snapshot, tmp_path / "arena-snapshot.json")
+    row = arena_snapshot_row(now=CLOCK)
+    assert row["status"] == "malformed", row
+    assert "fetched_at" in row["detail"]
