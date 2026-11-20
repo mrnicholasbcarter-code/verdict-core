@@ -953,11 +953,11 @@ class DagRuntime:
             else:
                 _esc_choice = None
 
-            # Pre-declare so mypy knows choice/considered/_post are Optional across
+            # Initialize so mypy knows choice/considered/_post are defined across
             # both the escalation and fallback branches.
-            choice: RouteVerdict | None
-            considered: tuple[RouteVerdict, ...]
-            _post: dict[str, int]
+            choice: RouteVerdict | None = None
+            considered: tuple[RouteVerdict, ...] = ()
+            _post: dict[str, int] = {}
             if _esc_choice is not None:
                 # Escalation found a stronger route within the admitted set.
                 self.events.emit(
@@ -2212,6 +2212,17 @@ class DagRuntime:
                         or new_ceil < run.escalation_tier_ceiling
                     ):
                         run.escalation_tier_ceiling = new_ceil
+                else:
+                    # t == 1: already at the strongest known tier; no stronger route
+                    # exists to escalate to.  Emit the exhausted event so the receipt
+                    # records it, but do not set a ceiling (there is nowhere to narrow).
+                    self.events.emit(
+                        "escalation_exhausted",
+                        run.node.node_id,
+                        from_tier=run.last_selected_tier,
+                        judged_failure_count=run.judged_failure_count,
+                        reason="at_strongest_tier",
+                    )
         if validated:
             self._set(run, NodeState.REJECTED, reason=failure.category)
         else:

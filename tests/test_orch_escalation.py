@@ -454,3 +454,67 @@ async def test_unknown_tier_judged_failures_escalate_to_known_tier_route(repo: P
     assert esc["to_tier"] == 2
     assert esc["reason"] == "judged_failures_threshold"
     assert result.nodes["n"].state is NodeState.VALIDATED
+
+
+async def test_tier1_route_escalation_exhausted_emits_event_and_budget_bounded(repo: Path) -> None:
+    """When the last-selected route is at tier=1 (the strongest known tier), neither a
+    stronger route ceiling nor an unknown-tier ceiling can be set.
+
+    The runtime must emit an 'escalation_exhausted' event (reason='at_strongest_tier')
+    and must NOT hang: once the pool is exhausted the node ends BLOCKED.
+
+    Failing-first: before the else-branch was added, reaching t==1 was a silent no-op
+    — no event was emitted and no test caught it.
+    """
+
+    def behaviour(node_id: str, route: str, call_num: int) -> str:
+        return "badcode"  # always fails judged (verification_failed)
+
+    ex = CallCountingExecutor(behaviour)
+    graph = WorkGraph("g", (node("n"),))
+    # Only one route at tier=1 (frontier): no stronger route exists.
+    rt, ev, _sel = make_esc(repo, graph, ex, [("cc/tier1-only", 1)])
+
+    result = await rt.run()
+
+    # Budget is bounded: the node must not hang.
+    assert result.outcome is not RunOutcome.COMPLETE
+    # 'escalation_exhausted' must be emitted with the correct reason and from_tier.
+    exhaust = ev.of("escalation_exhausted")
+    assert len(exhaust) >= 1, "expected an escalation_exhausted event when at strongest tier"
+    assert exhaust[0]["reason"] == "at_strongest_tier"
+    assert exhaust[0]["from_tier"] == 1
+
+
+async def test_unknown_tier_escalation_succeeds_when_ceiling_is_below_3(repo: Path) -> None:
+    """Escalation ceiling=2 (< 3) must still select a known tier=1 route after two
+    judged failures on an unknown-tier route.
+
+    Before the reorder in eligibility._assess the '_effective_max_tier < 3' check fired
+    first (min(3,2)=2 < 3), returning 'unknown_capability' and treating the route as if
+    no escalation was active.  After the fix the escalation check fires first, returning
+    'unknown_capability_escalating' for every active ceiling value, so the runtime
+    can still select the tier=1 route whose tier ≤ ceiling.
+
+    Failing-first: add this test, run it against the original ordering, confirm it
+    fails (escalation path broken), then apply the reorder and confirm it passes.
+    """
+
+    def behaviour(node_id: str, route: str, call_num: int) -> str:
+        if route == "cc/free":
+            return "badcode"
+        return "ok"
+
+    ex = CallCountingExecutor(behaviour)
+    graph = WorkGraph("g", (node("n"),))
+    # cc/free tier=None (unknown); cc/strong tier=1 (≤ ceiling=2 → admitted)
+    rt, ev, _sel = make_esc(repo, graph, ex, [("cc/free", None), ("cc/strong", 1)])
+
+    result = await rt.run()
+
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    esc_events = ev.of("escalation")
+    assert len(esc_events) >= 1, "expected an escalation event"
+    esc = esc_events[0]
+    assert esc["from_tier"] is None
+    assert esc["to_route"] == "cc/strong"

@@ -556,6 +556,7 @@ EVENT_TYPES = frozenset(
         "operator_policy_denied",  # BOD-340: approved policy refused the run
         "salvage_clear_error",  # BOD-308: clear_salvage_dir failed after a rejected attempt
         "escalation",  # capability escalation: next attempt must use a stronger route
+        "escalation_exhausted",  # capability escalation: already at strongest known tier
         "run_finished",
     }
 )

@@ -837,20 +837,23 @@ class EligibilityLadder:
             else requirements.max_capability_tier
         )
         if tier is None:
-            # Unknown capability is never promoted to sufficient. It only
-            # passes when the work accepts any tier, and then ranks after every
-            # route whose capability is known (it cannot win on a guess).
-            if _effective_max_tier < 3:
-                a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, "unknown_capability"
-                return a
             # When escalation is active, unknown-tier routes are treated as weaker
             # than any known tier and must not be selected: the runtime is explicitly
             # seeking a route with measured capability to escape repeated failures.
+            # This check must come first so it fires for every escalation ceiling,
+            # including ceilings below 3 (e.g. ceiling=2 still excludes unknown-tier
+            # routes with reason "unknown_capability_escalating", not "unknown_capability").
             if requirements.escalation_max_tier is not None:
                 a.failed_stage, a.reason = (
                     EligibilityStage.TASK_ELIGIBLE,
                     "unknown_capability_escalating",
                 )
+                return a
+            # Unknown capability is never promoted to sufficient. It only
+            # passes when the work accepts any tier, and then ranks after every
+            # route whose capability is known (it cannot win on a guess).
+            if _effective_max_tier < 3:
+                a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, "unknown_capability"
                 return a
             a.tier, a.slack, a.tier_known = 3, _UNKNOWN_SLACK, False
         else:
