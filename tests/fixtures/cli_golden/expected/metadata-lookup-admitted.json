@@ -1,6 +1,7 @@
 {
   "admitted_for_caps": true,
   "drop": null,
+  "join": "explicit",
   "omniroute_id": "groq/llama-3.3-70b-versatile",
   "provenance": {
     "attachment": {
