@@ -44,6 +44,22 @@ _SECRET = re.compile(
 )
 _NON_CHAT = re.compile(r"(?i)(embed|whisper|tts|lyria|image|video|audio|clip|rerank|moderation)")
 
+# Explicit allowlist of fields written to disk and stdout.  Any key not in
+# this tuple is an internal detail (e.g. working_state) and must not be
+# persisted or printed (CodeQL py/clear-text-storage-sensitive-data).
+_RECEIPT_FIELDS: tuple[str, ...] = (
+    "schema_version",
+    "identity_id",
+    "cost_class",
+    "endpoint",
+    "pack_digest",
+    "unaided_passed",
+    "packed_passed",
+    "conclusion",
+    "block_reason",
+    "omissions",
+)
+
 
 @dataclass(frozen=True)
 class LiftReceipt:
@@ -161,6 +177,10 @@ def make_goal_unit(task: str) -> ContextUnit:
     )
 
 
+_FREE_COST_CLASSES: frozenset[str] = frozenset({"local", "free"})
+_FREE_AND_PRICED_COST_CLASSES: frozenset[str] = frozenset({"local", "free", "cheaper"})
+
+
 def run_context_lift(
     *,
     base_url: str = DEFAULT_GATEWAY,
@@ -168,7 +188,15 @@ def run_context_lift(
     token: str | None = None,
     plane: MemoryPlane | None = None,
     execute: bool = True,
+    allow_priced: bool = False,
 ) -> dict[str, Any]:
+    """Run a context-pack lift cycle.
+
+    By default only local and free-tier (zero-priced) identities are eligible.
+    Pass ``allow_priced=True`` to also admit ``cheaper`` routes (priced at or
+    below $1 / M prompt tokens).  The timer's ExecStart never passes that flag;
+    any priced call must be an explicit operator opt-in.
+    """
     token = token or new_lift_token()
     owns_plane = plane is None
     root = (proof_root or Path.cwd()).resolve()
@@ -198,25 +226,26 @@ def run_context_lift(
         except LiveSurfaceBlocked as exc:
             return _blocked("live_surface_blocked", str(exc), base_url, retrieved.omissions)
         except LiveRoutingError as exc:
-            code = exc.code if exc.code != "no_qualified_candidate" else "no_cheaper_identity"
+            code = exc.code if exc.code != "no_qualified_candidate" else "no_free_identity"
             return _blocked(code, str(exc), base_url, retrieved.omissions)
         identity = None
         pack = None
         state = None
         unaided_body = ""
         packed_body = ""
-        last_block = "no_cheaper_identity"
+        last_block = "no_free_identity"
+        allowed_classes = _FREE_AND_PRICED_COST_CLASSES if allow_priced else _FREE_COST_CLASSES
         units = (make_goal_unit(task), *retrieved.units)
         cheaper = [
             candidate
             for candidate in failover_order(selection)
             if candidate.identity is not None
-            and candidate.identity.cost_class in {"local", "free", "cheaper"}
+            and candidate.identity.cost_class in allowed_classes
             and _NON_CHAT.search(candidate.identity.identity_id) is None
         ][:20]
         for candidate in cheaper:
             current = candidate.identity
-            if current is None or current.cost_class not in {"local", "free", "cheaper"}:
+            if current is None or current.cost_class not in allowed_classes:
                 continue
             if _NON_CHAT.search(current.identity_id):
                 continue
@@ -345,6 +374,7 @@ def _blocked(
 
 __all__ = [
     "UNAIDED_PROMPT",
+    "_RECEIPT_FIELDS",
     "LiftReceipt",
     "ingest_lift_fact",
     "lift_check_passes",

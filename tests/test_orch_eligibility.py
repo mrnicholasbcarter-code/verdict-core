@@ -1652,3 +1652,27 @@ def test_bod407_ladder_stale_cache_rate_limit_yields_to_live_quota(tmp_path: Pat
     ladder, _ = make_ladder(tmp_path, rows, [conn("kiro")], health_cache=cache)
     verdicts = by_route(ladder.evaluate(REQ, now=NOW))
     assert verdicts["kiro/claude-haiku-4.5"].reason == "cooldown:provider"
+
+
+def test_unknown_capability_escalating_reason_pins_at_ceiling_below_3(tmp_path: Path) -> None:
+    """With escalation_max_tier=2 (ceiling below 3), an unknown-tier route must be excluded
+    with reason 'unknown_capability_escalating', not 'unknown_capability'.
+
+    Before the reorder in eligibility._assess, _effective_max_tier=min(3,2)=2 < 3 caused
+    the 'unknown_capability' branch to fire first, hiding the escalation context in the
+    reason.  After the fix the escalation check runs first for every active ceiling value.
+
+    Failing-first: apply this test, confirm it fails under the original order, then apply
+    the eligibility fix and confirm it passes.
+    """
+    rows = [row("kr/mystery-model", owned_by="kiro")]
+    ladder, _ = make_ladder(tmp_path, rows, [conn("kiro")])
+    # ceiling=2 is below 3, so the old code would fire 'unknown_capability' first
+    req = TaskRequirements(max_capability_tier=3, escalation_max_tier=2)
+    _, verdicts = ladder.select(req, now=NOW)
+    mystery = by_route(verdicts)["kr/mystery-model"]
+    assert mystery.failed_stage == EligibilityStage.TASK_ELIGIBLE
+    assert mystery.reason == "unknown_capability_escalating", (
+        f"expected 'unknown_capability_escalating' but got {mystery.reason!r}; "
+        "eligibility._assess must check escalation_max_tier before _effective_max_tier"
+    )

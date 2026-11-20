@@ -263,3 +263,55 @@ def register(subparsers: Any) -> None:
             "A timed-out preflight is reported as an issue."
         ),
     )
+
+    bench_p = subparsers.add_parser("bench", help="Benchmarking tools for context and routing")
+    bench_sub = bench_p.add_subparsers(dest="bench_command", required=True)
+    context_lift_p = bench_sub.add_parser(
+        "context-lift",
+        help=(
+            "Measure context-pack lift on a free model: plant a fact, pack it, "
+            "score an unaided vs packed call; writes evidence to VERDICT_HOME/context-lift/. "
+            "FREE capacity only. Blocked result exits 0."
+        ),
+    )
+    context_lift_p.add_argument(
+        "--json", action="store_true", default=False, help="Print result as JSON on stdout"
+    )
+    context_lift_p.add_argument(
+        "--base-url",
+        default=None,
+        metavar="URL",
+        help="Gateway URL (default: OmniRoute at localhost:20128)",
+    )
+    context_lift_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        dest="dry_run",
+        help="Plan the context pack but do not make model calls",
+    )
+    context_lift_p.add_argument(
+        "--allow-priced",
+        action="store_true",
+        default=False,
+        dest="allow_priced",
+        help=(
+            "Also admit 'cheaper' (priced ≤ $1/M) routes. "
+            "Default: local and free-tier only. "
+            "The timer's ExecStart never passes this flag."
+        ),
+    )
+    _svc_grp = context_lift_p.add_mutually_exclusive_group()
+    _svc_grp.add_argument(
+        "--install-service",
+        action="store_true",
+        default=False,
+        dest="install_service",
+        help="Install (or update) the daily systemd timer for this bench",
+    )
+    _svc_grp.add_argument(
+        "--uninstall",
+        action="store_true",
+        default=False,
+        help="Remove the daily systemd timer (mutually exclusive with --install-service)",
+    )

@@ -324,11 +324,11 @@ def select_probe_models(
         if model_id and model_id not in candidates:
             candidates[model_id] = row
 
-    def rank(item: tuple[str, Mapping[str, Any]]) -> tuple[int, str, str]:
+    def rank(item: tuple[str, Mapping[str, Any]]) -> tuple[str, str]:
         model_id, row = item
         provider_name = provider(row)
-        free_rank = 0 if ":free" in model_id.lower() else 1
-        return free_rank, provider_name, model_id
+        # Deterministic, provider-diverse sort; capacity comes from facts, not names.
+        return provider_name, model_id
 
     ordered = sorted(candidates.items(), key=rank)
     selected: list[str] = []

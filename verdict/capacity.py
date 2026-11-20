@@ -111,6 +111,33 @@ def classify_route_capacity(
     return CapacityClass.UNKNOWN, plan_label, "no_free_evidence"
 
 
+def capacity_of(
+    conn: Mapping[str, Any] | None,
+    row: Mapping[str, Any],
+    *,
+    route_id: str,
+    openrouter_free_set: OpenRouterFreeSet | None,
+) -> tuple[CapacityClass, str]:
+    """Single source of truth for route capacity. Returns (class, deciding_fact).
+
+    ``deciding_fact`` names the signal that determined the class:
+    ``"no_connection"``, ``"plan_label"``, ``"import_free_only"``,
+    ``"gateway_free_tier"``, ``"all_zero_pricing"``, ``"openrouter_public_zero"``,
+    ``"oauth_subscription"``, ``"apikey_positive_pricing"``, or
+    ``"no_free_evidence"``.
+
+    Use this function everywhere a capacity decision is needed.
+    ``classify_route_capacity`` is the full 3-tuple form for callers that also
+    need the account plan label.
+
+    Invariant: a name, suffix or provider-id pattern never influences the result.
+    """
+    cls, _plan_label, fact = classify_route_capacity(
+        conn, row, route_id=route_id, openrouter_free_set=openrouter_free_set
+    )
+    return cls, fact
+
+
 def billing_capacity_override(cache: HealthCache, route_id: str, now: datetime) -> bool:
     """Whether a current route-scoped billing failure is specific paid evidence."""
     entry = cache.entry(route_id)
