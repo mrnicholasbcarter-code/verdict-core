@@ -225,6 +225,17 @@ LAUNCH: dict[str, LaunchSpec] = {
         entry="verdict.context_lift:run_context_lift",
         section="Development",
     ),
+    "bench.fusion-plan": LaunchSpec(
+        reason=(
+            "_cmd_bench_fusion_plan (run_fusion_plan_bench): FU1 fusion planning "
+            "benchmark -- panel of FREE admitted planners from different families "
+            "each produce a plan, a synthesiser merges them, results are compared "
+            "against a single-planner baseline; writes evidence to "
+            "VERDICT_HOME/fusion-bench/; long-running benchmark tool"
+        ),
+        entry="verdict.fusion_plan_bench:run_fusion_plan_bench",
+        section="Development",
+    ),
     "benchmark": LaunchSpec(
         reason=(
             "cmd_benchmark (run_reproducible_benchmarks/run_savings_bench): "

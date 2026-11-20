@@ -297,6 +297,8 @@ def _cmd_bench(args: argparse.Namespace) -> None:
     """Handle ``verdict bench <sub>`` CLI commands."""
     if args.bench_command == "context-lift":
         _cmd_bench_context_lift(args)
+    elif args.bench_command == "fusion-plan":
+        _cmd_bench_fusion_plan(args)
 
 
 def _cmd_bench_context_lift(args: argparse.Namespace) -> None:
@@ -349,6 +351,193 @@ def _cmd_bench_context_lift(args: argparse.Namespace) -> None:
         conclusion = receipt.get("conclusion", "unknown")
         identity = receipt.get("identity_id", "unknown")
         print(f"context-lift: {conclusion} ({identity}); evidence written to {out_file}")
+
+
+def _cmd_bench_fusion_plan(args: argparse.Namespace) -> None:
+    """``verdict bench fusion-plan``: FU1 fusion planning benchmark.
+
+    Panel members and synthesizer option (b) require FREE capacity.
+    Synthesizer option (a) and the top-planner baseline may use SUBSCRIPTION.
+    Never METERED or UNKNOWN. Fails closed when the minimum panel size cannot
+    be reached. Results are written under ``$VERDICT_HOME/fusion-bench/``.
+
+    Running the benchmark live is a post-merge task; this command wires up the
+    production caller but should not be executed in CI.
+    """
+    import asyncio
+    import json as _json
+    from datetime import datetime, timezone
+    from pathlib import Path as _Path
+
+    from verdict.fusion_plan_bench import (
+        RECEIPT_FIELDS,
+        FusionBenchConfig,
+        run_fusion_plan_bench,
+        summary_table,
+    )
+    from verdict.live_routing import DEFAULT_GATEWAY
+    from verdict.paths import verdict_home
+
+    base_url: str = getattr(args, "base_url", None) or DEFAULT_GATEWAY
+    dry_run: bool = bool(getattr(args, "dry_run", False))
+    emit_json: bool = bool(getattr(args, "json", False))
+
+    try:
+        cfg = FusionBenchConfig(
+            panel_size=getattr(args, "panel_size", 3),
+            max_calls=getattr(args, "max_calls", 10),
+            max_tokens=getattr(args, "max_tokens", 500_000),
+        )
+    except ValueError as exc:
+        print(f"error: invalid config: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    # Load goals fixture.
+    fixture_path_arg: str | None = getattr(args, "goals_fixture", None)
+    if fixture_path_arg:
+        fixture_path = _Path(fixture_path_arg)
+    else:
+        # Default: relative to the repo root (detected via pyproject.toml or cwd).
+        import importlib.resources
+
+        try:
+            # Installed package: use importlib.resources.
+            ref = (
+                importlib.resources.files("benchmarks")
+                / "fixtures"
+                / "fusion-plan-bench-goals.json"
+            )
+            fixture_path = _Path(str(ref))
+        except (TypeError, ModuleNotFoundError):
+            fixture_path = _Path("benchmarks/fixtures/fusion-plan-bench-goals.json")
+
+    if not fixture_path.exists():
+        print(f"error: goals fixture not found: {fixture_path}", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        fixture = _json.loads(fixture_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"error: cannot load goals fixture: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    goals = fixture.get("goals", [])
+    if not goals:
+        print("error: goals fixture has no goals", file=sys.stderr)
+        sys.exit(2)
+
+    if dry_run:
+        print(f"fusion-plan bench: dry-run; {len(goals)} goal(s) loaded from {fixture_path}")
+        print(
+            f"  panel_size={cfg.panel_size} max_calls={cfg.max_calls} max_tokens={cfg.max_tokens}"
+        )
+        return
+
+    # Build a live EligibilityLadder-based selector and DirectGatewayExecutor.
+    from verdict.credentials_store import resolve_api_key
+    from verdict.orchestration.eligibility_report import build_selector
+    from verdict.orchestration.executors import DirectGatewayExecutor
+
+    api_key = resolve_api_key()
+    if api_key is None:
+        print("BLOCKED: set VERDICT_OMNIROUTE_API_KEY for the OmniRoute gateway", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        selector = build_selector(base_url, scope="", prefer="")
+    except Exception as exc:
+        print(f"error: cannot build selector: {type(exc).__name__}: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    executor = DirectGatewayExecutor(base_url=base_url, api_key=api_key)
+
+    import re as _re
+
+    _safe_component_re = _re.compile(r"^[A-Za-z0-9._-]+$")
+
+    def _sanitize_component(val: str, name: str) -> str:
+        """Reject or sanitize a path component that comes from user-supplied data.
+
+        Allows only ``[A-Za-z0-9._-]``, rejects empty strings and the special
+        names ``.`` and ``..``, and raises ``ValueError`` for anything else so
+        the caller can skip the goal gracefully rather than writing outside the
+        intended output directory.
+        """
+        if not val or val in (".", ".."):
+            raise ValueError(f"{name} is empty or reserved: {val!r}")
+        if not _safe_component_re.match(val):
+            raise ValueError(
+                f"{name} contains characters not allowed in a path component "
+                f"(allowed: A-Za-z0-9._-): {val!r}"
+            )
+        return val
+
+    home = verdict_home()
+    out_dir = home / "fusion-bench"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir_resolved = out_dir.resolve()
+
+    all_reports = []
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    for entry in goals:
+        raw_goal_id: str = str(entry.get("id", "unknown"))
+        goal_text: str = str(entry.get("goal", ""))
+        constraints: str = str(entry.get("constraints", ""))
+
+        if not goal_text:
+            print(f"warning: skipping goal {raw_goal_id!r}: empty goal text", file=sys.stderr)
+            continue
+
+        try:
+            goal_id = _sanitize_component(raw_goal_id, "goal_id")
+        except ValueError as exc:
+            print(f"warning: skipping goal {raw_goal_id!r}: {exc}", file=sys.stderr)
+            continue
+
+        report = asyncio.run(
+            run_fusion_plan_bench(
+                goal=goal_text,
+                goal_id=goal_id,
+                constraints=constraints,
+                selector=selector,
+                executor=executor,
+                config=cfg,
+            )
+        )
+        all_reports.append(report)
+
+        # Write one result file per goal per arm.
+        for arm_key in (
+            [f"panel_{i}" for i in range(len(report.panel_members))]
+            + [f"synth_{s.synth_option}" for s in report.synth_results]
+            + [b.arm for b in report.baselines]
+        ):
+            arm_data = report.arm_dict(arm_key)
+            # Restrict to receipt fields allowlist.
+            safe_data = {k: arm_data.get(k) for k in RECEIPT_FIELDS}
+            out_file = out_dir / f"{stamp}-{goal_id}-{arm_key}.json"
+            # Defense-in-depth: ensure resolved path stays inside out_dir.
+            if not out_file.resolve().is_relative_to(out_dir_resolved):
+                raise RuntimeError(
+                    f"output path escape detected: {out_file} is not under {out_dir}"
+                )
+            out_file.write_text(_json.dumps(safe_data, indent=2), encoding="utf-8")
+
+    # Write summary.
+    summary_path = out_dir / f"{stamp}-summary.txt"
+    summary_text = summary_table(all_reports)
+    summary_path.write_text(summary_text, encoding="utf-8")
+
+    if emit_json:
+        # Full report as JSON (uses report dataclasses — convert to dicts).
+        import dataclasses
+
+        output = [dataclasses.asdict(r) for r in all_reports]
+        print(_json.dumps(output, indent=2, default=str))
+    else:
+        print(f"fusion-plan bench: {len(all_reports)} goal(s) run; results in {out_dir}")
+        print(summary_text)
 
 
 def _cmd_demo(args: argparse.Namespace) -> None:
