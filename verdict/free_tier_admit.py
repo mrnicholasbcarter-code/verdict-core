@@ -56,7 +56,6 @@ from verdict.context_pack import (
 )
 from verdict.context_trust import SourceKind, admit_external_evidence
 from verdict.eligibility import EligibilityRecord, EligibilityResult, EligibilityVerdict
-from verdict.free_route_harvest import free_status
 from verdict.models import ModelInfo
 from verdict.pack_state import PackState, classify_pack_state
 from verdict.relay import fatal_identity_mismatch
@@ -159,6 +158,25 @@ class FreeTierModel:
     provider: str
     free_type: str | None = None
     display_name: str | None = None
+
+    @property
+    def route_id(self) -> str:
+        """Canonical route ID: provider/model_id, normalized, without double-prefix.
+
+        Handles two shapes the free-tier API and string-row parsers emit:
+        - ``model_id="meta-llama/model:free", provider="kc"``
+          → ``"kc/meta-llama/model:free"``
+        - ``model_id="kc/meta-llama/model:free", provider="kc"`` (string-row)
+          → ``"kc/meta-llama/model:free"`` (not ``"kc/kc/..."``).
+        Provider is lowercased to match catalog route-id format.
+        """
+        p = self.provider.lower() if self.provider else ""
+        m = self.model_id
+        if p and m.lower().startswith(f"{p}/"):
+            # model_id already carries the provider prefix; normalise to lowercase
+            # provider so the returned id always matches catalog route-id format.
+            return f"{p}/{m[len(p) + 1 :]}"
+        return f"{p}/{m}" if p else m
 
 
 @dataclass(frozen=True)
@@ -1479,33 +1497,19 @@ def _matches_free_model(catalog_id: str, model_id: str, provider: str) -> bool:
     return catalog_id.endswith("/" + model_id)
 
 
-def _is_positively_free_identity(identity_id: str) -> bool:
-    return free_status({"id": identity_id}) == "free"
-
-
-def _looks_free_by_name(identity_id: str) -> bool:
-    """Name heuristic only. Never authoritative when a free_admitted set exists."""
-    lowered = identity_id.lower()
-    leaf = lowered.rsplit("/", 1)[-1]
-    return ":free" in lowered or leaf.endswith("-free") or leaf.endswith(":free")
-
-
 def _choose_sort(
     identity_id: str, active_healthy: frozenset[str], free_admitted: Collection[str] | None = None
 ) -> tuple[int, int, int, str]:
     """Free-first ordering keyed on authoritative free-tier membership.
 
     ``free_admitted`` is the free∩active set observed from OmniRoute's free-tier
-    summary. When it is provided, an identity is free iff it is a member — a free
-    model without a ``:free``/``-free`` suffix must not be displaced by paid
-    candidates, and a paid model must not jump the queue by name. The name
-    heuristic is used only when no authoritative set is available.
+    summary. An identity is free iff it is a member — a free model without a
+    ``:free``/``-free`` suffix must not be displaced by paid candidates, and a
+    paid model must not jump the queue by name. Without an authoritative set, all
+    identities sort equally (no name heuristic).
     """
     lowered = identity_id.lower()
-    if free_admitted is not None:
-        free_mark = 0 if identity_id in free_admitted else 1
-    else:
-        free_mark = 0 if _looks_free_by_name(identity_id) else 1
+    free_mark = 0 if (free_admitted is not None and identity_id in free_admitted) else 1
     small = 0 if any(token in lowered for token in _SMALL_TOKENS) else 1
     provider = _provider_of(identity_id)
     healthy = 0 if provider in active_healthy else 1
@@ -1550,7 +1554,7 @@ def admit_free_tier_active(snapshot: OmniRouteAdmitSnapshot) -> FreeTierAdmitRec
         return _provider_rejection(connections.get(provider))
 
     for row in snapshot.free_tier:
-        label = f"{row.provider}/{row.model_id}"
+        label = row.route_id
         if is_opaque_route_id(row.model_id) or is_opaque_route_id(label):
             exclusions.append(
                 NamedDrop(label, REASON_OPAQUE_ROUTE_DISALLOWED, "opaque route is not auditable")
