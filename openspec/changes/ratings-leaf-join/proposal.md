@@ -20,11 +20,12 @@ so the receipt shows how each rating was matched.
 ## What Changes
 
 - `verdict/metadata/store.py`: add `_normalize_leaf_version` (digit-dash-digit
-  → digit-dot-digit), add `all_records_normalized_leaf_index` (indexes ALL
-  store records; disambiguation: dot-form wins over dash twin; else ambiguous
-  tuple), add `MetadataSnapshot._normalized_leaf_index` cached property,
-  update `lookup_omniroute_id` to use the new index as a third-tier fallback
-  and record `join` provenance on the returned `MetadataLookup`.
+  → digit-dot-digit), add `all_records_normalized_leaf_index` (indexes
+  models.json records only; disambiguation: dot-form wins over dash twin; else
+  ambiguous tuple; callers upgrade to the dot twin via `record_by_id`), add
+  `MetadataSnapshot._normalized_leaf_index` cached property, update
+  `lookup_omniroute_id` to use the new index as a third-tier fallback with
+  dot-twin upgrade and record `join` provenance on the returned `MetadataLookup`.
 - `verdict/metadata/records.py`: add `LeafJoin = Literal["explicit", "leaf"]`
   type alias, add `join: LeafJoin | None` field to `MetadataLookup`, update
   `to_dict` to include it when set.

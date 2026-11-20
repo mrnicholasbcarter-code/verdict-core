@@ -12,12 +12,17 @@ remains the highest-priority path and always wins.
 
 ### Requirement: lookup_omniroute_id SHALL resolve dash-spelled inventory ids to dot-record counterparts via the normalised-leaf index
 
-The system SHALL maintain a normalised-leaf index across all store records.
-Normalisation converts digit-dash-digit sequences to digit-dot-digit (e.g.
-`claude-opus-5-5` becomes `claude-opus-5.5`).  When the explicit map and the
-omniroute_id index both miss, the system SHALL strip the provider prefix from
-the inventory id, apply the same normalisation, and look up the result in the
-normalised-leaf index.  A unique match SHALL resolve the lookup.  The explicit
+The system SHALL maintain a normalised-leaf index built from models.json records
+only (consistent with the existing raw-leaf index).  Normalisation converts
+digit-dash-digit sequences to digit-dot-digit (e.g. `claude-opus-5-5` becomes
+`claude-opus-5.5`).  When the explicit map and the omniroute_id index both miss,
+the system SHALL strip the provider prefix from the inventory id, apply the same
+normalisation, and look up the result in the models.json normalised-leaf index.
+A unique models.json match SHALL resolve the lookup.  If the matched record is
+in dash form (raw leaf differs from the normalised leaf), the system SHALL
+attempt a dot-twin upgrade: check for a record keyed `{provider}/{norm_leaf}` in
+the full store and use it if found, so that the scored api.json dot record is
+returned in preference to the unscored models.json dash record.  The explicit
 map takes precedence: when an explicit map entry is present, the normalised-leaf
 index SHALL NOT be consulted.
 
