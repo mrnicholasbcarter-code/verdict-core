@@ -193,6 +193,113 @@ def load_registry(env: Mapping[str, str] | None = None) -> DiscoveryRegistry | N
     return reg
 
 
+_GATEWAY_PREFIX = "omniroute/"
+
+
+def _canonical_route_key(route_id: str) -> str:
+    """Strip the gateway prefix (``omniroute/``) from a route id.
+
+    Registry ``route_key`` values never carry this prefix; ladder route ids
+    sometimes do.  Stripping ensures the lookup finds the right entry.
+    """
+    text = str(route_id or "").strip()
+    if text.lower().startswith(_GATEWAY_PREFIX):
+        return text[len(_GATEWAY_PREFIX) :]
+    return text
+
+
+def tool_ok_proof(
+    route_id: str, registry: DiscoveryRegistry | None, now: datetime.datetime
+) -> dict[str, Any]:
+    """Check whether the registry holds a fresh, live ``tool_ok=True`` proof.
+
+    Returns ``{"qualified": True, "source": "discovery_registry", ...}`` only
+    when ALL of the following hold:
+
+    - *registry* is not None (absent or stale registries are already filtered
+      by :func:`load_registry`).
+    - An entry for the canonical route key exists.
+    - ``capacity_class == "free"`` — subscription routes never prove free.
+    - ``answered is True`` — a live HTTP probe returned usable content.
+    - ``tool_ok is True`` — the tool call was measured and passed.
+    - ``served_model`` is not None and matches the model segment of the route
+      key — ``None`` means the gateway did not confirm the served model, so
+      the proof cannot be tied to a specific model identity.
+    - ``entry.checked_at`` is tz-aware, non-future, and within the registry TTL.
+
+    Any failed check returns ``{"qualified": False, "reason": "<code>", ...}``.
+    Exceptions inside the check return ``qualified=False`` rather than
+    propagating — a buggy entry never admits, it just falls back to the
+    normal ``no_agentic_probe`` path.
+
+    This function is **pure** (no I/O) and may be called per-route in a
+    hot path.  Pass a pre-loaded *registry* from :func:`load_registry`; do
+    not call it inside this function.
+    """
+    if registry is None:
+        return {"qualified": False, "reason": "registry_absent", "entry": None}
+
+    canonical = _canonical_route_key(route_id)
+
+    entry: RegistryEntry | None = None
+    for e in registry.entries:
+        if e.route_key == canonical:
+            entry = e
+            break
+
+    if entry is None:
+        return {"qualified": False, "reason": "not_in_registry", "entry": None}
+
+    # Subscription or unknown-capacity routes are never promoted via registry.
+    if entry.capacity_class != "free":
+        return {"qualified": False, "reason": "not_free_capacity", "entry": entry}
+
+    # Must have been answered by a live HTTP probe.
+    if not entry.answered:
+        return {"qualified": False, "reason": "not_answered", "entry": entry}
+
+    # tool_ok is tri-state: None = not measured, False = measured fail.
+    if entry.tool_ok is None:
+        return {"qualified": False, "reason": "not_probed", "entry": entry}
+    if not entry.tool_ok:
+        return {"qualified": False, "reason": "measured_fail", "entry": entry}
+
+    # served_model must be present and match the route's model segment.
+    # None means the gateway did not echo back the model identity; that
+    # is insufficient to bind the proof to this route.
+    if entry.served_model is None:
+        return {"qualified": False, "reason": "served_model_absent", "entry": entry}
+    model_segment = canonical.split("/", 1)[1] if "/" in canonical else canonical
+    if entry.served_model != model_segment:
+        return {"qualified": False, "reason": "served_model_mismatch", "entry": entry}
+
+    # Entry-level freshness: checked_at must be tz-aware, non-future, and
+    # within the registry TTL.  (Registry-level TTL was checked by
+    # load_registry, but individual entries may have been probed earlier.)
+    # Cap against the code constant so a file that declares an enormous
+    # ttl_s cannot extend freshness beyond what the operator deployed.
+    import math as _math
+
+    _file_ttl = registry.ttl_s
+    if not isinstance(_file_ttl, (int, float)) or not _math.isfinite(_file_ttl) or _file_ttl <= 0:
+        _file_ttl = REGISTRY_TTL_S
+    effective_ttl = min(_file_ttl, REGISTRY_TTL_S)
+    try:
+        checked = datetime.datetime.fromisoformat(entry.checked_at)
+        if checked.tzinfo is None:
+            return {"qualified": False, "reason": "naive_timestamp", "entry": entry}
+        age_s = (now - checked).total_seconds()
+        if age_s < 0:
+            # Future timestamp — clock skew or test anomaly; not proof.
+            return {"qualified": False, "reason": "future_timestamp", "entry": entry}
+        if age_s > effective_ttl:
+            return {"qualified": False, "reason": "entry_stale", "entry": entry}
+    except (ValueError, OverflowError, TypeError):
+        return {"qualified": False, "reason": "invalid_timestamp", "entry": entry}
+
+    return {"qualified": True, "reason": None, "source": "discovery_registry", "entry": entry}
+
+
 def save_registry(registry: DiscoveryRegistry, env: Mapping[str, str] | None = None) -> None:
     """Write registry atomically.  Creates ``$VERDICT_HOME/discovery/`` if needed."""
     path = registry_path(env)
