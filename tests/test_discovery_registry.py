@@ -1557,5 +1557,59 @@ class RateLimitedCountTest(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Fix 8: missing key → not_probed, never a measured failure
+# ---------------------------------------------------------------------------
+
+
+class MissingKeyNotProbedTest(unittest.TestCase):
+    """An unset env-var key is a configuration gap, not a network failure.
+
+    tool_probe must return TOOL_NOT_PROBED (tool_ok=None) and liveness must
+    record probe_skip_reason='key_missing', not look like the route was
+    contacted and found down.
+    """
+
+    def tearDown(self) -> None:
+        _set_transport(None)
+
+    def test_tool_probe_missing_key_returns_not_probed(self) -> None:
+        """tool_probe with an unset env var must return TOOL_NOT_PROBED, not TOOL_ERROR."""
+        from verdict.discovery.toolprobe import TOOL_NOT_PROBED, tool_probe
+
+        route = _route(auth="env:_VERDICT_TEST_MISSING_KEY_XYZ_")
+        result = tool_probe(route)
+        self.assertEqual(
+            result[0], TOOL_NOT_PROBED, "unset env var must return TOOL_NOT_PROBED, not TOOL_ERROR"
+        )
+        self.assertEqual(result[1], "key_missing", "detail must be 'key_missing'")
+        self.assertIsNone(result[2], "no latency for a skipped probe")
+        self.assertIsNone(result[3], "no served model for a skipped probe")
+
+    def test_liveness_missing_key_records_not_probed(self) -> None:
+        """liveness probe with an unset env var must set probe_skip_reason='key_missing'."""
+        route = _route(auth="env:_VERDICT_TEST_MISSING_KEY_XYZ_")
+
+        def _t(url: str, h: dict, p: bytes, timeout: float) -> tuple:
+            raise AssertionError(f"transport must not be called for a missing-key route: {url}")
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = run_refresh(
+                [(route, "free", "plan_free")], context_tokens=0, wall_budget_s=300.0, env=_env(tmp)
+            )
+
+        self.assertEqual(len(reg.entries), 1)
+        entry = reg.entries[0]
+        self.assertFalse(entry.answered, "key-missing route must not be answered")
+        self.assertIsNone(entry.tool_ok, "key-missing route must be not_probed (None), not False")
+        self.assertEqual(
+            entry.probe_skip_reason,
+            "key_missing",
+            "probe_skip_reason must be 'key_missing', not None (which looks like a network failure)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

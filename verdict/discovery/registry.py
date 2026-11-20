@@ -34,7 +34,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from verdict.discovery.model import ERROR, RATE_LIMITED, UP, ProbeResult, Route
+from verdict.discovery.model import ERROR, NO_KEY, RATE_LIMITED, UP, ProbeResult, Route
 from verdict.discovery.probe import probe_one
 from verdict.discovery.toolprobe import TOOL_NOT_PROBED, TOOL_OK, tool_probe
 from verdict.paths import verdict_home
@@ -334,10 +334,16 @@ def run_refresh(
                         r = probe_one(route, timeout=min(probe_timeout, remaining))
                     except Exception as exc:
                         r = ProbeResult(route=route, status=ERROR, detail=str(exc)[:200])
-                    if r.status == RATE_LIMITED:
-                        with _breaker_lock:
-                            breaker.open_pool(route)
-                    local_probed.append((item, r))
+                    if r.status == NO_KEY:
+                        # Key was never set — this is a configuration gap, not a
+                        # network failure.  Record as skipped so probe_skip_reason
+                        # is set and tool_ok stays None.
+                        local_skipped.append((item, "key_missing"))
+                    else:
+                        if r.status == RATE_LIMITED:
+                            with _breaker_lock:
+                                breaker.open_pool(route)
+                        local_probed.append((item, r))
         with _result_lock:
             for item, r in local_probed:
                 probe_items_out.append(item)

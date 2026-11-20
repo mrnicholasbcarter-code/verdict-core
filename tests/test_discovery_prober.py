@@ -420,10 +420,13 @@ class ToolProbeTest(unittest.TestCase):
         _, _, _, served = tool_probe(_route())
         self.assertEqual(served, "prov/mymodel")
 
-    def test_no_key_returns_tool_error(self) -> None:
+    def test_no_key_returns_not_probed(self) -> None:
+        """Unset env var must return TOOL_NOT_PROBED (not TOOL_ERROR): no request was made."""
+        from verdict.discovery.toolprobe import TOOL_NOT_PROBED as _TNP
+
         status, detail, _, _ = tool_probe(_route(auth="env:MISSING_VAR_TOOL_TEST"))
-        self.assertEqual(status, TOOL_ERROR)
-        self.assertIn("env var", detail or "")
+        self.assertEqual(status, _TNP, "missing key → TOOL_NOT_PROBED, not TOOL_ERROR")
+        self.assertEqual(detail, "key_missing")
 
     def test_transport_exception_returns_tool_error(self) -> None:
         def _t(url, h, p, timeout):

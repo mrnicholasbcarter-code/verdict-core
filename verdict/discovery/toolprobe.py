@@ -103,7 +103,8 @@ def tool_probe(
     """
     auth_header, early = _probe.resolve_auth(route.auth)
     if early == NO_KEY:
-        return TOOL_ERROR, "env var unset", None, None
+        # No request was made — record as not_probed, not a measured failure.
+        return TOOL_NOT_PROBED, "key_missing", None, None
     messages: list[dict[str, object]] = [{"role": "user", "content": PROMPT}]
     if context_tokens > 0:
         messages.insert(0, {"role": "system", "content": filler(context_tokens)})
