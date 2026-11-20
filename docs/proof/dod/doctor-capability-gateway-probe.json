@@ -63,11 +63,11 @@
     "change": "doctor-capability-gateway-probe"
   },
   "parent_confirmation": {
-    "by": "Claude Code controller session a8fca35c (parent of the orchestrate run, not one of its workers)",
-    "at": "2026-11-20T14:23:03Z",
+    "by": "operator (ran /tmp/claude-takeover/confirm.sh by hand from this session's prompt; not the story's author or its controller)",
+    "at": "2026-11-20T17:18:07Z",
     "command": ".venv/bin/python -m verdict doctor --json | jq -c \"{status, issues, warnings, gateway: [.capability_bootstrap.capabilities[] | select(.capability_id | startswith(\\\"gateway.\\\")) | {capability_id, status, selected_provider_id, health}]}\"",
     "raw_output": {
-      "path": "docs/proof/dod/doctor-capability-gateway-probe/parent-run-doctor-20261120T142303Z.json",
+      "path": "docs/proof/dod/doctor-capability-gateway-probe/operator-confirmation-20261120T171736Z.json",
       "sha256": "a15f144c9c0aff840a6d9ba3779fb18f951953a038700023a5f3ded942664877"
     }
   }
