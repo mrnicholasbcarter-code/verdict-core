@@ -2010,11 +2010,16 @@ def doctor_capability_report(
     *,
     providers: Sequence[DiscoveredProvider] | None = None,
     registry: SemanticCapabilityRegistry | None = None,
+    probe_gateway: GatewayProbe | None = None,
 ) -> dict[str, object]:
     """Capability → selected provider → authority → health for ``verdict doctor``."""
 
     report = run_bootstrap(
-        providers=providers, mode=BootstrapMode.PLAN, non_interactive=True, registry=registry
+        providers=providers,
+        mode=BootstrapMode.PLAN,
+        non_interactive=True,
+        registry=registry,
+        probe_gateway=probe_gateway,
     )
     active = registry if registry is not None else build_default_registry()
     rows: list[dict[str, object]] = []
