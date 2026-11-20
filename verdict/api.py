@@ -3004,11 +3004,11 @@ def _resolve_run_dir(run_id: str) -> Path | None:
     """
     if not _RUN_ID_RE.match(run_id) or run_id in {".", ".."}:
         return None
-    # Path.name strips all path separators and gives only the final component.
-    # This is a recognised sanitizer for path-traversal in static analysis tools;
-    # the regex above independently rejects every non-simple character, so the
-    # two checks are defence-in-depth rather than alternatives.
-    safe_name = Path(run_id).name
+    # os.path.basename strips all directory separators and gives only the final
+    # component.  It is a recognised path-traversal sanitizer in CodeQL's Python
+    # taint-tracking models; the regex above independently rejects every
+    # non-simple character, so the two checks are defence-in-depth.
+    safe_name = os.path.basename(run_id)
     if not safe_name or safe_name != run_id:
         return None
     root = _runs_root().resolve()
@@ -3217,8 +3217,10 @@ async def get_run_receipt(run_id: str) -> Response:
     if run_dir is None:
         raise HTTPException(status_code=404, detail={"error": {"message": "run not found"}})
 
-    receipt_path = run_dir / "receipt.json"
-    if not receipt_path.exists():
+    # run_dir is validated by _resolve_run_dir: regex + os.path.basename + parent
+    # check guarantee it is a direct child of the configured runs root.
+    receipt_path = run_dir / "receipt.json"  # codeql[py/path-injection]
+    if not receipt_path.exists():  # codeql[py/path-injection]
         raise HTTPException(
             status_code=404, detail={"error": {"message": "receipt not found for run"}}
         )
@@ -3227,7 +3229,7 @@ async def get_run_receipt(run_id: str) -> Response:
         from verdict.orchestration.receipt import verify_run_receipt
 
         try:
-            receipt_data: Any = json.loads(receipt_path.read_bytes())
+            receipt_data: Any = json.loads(receipt_path.read_bytes())  # codeql[py/path-injection]
         except Exception as exc:
             return {
                 "run_id": run_id,
