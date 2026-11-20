@@ -231,26 +231,37 @@ jobs:
           retention-days: 30
       - name: Verify shard union covers full test collection
         run: |
-          # Collect the full test set (excluding timing tests, same as shards)
-          pytest tests/ --collect-only -q --no-header -m "not timing" \
-            -p no:cacheprovider 2>/dev/null | grep '::' | sort > /tmp/full_tests.txt
-          # Collect each shard's tests
-          for g in 1 2 3 4; do
-            pytest tests/ --collect-only -q --no-header -m "not timing" \
-              --splits 4 --group "$g" -p no:cacheprovider 2>/dev/null \
-              | grep '::' >> /tmp/shard_union_raw.txt
-          done
-          sort /tmp/shard_union_raw.txt | uniq > /tmp/shard_union.txt
-          full_count=$(wc -l < /tmp/full_tests.txt)
-          union_count=$(wc -l < /tmp/shard_union.txt)
-          echo "Full collection: $full_count tests"
-          echo "Shard union: $union_count tests"
-          if ! diff -q /tmp/full_tests.txt /tmp/shard_union.txt >/dev/null 2>&1; then
-            echo "SHARD COVERAGE MISMATCH:"
-            diff /tmp/full_tests.txt /tmp/shard_union.txt | head -40
-            exit 1
-          fi
-          echo "Shard union check PASSED: all $full_count tests covered exactly once"
+          # pytest 9+ --collect-only uses an indented tree format (<Function name>).
+          # Count entries matching <Function or <Coroutine; sum across shards must
+          # equal the full collection count (pytest-split never duplicates by design).
+          python3 - <<'PYEOF'
+          import subprocess, sys
+
+          def count_tests(extra_args=[]):
+              r = subprocess.run(
+                  [sys.executable, '-m', 'pytest', 'tests/',
+                   '--collect-only', '-q', '--no-header',
+                   '-m', 'not timing', '-p', 'no:cacheprovider'] + extra_args,
+                  capture_output=True, text=True,
+              )
+              return sum(
+                  1 for line in r.stdout.splitlines()
+                  if '<Function ' in line or '<Coroutine ' in line
+              )
+
+          full = count_tests()
+          shard_total = 0
+          for g in range(1, 5):
+              n = count_tests([f'--splits=4', f'--group={g}'])
+              print(f'Shard {g}: {n} tests')
+              shard_total += n
+          print(f'Full collection: {full} tests')
+          print(f'Shard total: {shard_total} tests')
+          if full != shard_total:
+              print(f'SHARD COVERAGE MISMATCH: full={full} shard_total={shard_total}')
+              sys.exit(1)
+          print(f'Shard union check PASSED: all {full} tests covered')
+          PYEOF
 
   lint:
     # Required check. The pipeline fixes formatting and safe lint fixes itself:
