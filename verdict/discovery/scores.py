@@ -163,10 +163,12 @@ class ScoreIndex:
 
 
 def _http_fetch(url: str, timeout: float) -> object:
+    from verdict.http_safety import open_no_redirect
+
     req = urllib.request.Request(
         url, headers={"User-Agent": "verdict/0.1", "Accept": "application/json"}
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
+    with open_no_redirect(req, timeout=timeout) as resp:
         return json.load(resp)
 
 

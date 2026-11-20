@@ -53,7 +53,8 @@ def _set_transport(fn: Transport | None) -> None:
         _TRANSPORT = fn
 
 
-def _get_transport() -> Transport:
+def get_transport() -> Transport:
+    """Return the active HTTP backend (real or injected via ``_set_transport``)."""
     with _TRANSPORT_LOCK:
         return _TRANSPORT if _TRANSPORT is not None else _real_http
 
@@ -95,7 +96,7 @@ def _parse_retry_after(value: str) -> float | None:
         return None
 
 
-def _resolve_auth(auth: str) -> tuple[str | None, str]:
+def resolve_auth(auth: str) -> tuple[str | None, str]:
     """Return (Authorization header value or None, early-status or '').
 
     Returns (None, NO_KEY) when an env-var key is not set; in that case the
@@ -169,7 +170,7 @@ def _has_usable_content(choice: dict[str, object]) -> bool:
 def probe_one(route: Route, *, timeout: float = 12.0, max_tokens: int = 256) -> ProbeResult:
     """Probe one route and return a classified ProbeResult."""
     auth = route.auth
-    auth_header, early = _resolve_auth(auth)
+    auth_header, early = resolve_auth(auth)
     if early == NO_KEY:
         return ProbeResult(route=route, status=NO_KEY, detail="env var unset")
 
@@ -191,7 +192,7 @@ def probe_one(route: Route, *, timeout: float = 12.0, max_tokens: int = 256) -> 
         headers["Authorization"] = auth_header
 
     t0 = time.monotonic()
-    transport = _get_transport()
+    transport = get_transport()
 
     try:
         status_code, resp_headers, body_bytes = transport(url, headers, payload, timeout)

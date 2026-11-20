@@ -408,6 +408,49 @@ class RunRefreshLiveTest(unittest.TestCase):
             reg = run_refresh(routes, context_tokens=0, env=_env(tmp))
             self.assertEqual(len(reg.entries), 5)
 
+    def test_duplicate_route_key_probed_only_once(self) -> None:
+        """Two routes sharing a key must not share each other's proof.
+
+        The dedup must happen before probing so the second route is never
+        probed, and the registry must NOT show it as answered.
+        """
+        route_a = Route(
+            provider="p", model="m", base_url="http://a.example.com/v1", auth="none", source="s1"
+        )
+        route_b = Route(
+            provider="p", model="m", base_url="http://b.example.com/v1", auth="none", source="s2"
+        )
+        self.assertEqual(route_a.key, route_b.key)
+
+        urls_called: list[str] = []
+
+        def _t(url: str, h: dict, p: bytes, timeout: float):
+            urls_called.append(url)
+            # route_a answers OK; route_b (if ever called) would return 503
+            if "a.example.com" in url:
+                return 200, {}, _ok_body()
+            return 503, {}, b"error"
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = run_refresh(
+                [(route_a, "free", "plan_free"), (route_b, "free", "plan_free")],
+                context_tokens=0,
+                env=_env(tmp),
+            )
+
+        # Exactly one entry — the duplicate key was deduped before probing
+        self.assertEqual(len(registry.entries), 1)
+        # Only route_a's URL was called; route_b must never be probed
+        self.assertTrue(
+            any("a.example.com" in u for u in urls_called), "route_a should have been probed"
+        )
+        self.assertFalse(
+            any("b.example.com" in u for u in urls_called),
+            "route_b shares route_a's key and must not be probed separately",
+        )
+
     def test_served_model_recorded_from_headers(self) -> None:
         def _t(url, h, p, timeout):
             return (
@@ -512,6 +555,48 @@ class RunRefreshActionTest(unittest.TestCase):
             result = run_refresh_action(dry_run=True, env=env)
             self.assertEqual(result["counts"]["input"], 1)
             self.assertEqual(result["counts"]["total"], 1)
+
+    def test_malformed_sources_cache_entries_counted(self) -> None:
+        """Malformed cache entries must be counted and reported, not silently dropped."""
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _env(tmp)
+            discovery_dir = Path(tmp) / "discovery"
+            discovery_dir.mkdir(parents=True)
+            sources = [
+                # Valid free route
+                {
+                    "capacity_class": "free",
+                    "capacity_fact": "plan_free",
+                    "route": {
+                        "provider": "p1",
+                        "model": "m1",
+                        "base_url": "http://localhost:9999/v1",
+                        "auth": "none",
+                    },
+                },
+                # Malformed: route is missing required "provider" key
+                {
+                    "capacity_class": "free",
+                    "capacity_fact": "plan_free",
+                    "route": {"model": "m2", "base_url": "http://localhost:9999/v1"},
+                },
+                # Malformed: route field is not a dict
+                {"capacity_class": "free", "capacity_fact": "plan_free", "route": "not-a-dict"},
+            ]
+            (discovery_dir / "sources-cache.json").write_text(
+                _json.dumps(sources), encoding="utf-8"
+            )
+            result = run_refresh_action(dry_run=True, env=env)
+            # 1 valid route in entries, 2 malformed entries counted
+            self.assertEqual(result["counts"]["input"], 1)
+            self.assertIn(
+                "malformed_cache_entries",
+                result["counts"],
+                "malformed_cache_entries must be reported in counts",
+            )
+            self.assertEqual(result["counts"]["malformed_cache_entries"], 2)
 
     def test_action_skips_priced_routes_in_sources_cache(self) -> None:
         """Routes with capacity_class != free/subscription must be ignored."""

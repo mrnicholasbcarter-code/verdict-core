@@ -32,32 +32,47 @@ from verdict.paths import verdict_home
 _PROBEABLE = frozenset({"free", "subscription"})
 
 
-def _load_sources_cache(env: Any = None) -> list[tuple[Route, str, str]]:
+class _CacheResult:
+    """Return value of ``_load_sources_cache``: routes + count of dropped entries."""
+
+    __slots__ = ("malformed", "routes")
+
+    def __init__(self, routes: list[tuple[Route, str, str]], malformed: int = 0) -> None:
+        self.routes = routes
+        self.malformed = malformed
+
+
+def _load_sources_cache(env: Any = None) -> _CacheResult:
     """Load pre-classified routes from $VERDICT_HOME/discovery/sources-cache.json.
 
-    Returns an empty list when the file is absent or unreadable.
+    Returns an empty result when the file is absent or unreadable.
+    ``malformed`` counts entries that looked probeable but could not be parsed
+    as a valid Route; a corrupt cache must not look like a smaller valid one.
     """
     path = verdict_home(env) / "discovery" / "sources-cache.json"
     try:
         raw = path.read_text(encoding="utf-8")
     except (OSError, PermissionError):
-        return []
+        return _CacheResult([])
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
-        return []
+        return _CacheResult([])
     if not isinstance(data, list):
-        return []
+        return _CacheResult([])
     result: list[tuple[Route, str, str]] = []
+    malformed = 0
     for item in data:
         if not isinstance(item, dict):
+            malformed += 1
             continue
         cap_class = str(item.get("capacity_class", ""))
         cap_fact = str(item.get("capacity_fact", "unknown"))
         if cap_class not in _PROBEABLE:
-            continue  # never probe unknown or priced routes
+            continue  # intentional: skip non-probeable (not malformed)
         route_d = item.get("route", {})
         if not isinstance(route_d, dict):
+            malformed += 1
             continue
         try:
             route = Route(
@@ -72,9 +87,10 @@ def _load_sources_cache(env: Any = None) -> list[tuple[Route, str, str]]:
                 max_parallel=route_d.get("max_parallel"),
             )
         except (KeyError, TypeError):
+            malformed += 1
             continue
         result.append((route, cap_class, cap_fact))
-    return result
+    return _CacheResult(result, malformed)
 
 
 def _load_omniroute_routes(env: Any = None) -> list[tuple[Route, str, str]]:
@@ -91,16 +107,19 @@ def _load_omniroute_routes(env: Any = None) -> list[tuple[Route, str, str]]:
         return []
 
 
-def load_probeable_routes(env: Any = None) -> list[tuple[Route, str, str]]:
-    """Return routes ready to probe: FREE or SUBSCRIPTION, classified by a fact.
+def load_probeable_routes(env: Any = None) -> tuple[list[tuple[Route, str, str]], int]:
+    """Return (routes, malformed_count) ready to probe: FREE or SUBSCRIPTION.
+
+    ``malformed_count`` counts entries in the sources cache that looked
+    probeable but could not be parsed; it is 0 when routes come from OmniRoute.
 
     Source precedence: sources-cache.json → OmniRoute catalog.
     Unknown and priced routes are never returned.
     """
-    routes = _load_sources_cache(env)
-    if routes:
-        return routes
-    return _load_omniroute_routes(env)
+    cache = _load_sources_cache(env)
+    if cache.routes:
+        return cache.routes, cache.malformed
+    return _load_omniroute_routes(env), 0
 
 
 def run_refresh_action(
@@ -126,7 +145,9 @@ def run_refresh_action(
                 existing, dry_run=False, total_input=len(existing.entries), scores=_scores
             )
 
-    routes = load_probeable_routes(env)
+    # Load source routes — track malformed cache entries so a corrupt cache
+    # never silently looks like a smaller valid one.
+    routes, malformed = load_probeable_routes(env)
 
     # Load coding scores (cached/offline, never blocks the refresh)
     scores: ScoreIndex = load_scores(offline=True)
@@ -134,7 +155,13 @@ def run_refresh_action(
     registry = run_refresh(
         routes, context_tokens=context_tokens, wall_budget_s=wall_budget_s, env=env, dry_run=dry_run
     )
-    return _registry_to_summary(registry, dry_run=dry_run, total_input=len(routes), scores=scores)
+    return _registry_to_summary(
+        registry,
+        dry_run=dry_run,
+        total_input=len(routes),
+        scores=scores,
+        malformed_cache_entries=malformed,
+    )
 
 
 def _registry_to_summary(
@@ -143,6 +170,7 @@ def _registry_to_summary(
     dry_run: bool,
     total_input: int,
     scores: ScoreIndex | None = None,
+    malformed_cache_entries: int = 0,
 ) -> dict[str, Any]:
     """Convert a DiscoveryRegistry to a human/machine-readable summary dict."""
     entries = registry.entries
@@ -171,6 +199,7 @@ def _registry_to_summary(
             "answered": sum(1 for e in entries if e.answered),
             "tool_ok": sum(1 for e in entries if e.tool_ok),
             "rate_limited": sum(1 for e in entries if e.breaker_state == "open"),
+            "malformed_cache_entries": malformed_cache_entries,
         },
         "by_provider": by_provider,
         "entries": [e.to_dict() for e in entries],
@@ -183,11 +212,13 @@ def render_refresh_plain(result: dict[str, Any]) -> str:
     dry = " (dry-run)" if result.get("dry_run") else ""
     lines.append(f"verdict discovery refresh{dry}  {result.get('written_at', '')}")
     counts = result.get("counts", {})
+    malformed = counts.get("malformed_cache_entries", 0)
     lines.append(
         f"  input {counts.get('input', 0)}  "
         f"answered {counts.get('answered', 0)}  "
         f"tool_ok {counts.get('tool_ok', 0)}  "
         f"rate_limited {counts.get('rate_limited', 0)}"
+        + (f"  malformed_cache_entries {malformed}" if malformed else "")
     )
     by_prov = result.get("by_provider", {})
     if by_prov:

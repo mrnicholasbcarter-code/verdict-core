@@ -95,7 +95,7 @@ def tool_probe(
     ``context_tokens`` pads the request with that many tokens of instructions.
     ``served`` is the upstream a gateway reports in its response headers.
     """
-    auth_header, early = _probe._resolve_auth(route.auth)
+    auth_header, early = _probe.resolve_auth(route.auth)
     if early == NO_KEY:
         return TOOL_ERROR, "env var unset", None, None
     messages: list[dict[str, object]] = [{"role": "user", "content": PROMPT}]
@@ -120,7 +120,7 @@ def tool_probe(
     url = route.base_url.rstrip("/") + "/chat/completions"
     started = time.monotonic()
     try:
-        status_code, resp_headers, body = _probe._get_transport()(url, headers, payload, timeout)
+        status_code, resp_headers, body = _probe.get_transport()(url, headers, payload, timeout)
     except Exception as exc:
         return TOOL_ERROR, type(exc).__name__, None, None
     elapsed = int((time.monotonic() - started) * 1000)

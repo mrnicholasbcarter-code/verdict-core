@@ -277,6 +277,18 @@ def run_refresh(
         save_registry(reg, env)
         return reg
 
+    # Dedupe by route.key — keep first occurrence so that two routes sharing a
+    # key (same provider/model, different base_url or source) never cause one to
+    # inherit the other's proof.  Duplicates are silently dropped; they would
+    # otherwise produce a conflated result_by_key dict entry.
+    seen_keys: set[str] = set()
+    deduped_items: list[tuple[Route, str, str]] = []
+    for item in probe_items:
+        if item[0].key not in seen_keys:
+            seen_keys.add(item[0].key)
+            deduped_items.append(item)
+    probe_items = deduped_items
+
     just_routes = [r for r, _, _ in probe_items]
 
     # First stage: liveness probe
@@ -310,10 +322,11 @@ def run_refresh(
             if matching is not None:
                 breaker.open_pool(matching)
 
-    # Build registry entries for all probed routes
-    result_by_key = {r.route.key: r for r in probe_results}
-    for route, cap_class, cap_fact in probe_items:
-        pr = result_by_key.get(route.key)
+    # Build registry entries for all probed routes.
+    # Use parallel iteration (zip) rather than a key-based dict so that proof
+    # is always attached to the exact route it was measured on; a dict would
+    # allow two routes with the same key to inherit each other's result.
+    for (route, cap_class, cap_fact), pr in zip(probe_items, probe_results, strict=True):
         tr = tool_results.get(route.key)
         entries.append(_make_entry(route, cap_class, cap_fact, pr, tr, now_iso, breaker))
 
