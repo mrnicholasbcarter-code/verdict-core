@@ -4,6 +4,7 @@
 **Date:** 2026-11-17
 **Deciders:** Operator
 **Amends:** ADR-036 (Planner and Reviewer selection)
+**Amended by:** ADR-043 (ordering stage within a capacity class, 2026-11-20)
 **Related:** ADR-0001 (Control-plane invariants), ADR-032 (Core model metadata store)
 
 ## Context
