@@ -197,11 +197,11 @@
   },
   {
     "qualified_name": "verdict.evaluation.EvaluationController",
-    "reason": "UNTRIAGED: EvaluationController has only non-production references; Evidence-gated shadow, counterfactual, and promotion evaluation (verdict/evaluation.py)."
+    "reason": "KEEP: EvaluationController is the public promotion/kill-switch/rollback controller for the evidence-gated evaluation system; test_only_caller today because the evaluation pipeline is wired only in tests pending live acceptance runs (BOD-342 D15). Part of the verdict public surface via verdict/__init__.py."
   },
   {
     "qualified_name": "verdict.evaluation.build_evaluation_report",
-    "reason": "UNTRIAGED: build_evaluation_report has only non-production references; Evidence-gated shadow, counterfactual, and promotion evaluation (verdict/evaluation.py)."
+    "reason": "KEEP: build_evaluation_report is the public report-builder for the evidence-gated evaluation pipeline; test_only_caller today pending live wiring (BOD-342 D15). Part of the verdict public surface via verdict/__init__.py."
   },
   {
     "qualified_name": "verdict.execution_path.apply_bounded_recovery",
