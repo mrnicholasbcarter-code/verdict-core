@@ -258,3 +258,36 @@ def test_free_tier_model_route_id_normalizes_provider_case() -> None:
     assert row.route_id == "kc/meta-llama/model", (
         f"provider must be lowercase in route_id; got {row.route_id!r}"
     )
+
+
+def test_free_tier_model_route_id_mixed_case_prefix_normalizes() -> None:
+    """OCR finding: when model_id already carries the provider prefix but in a
+    different case (provider='KC', model_id='KC/meta-llama/x:free'), route_id
+    must lowercase the provider segment and not preserve the original casing.
+
+    Before the fix, `return m` in the double-prefix branch returned
+    'KC/meta-llama/x:free', which silently failed to match the catalog route id
+    'kc/meta-llama/x:free' and caused the genuinely free route to be skipped.
+    """
+    from verdict.free_tier_admit import FreeTierModel
+
+    # Case 3: model_id already starts with provider, but provider is uppercase
+    row = FreeTierModel(model_id="KC/meta-llama/x:free", provider="KC")
+    assert row.route_id == "kc/meta-llama/x:free", (
+        f"provider prefix must be lowercased even when model_id already carries it; "
+        f"got {row.route_id!r}"
+    )
+
+    # All three shapes now return a consistent, lowercase-provider route id
+    assert (
+        FreeTierModel(model_id="meta-llama/x:free", provider="kc").route_id
+        == "kc/meta-llama/x:free"
+    )
+    assert (
+        FreeTierModel(model_id="kc/meta-llama/x:free", provider="kc").route_id
+        == "kc/meta-llama/x:free"
+    )
+    assert (
+        FreeTierModel(model_id="KC/meta-llama/x:free", provider="KC").route_id
+        == "kc/meta-llama/x:free"
+    )

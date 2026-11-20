@@ -173,7 +173,9 @@ class FreeTierModel:
         p = self.provider.lower() if self.provider else ""
         m = self.model_id
         if p and m.lower().startswith(f"{p}/"):
-            return m  # model_id already carries the provider prefix
+            # model_id already carries the provider prefix; normalise to lowercase
+            # provider so the returned id always matches catalog route-id format.
+            return f"{p}/{m[len(p) + 1 :]}"
         return f"{p}/{m}" if p else m
 
 
