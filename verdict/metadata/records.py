@@ -432,13 +432,25 @@ class FieldConflict:
         return payload
 
 
+LeafJoin = Literal["explicit", "leaf"]
+
+
 @dataclass(frozen=True)
 class MetadataLookup:
-    """Read API for later capability gating."""
+    """Read API for later capability gating.
+
+    ``join`` records how the route was matched to a metadata record:
+    ``"explicit"`` for identity-map or omniroute_id equality;
+    ``"leaf"`` for the normalised-leaf index; ``None`` only when no join step
+    matched (the route is unmapped).  A drop does not reset ``join``:
+    ``map_target_missing`` and required-field drops still carry the join
+    provenance from whichever step resolved the route id.
+    """
 
     omniroute_id: str
     record: ModelMetadataRecord | None
     drop: MetadataDrop | None
+    join: LeafJoin | None = None
 
     @property
     def admitted_for_caps(self) -> bool:
@@ -464,13 +476,15 @@ class MetadataLookup:
         return cited
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "omniroute_id": self.omniroute_id,
             "admitted_for_caps": self.admitted_for_caps,
             "record": None if self.record is None else self.record.to_dict(),
             "drop": None if self.drop is None else self.drop.to_dict(),
             "provenance": self.provenance_for_receipt(),
         }
+        payload["join"] = self.join
+        return payload
 
 
 def resolve_required_name(name: str) -> str:

@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from verdict.metadata.mapping import IdentityMap
-from verdict.metadata.records import ModelMetadataError, ModelMetadataRecord
+from verdict.metadata.records import LeafJoin, ModelMetadataError, ModelMetadataRecord
 from verdict.metadata.store import MetadataSnapshot, lookup_omniroute_id
 
 # Same line the doctor's metadata row draws: older than 12 hours is stale.
@@ -35,6 +35,8 @@ class RatedModel:
 
     ``score``/``metric``/``source``/``as_of`` are what the store holds for the
     task metric, even when stale. ``basis`` is what the order used.
+    ``join`` records how the route was matched to its metadata record
+    (``"explicit"`` for map/omniroute-id, ``"leaf"`` for normalised-leaf).
     """
 
     route_id: str
@@ -45,6 +47,7 @@ class RatedModel:
     as_of: str | None
     tier: int | None = None
     basis: RatingBasis = "unknown"
+    join: LeafJoin | None = None
 
 
 def rating_metric(task_family: str) -> str:
@@ -95,9 +98,12 @@ def rate_model(
     as_of: str | None = None
     used_metric = metric
     basis: RatingBasis = "unknown"
+    record_join: LeafJoin | None = None
     if metadata is not None:
         try:
-            record = lookup_omniroute_id(metadata, route_id, identity_map=identity_map).record
+            lu = lookup_omniroute_id(metadata, route_id, identity_map=identity_map)
+            record = lu.record
+            record_join = lu.join
         except ModelMetadataError:
             record = None
         score, source, as_of = _score_field(record, metric)
@@ -126,6 +132,7 @@ def rate_model(
         as_of=as_of,
         tier=declared_tier,
         basis=basis,
+        join=record_join,
     )
 
 

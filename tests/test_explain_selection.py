@@ -292,6 +292,7 @@ class TestBehaviourParityAcrossFixtures:
                 "rating_metric",
                 "rating_source",
                 "rating_as_of",
+                "rating_join",
                 "advisory_rank",
                 "advisory_category",
                 "advisory_omission",
