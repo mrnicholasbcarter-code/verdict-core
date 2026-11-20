@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from verdict.arena.canonical import slug
+from verdict.arena.canonical import Drop, parse_name, slug
 from verdict.arena.crosswalk import LintIssue, lint_crosswalk, load_crosswalk
 from verdict.arena.match import build_store_index, match_rows
 from verdict.arena.rank import _MIN_REF_SET, ROLE_CHAINS, _build_reference_set
@@ -73,7 +73,15 @@ def coverage_report(
         unmatched_names.setdefault(cfg_drop, []).append(d.model_name)
 
     # Crosswalk lint: missing targets and unused entries
-    arena_row_keys: set[tuple[str, str]] = {(m.parsed.org, m.parsed.key) for m in matches}
+    # An entry is used when any Arena row canonicalises to its key, whether that
+    # row matched, hit a crosswalk drop entry, or was dropped in a collision.
+    arena_row_keys: set[tuple[str, str]] = set()
+    for r in overall_rows:
+        parsed_row = parse_name(
+            str(r.get("model_name", "")), str(r.get("organization", "")), crosswalk.org_providers
+        )
+        if not isinstance(parsed_row, Drop):
+            arena_row_keys.add((parsed_row.org, parsed_row.key))
     lint_issues: list[LintIssue] = lint_crosswalk(crosswalk, arena_row_keys, store_ids)
 
     # Twin groups

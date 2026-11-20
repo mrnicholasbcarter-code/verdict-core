@@ -181,3 +181,41 @@ def test_action_arena_coverage_no_snapshot_named_state(tmp_path: Path) -> None:
     result = _action_metadata_arena_coverage(snapshot_path=str(snap_path))
     assert result.ok
     assert result.data.get("status") == "no_snapshot"
+
+
+def test_drop_entry_that_hits_a_row_is_not_reported_unused(monkeypatch: Any) -> None:
+    """A crosswalk drop entry used by an Arena row must not be linted as crosswalk_unused."""
+    import verdict.arena.report as report_mod
+    from verdict.arena.crosswalk import Crosswalk, CrosswalkDropEntry
+
+    mini_cw = Crosswalk(
+        schema_version="1",
+        org_providers={"Anthropic": ["anthropic"]},
+        map_entries={},
+        drop_entries={
+            ("Anthropic", "claude-x"): CrosswalkDropEntry(
+                arena_org="Anthropic", arena_key="claude-x", arena_name="Claude X", reason="test"
+            )
+        },
+        all_keys=(("Anthropic", "claude-x"),),
+    )
+    monkeypatch.setattr(report_mod, "load_crosswalk", lambda _path=None: mini_cw)
+    rows: list[dict[str, Any]] = [
+        {
+            "model_name": "Claude X",
+            "organization": "Anthropic",
+            "category": "overall",
+            "_config": "text",
+            "rating": 1300.0,
+            "rating_lower": 1280.0,
+            "rating_upper": 1320.0,
+            "vote_count": 10000.0,
+            "rank": 1,
+            "leaderboard_publish_date": "2026-11-15",
+        }
+    ]
+
+    report = coverage_report(rows, frozenset({"anthropic/claude-y"}), now=CLOCK)
+
+    unused = [i for i in report["lint_issues"] if i["kind"] == "crosswalk_unused"]
+    assert unused == [], unused
