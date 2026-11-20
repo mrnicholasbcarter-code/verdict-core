@@ -33,7 +33,7 @@ from verdict.metadata import (
     lookup_omniroute_id,
     refresh_metadata,
 )
-from verdict.metadata.records import CapabilityCaps, ModelMetadataRecord
+from verdict.metadata.records import CapabilityCaps, ModelMetadataRecord, SoftScores
 from verdict.metadata.sources import (
     MODELS_DEV_API_URL,
     HttpxJsonTransport,
@@ -283,6 +283,99 @@ class TestMappingAndDrops:
         )
         assert found.drop is not None
         assert found.drop.reason == DROP_STALE
+
+    # -- normalised-leaf (dash→dot) join tests --------------------------------
+
+    def _dash_dot_snapshot(self) -> MetadataSnapshot:
+        """Snapshot with a dash record (no scores) and its dot twin (has scores).
+
+        This mirrors the real store shape for the Claude 5.5 family:
+        models.dev models.json emits the dash id; api.json emits the dot id
+        with the OpenRouter Artificial Analysis scores attached.
+        """
+        prov_models = FieldProvenance(
+            source=SOURCE_MODELS_DEV_MODELS, fetched_at=FETCHED_AT, version="fixture"
+        )
+        prov_aa = FieldProvenance(source=SOURCE_OPENROUTER_AA, fetched_at=FETCHED_AT)
+        context = ProvenancedField(value=512_000, provenance=prov_models)
+        aa_score = ProvenancedField(value=80.0, provenance=prov_aa)
+        return MetadataSnapshot(
+            schema_version=METADATA_SCHEMA_VERSION,
+            refreshed_at=FETCHED_AT,
+            sources={},
+            records=(
+                # Dash record — from models.json, no AA scores.
+                ModelMetadataRecord(
+                    id="anthropic/claude-opus-5-5", caps=CapabilityCaps(context=context)
+                ),
+                # Dot record — from api.json, carries the AA score.
+                ModelMetadataRecord(
+                    id="anthropic/claude-opus-5.5",
+                    caps=CapabilityCaps(context=context),
+                    scores=SoftScores(aa_coding=aa_score),
+                ),
+            ),
+        )
+
+    def test_normalized_leaf_join_dash_to_dot_record(self) -> None:
+        """Dash-spelled inventory id resolves to the dot record via normalised leaf."""
+        snapshot = self._dash_dot_snapshot()
+        found = lookup_omniroute_id(snapshot, "cc/claude-opus-5-5")
+        assert found.record is not None, "should resolve via normalised-leaf join"
+        assert found.record.id == "anthropic/claude-opus-5.5"
+        assert found.drop is None
+        assert found.join == "leaf"
+
+    def test_normalized_leaf_join_provenance_is_leaf(self) -> None:
+        """join is 'leaf' when resolved via normalised-leaf index, 'explicit' via map."""
+        from verdict.metadata.mapping import IdentityMap
+
+        snapshot = self._dash_dot_snapshot()
+        # Leaf join — no explicit map.
+        leaf_found = lookup_omniroute_id(snapshot, "cc/claude-opus-5-5")
+        assert leaf_found.join == "leaf"
+        # Explicit map — overrides the leaf join.
+        mapping = IdentityMap(
+            omniroute_to_models_dev={"cc/claude-opus-5-5": "anthropic/claude-opus-5.5"}
+        )
+        explicit_found = lookup_omniroute_id(snapshot, "cc/claude-opus-5-5", identity_map=mapping)
+        assert explicit_found.record is not None
+        assert explicit_found.join == "explicit"
+
+    def test_ambiguous_normalized_leaf_is_named_drop(self) -> None:
+        """Two distinct models with the same normalised leaf → unmapped, not arbitrary pick."""
+        prov = FieldProvenance(
+            source=SOURCE_MODELS_DEV_MODELS, fetched_at=FETCHED_AT, version="fixture"
+        )
+        tools = ProvenancedField(value=True, provenance=prov)
+        # Both have no digit-dash-digit; they normalize to the same leaf but
+        # represent genuinely different models from different vendors.
+        snapshot = MetadataSnapshot(
+            schema_version=METADATA_SCHEMA_VERSION,
+            refreshed_at=FETCHED_AT,
+            sources={},
+            records=(
+                ModelMetadataRecord(id="acme/fast-model", caps=CapabilityCaps(tools=tools)),
+                ModelMetadataRecord(id="rival/fast-model", caps=CapabilityCaps(tools=tools)),
+            ),
+        )
+        found = lookup_omniroute_id(snapshot, "cc/fast-model")
+        assert found.record is None
+        assert found.drop is not None
+        assert found.drop.reason == DROP_UNMAPPED
+        assert "ambiguous" in (found.drop.detail or "").lower()
+
+    def test_no_digit_dash_digit_stays_unmapped_without_match(self) -> None:
+        """A route whose leaf has no digit-dash-digit is not normalised differently;
+        it must match a store record exactly or stay unmapped."""
+        snapshot = self._dash_dot_snapshot()
+        # cc/claude-fable-5 has leaf claude-fable-5; the final '-5' is
+        # alpha-dash-digit, not digit-dash-digit, so normalization leaves it
+        # unchanged.  No record in the store has that leaf → DROP_UNMAPPED.
+        found = lookup_omniroute_id(snapshot, "cc/claude-fable-5")
+        assert found.record is None
+        assert found.drop is not None
+        assert found.drop.reason == DROP_UNMAPPED
 
 
 class TestInventNever:

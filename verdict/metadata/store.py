@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
@@ -30,6 +31,7 @@ from verdict.metadata.records import (
     SOURCE_OPENROUTER_AA,
     FieldConflict,
     FieldProvenance,
+    LeafJoin,
     MetadataDrop,
     MetadataLookup,
     ModelMetadataError,
@@ -115,6 +117,10 @@ class MetadataSnapshot:
     @cached_property
     def _leaf_index(self) -> dict[str, ModelMetadataRecord | tuple[str, ...]]:
         return unique_leaf_models_json_index(self)
+
+    @cached_property
+    def _normalized_leaf_index(self) -> dict[str, ModelMetadataRecord | tuple[str, ...]]:
+        return all_records_normalized_leaf_index(self)
 
     def is_stale(self, now: datetime, max_age: timedelta) -> bool:
         refreshed = datetime.fromisoformat(self.refreshed_at.replace("Z", "+00:00"))
@@ -277,6 +283,56 @@ def unique_leaf_models_json_index(
     return index
 
 
+def _normalize_leaf_version(leaf: str) -> str:
+    """Normalise version separators: replace digit-dash-digit with digit-dot-digit.
+
+    ``claude-opus-5-5`` → ``claude-opus-5.5``.  A bare ``5`` at the end or
+    alpha-dash-digit is left unchanged so ``claude-fable-5`` stays as-is.
+    """
+    return re.sub(r"(?<=\d)-(?=\d)", ".", leaf)
+
+
+def all_records_normalized_leaf_index(
+    snapshot: MetadataSnapshot,
+) -> dict[str, ModelMetadataRecord | tuple[str, ...]]:
+    """Index ALL store records by their normalised leaf.
+
+    Normalised leaf = :func:`_normalize_leaf_version` applied to the raw leaf
+    after the last ``/``.  Disambiguation when multiple records share the same
+    normalised leaf:
+
+    1. Prefer records whose raw leaf already equals the normalised leaf (the
+       already-normalised / dot-format record wins over its dash twin).
+    2. If exactly one record survives that filter → use it.
+    3. Otherwise the leaf is ambiguous: a sorted tuple of competing ids is
+       stored; ``lookup_omniroute_id`` will produce a named drop.
+
+    The explicit map and ``_omniroute_index`` are tried first in
+    ``lookup_omniroute_id``; this index is the final fallback.
+    """
+    buckets: dict[str, list[ModelMetadataRecord]] = {}
+    for item in snapshot.records:
+        norm = _normalize_leaf_version(model_id_leaf(item.id))
+        buckets.setdefault(norm, []).append(item)
+    index: dict[str, ModelMetadataRecord | tuple[str, ...]] = {}
+    for norm_leaf, items in buckets.items():
+        if len(items) == 1:
+            index[norm_leaf] = items[0]
+            continue
+        # Prefer records whose raw leaf == normalised leaf (dot form wins
+        # over its dash twin).  This resolves anthropic/claude-opus-5-5 vs
+        # anthropic/claude-opus-5.5 to the dot record without over-riding
+        # genuine collisions between different models from different vendors.
+        already_norm = [r for r in items if model_id_leaf(r.id) == norm_leaf]
+        candidates = already_norm if already_norm else items
+        if len(candidates) == 1:
+            index[norm_leaf] = candidates[0]
+            continue
+        # Ambiguous: two or more distinct models share the normalised leaf.
+        index[norm_leaf] = tuple(sorted(r.id for r in candidates))
+    return index
+
+
 def lookup_omniroute_id(
     snapshot: MetadataSnapshot,
     omniroute_id: str,
@@ -288,12 +344,21 @@ def lookup_omniroute_id(
 ) -> MetadataLookup:
     """Resolve an OmniRoute inventory id against Core's store.
 
-    Join order: exact map → exact store id → unique leaf in
-    models.dev models.json → else named drop ``unmapped``. Ambiguous leaves
-    are named drops (never an arbitrary pick). Unmapped and required-unknown
-    are named drops for the later capability gate. This function does not admit
-    work and
-    does not consult OmniRoute metadata.
+    Join order:
+
+    1. Explicit identity map (``identity_map.models_dev_id_for``).
+    2. Exact ``_omniroute_index`` hit (record carries this id as an
+       ``omniroute_id``).
+    3. Normalised-leaf index across all records: strip provider prefix, replace
+       digit-dash-digit with digit-dot-digit, then match a unique record.
+       Ambiguous normalised leaves are named drops (never an arbitrary pick).
+
+    Join provenance is recorded in ``MetadataLookup.join``: ``"explicit"`` for
+    steps 1-2, ``"leaf"`` for step 3.
+
+    Unmapped and required-unknown are named drops for the later capability
+    gate.  This function does not admit work and does not consult OmniRoute
+    metadata.
     """
     if not isinstance(omniroute_id, str) or not omniroute_id.strip():
         raise ModelMetadataError("omniroute_id must be non-empty")
@@ -312,15 +377,22 @@ def lookup_omniroute_id(
             )
 
     index = snapshot._omniroute_index
+    join: LeafJoin | None = None
     models_dev_id = identity_map.models_dev_id_for(key) if identity_map is not None else None
+    if models_dev_id is not None:
+        join = "explicit"
     if models_dev_id is None and key in index:
         models_dev_id = index[key].id
+        join = "explicit"
     if models_dev_id is None:
+        # Step 3: normalised-leaf index covering all store records.
         leaf = model_id_leaf(key)
-        leaf_hit = snapshot._leaf_index.get(leaf)
-        if isinstance(leaf_hit, ModelMetadataRecord):
-            models_dev_id = leaf_hit.id
-        elif isinstance(leaf_hit, tuple):
+        norm_leaf = _normalize_leaf_version(leaf)
+        norm_hit = snapshot._normalized_leaf_index.get(norm_leaf)
+        if isinstance(norm_hit, ModelMetadataRecord):
+            models_dev_id = norm_hit.id
+            join = "leaf"
+        elif isinstance(norm_hit, tuple):
             return MetadataLookup(
                 omniroute_id=key,
                 record=None,
@@ -328,8 +400,8 @@ def lookup_omniroute_id(
                     omniroute_id=key,
                     reason=DROP_UNMAPPED,
                     detail=(
-                        f"ambiguous leaf {leaf!r} across models.dev models.json: "
-                        + ", ".join(leaf_hit)
+                        f"ambiguous normalised leaf {norm_leaf!r} across store records: "
+                        + ", ".join(norm_hit)
                     ),
                 ),
             )
@@ -342,7 +414,7 @@ def lookup_omniroute_id(
                     reason=DROP_UNMAPPED,
                     detail=(
                         "no explicit OmniRoute→models.dev map, no identity match, "
-                        "and no unique models.json leaf"
+                        "and no unique normalised leaf in store"
                     ),
                 ),
             )
@@ -372,8 +444,9 @@ def lookup_omniroute_id(
                 detail="required capability field was not fetched",
                 missing_fields=tuple(missing),
             ),
+            join=join,
         )
-    return MetadataLookup(omniroute_id=key, record=record, drop=None)
+    return MetadataLookup(omniroute_id=key, record=record, drop=None, join=join)
 
 
 def _fetch(transport: JsonTransport, url: str) -> tuple[FetchedDocument | None, SourceStatus]:
