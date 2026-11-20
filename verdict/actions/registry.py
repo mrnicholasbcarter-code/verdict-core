@@ -205,6 +205,26 @@ LAUNCH: dict[str, LaunchSpec] = {
         entry="verdict.flagship_demo:run_demo",
         section="Setup",
     ),
+    "bench": LaunchSpec(
+        reason=(
+            "cmd_bench (run_context_lift): measures context-pack lift on a "
+            "free model — plants a fact, packs it, and scores unaided vs "
+            "packed; writes evidence to VERDICT_HOME/context-lift/; "
+            "long-running measurement tool"
+        ),
+        entry="verdict.context_lift:run_context_lift",
+        section="Development",
+    ),
+    "bench.context-lift": LaunchSpec(
+        reason=(
+            "_cmd_bench_context_lift (run_context_lift): measures context-pack "
+            "lift on a free model — plants a fact, packs it, and scores "
+            "unaided vs packed; writes evidence to VERDICT_HOME/context-lift/; "
+            "long-running measurement tool"
+        ),
+        entry="verdict.context_lift:run_context_lift",
+        section="Development",
+    ),
     "benchmark": LaunchSpec(
         reason=(
             "cmd_benchmark (run_reproducible_benchmarks/run_savings_bench): "
