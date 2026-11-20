@@ -1194,6 +1194,8 @@ def installed_service_rows(
     rows.append(_context_lift_timer_row(injected_timer_state))
     rows.append(_admit_snapshot_timer_row(injected_timer_state))
     rows.append(_admit_snapshot_freshness_row(now=now))
+    rows.append(_discovery_refresh_timer_row(injected_timer_state))
+    rows.append(_discovery_refresh_freshness_row(now=now))
     rows.extend(_ref_docs_rows(ref_docs_status))
     rows.append(report_row(now=now))
     rows.append(omniroute_webhook_row(now=now))
@@ -1592,6 +1594,98 @@ def _admit_snapshot_freshness_row(
         "label": label,
         "status": "warning",
         "detail": (f"{store.name} is {age_min}m old (threshold {int(threshold // 60)}m); {repair}"),
+    }
+
+
+def _discovery_refresh_timer_row(
+    timer_state: Callable[[str], dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """The 6-hour FREE-only discovery registry refresh timer is active."""
+    from verdict import discovery_refresh_service
+    from verdict.setup_host import DISCOVERY_REFRESH, setup_repair
+
+    unit = discovery_refresh_service.TIMER
+    state = (timer_state or discovery_refresh_service.timer_state)(unit)
+    name, result = str(state.get("state", "unknown")), str(state.get("result", "unknown"))
+    detail = f"{unit} is {name}; last result {result}"
+    label = "Discovery registry refresh timer"
+
+    if name == "active" and result in {"success", "unknown"}:
+        return {"label": label, "status": "ok", "detail": detail}
+    if name == "missing":
+        detail += f"; repair: {setup_repair(DISCOVERY_REFRESH)}"
+        return {"label": label, "status": "failed", "detail": detail}
+    if name == "inactive":
+        detail += f"; repair: systemctl --user enable --now {unit}"
+    else:
+        detail += (
+            "; repair: verdict discovery refresh --free-only --force; "
+            f"logs: journalctl --user -u {discovery_refresh_service.SERVICE}"
+        )
+    return {"label": label, "status": "failed", "detail": detail}
+
+
+def _discovery_refresh_freshness_row(
+    *, now: datetime | None = None, path: Path | None = None
+) -> dict[str, str]:
+    """Age of ``discovery/registry.json``; warns when missing or at/past TTL.
+
+    Uses ``"warning"`` (not ``"failed"``) so it does not block doctor before
+    the timer is first installed.
+    """
+    import json
+
+    from verdict.discovery.registry import REGISTRY_TTL_S, registry_path
+    from verdict.discovery_refresh_service import REGISTRY_FRESHNESS_WARN_S
+    from verdict.setup_host import DISCOVERY_REFRESH, setup_repair
+
+    label = "Discovery registry freshness"
+    repair = f"repair: {setup_repair(DISCOVERY_REFRESH)}"
+    store = path or registry_path()
+    now_dt = now or datetime.now(timezone.utc)
+
+    try:
+        raw = store.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"label": label, "status": "warning", "detail": f"{store.name} is missing; {repair}"}
+    except (OSError, UnicodeDecodeError):
+        return {
+            "label": label,
+            "status": "warning",
+            "detail": f"{store.name} is unreadable; {repair}",
+        }
+
+    try:
+        data = json.loads(raw)
+        written_at_str = data.get("written_at", "") if isinstance(data, dict) else ""
+        written_at = datetime.fromisoformat(written_at_str)
+        if written_at.tzinfo is None:
+            written_at = written_at.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError, AttributeError):
+        return {
+            "label": label,
+            "status": "warning",
+            "detail": f"{store.name} has no readable written_at; {repair}",
+        }
+
+    age_s = (now_dt - written_at).total_seconds()
+    age_h = age_s / 3600
+    ttl_h = REGISTRY_TTL_S // 3600
+    if age_s < REGISTRY_FRESHNESS_WARN_S:
+        return {
+            "label": label,
+            "status": "ok",
+            "detail": (
+                f"{store.name} age {age_h:.1f}h (TTL {ttl_h}h); "
+                f"{data.get('counts', {}).get('tool_ok', 0)} tool-ok entries"
+                if isinstance(data, dict)
+                else f"{store.name} age {age_h:.1f}h (TTL {ttl_h}h)"
+            ),
+        }
+    return {
+        "label": label,
+        "status": "warning",
+        "detail": (f"{store.name} is {age_h:.1f}h old (TTL {ttl_h}h); {repair}"),
     }
 
 

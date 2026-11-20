@@ -1412,6 +1412,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 force=getattr(args, "force", False),
                 context_tokens=getattr(args, "context_tokens", 18000),
                 wall_budget_s=getattr(args, "wall_budget_s", 300.0),
+                free_only=getattr(args, "free_only", False),
             )
             if getattr(args, "output_json", False):
                 print(_json.dumps(refresh_result, indent=2))

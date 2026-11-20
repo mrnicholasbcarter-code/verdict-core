@@ -69,3 +69,12 @@ def register(subparsers: Any) -> None:
         dest="wall_budget_s",
         help="Wall-clock budget in seconds for the full refresh (default 300).",
     )
+    refresh_p.add_argument(
+        "--free-only",
+        action="store_true",
+        dest="free_only",
+        help=(
+            "Probe FREE-capacity routes only; skip subscription routes "
+            "(no paid or subscription calls)."
+        ),
+    )

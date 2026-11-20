@@ -744,7 +744,7 @@ class ActionDiscoveryRefreshTest(unittest.TestCase):
                 dry_run=True, context_tokens=1000, wall_budget_s=10.0, force=True
             )
         mock_refresh.assert_called_once_with(
-            dry_run=True, context_tokens=1000, wall_budget_s=10.0, force=True
+            dry_run=True, context_tokens=1000, wall_budget_s=10.0, force=True, free_only=False
         )
 
 

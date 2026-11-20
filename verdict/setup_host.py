@@ -50,6 +50,7 @@ DOCS_REFRESH = "host.docs-refresh-timer"
 PR_WATCHER = "host.pr-watcher-timer"
 CONTEXT_LIFT = "host.context-lift-timer"
 ADMIT_SNAPSHOT = "host.admit-snapshot-timer"
+DISCOVERY_REFRESH = "host.discovery-refresh-timer"
 #: Apply order: ADMIT_SNAPSHOT before SERVE so the last-good file is fresh when
 #: the serve unit first starts.
 ORDER = (
@@ -62,6 +63,7 @@ ORDER = (
     PR_WATCHER,
     CONTEXT_LIFT,
     ADMIT_SNAPSHOT,
+    DISCOVERY_REFRESH,
     SERVE,
     PRIME,
 )
@@ -368,6 +370,11 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
 
         rendered = admit_snapshot_service.manage_service(unit_dir=env.unit_dir, dry_run=True)
         return _timer_problems(env, rendered, admit_snapshot_service.TIMER)
+    if provider_id == DISCOVERY_REFRESH:
+        from verdict import discovery_refresh_service
+
+        rendered = discovery_refresh_service.manage_service(unit_dir=env.unit_dir, dry_run=True)
+        return _timer_problems(env, rendered, discovery_refresh_service.TIMER)
     if provider_id == SERVE:
         from verdict import serve_service
 
@@ -495,6 +502,22 @@ _ACTIONS: dict[str, dict[str, str]] = {
         "postcondition": "verdict-admit-snapshot.timer is active.",
         "undo": "verdict admission refresh --uninstall",
         "install_command": "verdict setup --apply --allow host.admit-snapshot-timer",
+    },
+    DISCOVERY_REFRESH: {
+        "description": (
+            "Install the 6-hour discovery registry refresh timer "
+            "(FREE-capacity routes only; no paid or subscription calls)."
+        ),
+        "security_impact": (
+            "Writes two systemd user units; every 6 hours the job calls "
+            "verdict discovery refresh --free-only --force which probes FREE-capacity "
+            "routes only (--free-only), never paid or subscription; bounded by "
+            "--wall-budget 300 (5 minutes); writes "
+            "$VERDICT_HOME/discovery/registry.json."
+        ),
+        "postcondition": "verdict-discovery-refresh.timer is active.",
+        "undo": "verdict setup --apply --allow host.discovery-refresh-timer --uninstall",
+        "install_command": "verdict setup --apply --allow host.discovery-refresh-timer",
     },
     SERVE: {
         "description": (
@@ -731,6 +754,15 @@ def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[st
 
             steps = _install_timers(env, admit_snapshot_service.manage_service)
             return {"status": "applied", "note": f"{admit_snapshot_service.TIMER} enabled", **steps}
+        if provider_id == DISCOVERY_REFRESH:
+            from verdict import discovery_refresh_service
+
+            steps = _install_timers(env, discovery_refresh_service.manage_service)
+            return {
+                "status": "applied",
+                "note": f"{discovery_refresh_service.TIMER} enabled",
+                **steps,
+            }
         if provider_id == SERVE:
             return _install_serve(env)
         if provider_id == PRIME:
