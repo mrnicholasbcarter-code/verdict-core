@@ -3219,6 +3219,7 @@ async def get_run_events(
         byte_total = 0
         truncated = False
         next_seq: int | None = None
+        last_processed_seq: int | None = None  # tracks last seq emitted or skipped
 
         with os.fdopen(fd, "rb") as fh:
             for raw_line in fh:
@@ -3254,6 +3255,7 @@ async def get_run_events(
                     # Report the seq so the caller knows a seq was skipped.
                     oversized_seqs.append(seq)
                     truncated = True
+                    last_processed_seq = seq
                     continue
                 if byte_total + event_size > _RUNS_EVENTS_BYTE_BUDGET:
                     # Adding this event would exceed the byte budget; stop here.
@@ -3262,6 +3264,7 @@ async def get_run_events(
                     break
                 byte_total += event_size
                 collected.append(safe_evt)
+                last_processed_seq = seq
                 if len(collected) >= limit:
                     # Peek at the next matching event to populate next_seq.
                     # We read one more line from the file (already open).
@@ -3291,6 +3294,13 @@ async def get_run_events(
                         break
                     break
 
+        # When truncated only because of oversized events (the byte-budget
+        # and limit-peek paths set next_seq themselves), set next_seq to
+        # one past the last emitted-or-skipped seq so the client always
+        # has a valid cursor.  Convention matches the other two paths:
+        # next_seq = first seq NOT in this response.
+        if truncated and next_seq is None and last_processed_seq is not None:
+            next_seq = last_processed_seq + 1
         return {
             "events": collected,
             "next_seq": next_seq,
@@ -3321,12 +3331,12 @@ async def get_run_receipt(run_id: str) -> Response:
         """Raised from _load_and_verify when the file is missing or is a symlink."""
 
     def _load_and_verify() -> dict[str, Any]:
-        from verdict.orchestration.receipt import verify_run_receipt
+        from verdict.orchestration.receipt import verify_run_receipt_from_bytes
 
-        # Open with O_NOFOLLOW so the check and the read are one atomic
-        # operation: a symlink swapped in after any earlier check (e.g. an
-        # is_symlink() guard in the caller) is still rejected.  OSError covers
-        # ELOOP (symlink), ENOENT (missing), and other access failures.
+        # Open receipt.json with O_NOFOLLOW so the check and the read are one
+        # atomic operation: a symlink swapped in after any earlier check is
+        # still rejected.  OSError covers ELOOP (symlink), ENOENT (missing),
+        # and other access failures.
         try:
             fd = os.open(str(receipt_path), os.O_RDONLY | os.O_NOFOLLOW)
         except OSError as exc:
@@ -3351,15 +3361,26 @@ async def get_run_receipt(run_id: str) -> Response:
                 "verification": {"ok": False, "problems": [f"cannot read receipt: {exc}"]},
             }
 
-        # Pass repair=False so EventLog never truncates events.jsonl.  This
-        # holds unconditionally — even if a live run appends a partial line
-        # between any earlier check and this call.  A torn tail causes an
-        # events_digest mismatch in the returned problems, which is the
-        # correct observable outcome for a mid-write state.
-        problems = verify_run_receipt(run_dir, repair=False)
+        # Read events.jsonl once with O_NOFOLLOW.  Both files are read exactly
+        # once; verify_run_receipt_from_bytes uses these same bytes so the
+        # verification verdict and the returned receipt always describe the
+        # same content — no second read of either file.  OSError (ELOOP for
+        # a symlink, ENOENT for a missing file, …) → events_raw=None →
+        # verify_run_receipt_from_bytes reports a missing-events problem.
+        events_path = run_dir / "events.jsonl"
+        events_raw: bytes | None = None
+        try:
+            efd = os.open(str(events_path), os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(efd, "rb") as fh:
+                events_raw = fh.read()
+        except OSError:
+            pass
+
+        # Verification runs on raw file bytes; redaction happens after.
+        # A torn tail or digest mismatch appears as problems in the response.
+        problems = verify_run_receipt_from_bytes(raw, events_raw, run_dir)
         return {
             "run_id": run_id,
-            # Verification runs on raw file bytes first; redaction happens after.
             "receipt": _redact_event_data(receipt_data),
             "verification": {"ok": not problems, "problems": problems},
         }

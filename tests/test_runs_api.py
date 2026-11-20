@@ -886,6 +886,81 @@ class TestOversizedEvents:
         assert body["truncated"] is True
         assert 1 in body["oversized_seqs"]
 
+    def test_oversized_event_in_middle_sets_next_seq(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An oversized seq in the middle must leave next_seq set, not None.
+
+        truncated=True with next_seq=None prevents clients from polling for
+        new events on a live run.  next_seq must always be non-None when
+        truncated=True, and following it must return any events appended later.
+        """
+        from verdict.api import _RUNS_EVENTS_BYTE_BUDGET
+
+        large_payload = "x" * (_RUNS_EVENTS_BYTE_BUDGET + 1)
+        events = [
+            {
+                "seq": 1,
+                "at": "2026-01-01T00:00:00Z",
+                "type": "small_before",
+                "node_id": "",
+                "data": {},
+            },
+            {
+                "seq": 2,
+                "at": "2026-01-01T00:00:01Z",
+                "type": "big_event",
+                "node_id": "",
+                "data": {"blob": large_payload},
+            },
+            {
+                "seq": 3,
+                "at": "2026-01-01T00:00:02Z",
+                "type": "small_after",
+                "node_id": "",
+                "data": {},
+            },
+        ]
+        run_dir = _make_run(tmp_path, "mid-oversized", events=events)
+
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/mid-oversized/events", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+
+        # seq=2 is oversized; seq=1 and seq=3 must be collected.
+        seqs = [e["seq"] for e in body["events"]]
+        assert seqs == [1, 3]
+        assert body["truncated"] is True
+        assert 2 in body["oversized_seqs"]
+
+        # next_seq must be set so the client can continue (live-tail polling).
+        assert body["next_seq"] is not None, (
+            "next_seq must not be None when truncated=True (oversized event in middle)"
+        )
+
+        # Append seq=4 to events.jsonl; following next_seq must return it.
+        next_seq = body["next_seq"]
+        with (run_dir / "events.jsonl").open("a") as fout:
+            fout.write(
+                json.dumps(
+                    {
+                        "seq": 4,
+                        "at": "2026-01-01T00:00:03Z",
+                        "type": "appended",
+                        "node_id": "",
+                        "data": {},
+                    }
+                )
+                + "\n"
+            )
+        r2 = client.get(f"/v1/runs/mid-oversized/events?after_seq={next_seq - 1}", headers=AUTH)
+        assert r2.status_code == 200
+        body2 = r2.json()
+        assert any(e["seq"] == 4 for e in body2["events"]), (
+            "appended event must be reachable via next_seq"
+        )
+
     def test_oversized_event_followed_by_small_event(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -1057,11 +1132,14 @@ class TestReceiptTOCTOU:
     def test_torn_tail_injected_mid_call_is_not_repaired(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Torn tail injected AFTER receipt bytes are read but before verify runs.
+        """Torn tail injected AFTER both files are read does not affect the response.
 
-        Simulates the TOCTOU window: a live run appends a partial line between
-        any intermediate step and the EventLog open.  With repair=False the
-        file must still be byte-identical after the call.
+        Both receipt.json and events.jsonl are now read once at the start of
+        _load_and_verify().  An injection that happens after those reads (here,
+        inside the verify_run_receipt_from_bytes hook) is invisible to the
+        endpoint: it already holds the clean bytes.  The file is still not
+        repaired (repair=False is unconditional), and the response reflects the
+        pre-injection state.
         """
         from verdict.orchestration.receipt import EventLog, write_run_receipt
 
@@ -1074,19 +1152,22 @@ class TestReceiptTOCTOU:
 
         events_path = run_dir / "events.jsonl"
 
-        # Monkeypatch verify_run_receipt to inject a torn tail just before it
-        # reads the file, simulating a concurrent append.
+        # Monkeypatch verify_run_receipt_from_bytes to inject a torn tail just
+        # before the bytes-based verification, simulating a concurrent append
+        # that arrives after both files have already been read.
         from verdict.orchestration import receipt as receipt_mod
 
-        original_verify_fn = receipt_mod.verify_run_receipt
+        original_verify_fn = receipt_mod.verify_run_receipt_from_bytes
 
-        def _inject_then_verify(rd: Any, *, repair: bool = True) -> list[str]:
-            # Inject the torn tail now — AFTER the endpoint has read receipt.json.
+        def _inject_then_verify(
+            receipt_bytes: bytes, events_bytes: bytes | None, rd: Any, **kw: Any
+        ) -> list[str]:
+            # Inject AFTER both files were read by _load_and_verify().
             with events_path.open("ab") as f:
                 f.write(b'{"seq": 888, "injected')
-            return original_verify_fn(rd, repair=repair)
+            return original_verify_fn(receipt_bytes, events_bytes, rd, **kw)
 
-        monkeypatch.setattr(receipt_mod, "verify_run_receipt", _inject_then_verify)
+        monkeypatch.setattr(receipt_mod, "verify_run_receipt_from_bytes", _inject_then_verify)
 
         before_size_before_inject = events_path.stat().st_size
 
@@ -1099,8 +1180,11 @@ class TestReceiptTOCTOU:
         # file must NOT have been truncated by EventLog repair.
         assert len(after_bytes) > before_size_before_inject, "inject didn't work"
         body = r.json()
-        # With a torn tail the digest changes → problems must be non-empty.
-        assert body["verification"]["ok"] is False
+        # Injection happened AFTER both files were read; the endpoint already
+        # holds the clean pre-injection bytes, so no digest mismatch is
+        # detected.  This confirms: both files are read once, eliminating the
+        # second-read TOCTOU window.
+        assert body["verification"]["ok"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1483,6 +1567,71 @@ class TestVerifyNoFollowOpens:
         assert all(f & os.O_NOFOLLOW for _, f in events_opens), (
             f"O_NOFOLLOW not set for events.jsonl: {events_opens}"
         )
+
+    def test_receipt_reads_each_file_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """receipt.json and events.jsonl must each be opened exactly once.
+
+        Before the fix, verify_run_receipt(repair=False) opened both files a
+        second time, so a concurrent swap could produce a verdict that
+        describes different bytes from the ones returned.  Now both files are
+        read once in _load_and_verify() and the bytes are passed directly to
+        verify_run_receipt_from_bytes.
+
+        The second-open redirect: if os.open is called a second time for
+        receipt.json, it is redirected to a garbage file; if the response
+        reflects that garbage the fix is broken.
+        """
+        from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+        run_dir = tmp_path / "runs" / "single-read"
+        run_dir.mkdir(parents=True)
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("run_started", run_id="single-read", goal="single read test")
+        log.emit("run_finished", outcome="BLOCKED", reason="x")
+        write_run_receipt(run_dir)
+
+        # Read the real receipt for comparison.
+        original_receipt = json.loads((run_dir / "receipt.json").read_bytes())
+
+        # Write a garbage file; a second open of receipt.json is redirected here.
+        garbage = tmp_path / "garbage.json"
+        garbage.write_text('{"GARBAGE": true, "run_id": "GARBAGE_VALUE"}')
+
+        receipt_file = str(run_dir / "receipt.json")
+        events_file = str(run_dir / "events.jsonl")
+        open_counts: dict[str, int] = {}
+        real_open = os.open
+
+        def _counting_open(path: str, flags: int, *args: object, **kwargs: object) -> int:
+            open_counts[path] = open_counts.get(path, 0) + 1
+            if path == receipt_file and open_counts[path] > 1:
+                # Redirect second open to garbage so we can detect misuse.
+                return real_open(str(garbage), flags & ~os.O_NOFOLLOW, *args, **kwargs)  # type: ignore[arg-type]
+            return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(os, "open", _counting_open)
+
+        client = _client(monkeypatch, tmp_path / "runs")
+        r = client.get("/v1/runs/single-read/receipt", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+
+        # Each file opened exactly once (no second read).
+        assert open_counts.get(receipt_file, 0) == 1, (
+            f"receipt.json opened {open_counts.get(receipt_file, 0)} time(s), expected 1"
+        )
+        assert open_counts.get(events_file, 0) == 1, (
+            f"events.jsonl opened {open_counts.get(events_file, 0)} time(s), expected 1"
+        )
+
+        # Receipt in the response must match the original bytes, not the garbage.
+        assert body["receipt"].get("run_id") == original_receipt.get("run_id"), (
+            "returned receipt must come from the first read, not a redirected second read"
+        )
+        assert body["receipt"].get("run_id") != "GARBAGE_VALUE"
+        assert body["verification"]["ok"] is True
 
 
 # ---------------------------------------------------------------------------
