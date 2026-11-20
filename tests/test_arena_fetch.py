@@ -76,6 +76,15 @@ def test_is_fresh_returns_false_when_config_missing() -> None:
     assert _is_fresh(snapshot, CONFIG_TEXT, CLOCK) is False
 
 
+def test_is_fresh_handles_non_utc_offset_timestamp() -> None:
+    """fromisoformat parses offset-aware timestamps (e.g. +05:30) correctly."""
+    # Stored as a non-UTC offset: 1 hour ago in UTC is fresh regardless of the tz label.
+    # 2026-11-20T00:30:00+05:30 == 2026-11-19T19:00:00Z, which is 5 h before CLOCK.
+    fetched_offset = "2026-11-20T00:30:00+05:30"
+    snapshot = _minimal_snapshot(fetched_at={CONFIG_TEXT: fetched_offset})
+    assert _is_fresh(snapshot, CONFIG_TEXT, CLOCK, hours=REFRESH_INTERVAL_HOURS) is True
+
+
 # ---- refresh_arena_snapshot: skips when all configs are fresh -------------------
 
 
