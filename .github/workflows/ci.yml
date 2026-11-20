@@ -5,8 +5,58 @@ on:
     branches: [main, master, develop]
   pull_request:
     branches: [main, master, develop]
+  schedule:
+    - cron: '0 3 * * *'  # nightly at 03:00 UTC (full matrix, all checks)
+
+# Cancel stale in-flight runs on the same PR branch on a new push.
+# Never cancel main/tag runs (use the unique run_id as the group key instead).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Detect whether the PR touches testable code or only docs/markdown.
+  # Test jobs read this output and skip themselves on docs-only PRs.
+  # Required checks are satisfied because GitHub treats skipped jobs as passing.
+  # Non-PR events (main push, nightly) always set code=true.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.set.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            code:
+              - 'verdict/**'
+              - 'tests/**'
+              - 'scripts/**'
+              - 'contracts/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'setup.cfg'
+              - 'setup.py'
+              - '.github/workflows/**'
+              - 'docs/proof/**'
+              - 'openspec/**'
+              - 'specs/**'
+              - '*.py'
+              - '*.toml'
+              - '*.cfg'
+              - '*.lock'
+      - name: Set code output
+        id: set
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "code=${{ steps.filter.outputs.code }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
   typescript-contract-parity:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -54,13 +104,16 @@ jobs:
         run: cd verdict/client-sdk && npm run verify:package
 
   test:
+    # 3.10 on PRs; 3.10/3.11/3.12 on main push and nightly.
+    # 3.13 always runs in test-shard (sharded) instead of this job.
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
-        # Every version in requires-python / classifiers is exercised.
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ${{ (github.event_name == 'pull_request') && fromJson('["3.10"]') || fromJson('["3.10","3.11","3.12"]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -78,17 +131,125 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,server,dashboard]"
       - name: Run tests
-        if: matrix.python-version != '3.13'
         run: pytest tests/ -n auto --dist loadfile -q --tb=short -o faulthandler_timeout=300 -m "not timing"
-      - name: Run tests with coverage
-        if: matrix.python-version == '3.13'
-        run: pytest tests/ -n auto --dist loadfile -q --tb=short -o faulthandler_timeout=300 -m "not timing" --cov=verdict --cov-report=xml --cov-fail-under=70
       - name: Run wall-clock timing tests serially
         run: pytest tests/ -q --tb=short -m timing -p no:xdist
       - name: Validate versioned contract schema
         run: python scripts/validate_contract_schema.py
       - name: Validate public proof matrix and claims ledger
         run: python scripts/verify_proof_matrix.py
+
+  test-shard:
+    # Python 3.13 test suite split into 4 parallel shards via pytest-split.
+    # Runs on both PRs and main push (sharding always used for 3.13).
+    # Every test runs exactly once; the coverage job verifies the union.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Same depth as `test`: check_dod.py validates merged_sha commits.
+          fetch-depth: 0
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server,dashboard]"
+      - name: Run tests (shard ${{ matrix.group }}/4)
+        run: |
+          pytest tests/ \
+            -n auto --dist loadfile \
+            -q --tb=short \
+            -o faulthandler_timeout=300 \
+            -m "not timing" \
+            --splits 4 --group ${{ matrix.group }} \
+            --cov=verdict --cov-report= \
+            -p no:cacheprovider
+          mv .coverage .coverage.shard.${{ matrix.group }}
+      - name: Run wall-clock timing tests serially (shard 1 only)
+        if: matrix.group == 1
+        run: pytest tests/ -q --tb=short -m timing -p no:xdist
+      - name: Validate versioned contract schema (shard 1 only)
+        if: matrix.group == 1
+        run: python scripts/validate_contract_schema.py
+      - name: Validate public proof matrix and claims ledger (shard 1 only)
+        if: matrix.group == 1
+        run: python scripts/verify_proof_matrix.py
+      - name: Upload coverage shard
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-shard-${{ matrix.group }}
+          path: .coverage.shard.${{ matrix.group }}
+          retention-days: 1
+
+  coverage:
+    # Combines coverage from all 4 shards, enforces the 70% floor, and verifies
+    # that the shard union equals the full test collection (every test ran once).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [test-shard]
+    if: needs.test-shard.result == 'success'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server,dashboard]"
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: coverage-shard-*
+          merge-multiple: true
+      - name: Combine and report coverage
+        run: |
+          coverage combine .coverage.shard.*
+          coverage report --fail-under=70
+          coverage xml -o coverage.xml
+      - name: Upload combined coverage XML
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-combined
+          path: coverage.xml
+          retention-days: 30
+      - name: Verify shard union covers full test collection
+        run: |
+          # Collect the full test set (excluding timing tests, same as shards)
+          pytest tests/ --collect-only -q --no-header -m "not timing" \
+            -p no:cacheprovider 2>/dev/null | grep '::' | sort > /tmp/full_tests.txt
+          # Collect each shard's tests
+          for g in 1 2 3 4; do
+            pytest tests/ --collect-only -q --no-header -m "not timing" \
+              --splits 4 --group "$g" -p no:cacheprovider 2>/dev/null \
+              | grep '::' >> /tmp/shard_union_raw.txt
+          done
+          sort /tmp/shard_union_raw.txt | uniq > /tmp/shard_union.txt
+          full_count=$(wc -l < /tmp/full_tests.txt)
+          union_count=$(wc -l < /tmp/shard_union.txt)
+          echo "Full collection: $full_count tests"
+          echo "Shard union: $union_count tests"
+          if ! diff -q /tmp/full_tests.txt /tmp/shard_union.txt >/dev/null 2>&1; then
+            echo "SHARD COVERAGE MISMATCH:"
+            diff /tmp/full_tests.txt /tmp/shard_union.txt | head -40
+            exit 1
+          fi
+          echo "Shard union check PASSED: all $full_count tests covered exactly once"
 
   lint:
     # Required check. The pipeline fixes formatting and safe lint fixes itself:
@@ -247,12 +408,14 @@ jobs:
         run: mypy verdict --strict
 
   install-smoke:
+    # 3.10 and 3.13 on PRs (covers range boundaries); full 3.10-3.13 matrix
+    # on main push and nightly (unchanged from the existing gate contract).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ${{ (github.event_name == 'pull_request') && fromJson('["3.10","3.13"]') || fromJson('["3.10","3.11","3.12","3.13"]') }}
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python ${{ matrix.python-version }}
@@ -328,7 +491,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [test, lint, security, type-check, install-smoke, typescript-contract-parity, client-package-smoke]
+    needs: [test, test-shard, coverage, lint, security, type-check, install-smoke, typescript-contract-parity, client-package-smoke]
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python

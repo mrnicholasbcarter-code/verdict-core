@@ -11,6 +11,12 @@ on:
     branches: [main, master, develop]
   workflow_dispatch:
 
+# Cancel stale in-flight proof runs on the same PR branch on a new push.
+# Never cancel main/tag runs (use the unique run_id as the group key instead).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
