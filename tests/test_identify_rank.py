@@ -12,7 +12,6 @@ from typing import Any, ClassVar
 
 import pytest
 
-from verdict.metadata import store as metadata_store
 from verdict.metadata.mapping import IdentityMap
 from verdict.metadata.records import (
     SOURCE_MODELS_DEV,
@@ -303,7 +302,7 @@ class TestLadderRanksByCapabilityNotPrice:
             "cc/model-sub",
         ]
 
-    def test_high_score_tier0_beats_lower_score_tier1_despite_larger_slack(
+    def test_smaller_slack_tier1_beats_larger_slack_tier0_regardless_of_score(
         self, tmp_path: Path
     ) -> None:
         rows = [
@@ -319,11 +318,14 @@ class TestLadderRanksByCapabilityNotPrice:
         verdicts = {v.route_id: v for v in ladder.evaluate(REQ, now=NOW)}
         assert verdicts["cc/tier0"].rank_components is not None
         assert verdicts["cc/tier1"].rank_components is not None
+        # tier0 has more slack (3) than tier1 (2) for max_capability_tier=3
         assert (
             verdicts["cc/tier0"].rank_components["slack"]
             > verdicts["cc/tier1"].rank_components["slack"]
         )
-        assert _ranked(ladder, REQ) == ["cc/tier0", "cc/tier1"]
+        # cheapest-sufficient-first: tier1 (slack=2) beats tier0 (slack=3)
+        # even though tier0 has a higher aa_coding score
+        assert _ranked(ladder, REQ) == ["cc/tier1", "cc/tier0"]
 
     def test_rank_components_expose_rating_provenance(self, tmp_path: Path) -> None:
         rows = [_ladder_row("cc/model", pricing={"input": 1.0, "output": 2.0})]
@@ -383,7 +385,7 @@ class TestSnapshotLookupIndexes:
             )
         return out
 
-    def test_repeated_lookups_keep_join_semantics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_repeated_lookups_keep_join_semantics(self) -> None:
         snap = self._snapshot()
         expected = [
             ("acme/alias-target", None),
@@ -392,18 +394,12 @@ class TestSnapshotLookupIndexes:
             (None, "unmapped"),
             (None, "unmapped"),
         ]
-        scans: list[str] = []
-        real = metadata_store._record_from_models_json
-
-        def counting(record: ModelMetadataRecord) -> bool:
-            scans.append(record.id)
-            return real(record)
-
-        monkeypatch.setattr(metadata_store, "_record_from_models_json", counting)
         for _ in range(5):
             assert self._outcomes(snap) == expected
-        # The leaf index is built once per snapshot, not once per lookup.
-        assert len(scans) == len(snap.records)
+        # The normalised-leaf index is built once per snapshot instance.
+        first = snap._normalized_leaf_index
+        second = snap._normalized_leaf_index
+        assert first is second
 
     def test_indexes_are_per_snapshot(self) -> None:
         first = self._snapshot()
@@ -476,7 +472,9 @@ class TestActualSelectionRatingOrder:
             _record("acme/none", "p/none"),
         )
         ladder = _ladder(tmp_path, rows, conns, meta)
-        assert _ranked(ladder, REQ) == ["p/weak", "cc/opus", "p/none"]
+        # cheapest-sufficient-first: cc/opus (tier 0, slack=3) beats p/weak
+        # (unknown tier, slack=4) despite p/weak having an aa_coding score
+        assert _ranked(ladder, REQ) == ["cc/opus", "p/weak", "p/none"]
         verdicts = {v.route_id: v for v in ladder.evaluate(REQ, now=NOW)}
         rc = verdicts["cc/opus"].rank_components
         assert rc is not None
@@ -728,18 +726,24 @@ class TestShippedMapJoinsDotIdRatings:
     The OmniRoute inventory and models.dev models.json use dash ids
     (``anthropic/claude-opus-5-5``); the OpenRouter Artificial Analysis mirror
     rows use dot ids (``anthropic/claude-opus-5.5``) and the ratings join that
-    record in Core's store. The shipped explicit identity map joins the four
-    affected inventory routes to the record that carries the rating. Verified
-    read-only against the real local store 2026-10-21: exactly these dot ids
-    exist and hold the AA scores; the dash twins hold none. No dash/dot
-    normaliser and no related-model substitution may produce the join.
+    record in Core's store.  The shipped explicit identity map joins the four
+    affected inventory routes to the record that carries the rating.  The
+    normalised-leaf index also resolves dash-spelled inventory ids whose dot
+    twin holds a score; the explicit map takes precedence and is preferred.
     """
 
-    DOT_TARGETS: ClassVar[dict[str, tuple[str, float]]] = {
-        "cc/claude-opus-5-5": ("anthropic/claude-opus-5.5", 80.0),
-        "claude/claude-opus-5-5": ("anthropic/claude-opus-5.5", 80.0),
-        "cc/claude-fable-5-1": ("anthropic/claude-fable-5.1", 81.6),
-        "cc/claude-sonnet-5-5": ("anthropic/claude-sonnet-5.5", 71.5),
+    # Explicit map target (dot form) → (canonical dash id, score).
+    # The canonical id is the models.json dash record; the dot twin supplies
+    # scores which are merged while capability facts are preserved.
+    DOT_TARGETS: ClassVar[dict[str, tuple[str, str, float]]] = {
+        "cc/claude-opus-5-5": ("anthropic/claude-opus-5.5", "anthropic/claude-opus-5-5", 80.0),
+        "claude/claude-opus-5-5": ("anthropic/claude-opus-5.5", "anthropic/claude-opus-5-5", 80.0),
+        "cc/claude-fable-5-1": ("anthropic/claude-fable-5.1", "anthropic/claude-fable-5-1", 81.6),
+        "cc/claude-sonnet-5-5": (
+            "anthropic/claude-sonnet-5.5",
+            "anthropic/claude-sonnet-5-5",
+            71.5,
+        ),
     }
 
     def _store_record(
@@ -787,14 +791,24 @@ class TestShippedMapJoinsDotIdRatings:
 
         snapshot = self._snapshot()
         mapping = self._shipped_map()
-        for route, (target, score) in self.DOT_TARGETS.items():
+        for route, (_target, canonical_id, score) in self.DOT_TARGETS.items():
             found = lookup_omniroute_id(snapshot, route, identity_map=mapping)
             assert found.record is not None, route
-            assert found.record.id == target, route
+            # The canonical id is the models.json (dash) record; capability facts
+            # must not be lost to the dot twin even though the explicit map names
+            # the dot target.
+            assert found.record.id == canonical_id, route
+            assert found.record.caps.context is not None, f"{route}: context cap lost"
+            assert found.record.caps.context.provenance.source == SOURCE_MODELS_DEV_MODELS, route
             assert found.drop is None, route
+            assert found.join == "explicit", route
+            # Scores are merged from the dot twin.
+            assert found.record.scores.aa_coding is not None, route
+            assert found.record.scores.aa_coding.value == score, route
             rated = rate_model(route, metadata=snapshot, identity_map=mapping, now=NOW)
             assert (rated.basis, rated.score, rated.metric) == ("score", score, "aa_coding"), route
             assert rated.source == SOURCE_OPENROUTER_AA, route
+            assert rated.join == "explicit", route
 
     def test_similar_name_keeps_its_own_rating(self) -> None:
         from verdict.identify_rank import rate_model
@@ -808,14 +822,22 @@ class TestShippedMapJoinsDotIdRatings:
         rated = rate_model("cc/claude-opus-5", metadata=snapshot, identity_map=mapping, now=NOW)
         assert (rated.basis, rated.score) == ("score", 78.0)
 
-    def test_dot_spelled_inventory_id_is_not_normalised(self) -> None:
-        from verdict.metadata.records import DROP_UNMAPPED
-
+    def test_dot_spelled_inventory_id_resolves_via_leaf_join(self) -> None:
+        """A dot-spelled inventory id that is not in the explicit map still
+        resolves via the normalised-leaf index: the leaf ``claude-opus-5.5``
+        is already in its normalised form, so the index matches the models.json
+        dash record (which normalises to that leaf).  Scores from the dot twin
+        are merged in.  ``join`` is ``"leaf"`` because no explicit entry matched.
+        """
         snapshot = self._snapshot()
         mapping = self._shipped_map()
-        # The map keys dash inventory ids only; a dot-spelled id is a named
-        # drop, proving the join is explicit data and not a normaliser.
         found = lookup_omniroute_id(snapshot, "cc/claude-opus-5.5", identity_map=mapping)
-        assert found.record is None
-        assert found.drop is not None
-        assert found.drop.reason == DROP_UNMAPPED
+        assert found.record is not None
+        # The models.json (dash) record is kept as the canonical record so that
+        # capability facts are never lost to a dot-twin swap.
+        assert found.record.id == "anthropic/claude-opus-5-5"
+        assert found.drop is None
+        assert found.join == "leaf"
+        # Scores from the dot twin are merged in.
+        assert found.record.scores.aa_coding is not None
+        assert found.record.scores.aa_coding.value == 80.0

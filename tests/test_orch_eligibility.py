@@ -1288,9 +1288,9 @@ class TestDynamicAssignment:
             )
         )
         chosen, _ = self._select(tmp_path, replace(low_risk, frontier_worthy=True))
-        # Price-free: the declared-tier route (rated evidence) outranks
-        # classifier-only routes; small-model preference is no longer a rank.
-        assert chosen == "cc/claude-sonnet-5"
+        # Cheapest sufficient first: for a tier-3 task (low risk), haiku (tier 3,
+        # slack=0) beats sonnet (tier 2, slack=1) and opus (tier 0, slack=3).
+        assert chosen == "cc/claude-haiku-5"
 
     def test_insufficient_cheap_route_is_dropped_before_ranking(self, tmp_path: Path) -> None:
         review = TaskRequirements.for_node(WorkNode("r", "review", kind=NodeKind.REVIEW))
@@ -1330,10 +1330,12 @@ class TestDynamicAssignment:
             name: self._select(tmp_path / name, replace(req, frontier_worthy=True))[0]
             for name, req in (("a", bounded), ("b", medium), ("c", high))
         }
-        # The sufficiency floor still differs per unit; ranking inside it is
-        # price-free (declared tier evidence first, then slack).
+        # Cheapest sufficient first (slack before rating). For low-risk (tier-3
+        # task) haiku (slack=0) wins; for medium-risk (tier-2 task) haiku is
+        # insufficient and sonnet (slack=0) wins; for high-risk (tier-1 task)
+        # only opus passes, so opus wins.
         assert picks == {
-            "a": "cc/claude-sonnet-5",
+            "a": "cc/claude-haiku-5",
             "b": "cc/claude-sonnet-5",
             "c": "cc/claude-opus-5",
         }
@@ -1360,6 +1362,119 @@ class TestDynamicAssignment:
         chosen, _ = ladder.select(TaskRequirements(), now=NOW)
         # Price is excluded: equal routes fall through to the route_id tie-break.
         assert chosen is not None and chosen.route_id == "cx/gpt-5.4"
+
+
+class TestCheapestSufficientFirst:
+    """Slack-before-rating: cheapest route that meets the tier floor wins first."""
+
+    def test_tier_1_subscription_beats_tier_0_for_tier_1_task(self, tmp_path: Path) -> None:
+        """For a task requiring tier <= 1, tier-1 (slack=0) beats tier-0 (slack=1)."""
+        rows = [
+            {**row("cc/claude-opus-5", owned_by="claude"), "capability_tier": 0},  # slack=1
+            {**row("cc/claude-sonnet-5", owned_by="claude"), "capability_tier": 1},  # slack=0
+        ]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("claude")])
+        req = TaskRequirements(max_capability_tier=1)
+        chosen, verdicts = ladder.select(req, now=NOW)
+        assert chosen is not None and chosen.route_id == "cc/claude-sonnet-5", (
+            "tier-1 route (slack=0) must beat tier-0 route (slack=1) for a tier-1 task"
+        )
+        rc = by_route(verdicts)
+        assert rc["cc/claude-sonnet-5"].rank_components is not None
+        assert rc["cc/claude-sonnet-5"].rank_components["slack"] == 0
+        assert rc["cc/claude-opus-5"].rank_components is not None
+        assert rc["cc/claude-opus-5"].rank_components["slack"] == 1
+
+    def test_tier_0_wins_after_escalation_to_ceiling_0(self, tmp_path: Path) -> None:
+        """With escalation ceiling=0 the tier-1 route drops; only tier-0 survives."""
+        rows = [
+            {**row("cc/claude-opus-5", owned_by="claude"), "capability_tier": 0},
+            {**row("cc/claude-sonnet-5", owned_by="claude"), "capability_tier": 1},
+        ]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("claude")])
+        req = TaskRequirements(max_capability_tier=1, escalation_max_tier=0)
+        chosen, verdicts = ladder.select(req, now=NOW)
+        assert by_route(verdicts)["cc/claude-sonnet-5"].reason == "below_escalation_floor"
+        assert chosen is not None and chosen.route_id == "cc/claude-opus-5"
+
+    def test_equal_slack_ordered_by_rating(self, tmp_path: Path) -> None:
+        """When two routes share slack=0, declared-tier evidence beats unknown."""
+        rows = [
+            # Explicit capability_tier gives rating_rank=2 (declared tier).
+            {**row("kr/known-route", owned_by="kiro"), "capability_tier": 0},
+            # No capability_tier in row: classifier identifies tier 0 for
+            # admission, but rate_model sees declared_tier=None -> rating_rank=3.
+            row("cc/claude-opus-5-5", owned_by="claude"),
+        ]
+        ladder, _ = make_ladder(
+            tmp_path,
+            rows,
+            [conn("kiro"), conn("claude")],
+            metadata=None,  # disable external store: no scores either route
+        )
+        req = TaskRequirements(max_capability_tier=0)
+        chosen, verdicts = ladder.select(req, now=NOW)
+        rc = by_route(verdicts)
+        assert rc["kr/known-route"].rank_components["slack"] == 0
+        assert rc["cc/claude-opus-5-5"].rank_components["slack"] == 0
+        # Equal slack -> rating breaks the tie: declared > unknown.
+        assert chosen is not None and chosen.route_id == "kr/known-route"
+
+
+class TestRoleOrdering:
+    """role_ordering on TaskRequirements selects cheapest-sufficient vs strongest-first."""
+
+    def test_worker_node_picks_smallest_slack_sufficient_route(self, tmp_path: Path) -> None:
+        """An implement node uses cheapest_sufficient_first: slack=0 beats slack=1.
+
+        A tier-1 route (slack=0 for a tier-1 task) must beat a tier-0 route
+        (slack=1) when role_ordering is "cheapest_sufficient_first" (the default).
+        """
+        rows = [
+            {**row("cc/claude-opus-5", owned_by="claude"), "capability_tier": 0},  # slack=1
+            {**row("cc/claude-sonnet-5", owned_by="claude"), "capability_tier": 1},  # slack=0
+        ]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("claude")])
+        # Default role_ordering is "cheapest_sufficient_first".
+        req = TaskRequirements(max_capability_tier=1, role_ordering="cheapest_sufficient_first")
+        chosen, verdicts = ladder.select(req, now=NOW)
+        assert chosen is not None and chosen.route_id == "cc/claude-sonnet-5", (
+            "worker node must pick the smallest-slack sufficient route (cheapest_sufficient_first)"
+        )
+        rc = by_route(verdicts)
+        assert rc["cc/claude-sonnet-5"].rank_components is not None
+        assert rc["cc/claude-sonnet-5"].rank_components["slack"] == 0
+        assert (
+            rc["cc/claude-sonnet-5"].rank_components["ordering_basis"]
+            == "cheapest_sufficient_first"
+        )
+
+    def test_planner_node_picks_highest_rated_admitted_route(self, tmp_path: Path) -> None:
+        """A planner node uses strongest_first: tier-0 beats tier-1 even when slack is worse.
+
+        For a tier-1 max task, tier-0 (slack=1) has worse slack than tier-1 (slack=0),
+        but with role_ordering="strongest_first" the tier-0 route's lower rating_rank
+        wins because rating comes before slack in the sort key.
+        """
+        rows = [
+            # tier-0: rating_rank=2 (declared tier), slack=1 for a tier-1 task.
+            {**row("cc/claude-opus-5", owned_by="claude"), "capability_tier": 0},
+            # tier-1: rating_rank=2 (declared tier), slack=0 for a tier-1 task.
+            {**row("cc/claude-sonnet-5", owned_by="claude"), "capability_tier": 1},
+        ]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("claude")])
+        req = TaskRequirements(max_capability_tier=1, role_ordering="strongest_first")
+        chosen, verdicts = ladder.select(req, now=NOW)
+        assert chosen is not None and chosen.route_id == "cc/claude-opus-5", (
+            "planner node must pick the highest-rated admitted route (strongest_first)"
+        )
+        rc = by_route(verdicts)
+        assert rc["cc/claude-opus-5"].rank_components is not None
+        assert rc["cc/claude-opus-5"].rank_components["ordering_basis"] == "strongest_first"
+        # Tier-0 has slack=1 yet wins because rating comes before slack.
+        assert rc["cc/claude-opus-5"].rank_components["slack"] == 1
+        assert rc["cc/claude-sonnet-5"].rank_components is not None
+        assert rc["cc/claude-sonnet-5"].rank_components["slack"] == 0
 
 
 def test_unknown_capability_is_never_promoted_to_sufficient(tmp_path: Path) -> None:

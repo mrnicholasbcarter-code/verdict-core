@@ -125,9 +125,9 @@ How rankings order candidates:
   a trusted canonical alias). It never transfers to other models of the same
   provider.
 - Ranked routes get rank 1, 2, … by descending OmniRoute score. The rank is a
-  tie-break: it sorts after capacity tier, subscription token usage, task
-  rating, declared tier and capability slack, and before quota, provider
-  preference, load and fit.
+  tie-break: it sorts after capacity tier, capability slack (cheapest sufficient
+  route first), subscription token usage, task rating, declared tier, and before
+  quota, provider preference, load and fit.
 - **Tie-break:** when two admitted routes tie on every earlier key, a ranked
   route goes ahead of an unranked one. Unranked routes keep their baseline order
   relative to each other.

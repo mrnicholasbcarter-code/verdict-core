@@ -169,6 +169,7 @@ PLANNER_REQUIREMENTS = TaskRequirements(
     coding=True,
     reasoning=True,
     frontier_worthy=True,
+    role_ordering="strongest_first",
 )
 
 # Planner strength is the general intelligence index from Core's store.

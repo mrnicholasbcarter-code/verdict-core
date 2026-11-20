@@ -430,8 +430,10 @@ class TaskRequirements:
     exclude_pools: frozenset[str] = frozenset()  # failed credential pools, not model families
     # BOD-271 sufficiency floor. Capability tiers: 0 = frontier ... 3 = small/fast.
     # A route whose tier number is ABOVE this is insufficient for the work and is
-    # hard-dropped before ranking. Among sufficient routes the least-capable
-    # (cheapest sufficient) wins; extra capability is never a ranking bonus.
+    # hard-dropped before ranking.  Ordering among sufficient routes depends on
+    # ``role_ordering``: worker nodes prefer the cheapest sufficient route
+    # (slack=0 wins), while planner/reviewer roles prefer the strongest admitted
+    # route (highest rating or tier wins).
     max_capability_tier: int = 3
     # Escalation ceiling: after repeated judged failures, the runtime narrows
     # the selection to routes strictly stronger than the failing tier by setting
@@ -452,6 +454,12 @@ class TaskRequirements:
     escalation_capacity_classes: frozenset[CapacityClass] | None = None
     # Goal-derived family for usage history, independent of role capability gates.
     task_family: str | None = None
+    # Selection ordering within a capacity class.  Worker/implement nodes use
+    # "cheapest_sufficient_first" so the least-capable route that still meets
+    # the floor wins.  Planner and reviewer roles use "strongest_first" so the
+    # highest-rated admitted route is preferred (decomposition quality matters
+    # more than marginal cost on control-plane calls).
+    role_ordering: str = "cheapest_sufficient_first"
 
     @classmethod
     def for_node(cls, node: WorkNode, **overrides: Any) -> TaskRequirements:

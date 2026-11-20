@@ -1001,12 +1001,18 @@ class EligibilityLadder:
     def _rank_components(self, a: _Assessment) -> dict[str, Any]:
         """Compute all ranking components used to sort candidates.
 
-        This is the single source of truth for ranking values. Sort order
-        (see :meth:`_rank_key`): capacity tier, then rating (fresh task score, then fresh
-        intelligence fallback for code families missing ``aa_coding``, then
-        declared tier, then unknown) -> ``slack`` -> ``quota_rank`` -> ``provider_pref`` ->
-        ``load`` -> ``-fit`` -> ``route_id``. Marginal price is display only;
-        capacity class orders already-qualified candidates, never admission.
+        This is the single source of truth for ranking values.  The ``_rank_key``
+        method assembles these into a sort tuple whose order depends on the role:
+
+        * **cheapest_sufficient_first** (worker/implement): capacity tier ->
+          slack (smallest first) -> subscription tokens -> rating -> declared
+          tier -> advisory -> quota -> provider_pref -> load -> fit -> route_id.
+        * **strongest_first** (planner/reviewer): capacity tier -> subscription
+          tokens -> rating -> declared tier -> slack -> advisory -> quota ->
+          provider_pref -> load -> fit -> route_id.
+
+        Marginal price is display only; capacity class orders already-qualified
+        candidates, never admission.
 
         Uses ``getattr`` with defaults so partially-mocked ladders (BOD-203
         post-probe tests that bypass ``__init__``) keep working.
@@ -1046,7 +1052,13 @@ class EligibilityLadder:
                 cache_checked_at = lookup.entry.checked_at.isoformat()
                 cache_freshness = lookup.state
         quota = getattr(a, "quota_percent", None)
+        _ordering_basis = (
+            "strongest_first"
+            if getattr(self._select_stats, "strongest_first", False)
+            else "cheapest_sufficient_first"
+        )
         components = {
+            "ordering_basis": _ordering_basis,
             "rating_rank": rating_rank,
             "rating_basis": rating.basis,
             "rating": -neg_score if rating_rank in (0, 1) else None,
@@ -1054,6 +1066,7 @@ class EligibilityLadder:
             "rating_metric": rating.metric,
             "rating_source": rating.source,
             "rating_as_of": rating.as_of,
+            "rating_join": rating.join,
             "slack": getattr(a, "slack", 0),
             "quota_rank": quota_rank(quota if isinstance(quota, (int, float)) else None),
             "quota_percent": quota if isinstance(quota, (int, float)) else None,
@@ -1086,28 +1099,67 @@ class EligibilityLadder:
 
     def _rank_key(
         self, a: _Assessment
-    ) -> tuple[int, int, float, int, float, int, int, int, int, int, int, int, str]:
+    ) -> tuple[
+        int,
+        int | float,
+        int | float,
+        int | float,
+        int | float,
+        float,
+        int,
+        int,
+        int,
+        int,
+        int,
+        int,
+        str,
+    ]:
         """Build the sort tuple from :meth:`_rank_components` (smaller wins).
 
-        Cheapest qualified tier first, then a fresh task score (higher first) beats a fresh
-        intelligence fallback, which beats a declared tier, which beats
-        unknown. Coding scores and intelligence fallbacks are different
-        metrics and are never compared directly. Capability slack, measured
-        quota, provider preference, load and fit only break ties for free routes.
-        Qualified subscriptions sort by observed expected tokens per accepted task
-        before rating; unknown usage follows measured usage. Price is excluded.
+        Two orderings are supported, chosen by ``role_ordering`` on the
+        ``TaskRequirements`` that initiated this selection:
+
+        * **cheapest_sufficient_first** (worker/implement nodes, the default):
+          Slack comes before rating so the least capable route that still meets
+          the floor wins within each capacity class.  Subscriptions sort by
+          observed token usage after slack and before rating.
+
+        * **strongest_first** (planner and reviewer roles): Rating and declared
+          tier come before slack so the highest-quality admitted route wins.
+          Subscriptions sort by token usage after rating, before slack.
+
+        Price is excluded from the tuple in both orderings.
         """
         c = self._rank_components(a)
         subscription = a.capacity == CapacityClass.SUBSCRIPTION
         tokens = c["expected_tokens"]
+        strongest_first: bool = getattr(self._select_stats, "strongest_first", False)
+        if strongest_first:
+            # Strongest-first: rating before slack.  Planner and reviewer roles.
+            return (
+                c["capacity_order"],
+                int(tokens is None) if subscription else 0,
+                float(tokens or 0) if subscription else 0.0,
+                c["rating_rank"],
+                -(c["rating"] or 0.0),
+                c["declared_tier"] or 0,
+                c["slack"],
+                sys.maxsize if c["advisory_rank"] is None else c["advisory_rank"],
+                0 if subscription else c["quota_rank"],
+                c["provider_pref"],
+                c["load"],
+                -c["fit"],  # negate: stronger routes (higher fit) should rank lower
+                c["route_id"],
+            )
+        # Cheapest-sufficient-first: slack before rating.  Worker/implement nodes.
         return (
             c["capacity_order"],
+            c["slack"],
             int(tokens is None) if subscription else 0,
             float(tokens or 0) if subscription else 0.0,
             c["rating_rank"],
             -(c["rating"] or 0.0),
             c["declared_tier"] or 0,
-            c["slack"],
             sys.maxsize if c["advisory_rank"] is None else c["advisory_rank"],
             0 if subscription else c["quota_rank"],
             c["provider_pref"],
@@ -1119,21 +1171,25 @@ class EligibilityLadder:
     def _rank_components_for_display(self, components: dict[str, Any]) -> dict[str, Any]:
         """Transform internal rank_components to consumer-facing format.
 
-        Rank keys come first, in sort order. ``price`` (None when unknown) and
-        ``capacity_order`` is first; marginal price follows as information; ``price_known`` and
+        Rank keys come first, in sort order: ``capacity_order``, then
+        ``ordering_basis`` and ``slack`` (cheapest sufficient route first),
+        then rating fields, then advisory, quota, provider, load, fit,
+        route_id. Marginal price follows as information. ``price_known`` and
         ``rating_rank`` (encoded by ``rating_basis``) are omitted.
         """
         price_known = components.get("price_known", False)
         price_value = components.get("price_for_rank", 0.0)
         display = {
             "capacity_order": components["capacity_order"],
+            "ordering_basis": components.get("ordering_basis", "cheapest_sufficient_first"),
+            "slack": components["slack"],
             "rating_basis": components["rating_basis"],
             "rating": components["rating"],
             "declared_tier": components["declared_tier"],
             "rating_metric": components["rating_metric"],
             "rating_source": components["rating_source"],
             "rating_as_of": components["rating_as_of"],
-            "slack": components["slack"],
+            "rating_join": components.get("rating_join"),
             "advisory_rank": components["advisory_rank"],
             "advisory_category": components.get("advisory_category"),
             "advisory_omission": components.get("advisory_omission"),
@@ -1216,6 +1272,12 @@ class EligibilityLadder:
                 a.failed_stage, a.reason = EligibilityStage.SELECTED, "at_capacity"
                 continue
             candidates.append(a)
+        # Store role ordering in thread-local so _rank_key can read it without a
+        # parameter change.  This is safe because _assess_all, its callers, and
+        # _rank_key all run on the same thread (BOD-341 uses one thread per select).
+        self._select_stats.strongest_first = (
+            getattr(requirements, "role_ordering", "cheapest_sufficient_first") == "strongest_first"
+        )
         candidates.sort(key=self._rank_key)
         return assessments, candidates
 
@@ -1526,10 +1588,14 @@ class EligibilityLadder:
         return selected, final_verdicts
 
     def _probe_order(self, candidates: list[_Assessment]) -> list[_Assessment]:
-        """Cheapest tier first, then rating; equal ratings retain bounded scheduling.
+        """Probe order mirrors the main rank key (role-dependent ordering).
 
-        Within an equal rating, fresh confirmations and provider round-robin
-        retain the bounded scheduler. Scheduling never moves a costlier tier ahead of a cheaper qualified tier.
+        For cheapest-sufficient-first roles (workers): slack before rating,
+        ``[:4]`` captures (capacity, slack, tokens_known, tokens_float).
+        For strongest-first roles (planner/reviewer): rating before slack,
+        ``[:4]`` captures (capacity, tokens_known, tokens_float, rating_rank).
+        Within an equal ranking, fresh confirmations and provider round-robin
+        retain the bounded scheduler.
         """
         order: list[_Assessment] = []
         by_provider: dict[str, list[_Assessment]] = {}
@@ -1548,7 +1614,7 @@ class EligibilityLadder:
         return sorted(
             order,
             key=lambda a: (
-                *self._rank_key(a)[:3],
+                *self._rank_key(a)[:4],
                 *(rating_key(a.rating) if a.rating is not None else (3, 0.0, 0)),
             ),
         )
