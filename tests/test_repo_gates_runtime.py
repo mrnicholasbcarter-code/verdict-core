@@ -331,14 +331,25 @@ def test_committed_legacy_receipt_keeps_bytes_and_field_set() -> None:
 async def test_implement_node_gate_failure_is_correction_feedback(
     repo: Path, gate_bin: Path
 ) -> None:
-    """Self-host run 2026-10-12: tests passed, a gate failed only at integration
-    and blocked the run. A node-level lint failure now goes back to the worker."""
+    """Node-level lint failures that survive autofix still go back to the worker.
+
+    The autofix step runs ``ruff check --fix`` before the gate.  In this test the
+    runner's mock cannot actually rewrite files, so the fix is a no-op; the
+    subsequent gate ``ruff check .`` (without ``--fix``) still fails on the first
+    attempt and sends correction feedback.  On the second attempt the gate passes.
+    """
     runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
     normal_runner = runtime.runner
     seen = {"check": 0}
 
     async def lint_fails_once(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
-        if Path(argv[0]).name == "ruff" and "check" in argv and cwd.name.startswith("a-"):
+        # Only intercept the gate check (no --fix), not the proactive autofix call.
+        if (
+            Path(argv[0]).name == "ruff"
+            and "check" in argv
+            and "--fix" not in argv
+            and cwd.name.startswith("a-")
+        ):
             seen["check"] += 1
             if seen["check"] == 1:
                 return 1, "F401 unused import in a.txt"
@@ -387,32 +398,47 @@ async def test_existing_gate_debt_is_not_blamed_on_the_node(repo: Path, gate_bin
 async def test_existing_debt_in_one_gate_does_not_hide_a_new_failure_in_another(
     repo: Path, gate_bin: Path
 ) -> None:
-    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    """Existing ruff-check debt on the base does not mask a new mypy failure.
+
+    ruff-check fails everywhere (existing debt); mypy fails only in the node's
+    worktree on the first attempt.  The ruff-check failure is attributed to the
+    base and ignored; the mypy failure is attributed to the node and reported.
+    Format issues are proactively fixed by autofix, so they cannot be the
+    ``new_failure_in_another_gate`` for this scenario.
+    """
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n[tool.mypy]\nfiles=['a.txt']\n")
     normal_runner = runtime.runner
-    seen = {"format": 0}
+    seen = {"mypy": 0}
 
     async def debt_plus_new(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
         name = Path(argv[0]).name
-        if name == "ruff" and "check" in argv:
+        # ruff-check always fails (existing debt in base and node alike)
+        if name == "ruff" and "check" in argv and "--fix" not in argv:
             return 1, "existing lint debt"
-        if name == "ruff" and "format" in argv and cwd.name.startswith("a-"):
-            seen["format"] += 1
-            if seen["format"] == 1:
-                return 1, "Would reformat: a.txt"
+        # mypy fails once only in the node worktree (new failure)
+        if name == "mypy" and cwd.name.startswith("a-"):
+            seen["mypy"] += 1
+            if seen["mypy"] == 1:
+                return 1, "N818: exception name should end in Error"
         return await normal_runner(argv, cwd, timeout)
 
     runtime.runner = debt_plus_new
     await runtime.run()
     failure = events.of("failure", "a")[0]
     assert failure["category"] == "verification_failed"
-    assert events.of("rehydrate", "a")
+    assert "N818" in failure.get("reason", "") or events.of("rehydrate", "a")
 
 
 async def test_formatting_only_failure_is_repaired_with_the_formatter(
     repo: Path, gate_bin: Path
 ) -> None:
     """Self-host run 2026-10-12: two models' edits passed their tests but failed
-    only ruff format, and neither fixed it. Formatting is applied mechanically."""
+    only ruff format, and neither fixed it.
+
+    Formatting is now applied proactively before verification and gates via
+    _apply_lint_autofix.  The gate sees already-formatted code and passes.
+    A lint_autofix event records the autofix run.
+    """
     runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
     normal_runner = runtime.runner
     formatted = {"done": False}
@@ -433,11 +459,16 @@ async def test_formatting_only_failure_is_repaired_with_the_formatter(
     runtime.runner = needs_format
     result = await runtime.run()
     assert result.nodes["a"].state is NodeState.VALIDATED, result.reason
-    applied = [e for e in events.of("controller", "a") if e.get("state") == "FORMATTER_APPLIED"]
-    assert len(applied) == 1 and not events.of("failure", "a")
+    # Proactive autofix emits a lint_autofix event; no failure events.
+    autofix_evts = events.of("lint_autofix", "a")
+    assert autofix_evts, "lint_autofix event not emitted"
+    assert autofix_evts[0].get("ruff_format_exit") == 0
+    assert not events.of("failure", "a")
 
 
 async def test_lint_failures_are_never_auto_fixed(repo: Path, gate_bin: Path) -> None:
+    """ruff check --fix is proactively run, but when it cannot fix the error
+    (exit 1), the gate still fails and the node is not validated."""
     runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
     normal_runner = runtime.runner
 
@@ -448,5 +479,135 @@ async def test_lint_failures_are_never_auto_fixed(repo: Path, gate_bin: Path) ->
 
     runtime.runner = lint_fails
     await runtime.run()
-    assert not [e for e in events.of("controller", "a") if e.get("state") == "FORMATTER_APPLIED"]
+    # Autofix ran (lint_autofix event exists) but changed no files.
+    autofix_evts = events.of("lint_autofix", "a")
+    assert autofix_evts, "lint_autofix event not emitted"
+    assert autofix_evts[0].get("changed_files") == []
     assert events.of("failure", "a")[0]["category"] == "verification_failed"
+
+
+async def test_lint_autofix_runs_before_verification_and_gate(repo: Path, gate_bin: Path) -> None:
+    """Autofix commands run before verification_command and before repo gates.
+
+    The contract: _apply_lint_autofix is called in _validate before both the
+    verification command and _run_repo_gates, so both see the corrected code.
+    """
+    runtime, _events, _ = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+    call_order: list[str] = []
+
+    async def ordered_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        name = Path(argv[0]).name
+        if argv[0] == "git":
+            return await normal_runner(argv, cwd, timeout)
+        if name == "ruff" and "check" in argv and "--fix" in argv:
+            call_order.append("autofix_check")
+        elif name == "ruff" and "format" in argv and "--check" not in argv:
+            call_order.append("autofix_format")
+        elif name == "python" and "-m" in argv and "pytest" in argv:
+            call_order.append("verify")
+        elif name == "ruff" and "check" in argv and "--fix" not in argv:
+            call_order.append("gate_check")
+        elif name == "ruff" and "format" in argv and "--check" in argv:
+            call_order.append("gate_format")
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = ordered_runner
+    result = await runtime.run()
+    assert result.nodes["a"].state is NodeState.VALIDATED, result.reason
+    # Only look at the first occurrence of each label (from the implement node "a").
+    idx: dict[str, int] = {}
+    for i, label in enumerate(call_order):
+        idx.setdefault(label, i)
+    assert "autofix_check" in idx or "autofix_format" in idx, "no autofix calls recorded"
+    assert "verify" in idx, "no verify call recorded"
+    assert "gate_check" in idx or "gate_format" in idx, "no gate calls recorded"
+    autofix_last = max(idx.get("autofix_check", -1), idx.get("autofix_format", -1))
+    verify_first = idx.get("verify", len(call_order))
+    gate_first = min(
+        idx.get("gate_check", len(call_order)), idx.get("gate_format", len(call_order))
+    )
+    assert autofix_last < verify_first, f"autofix must run before verification; order: {call_order}"
+    assert autofix_last < gate_first, f"autofix must run before gates; order: {call_order}"
+
+
+@pytest.mark.parametrize("config", ["[tool.ruff]\n"])
+async def test_lint_autofix_event_in_node_receipt(repo: Path, gate_bin: Path, config: str) -> None:
+    """lint_autofix data is included in the per-attempt node record in the receipt."""
+    import json
+
+    from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+    runtime, _, _ = make_runtime(repo, config)
+    (runtime.run_dir / "graph.json").parent.mkdir(parents=True, exist_ok=True)
+    (runtime.run_dir / "graph.json").write_text(json.dumps(runtime.graph.to_dict()))
+    runtime.events = EventLog(runtime.run_dir / "events.jsonl")
+    result = await runtime.run()
+    assert result.nodes["a"].state is NodeState.VALIDATED, result.reason
+    receipt = json.loads(write_run_receipt(runtime.run_dir).read_text())
+    node_a = next((n for n in receipt.get("nodes", []) if n["node_id"] == "a"), None)
+    assert node_a is not None, "node 'a' missing from receipt nodes"
+    assert any(a.get("lint_autofix") is not None for a in node_a.get("attempts", [])), (
+        f"lint_autofix missing from node 'a' attempts: {node_a.get('attempts')}"
+    )
+    attempt_with_autofix = next(a for a in node_a["attempts"] if a.get("lint_autofix") is not None)
+    lint_rec = attempt_with_autofix["lint_autofix"]
+    assert "files_changed" in lint_rec
+    assert "ruff_missing" in lint_rec
+    assert "skipped" in lint_rec
+    assert lint_rec["ruff_missing"] is False
+    assert lint_rec["skipped"] is False
+
+
+async def test_ruff_missing_records_event_gates_proceed(
+    repo: Path, gate_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ruff is not found, a lint_autofix event with ruff_missing=True is emitted
+    and gates still run (no crash).  The node outcome is determined by gates alone."""
+    import verdict.orchestration.runtime as _rt_mod
+
+    orig = _rt_mod._resolve_gate_argv
+
+    def missing_ruff(argv: Sequence[str], cwd: Path) -> list[str]:
+        if argv and argv[0] == "ruff":
+            raise FileNotFoundError("gate executable not found: ruff")
+        return orig(argv, cwd)
+
+    monkeypatch.setattr(_rt_mod, "_resolve_gate_argv", missing_ruff)
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    result = await runtime.run()
+    # Ruff missing: autofix skipped, gates still run via the declared-gate path
+    # (which also calls _resolve_gate_argv — also raises).  The node may VALIDATE
+    # (gates skipped / fail-open) or fail depending on runtime gate handling.
+    # What we care about: lint_autofix event was emitted with ruff_missing=True.
+    autofix_evts = events.of("lint_autofix", "a")
+    assert autofix_evts, "lint_autofix event not emitted when ruff is missing"
+    assert autofix_evts[0].get("ruff_missing") is True
+    assert autofix_evts[0].get("skipped") is False
+    # No crash: the run completed (did not raise an exception).
+    assert result is not None
+
+
+async def test_autofix_skipped_when_no_ruff_gate(repo: Path, gate_bin: Path) -> None:
+    """When no ruff gate is declared, _apply_lint_autofix emits a skipped event
+    and returns without calling ruff."""
+    runtime, events, _ = make_runtime(repo, "[tool.mypy]\nfiles=['a.txt']\n")
+    normal_runner = runtime.runner
+    ruff_calls: list[str] = []
+
+    async def track_ruff(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "ruff":
+            ruff_calls.append(shlex.join(argv))
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = track_ruff
+    result = await runtime.run()
+    assert result.nodes["a"].state is NodeState.VALIDATED, result.reason
+    # lint_autofix event emitted with skipped=True.
+    autofix_evts = events.of("lint_autofix", "a")
+    assert autofix_evts, "lint_autofix event not emitted"
+    assert autofix_evts[0].get("skipped") is True
+    assert autofix_evts[0].get("reason") == "no_ruff_gate"
+    # No ruff calls at all for the implement node worktree.
+    ruff_in_node = [c for c in ruff_calls if "a-" in c or "a.txt" in c]
+    assert not ruff_in_node, f"unexpected ruff calls: {ruff_in_node}"

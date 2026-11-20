@@ -557,6 +557,7 @@ EVENT_TYPES = frozenset(
         "salvage_clear_error",  # BOD-308: clear_salvage_dir failed after a rejected attempt
         "escalation",  # capability escalation: next attempt must use a stronger route
         "escalation_exhausted",  # capability escalation: already at strongest known tier
+        "lint_autofix",  # safe lint + format applied to owned changed files before gates
         "run_finished",
     }
 )

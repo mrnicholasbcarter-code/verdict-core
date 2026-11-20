@@ -446,6 +446,13 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             if existing is not None:
                 cp["hydrate_count"] = existing.get("hydrate_count", 1) + 1
             attempts[current]["context_pack"] = cp
+        elif event.type == "lint_autofix" and current in attempts:
+            row = attempts[current]
+            row["lint_autofix"] = {
+                "files_changed": list(data.get("changed_files") or []),
+                "ruff_missing": bool(data.get("ruff_missing", False)),
+                "skipped": bool(data.get("skipped", False)),
+            }
     # route identity tracking: compute route_identity for each attempt (after all events processed)
     for row in attempts.values():
         if "_terminal_ok" in row:
