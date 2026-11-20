@@ -48,6 +48,9 @@ The proof-gate authority is [`proof/contract.yaml`](proof/contract.yaml), run by
 | `POST /v1/chat/completions`, `POST /v1/responses` | Relay path: route, then forward upstream with bounded attempts (`verdict/relay.py`, `verdict/proxy.py`). |
 | `verdict route` (CLI `Gate`) | Catalog truth only. The CLI `Gate` has no `EligibilityGate` attached. |
 | `verdict orchestrate` | Goal -> plan -> DAG -> workers -> review -> receipt, with per-node admission. |
+| `GET /v1/runs` (`verdict serve`) | List recent runs from `VERDICT_RUNS_DIR`. Read-only; bearer auth required. |
+| `GET /v1/runs/{run_id}/events` (`verdict serve`) | Paginate `events.jsonl` for one run. Filterable by node_id, type, seq range. Read-only; bearer auth required. |
+| `GET /v1/runs/{run_id}/receipt` (`verdict serve`) | Return `receipt.json` with live digest verification. Read-only; bearer auth required. |
 
 Details: [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md). Do not cite line numbers in docs; they go stale.
 

@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "verdict.run-trace-api/v1",
+  "title": "Verdict run-trace API response schemas",
+  "description": "Schemas for GET /v1/runs, /v1/runs/{id}/events and /v1/runs/{id}/receipt",
+  "definitions": {
+    "run_summary": {
+      "type": "object",
+      "required": ["run_id", "receipt_status"],
+      "additionalProperties": false,
+      "properties": {
+        "run_id":         { "type": "string" },
+        "started_at":     { "type": ["string", "null"] },
+        "outcome":        { "type": ["string", "null"] },
+        "receipt_status": { "enum": ["present", "missing", "unreadable"] }
+      }
+    },
+    "run_event": {
+      "type": "object",
+      "required": ["seq", "at", "type"],
+      "additionalProperties": true,
+      "properties": {
+        "seq":     { "type": "integer", "minimum": 1 },
+        "at":      { "type": "string" },
+        "type":    { "type": "string" },
+        "node_id": { "type": "string" },
+        "data":    {}
+      }
+    },
+    "runs_response": {
+      "type": "object",
+      "required": ["runs", "total"],
+      "additionalProperties": false,
+      "properties": {
+        "runs":  { "type": "array", "items": { "$ref": "#/definitions/run_summary" } },
+        "total": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "events_response": {
+      "type": "object",
+      "required": ["events", "truncated"],
+      "additionalProperties": false,
+      "properties": {
+        "events":    { "type": "array", "items": { "$ref": "#/definitions/run_event" } },
+        "next_seq":  { "type": ["integer", "null"], "minimum": 1 },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "verification_result": {
+      "type": "object",
+      "required": ["ok", "problems"],
+      "additionalProperties": false,
+      "properties": {
+        "ok":       { "type": "boolean" },
+        "problems": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "receipt_response": {
+      "type": "object",
+      "required": ["run_id", "verification"],
+      "additionalProperties": true,
+      "properties": {
+        "run_id":       { "type": "string" },
+        "receipt":      { "type": ["object", "null"] },
+        "verification": { "$ref": "#/definitions/verification_result" }
+      }
+    }
+  }
+}

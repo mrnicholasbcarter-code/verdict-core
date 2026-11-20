@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import re
 import sys
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -19,7 +20,7 @@ from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Query, Request
     from pydantic import BaseModel, Field
     from starlette.responses import JSONResponse, Response, StreamingResponse
 except ImportError as exc:
@@ -2960,6 +2961,282 @@ def _finish_evidence(
         if stored is not None:
             return stored
     return updated
+
+
+# ---------------------------------------------------------------------------
+# Run-trace API (read-only; BOD plan 20261120-orchestration-adoption item 11)
+# ---------------------------------------------------------------------------
+
+# Maximum bytes of serialised events returned by a single /v1/runs/{id}/events
+# response.  Protects against huge runs that would exceed response limits.
+_RUNS_EVENTS_BYTE_BUDGET = 1 * 1024 * 1024  # 1 MiB
+
+# Maximum number of run directories scanned per /v1/runs request.  Prevents
+# O(n) work when the runs root contains thousands of old directories.
+_RUNS_SCAN_LIMIT = 500
+
+# Strict allowlist: alphanumeric start, then alphanumeric / dot / hyphen /
+# underscore.  Explicitly excludes every path-separator character.
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _runs_root() -> Path:
+    """Configured runs directory; default ``<verdict_home()>/runs``.
+
+    Returns the absolute path; never creates the directory.
+    """
+    raw = os.getenv("VERDICT_RUNS_DIR", "").strip()
+    if raw:
+        return Path(raw).resolve()
+    from verdict.paths import verdict_home
+
+    return verdict_home() / "runs"
+
+
+def _resolve_run_dir(run_id: str) -> Path | None:
+    """Validate *run_id* and return its absolute path, or ``None`` on failure.
+
+    Returns ``None`` when:
+    * *run_id* does not match ``_RUN_ID_RE``,
+    * *run_id* is ``.`` or ``..``,
+    * the resolved path is not a direct child of the runs root, or
+    * no directory exists at the resolved path.
+    """
+    if not _RUN_ID_RE.match(run_id) or run_id in {".", ".."}:
+        return None
+    root = _runs_root().resolve()
+    candidate = (root / run_id).resolve()
+    # Must be a direct child — parent must equal the resolved root exactly.
+    if candidate.parent != root:
+        return None
+    if not candidate.is_dir():
+        return None
+    return candidate
+
+
+def _run_summary(run_id: str, run_dir: Path) -> dict[str, Any]:
+    """Build a summary dict for one run directory; never raises."""
+    started_at: str | None = None
+    outcome: str | None = None
+    receipt_status: str = "missing"
+
+    receipt_path = run_dir / "receipt.json"
+    if receipt_path.exists():
+        try:
+            rdata: Any = json.loads(receipt_path.read_bytes())
+            if isinstance(rdata, dict):
+                started_at = rdata.get("started_at") or None
+                outcome = rdata.get("outcome") or rdata.get("claimed_outcome") or None
+                receipt_status = "present"
+        except Exception:
+            receipt_status = "unreadable"
+
+    if started_at is None:
+        events_path = run_dir / "events.jsonl"
+        if events_path.exists():
+            try:
+                with events_path.open("rb") as fh:
+                    for raw_line in fh:
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        try:
+                            evt = json.loads(line)
+                        except Exception:
+                            break
+                        if isinstance(evt, dict):
+                            started_at = evt.get("at") or None
+                        break
+            except Exception:
+                pass
+
+    return {
+        "run_id": run_id,
+        "started_at": started_at,
+        "outcome": outcome,
+        "receipt_status": receipt_status,
+    }
+
+
+@app.get("/v1/runs")
+async def list_runs(
+    limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)
+) -> Response:
+    """List recent orchestration runs.
+
+    Returns run_id, started_at, outcome and receipt_status for each run,
+    sorted newest-first.  Reads ``VERDICT_RUNS_DIR`` (default
+    ``<verdict_home()>/runs``).  Never writes to any file.
+    """
+    root = _runs_root()
+    if not root.is_dir():
+        return JSONResponse({"runs": [], "total": 0})
+
+    def _collect() -> tuple[list[dict[str, Any]], int]:
+        entries: list[tuple[str | None, str]] = []
+        scanned = 0
+        for child in root.iterdir():
+            if scanned >= _RUNS_SCAN_LIMIT:
+                break
+            scanned += 1
+            if not child.is_dir():
+                continue
+            name = child.name
+            if not _RUN_ID_RE.match(name) or name in {".", ".."}:
+                continue
+            summary = _run_summary(name, child)
+            entries.append((summary.get("started_at"), name))
+
+        entries.sort(key=lambda t: t[0] or "", reverse=True)
+        total = len(entries)
+        page = entries[offset : offset + limit]
+        rows = [_run_summary(name, root / name) for _, name in page]
+        return rows, total
+
+    rows, total = await asyncio.to_thread(_collect)
+    return JSONResponse({"runs": rows, "total": total})
+
+
+@app.get("/v1/runs/{run_id}/events")
+async def get_run_events(
+    run_id: str,
+    node_id: list[str] = Query(default=[]),
+    type: list[str] = Query(default=[]),
+    after_seq: int | None = Query(default=None, ge=1),
+    seq_to: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> Response:
+    """Return a paginated window of events from one run's ``events.jsonl``.
+
+    Filters: ``node_id`` (repeatable), ``type`` (repeatable),
+    ``after_seq`` (exclusive lower bound), ``seq_to`` (inclusive upper bound).
+    Response is bounded to 1 MiB; ``truncated`` is true when the byte budget
+    was exhausted before the page limit was reached.  ``next_seq`` carries the
+    seq of the first event not returned, or null when the log is exhausted.
+    Never instantiates ``EventLog``; reads the file directly.
+    """
+    run_dir = _resolve_run_dir(run_id)
+    if run_dir is None:
+        raise HTTPException(status_code=404, detail={"error": {"message": "run not found"}})
+
+    node_id_set: frozenset[str] = frozenset(node_id)
+    type_set: frozenset[str] = frozenset(type)
+
+    def _read() -> dict[str, Any]:
+        events_path = run_dir / "events.jsonl"
+        if not events_path.exists():
+            return {"events": [], "next_seq": None, "truncated": False}
+
+        collected: list[dict[str, Any]] = []
+        byte_total = 0
+        truncated = False
+        next_seq: int | None = None
+
+        with events_path.open("rb") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    evt = json.loads(line)
+                except Exception:
+                    # Torn trailing line — treat as end of log, never repair.
+                    break
+                if not isinstance(evt, dict):
+                    continue
+                seq = evt.get("seq")
+                if not isinstance(seq, int):
+                    continue
+                if after_seq is not None and seq <= after_seq:
+                    continue
+                if seq_to is not None and seq > seq_to:
+                    break
+                if node_id_set and evt.get("node_id", "") not in node_id_set:
+                    continue
+                if type_set and evt.get("type", "") not in type_set:
+                    continue
+                serialised = json.dumps(evt, separators=(",", ":"))
+                byte_total += len(serialised.encode())
+                if byte_total > _RUNS_EVENTS_BYTE_BUDGET and collected:
+                    # Budget exhausted; remember where to continue.
+                    next_seq = seq
+                    truncated = True
+                    break
+                collected.append(evt)
+                if len(collected) >= limit:
+                    # Peek at the next matching event to populate next_seq.
+                    # We read one more line from the file (already open).
+                    for peek_line in fh:
+                        peek = peek_line.strip()
+                        if not peek:
+                            continue
+                        try:
+                            peek_evt = json.loads(peek)
+                        except Exception:
+                            break
+                        if not isinstance(peek_evt, dict):
+                            continue
+                        pseq = peek_evt.get("seq")
+                        if not isinstance(pseq, int):
+                            continue
+                        # Only count this as next_seq if it passes the same filters.
+                        if after_seq is not None and pseq <= after_seq:
+                            continue
+                        if seq_to is not None and pseq > seq_to:
+                            break
+                        if node_id_set and peek_evt.get("node_id", "") not in node_id_set:
+                            continue
+                        if type_set and peek_evt.get("type", "") not in type_set:
+                            continue
+                        next_seq = pseq
+                        break
+                    break
+
+        return {"events": collected, "next_seq": next_seq, "truncated": truncated}
+
+    result = await asyncio.to_thread(_read)
+    return JSONResponse(result)
+
+
+@app.get("/v1/runs/{run_id}/receipt")
+async def get_run_receipt(run_id: str) -> Response:
+    """Return the stored receipt and its verification result.
+
+    Calls the existing ``verify_run_receipt`` verifier without modifying it.
+    Returns ``verification.ok`` (bool) and ``verification.problems`` (list of
+    strings describing any mismatches).  Never writes to any file.
+    """
+    run_dir = _resolve_run_dir(run_id)
+    if run_dir is None:
+        raise HTTPException(status_code=404, detail={"error": {"message": "run not found"}})
+
+    receipt_path = run_dir / "receipt.json"
+    if not receipt_path.exists():
+        raise HTTPException(
+            status_code=404, detail={"error": {"message": "receipt not found for run"}}
+        )
+
+    def _load_and_verify() -> dict[str, Any]:
+        from verdict.orchestration.receipt import verify_run_receipt
+
+        try:
+            receipt_data: Any = json.loads(receipt_path.read_bytes())
+        except Exception as exc:
+            return {
+                "run_id": run_id,
+                "receipt": None,
+                "verification": {"ok": False, "problems": [f"cannot read receipt: {exc}"]},
+            }
+
+        problems = verify_run_receipt(run_dir)
+        return {
+            "run_id": run_id,
+            "receipt": receipt_data,
+            "verification": {"ok": not problems, "problems": problems},
+        }
+
+    result = await asyncio.to_thread(_load_and_verify)
+    return JSONResponse(result)
 
 
 @app.post(OMNIROUTE_WEBHOOK_PATH)

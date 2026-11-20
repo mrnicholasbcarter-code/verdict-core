@@ -597,6 +597,7 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `VERDICT_ALLOW_UNVERIFIED_DEV` | Opt-in (`1`/`true`) to admit unverified (unknown/error/timeout) candidates for non-protected work when the intelligence profile is `development`. Default off: unknown-state models are excluded as `runtime_truth_absent` |
 | `VERDICT_OUTCOME_SHADOW_ROOTS` | BOD-304/BOD-426 outcome-shadow run directories (OS path-separator list, or one manifest file with one run dir per line). Default unset: shadow disabled and nothing persisted. When set, every admission receipt's `outcome_shadow` block is also appended to `outcome_shadow.jsonl` next to the first entry; see [Outcome shadow sink](#outcome-shadow-sink) |
 | `VERDICT_WORKER_IDLE_SECONDS` | BOD-312 idle-output bound for `verdict orchestrate` Prime headless workers: a worker that writes nothing to stdout or stderr for this many seconds has its process group killed, the attempt ends `stalled`, and recovery moves the node to a different route within the attempt budget. Default `300`; an empty, zero, negative or non-numeric value keeps the default |
+| `VERDICT_RUNS_DIR` | Absolute path to the runs directory read by `GET /v1/runs` and related trace endpoints. Default `<VERDICT_HOME>/runs`. Must be an existing directory; a missing directory returns an empty list rather than an error |
 
 #### Serve authentication and receipts
 
