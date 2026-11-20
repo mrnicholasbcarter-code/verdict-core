@@ -3,13 +3,10 @@
 Source: [BOD-342 — Operator decision log](https://linear.app/bodanglin/issue/BOD-342/decisions-operator-decision-log-2026-10-13-memory-system-enforcement)
 (Linear, Bodanglin workspace, exported 2026-11-20).
 
-This file contains decisions D1–D22 imported verbatim. D23 and beyond remain in the
-BOD-342 comment thread and are pending operator review; each new entry here is one line
-pointing to its ADR.
-
-**Note on D23–D25:** D23 (two colliding entries: BOD-387 worker/reviewer rule 2026-10-15
-and the Part C bulk-move exception 2026-11-11), D24 (diff-format repair), and D25
-(patch truncation rule) exist in the Linear comments. See the private Linear archive.
+This file contains decisions D1–D30 and the D22 amendment, migrated from the BOD-342
+comment thread on 2026-11-20. Entries that pre-dated this migration are from the Linear
+source with private commercial details removed. D30 was recorded as D23 in the Linear
+thread; it is renumbered here because D23–D29 already existed (see the entries below).
 
 ---
 
@@ -119,7 +116,7 @@ Operator decisions, 2026-10-13. Linear is the system of record for decisions. Fi
 
 ## D14: OmniRoute 3.8.51 docs synthesis adopted (2026-10-13; D13 confirmed by the operator's go-ahead)
 
-* Quota and cooldown inputs come only from me/status and resilience/connections. 28 of 42 accounts report not\_supported, and those mean UNKNOWN.
+* Quota and cooldown inputs come only from me/status and resilience/connections. Most accounts report not\_supported, and those mean UNKNOWN.
 * Ranking order: outcome ledger, then model-latency-stats (24 h), then Verdict probe, then free-provider-rankings ELO (configured), then catalog. "warming" is not evidence.
 * The census comes from provider-plugin-manifest. Hand-written alias families shrink to agy->antigravity and dva->devin-cli.
 * Finish plan M1(a): the passive screen (model-latency-stats + rankings withUsage) replaces POST test-all. test-all runs only for zero-traffic routes.
@@ -202,15 +199,15 @@ The ticket owner is a mini-controller for exactly one Linear ticket. It runs on 
   * Grow to about 20 tasks before any rule goes into Verdict code.
 * Status: D18 revised to the adapted form above, still PROVISIONAL until the paired run.
 
-## D19: use the Anthropic Max API credit through OmniRoute (operator 2026-10-15, 'critical')
+## D19: use the Anthropic API credit through OmniRoute (operator 2026-10-15, 'critical')
 
-* The $100/month credit is live as anthropic/\* routes, with a local patch that drops the claude-code beta until OmniRoute 3.8.52.
-* Use it for the controller and verification when the Max weekly quota is out. Implementation stays on cheap and free models.
+* A limited paid API credit is live as anthropic/\* routes, with a local patch that drops the claude-code beta until OmniRoute 3.8.52.
+* Use it for the controller and verification when the subscription quota is exhausted. Implementation stays on cheap and free models.
 * Re-test after any OmniRoute upgrade.
 
 ## D20: parallel tracks with Opus owners on the API credit (operator 2026-10-15)
 
-Execution tracks (operator 2026-10-15): 3 parallel tracks, each owned by one agent on anthropic/claude-opus-5-5 (Max API credit), high effort (xhigh only for design or hard bugs), budget \~$15 per track, stop at budget. Delegation: a free model first; if none qualifies, the cheapest model that satisfies the need (ClinePass and Codex count as zero marginal cost when available); log every choice to the model-decision log.
+Execution tracks (operator 2026-10-15): 3 parallel tracks, each owned by one agent on anthropic/claude-opus-5-5 (a limited paid API credit), high effort (xhigh only for design or hard bugs), capped per-track budget, stop at cap. Delegation: a free model first; if none qualifies, the cheapest model that satisfies the need (finite subscription pools count as zero marginal cost when available); log every choice to the model-decision log.
 
 * Track 1, context engine to workers: BOD-303 (CE-03, CE-04) + BOD-349 (AD-04).
 * Track 2, Verdict picks the model and reselects: BOD-350 PR #839 rebase + BOD-271 live rules (AD-03, AD-06) + BOD-354 (stale key).
@@ -225,14 +222,143 @@ Acceptance per track = the BOD-355 matrix rows passing on main, re-run by the pa
   2. A real autonomous existing-file Linear change, with dynamically chosen models, context packs, tests, independent review and merged-main verification.
   3. Native Prime memory finished: canary kept, safe activation, history import, cross-session recall, periodic checks.
   4. The learning loop closed from real attempts and outcomes.
-* Models while cc and cx are exhausted: cp/cline-pass/glm-5.3 as controller, cp/cline-pass/kimi-k3 for complex ownership and review, free workers first.
-* ClinePass is finite capacity. Other API credits need a verified balance and approved limits.
+* Models while cc and cx are exhausted: \<subscription\>/glm-5.3 as controller, \<subscription\>/kimi-k3 for complex ownership and review, free workers first.
+* This subscription pool is finite capacity. Other paid credits need a verified balance and approved limits.
 * Delivered = parent-replayed exact-SHA production acceptance only.
 
 ## D22: model policy (operator 2026-10-15, effective immediately)
 
 * cc/\* and cx/\* are excluded from launches, planner fallbacks and reviews until live quota evidence and approval restore them.
-* Root controller: cp/cline-pass/glm-5.3. Hard architecture, ticket ownership and cross-family review: cp/cline-pass/kimi-k3. Other measured candidates: qwen3.8-max, minimax-m3, deepseek-v4.1-flash. GLM-5.3 Flash (empty reply) and DeepSeek V4 Pro (timeout) are not qualified.
-* Workers: eligible free models first, then subscriptions, with task-grade evidence. Separate account pools; no account cycling to dodge limits; ClinePass is finite.
-* anthropic/\* credit is separate and limited to the confirmed balance and the BOD-342 allocation; it is not an automatic fallback.
+* Root controller: \<subscription\>/glm-5.3. Hard architecture, ticket ownership and cross-family review: \<subscription\>/kimi-k3. Other measured candidates: qwen3.8-max, minimax-m3, deepseek-v4.1-flash. GLM-5.3 Flash (empty reply) and DeepSeek V4 Pro (timeout) are not qualified.
+* Workers: eligible free models first, then subscriptions, with task-grade evidence. Separate account pools; no account cycling to dodge limits; this subscription pool is finite.
+* The anthropic/\* route uses a limited paid credit, separate from subscription pools; it is not an automatic fallback.
 * Every role gets an exact, fresh, eligible model; record chosen vs executed identity.
+
+## D22 lifted (operator 2026-11-17)
+
+This replaces D22 (2026-10-15: "cc/\* and cx/\* are excluded from launches, planner
+fallbacks and reviews until live quota evidence and approval restore them").
+
+Decision: cc/\* (Claude subscription) and cx/\* (Codex subscription) routes may be used
+again for launches, planner fallbacks and reviews, through the normal admission ladder.
+Pay-per-token routes stay excluded.
+
+Live usage evidence at the time of the decision (OmniRoute call logs,
+2026-11-17 12:21–15:29Z): claude-opus-5-5 59/59 ok, claude-sonnet-5-5 4/5 ok;
+claude-fable-5-2 hit "credentials cooling down" twice the same day. Known cost:
+cc/\* models share one subscription with the orchestrator and escalation agents, so
+worker fallback draws on that quota.
+
+Code that enforced D22 and is being removed: `verdict/decomposer.py` (refuses any
+cc/\* planner), `verdict/autodev_run.py` `_PLANNER_EXCLUDED_POOLS = {"claude", "codex"}`,
+and the tests that pin both. Tracked with BOD-406.
+
+## D23: worker/reviewer eligibility evidence (BOD-387, 2026-10-15)
+
+Options: (a) loosen worker/reviewer to accept unmeasured headroom; (b) treat absent
+provider health as admissible; (c) use OmniRoute /api/resilience/connections as positive
+health evidence plus allow unmeasured headroom only with a fresh census passport.
+Chosen: (c), because it uses live gateway evidence plus a real proven call, not the
+absence of a block (same principle as PR #840). Expected: worker+reviewer select live
+with cross-family independence and no paid fallback. Measure: select-only on this host
+plus the census passports used. Reversible.
+
+## D24: diff-format repair for owned files ≤ 300 lines (BOD-391, 2026-10-15)
+
+A free/cheap executor kept returning the same miscounted unified diff even after a repair
+turn with the numbered file (codestral, 2/2 + 3/3 live). Options: (a) fuzzy blank-line
+apply (rejected: could misapply); (b) search/replace edit format everywhere (larger
+redesign); (c) repair turn asks for the FULL new content of the owned file when it is
+small (≤300 lines); Verdict computes the diff itself (difflib) and the normal
+git apply --check, owned-files bound and verification command still gate it.
+Chosen: (c), plus sending OmniRoute's cache-bypass on executor/repair/retry calls so
+retries are real samples (earlier runs were cache HITs). Expected: the scratch-repo
+AD-04 command verifies 3/3. Measure: 3 live runs with cache MISS. Reversible.
+
+## D25: patch repair for owned files > 300 lines (BOD-392, 2026-10-16)
+
+Evidence: a 3-line rename in the 407-line `credentials_registry.py`; the diff-format
+repair reply was truncated at max\_tokens=4096. Options: (a) raise max\_tokens (does not
+fix a model that echoes the file); (b) raise the full-file cap (costly, and risks
+truncating large files); (c) for files over 300 lines, the repair turn asks for
+SEARCH/REPLACE edit blocks: an exact old snippet that must match exactly once in the
+owned file, plus its replacement. Verdict applies the blocks, builds the diff itself,
+and runs the same git apply --check, owned-files and verification gates.
+Chosen: (c). It is bounded and exact-match (no fuzzy apply), and the reply stays small.
+Expected: BOD-392 verifies. Measure: the real BOD-392 command on main. Reversible.
+
+## D26: delete live\_routing\_run/live\_routing\_usage (BOD-384, 2026-10-16)
+
+Delete `live_routing_run` and `live_routing_usage` (no production caller; duplicates
+OmniRoute quota feed). Reversible by revert. Operator rule recorded: never park on
+approval; after ~30 min decide on a branch, worst case revert.
+
+## D27: three orphan modules from the Researcher pack (BOD-397, 2026-10-16)
+
+(1) `memory_providers/ai_memory_experimental.py`: DELETE. The native Rust ai-memory
+adapter (BOD-339) replaced it and has been live since 04:25Z. Keep
+`docs/proof/ai-memory-poc-2026-09-28/REPORT.md` as history and add a "superseded by
+BOD-339" note. (2) `workflows/autodev.py`: DELETE, in a separate follow-up PR. The real
+core loop is `verdict/autodev_run.py` (proven on main by BOD-392).
+`docs/architecture/AUTONOMOUS_DEV_LOOP.md` must be updated in that same PR to point to
+`autodev_run.py`. (3) `execution_hosts`: KEEP as ALLOWLIST, reason "documented contract
+(`docs/guides/execution-host-contract.md`); wire or retire under BOD-316". Reversible.
+
+## D28: merge flow (2026-10-16)
+
+The core loop is proven on main (BOD-392), so the 2026-10-09 release-train preference
+applies again; it was paused by the 10-14 no-churn rule until the core loop worked.
+Rule: each story keeps its own branch and its own cross-family review. When 2 or more
+reviewed stories are ready, the controller merges them into `integration/train-<n>`,
+runs CI once, and merges one PR to main with `--match-head-commit`. A single urgent fix
+(main red, security, or a blocker for a running proof) may still go straight to main.
+Measure: CI runs per merged story. Reversible.
+
+**D28 amendment (2026-10-16):** Train 1 (#878) merged after suite + reachability +
+openspec + ruff + vgate + CI, but WITHOUT the whole-repo release review required by the
+operator preference of 2026-10-11 (behavior evidence on the integration head before
+merge). Its real command was run only AFTER merge on main 93b42f1b (passed: new test
+file under a missing dir, 4 attempt records). From train 2 on, before merging:
+(1) a real `verdict autodev --allow-live` on a scratch repo, run FROM THE TRAIN HEAD;
+(2) `verdict doctor` from the train head;
+(3) a whole-repo review by a reviewer from a different family than every story author,
+covering product behaviour, not per-diff.
+Only then squash-merge with --match-head-commit and check the tree.
+
+## D29: doctor key resolver contract (BOD-411, 2026-10-16)
+
+Doctor reads the OmniRoute key through the one resolver (operator prevention rule P1,
+failure-review-and-prevention as of 2026-10-13).
+`tests/test_cli_inprocess.py::test_omniroute_token_does_not_inspect_home_or_private_paths`
+encodes the pre-credentials-store contract from BOD-238 (#623), so it is replaced by a
+NARROWER test. The token lookup may read only the documented owner-only key file
+(`~/.config/verdict/omniroute-api-key`, 0600) and the credential store, in the
+documented precedence. It must not read any other private path, and a key file readable
+by group or others is refused. This counts as a contract change recorded here, not a
+weakened test. Reversible.
+
+## D30: exception to the "never touch operator or ref-\*" rule (BOD-339 Part C, accepted 2026-11-11)
+
+(Recorded as D23 in the Linear thread; renumbered here because D23–D29 already existed.)
+
+* **What happened:**
+  * Part C moved the closed sessions of `dev`, `mrnicholasbcarter-code-verdict-core`,
+    `nick` and `.hermes` into `default/verdict`, one at a time with
+    `ai-memory move-session <id> --confirm` (no `--force`).
+  * `move-session` re-stamps **every** observation of a session, including rows filed in
+    other projects. `lifecycle-ops.md:760` says so: "every `observations` row of the
+    session (including any that landed in another …)".
+  * One session carried observations across 11 projects; two of those rows were in the
+    `operator` project. All rows now sit in `verdict`.
+* **The 2 `operator` rows:** both were 2026-11-06 observations of one Claude Code read
+  of `~/.agents/operator/definition-of-done.md`. Project: `operator` → `verdict`.
+  Bodies unchanged (same hash).
+* **What did not change:** `operator` pages (445 versions, all body hashes identical).
+  `operator` sessions and handoffs: 0 → 0. `ref-omniroute` page versions: unchanged.
+* **Why no undo:** no ai-memory command moves single observations. A reverse
+  `move-session` would move all rows from the session, not just the 2 `operator` ones.
+* **Decision:** the operator accepts the moved observations, Part C stands, nothing is
+  restored.
+* **Rule going forward:** before any bulk `move-session`, count each session's
+  observations by project and skip any session that touches `operator` or `ref-*`.
+  The process gap is logged as BOD-348 N50.

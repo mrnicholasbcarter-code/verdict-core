@@ -3,9 +3,10 @@
 Source: [BOD-348 — Negative results ledger](https://linear.app/bodanglin/issue/BOD-348/decisions-negative-results-ledger-tried-measured-did-not-work-kept)
 (Linear, Bodanglin workspace, exported 2026-11-20).
 
-This file contains N01–N52, imported verbatim on 2026-11-20, plus N53 (sanitized).
-Full incident details for the 2026-11-11 token-exposure event are operator-private and
-remain in the private Linear archive; this file contains only the sanitized N53 summary.
+This file contains N01–N55, imported from the Linear source on 2026-11-20 with private
+commercial details removed. N53 is held in the private archive. The 2026-10-15 entries
+originally labelled N48 and N49 are renumbered N54 and N55 to resolve a collision with
+the canonical 2026-11-11 N48/N49 table.
 
 ---
 
@@ -109,22 +110,19 @@ balanced.ts is a stub dressed as learning: its gradients are never read, LoRA B 
 
 | \# | source | tried | result | evidence | conditions | retest when |
 | -- | -- | -- | -- | -- | -- | -- |
-| N45 | Our run 2026-10-15 | 3 parallel Opus 5.5 (high) ticket owners on the Anthropic API credit with a $15/track budget checked via OmniRoute call-log cost | \~12.6M input tokens in \~25 min (\~$70 at list price); the call-log cost field reads 0 for the anthropic provider, so the budget check was blind; no prompt caching (cacheRead 0), so every turn resent the full context | OmniRoute call logs (tokens.in/out), BOD-342 D20 | OmniRoute 3.8.51, anthropic API key | Owners on a cheaper model, a token-based budget (tokens.in \* price), and prompt caching enabled |
-| N46 | Our run 2026-10-15 | ClinePass (qwen3.8-max, kimi-k3) as the model for a long-running owner agent | Rate-limited: qwen3.8-max lasted 131 turns then 429 'all credentials cooling down'; kimi-k3 got 4 straight 429s (8 failures, \~10 min cooldown) on both accounts | OmniRoute model-cooldowns, child logs | ClinePass $9.99 plan x2 | Use ClinePass for bounded implementation slices (a few calls), not a 100+ turn owner loop; rotate models; space the calls |
+| N45 | Our run 2026-10-15 | 3 parallel Opus 5.5 (high) ticket owners on the Anthropic API credit with a per-track budget checked via OmniRoute call-log cost | \~12.6M input tokens in \~25 min (significant cost at list price); the call-log cost field reads 0 for the anthropic provider, so the budget check was blind; no prompt caching (cacheRead 0), so every turn resent the full context | OmniRoute call logs (tokens.in/out), BOD-342 D20 | OmniRoute 3.8.51, anthropic API key | Owners on a cheaper model, a token-based budget (tokens.in \* price), and prompt caching enabled |
+| N46 | Our run 2026-10-15 | A subscription service (qwen3.8-max, kimi-k3) as the model for a long-running owner agent | Rate-limited: qwen3.8-max lasted 131 turns then 429 'all credentials cooling down'; kimi-k3 got 4 straight 429s (8 failures, \~10 min cooldown) on both accounts | OmniRoute model-cooldowns, child logs | A subscription service on two accounts | Use this subscription pool for bounded implementation slices (a few calls), not a 100+ turn owner loop; rotate models; space the calls |
 | N47 | Our run 2026-10-15 | Free Nemotron 120B as a native AGENT worker (multi-step, with tools) on a real code fix (route latency) | False success: reported implemented and tests passing, but the diff was only 2 moved definitions plus commented-out code; no tests, no commit. It works for single-shot new-file slices via autodev (verified by tests), not for open-ended agent work | track2-v5 report 2026-10-15 07:4xZ | nemotron :free via kilocode | Use it only through `verdict autodev` with test verification, never as a free-form agent |
 
 ---
 
 ## N48–N52 (added 2026-11-11)
 
-<!-- Note: N48 and N49 also appear from 2026-10-15 (prose entries, see section below).
-     Operator should renumber one set. The 2026-11-11 table entries are canonical. -->
-
 | \# | source | tried | result | evidence | conditions | retest when |
 | -- | -- | -- | -- | -- | -- | -- |
 | N48 | Our test 2026-11-11 | Isolating a Claude Code `-p` test against a throwaway ai-memory instance (port 49395, fake `HOME`/`AI_MEMORY_HOME`, `--strict-mcp-config`) | **It wrote to the LIVE store.** `--strict-mcp-config` isolates MCP only. Claude Code's installed ai-memory **plugin hooks** still fired and posted to the live server (49374). The live router applied the fake home's routes and created a real live project `verdict` holding 1 session, 1 page and 8 observations. Removed after a fresh backup with `ai-memory purge-session`. The project row is now empty | live DB `sessions`/`projects` rows; backup `~/.hermes/backups/` (74.47 MiB) | Claude Code with the ai-memory@ai-memory plugin 3.4.5; ai-memory 3.4.5 | Throwaway harness tests must disable hooks too (`claude --bare`), or run under a separate OS user. Verify by counting live `sessions` rows before and after |
 | N49 | Our test 2026-11-11 | Running a throwaway Hermes (fake `HOME`/`HERMES_HOME`, own `HERMES_GATEWAY_LOCK_DIR`) with a **copied `~/.hermes/.env`** | The throwaway gateway connected the **live Telegram and Photon accounts**. Live gateway: `Telegram polling conflict (1/5)` and Photon `SIDECAR_CRASHED` at 01:36:34Z. Both self-recovered: Photon reconnected at 01:36:39Z, Telegram confirmed healthy at 01:37:09Z. Copies removed | `~/.hermes/logs/gateway.log` 2026-11-11 01:36-01:37Z | Hermes multiplexed gateway | **Never copy `.env` or `auth.json` into a scratch home** (operator rule). Pass the one provider key through the environment instead |
-| N50 | Our run 2026-11-11 | Bulk `move-session` (Part C) with a per-session dry run that checked only the session's **home** project | `move-session` moves **all** of a session's observations wherever they are filed. One `dev` session carried 18,957 observations across 11 projects, including 2 in `operator`, so the move pulled rows out of `operator` and 14 other projects into `verdict`. The dry run's counts did not show where the rows were filed, so the protected-project check missed it. No command moves single observations back. Accepted by the operator (BOD-342 D23) | live DB vs pre-C backup `ai-memory-pre-C-20261111T042624Z`; `c-run/apply.jsonl`; `lifecycle-ops.md:760` | ai-memory 3.4.5 | Never: before a bulk move, count each session's observations by `project_id` and skip sessions that touch protected projects |
+| N50 | Our run 2026-11-11 | Bulk `move-session` (Part C) with a per-session dry run that checked only the session's **home** project | `move-session` moves **all** of a session's observations wherever they are filed. One `dev` session carried 18,957 observations across 11 projects, including 2 in `operator`, so the move pulled rows out of `operator` and 14 other projects into `verdict`. The dry run's counts did not show where the rows were filed, so the protected-project check missed it. No command moves single observations back. Accepted by the operator (BOD-342 D30; recorded as D23 in the Linear thread) | live DB vs pre-C backup `ai-memory-pre-C-20261111T042624Z`; `c-run/apply.jsonl`; `lifecycle-ops.md:760` | ai-memory 3.4.5 | Never: before a bulk move, count each session's observations by `project_id` and skip sessions that touch protected projects |
 | N51 | Our run 2026-11-11 | Operator golden eval (BOD-346 AC5) on ai-memory 3.4.5 | hit@5 **0.70**, hit@1 0.55, 0 foreign hits, 12 misses. It was **0.825** on the live store on 3.2.x on 2026-11-06. The 0.90 bar is unchanged. Every expected page is still in `operator` with the right citation and text (445 pages, all embedded, hashes identical to before Part C), so recall ranks them below the top 5. **Cause: nomic-embed-text vector stream degrades recall; fix is `embedding_provider = "none"` with reranker on (N51 update below, hit@5 0.825)** | `scripts/memory_recall_eval.py` @ `f8ae14d1`; golden `~/.local/share/verdict-memory-eval/operator-golden.jsonl`; `openspec/changes/ref-docs-in-memory/tasks.md` 3.2 | ai-memory 3.4.5, live store, scoped to `default/operator` | 0.90 bar: retest after changing the recall model or reranker |
 | N52 | Our review 2026-11-11 | `MrLuciano/ai-memory-hermes-plugin` as Hermes's memory provider (recall every turn, replacing the shell hooks except the two tool events) | **Rejected, not installed.** (1) Hermes CLI and `hermes -z` sessions pass no `cwd`, so the plugin scopes them to `hermes/hermes-default`, project unknown, writes off. (2) Its `sys.path.insert` and bare-name imports shadow Hermes's own `cli` module, so `from cli import save_config_value` raises ImportError. (3) No spool, a silent 60 s skip after 3 failures, and session-end on a daemon thread that `-z` can kill. Its recall is FTS-only (`/admin/search`, no reranker, 0 LLM calls), unscoped by default | plugin source v0.1.3; Hermes `agent/agent_init.py:1200`; ai-memory `admin.rs:2015`; `hermes plugins validate` passed 12/12 (structure only) | Hermes Agent v0.23.0, ai-memory 3.4.5, `plugins.isolation: in_process` | When the cwd-scoping and import-shadowing issues are fixed upstream |
 
@@ -134,22 +132,18 @@ balanced.ts is a stub dressed as learning: its gradients are never read, LoRA B 
 
 ---
 
-## N53 — 2026-11-11: bearer token printed to transcript, local-only, rotated
+## N53
 
-| \# | source | tried | result | evidence | conditions | retest when |
-| -- | -- | -- | -- | -- | -- | -- |
-| N53 | Incident 2026-11-11 | An agent reading a hook-spool file printed its full field set, including the raw bearer token for the local memory service | The value reached the harness transcript and, via the proxy, the model provider's call logs. The listener was loopback-only (127.0.0.1); the token was never committed to git. Impact class: local-only credential exposure, no external reach, no data loss. The token was rotated the same session. Full details in the private Linear archive. | Incident log 2026-11-11, stored in the private archive | ai-memory hook-spool, local listener | — |
-
-**Prevention rule:** when reading spool files, access only `url`, `attempts`, and `created_ms`; never log or print the `token` field. The memory-admin skill enforces this.
+N53: moved to the private archive.
 
 ---
 
-## Historical entries: N48 and N49 at 2026-10-15
+## Historical entries: N54 and N55 at 2026-10-15
 
-These entries predate the canonical 2026-11-11 N48/N49 table above. The operator should
-renumber them. They are preserved here verbatim.
+These entries predate the canonical 2026-11-11 N48/N49 table above. They were originally
+labelled N48 and N49; renumbered here on 2026-11-20 to resolve the collision.
 
-**N48 (2026-10-15 12:14Z):** `verdict autodev --objective` on an EXISTING 32 KB test file (tests/test\_free\_tier\_admit.py, add one sibling test):
+**N54 (2026-10-15 12:14Z):** `verdict autodev --objective` on an EXISTING 32 KB test file (tests/test\_free\_tier\_admit.py, add one sibling test):
 
 - No --executor-model: refused, "missing ExecutionPathDecision" (autodev does not choose its own executor; AD-03 gap).
 - --executor-model mistral/codestral-latest: refused, "bootstrap requires an explicit provider/model:free route" (only :free ids are accepted).
@@ -158,13 +152,11 @@ renumber them. They are preserved here verbatim.
 
 Lesson: on large existing files, the free single-shot patch path fails (a timeout, then an inexact hunk). Criterion 2 needs AD-03, the context pack, and a more tolerant patch format or edit-by-symbol. Do not retry the same route on the same file.
 
-**N49 (2026-10-15):** an external agent created a user in the local memory service through its API. That enabled human auth with no root user, so the next service restart failed. Lesson: shared local services need an access rule for outside agents (read-only token, no user/config creation); before restarting, check the user table and auth state. Recovery: via `AI_MEMORY_AUTH__RECOVERY_TOKEN` in the EnvironmentFile.
+**N55 (2026-10-15):** an external agent created a user in the local memory service through its API. That enabled human auth with no root user, so the next service restart failed. Lesson: shared local services need an access rule for outside agents (read-only token, no user/config creation); before restarting, check the user table and auth state. Recovery: via `AI_MEMORY_AUTH__RECOVERY_TOKEN` in the EnvironmentFile.
 
 ---
 
 ## Numbering conflicts
 
-The ledger has duplicate IDs: N48 and N49 appear once at 2026-10-15 (see historical
-section above) and again at 2026-11-11 (the table). The operator should renumber the
-2026-10-15 entries before the next review cycle. The 2026-11-11 N48–N52 table entries
-are the canonical ones.
+Resolved 2026-11-20: the 2026-10-15 entries formerly labelled N48 and N49 are now N54
+and N55. The 2026-11-11 N48–N52 table entries are the canonical ones.
