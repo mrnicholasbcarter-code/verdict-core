@@ -3202,9 +3202,9 @@ async def get_run_events(
                     continue
                 if type_set and evt.get("type", "") not in type_set:
                     continue
-                # Redact credential-like fields in the data payload before
-                # adding to the response (defence-in-depth; auth gate is primary).
-                safe_evt = {**evt, "data": _redact_event_data(evt.get("data", {}))}
+                # Redact credential-like keys across the whole event dict
+                # (top-level and all nested dicts/lists) before serving.
+                safe_evt = _redact_event_data(evt)
                 serialised = json.dumps(safe_evt, separators=(",", ":"))
                 byte_total += len(serialised.encode())
                 if byte_total > _RUNS_EVENTS_BYTE_BUDGET and collected:
@@ -3308,7 +3308,9 @@ async def get_run_receipt(run_id: str) -> Response:
             # (a write to events.jsonl).  Return a problem without mutating.
             return {
                 "run_id": run_id,
-                "receipt": receipt_data,
+                # Redact receipt before returning; verification is skipped so raw
+                # bytes are never compared against the redacted copy.
+                "receipt": _redact_event_data(receipt_data),
                 "verification": {
                     "ok": False,
                     "problems": [
@@ -3318,10 +3320,12 @@ async def get_run_receipt(run_id: str) -> Response:
                 },
             }
 
+        # Verification reads the raw files from disk; it must complete before
+        # redaction so the digest comparison is always against unmodified bytes.
         problems = verify_run_receipt(run_dir)
         return {
             "run_id": run_id,
-            "receipt": receipt_data,
+            "receipt": _redact_event_data(receipt_data),
             "verification": {"ok": not problems, "problems": problems},
         }
 

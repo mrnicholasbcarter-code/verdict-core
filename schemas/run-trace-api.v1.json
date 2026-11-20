@@ -17,6 +17,7 @@
     },
     "run_event": {
       "type": "object",
+      "description": "A single orchestration event. additionalProperties mirrors the raw file; any key whose name matches a credential pattern (api_key, password, secret, api_token, auth_token, credential) is replaced with \"[REDACTED]\" at every depth by the server before the event is included in a response.",
       "required": ["seq", "at", "type"],
       "additionalProperties": true,
       "properties": {
@@ -69,6 +70,7 @@
     },
     "receipt_response": {
       "type": "object",
+      "description": "Receipt and verification for a completed run. additionalProperties mirrors the raw receipt file; any key whose name matches a credential pattern (api_key, password, secret, api_token, auth_token, credential) is replaced with \"[REDACTED]\" at every depth by the server before being served. Digest verification runs on the raw file bytes before redaction so the verify result is correct.",
       "required": ["run_id", "verification"],
       "additionalProperties": true,
       "properties": {

@@ -735,3 +735,118 @@ class TestCredentialRedaction:
         evt_data = r.json()["events"][0]["data"]
         assert evt_data["password"] == "[REDACTED]"
         assert evt_data["count"] == 42
+
+    def test_top_level_event_field_is_redacted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Credential key at the top level of the event dict is redacted."""
+        events = [
+            {
+                "seq": 1,
+                "at": "2026-01-01T00:00:00Z",
+                "type": "run_started",
+                "node_id": "",
+                # api_key at the event top level (not inside data)
+                "api_key": "sk-toplevel-secret",
+                "data": {},
+            }
+        ]
+        _make_run(tmp_path, "toplevel-cred-run", events=events)
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/toplevel-cred-run/events", headers=AUTH)
+        assert r.status_code == 200
+        evt = r.json()["events"][0]
+        assert "sk-toplevel-secret" not in r.text
+        assert evt["api_key"] == "[REDACTED]"
+
+    def test_depth2_event_field_is_redacted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Credential key nested at depth 2 inside data is redacted."""
+        events = [
+            {
+                "seq": 1,
+                "at": "2026-01-01T00:00:00Z",
+                "type": "run_started",
+                "node_id": "",
+                "data": {"inner": {"secret": "nested-secret-value", "safe": "ok"}},
+            }
+        ]
+        _make_run(tmp_path, "depth2-cred-run", events=events)
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/depth2-cred-run/events", headers=AUTH)
+        assert r.status_code == 200
+        evt_inner = r.json()["events"][0]["data"]["inner"]
+        assert "nested-secret-value" not in r.text
+        assert evt_inner["secret"] == "[REDACTED]"
+        assert evt_inner["safe"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Receipt redaction: receipt response must not expose credential-named fields
+# ---------------------------------------------------------------------------
+
+
+class TestReceiptRedaction:
+    """The receipt endpoint applies the same credential redaction as the events
+    endpoint to the receipt payload.  Digest verification still runs on the
+    raw file bytes, never on the redacted copy, so the verify result is correct.
+    """
+
+    def test_receipt_credential_fields_are_redacted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A receipt with a credential-named key comes back redacted."""
+        from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+        run_dir = tmp_path / "redact-rcpt"
+        run_dir.mkdir()
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("run_started", run_id="redact-rcpt", goal="redaction test")
+        log.emit("run_finished", outcome="BLOCKED", reason="test")
+        write_run_receipt(run_dir)
+
+        # Inject a credential-named field into receipt.json (simulates a future
+        # change that accidentally logs one there).
+        import json as _json
+
+        receipt_path = run_dir / "receipt.json"
+        raw = _json.loads(receipt_path.read_bytes())
+        raw["api_key"] = "receipt-secret-value"
+        receipt_path.write_text(_json.dumps(raw))
+
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/redact-rcpt/receipt", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert "receipt-secret-value" not in r.text
+        assert body["receipt"]["api_key"] == "[REDACTED]"
+        # Verification result must still reflect the tampered file (digest changed).
+        assert isinstance(body["verification"]["ok"], bool)
+        assert isinstance(body["verification"]["problems"], list)
+
+    def test_receipt_verify_uses_raw_bytes_not_redacted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Verification result is based on raw file bytes, not on the redacted copy.
+
+        A clean (unmodified) run should have verification.ok True regardless of
+        redaction, because the redaction happens after verification reads the files.
+        """
+        from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+        run_dir = tmp_path / "verify-raw-run"
+        run_dir.mkdir()
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("run_started", run_id="verify-raw-run", goal="verify test")
+        log.emit("run_finished", outcome="BLOCKED", reason="test")
+        write_run_receipt(run_dir)
+
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/verify-raw-run/receipt", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        # A clean run must verify ok; if verify saw the redacted copy it would
+        # find a digest mismatch.
+        assert body["verification"]["ok"] is True
+        assert body["verification"]["problems"] == []
