@@ -1,18 +1,25 @@
 """Aggregate entry point: collect rows from all discovery sources.
 
-:func:`collect_sources` runs all enabled adapters and returns the combined
-list of :class:`~verdict.discovery.sources._types.DiscoveryRow` objects.
-Story S3's registry will consume this.
+:func:`collect_sources` runs all enabled adapters and returns a
+:class:`CollectResult` with both the combined
+:class:`~verdict.discovery.sources._types.DiscoveryRow` list and any
+per-source :class:`SourceError` records.  Story S3's registry will consume
+this.
 
 Network adapters (openrouter, kilo, models_dev, community lists) use an
 injectable ``Fetcher`` so the caller can run them offline in tests.  The
 OmniRoute adapter accepts an ``OmniRouteEvidence`` object (or a zero-arg
 callable returning one) so it is also testable without HTTP.
+
+A failed source is always recorded in :attr:`CollectResult.errors`.  An
+empty ``rows`` list for a source means the source returned no models;
+a non-empty ``errors`` list means at least one source *failed* and must
+not be treated as a successful-but-empty result.
 """
 
 from __future__ import annotations
 
-import contextlib
+from dataclasses import dataclass, field
 from typing import Any
 
 from verdict.discovery.sources._fetcher import Fetcher, default_fetcher
@@ -22,6 +29,38 @@ from verdict.discovery.sources.kilo import fetch_kilo
 from verdict.discovery.sources.models_dev import fetch_models_dev
 from verdict.discovery.sources.omniroute import parse_free_tier_ids, rows_from_evidence
 from verdict.discovery.sources.openrouter import fetch_openrouter
+
+
+@dataclass(frozen=True)
+class SourceError:
+    """A single per-source failure recorded by :func:`collect_sources`.
+
+    Attributes:
+        source: The adapter name (e.g. ``"kilo"``).
+        error_type: The exception class name (e.g. ``"OSError"``).
+        message: A short, human-readable description; no secrets.
+    """
+
+    source: str
+    error_type: str
+    message: str
+
+
+@dataclass
+class CollectResult:
+    """Return value of :func:`collect_sources`.
+
+    Attributes:
+        rows: All :class:`~verdict.discovery.sources._types.DiscoveryRow`
+            objects from every source that succeeded.
+        errors: One :class:`SourceError` per adapter that raised.  An empty
+            list means every enabled adapter ran without error.  A source
+            that errored must *not* appear as an empty-success entry in
+            ``rows``; it only appears here.
+    """
+
+    rows: list[DiscoveryRow] = field(default_factory=list)
+    errors: list[SourceError] = field(default_factory=list)
 
 
 def collect_sources(
@@ -36,11 +75,12 @@ def collect_sources(
     include_kilo: bool = True,
     include_models_dev: bool = True,
     include_community: bool = True,
-) -> list[DiscoveryRow]:
+) -> CollectResult:
     """Collect rows from all enabled discovery sources.
 
-    Returns a combined list; each row names its ``source`` and ``fetched_at``.
-    Sources that fail are skipped; no exception propagates to the caller.
+    Returns a :class:`CollectResult` with ``rows`` from every source that
+    succeeded and ``errors`` for every source that raised.  A failed source
+    never appears as an empty success.
 
     Args:
         omniroute_evidence: An ``OmniRouteEvidence`` instance, a zero-arg
@@ -49,50 +89,59 @@ def collect_sources(
             ``/api/free-tier/summary``, or ``None`` if unavailable.
         omniroute_base_url: Base URL recorded in OmniRoute rows' provenance.
         fetcher: HTTP fetcher; inject
-            :func:`~verdict.discovery.sources._fetcher.make_stub_fetcher`
+            :func:`~tests.helpers_discovery.make_stub_fetcher`
             in tests for fully offline operation.
         community: Pin configuration for community list sources.
         include_*: Toggle individual sources.
 
     Returns:
-        All rows from all enabled sources, in source order.
+        :class:`CollectResult` with combined rows and any per-source errors.
     """
     cfg = community or CommunityConfig()
-    rows: list[DiscoveryRow] = []
+    result = CollectResult()
+
+    def _run(source: str, fn: Any, *args: Any, **kwargs: Any) -> None:
+        try:
+            result.rows.extend(fn(*args, **kwargs))
+        except Exception as exc:
+            result.errors.append(
+                SourceError(source=source, error_type=type(exc).__name__, message=str(exc)[:200])
+            )
 
     # 1. OmniRoute
     if include_omniroute and omniroute_evidence is not None:
-        with contextlib.suppress(Exception):
+        try:
             evidence = omniroute_evidence() if callable(omniroute_evidence) else omniroute_evidence
             free_ids = (
                 parse_free_tier_ids(omniroute_free_tier_payload)
                 if omniroute_free_tier_payload is not None
                 else ()
             )
-            rows.extend(
+            result.rows.extend(
                 rows_from_evidence(evidence, base_url=omniroute_base_url, free_tier_ids=free_ids)
+            )
+        except Exception as exc:
+            result.errors.append(
+                SourceError(
+                    source="omniroute", error_type=type(exc).__name__, message=str(exc)[:200]
+                )
             )
 
     # 2. OpenRouter
     if include_openrouter:
-        with contextlib.suppress(Exception):
-            rows.extend(fetch_openrouter(fetcher=fetcher))
+        _run("openrouter", fetch_openrouter, fetcher=fetcher)
 
     # 3. Kilo
     if include_kilo:
-        with contextlib.suppress(Exception):
-            rows.extend(fetch_kilo(fetcher=fetcher))
+        _run("kilo", fetch_kilo, fetcher=fetcher)
 
     # 4. models.dev
     if include_models_dev:
-        with contextlib.suppress(Exception):
-            rows.extend(fetch_models_dev(fetcher=fetcher))
+        _run("models_dev", fetch_models_dev, fetcher=fetcher)
 
     # 5. Community lists
     if include_community:
-        with contextlib.suppress(Exception):
-            rows.extend(fetch_fcm(fetcher=fetcher, commit=cfg.fcm_commit))
-        with contextlib.suppress(Exception):
-            rows.extend(fetch_dsh(fetcher=fetcher, commit=cfg.dsh_commit))
+        _run("free_coding_models", fetch_fcm, fetcher=fetcher, commit=cfg.fcm_commit)
+        _run("dsh_our_free_model", fetch_dsh, fetcher=fetcher, commit=cfg.dsh_commit)
 
-    return rows
+    return result

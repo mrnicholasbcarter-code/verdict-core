@@ -80,17 +80,6 @@ class TestDiscoveryRow:
 class TestOmniRouteAdapter:
     """Tests for rows_from_evidence and parse_free_tier_ids."""
 
-    def _make_evidence(self, inventory: dict, connections_source: str = "management") -> object:
-        """Build a minimal OmniRouteEvidence-like object from dicts."""
-        from datetime import datetime, timezone
-
-        from verdict.omniroute_evidence import parse_omniroute_evidence
-
-        v1_models_payload: dict = {"data": list(inventory.values())}
-        return parse_omniroute_evidence(
-            v1_models=v1_models_payload, now=datetime(2026, 11, 20, tzinfo=timezone.utc)
-        )
-
     def test_rows_extracted_from_inventory(self) -> None:
         from datetime import datetime, timezone
 
@@ -538,6 +527,81 @@ class TestDSHAdapter:
 # ---------------------------------------------------------------------------
 
 
+class TestCollectSourcesErrors:
+    """Failing-first tests: errors must be recorded, not silently swallowed."""
+
+    def test_failed_source_recorded_as_error_not_silent_success(self) -> None:
+        """A source that raises must appear in errors, not as empty success."""
+        from verdict.discovery.collect import CollectResult
+
+        def bad_fetcher(url: str, **kwargs: object) -> bytes:
+            raise OSError("simulated network failure")
+
+        result = collect_sources(
+            fetcher=bad_fetcher,
+            include_omniroute=False,
+            include_kilo=True,
+            include_openrouter=False,
+            include_models_dev=False,
+            include_community=False,
+        )
+        assert isinstance(result, CollectResult), "collect_sources must return CollectResult"
+        assert len(result.errors) == 1
+        err = result.errors[0]
+        assert err.source == "kilo"
+        assert err.error_type == "OSError"
+        assert "simulated network failure" in err.message
+
+    def test_error_has_source_type_and_message_fields(self) -> None:
+        """SourceError must carry source, error_type, and message."""
+        from verdict.discovery.collect import CollectResult, SourceError
+
+        def bad_fetcher(url: str, **kwargs: object) -> bytes:
+            raise ValueError("bad payload")
+
+        result = collect_sources(
+            fetcher=bad_fetcher,
+            include_omniroute=False,
+            include_openrouter=True,
+            include_kilo=False,
+            include_models_dev=False,
+            include_community=False,
+        )
+        assert isinstance(result, CollectResult)
+        assert result.errors, "expected at least one error"
+        for err in result.errors:
+            assert isinstance(err, SourceError)
+            assert err.source
+            assert err.error_type
+            assert err.message
+
+    def test_successful_sources_still_returned_alongside_errors(self) -> None:
+        """Rows from good sources must survive even when another source fails."""
+        from verdict.discovery.sources.openrouter import OPENROUTER_MODELS_URL
+
+        good_payload: dict[str, object] = {
+            "data": [{"id": "openrouter/x", "pricing": {"prompt": "0", "completion": "0"}}]
+        }
+
+        def mixed_fetcher(url: str, **kwargs: object) -> bytes:
+            import json
+
+            if url == OPENROUTER_MODELS_URL:
+                return json.dumps(good_payload).encode()
+            raise OSError("kilo/models_dev/community network down")
+
+        result = collect_sources(
+            fetcher=mixed_fetcher,
+            include_omniroute=False,
+            include_openrouter=True,
+            include_kilo=True,
+            include_models_dev=False,
+            include_community=False,
+        )
+        assert any(r.source == "openrouter" for r in result.rows)
+        assert any(e.source == "kilo" for e in result.errors)
+
+
 class TestCollectSources:
     """Integration-level tests: all sources offline via stubs."""
 
@@ -584,9 +648,9 @@ class TestCollectSources:
         )
 
     def test_collect_all_sources_offline(self) -> None:
-        rows = collect_sources(fetcher=self._make_fetcher(), include_omniroute=False)
-        assert len(rows) > 0
-        sources_seen = {r.source for r in rows}
+        result = collect_sources(fetcher=self._make_fetcher(), include_omniroute=False)
+        assert len(result.rows) > 0
+        sources_seen = {r.source for r in result.rows}
         assert "openrouter" in sources_seen
         assert "kilo" in sources_seen
         assert "models_dev" in sources_seen
@@ -594,8 +658,8 @@ class TestCollectSources:
         assert "dsh_our_free_model" in sources_seen
 
     def test_each_row_has_required_fields(self) -> None:
-        rows = collect_sources(fetcher=self._make_fetcher(), include_omniroute=False)
-        for row in rows:
+        result = collect_sources(fetcher=self._make_fetcher(), include_omniroute=False)
+        for row in result.rows:
             assert isinstance(row.id, str) and row.id
             assert isinstance(row.provider, str) and row.provider
             assert isinstance(row.source, str) and row.source
@@ -608,11 +672,13 @@ class TestCollectSources:
         from verdict.discovery.sources.openrouter import OPENROUTER_MODELS_URL
 
         stub = make_stub_fetcher({OPENROUTER_MODELS_URL: self._openrouter_payload()})
-        rows = collect_sources(
+        result = collect_sources(
             fetcher=stub, include_omniroute=False, include_models_dev=False, include_community=False
         )
         # Kilo failed but openrouter still returned rows
-        assert any(r.source == "openrouter" for r in rows)
+        assert any(r.source == "openrouter" for r in result.rows)
+        # Kilo failure is now recorded
+        assert any(e.source == "kilo" for e in result.errors)
 
     def test_omniroute_with_fixture_evidence(self) -> None:
         from datetime import datetime, timezone
@@ -630,7 +696,7 @@ class TestCollectSources:
             health_matrix=None,
             now=datetime(2026, 11, 20, tzinfo=timezone.utc),
         )
-        rows = collect_sources(
+        result = collect_sources(
             omniroute_evidence=evidence,
             fetcher=make_stub_fetcher({}),
             include_openrouter=False,
@@ -638,12 +704,12 @@ class TestCollectSources:
             include_models_dev=False,
             include_community=False,
         )
-        assert len(rows) == 1
-        assert rows[0].id == "groq/llama-3.3-70b"
-        assert rows[0].source == "omniroute"
+        assert len(result.rows) == 1
+        assert result.rows[0].id == "groq/llama-3.3-70b"
+        assert result.rows[0].source == "omniroute"
 
     def test_toggle_disable_sources(self) -> None:
-        rows = collect_sources(
+        result = collect_sources(
             fetcher=self._make_fetcher(),
             include_omniroute=False,
             include_openrouter=False,
@@ -651,4 +717,5 @@ class TestCollectSources:
             include_models_dev=False,
             include_community=False,
         )
-        assert rows == []
+        assert result.rows == []
+        assert result.errors == []

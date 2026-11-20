@@ -36,17 +36,33 @@ empty list rather than raising.
 - **WHEN** the FCM source file contains a function call or object literal in an array
 - **THEN** `parse_fcm` returns an empty list and raises no exception
 
-### Requirement: `collect_sources` SHALL swallow per-adapter failures
-If any adapter raises, `collect_sources` SHALL continue and return rows from
-the remaining adapters.  No exception SHALL propagate to the caller.
+### Requirement: `collect_sources` SHALL record per-adapter failures as errors
+If any adapter raises, `collect_sources` SHALL continue and collect rows from
+the remaining adapters.  No exception SHALL propagate to the caller.  Each
+failure SHALL be recorded as a `SourceError` in `CollectResult.errors` with
+the source name, exception class name, and a short message (no secrets).  A
+failed source SHALL NOT appear as an empty-success entry in `CollectResult.rows`;
+empty rows and a recorded error are mutually exclusive per source.
 
 #### Scenario: One failing adapter does not block others
 - **WHEN** the OpenRouter adapter raises and other adapters succeed
-- **THEN** `collect_sources` returns rows from the succeeding adapters only
+- **THEN** `collect_sources` returns a `CollectResult` with rows from the
+  succeeding adapters and an error entry naming the failed source
 
-### Requirement: `refresh_discovery_sources.py` SHALL write a cache index
-The script SHALL write `{source}.json` per enabled source and `_index.json`
-summarising row counts and errors to `$VERDICT_HOME/discovery/sources/`.
+#### Scenario: Failed source is recorded, never treated as empty success
+- **WHEN** an adapter raises
+- **THEN** `CollectResult.errors` contains one entry for that source
+- **AND** `CollectResult.rows` contains no rows with that `source` value
+
+### Requirement: `refresh_discovery_sources.py` SHALL write cache files atomically
+The script SHALL write `{source}.json` and `_index.json` via a temporary file
+in the same directory followed by `os.replace`, so a reader never sees a
+partial write.  Failed sources SHALL appear in the index with a non-null
+`error` field; they SHALL NOT appear as `row_count: 0` with `error: null`.
+
+#### Scenario: Index records a source error
+- **WHEN** `run()` is called and one network adapter fails
+- **THEN** `_index.json` has an entry for that source with a non-null `error`
 
 #### Scenario: Index is written on success
 - **WHEN** `run()` is called with one enabled source that returns rows

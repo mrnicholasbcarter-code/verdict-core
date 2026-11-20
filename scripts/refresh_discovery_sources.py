@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,7 +70,8 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _write_cache(cache_dir: Path, name: str, rows: list[DiscoveryRow]) -> None:
+def _write_cache_atomic(cache_dir: Path, name: str, rows: list[DiscoveryRow]) -> None:
+    """Write a source cache file atomically (temp file + os.replace)."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / f"{name}.json"
     payload = {
@@ -79,8 +81,36 @@ def _write_cache(cache_dir: Path, name: str, rows: list[DiscoveryRow]) -> None:
         "written_at": _iso_now(),
         "rows": [r.to_dict() for r in rows],
     }
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    text = json.dumps(payload, indent=2, sort_keys=True)
+    fd, tmp = tempfile.mkstemp(dir=cache_dir, prefix=f".{name}-", suffix=".json.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        import contextlib
+
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
     print(f"  wrote {len(rows):>5} rows → {path}", flush=True)
+
+
+def _write_index_atomic(idx_path: Path, result: dict[str, object]) -> None:
+    """Write the _index.json file atomically (temp file + os.replace)."""
+    import contextlib
+
+    idx_path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(result, indent=2, sort_keys=True)
+    fd, tmp = tempfile.mkstemp(dir=idx_path.parent, prefix="._index-", suffix=".json.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, idx_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def run(
@@ -109,13 +139,19 @@ def run(
             api_key = os.environ.get("OMNIROUTE_API_KEY") or os.environ.get("LLMGATE_API_KEY")
             mgmt_token = os.environ.get("OMNIROUTE_MANAGEMENT_TOKEN")
             evidence = fetch_omniroute_evidence(base, api_key=api_key, management_token=mgmt_token)
-            # Try free-tier summary separately via default_fetcher
+            # Try free-tier summary separately; log but do not abort on failure.
             free_tier_payload = None
+            free_tier_error: str | None = None
             try:
                 raw_ft = default_fetcher(base.rstrip("/") + "/api/free-tier/summary", timeout=20.0)
                 free_tier_payload = json.loads(raw_ft)
-            except Exception:
-                pass
+            except Exception as ft_exc:
+                free_tier_error = f"{type(ft_exc).__name__}: {ft_exc}"
+                print(
+                    f"  WARNING [omniroute/free-tier]: {free_tier_error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             free_ids = parse_free_tier_ids(free_tier_payload) if free_tier_payload else ()
             or_rows = rows_from_evidence(evidence, base_url=base, free_tier_ids=free_ids)
             index.append(
@@ -123,6 +159,7 @@ def run(
                     "source": "omniroute",
                     "row_count": len(or_rows),
                     "error": None,
+                    "free_tier_warning": free_tier_error,
                     "fetched_at": _iso_now(),
                 }
             )
@@ -134,11 +171,12 @@ def run(
                 {"source": "omniroute", "row_count": 0, "error": msg, "fetched_at": _iso_now()}
             )
         if or_rows:
-            _write_cache(home, "omniroute", or_rows)
+            _write_cache_atomic(home, "omniroute", or_rows)
 
     # Network adapters: use collect_sources for the remaining sources.
-    # collect_sources swallows per-adapter exceptions, so each is best-effort.
-    net_rows = collect_sources(
+    # collect_sources records per-source errors so we can tell failed sources
+    # apart from successfully-empty ones.
+    net_result = collect_sources(
         fetcher=default_fetcher,
         community=cfg,
         include_omniroute=False,
@@ -148,11 +186,16 @@ def run(
         include_community=bool({"free_coding_models", "dsh_our_free_model"} & enabled),
     )
 
-    # Group rows by source and cache each separately, tracking per-source
-    # error state from the index (collect_sources swallows exceptions, so
-    # we infer success from the row list).
+    # Build a set of sources that errored so we don't confuse them with empties.
+    errored_sources = {e.source: e for e in net_result.errors}
+    for err in net_result.errors:
+        print(
+            f"  ERROR [{err.source}]: {err.error_type}: {err.message}", file=sys.stderr, flush=True
+        )
+
+    # Group successful rows by source and cache each separately.
     rows_by_source: dict[str, list[DiscoveryRow]] = {}
-    for row in net_rows:
+    for row in net_result.rows:
         rows_by_source.setdefault(row.source, []).append(row)
 
     for source_key, file_name in _SOURCE_TO_FILE.items():
@@ -168,17 +211,29 @@ def run(
             and source_key not in enabled
         ):
             continue
-        src_rows = rows_by_source.get(source_key, [])
-        index.append(
-            {
-                "source": source_key,
-                "row_count": len(src_rows),
-                "error": None,
-                "fetched_at": src_rows[0].fetched_at if src_rows else _iso_now(),
-            }
-        )
-        if src_rows:
-            _write_cache(home, file_name, src_rows)
+
+        if source_key in errored_sources:
+            err = errored_sources[source_key]
+            index.append(
+                {
+                    "source": source_key,
+                    "row_count": 0,
+                    "error": f"{err.error_type}: {err.message}",
+                    "fetched_at": _iso_now(),
+                }
+            )
+        else:
+            src_rows = rows_by_source.get(source_key, [])
+            index.append(
+                {
+                    "source": source_key,
+                    "row_count": len(src_rows),
+                    "error": None,
+                    "fetched_at": src_rows[0].fetched_at if src_rows else _iso_now(),
+                }
+            )
+            if src_rows:
+                _write_cache_atomic(home, file_name, src_rows)
 
     result: dict[str, object] = {
         "schema": "verdict.discovery.sources.index/v1",
@@ -187,8 +242,7 @@ def run(
         "total_rows": sum(e.get("row_count", 0) for e in index),  # type: ignore[call-overload]
     }
     idx_path = home / "_index.json"
-    home.mkdir(parents=True, exist_ok=True)
-    idx_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+    _write_index_atomic(idx_path, result)
     print(f"\nTotal rows: {result['total_rows']}  Index: {idx_path}", flush=True)
     return result
 
