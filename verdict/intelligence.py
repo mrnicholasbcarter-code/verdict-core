@@ -1666,6 +1666,34 @@ class IntelligenceService:
                     candidate_states=[],
                     safety_flags=["fail_closed_omniroute_unauthorized"],
                 )
+            if isinstance(context, dict) and context.get("_dispatch_gateway_origin"):
+                # Dispatching callers on the relay path always need a proof-bound
+                # admission result.  An unavailable snapshot cannot produce one,
+                # so fail closed rather than leaking into the historical catalog
+                # where admission_proofs would be empty and dispatch would be
+                # denied with a misleading "missing route-bound admission proof".
+                return RoutingDecision(
+                    model=NO_ELIGIBLE_TARGET,
+                    provider="none",
+                    tier=final_tier,
+                    reason=(
+                        "fail_closed — OmniRoute admission snapshot unavailable"
+                        + (f": {_fetch_error}" if _fetch_error else "")
+                        + "; relay dispatch requires proof"
+                    ),
+                    escalated=escalated,
+                    escalation_reason=esc_reason or None,
+                    policy_version=self._policy_version,
+                    degraded_mode=False,
+                    managed_backend_status=self.managed_backend_status,
+                    protected=False,
+                    task_class="ordinary",
+                    decision="denied",
+                    transport_outcome="not_sent",
+                    quality_outcome="unknown",
+                    candidate_states=[],
+                    safety_flags=["fail_closed_snapshot_unavailable"],
+                )
             # Compatibility-only offline callers may use the historical path.
             return None
         classification = classify_worthiness(

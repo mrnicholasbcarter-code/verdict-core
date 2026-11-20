@@ -524,3 +524,79 @@ def test_unauthorized_gateway_key_denies_without_premium_fallback(monkeypatch) -
     assert "env OMNIROUTE_API_KEY" in decision.reason
     assert "bogus-key-value" not in decision.reason
     assert "fail_closed_omniroute_unauthorized" in decision.safety_flags
+
+
+def test_snapshot_unavailable_on_relay_path_fails_closed(monkeypatch) -> None:
+    """Relay dispatch path with an unavailable OmniRoute snapshot must fail closed.
+
+    When load_omniroute_admit_snapshot raises a non-auth LiveAdmitError (e.g.
+    timeout, transport failure, or stale LKG) and the caller supplies
+    _dispatch_gateway_origin, the routing must return decision="denied" with a
+    clear fail_closed reason rather than leaking into the historical catalog
+    (which has no admission_proofs) and producing a misleading
+    "dispatch denied: missing route-bound admission proof" error.
+    """
+    import asyncio
+
+    service = IntelligenceService(
+        primary_model="openrouter/baidu/ernie-5.5-flash-preview:free",
+        providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
+        profile="development",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+    )
+
+    def raise_timeout(*args, **kwargs):
+        raise LiveAdmitError(
+            "timeout",
+            "OmniRoute admit surfaces failed (account_status, catalog, free_tier, providers)"
+            " and no last-good snapshot younger than 900s exists:"
+            " timeout:aggregate discovery deadline exceeded at /api/free-tier/summary",
+        )
+
+    monkeypatch.setattr("verdict.intelligence.load_omniroute_admit_snapshot", raise_timeout)
+
+    decision = asyncio.run(
+        service.route(
+            "Reply with just: ok", context={"_dispatch_gateway_origin": "http://127.0.0.1:20128/v1"}
+        )
+    )
+
+    assert decision.model == "no_eligible_target"
+    assert decision.decision == "denied"
+    assert decision.transport_outcome == "not_sent"
+    assert "fail_closed" in decision.reason
+    assert "fail_closed_snapshot_unavailable" in decision.safety_flags
+    # Must not look like the misleading dispatch-loop error.
+    assert "missing route-bound admission proof" not in decision.reason
+
+
+def test_snapshot_unavailable_without_dispatch_context_uses_historical(monkeypatch) -> None:
+    """Non-relay callers (e.g. CLI) may fall to the historical catalog on snapshot failure.
+
+    Only dispatching callers (those with _dispatch_gateway_origin in context)
+    get the fail-closed behaviour.  Legacy/offline callers that do not set that
+    key must continue to reach the historical catalog path unchanged.
+    """
+    import asyncio
+
+    service = IntelligenceService(
+        primary_model="openrouter/baidu/ernie-5.5-flash-preview:free",
+        providers={"omniroute": ProviderConfig(base_url="http://127.0.0.1:20128/v1")},
+        profile="development",
+        log_path="",
+        log_full_task=False,
+        discovery_ttl=60,
+    )
+
+    def raise_timeout(*args, **kwargs):
+        raise LiveAdmitError("timeout", "aggregate discovery deadline exceeded")
+
+    monkeypatch.setattr("verdict.intelligence.load_omniroute_admit_snapshot", raise_timeout)
+
+    # No _dispatch_gateway_origin → old historical-catalog path.
+    decision = asyncio.run(service.route("Reply with just: ok", context={}))
+
+    # The new fail-closed path must NOT fire for non-dispatch callers.
+    assert "fail_closed_snapshot_unavailable" not in decision.safety_flags
