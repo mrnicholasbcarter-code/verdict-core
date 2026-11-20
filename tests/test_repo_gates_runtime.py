@@ -15,7 +15,7 @@ from verdict.orchestration import verification
 from verdict.orchestration.contracts import NodeKind, NodeState, RunOutcome, WorkGraph, WorkNode
 from verdict.orchestration.controls import ControlRequest
 from verdict.orchestration.recovery import FailureIntelligence
-from verdict.orchestration.runtime import DagRuntime, RuntimePolicy, subprocess_runner
+from verdict.orchestration.runtime import DagRuntime, NodeRun, RuntimePolicy, subprocess_runner
 
 
 @pytest.fixture()
@@ -426,7 +426,9 @@ async def test_existing_debt_in_one_gate_does_not_hide_a_new_failure_in_another(
     await runtime.run()
     failure = events.of("failure", "a")[0]
     assert failure["category"] == "verification_failed"
-    assert "N818" in failure.get("reason", "") or events.of("rehydrate", "a")
+    assert "N818" in failure.get("evidence", ""), (
+        f"expected N818 in failure evidence; got: {failure.get('evidence', '')!r}"
+    )
 
 
 async def test_formatting_only_failure_is_repaired_with_the_formatter(
@@ -562,30 +564,33 @@ async def test_lint_autofix_event_in_node_receipt(repo: Path, gate_bin: Path, co
 async def test_ruff_missing_records_event_gates_proceed(
     repo: Path, gate_bin: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When ruff is not found, a lint_autofix event with ruff_missing=True is emitted
-    and gates still run (no crash).  The node outcome is determined by gates alone."""
+    """When ruff is missing in the autofix path, the lint_autofix event records
+    ruff_missing=True, gates still run (via gate_bin which has ruff), and the
+    node validates because the gates themselves succeed."""
     import verdict.orchestration.runtime as _rt_mod
 
     orig = _rt_mod._resolve_gate_argv
 
-    def missing_ruff(argv: Sequence[str], cwd: Path) -> list[str]:
-        if argv and argv[0] == "ruff":
+    def missing_ruff_fix_only(argv: Sequence[str], cwd: Path) -> list[str]:
+        # Raise only for the proactive autofix calls (--fix flag present).
+        # Gate calls (ruff check . / ruff format --check .) are resolved normally.
+        if argv and argv[0] == "ruff" and "--fix" in argv:
             raise FileNotFoundError("gate executable not found: ruff")
         return orig(argv, cwd)
 
-    monkeypatch.setattr(_rt_mod, "_resolve_gate_argv", missing_ruff)
+    monkeypatch.setattr(_rt_mod, "_resolve_gate_argv", missing_ruff_fix_only)
     runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
     result = await runtime.run()
-    # Ruff missing: autofix skipped, gates still run via the declared-gate path
-    # (which also calls _resolve_gate_argv — also raises).  The node may VALIDATE
-    # (gates skipped / fail-open) or fail depending on runtime gate handling.
-    # What we care about: lint_autofix event was emitted with ruff_missing=True.
+    # Autofix path could not find ruff → ruff_missing=True, skipped=False.
     autofix_evts = events.of("lint_autofix", "a")
     assert autofix_evts, "lint_autofix event not emitted when ruff is missing"
     assert autofix_evts[0].get("ruff_missing") is True
     assert autofix_evts[0].get("skipped") is False
-    # No crash: the run completed (did not raise an exception).
-    assert result is not None
+    # Gates still ran: repo_gate events exist for node "a".
+    gate_evts = events.of("repo_gate", "a")
+    assert gate_evts, "gates did not run after autofix ruff_missing"
+    # Node validates because gates (via gate_bin) passed.
+    assert result.nodes["a"].state is NodeState.VALIDATED, result.reason
 
 
 async def test_autofix_skipped_when_no_ruff_gate(repo: Path, gate_bin: Path) -> None:
@@ -593,11 +598,11 @@ async def test_autofix_skipped_when_no_ruff_gate(repo: Path, gate_bin: Path) -> 
     and returns without calling ruff."""
     runtime, events, _ = make_runtime(repo, "[tool.mypy]\nfiles=['a.txt']\n")
     normal_runner = runtime.runner
-    ruff_calls: list[str] = []
+    ruff_calls: list[tuple[list[str], Path]] = []
 
     async def track_ruff(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
         if Path(argv[0]).name == "ruff":
-            ruff_calls.append(shlex.join(argv))
+            ruff_calls.append((list(argv), cwd))
         return await normal_runner(argv, cwd, timeout)
 
     runtime.runner = track_ruff
@@ -608,6 +613,80 @@ async def test_autofix_skipped_when_no_ruff_gate(repo: Path, gate_bin: Path) -> 
     assert autofix_evts, "lint_autofix event not emitted"
     assert autofix_evts[0].get("skipped") is True
     assert autofix_evts[0].get("reason") == "no_ruff_gate"
-    # No ruff calls at all for the implement node worktree.
-    ruff_in_node = [c for c in ruff_calls if "a-" in c or "a.txt" in c]
-    assert not ruff_in_node, f"unexpected ruff calls: {ruff_in_node}"
+    # No ruff calls for the implement node's worktree: match on cwd.name and argv elements.
+    ruff_in_node = [(av, cw) for av, cw in ruff_calls if cw.name.startswith("a-") or "a.txt" in av]
+    assert not ruff_in_node, f"unexpected ruff calls in node worktree: {ruff_in_node}"
+
+
+async def test_fixable_f401_is_corrected_in_file_and_node_validates(
+    repo: Path, gate_bin: Path
+) -> None:
+    """A runner that simulates ruff check --fix by writing clean content to the
+    target file proves the full contract: file digest changes, changed_files is
+    non-empty in the event, the gate then sees clean code, and the node validates.
+    """
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+
+    async def fixing_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        name = Path(argv[0]).name
+        if name == "ruff" and "check" in argv and "--fix" in argv:
+            # argv = [resolved_ruff, "check", "--fix", target1, ...]
+            # Simulate the fix by rewriting each target file with clean content.
+            for target in argv[3:]:
+                target_path = cwd / target
+                if target_path.is_file():
+                    target_path.write_text("# fixed by autofix\n")
+            return 0, "Fixed 1 error (F401)."
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = fixing_runner
+    result = await runtime.run()
+    assert result.nodes["a"].state is NodeState.VALIDATED, result.reason
+    autofix_evts = events.of("lint_autofix", "a")
+    assert autofix_evts, "lint_autofix event not emitted"
+    changed = autofix_evts[0].get("changed_files", [])
+    assert changed, f"expected at least one file in changed_files; got {changed!r}"
+    assert not events.of("failure", "a"), "unexpected failure after autofix"
+
+
+async def test_unowned_changed_file_is_never_passed_to_ruff(
+    repo: Path, gate_bin: Path, tmp_path: Path
+) -> None:
+    """A file changed by the worker but not in owned_files must never appear in
+    the ruff --fix argv; only owned files are auto-fixed.
+
+    _apply_lint_autofix is called directly to isolate the ownership filter from
+    the runtime's ownership-violation gate, which runs earlier in the full flow
+    and would block the node before autofix is ever reached.
+    """
+    runtime, _events, _ = make_runtime(repo, "")
+    fix_argvs: list[list[str]] = []
+    normal_runner = runtime.runner
+
+    async def track_fix(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "ruff" and "--fix" in argv:
+            fix_argvs.append(list(argv))
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = track_fix
+
+    # Fake worktree: a.txt is owned, b.txt is not; both present and in changed.
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / "pyproject.toml").write_text("[tool.ruff]\n")
+    (worktree / "a.txt").write_text("import os  # F401 candidate\n")
+    (worktree / "b.txt").write_text("unowned content\n")
+
+    run = NodeRun(
+        node=WorkNode(
+            "a", "write a", owned_files=("a.txt",), verification_command=("python", "-m", "pytest")
+        )
+    )
+    await runtime._apply_lint_autofix(run, worktree, ["a.txt", "b.txt"])
+
+    # At least one ruff --fix call must have happened (a.txt is owned and exists).
+    assert fix_argvs, "ruff --fix was never called"
+    # b.txt must never appear as an argv element in any --fix invocation.
+    for argv in fix_argvs:
+        assert "b.txt" not in argv, f"unowned b.txt was passed to ruff --fix; full argv: {argv}"
