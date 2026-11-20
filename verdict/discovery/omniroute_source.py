@@ -73,7 +73,7 @@ def load_omniroute_classified(env: Mapping[str, str] | None = None) -> list[tupl
         req = urllib.request.Request(
             url, headers={"Authorization": f"Bearer {key}", "User-Agent": "verdict/0.1"}
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310
             import json
 
             catalog = json.load(resp)

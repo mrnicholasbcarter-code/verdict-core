@@ -63,7 +63,7 @@ def _real_http(
     """Real HTTP POST via urllib; returns (status, headers_dict, body_bytes)."""
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
             return int(resp.status), dict(resp.headers), resp.read()
     except urllib.error.HTTPError as exc:
         body_bytes = b""

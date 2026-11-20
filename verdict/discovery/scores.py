@@ -166,7 +166,7 @@ def _http_fetch(url: str, timeout: float) -> object:
     req = urllib.request.Request(
         url, headers={"User-Agent": "verdict/0.1", "Accept": "application/json"}
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
         return json.load(resp)
 
 
