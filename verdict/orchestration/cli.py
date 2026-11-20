@@ -850,15 +850,16 @@ def _orchestrate(args: argparse.Namespace) -> int:
     _review_budget: int | None = None
     _review_budget_source: str = ""
     _env_budget_raw = os.environ.get("VERDICT_REVIEW_TOKEN_BUDGET")
-    if args.review_token_budget is not None:
-        if args.review_token_budget > REVIEW_BUDGET_CEILING:
+    _flag_budget: int | None = getattr(args, "review_token_budget", None)
+    if _flag_budget is not None:
+        if _flag_budget > REVIEW_BUDGET_CEILING:
             print(
-                f"BLOCKED: --review-token-budget {args.review_token_budget} exceeds"
+                f"BLOCKED: --review-token-budget {_flag_budget} exceeds"
                 f" ceiling {REVIEW_BUDGET_CEILING}",
                 file=sys.stderr,
             )
             return 2
-        _review_budget = args.review_token_budget
+        _review_budget = _flag_budget
         _review_budget_source = "flag"
     elif _env_budget_raw is not None:
         try:
