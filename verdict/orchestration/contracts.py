@@ -460,6 +460,10 @@ class TaskRequirements:
     # highest-rated admitted route is preferred (decomposition quality matters
     # more than marginal cost on control-plane calls).
     role_ordering: str = "cheapest_sufficient_first"
+    # Arena advisory role for VR lookup.  "implement" uses the agent/webdev/text
+    # chain; "planner" uses text/webdev; "reviewer" uses webdev/text.
+    # None means the arena snapshot is not consulted for this node.
+    arena_role: str | None = None
 
     @classmethod
     def for_node(cls, node: WorkNode, **overrides: Any) -> TaskRequirements:

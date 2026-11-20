@@ -1684,6 +1684,7 @@ def _register_builtins() -> None:
         _action_memory_ref_docs_sync,
         _action_memory_search,
         _action_memory_setup,
+        _action_metadata_arena_coverage,
         _action_metadata_install_service,
         _action_metadata_lookup,
         _action_metadata_refresh,
@@ -2421,6 +2422,16 @@ def _register_builtins() -> None:
                 "Models",
             ),
             _action_metadata_install_service,
+        ),
+        (
+            ActionSpec(
+                "metadata.arena-coverage",
+                "models",
+                "read",
+                "Report Arena leaderboard join coverage and reference-set sizes",
+                "Models",
+            ),
+            _action_metadata_arena_coverage,
         ),
         # receipt family (per subcommand)
         (

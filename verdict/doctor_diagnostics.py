@@ -1217,6 +1217,7 @@ def installed_service_rows(
             }
         )
         rows.append(health_cache_row(now=now))
+        rows.append(arena_snapshot_row(now=now))
         return rows
     checked_at = now or datetime.now(timezone.utc)
     metadata_issues: list[str] = []
@@ -1306,6 +1307,7 @@ def installed_service_rows(
     )
 
     rows.append(health_cache_row(now=now))
+    rows.append(arena_snapshot_row(now=now))
     return rows
 
 
@@ -1806,6 +1808,100 @@ def omniroute_webhook_row(*, now: datetime | None = None) -> dict[str, str]:
         "status": "ok",
         "detail": f"registered at {status.get('url')}; last event age {age}s; "
         f"events {status.get('events_total', 0)}",
+    }
+
+
+def arena_snapshot_row(*, now: datetime | None = None) -> dict[str, str]:
+    """Doctor row for the Arena advisory snapshot freshness.
+
+    Status:
+    - ``missing``: snapshot file does not exist yet
+    - ``ok``: all fetched_at timestamps are < 48 h old
+    - ``warning``: at least one fetched_at is ≥ 48 h old (refresh overdue)
+    - ``stale``: at least one leaderboard_publish_date is > 45 days old
+      (data too old to use for ranking; metadata refresh can recover it)
+    """
+    from verdict.arena.snapshot import (
+        OVERDUE_HOURS,
+        STALENESS_DAYS,
+        default_snapshot_path,
+        load_snapshot,
+    )
+
+    clock = now if now is not None else datetime.now(timezone.utc)
+    snap = load_snapshot()
+    if snap is None:
+        path = default_snapshot_path()
+        return {
+            "label": "Arena ratings",
+            "status": "missing",
+            "detail": (
+                f"{path} does not exist; run: verdict metadata refresh "
+                "to populate the Arena snapshot"
+            ),
+        }
+
+    # Malformed-date pre-pass: treat unparseable fields as an explicit error state
+    malformed_fields: list[str] = []
+    for cfg, pub_date in snap.leaderboard_publish_date.items():
+        try:
+            datetime.strptime(pub_date, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            malformed_fields.append(f"leaderboard_publish_date[{cfg!r}]={pub_date!r}")
+    for cfg, fetched in snap.fetched_at.items():
+        try:
+            datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+        except (ValueError, TypeError, AttributeError):
+            malformed_fields.append(f"fetched_at[{cfg!r}]={fetched!r}")
+    if malformed_fields:
+        return {
+            "label": "Arena ratings",
+            "status": "malformed",
+            "detail": "unparseable field(s): " + "; ".join(malformed_fields),
+        }
+
+    # Staleness check: leaderboard_publish_date > STALENESS_DAYS old
+    stale_configs: list[str] = []
+    for cfg, pub_date in snap.leaderboard_publish_date.items():
+        published = datetime.strptime(pub_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        if clock - published > timedelta(days=STALENESS_DAYS):
+            stale_configs.append(cfg)
+    if stale_configs:
+        return {
+            "label": "Arena ratings",
+            "status": "stale",
+            "detail": (
+                f"leaderboard_publish_date > {STALENESS_DAYS}d old for: "
+                + ", ".join(sorted(stale_configs))
+                + "; run: verdict metadata refresh"
+            ),
+        }
+
+    # Warning: fetched_at > OVERDUE_HOURS old for any config
+    overdue_configs: list[str] = []
+    for cfg, fetched in snap.fetched_at.items():
+        ts = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+        if (clock - ts) >= timedelta(hours=OVERDUE_HOURS):
+            overdue_configs.append(cfg)
+    if overdue_configs:
+        return {
+            "label": "Arena ratings",
+            "status": "warning",
+            "detail": (
+                f"fetched_at >= {OVERDUE_HOURS}h ago for: "
+                + ", ".join(sorted(overdue_configs))
+                + "; run: verdict metadata refresh"
+            ),
+        }
+
+    record_count = len(snap.records)
+    oldest_fetch = ""
+    if snap.fetched_at:
+        oldest_fetch = "; oldest fetch: " + min(snap.fetched_at.values())
+    return {
+        "label": "Arena ratings",
+        "status": "ok",
+        "detail": f"{record_count} model(s) in snapshot{oldest_fetch}",
     }
 
 

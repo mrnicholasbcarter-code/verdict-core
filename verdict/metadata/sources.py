@@ -59,6 +59,7 @@ ALLOWED_METADATA_HOSTS = frozenset(
         "raw.githubusercontent.com",
         "github.com",
         "huggingface.co",
+        "datasets-server.huggingface.co",  # Arena leaderboard fetch (stdlib urllib)
         "artificialanalysis.ai",
         "openrouter.ai",
     }
@@ -72,8 +73,9 @@ P1_SKIP_REASONS = {
         "core dependency; supply a fixture payload to store scores."
     ),
     SOURCE_ARENA_ELO: (
-        "Arena Elo durable path is Hugging Face dataset lmarena-ai/leaderboard-dataset; "
-        "huggingface_hub is not a core dependency. Supply a fixture to store Elo."
+        "Arena ratings are fetched natively by verdict metadata refresh (stdlib urllib, "
+        "no huggingface_hub required) and stored as advisory VRs in the arena snapshot. "
+        "Supply a fixture payload to also store arena_elo in the Core metadata store."
     ),
     SOURCE_OPEN_LLM: (
         "Open LLM Leaderboard is Hugging Face dataset open-llm-leaderboard/contents; "
@@ -481,7 +483,7 @@ AA_FIELD_MAP = {
     "agentic_index": "aa_agentic",
     "median_time_to_first_token": "aa_latency",
 }
-ARENA_FIELD_MAP = {"elo": "arena_elo"}
+ARENA_FIELD_MAP = {"rating": "arena_elo"}  # HF dataset field "rating" → store field "arena_elo"
 OPEN_LLM_FIELD_MAP = {"average": "open_llm"}
 BFCL_FIELD_MAP = {"overall_accuracy": "bfcl"}
 

@@ -77,6 +77,7 @@ _CATEGORY_COOLDOWN_SECONDS: Mapping[str, float] = {
 _DEFAULT_COOLDOWN_SECONDS = 60.0
 # Sentinel: no snapshot passed, so the ladder reads the default metadata store.
 _DEFAULT_METADATA = object()
+_DEFAULT_ARENA = object()
 # Probe outcomes that describe the provider account (billing, entitlement), not
 # one route: every sibling route would fail the same way, so the whole provider
 # is cooled down and its remaining candidates are skipped without probing.
@@ -418,6 +419,7 @@ class EligibilityLadder:
         rankings_provenance: Mapping[str, Mapping[str, Any]] | None = None,
         rankings_received_at: str | None = None,
         read_only: bool = False,
+        arena_snapshot: Any = _DEFAULT_ARENA,
     ) -> None:
         self._rows = {str(r.get("id", "")): r for r in inventory_rows if r.get("id")}
         self._connections = list(connections)
@@ -480,6 +482,9 @@ class EligibilityLadder:
         self._rating_evidence_cache: tuple[MetadataSnapshot | None, IdentityMap | None] | None = (
             None
         )
+        # Arena advisory snapshot: loaded once on first use; None disables arena rankings.
+        self._arena_snapshot_arg = arena_snapshot
+        self._arena_snapshot_cache: Any = _DEFAULT_ARENA  # sentinel = not yet loaded
 
     @property
     def admitted(self) -> AdmittedSet | None:
@@ -510,6 +515,32 @@ class EligibilityLadder:
                 mapping = None
         self._rating_evidence_cache = (snapshot, mapping)
         return snapshot, mapping
+
+    def _arena_evidence(self) -> Any:
+        """Arena snapshot for advisory VR augmentation, loaded once per ladder.
+
+        Returns None when disabled; returns the loaded snapshot otherwise.
+        """
+        cached = self._arena_snapshot_cache
+        if cached is not _DEFAULT_ARENA:
+            return cached
+        arg = self._arena_snapshot_arg
+        if arg is _DEFAULT_ARENA:
+            # Default: try to load the on-disk snapshot; None if missing.
+            try:
+                from verdict.arena.snapshot import load_snapshot
+
+                loaded = load_snapshot()
+            except Exception:
+                loaded = None
+            if loaded is not None:
+                # Only cache a successful load; leave the sentinel so a later
+                # call retries when the file appears or is refreshed.
+                self._arena_snapshot_cache = loaded
+            return loaded
+        # Explicit: None disables arena rankings, a snapshot object enables them.
+        self._arena_snapshot_cache = arg
+        return arg
 
     def require_launchable(self, route_id: str, *, surface: str) -> None:
         """Launch precondition for callers that bind a selected route.
@@ -899,6 +930,30 @@ class EligibilityLadder:
             identity_map=mapping,
             now=now,
         )
+        # Arena advisory augmentation: reorder among admitted candidates only.
+        # Only applied when the route has a declared capability tier (tier_known)
+        # so an unknown-tier route cannot leapfrog a known-tier route via Arena.
+        arena_role = requirements.arena_role
+        if arena_role is not None and a.tier_known:
+            arena_snap = self._arena_evidence()
+            if arena_snap is not None:
+                try:
+                    from dataclasses import replace
+
+                    from verdict.arena.rank import vr_for_route
+
+                    arena_vr = vr_for_route(route_id, arena_snap, arena_role, mapping, now)
+                    if arena_vr is not None:
+                        a.rating = replace(
+                            a.rating,
+                            score=arena_vr.vr,
+                            metric=arena_vr.metric,
+                            source="arena_elo",
+                            as_of=arena_vr.published,
+                            basis="score",
+                        )
+                except Exception as exc:  # Arena is advisory; never block routing on its failure
+                    _LOG.debug("arena: vr augmentation failed: %s: %s", type(exc).__name__, exc)
         return a
 
     def _task_gate(

@@ -1,0 +1,58 @@
+{
+  "schema_version": "1",
+  "note": "Arena (org, canonical key) → models.dev ids. Consulted before the canonical join. Never add an entry for a 'related' model. See docs/adr/ADR-046-arena-ratings-advisory-source.md.",
+  "org_providers": {
+    "anthropic": ["anthropic"],
+    "openai": ["openai"],
+    "google": ["google"],
+    "alibaba": ["alibaba", "qwen"],
+    "deepseek": ["deepseek"],
+    "xai": ["xai", "x-ai"],
+    "zai": ["zai", "z-ai"],
+    "moonshot": ["moonshotai"],
+    "minimax": ["minimax"],
+    "mistral": ["mistralai", "mistral"],
+    "meta": ["meta-llama", "meta"],
+    "xiaomi": []
+  },
+  "entries": [
+    {
+      "arena_org": "deepseek",
+      "arena_key": "deepseek-v4-1-flash-20261017",
+      "arena_name": "DeepSeek-V4.1-Flash-20261017",
+      "models_dev_ids": ["deepseek/deepseek-v4.1-flash-1017"],
+      "source": "operator verified against models.dev catalog 2026-11-20",
+      "verified": "2026-11-20"
+    },
+    {
+      "arena_org": "google",
+      "arena_key": "gemini-3-pro",
+      "arena_name": "Gemini 3 Pro",
+      "action": "drop",
+      "reason": "store has only gemini-3-pro-preview; same checkpoint not confirmed"
+    },
+    {
+      "arena_org": "deepseek",
+      "arena_key": "deepseek-v4-pro-high-20260813",
+      "arena_name": "DeepSeek-V4-Pro (High, 20260813)",
+      "models_dev_ids": ["deepseek/deepseek-v4-pro-0813"],
+      "source": "operator verified against models.dev catalog 2026-11-20",
+      "verified": "2026-11-20"
+    },
+    {
+      "arena_org": "alibaba",
+      "arena_key": "qwen3-7-max-20260517",
+      "arena_name": "Qwen3.7-Max (20260517)",
+      "models_dev_ids": ["alibaba/qwen3.7-max-0517", "qwen/qwen3.7-max-0517"],
+      "source": "operator verified against models.dev catalog 2026-11-20",
+      "verified": "2026-11-20"
+    },
+    {
+      "arena_org": "deepseek",
+      "arena_key": "deepseek-v4-1-flash-20260910",
+      "arena_name": "DeepSeek-V4.1-Flash-20260910",
+      "action": "drop",
+      "reason": "store has only deepseek-v4.1-flash-0910-uncensored; different checkpoint"
+    }
+  ]
+}

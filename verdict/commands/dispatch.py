@@ -1342,6 +1342,12 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             print(json.dumps(result.data, indent=2))
             if not result.ok:
                 raise SystemExit(result.exit_code)
+        elif args.metadata_command == "arena-coverage":
+            legacy.cmd_arena_coverage(
+                store_path=getattr(args, "store_path", None),
+                snapshot_path=getattr(args, "snapshot_path", None),
+                output_json=getattr(args, "json", False),
+            )
         else:
             legacy.cmd_metadata(args)
     elif args.command == "outcome":
