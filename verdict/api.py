@@ -3066,10 +3066,14 @@ def _run_summary(run_id: str, run_dir: Path) -> dict[str, Any]:
     receipt_status: str = "missing"
     summary_error: str | None = None
 
+    # Both reads below use O_NOFOLLOW so a symlinked file inside a valid run
+    # dir cannot leak outside content into the summary.
+    from verdict.orchestration.receipt import _read_bytes_nofollow
+
     receipt_path = run_dir / "receipt.json"
     if receipt_path.exists():
         try:
-            rdata: Any = json.loads(receipt_path.read_bytes())
+            rdata: Any = json.loads(_read_bytes_nofollow(receipt_path))
             if isinstance(rdata, dict):
                 started_at = rdata.get("started_at") or None
                 outcome = rdata.get("outcome") or rdata.get("claimed_outcome") or None
@@ -3085,20 +3089,20 @@ def _run_summary(run_id: str, run_dir: Path) -> dict[str, Any]:
         events_path = run_dir / "events.jsonl"
         if events_path.exists():
             try:
-                with events_path.open("rb") as fh:
-                    for raw_line in fh:
-                        line = raw_line.strip()
-                        if not line:
-                            continue
-                        try:
-                            evt = json.loads(line)
-                        except Exception:
-                            break
-                        # Only the run_started event carries the authoritative
-                        # start timestamp; ignore any earlier non-typed events.
-                        if isinstance(evt, dict) and evt.get("type") == "run_started":
-                            started_at = evt.get("at") or None
-                            break
+                events_raw = _read_bytes_nofollow(events_path)
+                for raw_line in events_raw.splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        evt = json.loads(line)
+                    except Exception:
+                        break
+                    # Only the run_started event carries the authoritative
+                    # start timestamp; ignore any earlier non-typed events.
+                    if isinstance(evt, dict) and evt.get("type") == "run_started":
+                        started_at = evt.get("at") or None
+                        break
             except Exception as exc:
                 if summary_error is None:
                     summary_error = type(exc).__name__

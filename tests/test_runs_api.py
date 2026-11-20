@@ -1341,3 +1341,145 @@ class TestStartedAtFromRunStarted:
         assert row is not None
         # Must be from run_started (seq 2), not plan_created (seq 1).
         assert row["started_at"] == "2026-06-15T12:00:00Z"
+
+
+# ---------------------------------------------------------------------------
+# Fix (round-7): _run_summary and verify_run_receipt use O_NOFOLLOW
+# ---------------------------------------------------------------------------
+
+
+class TestSymlinkInValidRunDir:
+    """Symlinked files inside a valid run dir must not leak outside content."""
+
+    def test_symlink_events_jsonl_in_run_dir_summary_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A symlinked events.jsonl inside a valid run dir must not appear in list_runs output."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "events.jsonl").write_text(
+            '{"seq":1,"at":"2026-01-01T00:00:00Z","type":"run_started","node_id":"","data":{"secret":"outsidedata"}}\n'
+        )
+        run_dir = tmp_path / "runs" / "sym-evts-run"
+        run_dir.mkdir(parents=True)
+        try:
+            os.symlink(outside / "events.jsonl", run_dir / "events.jsonl")
+        except OSError:
+            pytest.skip("symlink creation failed")
+
+        client = _client(monkeypatch, tmp_path / "runs")
+        r = client.get("/v1/runs", headers=AUTH)
+        assert r.status_code == 200
+        row = next((x for x in r.json()["runs"] if x["run_id"] == "sym-evts-run"), None)
+        assert row is not None
+        # started_at must NOT be set from the outside file.
+        assert row["started_at"] is None
+        # Outside content must never appear in the response.
+        assert "outsidedata" not in r.text
+
+    def test_symlink_receipt_json_in_run_dir_summary_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A symlinked receipt.json inside a valid run dir must set summary_error."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "receipt.json").write_text(
+            '{"run_id":"outside","started_at":"2025-01-01T00:00:00Z","secret":"outsidereceipt"}'
+        )
+        run_dir = tmp_path / "runs" / "sym-rcpt-run"
+        run_dir.mkdir(parents=True)
+        try:
+            os.symlink(outside / "receipt.json", run_dir / "receipt.json")
+        except OSError:
+            pytest.skip("symlink creation failed")
+
+        client = _client(monkeypatch, tmp_path / "runs")
+        r = client.get("/v1/runs", headers=AUTH)
+        assert r.status_code == 200
+        row = next((x for x in r.json()["runs"] if x["run_id"] == "sym-rcpt-run"), None)
+        assert row is not None
+        # Must have summary_error (symlink rejected) and must not leak outside content.
+        assert "summary_error" in row
+        assert "outsidereceipt" not in r.text
+        # started_at must not be populated from the outside receipt.
+        assert row["started_at"] is None
+
+    def test_symlink_events_jsonl_receipt_endpoint_reports_problem(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A symlinked events.jsonl with a valid receipt must report a problem, not leak content."""
+        from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+        run_dir = tmp_path / "runs" / "sym-evts-rcpt"
+        run_dir.mkdir(parents=True)
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("run_started", run_id="sym-evts-rcpt", goal="test")
+        log.emit("run_finished", outcome="BLOCKED", reason="test")
+        write_run_receipt(run_dir)
+
+        # Replace events.jsonl with a symlink to outside content AFTER receipt is written.
+        events_path = run_dir / "events.jsonl"
+        events_path.unlink()
+        outside = tmp_path / "outside"
+        outside.mkdir(exist_ok=True)
+        (outside / "events.jsonl").write_text(
+            '{"seq":1,"at":"2026-01-01T00:00:00Z","type":"run_started","node_id":"","data":{"secret":"leakedsecret"}}\n'
+        )
+        try:
+            os.symlink(outside / "events.jsonl", events_path)
+        except OSError:
+            pytest.skip("symlink creation failed")
+
+        client = _client(monkeypatch, tmp_path / "runs")
+        r = client.get("/v1/runs/sym-evts-rcpt/receipt", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        # Symlinked events.jsonl must cause a problem, not silently verify.
+        assert body["verification"]["ok"] is False
+        assert "leakedsecret" not in r.text
+
+
+class TestVerifyNoFollowOpens:
+    """verify_run_receipt(repair=False) must use O_NOFOLLOW for both files."""
+
+    def test_verify_repair_false_uses_o_nofollow_for_receipt_and_events(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The receipt endpoint must open receipt.json and events.jsonl with O_NOFOLLOW."""
+        from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+        run_dir = tmp_path / "runs" / "verify-nofollow"
+        run_dir.mkdir(parents=True)
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("run_started", run_id="verify-nofollow", goal="test")
+        log.emit("run_finished", outcome="BLOCKED", reason="test")
+        write_run_receipt(run_dir)
+
+        opens: list[tuple[str, int]] = []
+        real_open = os.open
+
+        def _recording_open(path: str, flags: int, *args: object, **kwargs: object) -> int:
+            opens.append((str(path), flags))
+            return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(os, "open", _recording_open)
+
+        client = _client(monkeypatch, tmp_path / "runs")
+        r = client.get("/v1/runs/verify-nofollow/receipt", headers=AUTH)
+        assert r.status_code == 200
+
+        receipt_file = str(run_dir / "receipt.json")
+        events_file = str(run_dir / "events.jsonl")
+
+        receipt_opens = [(p, f) for p, f in opens if p == receipt_file]
+        events_opens = [(p, f) for p, f in opens if p == events_file]
+
+        assert receipt_opens, f"os.open not called for receipt.json; all opens: {opens}"
+        assert events_opens, f"os.open not called for events.jsonl; all opens: {opens}"
+
+        assert all(f & os.O_NOFOLLOW for _, f in receipt_opens), (
+            f"O_NOFOLLOW not set for receipt.json: {receipt_opens}"
+        )
+        assert all(f & os.O_NOFOLLOW for _, f in events_opens), (
+            f"O_NOFOLLOW not set for events.jsonl: {events_opens}"
+        )

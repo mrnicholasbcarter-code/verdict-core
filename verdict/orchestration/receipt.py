@@ -185,9 +185,9 @@ class EventLog:
             return []
 
         if not self._repair:
-            # Non-repair path: tolerant decode so a torn multi-byte sequence
-            # doesn't raise before we can inspect which line is bad.
-            raw_bytes = self.path.read_bytes()
+            # Non-repair path: reject symlinks and read atomically so a
+            # malicious symlink swap cannot leak outside content.
+            raw_bytes = _read_bytes_nofollow(self.path)
             # A file ending with "\n" has no torn tail: every line is complete.
             has_trailing_newline = not raw_bytes or raw_bytes.endswith(b"\n")
             all_lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
@@ -242,6 +242,25 @@ class EventLog:
 
 def _sha256_file(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _read_bytes_nofollow(path: Path) -> bytes:
+    """Read *path* bytes without following symlinks.
+
+    Uses ``O_NOFOLLOW`` so the check and the read are one atomic operation:
+    a symlink cannot be substituted between an ``is_symlink()`` guard and the
+    actual open.  Raises ``OrchestrationError`` on a symlink (ELOOP) or any
+    other ``OSError`` (missing, permission denied, …).
+
+    Exported so ``verdict.api`` can use the same helper for the list-runs
+    summary path.
+    """
+    try:
+        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise OrchestrationError(f"cannot read {path.name}: {exc}") from exc
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read()
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -1070,7 +1089,18 @@ def verify_run_receipt(run_dir: Path, *, repair: bool = True) -> list[str]:
     if not path.exists():
         return [f"missing {RECEIPT_FILE}"]
     try:
-        stored = _load_json(path)
+        if repair:
+            stored = _load_json(path)
+        else:
+            # Non-repair (API) path: refuse symlinks so a swapped receipt.json
+            # cannot leak outside content.
+            try:
+                stored_val: Any = json.loads(_read_bytes_nofollow(path))
+            except (OrchestrationError, ValueError) as exc:
+                raise OrchestrationError(f"cannot read {RECEIPT_FILE}: {exc}") from exc
+            if not isinstance(stored_val, dict):
+                raise OrchestrationError(f"{RECEIPT_FILE} must contain a JSON object")
+            stored = stored_val
     except OrchestrationError as exc:
         return [str(exc)]
     problems: list[str] = []
@@ -1079,7 +1109,17 @@ def verify_run_receipt(run_dir: Path, *, repair: bool = True) -> list[str]:
     events_path = run_dir / EVENTS_FILE
     if not events_path.exists():
         return [*problems, f"missing {EVENTS_FILE}"]
-    if stored.get("events_digest") != _sha256_file(events_path):
+    if repair:
+        digest = _sha256_file(events_path)
+    else:
+        # Read events.jsonl with nofollow so the digest and the parse below
+        # (via EventLog.read(repair=False)) both refuse symlinks.
+        try:
+            events_raw = _read_bytes_nofollow(events_path)
+        except OrchestrationError as exc:
+            return [*problems, f"cannot read {EVENTS_FILE}: {exc}"]
+        digest = "sha256:" + hashlib.sha256(events_raw).hexdigest()
+    if stored.get("events_digest") != digest:
         problems.append("events_digest mismatch: events.jsonl changed after receipt was written")
     try:
         fresh = build_run_receipt(run_dir, repair=repair)
