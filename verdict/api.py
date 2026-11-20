@@ -2975,9 +2975,34 @@ _RUNS_EVENTS_BYTE_BUDGET = 1 * 1024 * 1024  # 1 MiB
 # O(n) work when the runs root contains thousands of old directories.
 _RUNS_SCAN_LIMIT = 500
 
+# Maximum page sizes (also the FastAPI Query ``le=`` values; named here so
+# tests can reference them without magic numbers).
+_RUNS_PAGE_LIMIT_MAX = 100
+_RUNS_EVENTS_LIMIT_MAX = 500
+
 # Strict allowlist: alphanumeric start, then alphanumeric / dot / hyphen /
 # underscore.  Explicitly excludes every path-separator character.
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+# Event-data credential redaction.  Keys whose names match this pattern have
+# their values replaced with "[REDACTED]" in /v1/runs/{id}/events responses.
+# This is defence-in-depth: events are written by internal code, but a future
+# change might accidentally log a secret-shaped value.
+_CREDENTIAL_KEY_RE = re.compile(
+    r"^(api[_-]?key|password|secret|api[_-]?token|auth[_-]?token|credential)$", re.IGNORECASE
+)
+
+
+def _redact_event_data(data: Any) -> Any:
+    """Recursively redact values in *data* whose key names match credential patterns."""
+    if isinstance(data, dict):
+        return {
+            k: "[REDACTED]" if _CREDENTIAL_KEY_RE.match(k) else _redact_event_data(v)
+            for k, v in data.items()
+        }
+    if isinstance(data, list):
+        return [_redact_event_data(item) for item in data]
+    return data
 
 
 def _runs_root() -> Path:
@@ -3012,8 +3037,18 @@ def _resolve_run_dir(run_id: str) -> Path | None:
     root = _runs_root().resolve()
     try:
         for entry in root.iterdir():
-            if entry.name == run_id and entry.is_dir():
-                return entry
+            if entry.name != run_id:
+                continue
+            # Reject symlinks: is_dir() follows symlinks, so a symlink to a
+            # directory outside the runs root would otherwise pass.
+            if entry.is_symlink():
+                return None
+            if not entry.is_dir():
+                return None
+            # Defence-in-depth: confirm the resolved path stays inside root.
+            if not entry.resolve().is_relative_to(root):
+                return None
+            return entry
     except OSError:
         pass
     return None
@@ -3065,7 +3100,8 @@ def _run_summary(run_id: str, run_dir: Path) -> dict[str, Any]:
 
 @app.get("/v1/runs")
 async def list_runs(
-    limit: int = Query(default=20, ge=1, le=100), offset: int = Query(default=0, ge=0)
+    limit: int = Query(default=20, ge=1, le=_RUNS_PAGE_LIMIT_MAX),
+    offset: int = Query(default=0, ge=0),
 ) -> Response:
     """List recent orchestration runs.
 
@@ -3077,14 +3113,19 @@ async def list_runs(
     if not root.is_dir():
         return JSONResponse({"runs": [], "total": 0})
 
-    def _collect() -> tuple[list[dict[str, Any]], int]:
+    def _collect() -> tuple[list[dict[str, Any]], int, bool]:
         entries: list[tuple[str | None, str]] = []
         scanned = 0
+        scan_truncated = False
         for child in root.iterdir():
             if scanned >= _RUNS_SCAN_LIMIT:
+                # More entries exist beyond the scan limit; total will be a
+                # lower bound.  Pick the bounded path: add total_scan_truncated
+                # to the response rather than scanning all directories.
+                scan_truncated = True
                 break
             scanned += 1
-            if not child.is_dir():
+            if child.is_symlink() or not child.is_dir():
                 continue
             name = child.name
             if not _RUN_ID_RE.match(name) or name in {".", ".."}:
@@ -3096,10 +3137,10 @@ async def list_runs(
         total = len(entries)
         page = entries[offset : offset + limit]
         rows = [_run_summary(name, root / name) for _, name in page]
-        return rows, total
+        return rows, total, scan_truncated
 
-    rows, total = await asyncio.to_thread(_collect)
-    return JSONResponse({"runs": rows, "total": total})
+    rows, total, scan_truncated = await asyncio.to_thread(_collect)
+    return JSONResponse({"runs": rows, "total": total, "total_scan_truncated": scan_truncated})
 
 
 @app.get("/v1/runs/{run_id}/events")
@@ -3109,7 +3150,7 @@ async def get_run_events(
     type: list[str] = Query(default=[]),
     after_seq: int | None = Query(default=None, ge=1),
     seq_to: int | None = Query(default=None, ge=1),
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int = Query(default=100, ge=1, le=_RUNS_EVENTS_LIMIT_MAX),
 ) -> Response:
     """Return a paginated window of events from one run's ``events.jsonl``.
 
@@ -3129,7 +3170,8 @@ async def get_run_events(
 
     def _read() -> dict[str, Any]:
         events_path = run_dir / "events.jsonl"
-        if not events_path.exists():
+        # Reject symlinks: a symlink could point outside the run dir.
+        if events_path.is_symlink() or not events_path.exists():
             return {"events": [], "next_seq": None, "truncated": False}
 
         collected: list[dict[str, Any]] = []
@@ -3160,14 +3202,17 @@ async def get_run_events(
                     continue
                 if type_set and evt.get("type", "") not in type_set:
                     continue
-                serialised = json.dumps(evt, separators=(",", ":"))
+                # Redact credential-like fields in the data payload before
+                # adding to the response (defence-in-depth; auth gate is primary).
+                safe_evt = {**evt, "data": _redact_event_data(evt.get("data", {}))}
+                serialised = json.dumps(safe_evt, separators=(",", ":"))
                 byte_total += len(serialised.encode())
                 if byte_total > _RUNS_EVENTS_BYTE_BUDGET and collected:
                     # Budget exhausted; remember where to continue.
                     next_seq = seq
                     truncated = True
                     break
-                collected.append(evt)
+                collected.append(safe_evt)
                 if len(collected) >= limit:
                     # Peek at the next matching event to populate next_seq.
                     # We read one more line from the file (already open).
@@ -3216,10 +3261,34 @@ async def get_run_receipt(run_id: str) -> Response:
         raise HTTPException(status_code=404, detail={"error": {"message": "run not found"}})
 
     receipt_path = run_dir / "receipt.json"
-    if not receipt_path.exists():
+    # Reject symlinks: receipt.json could point outside the run dir.
+    if receipt_path.is_symlink() or not receipt_path.exists():
         raise HTTPException(
             status_code=404, detail={"error": {"message": "receipt not found for run"}}
         )
+
+    def _events_tail_intact(events_path: Path) -> bool:
+        """Return True iff the last non-empty line of events.jsonl decodes as JSON.
+
+        verify_run_receipt calls EventLog, whose __init__ repairs a torn tail by
+        truncating the file — a mutation.  Checking the tail first lets us skip
+        verify_run_receipt for torn files so that GET never writes to a run dir.
+        """
+        if not events_path.exists():
+            return True  # no file → no tail to tear; let verify_run_receipt report it
+        try:
+            last: bytes = b""
+            with events_path.open("rb") as fh:
+                for line in fh:
+                    stripped = line.strip()
+                    if stripped:
+                        last = stripped
+            if not last:
+                return True
+            json.loads(last)
+            return True
+        except Exception:
+            return False
 
     def _load_and_verify() -> dict[str, Any]:
         from verdict.orchestration.receipt import verify_run_receipt
@@ -3231,6 +3300,22 @@ async def get_run_receipt(run_id: str) -> Response:
                 "run_id": run_id,
                 "receipt": None,
                 "verification": {"ok": False, "problems": [f"cannot read receipt: {exc}"]},
+            }
+
+        events_path = run_dir / "events.jsonl"
+        if not _events_tail_intact(events_path):
+            # Torn tail: calling verify_run_receipt would trigger EventLog repair
+            # (a write to events.jsonl).  Return a problem without mutating.
+            return {
+                "run_id": run_id,
+                "receipt": receipt_data,
+                "verification": {
+                    "ok": False,
+                    "problems": [
+                        "events.jsonl has a torn tail; "
+                        "full verification skipped to avoid mutation by GET"
+                    ],
+                },
             }
 
         problems = verify_run_receipt(run_dir)

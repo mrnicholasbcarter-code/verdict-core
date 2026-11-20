@@ -203,10 +203,27 @@ class TestListRuns:
         assert row["receipt_status"] == "missing"
 
     def test_limit_max_enforced(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from verdict.api import _RUNS_PAGE_LIMIT_MAX
+
         client = _client(monkeypatch, tmp_path)
-        r = client.get("/v1/runs?limit=999", headers=AUTH)
+        r = client.get(f"/v1/runs?limit={_RUNS_PAGE_LIMIT_MAX + 1}", headers=AUTH)
         # FastAPI should return 422 for out-of-range limit.
         assert r.status_code == 422
+
+    def test_total_scan_truncated_flag(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """When more runs exist than _RUNS_SCAN_LIMIT, total_scan_truncated must be True."""
+        from verdict.api import _RUNS_SCAN_LIMIT
+
+        # Create SCAN_LIMIT + 1 run directories.
+        for i in range(_RUNS_SCAN_LIMIT + 1):
+            (tmp_path / f"run-{i:04d}").mkdir()
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs?limit=1", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total_scan_truncated"] is True
 
     def test_non_directory_entries_skipped(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -350,9 +367,11 @@ class TestGetRunEvents:
         assert r.status_code == 404
 
     def test_limit_max_enforced(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from verdict.api import _RUNS_EVENTS_LIMIT_MAX
+
         _make_run(tmp_path, "run-1", events=[])
         client = _client(monkeypatch, tmp_path)
-        r = client.get("/v1/runs/run-1/events?limit=9999", headers=AUTH)
+        r = client.get(f"/v1/runs/run-1/events?limit={_RUNS_EVENTS_LIMIT_MAX + 1}", headers=AUTH)
         assert r.status_code == 422
 
 
@@ -462,10 +481,12 @@ class TestRunIdValidation:
     def test_path_stays_inside_runs_root(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """A symlink pointing outside the runs root must not be followed."""
+        """A symlink pointing outside the runs root must be rejected with 404."""
         outside = tmp_path / "outside"
         outside.mkdir()
-        (outside / "events.jsonl").write_text("")
+        (outside / "events.jsonl").write_text(
+            '{"seq":1,"at":"2026-01-01T00:00:00Z","type":"secret","node_id":"","data":{"key":"SUPERSECRET"}}\n'
+        )
         link = tmp_path / "runs" / "escape"
         link.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -475,10 +496,53 @@ class TestRunIdValidation:
 
         client = _client(monkeypatch, tmp_path / "runs")
         r = client.get("/v1/runs/escape/events", headers=AUTH)
-        # escape is a dir but resolves outside root; must be 404.
-        # (If symlinks don't escape on this OS, it's also fine to get 200.)
-        # We check that no server error occurred.
-        assert r.status_code in (200, 404)
+        # A symlink run dir escaping root must be 404, never 200.
+        assert r.status_code == 404
+        assert "SUPERSECRET" not in r.text
+
+    def test_symlink_events_file_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """events.jsonl that is a symlink escaping the run dir must yield empty events."""
+        runs = tmp_path / "runs"
+        run_dir = runs / "sym-run"
+        run_dir.mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        secret_data = '{"seq":1,"at":"2026-01-01T00:00:00Z","type":"t","node_id":"","data":{"api_key":"sk-12345"}}\n'
+        (outside / "events.jsonl").write_text(secret_data)
+        try:
+            os.symlink(outside / "events.jsonl", run_dir / "events.jsonl")
+        except OSError:
+            pytest.skip("symlink creation failed")
+
+        client = _client(monkeypatch, runs)
+        r = client.get("/v1/runs/sym-run/events", headers=AUTH)
+        # Symlink to outside file: must return empty events, not the outside content.
+        assert r.status_code == 200
+        assert r.json()["events"] == []
+        assert "sk-12345" not in r.text
+
+    def test_symlink_receipt_file_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """receipt.json that is a symlink escaping the run dir must yield 404."""
+        runs = tmp_path / "runs"
+        run_dir = runs / "sym-rcpt"
+        run_dir.mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "receipt.json").write_text('{"run_id":"outside","secret":"topsecret"}')
+        try:
+            os.symlink(outside / "receipt.json", run_dir / "receipt.json")
+        except OSError:
+            pytest.skip("symlink creation failed")
+
+        client = _client(monkeypatch, runs)
+        r = client.get("/v1/runs/sym-rcpt/receipt", headers=AUTH)
+        # Symlink receipt.json escaping run dir: must 404, never return outside content.
+        assert r.status_code == 404
+        assert "topsecret" not in r.text
 
     def test_no_filesystem_path_in_error_body(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -554,3 +618,120 @@ class TestReadOnly:
 
         new_files = files_after - files_before
         assert not new_files, f"New files created: {new_files}"
+
+    def test_receipt_existing_files_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """receipt endpoint must leave events.jsonl and receipt.json byte- and mtime-identical.
+
+        A GET must never trigger EventLog's torn-tail repair: it writes events.jsonl
+        in place, which would mutate digest-bound data.  Use a fully intact (not torn)
+        events.jsonl so repair does not trigger; then assert both files are unchanged.
+        """
+        from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+        run_dir = tmp_path / "immutable-run"
+        run_dir.mkdir()
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("run_started", run_id="immutable-run", goal="immutability test")
+        log.emit("run_finished", outcome="BLOCKED", reason="immutable")
+        write_run_receipt(run_dir)
+
+        def _stats() -> dict[str, tuple[bytes, int]]:
+            result = {}
+            for name in ("events.jsonl", "receipt.json"):
+                p = run_dir / name
+                result[name] = (p.read_bytes(), p.stat().st_mtime_ns)
+            return result
+
+        before = _stats()
+        client = _client(monkeypatch, tmp_path)
+        client.get("/v1/runs/immutable-run/receipt", headers=AUTH)
+        after = _stats()
+
+        for name in ("events.jsonl", "receipt.json"):
+            assert before[name][0] == after[name][0], f"{name} bytes changed"
+            assert before[name][1] == after[name][1], f"{name} mtime changed"
+
+
+# ---------------------------------------------------------------------------
+# Credential redaction: events response must not expose secret-like fields
+# ---------------------------------------------------------------------------
+
+
+_CRED_EVENTS: list[dict[str, Any]] = [
+    {
+        "seq": 1,
+        "at": "2026-01-01T00:00:00Z",
+        "type": "worker_result",
+        "node_id": "n1",
+        "data": {
+            "api_key": "sk-secret-key-12345",
+            "password": "hunter2",
+            "normal_field": "visible-value",
+        },
+    },
+    {
+        "seq": 2,
+        "at": "2026-01-01T00:00:01Z",
+        "type": "run_finished",
+        "node_id": "",
+        "data": {"outcome": "COMPLETE", "secret": "do-not-expose"},
+    },
+]
+
+
+class TestCredentialRedaction:
+    """The events endpoint redacts values in event data whose key names match
+    well-known credential patterns (api_key, password, secret, etc.).
+
+    The events are written by internal orchestration code (not user-generated),
+    so this is a defence-in-depth measure: even if a future change accidentally
+    logs a secret-shaped field, it will not be served to callers.
+    """
+
+    def test_credential_fields_are_redacted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _make_run(tmp_path, "cred-run", events=_CRED_EVENTS)
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/cred-run/events", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["events"]) == 2
+
+        # Credential values must not appear anywhere in the response.
+        response_text = r.text
+        assert "sk-secret-key-12345" not in response_text
+        assert "hunter2" not in response_text
+        assert "do-not-expose" not in response_text
+
+        # Non-credential fields must still be present.
+        assert "visible-value" in response_text
+
+        # The data dict must still exist but with redacted values.
+        evt1_data = body["events"][0]["data"]
+        assert evt1_data["api_key"] == "[REDACTED]"
+        assert evt1_data["password"] == "[REDACTED]"
+        assert evt1_data["normal_field"] == "visible-value"
+
+    def test_non_string_credential_fields_are_redacted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Redaction applies to non-string values too (e.g. dict or list under a secret key)."""
+        events = [
+            {
+                "seq": 1,
+                "at": "2026-01-01T00:00:00Z",
+                "type": "t",
+                "node_id": "",
+                "data": {"password": {"nested": "value"}, "count": 42},
+            }
+        ]
+        _make_run(tmp_path, "nested-cred-run", events=events)
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/nested-cred-run/events", headers=AUTH)
+        assert r.status_code == 200
+        evt_data = r.json()["events"][0]["data"]
+        assert evt_data["password"] == "[REDACTED]"
+        assert evt_data["count"] == 42
