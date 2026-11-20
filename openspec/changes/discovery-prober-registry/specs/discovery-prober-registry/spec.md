@@ -1,3 +1,5 @@
+# Spec Delta: Discovery prober and registry
+
 ## ADDED Requirements
 
 ### Requirement: Prober SHALL only probe FREE and SUBSCRIPTION routes
@@ -105,12 +107,14 @@ secret MUST be sanitized out of `ProbeResult.detail` and `RegistryEntry.auth`.
 
 ### Requirement: `verdict discovery refresh` SHALL accept --dry-run
 
-When `--dry-run` is passed, `run_refresh` SHALL return a registry with entries
-pre-populated as unanswered but SHALL NOT make any probe calls and SHALL NOT
-write the registry file.
+When `--dry-run` is passed, `run_refresh_action` SHALL return immediately with
+`source="dry_run_requires_catalog"` and an empty entry list.  It SHALL NOT make
+any network call and SHALL NOT write the registry file.  The OmniRoute catalog
+requires a live fetch and is therefore unavailable offline.
 
-#### Scenario: Dry-run makes no probe calls and writes no file
+#### Scenario: Dry-run makes no network calls and writes no file
 
 - **GIVEN** `--dry-run` is passed
-- **WHEN** `run_refresh` completes
-- **THEN** the transport is never called and no registry file is written to disk
+- **WHEN** `run_refresh_action` returns
+- **THEN** no HTTP transport call is made, no registry file is written to disk,
+  and `result["source"] == "dry_run_requires_catalog"`

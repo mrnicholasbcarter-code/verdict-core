@@ -529,119 +529,13 @@ class RunRefreshActionTest(unittest.TestCase):
         _set_transport(None)
 
     def test_action_dry_run_no_sources(self) -> None:
-        """With no sources available, dry-run should return empty without crashing."""
+        """dry-run with no catalog returns dry_run_requires_catalog and empty counts."""
         with tempfile.TemporaryDirectory() as tmp:
             result = run_refresh_action(dry_run=True, env=_env(tmp))
             self.assertIsInstance(result, dict)
             self.assertEqual(result.get("dry_run"), True)
             self.assertIn("counts", result)
-
-    def test_action_uses_sources_cache_when_available(self) -> None:
-        """If sources-cache.json exists, routes should be loaded from it."""
-        import json as _json
-
-        with tempfile.TemporaryDirectory() as tmp:
-            env = _env(tmp)
-            discovery_dir = Path(tmp) / "discovery"
-            discovery_dir.mkdir(parents=True)
-            sources = [
-                {
-                    "capacity_class": "free",
-                    "capacity_fact": "plan_free",
-                    "route": {
-                        "provider": "kilo",
-                        "model": "kilo/model-a",
-                        "base_url": "http://localhost:9999/v1",
-                        "auth": "none",
-                        "max_parallel": 1,
-                    },
-                }
-            ]
-            (discovery_dir / "sources-cache.json").write_text(
-                _json.dumps(sources), encoding="utf-8"
-            )
-            result = run_refresh_action(dry_run=True, env=env)
-            self.assertEqual(result["counts"]["input"], 1)
-            self.assertEqual(result["counts"]["total"], 1)
-
-    def test_malformed_sources_cache_entries_counted(self) -> None:
-        """Malformed cache entries must be counted and reported, not silently dropped."""
-        import json as _json
-
-        with tempfile.TemporaryDirectory() as tmp:
-            env = _env(tmp)
-            discovery_dir = Path(tmp) / "discovery"
-            discovery_dir.mkdir(parents=True)
-            sources = [
-                # Valid free route
-                {
-                    "capacity_class": "free",
-                    "capacity_fact": "plan_free",
-                    "route": {
-                        "provider": "p1",
-                        "model": "m1",
-                        "base_url": "http://localhost:9999/v1",
-                        "auth": "none",
-                    },
-                },
-                # Malformed: route is missing required "provider" key
-                {
-                    "capacity_class": "free",
-                    "capacity_fact": "plan_free",
-                    "route": {"model": "m2", "base_url": "http://localhost:9999/v1"},
-                },
-                # Malformed: route field is not a dict
-                {"capacity_class": "free", "capacity_fact": "plan_free", "route": "not-a-dict"},
-            ]
-            (discovery_dir / "sources-cache.json").write_text(
-                _json.dumps(sources), encoding="utf-8"
-            )
-            result = run_refresh_action(dry_run=True, env=env)
-            # 1 valid route in entries, 2 malformed entries counted
-            self.assertEqual(result["counts"]["input"], 1)
-            self.assertIn(
-                "malformed_cache_entries",
-                result["counts"],
-                "malformed_cache_entries must be reported in counts",
-            )
-            self.assertEqual(result["counts"]["malformed_cache_entries"], 2)
-
-    def test_action_skips_priced_routes_in_sources_cache(self) -> None:
-        """Routes with capacity_class != free/subscription must be ignored."""
-        import json as _json
-
-        with tempfile.TemporaryDirectory() as tmp:
-            env = _env(tmp)
-            discovery_dir = Path(tmp) / "discovery"
-            discovery_dir.mkdir(parents=True)
-            sources = [
-                {
-                    "capacity_class": "priced",
-                    "capacity_fact": "priced",
-                    "route": {
-                        "provider": "openai",
-                        "model": "gpt-4o",
-                        "base_url": "http://localhost:9999/v1",
-                        "auth": "none",
-                    },
-                },
-                {
-                    "capacity_class": "unknown",
-                    "capacity_fact": "unknown",
-                    "route": {
-                        "provider": "mystery",
-                        "model": "mystery/model",
-                        "base_url": "http://localhost:9999/v1",
-                        "auth": "none",
-                    },
-                },
-            ]
-            (discovery_dir / "sources-cache.json").write_text(
-                _json.dumps(sources), encoding="utf-8"
-            )
-            result = run_refresh_action(dry_run=True, env=env)
-            # Neither priced nor unknown routes should be included
-            self.assertEqual(result["counts"]["input"], 0)
+            self.assertEqual(result.get("source"), "dry_run_requires_catalog")
 
 
 # ---------------------------------------------------------------------------
@@ -653,8 +547,8 @@ class DryRunNoNetworkTest(unittest.TestCase):
     def tearDown(self) -> None:
         _set_transport(None)
 
-    def test_dry_run_no_omniroute_fallback_when_cache_absent(self) -> None:
-        """dry_run=True must never fall back to OmniRoute (or any network call)."""
+    def test_dry_run_makes_zero_network_calls(self) -> None:
+        """dry_run=True must never make any network call; source is dry_run_requires_catalog."""
 
         network_calls: list[str] = []
 
@@ -665,53 +559,15 @@ class DryRunNoNetworkTest(unittest.TestCase):
         _set_transport(_explode)
 
         with tempfile.TemporaryDirectory() as tmp:
-            # No sources-cache.json — the only source is OmniRoute, which must be skipped.
             result = run_refresh_action(dry_run=True, env=_env(tmp))
 
         self.assertEqual(network_calls, [], "dry_run must make zero network calls")
         self.assertIsInstance(result, dict)
-        # The result must name the reason (sources_cache_missing or similar)
-        self.assertIn(
-            result.get("source") or result.get("dry_run_source") or "",
-            ("sources_cache_missing",),
-            "dry_run with no cache must report sources_cache_missing",
+        self.assertEqual(
+            result.get("source"),
+            "dry_run_requires_catalog",
+            "dry_run must report dry_run_requires_catalog",
         )
-
-    def test_dry_run_with_cache_still_uses_it_without_omniroute(self) -> None:
-        """dry_run=True with sources-cache.json must use the cache, not OmniRoute."""
-        import json as _json
-
-        network_calls: list[str] = []
-
-        def _explode(url: str, h: dict, p: bytes, timeout: float):
-            network_calls.append(url)
-            raise RuntimeError(f"network call in dry-run: {url}")
-
-        _set_transport(_explode)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            env = _env(tmp)
-            discovery_dir = Path(tmp) / "discovery"
-            discovery_dir.mkdir(parents=True)
-            sources = [
-                {
-                    "capacity_class": "free",
-                    "capacity_fact": "plan_free",
-                    "route": {
-                        "provider": "p1",
-                        "model": "m1",
-                        "base_url": "http://localhost:9999/v1",
-                        "auth": "none",
-                    },
-                }
-            ]
-            (discovery_dir / "sources-cache.json").write_text(
-                _json.dumps(sources), encoding="utf-8"
-            )
-            result = run_refresh_action(dry_run=True, env=env)
-
-        self.assertEqual(network_calls, [], "dry_run must make zero network calls even with cache")
-        self.assertEqual(result["counts"]["input"], 1)
 
 
 # ---------------------------------------------------------------------------
@@ -814,15 +670,8 @@ class ActionDiscoveryRefreshTest(unittest.TestCase):
                 "written_at": "2026-11-20T00:00:00+00:00",
                 "ttl_s": REGISTRY_TTL_S,
                 "dry_run": True,
-                "source": "sources_cache_missing",
-                "counts": {
-                    "input": 0,
-                    "total": 0,
-                    "answered": 0,
-                    "tool_ok": 0,
-                    "rate_limited": 0,
-                    "malformed_cache_entries": 0,
-                },
+                "source": "dry_run_requires_catalog",
+                "counts": {"input": 0, "total": 0, "answered": 0, "tool_ok": 0, "rate_limited": 0},
                 "by_provider": {},
                 "entries": [],
             }
