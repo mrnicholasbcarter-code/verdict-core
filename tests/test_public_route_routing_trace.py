@@ -19,6 +19,7 @@ TRACE_KEYS = {
     "shortlist_candidate_ids",
     "optimizer_decision",
     "rejected_offers",
+    "admit_drops",
 }
 
 
@@ -58,6 +59,13 @@ def _assert_matches_stages(
         for item in decision.rejected
         if item.candidate_id is not None
     ]
+    # admit_drops: every route offered but not admitted must appear exactly once.
+    admitted_ids = set(trace["admitted_candidate_ids"])
+    for drop in trace["admit_drops"]:
+        assert set(drop) == {"candidate_id", "code"}
+        assert drop["candidate_id"] not in admitted_ids, (
+            f"route {drop['candidate_id']!r} is both admitted and in admit_drops"
+        )
 
 
 def test_trace_on_selection(spy: h.Spy) -> None:
@@ -181,6 +189,8 @@ def test_trace_carries_ids_and_codes_only(spy: h.Spy) -> None:
     codes = {item["code"] for item in trace["rejected_offers"]}
     # Priced losers carry "; selected_cash=..." in the optimizer reason; the code does not.
     assert "higher_complete_expected_cost" in codes
+    for item in trace["admit_drops"]:
+        assert set(item) == {"candidate_id", "code"}
     text = repr(trace)
     for leaked in ("secret-pool-name", "sha256", "usd", "evidence", "cash", "="):
         assert leaked not in text
@@ -195,3 +205,30 @@ def test_trace_is_internal_field_not_in_decision_dict() -> None:
         model="m", provider="p", tier=1, reason="r", routing_trace={"admitted_candidate_ids": []}
     )
     assert "routing_trace" not in _safe_decision_dict(decision)
+
+
+def test_admit_drops_covers_every_offered_route(spy: h.Spy) -> None:
+    """Catches: a dropped route appearing in neither admitted_candidate_ids nor admit_drops.
+
+    HYG routing-trace-missing-admit-drops: the trace must name every offered
+    candidate the request dropped, with a code (e.g. no_fresh_passport).
+    The invariant: admitted_candidate_ids | {d["candidate_id"] for d in admit_drops}
+    == the set of all offered routes, and the two sets are disjoint.
+    """
+    with h.client() as client:
+        response = client.post("/v1/route?include_routing_trace=true", json=h.route_body(_free()))
+    assert response.status_code == 200, response.text
+    trace = response.json()["routing_trace"]
+    offered_set = set(h.ROUTES)
+    admitted_set = set(trace["admitted_candidate_ids"])
+    drop_set = {item["candidate_id"] for item in trace["admit_drops"]}
+    # Partition: every offered route must appear in exactly one of the two sets.
+    assert admitted_set | drop_set == offered_set, (
+        f"routes missing from trace: {offered_set - admitted_set - drop_set}"
+    )
+    assert admitted_set & drop_set == set(), (
+        f"routes in both admitted and admit_drops: {admitted_set & drop_set}"
+    )
+    # Every admit_drop entry must carry a non-empty code string.
+    for item in trace["admit_drops"]:
+        assert item["code"], f"admit_drop for {item['candidate_id']!r} has empty code"
