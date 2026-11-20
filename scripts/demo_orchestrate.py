@@ -58,6 +58,7 @@ from verdict.orchestration.recovery import FailureIntelligence
 from verdict.orchestration.run import run_golden_path
 from verdict.orchestration.runtime import RuntimePolicy
 from verdict.orchestration.tui import event_line
+from verdict.paths import scoped_state_env
 from verdict.subagent_selection import HealthResult
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -268,12 +269,19 @@ def _make_repo(root: Path) -> Path:
 
 
 async def run_demo(out: Path) -> int:
-    os.environ["VERDICT_DECISION_SIGNALS_MODE"] = "SHADOW"
+    # Fixture state lives inside root, never in the user's VERDICT_HOME.
+    # Fixture rows must not satisfy live proof (AGENTS.md); scoped_state_env
+    # ensures that the session ledger, health cache and passport store all go
+    # to root/fixture-state and never touch ~/.verdict.
     now = datetime.now(timezone.utc)
     # A fixed scratch path keeps the recorded event log free of random temp names.
     root = Path(tempfile.gettempdir()) / "verdict-demo"
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True)
+    _scoped = scoped_state_env(root / "fixture-state")
+    _scoped["VERDICT_DECISION_SIGNALS_MODE"] = "SHADOW"
+    _saved = {key: os.environ.get(key) for key in _scoped}
+    os.environ.update(_scoped)
     try:
         repo = _make_repo(root)
         rows, conns = fixture_inventory(), fixture_connections()
@@ -322,6 +330,11 @@ async def run_demo(out: Path) -> int:
         shutil.copytree(run_dir, out, ignore=shutil.ignore_patterns("worktrees", "*.tmp"))
         admitted.write_receipt(out / "admission.json")
     finally:
+        for key, value in _saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         shutil.rmtree(root, ignore_errors=True)
     return 0 if result.outcome == "COMPLETE" else 1
 
