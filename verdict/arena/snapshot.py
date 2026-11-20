@@ -133,14 +133,44 @@ def default_snapshot_path() -> Path:
     return verdict_home() / "arena-snapshot.json"
 
 
+def _validate_snapshot_shape(data: Any) -> str | None:
+    """Return an error string if `data` is structurally invalid, else None.
+
+    Guards against top-level lists, missing dict fields, and mistyped `records`
+    that would cause AttributeError / TypeError inside from_dict.
+    """
+    if not isinstance(data, dict):
+        return f"expected dict at top level, got {type(data).__name__}"
+    records = data.get("records", {})
+    if not isinstance(records, dict):
+        return f"records must be a dict, got {type(records).__name__}"
+    # Spot-check one level of records nesting
+    for sid, configs in records.items():
+        if not isinstance(configs, dict):
+            return f"records[{sid!r}] must be a dict, got {type(configs).__name__}"
+        for cfg, slots in configs.items():
+            if not isinstance(slots, dict):
+                return f"records[{sid!r}][{cfg!r}] must be a dict, got {type(slots).__name__}"
+            break  # one entry is enough to verify shape
+        break
+    return None
+
+
 def load_snapshot(path: Path | None = None) -> ArenaSnapshot | None:
-    """Load the Arena snapshot from disk; return None if missing or corrupt."""
+    """Load the Arena snapshot from disk; return None if missing or structurally invalid.
+
+    Returns None (never raises) for any corrupt, malformed-shape, or missing file so
+    that callers such as doctor and the coverage action never crash.
+    """
     p = path or default_snapshot_path()
     try:
         with p.open(encoding="utf-8") as fh:
             data = json.load(fh)
+        shape_error = _validate_snapshot_shape(data)
+        if shape_error is not None:
+            return None
         return ArenaSnapshot.from_dict(data)
-    except (OSError, KeyError, ValueError, json.JSONDecodeError):
+    except (OSError, KeyError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         return None
 
 

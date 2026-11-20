@@ -524,7 +524,7 @@ class EligibilityLadder:
         cached = self._arena_snapshot_cache
         if cached is not _DEFAULT_ARENA:
             return cached
-        arg = getattr(self, "_arena_snapshot_arg", _DEFAULT_ARENA)
+        arg = self._arena_snapshot_arg
         if arg is _DEFAULT_ARENA:
             # Default: try to load the on-disk snapshot; None if missing.
             try:
@@ -533,7 +533,10 @@ class EligibilityLadder:
                 loaded = load_snapshot()
             except Exception:
                 loaded = None
-            self._arena_snapshot_cache = loaded
+            if loaded is not None:
+                # Only cache a successful load; leave the sentinel so a later
+                # call retries when the file appears or is refreshed.
+                self._arena_snapshot_cache = loaded
             return loaded
         # Explicit: None disables arena rankings, a snapshot object enables them.
         self._arena_snapshot_cache = arg
@@ -949,8 +952,8 @@ class EligibilityLadder:
                             as_of=arena_vr.published,
                             basis="score",
                         )
-                except Exception:
-                    pass  # Arena is advisory; never block routing on its failure
+                except Exception as exc:  # Arena is advisory; never block routing on its failure
+                    _LOG.debug("arena: vr augmentation failed: %s: %s", type(exc).__name__, exc)
         return a
 
     def _task_gate(

@@ -111,7 +111,8 @@ def match_rows(
         # Canonicalise to get (org, key) for crosswalk lookup
         parsed_result = parse_name(model_name, organization, crosswalk.org_providers)
         if isinstance(parsed_result, Drop):
-            drops.append(parsed_result)
+            # Backfill config since parse_name doesn't know it yet
+            drops.append(Drop(**{**parsed_result.__dict__, "config": config}))
             continue
 
         parsed = parsed_result
@@ -126,6 +127,7 @@ def match_rows(
                     organization=organization,
                     reason=DROP_CROSSWALK_DROP,
                     detail=drop_entry.reason,
+                    config=config,
                 )
             )
             continue
@@ -149,6 +151,7 @@ def match_rows(
                         organization=organization,
                         reason=DROP_CROSSWALK_TARGET_MISSING,
                         detail=f"none of {list(map_entry.models_dev_ids)!r} found in store",
+                        config=config,
                     )
                 )
                 continue
@@ -169,6 +172,7 @@ def match_rows(
                         organization=organization,
                         reason=DROP_NO_STORE_RECORD,
                         detail=f"no store id for ({parsed.org!r}, {parsed.key!r})",
+                        config=config,
                     )
                 )
                 continue
@@ -195,6 +199,7 @@ def match_rows(
                     organization=organization,
                     reason=DROP_VARIANT_COLLISION,
                     detail=f"duplicate ({config!r}, {parsed.effort!r}) for {colliding_name!r}",
+                    config=config,
                 )
             )
             # Retroactively drop the first match (any overlap in store_ids for same config+effort)
@@ -219,6 +224,7 @@ def match_rows(
                         organization=organization,
                         reason=DROP_VARIANT_COLLISION,
                         detail=f"duplicate ({config!r}, {parsed.effort!r}) for {model_name!r}",
+                        config=config,
                     )
                 )
 

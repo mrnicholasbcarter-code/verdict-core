@@ -66,14 +66,6 @@ class ArenaVR:
     published: str  # leaderboard_publish_date
 
 
-def _best_slot(slots: dict[str, ArenaSlot]) -> tuple[str, ArenaSlot] | None:
-    """Return the highest-effort slot available, in preference order."""
-    for effort in reversed(_EFFORT_FALLBACK):
-        if effort in slots:
-            return effort, slots[effort]
-    return None
-
-
 def _is_usable(slot: ArenaSlot, config: str, now: datetime) -> tuple[bool, str]:
     """Return (usable, reason). below_floor or stale makes it unusable for ranking."""
     floor = FLOOR_N.get(config, 0.0)

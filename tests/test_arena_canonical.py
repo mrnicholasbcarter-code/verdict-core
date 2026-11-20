@@ -201,12 +201,7 @@ def test_parse_name_multiple_effort_tokens_is_drop(org_providers: dict[str, list
 def test_parse_name_single_effort_token_is_not_ambiguous(
     org_providers: dict[str, list[str]],
 ) -> None:
-    """A single effort token must still produce a Parsed, not a Drop."""
-    result = parse_name("GPT-4o (high)", "OpenAI", org_providers)
-    # May be a Drop for org reasons, but NOT for ambiguous_effort
-    if isinstance(result, Drop):
-        from verdict.arena.canonical import DROP_AMBIGUOUS_EFFORT
-
-        assert result.reason != DROP_AMBIGUOUS_EFFORT, (
-            "single effort token should not be ambiguous_effort"
-        )
+    """A single effort token must produce a Parsed (not a Drop) for a known org."""
+    result = parse_name("GPT-4o (high)", "openai", org_providers)
+    assert isinstance(result, Parsed), f"expected Parsed, got {result!r}"
+    assert result.effort == "high"

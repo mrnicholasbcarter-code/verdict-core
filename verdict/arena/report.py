@@ -67,14 +67,8 @@ def coverage_report(
         matched_by_config[m._config] = matched_by_config.get(m._config, 0) + 1
 
     for d in drops:
-        cfg_drop = None
-        # find config from original rows
-        for r in overall_rows:
-            if r.get("model_name") == d.model_name and r.get("organization") == d.organization:
-                cfg_drop = r.get("_config", "unknown")
-                break
-        if cfg_drop is None:
-            cfg_drop = "unknown"
+        # Use the config carried on the Drop record (set in match_rows); fall back to "unknown"
+        cfg_drop = d.config if d.config else "unknown"
         unmatched_by_config[cfg_drop] = unmatched_by_config.get(cfg_drop, 0) + 1
         unmatched_names.setdefault(cfg_drop, []).append(d.model_name)
 

@@ -118,8 +118,9 @@ def test_health_cache_row_fails_when_fresh_plus_stale_is_zero(_isolated_health_c
 
 
 def test_installed_service_rows_fails_when_identify_timer_missing(
-    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch
+    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
     from verdict.identify_service import TIMER as IDENTIFY_TIMER
 
     _record_one_route(_isolated_health_cache, checked_at=NOW)
@@ -172,8 +173,9 @@ def test_installed_service_rows_reports_metadata_timer_never_completed(
 
 
 def test_installed_service_rows_fails_when_prime_sync_timer_is_failed(
-    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch
+    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
     _record_one_route(_isolated_health_cache, checked_at=NOW)
 
     def fake_timer_state(unit: str) -> dict[str, object]:

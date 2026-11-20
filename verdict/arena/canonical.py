@@ -54,6 +54,7 @@ class Drop:
     organization: str
     reason: DropReason
     detail: str = ""
+    config: str = ""  # Arena config (_config field); empty when not yet known at parse time
 
 
 def slug(text: str) -> str:
