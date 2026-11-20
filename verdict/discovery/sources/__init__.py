@@ -18,7 +18,7 @@ Adapters:
   lists, fetched at refresh time from pinned GitHub commits)
 """
 
-from verdict.discovery.sources._fetcher import Fetcher, default_fetcher, make_stub_fetcher
+from verdict.discovery.sources._fetcher import Fetcher, default_fetcher
 from verdict.discovery.sources._types import DiscoveryRow
 from verdict.discovery.sources.community import (
     CommunityConfig,
@@ -42,7 +42,6 @@ __all__ = [
     "fetch_kilo",
     "fetch_models_dev",
     "fetch_openrouter",
-    "make_stub_fetcher",
     "parse_dsh",
     "parse_fcm",
     "parse_free_tier_ids",

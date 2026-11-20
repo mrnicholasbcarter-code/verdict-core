@@ -1,7 +1,7 @@
 """Offline unit tests for verdict.discovery.sources.
 
 All tests run with no network access.  HTTP calls are replaced by
-:func:`~verdict.discovery.sources._fetcher.make_stub_fetcher` or by passing
+:func:`tests.helpers_discovery.make_stub_fetcher` or by passing
 fixture dicts directly to the parse functions.
 """
 
@@ -11,8 +11,8 @@ from typing import ClassVar
 
 import pytest
 
+from tests.helpers_discovery import make_stub_fetcher
 from verdict.discovery.collect import collect_sources
-from verdict.discovery.sources._fetcher import make_stub_fetcher
 from verdict.discovery.sources._types import DiscoveryRow
 from verdict.discovery.sources.community import (
     _DSH_DEFAULT_COMMIT,

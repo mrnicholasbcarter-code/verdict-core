@@ -35,20 +35,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from verdict.discovery.collect import collect_sources  # noqa: E402
 from verdict.discovery.sources._fetcher import default_fetcher  # noqa: E402
 from verdict.discovery.sources._types import DiscoveryRow  # noqa: E402
-from verdict.discovery.sources.community import (  # noqa: E402
-    CommunityConfig,
-    fetch_dsh,
-    fetch_fcm,
-)
-from verdict.discovery.sources.kilo import fetch_kilo  # noqa: E402
-from verdict.discovery.sources.models_dev import fetch_models_dev  # noqa: E402
+from verdict.discovery.sources.community import CommunityConfig  # noqa: E402
 from verdict.discovery.sources.omniroute import (  # noqa: E402
     parse_free_tier_ids,
     rows_from_evidence,
 )
-from verdict.discovery.sources.openrouter import fetch_openrouter  # noqa: E402
 from verdict.paths import verdict_home  # noqa: E402
 
 _ALL_SOURCES = (
@@ -59,6 +53,16 @@ _ALL_SOURCES = (
     "free_coding_models",
     "dsh_our_free_model",
 )
+
+# Map from DiscoveryRow.source values to canonical cache file names.
+_SOURCE_TO_FILE: dict[str, str] = {
+    "omniroute": "omniroute",
+    "openrouter": "openrouter",
+    "kilo": "kilo",
+    "models_dev": "models_dev",
+    "free_coding_models": "free_coding_models",
+    "dsh_our_free_model": "dsh_our_free_model",
+}
 
 
 def _iso_now() -> str:
@@ -92,30 +96,12 @@ def run(
     home = cache_dir or (verdict_home() / "discovery" / "sources")
     index: list[dict[str, object]] = []
 
-    def _run_source(name: str, fn: object, *args: object, **kwargs: object) -> list[DiscoveryRow]:
-        try:
-            rows = fn(*args, **kwargs)  # type: ignore[call-arg,operator]
-            index.append(
-                {
-                    "source": name,
-                    "row_count": len(rows),
-                    "error": None,
-                    "fetched_at": rows[0].fetched_at if rows else _iso_now(),
-                }
-            )
-            return rows
-        except Exception as exc:
-            msg = f"{type(exc).__name__}: {exc}"
-            print(f"  ERROR [{name}]: {msg}", file=sys.stderr, flush=True)
-            traceback.print_exc(file=sys.stderr)
-            index.append({"source": name, "row_count": 0, "error": msg, "fetched_at": _iso_now()})
-            return []
-
     print(f"Refreshing discovery sources → {home}", flush=True)
 
-    # OmniRoute: requires a live gateway; skip gracefully if unavailable.
+    # OmniRoute: requires a live gateway; handled separately because it needs
+    # fetch_omniroute_evidence (not injectable via the Fetcher protocol).
+    or_rows: list[DiscoveryRow] = []
     if "omniroute" in enabled:
-        or_rows: list[DiscoveryRow] = []
         try:
             from verdict.omniroute_evidence import fetch_omniroute_evidence
 
@@ -143,40 +129,56 @@ def run(
         except Exception as exc:
             msg = f"{type(exc).__name__}: {exc}"
             print(f"  ERROR [omniroute]: {msg}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
             index.append(
                 {"source": "omniroute", "row_count": 0, "error": msg, "fetched_at": _iso_now()}
             )
         if or_rows:
             _write_cache(home, "omniroute", or_rows)
 
-    if "openrouter" in enabled:
-        rows = _run_source("openrouter", fetch_openrouter, fetcher=default_fetcher)
-        if rows:
-            _write_cache(home, "openrouter", rows)
+    # Network adapters: use collect_sources for the remaining sources.
+    # collect_sources swallows per-adapter exceptions, so each is best-effort.
+    net_rows = collect_sources(
+        fetcher=default_fetcher,
+        community=cfg,
+        include_omniroute=False,
+        include_openrouter="openrouter" in enabled,
+        include_kilo="kilo" in enabled,
+        include_models_dev="models_dev" in enabled,
+        include_community=bool({"free_coding_models", "dsh_our_free_model"} & enabled),
+    )
 
-    if "kilo" in enabled:
-        rows = _run_source("kilo", fetch_kilo, fetcher=default_fetcher)
-        if rows:
-            _write_cache(home, "kilo", rows)
+    # Group rows by source and cache each separately, tracking per-source
+    # error state from the index (collect_sources swallows exceptions, so
+    # we infer success from the row list).
+    rows_by_source: dict[str, list[DiscoveryRow]] = {}
+    for row in net_rows:
+        rows_by_source.setdefault(row.source, []).append(row)
 
-    if "models_dev" in enabled:
-        rows = _run_source("models_dev", fetch_models_dev, fetcher=default_fetcher)
-        if rows:
-            _write_cache(home, "models_dev", rows)
-
-    if "free_coding_models" in enabled:
-        rows = _run_source(
-            "free_coding_models", fetch_fcm, fetcher=default_fetcher, commit=cfg.fcm_commit
+    for source_key, file_name in _SOURCE_TO_FILE.items():
+        if source_key == "omniroute":
+            continue
+        # Only process if the source was requested.
+        if source_key == "free_coding_models" and "free_coding_models" not in enabled:
+            continue
+        if source_key == "dsh_our_free_model" and "dsh_our_free_model" not in enabled:
+            continue
+        if (
+            source_key not in ("free_coding_models", "dsh_our_free_model")
+            and source_key not in enabled
+        ):
+            continue
+        src_rows = rows_by_source.get(source_key, [])
+        index.append(
+            {
+                "source": source_key,
+                "row_count": len(src_rows),
+                "error": None,
+                "fetched_at": src_rows[0].fetched_at if src_rows else _iso_now(),
+            }
         )
-        if rows:
-            _write_cache(home, "free_coding_models", rows)
-
-    if "dsh_our_free_model" in enabled:
-        rows = _run_source(
-            "dsh_our_free_model", fetch_dsh, fetcher=default_fetcher, commit=cfg.dsh_commit
-        )
-        if rows:
-            _write_cache(home, "dsh_our_free_model", rows)
+        if src_rows:
+            _write_cache(home, file_name, src_rows)
 
     result: dict[str, object] = {
         "schema": "verdict.discovery.sources.index/v1",
