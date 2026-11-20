@@ -2,7 +2,7 @@
 
 Ported from freescan/probe.py (D1, BOD-342).
 
-Transport is injectable (``set_transport``) so tests never make real network calls.
+Transport is injectable (``_set_transport``) so tests never make real network calls.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ _TRANSPORT: Transport | None = None
 _TRANSPORT_LOCK = threading.Lock()
 
 
-def set_transport(fn: Transport | None) -> None:
+def _set_transport(fn: Transport | None) -> None:
     """Replace the HTTP backend.  Pass None to restore the real urllib backend."""
     global _TRANSPORT
     with _TRANSPORT_LOCK:

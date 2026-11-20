@@ -31,7 +31,7 @@ from typing import Any
 
 from verdict.discovery.model import RATE_LIMITED, UP, ProbeResult, Route
 from verdict.discovery.probe import probe_all
-from verdict.discovery.toolprobe import TOOL_OK, tool_probe
+from verdict.discovery.toolprobe import TOOL_OK, tool_probe_all
 from verdict.paths import verdict_home
 
 # ---------------------------------------------------------------------------
@@ -293,20 +293,22 @@ def run_refresh(
         if result.status == RATE_LIMITED:
             breaker.open_pool(result.route)
 
-    # Second stage: tool probe at agent size for UP routes
-    tool_results: dict[str, tuple[str, str | None, int | None, str | None]] = {}
+    # Second stage: tool probe at agent size for UP routes (via tool_probe_all)
     up_results = [r for r in probe_results if r.status == UP and not breaker.is_open(r.route)]
-    for pr_up in up_results:
-        if time.monotonic() >= deadline:
-            break
-        t_status, t_detail, t_latency, t_served = tool_probe(
-            pr_up.route,
-            timeout=min(probe_timeout, max(5.0, deadline - time.monotonic())),
-            context_tokens=context_tokens,
-        )
-        tool_results[pr_up.route.key] = (t_status, t_detail, t_latency, t_served)
+    remaining_budget = deadline - time.monotonic()
+    tool_results: dict[str, tuple[str, str | None, int | None, str | None]] = tool_probe_all(
+        up_results,
+        timeout=min(probe_timeout, max(5.0, remaining_budget)),
+        concurrency=1,  # per-pool rate respect: tool probes are heavy, serialise them
+        per_host=1,
+        context_tokens=context_tokens,
+    )
+    # Open breaker for any tool_error 429s
+    for route_key, (t_status, t_detail, _, _) in tool_results.items():
         if t_status == "tool_error" and "429" in str(t_detail):
-            breaker.open_pool(pr_up.route)
+            matching = next((r.route for r in probe_results if r.route.key == route_key), None)
+            if matching is not None:
+                breaker.open_pool(matching)
 
     # Build registry entries for all probed routes
     result_by_key = {r.route.key: r for r in probe_results}

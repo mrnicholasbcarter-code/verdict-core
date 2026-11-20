@@ -19,7 +19,13 @@ import json
 from typing import Any
 
 from verdict.discovery.model import Route
-from verdict.discovery.registry import REGISTRY_SCHEMA, DiscoveryRegistry, run_refresh
+from verdict.discovery.registry import (
+    REGISTRY_SCHEMA,
+    DiscoveryRegistry,
+    load_registry,
+    run_refresh,
+)
+from verdict.discovery.scores import ScoreIndex, load_scores
 from verdict.paths import verdict_home
 
 # Capacity class strings that may be probed (all others are skipped)
@@ -100,6 +106,7 @@ def load_probeable_routes(env: Any = None) -> list[tuple[Route, str, str]]:
 def run_refresh_action(
     *,
     dry_run: bool = False,
+    force: bool = False,
     context_tokens: int = 18_000,
     wall_budget_s: float = 300.0,
     env: Any = None,
@@ -107,17 +114,35 @@ def run_refresh_action(
     """Probe routes and return a dict suitable for json.dumps.
 
     ``dry_run=True`` lists what would be probed without making any calls.
+    ``force=True`` re-runs even when a fresh registry already exists.
     """
+    # Skip if a fresh registry already exists (unless forced or dry-run)
+    if not dry_run and not force:
+        existing = load_registry(env)
+        if existing is not None:
+            # Build a minimal ScoreIndex to populate the result with score metadata
+            _scores: ScoreIndex = load_scores(offline=True)
+            return _registry_to_summary(
+                existing, dry_run=False, total_input=len(existing.entries), scores=_scores
+            )
+
     routes = load_probeable_routes(env)
+
+    # Load coding scores (cached/offline, never blocks the refresh)
+    scores: ScoreIndex = load_scores(offline=True)
 
     registry = run_refresh(
         routes, context_tokens=context_tokens, wall_budget_s=wall_budget_s, env=env, dry_run=dry_run
     )
-    return _registry_to_summary(registry, dry_run=dry_run, total_input=len(routes))
+    return _registry_to_summary(registry, dry_run=dry_run, total_input=len(routes), scores=scores)
 
 
 def _registry_to_summary(
-    registry: DiscoveryRegistry, *, dry_run: bool, total_input: int
+    registry: DiscoveryRegistry,
+    *,
+    dry_run: bool,
+    total_input: int,
+    scores: ScoreIndex | None = None,
 ) -> dict[str, Any]:
     """Convert a DiscoveryRegistry to a human/machine-readable summary dict."""
     entries = registry.entries

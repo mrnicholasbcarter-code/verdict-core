@@ -9,7 +9,7 @@ import this, so it must not import verdict modules or third-party packages.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 
 # --- auth -----------------------------------------------------------------
 # A route's ``auth`` is one of:
@@ -77,28 +77,3 @@ class Score:
     as_of: str  # ISO date the source data was published or fetched
     matched_id: str  # the id in the source that this route was matched to
     exact: bool = True  # False when matched by normalised/fuzzy name
-
-
-def to_row(result: ProbeResult, score: Score | None) -> dict[str, object]:
-    """Flatten one probe result (+ optional score) into a JSON-serialisable dict."""
-    r = result.route
-    return {
-        "provider": r.provider,
-        "model": r.model,
-        "key": r.key,
-        "status": result.status,
-        "latency_ms": result.latency_ms,
-        "http_code": result.http_code,
-        "detail": result.detail,
-        "retry_after_s": result.retry_after_s,
-        "answered_model": result.answered_model,
-        "tool": result.tool,
-        "base_url": r.base_url,
-        "auth": r.auth if not r.auth.startswith("literal:") else "literal",
-        "source": r.source,
-        "upstream": r.upstream,
-        "billing": r.billing,
-        "context": r.context,
-        "notes": r.notes,
-        "score": asdict(score) if score else None,
-    }

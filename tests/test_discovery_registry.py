@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 
 from verdict.discovery.model import Route
-from verdict.discovery.probe import set_transport
+from verdict.discovery.probe import _set_transport
 from verdict.discovery.refresh import render_refresh_plain, run_refresh_action
 from verdict.discovery.registry import (
     BREAKER_CLOSED,
@@ -288,7 +288,7 @@ class BreakerTest(unittest.TestCase):
 
 class RunRefreshDryRunTest(unittest.TestCase):
     def tearDown(self) -> None:
-        set_transport(None)
+        _set_transport(None)
 
     def test_dry_run_no_transport_called(self) -> None:
         called: list[bool] = []
@@ -297,7 +297,7 @@ class RunRefreshDryRunTest(unittest.TestCase):
             called.append(True)
             return 200, {}, _ok_body()
 
-        set_transport(_t)
+        _set_transport(_t)
 
         with tempfile.TemporaryDirectory() as tmp:
             routes = [(_route(provider="p", model=f"m{i}"), "free", "plan_free") for i in range(3)]
@@ -325,7 +325,7 @@ class RunRefreshDryRunTest(unittest.TestCase):
 
 class RunRefreshLiveTest(unittest.TestCase):
     def tearDown(self) -> None:
-        set_transport(None)
+        _set_transport(None)
 
     def test_answered_and_tool_ok_route(self) -> None:
         # First call is liveness probe → UP; second is tool probe → TOOL_OK
@@ -338,7 +338,7 @@ class RunRefreshLiveTest(unittest.TestCase):
                 return 200, {}, _tool_ok_body()
             return 200, {}, _ok_body()
 
-        set_transport(_t)
+        _set_transport(_t)
 
         with tempfile.TemporaryDirectory() as tmp:
             routes = [(_route(), "free", "plan_free")]
@@ -354,7 +354,7 @@ class RunRefreshLiveTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 429, {"Retry-After": "30"}, _429_body()
 
-        set_transport(_t)
+        _set_transport(_t)
 
         with tempfile.TemporaryDirectory() as tmp:
             routes = [(_route(provider="kilo", upstream="kilo"), "free", "plan_free")]
@@ -369,7 +369,7 @@ class RunRefreshLiveTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 200, {}, _ok_body()
 
-        set_transport(_t)
+        _set_transport(_t)
 
         with tempfile.TemporaryDirectory() as tmp:
             env = _env(tmp)
@@ -387,7 +387,7 @@ class RunRefreshLiveTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 200, {}, _ok_body()
 
-        set_transport(_t)
+        _set_transport(_t)
 
         with tempfile.TemporaryDirectory() as tmp:
             routes = [(_route(provider="claude", model="claude-3-5"), "subscription", "plan_paid")]
@@ -399,7 +399,7 @@ class RunRefreshLiveTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 200, {}, _ok_body()
 
-        set_transport(_t)
+        _set_transport(_t)
 
         with tempfile.TemporaryDirectory() as tmp:
             routes = [
@@ -416,7 +416,7 @@ class RunRefreshLiveTest(unittest.TestCase):
                 _ok_body(),
             )
 
-        set_transport(_t)
+        _set_transport(_t)
 
         with tempfile.TemporaryDirectory() as tmp:
             routes = [(_route(), "free", "plan_free")]
@@ -475,7 +475,7 @@ class RenderRefreshPlainTest(unittest.TestCase):
 
 class RunRefreshActionTest(unittest.TestCase):
     def tearDown(self) -> None:
-        set_transport(None)
+        _set_transport(None)
 
     def test_action_dry_run_no_sources(self) -> None:
         """With no sources available, dry-run should return empty without crashing."""

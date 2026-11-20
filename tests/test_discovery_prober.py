@@ -21,7 +21,7 @@ from verdict.discovery.model import (
     UP,
     Route,
 )
-from verdict.discovery.probe import probe_all, probe_one, set_transport
+from verdict.discovery.probe import _set_transport, probe_all, probe_one
 from verdict.discovery.toolprobe import (
     BAD_TOOL_CALL,
     NO_TOOL_CALL,
@@ -91,13 +91,13 @@ def _tool_call_body(city: str = "Paris") -> bytes:
 
 class ProbeOneStatusTest(unittest.TestCase):
     def tearDown(self) -> None:
-        set_transport(None)
+        _set_transport(None)
 
     def test_up_on_200_with_content(self) -> None:
         def _t(url, h, p, timeout):
             return 200, {}, json.dumps(_ok_body()).encode()
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.status, UP)
         self.assertIsNotNone(r.latency_ms)
@@ -106,7 +106,7 @@ class ProbeOneStatusTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 500, {}, b'{"error": "internal"}'
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.status, DOWN)
         self.assertEqual(r.http_code, 500)
@@ -115,7 +115,7 @@ class ProbeOneStatusTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 429, {"Retry-After": "30"}, b'{"error": "too many requests"}'
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.status, RATE_LIMITED)
         self.assertEqual(r.retry_after_s, 30.0)
@@ -127,7 +127,7 @@ class ProbeOneStatusTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 200, {}, body
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.status, RATE_LIMITED)
 
@@ -135,7 +135,7 @@ class ProbeOneStatusTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 401, {}, b'{"error": "unauthorized"}'
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.status, AUTH_ERROR)
         self.assertEqual(r.http_code, 401)
@@ -144,7 +144,7 @@ class ProbeOneStatusTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 403, {}, b'{"error": "forbidden"}'
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.status, AUTH_ERROR)
 
@@ -152,7 +152,7 @@ class ProbeOneStatusTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 200, {"content-type": "text/html"}, b"<html>...</html>"
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.status, GARBAGE)
 
@@ -160,7 +160,7 @@ class ProbeOneStatusTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 200, {}, b"not json at all"
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.status, GARBAGE)
 
@@ -170,7 +170,7 @@ class ProbeOneStatusTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 200, {}, body
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.status, GARBAGE)
 
@@ -178,7 +178,7 @@ class ProbeOneStatusTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             raise TimeoutError("timed out")
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.status, TIMEOUT)
 
@@ -186,7 +186,7 @@ class ProbeOneStatusTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             raise OSError("connection refused")
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.status, ERROR)
 
@@ -202,7 +202,7 @@ class ProbeOneStatusTest(unittest.TestCase):
             called.append(True)
             return 200, {}, json.dumps(_ok_body()).encode()
 
-        set_transport(_t)
+        _set_transport(_t)
         probe_one(_route(auth="env:MISSING_VAR_NEVER_SET"))
         self.assertEqual(called, [], "transport must not be called when key is missing")
 
@@ -214,7 +214,7 @@ class ProbeOneStatusTest(unittest.TestCase):
                 json.dumps(_ok_body()).encode(),
             )
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.answered_model, "prov/model-id")
 
@@ -222,7 +222,7 @@ class ProbeOneStatusTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 429, {"Retry-After": "60"}, b""
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertEqual(r.retry_after_s, 60.0)
 
@@ -233,7 +233,7 @@ class ProbeOneStatusTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 429, {"Retry-After": date_str}, b""
 
-        set_transport(_t)
+        _set_transport(_t)
         r = probe_one(_route())
         self.assertIsNotNone(r.retry_after_s)
         assert r.retry_after_s is not None
@@ -246,7 +246,7 @@ class ProbeOneStatusTest(unittest.TestCase):
             seen.append(h)
             return 200, {}, json.dumps(_ok_body()).encode()
 
-        set_transport(_t)
+        _set_transport(_t)
         probe_one(_route(auth="literal:mytoken"))
         self.assertEqual(seen[0]["Authorization"], "Bearer mytoken")
 
@@ -259,7 +259,7 @@ class ProbeOneStatusTest(unittest.TestCase):
             def _t(url, h, p, timeout):
                 raise OSError("connect failed: supersecret in error")
 
-            set_transport(_t)
+            _set_transport(_t)
             r = probe_one(_route(auth="env:_TEST_SECRET_XYZ"))
             self.assertNotIn("supersecret", r.detail or "")
         finally:
@@ -272,7 +272,7 @@ class ProbeOneStatusTest(unittest.TestCase):
             seen.append(h)
             return 200, {}, json.dumps(_ok_body()).encode()
 
-        set_transport(_t)
+        _set_transport(_t)
         probe_one(_route())
         self.assertEqual(seen[0]["User-Agent"], "verdict/0.1")
 
@@ -284,7 +284,7 @@ class ProbeOneStatusTest(unittest.TestCase):
 
 class ProbeAllTest(unittest.TestCase):
     def tearDown(self) -> None:
-        set_transport(None)
+        _set_transport(None)
 
     def test_returns_in_input_order(self) -> None:
         routes = [_route(model=f"m{i}") for i in range(5)]
@@ -292,7 +292,7 @@ class ProbeAllTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             return 200, {}, json.dumps(_ok_body()).encode()
 
-        set_transport(_t)
+        _set_transport(_t)
         results = probe_all(routes)
         self.assertEqual(len(results), 5)
         for i, r in enumerate(results):
@@ -306,7 +306,7 @@ class ProbeAllTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             raise RuntimeError("boom")
 
-        set_transport(_t)
+        _set_transport(_t)
         results = probe_all([_route()])
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].status, ERROR)
@@ -331,7 +331,7 @@ class ProbeAllTest(unittest.TestCase):
                 concurrent[0] -= 1
             return 200, {}, json.dumps(_ok_body()).encode()
 
-        set_transport(_t)
+        _set_transport(_t)
         routes = [_route(model=f"m{i}", max_parallel=1) for i in range(4)]
         probe_all(routes, per_host=1)
         self.assertEqual(peak[0], 1)
@@ -414,13 +414,13 @@ class FillerTest(unittest.TestCase):
 
 class ToolProbeTest(unittest.TestCase):
     def tearDown(self) -> None:
-        set_transport(None)
+        _set_transport(None)
 
     def test_tool_ok_result(self) -> None:
         def _t(url, h, p, timeout):
             return 200, {}, _tool_call_body("Paris")
 
-        set_transport(_t)
+        _set_transport(_t)
         status, detail, latency_ms, _served = tool_probe(_route())
         self.assertEqual(status, TOOL_OK)
         self.assertIsNone(detail)
@@ -434,7 +434,7 @@ class ToolProbeTest(unittest.TestCase):
             seen.append(json.loads(p))
             return 200, {}, _tool_call_body()
 
-        set_transport(_t)
+        _set_transport(_t)
         tool_probe(_route())
         self.assertNotIn("temperature", seen[0])
 
@@ -445,7 +445,7 @@ class ToolProbeTest(unittest.TestCase):
             seen.append(json.loads(p))
             return 200, {}, _tool_call_body()
 
-        set_transport(_t)
+        _set_transport(_t)
         tool_probe(_route(), context_tokens=500)
         messages = seen[0].get("messages", [])
         self.assertGreater(len(messages), 1, "system message with filler expected")
@@ -462,7 +462,7 @@ class ToolProbeTest(unittest.TestCase):
                 _tool_call_body(),
             )
 
-        set_transport(_t)
+        _set_transport(_t)
         _, _, _, served = tool_probe(_route())
         self.assertEqual(served, "prov/mymodel")
 
@@ -475,7 +475,7 @@ class ToolProbeTest(unittest.TestCase):
         def _t(url, h, p, timeout):
             raise RuntimeError("network gone")
 
-        set_transport(_t)
+        _set_transport(_t)
         status, _, _, _ = tool_probe(_route())
         self.assertEqual(status, TOOL_ERROR)
 
@@ -487,7 +487,7 @@ class ToolProbeTest(unittest.TestCase):
 
 class ToolProbeAllTest(unittest.TestCase):
     def tearDown(self) -> None:
-        set_transport(None)
+        _set_transport(None)
 
     def test_only_probes_up_routes(self) -> None:
         from verdict.discovery.model import ProbeResult
@@ -499,7 +499,7 @@ class ToolProbeAllTest(unittest.TestCase):
             called.append(body["model"])
             return 200, {}, _tool_call_body()
 
-        set_transport(_t)
+        _set_transport(_t)
         up = ProbeResult(route=_route(provider="p", model="m1"), status=UP)
         down = ProbeResult(route=_route(provider="p", model="m2"), status=DOWN)
         result = tool_probe_all([up, down])
