@@ -13,6 +13,7 @@ contents, API keys, or headers are ever attached** — only the keys in
 
 from __future__ import annotations
 
+import importlib
 import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
@@ -133,10 +134,8 @@ class _TracerState:
             return self._tracer
         self._initialised = True
         try:
-            # importlib keeps mypy --strict clean whether or not the optional
-            # `tracing` extra is installed (no type: ignore needed either way).
-            import importlib
-
+            # importlib (imported at module level) keeps mypy --strict clean
+            # whether or not the optional `tracing` extra is installed.
             trace = importlib.import_module("opentelemetry.trace")
             otlp_span_exporter_cls = importlib.import_module(
                 "opentelemetry.exporter.otlp.proto.grpc.trace_exporter"
@@ -216,10 +215,10 @@ def record_event(
         return
 
     try:
-        from opentelemetry import context as otel_context
-        from opentelemetry import trace
+        otel_context = importlib.import_module("opentelemetry.context")
+        otel_trace = importlib.import_module("opentelemetry.trace")
 
-        ctx = trace.set_span_in_context(parent_span)
+        ctx = otel_trace.set_span_in_context(parent_span)
         token = otel_context.attach(ctx)
         try:
             with tracer.start_as_current_span(f"event.{event_type}") as child:

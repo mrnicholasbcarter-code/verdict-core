@@ -284,13 +284,14 @@ class TestBehaviourParityAcrossFixtures:
             assert v.rank_components is not None
             assert list(v.rank_components) == [  # ordered dict, rank keys first
                 "capacity_order",
+                "ordering_basis",
+                "slack",
                 "rating_basis",
                 "rating",
                 "declared_tier",
                 "rating_metric",
                 "rating_source",
                 "rating_as_of",
-                "slack",
                 "advisory_rank",
                 "advisory_category",
                 "advisory_omission",
@@ -681,8 +682,9 @@ def test_event_size_bound_stays_under_32kb_with_25_candidates() -> None:
 def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
     """_rank_components is the single source of truth for _rank_key (500 routes).
 
-    The key is capacity tier, rating evidence, then slack, quota, provider
-    preference, load, fit and route_id. Marginal price never enters it.
+    The key is capacity tier, then slack (cheapest sufficient first), then
+    rating evidence, quota, provider preference, load, fit and route_id.
+    Marginal price never enters it.
     """
     import random
 
@@ -736,12 +738,12 @@ def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
         c = ladder._rank_components(a)
         assert ladder._rank_key(a) == (
             c["capacity_order"],
+            c["slack"],
             int(c["expected_tokens"] is None) if a.capacity == CapacityClass.SUBSCRIPTION else 0,
             float(c["expected_tokens"] or 0) if a.capacity == CapacityClass.SUBSCRIPTION else 0.0,
             c["rating_rank"],
             -(c["rating"] or 0.0),
             c["declared_tier"] or 0,
-            c["slack"],
             sys.maxsize if c["advisory_rank"] is None else c["advisory_rank"],
             0 if a.capacity == CapacityClass.SUBSCRIPTION else c["quota_rank"],
             c["provider_pref"],

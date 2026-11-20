@@ -303,7 +303,7 @@ class TestLadderRanksByCapabilityNotPrice:
             "cc/model-sub",
         ]
 
-    def test_high_score_tier0_beats_lower_score_tier1_despite_larger_slack(
+    def test_smaller_slack_tier1_beats_larger_slack_tier0_regardless_of_score(
         self, tmp_path: Path
     ) -> None:
         rows = [
@@ -319,11 +319,14 @@ class TestLadderRanksByCapabilityNotPrice:
         verdicts = {v.route_id: v for v in ladder.evaluate(REQ, now=NOW)}
         assert verdicts["cc/tier0"].rank_components is not None
         assert verdicts["cc/tier1"].rank_components is not None
+        # tier0 has more slack (3) than tier1 (2) for max_capability_tier=3
         assert (
             verdicts["cc/tier0"].rank_components["slack"]
             > verdicts["cc/tier1"].rank_components["slack"]
         )
-        assert _ranked(ladder, REQ) == ["cc/tier0", "cc/tier1"]
+        # cheapest-sufficient-first: tier1 (slack=2) beats tier0 (slack=3)
+        # even though tier0 has a higher aa_coding score
+        assert _ranked(ladder, REQ) == ["cc/tier1", "cc/tier0"]
 
     def test_rank_components_expose_rating_provenance(self, tmp_path: Path) -> None:
         rows = [_ladder_row("cc/model", pricing={"input": 1.0, "output": 2.0})]
@@ -476,7 +479,9 @@ class TestActualSelectionRatingOrder:
             _record("acme/none", "p/none"),
         )
         ladder = _ladder(tmp_path, rows, conns, meta)
-        assert _ranked(ladder, REQ) == ["p/weak", "cc/opus", "p/none"]
+        # cheapest-sufficient-first: cc/opus (tier 0, slack=3) beats p/weak
+        # (unknown tier, slack=4) despite p/weak having an aa_coding score
+        assert _ranked(ladder, REQ) == ["cc/opus", "p/weak", "p/none"]
         verdicts = {v.route_id: v for v in ladder.evaluate(REQ, now=NOW)}
         rc = verdicts["cc/opus"].rank_components
         assert rc is not None
