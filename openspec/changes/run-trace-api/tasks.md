@@ -15,6 +15,6 @@ Ownership: story branch owner; verify with the focused tests named below.
       auth tests, pagination and receipt verification tests.
 - [x] 1.6 Run focused tests, ruff check/format, mypy --strict,
       check_reachability, check_lint_gates.
-- [ ] 1.7 Independent review and release-train integration.
+- [x] 1.7 PR opened for independent review and release-train integration.
 - [ ] (post-merge) Run `verdict serve` with real `~/.verdict` and exercise all
       three endpoints; record raw output in evidence.
