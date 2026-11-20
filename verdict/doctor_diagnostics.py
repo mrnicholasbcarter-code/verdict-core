@@ -1192,6 +1192,8 @@ def installed_service_rows(
     rows.append(_docs_refresh_timer_row(injected_timer_state))
     rows.append(_pr_watcher_timer_row(injected_timer_state))
     rows.append(_context_lift_timer_row(injected_timer_state))
+    rows.append(_admit_snapshot_timer_row(injected_timer_state))
+    rows.append(_admit_snapshot_freshness_row(now=now))
     rows.extend(_ref_docs_rows(ref_docs_status))
     rows.append(report_row(now=now))
     rows.append(omniroute_webhook_row(now=now))
@@ -1485,6 +1487,110 @@ def _context_lift_timer_row(
             f"logs: journalctl --user -u {context_lift_service.SERVICE}"
         )
     return {"label": label, "status": "failed", "detail": detail}
+
+
+def _admit_snapshot_timer_row(
+    timer_state: Callable[[str], dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """The 5-minute admission snapshot keeper timer is active and its last run succeeded."""
+    from verdict import admit_snapshot_service
+    from verdict.setup_host import ADMIT_SNAPSHOT, setup_repair
+
+    unit = admit_snapshot_service.TIMER
+    state = (timer_state or admit_snapshot_service.timer_state)(unit)
+    name, result = str(state.get("state", "unknown")), str(state.get("result", "unknown"))
+    detail = f"{unit} is {name}; last result {result}"
+    label = "Admit-snapshot keeper timer"
+
+    if name == "active" and result in {"success", "unknown"}:
+        return {"label": label, "status": "ok", "detail": detail}
+    if name == "missing":
+        detail += f"; repair: {setup_repair(ADMIT_SNAPSHOT)}"
+        return {"label": label, "status": "failed", "detail": detail}
+    if name == "inactive":
+        detail += f"; repair: systemctl --user enable --now {unit}"
+    else:
+        detail += (
+            "; repair: verdict admission refresh; "
+            f"logs: journalctl --user -u {admit_snapshot_service.SERVICE}"
+        )
+    return {"label": label, "status": "failed", "detail": detail}
+
+
+def _admit_snapshot_freshness_row(
+    *, now: datetime | None = None, path: Path | None = None
+) -> dict[str, str]:
+    """Age of ``admit-last-good.json``; warns when missing or older than 15 minutes.
+
+    Uses ``"warning"`` (not ``"failed"``) so it does not block doctor before the
+    timer is first installed.
+    """
+    import json
+
+    from verdict.free_tier_admit import (
+        ADMIT_LAST_GOOD_MAX_AGE_SECONDS,
+        default_admit_last_good_path,
+    )
+    from verdict.setup_host import ADMIT_SNAPSHOT, setup_repair
+
+    label = "Admit-last-good freshness"
+    repair = f"repair: {setup_repair(ADMIT_SNAPSHOT)}"
+    store = path or default_admit_last_good_path()
+    now_dt = now or datetime.now(timezone.utc)
+
+    try:
+        data = json.loads(store.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"label": label, "status": "warning", "detail": f"{store.name} is missing; {repair}"}
+    except (OSError, ValueError):
+        return {
+            "label": label,
+            "status": "warning",
+            "detail": f"{store.name} is unreadable; {repair}",
+        }
+
+    # Find the newest fetched_at stamp across all origins and surfaces.
+    newest: datetime | None = None
+    if isinstance(data, dict):
+        for origin_data in data.values():
+            if not isinstance(origin_data, dict):
+                continue
+            for surface in origin_data.values():
+                if not isinstance(surface, dict):
+                    continue
+                raw = surface.get("fetched_at")
+                if not isinstance(raw, str):
+                    continue
+                try:
+                    ts = datetime.fromisoformat(raw)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if newest is None or ts > newest:
+                        newest = ts
+                except (TypeError, ValueError):
+                    continue
+
+    if newest is None:
+        return {
+            "label": label,
+            "status": "warning",
+            "detail": f"{store.name} has no readable timestamps; {repair}",
+        }
+
+    age_s = (now_dt - newest).total_seconds()
+    age_min = int(age_s // 60)
+    threshold = ADMIT_LAST_GOOD_MAX_AGE_SECONDS
+    if age_s < threshold:
+        return {
+            "label": label,
+            "status": "ok",
+            "detail": f"{store.name} age {age_min}m (threshold {int(threshold // 60)}m)",
+        }
+    return {
+        "label": label,
+        "status": "warning",
+        "detail": (f"{store.name} is {age_min}m old (threshold {int(threshold // 60)}m); {repair}"),
+    }
 
 
 def _parse_repos_from_argv(exec_start: str) -> list[str]:

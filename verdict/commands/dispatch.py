@@ -199,6 +199,100 @@ def _cmd_pr_watch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     sys.exit(0 if result.get("ok") else 1)
 
 
+def _cmd_admission(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Handle ``verdict admission <sub>`` CLI commands."""
+    if getattr(args, "admission_command", None) != "refresh":
+        parser.print_help()
+        return
+    _cmd_admission_refresh(args)
+
+
+def _cmd_admission_refresh(args: argparse.Namespace) -> None:
+    """``verdict admission refresh``: fetch the OmniRoute admission snapshot.
+
+    Writes ``~/.verdict/admit-last-good.json`` via the same atomic path that
+    the serve/relay path uses.  Makes no model or inference calls — only the
+    OmniRoute catalog, provider, health and quota reads.
+
+    Exits 0 on a fully fresh snapshot (``stale_served == ()``).
+    Exits 1 when the fetch fails or surfaces are stale (last-good intact).
+    """
+    import json as _json
+
+    if getattr(args, "install_service", False) or getattr(args, "uninstall", False):
+        from verdict import admit_snapshot_service
+
+        result = admit_snapshot_service.manage_service(
+            dry_run=getattr(args, "dry_run", False), uninstall=getattr(args, "uninstall", False)
+        )
+        if getattr(args, "output_json", False):
+            print(_json.dumps(result, indent=2, default=str))
+        else:
+            status = "uninstalled" if getattr(args, "uninstall", False) else "installed"
+            changed = result.get("changed", False)
+            print(f"admit-snapshot timer {status}; changed={changed}")
+        return
+
+    from verdict.free_tier_admit import (
+        LiveAdmitError,
+        load_omniroute_admit_snapshot,
+        omniroute_endpoint_from_env,
+    )
+
+    endpoint = omniroute_endpoint_from_env()
+    if endpoint is None or not str(endpoint[0] or "").strip():
+        msg = "OmniRoute not configured; set OMNIROUTE_BASE_URL or omniroute-api-key"
+        if getattr(args, "output_json", False):
+            print(_json.dumps({"ok": False, "reason": "omniroute_not_configured", "detail": msg}))
+        else:
+            print(f"error: {msg}", file=sys.stderr)
+        sys.exit(1)
+
+    base_url, api_key = endpoint
+    # Use a 2-minute aggregate deadline (more generous than serve's 30 s) so
+    # the background keeper succeeds on a loaded host.
+    try:
+        snapshot = load_omniroute_admit_snapshot(
+            base_url, api_key=api_key, aggregate_deadline_seconds=120.0
+        )
+    except LiveAdmitError as exc:
+        msg = f"admission snapshot fetch failed: {exc.code}: {exc}"
+        if getattr(args, "output_json", False):
+            print(_json.dumps({"ok": False, "reason": exc.code, "detail": str(exc)}))
+        else:
+            print(f"error: {msg}", file=sys.stderr)
+        sys.exit(1)
+
+    # A snapshot with stale surfaces or an incomplete state is not a success —
+    # exit non-zero so the doctor "last result" row reflects the true state.
+    stale = list(snapshot.stale_served)
+    incomplete = not snapshot.catalog or not snapshot.connections
+    ok = not stale and not incomplete
+
+    out: dict[str, object] = {
+        "ok": ok,
+        "admitted_free": len(snapshot.free_tier),
+        "active_providers": sorted(snapshot.active_providers),
+        "stale_served": stale,
+    }
+    if incomplete:
+        out["reason"] = "incomplete_snapshot"
+    if getattr(args, "output_json", False):
+        print(_json.dumps(out, indent=2, default=str))
+    else:
+        if ok:
+            print(
+                f"admission snapshot written; "
+                f"providers={len(snapshot.active_providers)} "
+                f"free_tier={len(snapshot.free_tier)}"
+            )
+        else:
+            detail = f"stale_served={stale}" if stale else "incomplete snapshot"
+            print(f"warning: {detail}", file=sys.stderr)
+    if not ok:
+        sys.exit(1)
+
+
 def _cmd_bench(args: argparse.Namespace) -> None:
     """Handle ``verdict bench <sub>`` CLI commands."""
     if args.bench_command == "context-lift":
@@ -1289,6 +1383,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         )
     elif args.command == "pr-watch":
         _cmd_pr_watch(parser, args)
+    elif args.command == "admission":
+        _cmd_admission(parser, args)
     elif args.command == "discovery":
         if args.discovery_command == "funnel":
             import json as _json
