@@ -651,6 +651,15 @@ def _action_discovery_funnel(**kwargs: Any) -> ActionResult:
     return ActionResult(data=run_funnel())
 
 
+def _action_discovery_refresh(**kwargs: Any) -> ActionResult:
+    """Probe free/subscription routes and write 12-hour proof registry."""
+    from verdict.discovery.refresh import run_refresh_action
+
+    dry_run = bool(kwargs.get("dry_run", False))
+    result = run_refresh_action(dry_run=dry_run)
+    return ActionResult(data=result)
+
+
 def _action_eligibility(**kwargs: Any) -> ActionResult:
     """Evaluate the DISCOVERED→SELECTED eligibility ladder."""
     import os
@@ -1767,6 +1776,16 @@ def _register_builtins() -> None:
                 "Health",
             ),
             _action_discovery_funnel,
+        ),
+        (
+            ActionSpec(
+                "discovery.refresh",
+                "health",
+                "mutation",
+                "Probe free/subscription routes and write 12-hour proof registry",
+                "Health",
+            ),
+            _action_discovery_refresh,
         ),
         (
             ActionSpec(
