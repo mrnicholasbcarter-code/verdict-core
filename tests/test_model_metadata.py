@@ -287,44 +287,115 @@ class TestMappingAndDrops:
     # -- normalised-leaf (dash→dot) join tests --------------------------------
 
     def _dash_dot_snapshot(self) -> MetadataSnapshot:
-        """Snapshot with a dash record (no scores) and its dot twin (has scores).
+        """Snapshot with a dash record (models.json) and its dot twin (api.json/litellm).
 
-        This mirrors the real store shape for the Claude 5.5 family:
-        models.dev models.json emits the dash id; api.json emits the dot id
-        with the OpenRouter Artificial Analysis scores attached.
+        This mirrors the real production store shape for the Claude 5.5 family:
+        - models.dev models.json emits the dash id with capability facts
+          (context window etc.) using SOURCE_MODELS_DEV_MODELS provenance.
+        - api.json (litellm) emits the dot id with SOURCE_LITELLM provenance
+          for any caps it carries and AA scores from SOURCE_OPENROUTER_AA.
+
+        The dot record deliberately uses SOURCE_LITELLM (not SOURCE_MODELS_DEV_MODELS)
+        so that _record_from_models_json returns False for it and it is not entered
+        in the normalised-leaf index.  Only the dash record is indexed; the upgrade
+        path in lookup_omniroute_id finds the dot twin by id and merges its scores.
         """
         prov_models = FieldProvenance(
             source=SOURCE_MODELS_DEV_MODELS, fetched_at=FETCHED_AT, version="fixture"
         )
+        prov_litellm = FieldProvenance(source=SOURCE_LITELLM, fetched_at=FETCHED_AT)
         prov_aa = FieldProvenance(source=SOURCE_OPENROUTER_AA, fetched_at=FETCHED_AT)
-        context = ProvenancedField(value=512_000, provenance=prov_models)
+        # Dash record (models.json): capability facts, no scores.
+        models_json_context = ProvenancedField(value=512_000, provenance=prov_models)
+        # Dot record (api.json): litellm capability, AA score — different context value
+        # so tests can verify which record's caps were preserved.
+        litellm_context = ProvenancedField(value=200_000, provenance=prov_litellm)
         aa_score = ProvenancedField(value=80.0, provenance=prov_aa)
         return MetadataSnapshot(
             schema_version=METADATA_SCHEMA_VERSION,
             refreshed_at=FETCHED_AT,
             sources={},
             records=(
-                # Dash record — from models.json, no AA scores.
+                # Dash record — from models.json, capability facts, no scores.
                 ModelMetadataRecord(
-                    id="anthropic/claude-opus-5-5", caps=CapabilityCaps(context=context)
+                    id="anthropic/claude-opus-5-5", caps=CapabilityCaps(context=models_json_context)
                 ),
-                # Dot record — from api.json, carries the AA score.
+                # Dot record — from api.json (SOURCE_LITELLM), no models.json caps,
+                # carries the AA score.  SOURCE_LITELLM provenance means
+                # _record_from_models_json returns False → not in normalised-leaf index.
                 ModelMetadataRecord(
                     id="anthropic/claude-opus-5.5",
-                    caps=CapabilityCaps(context=context),
+                    caps=CapabilityCaps(context=litellm_context),
                     scores=SoftScores(aa_coding=aa_score),
                 ),
             ),
         )
 
     def test_normalized_leaf_join_dash_to_dot_record(self) -> None:
-        """Dash-spelled inventory id resolves to the dot record via normalised leaf."""
+        """Dash-spelled inventory id resolves via normalised leaf, keeping models.json caps."""
         snapshot = self._dash_dot_snapshot()
         found = lookup_omniroute_id(snapshot, "cc/claude-opus-5-5")
         assert found.record is not None, "should resolve via normalised-leaf join"
-        assert found.record.id == "anthropic/claude-opus-5.5"
+        # The models.json record's ID is kept (not swapped for the dot twin).
+        assert found.record.id == "anthropic/claude-opus-5-5"
         assert found.drop is None
         assert found.join == "leaf"
+        # Capability facts come from the models.json (dash) record: 512k context.
+        assert found.record.caps.context is not None
+        assert found.record.caps.context.value == 512_000
+        assert found.record.caps.context.provenance.source == SOURCE_MODELS_DEV_MODELS
+        # Scores are merged from the dot twin (api.json).
+        assert found.record.scores.aa_coding is not None
+        assert found.record.scores.aa_coding.value == 80.0
+
+    def test_dot_twin_upgrade_does_not_lose_capability_facts(self) -> None:
+        """Dash→dot upgrade never loses capability facts the models.json record had.
+
+        The dot twin (api.json/litellm) may omit capability fields that the
+        models.json (dash) record populated.  After the merge the resolved record
+        must still carry those caps so that a later required= check or
+        admitted_for_caps does not incorrectly drop a route.
+        """
+        prov_models = FieldProvenance(
+            source=SOURCE_MODELS_DEV_MODELS, fetched_at=FETCHED_AT, version="fixture"
+        )
+        prov_litellm = FieldProvenance(source=SOURCE_LITELLM, fetched_at=FETCHED_AT)
+        prov_aa = FieldProvenance(source=SOURCE_OPENROUTER_AA, fetched_at=FETCHED_AT)
+        # The models.json record has tools=True and context=512k.
+        tools_cap = ProvenancedField(value=True, provenance=prov_models)
+        context_cap = ProvenancedField(value=512_000, provenance=prov_models)
+        # The dot twin has only a litellm context (different value) and an AA score.
+        # Crucially it does NOT have tools.
+        litellm_context = ProvenancedField(value=200_000, provenance=prov_litellm)
+        aa_score = ProvenancedField(value=75.0, provenance=prov_aa)
+        snapshot = MetadataSnapshot(
+            schema_version=METADATA_SCHEMA_VERSION,
+            refreshed_at=FETCHED_AT,
+            sources={},
+            records=(
+                ModelMetadataRecord(
+                    id="acme/model-1-0", caps=CapabilityCaps(tools=tools_cap, context=context_cap)
+                ),
+                ModelMetadataRecord(
+                    id="acme/model-1.0",
+                    caps=CapabilityCaps(context=litellm_context),
+                    scores=SoftScores(aa_coding=aa_score),
+                ),
+            ),
+        )
+        found = lookup_omniroute_id(snapshot, "cc/model-1-0", required=["tools"])
+        # Must not drop the route due to missing tools — the models.json record has it.
+        assert found.admitted_for_caps, "tools cap from models.json must be preserved"
+        assert found.record is not None
+        assert found.record.id == "acme/model-1-0"
+        assert found.record.caps.tools is not None
+        assert found.record.caps.tools.provenance.source == SOURCE_MODELS_DEV_MODELS
+        # The score from the dot twin must be merged in.
+        assert found.record.scores.aa_coding is not None
+        assert found.record.scores.aa_coding.value == 75.0
+        # The models.json context must be preserved (not overwritten by litellm).
+        assert found.record.caps.context is not None
+        assert found.record.caps.context.value == 512_000
 
     def test_normalized_leaf_join_provenance_is_leaf(self) -> None:
         """join is 'leaf' when resolved via normalised-leaf index, 'explicit' via map."""

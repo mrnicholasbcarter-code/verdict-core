@@ -441,7 +441,10 @@ class MetadataLookup:
 
     ``join`` records how the route was matched to a metadata record:
     ``"explicit"`` for identity-map or omniroute_id equality;
-    ``"leaf"`` for the normalised-leaf index; ``None`` when no record was found.
+    ``"leaf"`` for the normalised-leaf index; ``None`` only when no join step
+    matched (the route is unmapped).  A drop does not reset ``join``:
+    ``map_target_missing`` and required-field drops still carry the join
+    provenance from whichever step resolved the route id.
     """
 
     omniroute_id: str
