@@ -2519,37 +2519,105 @@ class DagRuntime:
         finally:
             await self.git.remove_worktree(path)
 
-    async def _repair_formatting(
-        self, run: NodeRun, worktree: Path, changed: list[str]
-    ) -> list[str]:
-        """Run ``ruff format`` on the node's changed files, then rerun the gates."""
+    async def _apply_lint_autofix(self, run: NodeRun, worktree: Path, changed: list[str]) -> None:
+        """Run ``ruff check --fix`` then ``ruff format`` on this node's changed files.
+
+        Runs only when ruff is a declared gate; imposing a tool not chosen by the
+        repo would widen scope without consent.  Emits a ``lint_autofix`` event
+        recording which files changed, so autofixed work is visible in the receipt
+        and never silent.
+
+        If ruff is not declared, emits the event with ``skipped=True``.  If ruff
+        is missing, records ``ruff_missing=True`` and returns without touching any
+        file.  The repo gates always run afterward; this step does not replace them.
+
+        Only owned files that exist in the worktree are touched; unowned files are
+        never modified.  Exit codes from ``--fix`` and ``format`` are recorded in
+        the event but never treated as failures: the subsequent gate run decides.
+        """
+        node_id = run.node.node_id
+        try:
+            gates = discover_repo_gates(worktree)
+        except ValueError:
+            # config error — _run_repo_gates will surface it; skip autofix silently.
+            return
+        if not any(g.name in ("ruff-check", "ruff-format") for g in gates):
+            self.events.emit(
+                "lint_autofix",
+                node_id,
+                files=[],
+                changed_files=[],
+                skipped=True,
+                ruff_missing=False,
+                reason="no_ruff_gate",
+            )
+            return
+
         root = worktree.resolve()
         targets = [
             p
             for p in changed
-            if not (worktree / p).is_symlink()
+            if run.node.owns(p)
+            and not (worktree / p).is_symlink()
             and (worktree / p).is_file()
             and (worktree / p).resolve().is_relative_to(root)
         ]
         if not targets:
-            return ["repo_gate_failed: ruff-format exit 1: no changed files to format"]
+            self.events.emit(
+                "lint_autofix",
+                node_id,
+                files=[],
+                changed_files=[],
+                skipped=False,
+                ruff_missing=False,
+            )
+            return
+
+        before = {p: hashlib.sha256((worktree / p).read_bytes()).hexdigest() for p in targets}
+
         try:
-            argv = _resolve_gate_argv(("ruff", "format", *targets), worktree)
+            check_argv = _resolve_gate_argv(("ruff", "check", "--fix", *targets), worktree)
+            fmt_argv = _resolve_gate_argv(("ruff", "format", *targets), worktree)
         except FileNotFoundError:
-            return ["repo_gate_failed: ruff-format exit 127: ruff not found"]
-        code, out = await self.runner(argv, worktree, self.policy.verify_timeout_seconds)
-        self.events.emit(
-            "controller",
-            run.node.node_id,
-            state="FORMATTER_APPLIED",
-            command=shlex.join(["ruff", "format", *targets]),
-            files=targets,
-            exit_code=code,
-            tail=out[-300:],
+            self.events.emit(
+                "lint_autofix",
+                node_id,
+                files=targets,
+                changed_files=[],
+                skipped=False,
+                ruff_missing=True,
+            )
+            return
+
+        check_code, check_out = await self.runner(
+            check_argv, worktree, self.policy.verify_timeout_seconds
         )
-        failed: list[str] = []
-        await self._run_repo_gates(run, worktree, worker_fixable_only=True, failed=failed)
-        return failed
+        fmt_code, _fmt_out = await self.runner(
+            fmt_argv, worktree, self.policy.verify_timeout_seconds
+        )
+
+        after = {
+            p: hashlib.sha256((worktree / p).read_bytes()).hexdigest()
+            for p in targets
+            if (worktree / p).is_file()
+        }
+        fixed_files = [p for p in targets if before.get(p) != after.get(p)]
+
+        self.events.emit(
+            "lint_autofix",
+            node_id,
+            files=targets,
+            changed_files=fixed_files,
+            skipped=False,
+            ruff_missing=False,
+            check_command=shlex.join(["ruff", "check", "--fix", *targets]),
+            format_command=shlex.join(["ruff", "format", *targets]),
+            ruff_check_exit=check_code,
+            ruff_format_exit=fmt_code,
+            check_tail=check_out[-300:],
+            before_digests={p: before[p][:16] for p in targets},
+            after_digests={p: after.get(p, before[p])[:16] for p in targets},
+        )
 
     async def _gate_fails_on_base(self, gate_reason: str, base: str) -> bool:
         """Whether the failing gate named in ``gate_reason`` already fails on ``base``."""
@@ -2614,6 +2682,11 @@ class DagRuntime:
             return "ownership_violation: node has no owned_files but changed: " + ", ".join(
                 changed[:8]
             )
+        # Apply safe lint fixes to this node's changed files before running
+        # verification and repo gates, so both see the corrected code.
+        # Runs only when ruff is a declared gate and the node changed files.
+        if node.kind is NodeKind.IMPLEMENT and changed:
+            await self._apply_lint_autofix(run, worktree, changed)
         if node.verification_command:
             resolved, resolved_argv0 = _resolve_verify_argv(node.verification_command)
             code, out = await self.runner(resolved, worktree, self.policy.verify_timeout_seconds)
@@ -2642,11 +2715,6 @@ class DagRuntime:
                 # this node newly broke, so every failing gate is checked.
                 failed: list[str] = []
                 await self._run_repo_gates(run, worktree, worker_fixable_only=True, failed=failed)
-                if failed and all(f.startswith("repo_gate_failed: ruff-format ") for f in failed):
-                    # Formatting is mechanical: apply the repo's formatter to the files
-                    # this node changed, record it, and check the gates again. Lint and
-                    # type failures are never auto-fixed; they go back to the worker.
-                    failed = await self._repair_formatting(run, worktree, changed)
                 for gate_reason in failed:
                     if not await self._gate_fails_on_base(gate_reason, base):
                         return f"verification_failed: {gate_reason[:600]}"
