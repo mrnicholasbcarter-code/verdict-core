@@ -1480,3 +1480,159 @@ class TestAdapterBugLocation:
         err = result.errors[0]
         assert err.error_kind == "source_error"
         assert err.location is None, "source_error must not have a location"
+
+
+# ---------------------------------------------------------------------------
+# Round-5 findings
+# ---------------------------------------------------------------------------
+
+# Finding 1 (security) -------------------------------------------------------
+
+
+class TestOmniRouteErrorRedaction:
+    """Finding 1: _safe_msg in refresh script must redact credentials, not just truncate."""
+
+    def test_key_in_omniroute_error_is_redacted_in_stderr(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An API key that appears in an OmniRoute exception must not reach stderr."""
+        from unittest.mock import patch
+
+        from scripts.refresh_discovery_sources import run as refresh_run
+
+        fake_key = "sk-or-v1-" + "A" * 40
+
+        def _raise_with_key(*a: object, **kw: object) -> object:
+            raise OSError(f"auth failed: api_key={fake_key}")
+
+        with patch(
+            "verdict.omniroute_evidence.fetch_omniroute_evidence", side_effect=_raise_with_key
+        ):
+            refresh_run(sources=["omniroute"], cache_dir=tmp_path)
+
+        captured = capsys.readouterr()
+        assert fake_key not in captured.err, f"key leaked to stderr: {captured.err[:300]}"
+
+    def test_key_in_omniroute_error_is_redacted_in_index(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An API key in an OmniRoute exception must not appear in _index.json."""
+        from unittest.mock import patch
+
+        from scripts.refresh_discovery_sources import run as refresh_run
+
+        fake_key = "sk-or-v1-" + "B" * 40
+
+        def _raise_with_key(*a: object, **kw: object) -> object:
+            raise OSError(f"auth failed: api_key={fake_key}")
+
+        with patch(
+            "verdict.omniroute_evidence.fetch_omniroute_evidence", side_effect=_raise_with_key
+        ):
+            refresh_run(sources=["omniroute"], cache_dir=tmp_path)
+
+        index_text = (tmp_path / "_index.json").read_text()
+        assert fake_key not in index_text, f"key leaked to _index.json: {index_text[:300]}"
+        # The error entry must still be present (just redacted)
+        assert "omniroute" in index_text
+        assert '"error"' in index_text
+
+
+# Finding 2 (correctness) ----------------------------------------------------
+
+
+class TestOmniRouteCacheOnFailure:
+    """Finding 2: OmniRoute failure must leave no cache file, not an empty one."""
+
+    def test_omniroute_failure_leaves_no_cache_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When OmniRoute fetch fails, omniroute.json must not exist."""
+        from unittest.mock import patch
+
+        from scripts.refresh_discovery_sources import run as refresh_run
+
+        def _raise(*a: object, **kw: object) -> object:
+            raise OSError("gateway unreachable")
+
+        with patch("verdict.omniroute_evidence.fetch_omniroute_evidence", side_effect=_raise):
+            refresh_run(sources=["omniroute"], cache_dir=tmp_path)
+
+        assert not (tmp_path / "omniroute.json").exists(), (
+            "omniroute.json must not exist after a fetch failure"
+        )
+
+    def test_omniroute_success_then_failure_removes_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After a successful run (file exists), a subsequent failure removes the cache."""
+        from dataclasses import dataclass
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+
+        from scripts.refresh_discovery_sources import run as refresh_run
+        from verdict.discovery.sources._types import DiscoveryRow
+
+        # Build a minimal fake evidence object that rows_from_evidence can use.
+        @dataclass
+        class _FakeEvidence:
+            inventory_rows: list[object]
+            connections: list[object]
+
+        fake_rows = [
+            DiscoveryRow(
+                id="fake/model",
+                provider="fake",
+                source="omniroute",
+                source_url="http://localhost:20128/v1/models",
+                fetched_at=datetime.now(timezone.utc).isoformat(),
+            )
+        ]
+
+        def _success_evidence(*a: object, **kw: object) -> object:
+            return _FakeEvidence(inventory_rows=[], connections=[])
+
+        def _fail_evidence(*a: object, **kw: object) -> object:
+            raise OSError("gateway unreachable")
+
+        # First run: success, file is written.
+        # Patch rows_from_evidence at the script's own import namespace.
+        with (
+            patch(
+                "verdict.omniroute_evidence.fetch_omniroute_evidence", side_effect=_success_evidence
+            ),
+            patch("scripts.refresh_discovery_sources.rows_from_evidence", return_value=fake_rows),
+        ):
+            refresh_run(sources=["omniroute"], cache_dir=tmp_path)
+
+        assert (tmp_path / "omniroute.json").exists(), "setup: file should exist after success"
+
+        # Second run: failure, file must be removed.
+        with patch(
+            "verdict.omniroute_evidence.fetch_omniroute_evidence", side_effect=_fail_evidence
+        ):
+            refresh_run(sources=["omniroute"], cache_dir=tmp_path)
+
+        assert not (tmp_path / "omniroute.json").exists(), (
+            "omniroute.json must be removed after a subsequent failure"
+        )
+
+    def test_omniroute_failure_index_records_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OmniRoute failure must record an error entry in _index.json."""
+        from unittest.mock import patch
+
+        from scripts.refresh_discovery_sources import run as refresh_run
+
+        def _raise(*a: object, **kw: object) -> object:
+            raise OSError("gateway unreachable")
+
+        with patch("verdict.omniroute_evidence.fetch_omniroute_evidence", side_effect=_raise):
+            result = refresh_run(sources=["omniroute"], cache_dir=tmp_path)
+
+        sources = result["sources"]
+        or_entry = next((s for s in sources if s["source"] == "omniroute"), None)
+        assert or_entry is not None
+        assert or_entry["error"] is not None, "error field must be non-null on failure"
+        assert or_entry["row_count"] == 0

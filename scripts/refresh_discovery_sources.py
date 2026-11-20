@@ -76,13 +76,16 @@ def _iso_now() -> str:
 
 
 def _safe_msg(exc: BaseException) -> str:
-    """Return a truncated, sanitized log message from an exception.
+    """Return a sanitized, truncated log message from an exception.
 
-    Logs only the exception type name and the first ``_MSG_LIMIT`` characters
-    of ``str(exc)``.  Never calls ``traceback.print_exc`` or equivalent: full
-    stack frames can expose auth headers or keys from locals.
+    Uses the shared :func:`~verdict.discovery._sanitize.sanitize_exc_msg`
+    redactor so credentials that appear in exception messages (e.g. API keys
+    from OMNIROUTE_API_KEY or LLMGATE_API_KEY) are stripped before the message
+    reaches logs or index files.  Never calls ``traceback.print_exc``.
     """
-    return f"{type(exc).__name__}: {str(exc)[:_MSG_LIMIT]}"
+    from verdict.discovery._sanitize import sanitize_exc_msg
+
+    return f"{type(exc).__name__}: {sanitize_exc_msg(exc, limit=_MSG_LIMIT)}"
 
 
 def _remove_stale_cache(cache_dir: Path, name: str) -> None:
@@ -233,6 +236,9 @@ def run(
                     fetched_at=_iso_now(),
                 )
             )
+            # Write cache only on success; failure must leave no cache file so
+            # readers cannot mistake a stale or empty file for a valid result.
+            _write_cache_atomic(home, "omniroute", or_rows)
         except Exception as exc:
             msg = _safe_msg(exc)
             print(f"  ERROR [omniroute]: {msg}", file=sys.stderr, flush=True)
@@ -247,7 +253,6 @@ def run(
                     fetched_at=_iso_now(),
                 )
             )
-        _write_cache_atomic(home, "omniroute", or_rows)
 
     # Network adapters: use collect_sources for the remaining sources.
     # collect_sources records per-source errors so we can tell failed sources

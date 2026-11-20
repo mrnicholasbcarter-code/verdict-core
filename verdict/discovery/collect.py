@@ -19,10 +19,10 @@ not be treated as a successful-but-empty result.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from verdict.discovery._sanitize import sanitize_exc_msg as _sanitize_exc_msg
 from verdict.discovery.sources._fetcher import Fetcher, default_fetcher
 from verdict.discovery.sources._types import DiscoveryRow
 from verdict.discovery.sources.community import CommunityConfig, fetch_dsh, fetch_fcm
@@ -34,32 +34,6 @@ from verdict.discovery.sources.openrouter import fetch_openrouter
 # Exceptions that indicate a transient source outage (network/data) rather than
 # a bug in the adapter code.
 _OUTAGE_EXC = (OSError, ValueError, UnicodeDecodeError)
-
-# Top-up patterns applied after verdict.security.redact_text to cover gaps:
-#
-# 1. URL query-string credential params (e.g. ``?key=…``, ``&api_key=…``).
-#    redact_text covers user:pass@ URLs but not query params with bare key names.
-_URL_QUERY_CRED_RE = re.compile(
-    r"([?&](?:api[_-]?key|token|key|secret|password|auth)[^=&]*=)[^\s&,;#]+", re.IGNORECASE
-)
-# 2. ``Authorization: Basic <token>``.  redact_text's CREDENTIAL_SHAPES covers
-#    Bearer but not Basic.
-_AUTH_BASIC_RE = re.compile(r"(?i)(authorization\s*:\s*basic\s+)[^\s,;]+")
-
-
-def _sanitize_exc_msg(exc: BaseException, *, limit: int = 200) -> str:
-    """Return a sanitized, truncated exception message.
-
-    Uses :func:`~verdict.security.redact_text` as the primary credential
-    redactor, then applies two targeted top-up patterns that it does not cover:
-    URL query-string credential parameters and ``Authorization: Basic`` headers.
-    """
-    from verdict.security import redact_text
-
-    sanitized = redact_text(str(exc))
-    sanitized = _URL_QUERY_CRED_RE.sub(r"\1[redacted]", sanitized)
-    sanitized = _AUTH_BASIC_RE.sub(r"\1[redacted]", sanitized)
-    return sanitized[:limit]
 
 
 @dataclass(frozen=True)
