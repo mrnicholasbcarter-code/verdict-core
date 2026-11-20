@@ -49,7 +49,9 @@ REF_DOCS = "host.ref-docs-timer"
 DOCS_REFRESH = "host.docs-refresh-timer"
 PR_WATCHER = "host.pr-watcher-timer"
 CONTEXT_LIFT = "host.context-lift-timer"
-#: Apply order: Prime enable needs a healthy serve, so the serve unit comes first.
+ADMIT_SNAPSHOT = "host.admit-snapshot-timer"
+#: Apply order: ADMIT_SNAPSHOT before SERVE so the last-good file is fresh when
+#: the serve unit first starts.
 ORDER = (
     OCR,
     METADATA,
@@ -59,6 +61,7 @@ ORDER = (
     DOCS_REFRESH,
     PR_WATCHER,
     CONTEXT_LIFT,
+    ADMIT_SNAPSHOT,
     SERVE,
     PRIME,
 )
@@ -360,6 +363,11 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
 
         rendered = context_lift_service.manage_service(unit_dir=env.unit_dir, dry_run=True)
         return _timer_problems(env, rendered, context_lift_service.TIMER)
+    if provider_id == ADMIT_SNAPSHOT:
+        from verdict import admit_snapshot_service
+
+        rendered = admit_snapshot_service.manage_service(unit_dir=env.unit_dir, dry_run=True)
+        return _timer_problems(env, rendered, admit_snapshot_service.TIMER)
     if provider_id == SERVE:
         from verdict import serve_service
 
@@ -472,6 +480,21 @@ _ACTIONS: dict[str, dict[str, str]] = {
         "postcondition": "verdict-context-lift.timer is active.",
         "undo": "verdict bench context-lift --install-service --uninstall",
         "install_command": "verdict setup --apply --allow host.context-lift-timer",
+    },
+    ADMIT_SNAPSHOT: {
+        "description": (
+            "Install the 5-minute admission snapshot keeper timer "
+            "(no model calls; keeps admit-last-good.json fresh for serve)."
+        ),
+        "security_impact": (
+            "Writes two systemd user units; every 5 minutes the job calls "
+            "verdict admission refresh which reads OmniRoute catalog, provider, "
+            "health and quota endpoints only — no model or inference calls. "
+            "Writes ~/.verdict/admit-last-good.json (0600)."
+        ),
+        "postcondition": "verdict-admit-snapshot.timer is active.",
+        "undo": "verdict admission refresh --uninstall",
+        "install_command": "verdict setup --apply --allow host.admit-snapshot-timer",
     },
     SERVE: {
         "description": (
@@ -703,6 +726,11 @@ def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[st
 
             steps = _install_timers(env, context_lift_service.manage_service)
             return {"status": "applied", "note": f"{context_lift_service.TIMER} enabled", **steps}
+        if provider_id == ADMIT_SNAPSHOT:
+            from verdict import admit_snapshot_service
+
+            steps = _install_timers(env, admit_snapshot_service.manage_service)
+            return {"status": "applied", "note": f"{admit_snapshot_service.TIMER} enabled", **steps}
         if provider_id == SERVE:
             return _install_serve(env)
         if provider_id == PRIME:

@@ -546,6 +546,7 @@ class OpenCodeReviewer:
             exclude_routes=exclude_routes,
             exclude_families=exclude_families | aliased_pools_for(exclude_routes),
             role_ordering="strongest_first",
+            arena_role="reviewer",
         )
         tried: set[str] = set()
         last: ReviewResult | None = None

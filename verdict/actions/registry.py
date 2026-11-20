@@ -225,6 +225,17 @@ LAUNCH: dict[str, LaunchSpec] = {
         entry="verdict.context_lift:run_context_lift",
         section="Development",
     ),
+    "bench.fusion-plan": LaunchSpec(
+        reason=(
+            "_cmd_bench_fusion_plan (run_fusion_plan_bench): FU1 fusion planning "
+            "benchmark -- panel of FREE admitted planners from different families "
+            "each produce a plan, a synthesiser merges them, results are compared "
+            "against a single-planner baseline; writes evidence to "
+            "VERDICT_HOME/fusion-bench/; long-running benchmark tool"
+        ),
+        entry="verdict.fusion_plan_bench:run_fusion_plan_bench",
+        section="Development",
+    ),
     "benchmark": LaunchSpec(
         reason=(
             "cmd_benchmark (run_reproducible_benchmarks/run_savings_bench): "
@@ -687,6 +698,40 @@ def _action_discovery_refresh(**kwargs: Any) -> ActionResult:
         dry_run=dry_run, force=force, context_tokens=context_tokens, wall_budget_s=wall_budget_s
     )
     return ActionResult(data=result)
+
+
+def _action_admission_refresh(**kwargs: Any) -> ActionResult:
+    """Fetch the OmniRoute admission snapshot; write last-good; no model calls."""
+    from verdict.free_tier_admit import (
+        LiveAdmitError,
+        load_omniroute_admit_snapshot,
+        omniroute_endpoint_from_env,
+    )
+
+    _known: set[str] = set()
+    unknown = set(kwargs) - _known
+    if unknown:
+        raise ValueError(f"unknown admission.refresh parameter(s): {sorted(unknown)}")
+    endpoint = omniroute_endpoint_from_env()
+    if endpoint is None or not str(endpoint[0] or "").strip():
+        return ActionResult(data={"ok": False, "reason": "omniroute_not_configured"}, ok=False)
+    base_url, api_key = endpoint
+    try:
+        snapshot = load_omniroute_admit_snapshot(
+            base_url, api_key=api_key, aggregate_deadline_seconds=120.0
+        )
+    except LiveAdmitError as exc:
+        return ActionResult(data={"ok": False, "reason": exc.code}, ok=False)
+    stale = list(snapshot.stale_served)
+    ok = not stale and bool(snapshot.catalog) and bool(snapshot.connections)
+    return ActionResult(
+        data={
+            "ok": ok,
+            "admitted_free": len(snapshot.free_tier),
+            "active_providers": sorted(snapshot.active_providers),
+            "stale_served": stale,
+        }
+    )
 
 
 def _action_eligibility(**kwargs: Any) -> ActionResult:
@@ -1639,6 +1684,7 @@ def _register_builtins() -> None:
         _action_memory_ref_docs_sync,
         _action_memory_search,
         _action_memory_setup,
+        _action_metadata_arena_coverage,
         _action_metadata_install_service,
         _action_metadata_lookup,
         _action_metadata_refresh,
@@ -1815,6 +1861,16 @@ def _register_builtins() -> None:
                 "Health",
             ),
             _action_discovery_refresh,
+        ),
+        (
+            ActionSpec(
+                "admission.refresh",
+                "health",
+                "mutation",
+                "Fetch OmniRoute admission snapshot and write last-good file (no model calls)",
+                "Health",
+            ),
+            _action_admission_refresh,
         ),
         (
             ActionSpec(
@@ -2366,6 +2422,16 @@ def _register_builtins() -> None:
                 "Models",
             ),
             _action_metadata_install_service,
+        ),
+        (
+            ActionSpec(
+                "metadata.arena-coverage",
+                "models",
+                "read",
+                "Report Arena leaderboard join coverage and reference-set sizes",
+                "Models",
+            ),
+            _action_metadata_arena_coverage,
         ),
         # receipt family (per subcommand)
         (

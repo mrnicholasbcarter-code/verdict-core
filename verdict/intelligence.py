@@ -1523,11 +1523,23 @@ class IntelligenceService:
         )
         # Routing trace stages, read from the objects this request used: the
         # confirmed set when live confirmation ran, else the offered admission.
+        _admitted_in_trace = set(confirmed.admitted if confirm_live else offered_admitted)
+        _exclusion_code: dict[str, str] = {
+            drop.model_id: drop.reason for drop in confirmed.exclusions
+        }
         stages = {
             "admitted_candidate_ids": list(
                 confirmed.admitted if confirm_live else offered_admitted
             ),
             "shortlist_candidate_ids": [item.route_id for item in pool.shortlist],
+            # Every route that was offered but not admitted, with the reason code from
+            # the admission/confirmation ladder.  Routes that were filtered before
+            # gate_admit_prove_confirm ran get the fallback code "not_admitted".
+            "admit_drops": [
+                {"candidate_id": route_id, "code": _exclusion_code.get(route_id, "not_admitted")}
+                for route_id in raw_offered
+                if route_id not in _admitted_in_trace
+            ],
         }
         return (
             replace(

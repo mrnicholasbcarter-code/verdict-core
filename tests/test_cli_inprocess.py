@@ -70,6 +70,11 @@ def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     monkeypatch.setattr(
         context_lift_service, "timer_state", lambda unit: {"state": "active", "result": "success"}
     )
+    import verdict.admit_snapshot_service as admit_snapshot_service
+
+    monkeypatch.setattr(
+        admit_snapshot_service, "timer_state", lambda unit: {"state": "active", "result": "success"}
+    )
     from datetime import datetime, timezone
 
     monkeypatch.setattr(

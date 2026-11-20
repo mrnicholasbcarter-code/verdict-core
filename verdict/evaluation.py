@@ -146,6 +146,7 @@ def normalize_failure_class(value: str | EvaluationFailureClass) -> EvaluationFa
         "tool_unavailable": EvaluationFailureClass.CAPABILITY,
         "capability_mismatch": EvaluationFailureClass.CAPABILITY,
         "verification_failed": EvaluationFailureClass.VERIFICATION,
+        "environment_error": EvaluationFailureClass.CONFIGURATION,
         "quality_failure": EvaluationFailureClass.QUALITY,
         "quality": EvaluationFailureClass.QUALITY,
         "unknown": EvaluationFailureClass.UNKNOWN,

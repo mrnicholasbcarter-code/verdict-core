@@ -1192,6 +1192,8 @@ def installed_service_rows(
     rows.append(_docs_refresh_timer_row(injected_timer_state))
     rows.append(_pr_watcher_timer_row(injected_timer_state))
     rows.append(_context_lift_timer_row(injected_timer_state))
+    rows.append(_admit_snapshot_timer_row(injected_timer_state))
+    rows.append(_admit_snapshot_freshness_row(now=now))
     rows.extend(_ref_docs_rows(ref_docs_status))
     rows.append(report_row(now=now))
     rows.append(omniroute_webhook_row(now=now))
@@ -1215,6 +1217,7 @@ def installed_service_rows(
             }
         )
         rows.append(health_cache_row(now=now))
+        rows.append(arena_snapshot_row(now=now))
         return rows
     checked_at = now or datetime.now(timezone.utc)
     metadata_issues: list[str] = []
@@ -1304,6 +1307,7 @@ def installed_service_rows(
     )
 
     rows.append(health_cache_row(now=now))
+    rows.append(arena_snapshot_row(now=now))
     return rows
 
 
@@ -1485,6 +1489,110 @@ def _context_lift_timer_row(
             f"logs: journalctl --user -u {context_lift_service.SERVICE}"
         )
     return {"label": label, "status": "failed", "detail": detail}
+
+
+def _admit_snapshot_timer_row(
+    timer_state: Callable[[str], dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """The 5-minute admission snapshot keeper timer is active and its last run succeeded."""
+    from verdict import admit_snapshot_service
+    from verdict.setup_host import ADMIT_SNAPSHOT, setup_repair
+
+    unit = admit_snapshot_service.TIMER
+    state = (timer_state or admit_snapshot_service.timer_state)(unit)
+    name, result = str(state.get("state", "unknown")), str(state.get("result", "unknown"))
+    detail = f"{unit} is {name}; last result {result}"
+    label = "Admit-snapshot keeper timer"
+
+    if name == "active" and result in {"success", "unknown"}:
+        return {"label": label, "status": "ok", "detail": detail}
+    if name == "missing":
+        detail += f"; repair: {setup_repair(ADMIT_SNAPSHOT)}"
+        return {"label": label, "status": "failed", "detail": detail}
+    if name == "inactive":
+        detail += f"; repair: systemctl --user enable --now {unit}"
+    else:
+        detail += (
+            "; repair: verdict admission refresh; "
+            f"logs: journalctl --user -u {admit_snapshot_service.SERVICE}"
+        )
+    return {"label": label, "status": "failed", "detail": detail}
+
+
+def _admit_snapshot_freshness_row(
+    *, now: datetime | None = None, path: Path | None = None
+) -> dict[str, str]:
+    """Age of ``admit-last-good.json``; warns when missing or older than 15 minutes.
+
+    Uses ``"warning"`` (not ``"failed"``) so it does not block doctor before the
+    timer is first installed.
+    """
+    import json
+
+    from verdict.free_tier_admit import (
+        ADMIT_LAST_GOOD_MAX_AGE_SECONDS,
+        default_admit_last_good_path,
+    )
+    from verdict.setup_host import ADMIT_SNAPSHOT, setup_repair
+
+    label = "Admit-last-good freshness"
+    repair = f"repair: {setup_repair(ADMIT_SNAPSHOT)}"
+    store = path or default_admit_last_good_path()
+    now_dt = now or datetime.now(timezone.utc)
+
+    try:
+        data = json.loads(store.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"label": label, "status": "warning", "detail": f"{store.name} is missing; {repair}"}
+    except (OSError, ValueError):
+        return {
+            "label": label,
+            "status": "warning",
+            "detail": f"{store.name} is unreadable; {repair}",
+        }
+
+    # Find the newest fetched_at stamp across all origins and surfaces.
+    newest: datetime | None = None
+    if isinstance(data, dict):
+        for origin_data in data.values():
+            if not isinstance(origin_data, dict):
+                continue
+            for surface in origin_data.values():
+                if not isinstance(surface, dict):
+                    continue
+                raw = surface.get("fetched_at")
+                if not isinstance(raw, str):
+                    continue
+                try:
+                    ts = datetime.fromisoformat(raw)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if newest is None or ts > newest:
+                        newest = ts
+                except (TypeError, ValueError):
+                    continue
+
+    if newest is None:
+        return {
+            "label": label,
+            "status": "warning",
+            "detail": f"{store.name} has no readable timestamps; {repair}",
+        }
+
+    age_s = (now_dt - newest).total_seconds()
+    age_min = int(age_s // 60)
+    threshold = ADMIT_LAST_GOOD_MAX_AGE_SECONDS
+    if age_s < threshold:
+        return {
+            "label": label,
+            "status": "ok",
+            "detail": f"{store.name} age {age_min}m (threshold {int(threshold // 60)}m)",
+        }
+    return {
+        "label": label,
+        "status": "warning",
+        "detail": (f"{store.name} is {age_min}m old (threshold {int(threshold // 60)}m); {repair}"),
+    }
 
 
 def _parse_repos_from_argv(exec_start: str) -> list[str]:
@@ -1700,6 +1808,100 @@ def omniroute_webhook_row(*, now: datetime | None = None) -> dict[str, str]:
         "status": "ok",
         "detail": f"registered at {status.get('url')}; last event age {age}s; "
         f"events {status.get('events_total', 0)}",
+    }
+
+
+def arena_snapshot_row(*, now: datetime | None = None) -> dict[str, str]:
+    """Doctor row for the Arena advisory snapshot freshness.
+
+    Status:
+    - ``missing``: snapshot file does not exist yet
+    - ``ok``: all fetched_at timestamps are < 48 h old
+    - ``warning``: at least one fetched_at is ≥ 48 h old (refresh overdue)
+    - ``stale``: at least one leaderboard_publish_date is > 45 days old
+      (data too old to use for ranking; metadata refresh can recover it)
+    """
+    from verdict.arena.snapshot import (
+        OVERDUE_HOURS,
+        STALENESS_DAYS,
+        default_snapshot_path,
+        load_snapshot,
+    )
+
+    clock = now if now is not None else datetime.now(timezone.utc)
+    snap = load_snapshot()
+    if snap is None:
+        path = default_snapshot_path()
+        return {
+            "label": "Arena ratings",
+            "status": "missing",
+            "detail": (
+                f"{path} does not exist; run: verdict metadata refresh "
+                "to populate the Arena snapshot"
+            ),
+        }
+
+    # Malformed-date pre-pass: treat unparseable fields as an explicit error state
+    malformed_fields: list[str] = []
+    for cfg, pub_date in snap.leaderboard_publish_date.items():
+        try:
+            datetime.strptime(pub_date, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            malformed_fields.append(f"leaderboard_publish_date[{cfg!r}]={pub_date!r}")
+    for cfg, fetched in snap.fetched_at.items():
+        try:
+            datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+        except (ValueError, TypeError, AttributeError):
+            malformed_fields.append(f"fetched_at[{cfg!r}]={fetched!r}")
+    if malformed_fields:
+        return {
+            "label": "Arena ratings",
+            "status": "malformed",
+            "detail": "unparseable field(s): " + "; ".join(malformed_fields),
+        }
+
+    # Staleness check: leaderboard_publish_date > STALENESS_DAYS old
+    stale_configs: list[str] = []
+    for cfg, pub_date in snap.leaderboard_publish_date.items():
+        published = datetime.strptime(pub_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        if clock - published > timedelta(days=STALENESS_DAYS):
+            stale_configs.append(cfg)
+    if stale_configs:
+        return {
+            "label": "Arena ratings",
+            "status": "stale",
+            "detail": (
+                f"leaderboard_publish_date > {STALENESS_DAYS}d old for: "
+                + ", ".join(sorted(stale_configs))
+                + "; run: verdict metadata refresh"
+            ),
+        }
+
+    # Warning: fetched_at > OVERDUE_HOURS old for any config
+    overdue_configs: list[str] = []
+    for cfg, fetched in snap.fetched_at.items():
+        ts = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+        if (clock - ts) >= timedelta(hours=OVERDUE_HOURS):
+            overdue_configs.append(cfg)
+    if overdue_configs:
+        return {
+            "label": "Arena ratings",
+            "status": "warning",
+            "detail": (
+                f"fetched_at >= {OVERDUE_HOURS}h ago for: "
+                + ", ".join(sorted(overdue_configs))
+                + "; run: verdict metadata refresh"
+            ),
+        }
+
+    record_count = len(snap.records)
+    oldest_fetch = ""
+    if snap.fetched_at:
+        oldest_fetch = "; oldest fetch: " + min(snap.fetched_at.values())
+    return {
+        "label": "Arena ratings",
+        "status": "ok",
+        "detail": f"{record_count} model(s) in snapshot{oldest_fetch}",
     }
 
 

@@ -118,8 +118,9 @@ def test_health_cache_row_fails_when_fresh_plus_stale_is_zero(_isolated_health_c
 
 
 def test_installed_service_rows_fails_when_identify_timer_missing(
-    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch
+    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
     from verdict.identify_service import TIMER as IDENTIFY_TIMER
 
     _record_one_route(_isolated_health_cache, checked_at=NOW)
@@ -172,8 +173,9 @@ def test_installed_service_rows_reports_metadata_timer_never_completed(
 
 
 def test_installed_service_rows_fails_when_prime_sync_timer_is_failed(
-    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch
+    _isolated_health_cache: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / ".verdict"))
     _record_one_route(_isolated_health_cache, checked_at=NOW)
 
     def fake_timer_state(unit: str) -> dict[str, object]:
@@ -235,7 +237,25 @@ def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
 
     monkeypatch.setattr(pars, "timer_state", fake_timer)
     monkeypatch.setattr(metadata_service, "timer_state", fake_timer)
+    import verdict.admit_snapshot_service as admit_snapshot_service
+
+    monkeypatch.setattr(admit_snapshot_service, "timer_state", fake_timer)
     import json
+
+    from verdict.free_tier_admit import default_admit_last_good_path
+
+    last_good = default_admit_last_good_path()
+    last_good.parent.mkdir(parents=True, exist_ok=True)
+    last_good.write_text(
+        json.dumps(
+            {
+                "http://127.0.0.1:20128": {
+                    "free_tier": {"fetched_at": NOW.isoformat(), "payload": {}}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     from verdict.identify_service import latest_report_path
 
@@ -276,6 +296,30 @@ def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
         "ok": True,
         "problems": [],
     }
+    # Create a fresh arena snapshot so arena_snapshot_row() returns "ok".
+    _now_str = NOW.strftime("%Y-%m-%dT%H:%M:%SZ")
+    _today_str = NOW.strftime("%Y-%m-%d")
+    _arena_snap_path = tmp_path / ".verdict" / "arena-snapshot.json"
+    _arena_snap_path.parent.mkdir(parents=True, exist_ok=True)
+    _arena_snap_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "fetched_at": {
+                    "arena_text": _now_str,
+                    "arena_webdev": _now_str,
+                    "arena_agent": _now_str,
+                },
+                "leaderboard_publish_date": {
+                    "arena_text": _today_str,
+                    "arena_webdev": _today_str,
+                    "arena_agent": _today_str,
+                },
+                "reference_sets": {},
+                "records": {},
+            }
+        )
+    )
     rows = dd.installed_service_rows(
         now=NOW, timer_state=fake_timer, ref_docs_status=lambda: [synced]
     )

@@ -7,12 +7,15 @@ call ``run_action`` for the byte-identical ``--json`` surface where required.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from verdict.actions.base import ActionResult
 from verdict.paths import verdict_home
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Models
@@ -1158,6 +1161,21 @@ def _action_metadata_refresh(**kwargs: Any) -> ActionResult:
     resolved_store = str(
         Path(store_path).expanduser() if store_path else verdict_home() / "model-metadata.json"
     )
+    # Arena advisory snapshot: only fetch live when not in offline fixture mode.
+    arena_status: dict[str, Any] = {}
+    if not offline:
+        try:
+            from verdict.arena.fetch import refresh_arena_snapshot
+            from verdict.metadata.store import load_store
+
+            live_store = load_store(Path(resolved_store))
+            store_ids = frozenset(r.id for r in live_store.records)
+            arena_result = refresh_arena_snapshot(store_ids, now=now)
+            arena_status = arena_result
+        except Exception as exc:
+            logger.warning("arena: refresh failed: %s: %s", type(exc).__name__, exc)
+            arena_status = {"ok": False, "error_kind": type(exc).__name__, "error": str(exc)}
+
     return ActionResult(
         data={
             "schema_version": snapshot.schema_version,
@@ -1168,6 +1186,7 @@ def _action_metadata_refresh(**kwargs: Any) -> ActionResult:
             "sources": {name: status.to_dict() for name, status in snapshot.sources.items()},
             "mapping": snapshot.mapping,
             "store": resolved_store,
+            "arena": arena_status,
         }
     )
 
@@ -1182,6 +1201,93 @@ def _action_metadata_install_service(**kwargs: Any) -> ActionResult:
         uninstall=bool(kwargs.get("uninstall", False)),
     )
     return ActionResult(data=result)
+
+
+def _action_metadata_arena_coverage(**kwargs: Any) -> ActionResult:
+    """Report Arena leaderboard join coverage and reference-set sizes."""
+    from datetime import datetime, timedelta, timezone
+
+    from verdict.arena.rank import reference_set_sizes
+    from verdict.arena.snapshot import STALENESS_DAYS, load_snapshot
+    from verdict.metadata.records import ModelMetadataError
+    from verdict.metadata.store import load_store
+    from verdict.paths import verdict_home
+
+    now = datetime.now(timezone.utc)
+    store_path = kwargs.get("store_path")
+    snapshot_path = kwargs.get("snapshot_path")
+    resolved_store = (
+        Path(store_path).expanduser() if store_path else verdict_home() / "model-metadata.json"
+    )
+    snap_path = Path(snapshot_path).expanduser() if snapshot_path else None
+
+    arena_snap = load_snapshot(snap_path)
+    if arena_snap is None:
+        return ActionResult(
+            data={
+                "status": "no_snapshot",
+                "detail": "snapshot file does not exist; run: verdict metadata refresh",
+            }
+        )
+
+    try:
+        metadata = load_store(resolved_store)
+        store_ids = frozenset(r.id for r in metadata.records)
+    except (ModelMetadataError, OSError, ValueError):
+        store_ids = frozenset()
+
+    # Derive coverage from snapshot's stored summary (populated by build_snapshot_from_rows).
+    # For backward compat with snapshots built before this field, fall back to record counts.
+    coverage_summary = arena_snap.coverage_summary
+    if coverage_summary:
+        total = sum(v.get("total", 0) for v in coverage_summary.values())
+        matched = sum(v.get("matched", 0) for v in coverage_summary.values())
+        dropped = sum(v.get("dropped", 0) for v in coverage_summary.values())
+        by_config = {
+            cfg: {
+                "matched": v.get("matched", 0),
+                "dropped": v.get("dropped", 0),
+                "total": v.get("total", 0),
+            }
+            for cfg, v in coverage_summary.items()
+        }
+    else:
+        # Backward compat: derive matched count from records
+        matched = sum(
+            len(slots) for configs in arena_snap.records.values() for slots in configs.values()
+        )
+        total = matched
+        dropped = 0
+        by_config = {}
+
+    # Reference set sizes per role
+    ref_sizes = reference_set_sizes(arena_snap, now)
+
+    # Snapshot meta with staleness
+    stale: dict[str, bool] = {}
+    for cfg_name, pub_date in arena_snap.leaderboard_publish_date.items():
+        try:
+            published = datetime.strptime(pub_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            stale[cfg_name] = now - published > timedelta(days=STALENESS_DAYS)
+        except (ValueError, TypeError):
+            stale[cfg_name] = False
+
+    snap_meta = {
+        "fetched_at": arena_snap.fetched_at,
+        "leaderboard_publish_date": arena_snap.leaderboard_publish_date,
+        "stale": stale,
+    }
+
+    report: dict[str, Any] = {
+        "total_overall_rows": total,
+        "matched": matched,
+        "unmatched": dropped,
+        "by_config": by_config,
+        "reference_set_sizes": ref_sizes,
+        "snapshot": snap_meta,
+        "store_ids_count": len(store_ids),
+    }
+    return ActionResult(data=report)
 
 
 # ---------------------------------------------------------------------------

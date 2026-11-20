@@ -8,6 +8,36 @@ from collections.abc import Sequence
 from pathlib import Path
 
 
+def classify_verify_env_error(argv: Sequence[str], code: int, out: str) -> str | None:
+    """Return an ``"environment_error: <reason>"`` string when the verification
+    failure is an environment problem rather than a route/implementation issue.
+
+    Returns ``None`` for normal failures that should be classified as
+    ``verification_failed`` (the route may have produced wrong output).
+
+    Rules:
+    - Exit code 126 (not executable) or 127 (not found) is always an env error.
+      Note: ``subprocess_runner`` returns 127 when the binary is missing even
+      before the process starts, so this also covers FileNotFoundError.
+    - ``python -m MODULE`` where the interpreter prints "No module named MODULE"
+      (exit 1) is an env error.  Only the exact ``-m`` target is matched to
+      avoid misclassifying a ModuleNotFoundError traceback from within the test
+      suite (which is a genuine wrong-result failure).
+    """
+    if code in (126, 127):
+        return f"environment_error: exit {code}: {out[:200]}"
+    # Detect missing module when -m was used: e.g. ``python -m pytest`` with
+    # no pytest installed exits 1 and prints "<python>: No module named pytest".
+    argv_list = list(argv)
+    if "-m" in argv_list:
+        m_idx = argv_list.index("-m")
+        if m_idx + 1 < len(argv_list):
+            module = argv_list[m_idx + 1]
+            if f"No module named {module}" in out:
+                return f"environment_error: No module named {module}"
+    return None
+
+
 def resolve_verify_argv(argv: Sequence[str]) -> tuple[list[str], str]:
     """Return the executed argv and an interpreter substitution, if one was needed.
 
