@@ -703,10 +703,7 @@ def _action_admission_refresh(**kwargs: Any) -> ActionResult:
         raise ValueError(f"unknown admission.refresh parameter(s): {sorted(unknown)}")
     endpoint = omniroute_endpoint_from_env()
     if endpoint is None or not str(endpoint[0] or "").strip():
-        return ActionResult(
-            data={"ok": False, "reason": "omniroute_not_configured"},
-            ok=False,
-        )
+        return ActionResult(data={"ok": False, "reason": "omniroute_not_configured"}, ok=False)
     base_url, api_key = endpoint
     try:
         snapshot = load_omniroute_admit_snapshot(
