@@ -548,6 +548,7 @@ EVENT_TYPES = frozenset(
         "openspec_admission",  # BOD-205: change contract admission
         "openspec_conformance",  # BOD-205: strict OpenSpec validation evidence
         "operator_policy_denied",  # BOD-340: approved policy refused the run
+        "salvage_clear_error",  # BOD-308: clear_salvage_dir failed after a rejected attempt
         "run_finished",
     }
 )
