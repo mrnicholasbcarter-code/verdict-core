@@ -290,6 +290,7 @@ class TestBehaviourParityAcrossFixtures:
                 "rating_metric",
                 "rating_source",
                 "rating_as_of",
+                "rating_join",
                 "slack",
                 "advisory_rank",
                 "advisory_category",
