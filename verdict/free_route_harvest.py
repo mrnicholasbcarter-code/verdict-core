@@ -62,19 +62,20 @@ def _positive_price(pricing: object) -> bool:
 
 
 def free_status(row: Mapping[str, Any], free_ids: Collection[str] | None = None) -> str:
-    """Free-ness from an adapter facet or the id, never from a missing price (FR-036).
+    """Free-ness from declared facts only, never from a name or missing price (FR-036).
 
-    Live catalogs omit ``pricing`` on every row, so its absence carries no information.
-    ``free_ids`` is whatever the negotiated gateway adapter positively declared free; a
-    gateway that declares nothing leaves every unmarked id ``UNKNOWN``.
+    Returns ``"free"`` only when ``free_ids`` explicitly declares this identity
+    free; ``"paid"`` when any declared price is positive; ``"UNKNOWN"`` otherwise.
+    A ``:free`` suffix or any other name pattern is not evidence.
+
+    ``free_ids`` is whatever the negotiated gateway adapter positively declared
+    free; a gateway that declares nothing leaves every unmarked id ``"UNKNOWN"``.
     """
     model_id = str(row.get("id") or "")
     if free_ids is not None and model_id in free_ids:
         return "free"
     if _positive_price(row.get("pricing")):
         return "paid"
-    if ":free" in model_id.lower():
-        return "free"
     return "UNKNOWN"
 
 
@@ -189,16 +190,16 @@ def first_execute_need(*, catalog_n: int, keep_n: int) -> int:
 def pick_best_live(
     observations: Sequence[Mapping[str, Any]], free_ids: Collection[str] | None = None
 ) -> str | None:
-    """Lowest-latency ready identity that is free, by id shape or adapter declaration.
+    """Lowest-latency ready identity that is in the declared free set.
 
-    ``free_ids`` lets a gateway-negotiated facet (FR-034/FR-038) recognize a free
-    identity that carries no ``:free`` suffix; without it, only the id shape is used.
+    ``free_ids`` is the gateway-negotiated set of positively-free identities
+    (FR-034/FR-038). Without it no identity qualifies; a name alone is not evidence.
     """
     best_id: str | None = None
     best_ms = math.inf
     for row in observations:
         model_id = str(row.get("model_id") or "")
-        is_free = ":free" in model_id.lower() or (free_ids is not None and model_id in free_ids)
+        is_free = free_ids is not None and model_id in free_ids
         if not is_free:
             continue
         if str(row.get("availability_state") or "").lower() != "ready":
@@ -250,24 +251,40 @@ def drain_keep_probes(pending: Sequence[str], transport: ProbeTransport) -> None
 
 
 def harvest_live_route(
-    rows: Sequence[Mapping[str, Any]], transport: ProbeTransport, need: TaskNeed | None = None
+    rows: Sequence[Mapping[str, Any]],
+    transport: ProbeTransport,
+    need: TaskNeed | None = None,
+    free_ids: Collection[str] | None = None,
 ) -> dict[str, Any]:
-    """Filter KEEP, probe until need + LIVE pick, leave remainder for drain."""
+    """Filter KEEP, probe until need + LIVE pick, leave remainder for drain.
+
+    ``free_ids`` is the gateway-negotiated set of positively-free identities
+    (FR-034/FR-038). When absent, the KEEP set itself serves as the selection
+    universe: ``keep_free_compatible`` already excluded positively-paid routes, so
+    any route in KEEP is eligible to be picked. No name heuristic is applied.
+    """
     task = need or TaskNeed(chat=True)
-    keep = keep_free_compatible(rows, task)
+    keep = keep_free_compatible(rows, task, free_ids=free_ids)
     if not keep:
         return {}
+    # Selection universe: gateway-declared free set, or the KEEP set when no
+    # gateway declaration is available (all KEEP routes are non-paid by construction).
+    pick_universe: Collection[str] = free_ids if free_ids is not None else set(keep)
     n = len(keep)
     need_n = first_execute_need(catalog_n=len(rows), keep_n=n)
     observations: list[Any] = []
     pending = list(keep)
     while pending:
-        picked = pick_best_live(_obs_maps(observations)) if observations else None
+        picked = (
+            pick_best_live(_obs_maps(observations), free_ids=pick_universe)
+            if observations
+            else None
+        )
         if len(observations) >= need_n and picked:
             break
         nxt = pending.pop(0)
         observations.extend(_probe_ids([nxt], transport))
-    picked = pick_best_live(_obs_maps(observations))
+    picked = pick_best_live(_obs_maps(observations), free_ids=pick_universe)
     if picked is None:
         return {}
     blob = json.dumps(
