@@ -19,6 +19,7 @@ Adapters:
 """
 
 from verdict.discovery.sources._fetcher import Fetcher, default_fetcher
+from verdict.discovery.sources._pricing import parse_price
 from verdict.discovery.sources._types import DiscoveryRow
 from verdict.discovery.sources.community import (
     CommunityConfig,
@@ -48,5 +49,6 @@ __all__ = [
     "parse_kilo",
     "parse_models_dev",
     "parse_openrouter",
+    "parse_price",
     "rows_from_evidence",
 ]

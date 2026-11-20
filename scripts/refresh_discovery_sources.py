@@ -162,19 +162,29 @@ def run(
     community: CommunityConfig | None = None,
     omniroute_base_url: str = "http://localhost:20128",
     fetcher: Fetcher = default_fetcher,
+    fcm_commit: str | None = None,
+    dsh_commit: str | None = None,
 ) -> dict[str, Any]:
     """Run enabled adapters, cache the results, return an index dict.
 
     Args:
         sources: Which sources to refresh (default: all).
         cache_dir: Directory for cache files (default: ``$VERDICT_HOME/discovery/sources/``).
-        community: Community list pin config.
+        community: Community list pin config.  When ``fcm_commit`` or
+            ``dsh_commit`` are also passed they override the corresponding
+            field on this object.
         omniroute_base_url: OmniRoute base URL.
         fetcher: HTTP fetcher injected for the network adapters; override in
             tests with :func:`tests.helpers_discovery.make_stub_fetcher`.
+        fcm_commit: Override the pinned commit for free-coding-models.
+        dsh_commit: Override the pinned commit for dsh-our-free-model.
     """
     enabled = set(sources or _ALL_SOURCES)
-    cfg = community or CommunityConfig()
+    base_cfg = community or CommunityConfig()
+    cfg = CommunityConfig(
+        fcm_commit=fcm_commit if fcm_commit is not None else base_cfg.fcm_commit,
+        dsh_commit=dsh_commit if dsh_commit is not None else base_cfg.dsh_commit,
+    )
     home = cache_dir or (verdict_home() / "discovery" / "sources")
     index: list[dict[str, Any]] = []
 
@@ -229,8 +239,7 @@ def run(
                     fetched_at=_iso_now(),
                 )
             )
-        if or_rows:
-            _write_cache_atomic(home, "omniroute", or_rows)
+        _write_cache_atomic(home, "omniroute", or_rows)
 
     # Network adapters: use collect_sources for the remaining sources.
     # collect_sources records per-source errors so we can tell failed sources
@@ -242,7 +251,8 @@ def run(
         include_openrouter="openrouter" in enabled,
         include_kilo="kilo" in enabled,
         include_models_dev="models_dev" in enabled,
-        include_community=bool({"free_coding_models", "dsh_our_free_model"} & enabled),
+        include_fcm="free_coding_models" in enabled,
+        include_dsh="dsh_our_free_model" in enabled,
     )
 
     # Build a set of sources that errored so we don't confuse them with empties.
@@ -295,8 +305,7 @@ def run(
                     fetched_at=src_rows[0].fetched_at if src_rows else _iso_now(),
                 )
             )
-            if src_rows:
-                _write_cache_atomic(home, file_name, src_rows)
+            _write_cache_atomic(home, file_name, src_rows)
 
     result: dict[str, Any] = {
         "schema": "verdict.discovery.sources.index/v1",
@@ -332,8 +341,26 @@ def main() -> None:
         default=os.environ.get("OMNIROUTE_BASE_URL", "http://localhost:20128"),
         help="OmniRoute base URL (default: $OMNIROUTE_BASE_URL or http://localhost:20128).",
     )
+    parser.add_argument(
+        "--fcm-commit",
+        default=None,
+        metavar="SHA",
+        help="Override the pinned commit SHA for free-coding-models (vava-nessa/free-coding-models).",
+    )
+    parser.add_argument(
+        "--dsh-commit",
+        default=None,
+        metavar="SHA",
+        help="Override the pinned commit SHA for dsh-our-free-model (Ebony-Vinyl/dsh-our-free-model).",
+    )
     args = parser.parse_args()
-    run(sources=args.sources, cache_dir=args.cache_dir, omniroute_base_url=args.base_url)
+    run(
+        sources=args.sources,
+        cache_dir=args.cache_dir,
+        omniroute_base_url=args.base_url,
+        fcm_commit=args.fcm_commit,
+        dsh_commit=args.dsh_commit,
+    )
 
 
 if __name__ == "__main__":

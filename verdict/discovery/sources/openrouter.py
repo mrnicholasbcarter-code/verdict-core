@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from verdict.discovery.sources._fetcher import Fetcher, default_fetcher
+from verdict.discovery.sources._pricing import parse_price
 from verdict.discovery.sources._types import DiscoveryRow
 
 _SOURCE = "openrouter"
@@ -22,20 +23,8 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _price(value: Any) -> float | None:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        try:
-            f = float(value)
-            return f if f >= 0 else None
-        except (OverflowError, ValueError):
-            pass
-    if isinstance(value, str):
-        try:
-            f = float(value)
-            return f if f >= 0 else None
-        except ValueError:
-            pass
-    return None
+# Use the shared price parser so numeric strings like "0" or "0.000001" are accepted.
+_price = parse_price
 
 
 def parse_openrouter(payload: Any, *, fetched_at: str | None = None) -> list[DiscoveryRow]:

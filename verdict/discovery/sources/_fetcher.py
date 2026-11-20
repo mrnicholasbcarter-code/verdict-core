@@ -39,8 +39,8 @@ def default_fetcher(
 ) -> bytes:
     """Fetch *url* using :func:`~verdict.http_safety.open_no_redirect`.
 
-    Reads in 64 KiB chunks, raising ``OSError`` if ``max_bytes`` is
-    exceeded before the response is fully consumed.
+    Reads in 64 KiB chunks, stopping exactly at ``max_bytes``.  Raises
+    ``OSError`` if the server sends more data than the limit allows.
     """
     from verdict.http_safety import open_no_redirect
 
@@ -53,7 +53,7 @@ def default_fetcher(
         total = 0
         chunk_size = 65_536
         while True:
-            chunk = response.read(chunk_size)
+            chunk = response.read(min(chunk_size, max_bytes - total + 1))
             if not chunk:
                 break
             total += len(chunk)

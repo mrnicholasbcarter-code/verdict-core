@@ -40,12 +40,18 @@ from verdict.discovery.sources._types import DiscoveryRow
 
 _FCM_REPO = "vava-nessa/free-coding-models"
 _FCM_FILE = "sources.js"
+# To bump this pin: update the SHA to the new HEAD commit of the repo and
+# update the corresponding tests in tests/test_discovery_sources.py.
+# Use --fcm-commit <sha> at the CLI to override without changing source.
 _FCM_DEFAULT_COMMIT = "b9269a5408d69844604b1038d5f96b6575d54b86"
 _FCM_LICENSE = "MIT-with-Enhanced-Disclaimers"
 _FCM_LICENSE_RESTRICTED = False  # MIT-based, permits reuse
 
 _DSH_REPO = "Ebony-Vinyl/dsh-our-free-model"
 _DSH_FILE = "src/providers/registry.json"
+# To bump this pin: update the SHA to the new HEAD commit of the repo and
+# update the corresponding tests in tests/test_discovery_sources.py.
+# Use --dsh-commit <sha> at the CLI to override without changing source.
 _DSH_DEFAULT_COMMIT = "ba266c6e268bc5fb9227fb1353149e4a99f77739"
 _DSH_LICENSE = "MIT"
 _DSH_LICENSE_RESTRICTED = False  # standard MIT, permits reuse
@@ -86,9 +92,7 @@ class CommunityConfig:
 #   ];
 
 # Match a named array export (const or let): capture name + array body.
-_NAMED_EXPORT_RE = re.compile(
-    r"""(?:export\s+(?:const|let)\s+(\w+)\s*=\s*)(\[[\s\S]*?\]);""", re.MULTILINE
-)
+_NAMED_EXPORT_RE = re.compile(r"""(?:export\s+(?:const|let)\s+(\w+)\s*=\s*)(\[[\s\S]*?\]);""")
 
 # Lightweight array-of-arrays JSON extractor: validates only array-of-array
 # shape (no object nesting, no template literals, no function calls).
@@ -241,5 +245,5 @@ def fetch_dsh(
     ts = datetime.now(timezone.utc).isoformat()
     url = _raw_url(_DSH_REPO, _DSH_FILE, commit)
     raw = fetcher(url, timeout=timeout, max_bytes=max_bytes)
-    payload = json.loads(raw)
+    payload = json.loads(raw)  # JSONDecodeError (ValueError subclass) propagates as source_error
     return parse_dsh(payload, fetched_at=ts, commit=commit)

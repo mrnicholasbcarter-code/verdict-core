@@ -545,7 +545,8 @@ class TestCollectSourcesErrors:
             include_kilo=True,
             include_openrouter=False,
             include_models_dev=False,
-            include_community=False,
+            include_fcm=False,
+            include_dsh=False,
         )
         assert isinstance(result, CollectResult), "collect_sources must return CollectResult"
         assert len(result.errors) == 1
@@ -567,7 +568,8 @@ class TestCollectSourcesErrors:
             include_openrouter=True,
             include_kilo=False,
             include_models_dev=False,
-            include_community=False,
+            include_fcm=False,
+            include_dsh=False,
         )
         assert isinstance(result, CollectResult)
         assert result.errors, "expected at least one error"
@@ -598,7 +600,8 @@ class TestCollectSourcesErrors:
             include_openrouter=True,
             include_kilo=True,
             include_models_dev=False,
-            include_community=False,
+            include_fcm=False,
+            include_dsh=False,
         )
         assert any(r.source == "openrouter" for r in result.rows)
         assert any(e.source == "kilo" for e in result.errors)
@@ -675,7 +678,11 @@ class TestCollectSources:
 
         stub = make_stub_fetcher({OPENROUTER_MODELS_URL: self._openrouter_payload()})
         result = collect_sources(
-            fetcher=stub, include_omniroute=False, include_models_dev=False, include_community=False
+            fetcher=stub,
+            include_omniroute=False,
+            include_models_dev=False,
+            include_fcm=False,
+            include_dsh=False,
         )
         # Kilo failed but openrouter still returned rows
         assert any(r.source == "openrouter" for r in result.rows)
@@ -704,7 +711,8 @@ class TestCollectSources:
             include_openrouter=False,
             include_kilo=False,
             include_models_dev=False,
-            include_community=False,
+            include_fcm=False,
+            include_dsh=False,
         )
         assert len(result.rows) == 1
         assert result.rows[0].id == "groq/llama-3.3-70b"
@@ -717,7 +725,8 @@ class TestCollectSources:
             include_openrouter=False,
             include_kilo=False,
             include_models_dev=False,
-            include_community=False,
+            include_fcm=False,
+            include_dsh=False,
         )
         assert result.rows == []
         assert result.errors == []
@@ -819,3 +828,421 @@ class TestRefreshScriptBehavior:
                 f"entry '{entry['source']}' has schema {set(entry.keys())}, "
                 f"expected {expected_keys}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Round-3 OCR finding tests
+# ---------------------------------------------------------------------------
+
+# Finding 1 (additional tests) -----------------------------------------------
+
+
+class TestRefreshSuccessWithZeroRows:
+    """Finding 1: a success that returns zero rows must overwrite the stale cache."""
+
+    _OPENROUTER_PAYLOAD: ClassVar[dict] = {
+        "data": [
+            {
+                "id": "openrouter/google/gemini-flash:free",
+                "pricing": {"prompt": "0", "completion": "0"},
+                "context_length": 1000000,
+            }
+        ]
+    }
+
+    def test_network_success_with_zero_rows_overwrites_stale_cache(self, tmp_path: Path) -> None:
+        from scripts.refresh_discovery_sources import run as refresh_run
+        from verdict.discovery.sources.openrouter import OPENROUTER_MODELS_URL
+
+        cache_dir = tmp_path / "sources"
+
+        # First run: openrouter succeeds with rows.
+        success = make_stub_fetcher({OPENROUTER_MODELS_URL: self._OPENROUTER_PAYLOAD})
+        refresh_run(sources=["openrouter"], cache_dir=cache_dir, fetcher=success)
+        assert (cache_dir / "openrouter.json").exists(), "sanity: cache written on success"
+
+        # Second run: openrouter succeeds but returns zero rows (empty data list).
+        empty = make_stub_fetcher({OPENROUTER_MODELS_URL: {"data": []}})
+        refresh_run(sources=["openrouter"], cache_dir=cache_dir, fetcher=empty)
+
+        # Cache file must exist (overwritten with empty rows — not stale rows).
+        assert (cache_dir / "openrouter.json").exists(), (
+            "cache file must be (re)written on success even when row count is zero"
+        )
+        import json as _json
+
+        written = _json.loads((cache_dir / "openrouter.json").read_text())
+        assert written["row_count"] == 0, "re-written file must reflect zero rows"
+
+    def test_omniroute_success_with_zero_rows_overwrites_stale_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from datetime import datetime, timezone
+
+        import verdict.omniroute_evidence as omni_mod
+        from scripts.refresh_discovery_sources import run as refresh_run
+
+        cache_dir = tmp_path / "sources"
+
+        evidence_one = omni_mod.parse_omniroute_evidence(
+            v1_models={"data": [{"id": "groq/llama-3.3-70b", "owned_by": "groq"}]},
+            providers=None,
+            resilience=None,
+            limits=None,
+            cooldowns=None,
+            health_matrix=None,
+            now=datetime(2026, 11, 20, tzinfo=timezone.utc),
+        )
+        evidence_zero = omni_mod.parse_omniroute_evidence(
+            v1_models={"data": []},
+            providers=None,
+            resilience=None,
+            limits=None,
+            cooldowns=None,
+            health_matrix=None,
+            now=datetime(2026, 11, 20, tzinfo=timezone.utc),
+        )
+
+        # First call succeeds with rows; second returns empty.
+        call_count = {"n": 0}
+
+        def _evidence(*a: object, **kw: object) -> object:
+            call_count["n"] += 1
+            return evidence_one if call_count["n"] == 1 else evidence_zero
+
+        monkeypatch.setattr(omni_mod, "fetch_omniroute_evidence", _evidence)
+
+        refresh_run(sources=["omniroute"], cache_dir=cache_dir)
+        assert (cache_dir / "omniroute.json").exists(), "sanity"
+
+        refresh_run(sources=["omniroute"], cache_dir=cache_dir)
+        assert (cache_dir / "omniroute.json").exists(), (
+            "omniroute cache must be (re)written on success even when rows = 0"
+        )
+        import json as _json
+
+        written = _json.loads((cache_dir / "omniroute.json").read_text())
+        assert written["row_count"] == 0
+
+
+# Finding 2 ------------------------------------------------------------------
+
+
+class TestRefreshOnlyRequestedCommunitySourcesFetched:
+    """Finding 2: --sources free_coding_models must not also fetch dsh_our_free_model."""
+
+    def test_only_fcm_requested_fetches_only_fcm(self, tmp_path: Path) -> None:
+        from scripts.refresh_discovery_sources import run as refresh_run
+        from verdict.discovery.sources.community import (
+            _DSH_DEFAULT_COMMIT,
+            _DSH_FILE,
+            _DSH_REPO,
+            _FCM_DEFAULT_COMMIT,
+            _FCM_FILE,
+            _FCM_REPO,
+            _GITHUB_RAW,
+        )
+
+        calls: list[str] = []
+
+        def _recording_fetcher(url: str, **kw: object) -> bytes:
+            calls.append(url)
+            # Return minimal valid payloads for URLs we expect; raise for unexpected.
+            fcm_url = f"{_GITHUB_RAW}/{_FCM_REPO}/{_FCM_DEFAULT_COMMIT}/{_FCM_FILE}"
+            if url == fcm_url:
+                return b'export const test = [["model-a", "Model A", "B", 20, "32k"]];'
+            raise KeyError(f"unexpected URL: {url!r}")
+
+        refresh_run(
+            sources=["free_coding_models"], cache_dir=tmp_path / "s", fetcher=_recording_fetcher
+        )
+
+        dsh_url = f"{_GITHUB_RAW}/{_DSH_REPO}/{_DSH_DEFAULT_COMMIT}/{_DSH_FILE}"
+        assert dsh_url not in calls, (
+            "requesting only free_coding_models must not fetch dsh_our_free_model"
+        )
+
+    def test_only_dsh_requested_fetches_only_dsh(self, tmp_path: Path) -> None:
+        from scripts.refresh_discovery_sources import run as refresh_run
+        from verdict.discovery.sources.community import (
+            _DSH_DEFAULT_COMMIT,
+            _DSH_FILE,
+            _DSH_REPO,
+            _FCM_DEFAULT_COMMIT,
+            _FCM_FILE,
+            _FCM_REPO,
+            _GITHUB_RAW,
+        )
+
+        calls: list[str] = []
+
+        def _recording_fetcher(url: str, **kw: object) -> bytes:
+            calls.append(url)
+            dsh_url = f"{_GITHUB_RAW}/{_DSH_REPO}/{_DSH_DEFAULT_COMMIT}/{_DSH_FILE}"
+            if url == dsh_url:
+                return b'[{"id": "prov1", "models": [{"id": "m1"}]}]'
+            raise KeyError(f"unexpected URL: {url!r}")
+
+        refresh_run(
+            sources=["dsh_our_free_model"], cache_dir=tmp_path / "s", fetcher=_recording_fetcher
+        )
+
+        fcm_url = f"{_GITHUB_RAW}/{_FCM_REPO}/{_FCM_DEFAULT_COMMIT}/{_FCM_FILE}"
+        assert fcm_url not in calls, (
+            "requesting only dsh_our_free_model must not fetch free_coding_models"
+        )
+
+
+# Finding 3 ------------------------------------------------------------------
+
+
+class TestCollectSourcesErrorKind:
+    """Finding 3: adapter bugs get a distinct error_kind from expected outages."""
+
+    def test_outage_errors_have_source_error_kind(self) -> None:
+        from urllib.error import URLError
+
+        from verdict.discovery.collect import collect_sources
+
+        def _raises(*a: object, **kw: object) -> bytes:
+            raise URLError("connection refused")
+
+        result = collect_sources(
+            fetcher=_raises,
+            include_omniroute=False,
+            include_openrouter=True,
+            include_kilo=False,
+            include_models_dev=False,
+            include_fcm=False,
+            include_dsh=False,
+        )
+        assert len(result.errors) == 1
+        err = result.errors[0]
+        assert err.error_kind == "source_error", (
+            f"URLError is a known outage; error_kind should be 'source_error', got {err.error_kind!r}"
+        )
+
+    def test_adapter_bug_has_adapter_bug_kind(self) -> None:
+        from verdict.discovery.collect import collect_sources
+
+        def _buggy_fetcher(*a: object, **kw: object) -> bytes:
+            raise AttributeError("adapter_internal_bug")
+
+        result = collect_sources(
+            fetcher=_buggy_fetcher,
+            include_omniroute=False,
+            include_openrouter=True,
+            include_kilo=False,
+            include_models_dev=False,
+            include_fcm=False,
+            include_dsh=False,
+        )
+        assert len(result.errors) == 1
+        err = result.errors[0]
+        assert err.error_kind == "adapter_bug", (
+            f"AttributeError is an unexpected bug; error_kind should be 'adapter_bug', got {err.error_kind!r}"
+        )
+
+    def test_message_sanitizes_credential_params(self) -> None:
+        """Exception messages containing credential fragments are sanitized."""
+        from verdict.discovery.collect import collect_sources
+
+        def _leaky_fetcher(*a: object, **kw: object) -> bytes:
+            raise OSError("HTTP 403 at https://api.example.com/v1/models?api_key=sk-secret-123")
+
+        result = collect_sources(
+            fetcher=_leaky_fetcher,
+            include_omniroute=False,
+            include_openrouter=True,
+            include_kilo=False,
+            include_models_dev=False,
+            include_fcm=False,
+            include_dsh=False,
+        )
+        assert len(result.errors) == 1
+        err = result.errors[0]
+        assert "sk-secret-123" not in err.message, (
+            "credential values must be redacted from error messages"
+        )
+
+
+# Finding 4 ------------------------------------------------------------------
+
+
+class TestSharedPriceParser:
+    """Finding 4: shared price parser accepts numeric strings."""
+
+    def test_zero_string_kilo(self) -> None:
+        from verdict.discovery.sources.kilo import parse_kilo
+
+        rows = parse_kilo([{"id": "kc/m", "pricing": {"prompt": "0", "completion": "0"}}])
+        assert rows[0].input_price == 0.0
+        assert rows[0].output_price == 0.0
+
+    def test_fractional_string_kilo(self) -> None:
+        from verdict.discovery.sources.kilo import parse_kilo
+
+        rows = parse_kilo(
+            [{"id": "kc/m", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}]
+        )
+        assert rows[0].input_price == pytest.approx(0.000001)
+        assert rows[0].output_price == pytest.approx(0.000002)
+
+    def test_zero_string_models_dev(self) -> None:
+        from verdict.discovery.sources.models_dev import parse_models_dev
+
+        rows = parse_models_dev(
+            {"models": [{"id": "prov/m", "pricing": {"prompt": "0", "completion": "0"}}]}
+        )
+        assert rows[0].input_price == 0.0
+        assert rows[0].output_price == 0.0
+
+    def test_fractional_string_models_dev(self) -> None:
+        from verdict.discovery.sources.models_dev import parse_models_dev
+
+        rows = parse_models_dev(
+            {
+                "models": [
+                    {"id": "prov/m", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}
+                ]
+            }
+        )
+        assert rows[0].input_price == pytest.approx(0.000001)
+        assert rows[0].output_price == pytest.approx(0.000002)
+
+    def test_numeric_int_accepted(self) -> None:
+        from verdict.discovery.sources.kilo import parse_kilo
+
+        rows = parse_kilo([{"id": "kc/m", "pricing": {"prompt": 0, "completion": 5}}])
+        assert rows[0].input_price == 0.0
+        assert rows[0].output_price == 5.0
+
+    def test_none_returns_none(self) -> None:
+        from verdict.discovery.sources.kilo import parse_kilo
+
+        rows = parse_kilo([{"id": "kc/m"}])
+        assert rows[0].input_price is None
+        assert rows[0].output_price is None
+
+    def test_garbage_string_returns_none(self) -> None:
+        from verdict.discovery.sources.kilo import parse_kilo
+
+        rows = parse_kilo([{"id": "kc/m", "pricing": {"prompt": "abc", "completion": "xyz"}}])
+        assert rows[0].input_price is None
+        assert rows[0].output_price is None
+
+
+# Finding 5 ------------------------------------------------------------------
+
+
+class TestFetchDSHMalformedJSON:
+    """Finding 5: fetch_dsh raises on malformed JSON."""
+
+    def test_raises_on_malformed_json(self) -> None:
+        import json as _json
+
+        from verdict.discovery.sources.community import (
+            _DSH_DEFAULT_COMMIT,
+            _DSH_FILE,
+            _DSH_REPO,
+            _GITHUB_RAW,
+            fetch_dsh,
+        )
+
+        dsh_url = f"{_GITHUB_RAW}/{_DSH_REPO}/{_DSH_DEFAULT_COMMIT}/{_DSH_FILE}"
+        stub = make_stub_fetcher({dsh_url: b"not valid json {"})
+        with pytest.raises(_json.JSONDecodeError):
+            fetch_dsh(fetcher=stub)
+
+    def test_collect_sources_records_dsh_json_error_as_source_error(self) -> None:
+        """DSH JSON errors are expected outages, not adapter bugs."""
+        from verdict.discovery.collect import collect_sources
+        from verdict.discovery.sources.community import (
+            _DSH_DEFAULT_COMMIT,
+            _DSH_FILE,
+            _DSH_REPO,
+            _GITHUB_RAW,
+        )
+
+        dsh_url = f"{_GITHUB_RAW}/{_DSH_REPO}/{_DSH_DEFAULT_COMMIT}/{_DSH_FILE}"
+        stub = make_stub_fetcher({dsh_url: b"not valid json {"})
+        result = collect_sources(
+            fetcher=stub,
+            include_omniroute=False,
+            include_openrouter=False,
+            include_kilo=False,
+            include_models_dev=False,
+            include_fcm=False,
+            include_dsh=True,
+        )
+        assert len(result.errors) == 1
+        err = result.errors[0]
+        assert err.source == "dsh_our_free_model"
+        assert err.error_kind == "source_error"
+
+
+# Finding 6 ------------------------------------------------------------------
+
+
+class TestFetcherExactByteLimit:
+    """Finding 6: default_fetcher never overshoots max_bytes by a chunk."""
+
+    def test_response_at_exact_limit_succeeds(self) -> None:
+        """A response of exactly max_bytes bytes is returned without error."""
+        from io import BytesIO
+        from unittest.mock import patch
+
+        from verdict.discovery.sources._fetcher import default_fetcher
+
+        payload = b"x" * 10
+
+        class _ExactResponse:
+            def __init__(self) -> None:
+                self._buf = BytesIO(payload)
+
+            def read(self, n: int) -> bytes:
+                return self._buf.read(n)
+
+            def __enter__(self) -> _ExactResponse:
+                return self
+
+            def __exit__(self, *a: object) -> None:
+                pass
+
+        with patch("verdict.http_safety.open_no_redirect", return_value=_ExactResponse()):
+            result = default_fetcher("http://example.com", max_bytes=10)
+        assert result == payload
+
+    def test_read_does_not_overshoot_max_bytes_by_a_chunk(self) -> None:
+        """With max_bytes=5, each read requests at most max_bytes+1 bytes, not chunk_size."""
+        from io import BytesIO
+        from unittest.mock import patch
+
+        from verdict.discovery.sources._fetcher import default_fetcher
+
+        read_sizes: list[int] = []
+
+        class _TrackingResponse:
+            def __init__(self, data: bytes) -> None:
+                self._buf = BytesIO(data)
+
+            def read(self, n: int) -> bytes:
+                read_sizes.append(n)
+                return self._buf.read(n)
+
+            def __enter__(self) -> _TrackingResponse:
+                return self
+
+            def __exit__(self, *a: object) -> None:
+                pass
+
+        with patch(
+            "verdict.http_safety.open_no_redirect", return_value=_TrackingResponse(b"x" * 4)
+        ):
+            result = default_fetcher("http://example.com", max_bytes=5)
+
+        assert result == b"x" * 4
+        # With fix: first read requests min(65536, 5-0+1) = 6, not 65536.
+        assert all(n <= 6 for n in read_sizes), (
+            f"read sizes {read_sizes} should all be ≤ 6 with max_bytes=5"
+        )
