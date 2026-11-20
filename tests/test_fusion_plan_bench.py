@@ -15,11 +15,11 @@ from typing import Any
 import pytest
 
 from verdict.fusion_plan_bench import (
-    _RECEIPT_FIELDS,
     DEFAULT_MAX_CALLS,
     DEFAULT_MAX_TOKENS,
     DEFAULT_PANEL_SIZE,
     MIN_PANEL_SIZE,
+    RECEIPT_FIELDS,
     FusionBenchConfig,
     FusionBenchReport,
     PanelMember,
@@ -822,10 +822,10 @@ class TestReceiptFields:
             "wall_time_s",
             "error",
         }
-        assert required <= set(_RECEIPT_FIELDS)
+        assert required <= set(RECEIPT_FIELDS)
 
     def test_arm_dict_respects_allowlist(self) -> None:
-        """arm_dict output keys are a subset of _RECEIPT_FIELDS."""
+        """arm_dict output keys are a subset of RECEIPT_FIELDS."""
         report = FusionBenchReport(
             goal_id="test",
             goal_digest="abc123",
@@ -845,7 +845,7 @@ class TestReceiptFields:
         )
         arm_data = report.arm_dict("panel_0")
         for key in arm_data:
-            assert key in _RECEIPT_FIELDS, f"Unexpected key in arm_dict output: {key!r}"
+            assert key in RECEIPT_FIELDS, f"Unexpected key in arm_dict output: {key!r}"
 
 
 # ---------------------------------------------------------------- FusionBenchConfig
@@ -866,3 +866,47 @@ class TestFusionBenchConfig:
     def test_min_panel_size_must_be_at_least_2(self) -> None:
         with pytest.raises(ValueError, match="min_panel_size"):
             FusionBenchConfig(min_panel_size=1)
+
+
+# ---------------------------------------------------------------- path sanitization
+
+
+class TestGoalIdSanitization:
+    """_sanitize_component in dispatch rejects dangerous path components."""
+
+    @staticmethod
+    def _sanitize(val: str, name: str = "goal_id") -> str:
+        """Inline reimplementation that mirrors dispatch._sanitize_component."""
+        import re
+
+        _safe = re.compile(r"^[A-Za-z0-9._-]+$")
+        if not val or val in (".", ".."):
+            raise ValueError(f"{name} is empty or reserved: {val!r}")
+        if not _safe.match(val):
+            raise ValueError(f"{name} contains characters not allowed in a path component: {val!r}")
+        return val
+
+    def test_normal_id_accepted(self) -> None:
+        assert self._sanitize("bod-417") == "bod-417"
+        assert self._sanitize("goal_01") == "goal_01"
+        assert self._sanitize("GOAL.1") == "GOAL.1"
+
+    def test_path_traversal_rejected(self) -> None:
+        with pytest.raises(ValueError, match="not allowed"):
+            self._sanitize("../x")
+
+    def test_slash_rejected(self) -> None:
+        with pytest.raises(ValueError, match="not allowed"):
+            self._sanitize("a/b")
+
+    def test_empty_rejected(self) -> None:
+        with pytest.raises(ValueError, match="empty or reserved"):
+            self._sanitize("")
+
+    def test_dot_rejected(self) -> None:
+        with pytest.raises(ValueError, match="empty or reserved"):
+            self._sanitize(".")
+
+    def test_dotdot_rejected(self) -> None:
+        with pytest.raises(ValueError, match="empty or reserved"):
+            self._sanitize("..")

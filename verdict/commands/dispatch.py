@@ -276,10 +276,10 @@ def _cmd_bench_fusion_plan(args: argparse.Namespace) -> None:
     from pathlib import Path as _Path
 
     from verdict.fusion_plan_bench import (
-        _RECEIPT_FIELDS,
+        RECEIPT_FIELDS,
         FusionBenchConfig,
-        _summary_table,
         run_fusion_plan_bench,
+        summary_table,
     )
     from verdict.live_routing import DEFAULT_GATEWAY
     from verdict.paths import verdict_home
@@ -352,25 +352,53 @@ def _cmd_bench_fusion_plan(args: argparse.Namespace) -> None:
     try:
         selector = build_selector(base_url, scope="", prefer="")
     except Exception as exc:
-        print(f"error: cannot build selector: {exc}", file=sys.stderr)
+        print(f"error: cannot build selector: {type(exc).__name__}: {exc}", file=sys.stderr)
         sys.exit(2)
 
     executor = DirectGatewayExecutor(base_url=base_url, api_key=api_key)
 
+    import re as _re
+
+    _safe_component_re = _re.compile(r"^[A-Za-z0-9._-]+$")
+
+    def _sanitize_component(val: str, name: str) -> str:
+        """Reject or sanitize a path component that comes from user-supplied data.
+
+        Allows only ``[A-Za-z0-9._-]``, rejects empty strings and the special
+        names ``.`` and ``..``, and raises ``ValueError`` for anything else so
+        the caller can skip the goal gracefully rather than writing outside the
+        intended output directory.
+        """
+        if not val or val in (".", ".."):
+            raise ValueError(f"{name} is empty or reserved: {val!r}")
+        if not _safe_component_re.match(val):
+            raise ValueError(
+                f"{name} contains characters not allowed in a path component "
+                f"(allowed: A-Za-z0-9._-): {val!r}"
+            )
+        return val
+
     home = verdict_home()
     out_dir = home / "fusion-bench"
     out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir_resolved = out_dir.resolve()
 
     all_reports = []
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     for entry in goals:
-        goal_id: str = str(entry.get("id", "unknown"))
+        raw_goal_id: str = str(entry.get("id", "unknown"))
         goal_text: str = str(entry.get("goal", ""))
         constraints: str = str(entry.get("constraints", ""))
 
         if not goal_text:
-            print(f"warning: skipping goal {goal_id!r}: empty goal text", file=sys.stderr)
+            print(f"warning: skipping goal {raw_goal_id!r}: empty goal text", file=sys.stderr)
+            continue
+
+        try:
+            goal_id = _sanitize_component(raw_goal_id, "goal_id")
+        except ValueError as exc:
+            print(f"warning: skipping goal {raw_goal_id!r}: {exc}", file=sys.stderr)
             continue
 
         report = asyncio.run(
@@ -393,13 +421,18 @@ def _cmd_bench_fusion_plan(args: argparse.Namespace) -> None:
         ):
             arm_data = report.arm_dict(arm_key)
             # Restrict to receipt fields allowlist.
-            safe_data = {k: arm_data.get(k) for k in _RECEIPT_FIELDS}
+            safe_data = {k: arm_data.get(k) for k in RECEIPT_FIELDS}
             out_file = out_dir / f"{stamp}-{goal_id}-{arm_key}.json"
+            # Defense-in-depth: ensure resolved path stays inside out_dir.
+            if not out_file.resolve().is_relative_to(out_dir_resolved):
+                raise RuntimeError(
+                    f"output path escape detected: {out_file} is not under {out_dir}"
+                )
             out_file.write_text(_json.dumps(safe_data, indent=2), encoding="utf-8")
 
     # Write summary.
     summary_path = out_dir / f"{stamp}-summary.txt"
-    summary_text = _summary_table(all_reports)
+    summary_text = summary_table(all_reports)
     summary_path.write_text(summary_text, encoding="utf-8")
 
     if emit_json:

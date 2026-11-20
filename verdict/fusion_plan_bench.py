@@ -58,18 +58,8 @@ DEFAULT_MAX_CALLS = 10
 DEFAULT_MAX_TOKENS = 500_000
 #: Timeout per individual planner or synthesizer call (seconds).
 DEFAULT_CALL_TIMEOUT_S = 180.0
-#: TaskRequirements shared by all panel and synthesizer calls.
-_BENCH_REQUIREMENTS_BASE = TaskRequirements(
-    required_capabilities=frozenset({"tools"}),
-    min_context_tokens=100_000,
-    coding=True,
-    reasoning=False,
-    frontier_worthy=False,
-    role_ordering="strongest_first",
-)
-
 # Fields written to disk — explicit allowlist keeps internal state off-disk.
-_RECEIPT_FIELDS: tuple[str, ...] = (
+RECEIPT_FIELDS: tuple[str, ...] = (
     "schema_version",
     "goal_id",
     "goal_digest",
@@ -487,7 +477,7 @@ async def run_fusion_plan_bench(
     call_count = 0
     token_count = 0
 
-    def _cap_check(label: str) -> bool:
+    def _cap_check() -> bool:
         """Return True when the call + token caps still have headroom."""
         return call_count < cfg.max_calls and token_count < cfg.max_tokens
 
@@ -497,7 +487,7 @@ async def run_fusion_plan_bench(
     panel_valid_plans: list[WorkGraph] = []
 
     for panel_slot in range(cfg.panel_size):
-        if not _cap_check(f"panel_{panel_slot}"):
+        if not _cap_check():
             report.panel_members.append(
                 PanelMember(
                     route_id="",
@@ -616,7 +606,7 @@ async def run_fusion_plan_bench(
         return report
 
     # -------------------------------------------------- synthesis (option b: FREE)
-    if _cap_check("synth_b") and panel_valid_plans:
+    if _cap_check() and panel_valid_plans:
         t0 = time.monotonic()
         synth_tried: set[str] = set(tried)  # exclude panel routes
 
@@ -666,7 +656,7 @@ async def run_fusion_plan_bench(
                         error=f"capacity_blocked:{cap_val}",
                     )
                 )
-            elif _cap_check("synth_b_call"):
+            elif _cap_check():
                 from verdict.orchestration.contracts import AnswerOnlyExecutor, OrchestrationError
                 from verdict.orchestration.controller_operations import bounded_executor_call
                 from verdict.orchestration.planner import parse_plan
@@ -754,7 +744,7 @@ async def run_fusion_plan_bench(
     # -------------------------------------------------- synthesis (option a: highest-rated planner)
     # Option (a) may use FREE or SUBSCRIPTION. It is benched using the same
     # synthesizer prompt as option (b). The panel routes are excluded.
-    if _cap_check("synth_a") and panel_valid_plans:
+    if _cap_check() and panel_valid_plans:
         from verdict.orchestration.contracts import AnswerOnlyExecutor, OrchestrationError
         from verdict.orchestration.controller_operations import bounded_executor_call
         from verdict.orchestration.planner import parse_plan
@@ -872,7 +862,7 @@ async def run_fusion_plan_bench(
 
     # -------------------------------------------------- baseline: top planner
     # Top planner uses strongest_first with FREE|SUBSCRIPTION.
-    if _cap_check("baseline_top"):
+    if _cap_check():
         from verdict.orchestration.contracts import AnswerOnlyExecutor, OrchestrationError
         from verdict.orchestration.controller_operations import bounded_executor_call
         from verdict.orchestration.planner import build_planning_prompt, parse_plan
@@ -1006,7 +996,7 @@ async def run_fusion_plan_bench(
 # --------------------------------------------------- summary table helpers
 
 
-def _summary_table(reports: list[FusionBenchReport]) -> str:
+def summary_table(reports: list[FusionBenchReport]) -> str:
     """Render a plain-text summary table across all goals and arms."""
     if not reports:
         return "(no results)"

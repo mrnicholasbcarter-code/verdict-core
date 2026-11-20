@@ -266,6 +266,21 @@ def register(subparsers: Any) -> None:
 
     bench_p = subparsers.add_parser("bench", help="Benchmarking tools for context and routing")
     bench_sub = bench_p.add_subparsers(dest="bench_command", required=True)
+
+    import argparse as _argparse
+
+    def _panel_size(val: str) -> int:
+        n = int(val)
+        if n < 2:
+            raise _argparse.ArgumentTypeError(f"--panel-size must be >= 2, got {n}")
+        return n
+
+    def _positive_int(val: str) -> int:
+        n = int(val)
+        if n <= 0:
+            raise _argparse.ArgumentTypeError(f"must be a positive integer, got {n}")
+        return n
+
     context_lift_p = bench_sub.add_parser(
         "context-lift",
         help=(
@@ -350,7 +365,7 @@ def register(subparsers: Any) -> None:
     )
     fusion_plan_p.add_argument(
         "--panel-size",
-        type=int,
+        type=_panel_size,
         default=3,
         metavar="N",
         dest="panel_size",
@@ -358,7 +373,7 @@ def register(subparsers: Any) -> None:
     )
     fusion_plan_p.add_argument(
         "--max-calls",
-        type=int,
+        type=_positive_int,
         default=10,
         metavar="N",
         dest="max_calls",
@@ -366,7 +381,7 @@ def register(subparsers: Any) -> None:
     )
     fusion_plan_p.add_argument(
         "--max-tokens",
-        type=int,
+        type=_positive_int,
         default=500_000,
         metavar="N",
         dest="max_tokens",
