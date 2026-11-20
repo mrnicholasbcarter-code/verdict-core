@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.arena.canonical import slug
-from verdict.arena.crosswalk import load_crosswalk
+from verdict.arena.crosswalk import LintIssue, lint_crosswalk, load_crosswalk
 from verdict.arena.match import build_store_index, match_rows
 from verdict.arena.rank import _MIN_REF_SET, ROLE_CHAINS, _build_reference_set
 from verdict.arena.snapshot import STALENESS_DAYS, ArenaSnapshot
@@ -78,6 +78,10 @@ def coverage_report(
         unmatched_by_config[cfg_drop] = unmatched_by_config.get(cfg_drop, 0) + 1
         unmatched_names.setdefault(cfg_drop, []).append(d.model_name)
 
+    # Crosswalk lint: missing targets and unused entries
+    arena_row_keys: set[tuple[str, str]] = {(m.parsed.org, m.parsed.key) for m in matches}
+    lint_issues: list[LintIssue] = lint_crosswalk(crosswalk, arena_row_keys, store_ids)
+
     # Twin groups
     twins = _twin_groups(store_ids)
 
@@ -127,6 +131,10 @@ def coverage_report(
         "twin_group_count": len(twins),
         "reference_set_sizes": ref_sizes,
         "snapshot": snap_meta,
+        "lint_issues": [
+            {"kind": i.kind, "key": list(i.key), "detail": i.detail} for i in lint_issues
+        ],
+        "lint_issue_count": len(lint_issues),
     }
 
     return report
