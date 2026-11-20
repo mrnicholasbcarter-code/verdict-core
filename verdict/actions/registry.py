@@ -689,6 +689,43 @@ def _action_discovery_refresh(**kwargs: Any) -> ActionResult:
     return ActionResult(data=result)
 
 
+def _action_admission_refresh(**kwargs: Any) -> ActionResult:
+    """Fetch the OmniRoute admission snapshot; write last-good; no model calls."""
+    from verdict.free_tier_admit import (
+        LiveAdmitError,
+        load_omniroute_admit_snapshot,
+        omniroute_endpoint_from_env,
+    )
+
+    _known: set[str] = set()
+    unknown = set(kwargs) - _known
+    if unknown:
+        raise ValueError(f"unknown admission.refresh parameter(s): {sorted(unknown)}")
+    endpoint = omniroute_endpoint_from_env()
+    if endpoint is None or not str(endpoint[0] or "").strip():
+        return ActionResult(
+            data={"ok": False, "reason": "omniroute_not_configured"},
+            ok=False,
+        )
+    base_url, api_key = endpoint
+    try:
+        snapshot = load_omniroute_admit_snapshot(
+            base_url, api_key=api_key, aggregate_deadline_seconds=120.0
+        )
+    except LiveAdmitError as exc:
+        return ActionResult(data={"ok": False, "reason": exc.code}, ok=False)
+    stale = list(snapshot.stale_served)
+    ok = not stale and bool(snapshot.catalog) and bool(snapshot.connections)
+    return ActionResult(
+        data={
+            "ok": ok,
+            "admitted_free": len(snapshot.free_tier),
+            "active_providers": sorted(snapshot.active_providers),
+            "stale_served": stale,
+        }
+    )
+
+
 def _action_eligibility(**kwargs: Any) -> ActionResult:
     """Evaluate the DISCOVERED→SELECTED eligibility ladder."""
     import os
@@ -1815,6 +1852,16 @@ def _register_builtins() -> None:
                 "Health",
             ),
             _action_discovery_refresh,
+        ),
+        (
+            ActionSpec(
+                "admission.refresh",
+                "health",
+                "mutation",
+                "Fetch OmniRoute admission snapshot and write last-good file (no model calls)",
+                "Health",
+            ),
+            _action_admission_refresh,
         ),
         (
             ActionSpec(
