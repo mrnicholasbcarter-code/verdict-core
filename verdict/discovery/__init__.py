@@ -42,6 +42,7 @@ from verdict.discovery.registry import (
     load_registry,
     run_refresh,
     save_registry,
+    tool_ok_proof,
 )
 from verdict.http_safety import open_no_redirect
 from verdict.models import ModelInfo, ProviderConfig
@@ -136,4 +137,5 @@ __all__ = [
     "normalize_model_record",
     "run_refresh",
     "save_registry",
+    "tool_ok_proof",
 ]

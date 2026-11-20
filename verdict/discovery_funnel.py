@@ -128,6 +128,7 @@ def build_funnel(
     admission: dict[str, Any] | None,
     now: datetime,
     max_probes_per_select: int | None = None,
+    registry: Any | None = None,
 ) -> dict[str, Any]:
     """Compute the funnel from already-loaded evidence.
 
@@ -349,6 +350,26 @@ def build_funnel(
         tool_ok_drops = dict(tool_drop_reasons)
 
     # ------------------------------------------------------------------
+    # Stage 5b: registry_proof (S3b — routes proved by discovery registry)
+    # ------------------------------------------------------------------
+    # Counts free routes in the discovery registry with a fresh tool_ok=True
+    # proof.  These routes are eligible for admission via registry proof even
+    # when the health cache has no (or stale) agentic_ok entry.
+    registry_proof_count: int | None = None
+    if registry is not None:
+        from verdict.discovery.registry import tool_ok_proof as _tok_proof
+
+        rp_count = 0
+        for entry in getattr(registry, "entries", []):
+            if entry.capacity_class == "free" and entry.tool_ok is True:
+                result = _tok_proof(entry.route_key, registry, now)
+                if result["qualified"]:
+                    rp_count += 1
+        registry_proof_count = rp_count
+        if "discovery-registry.json" not in sources:
+            sources.append("discovery-registry.json")
+
+    # ------------------------------------------------------------------
     # Stage 6: admitted
     # ------------------------------------------------------------------
     admitted_routes: set[str] | None = None
@@ -418,7 +439,10 @@ def build_funnel(
                 probed_count, cap=f"SCREEN_MAX_ROUTES={SCREEN_MAX_ROUTES}", drops=probed_drops
             ),
             "answered": _stage(answered_count, drops=answered_drops),
-            "tool_ok": _stage(tool_ok_count, drops=tool_ok_drops),
+            "tool_ok": _stage(tool_ok_count, drops=tool_ok_drops)
+            | (
+                {"registry_proof": registry_proof_count} if registry_proof_count is not None else {}
+            ),
             "admitted": _stage(admitted_count, drops=admitted_drops, raw=admission_total),
             "considered": {
                 "count": None,
@@ -465,6 +489,8 @@ def run_funnel(
     Returns the funnel dict.  Callers must not write this dict anywhere;
     this module makes no writes.
     """
+    from verdict.discovery.registry import load_registry as _load_registry
+
     now = datetime.now(timezone.utc)
     home = verdict_home_path or verdict_home()
 
@@ -472,9 +498,14 @@ def run_funnel(
     hc_path = health_cache_path or default_cache_path()
     health_cache_obj = _load_health_cache(hc_path)
     admission = _load_admission(home / "admission-latest.json")
+    discovery_registry = _load_registry()
 
     return build_funnel(
-        identify_report=identify_report, health_cache=health_cache_obj, admission=admission, now=now
+        identify_report=identify_report,
+        health_cache=health_cache_obj,
+        admission=admission,
+        now=now,
+        registry=discovery_registry,
     )
 
 
@@ -537,6 +568,12 @@ def render_plain(funnel: dict[str, Any]) -> str:
         drops = s.get("drops", {})
         for reason, n in sorted(drops.items()):
             lines.append(f"    - dropped {n} : {reason}")
+
+        # Show registry_proof count after tool_ok (S3b)
+        if name == "tool_ok":
+            rp = s.get("registry_proof")
+            if rp is not None:
+                lines.append(f"    via registry proof: {rp}")
 
         # Show free-by-rule breakdown after free_by_fact
         if name == "free_by_fact":

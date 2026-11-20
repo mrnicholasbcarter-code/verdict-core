@@ -444,6 +444,12 @@ class EligibilityLadder:
         self._admission_receipt = admission_receipt
         # Health cache (from #742 prove-at-rest daemon). Read-only in selection.
         self._health_cache = health_cache
+        # S3b: discovery registry proof cache.  Loaded lazily on the first
+        # agentic-gate check; None once loaded when the registry is absent or
+        # stale.  The race between concurrent select() calls is intentionally
+        # benign: both threads load the same file and the second write wins.
+        self._discovery_registry_loaded: bool = False
+        self._discovery_registry_cache: Any = None
         # BOD-299 phase 1: optional real-session evidence, read-only in selection.
         self._session_ledger = session_ledger
         self._session_evidence_error: str | None = None
@@ -956,12 +962,31 @@ class EligibilityLadder:
                 if lookup.entry is None or (
                     proof["source"] == "agentic_probe" and not lookup.entry.agentic_ok
                 ):
-                    return "no_agentic_probe"
-                return (
-                    "session_capability_expired_or_revoked"
-                    if proof["source"] == "session_evidence"
-                    else "agentic_probe_stale"
-                )
+                    # S3b: before rejecting as no_agentic_probe, check the
+                    # discovery registry for a fresh tool_ok=True proof.
+                    # Only FREE capacity qualifies; UNKNOWN stays unknown.
+                    if capacity == CapacityClass.FREE:
+                        from verdict.discovery.registry import load_registry as _load_registry
+                        from verdict.discovery.registry import tool_ok_proof as _tool_ok_proof
+
+                        if not self._discovery_registry_loaded:
+                            self._discovery_registry_cache = _load_registry()
+                            self._discovery_registry_loaded = True
+                        reg_result = _tool_ok_proof(
+                            route_id, self._discovery_registry_cache, gate_now
+                        )
+                        if not reg_result["qualified"]:
+                            return "no_agentic_probe"
+                        # Registry proves tool capability — fall through to
+                        # the session-evidence check below.
+                    else:
+                        return "no_agentic_probe"
+                else:
+                    return (
+                        "session_capability_expired_or_revoked"
+                        if proof["source"] == "session_evidence"
+                        else "agentic_probe_stale"
+                    )
             # Current liveness remains the separate HEALTHY stage. Unknown
             # or stale health may use the existing bounded cheap probe.
             # Real session outcomes can narrow, never replace, probe qualification.
