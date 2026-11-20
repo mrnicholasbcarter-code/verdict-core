@@ -424,10 +424,12 @@ class RunRefreshLiveTest(unittest.TestCase):
 
         urls_called: list[str] = []
 
+        import urllib.parse as _uparse
+
         def _t(url: str, h: dict, p: bytes, timeout: float):
             urls_called.append(url)
             # route_a answers OK; route_b (if ever called) would return 503
-            if "a.example.com" in url:
+            if _uparse.urlsplit(url).hostname == "a.example.com":
                 return 200, {}, _ok_body()
             return 503, {}, b"error"
 
@@ -444,10 +446,11 @@ class RunRefreshLiveTest(unittest.TestCase):
         self.assertEqual(len(registry.entries), 1)
         # Only route_a's URL was called; route_b must never be probed
         self.assertTrue(
-            any("a.example.com" in u for u in urls_called), "route_a should have been probed"
+            any(_uparse.urlsplit(u).hostname == "a.example.com" for u in urls_called),
+            "route_a should have been probed",
         )
         self.assertFalse(
-            any("b.example.com" in u for u in urls_called),
+            any(_uparse.urlsplit(u).hostname == "b.example.com" for u in urls_called),
             "route_b shares route_a's key and must not be probed separately",
         )
 
@@ -634,6 +637,195 @@ class RunRefreshActionTest(unittest.TestCase):
             result = run_refresh_action(dry_run=True, env=env)
             # Neither priced nor unknown routes should be included
             self.assertEqual(result["counts"]["input"], 0)
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: dry-run must make zero network calls
+# ---------------------------------------------------------------------------
+
+
+class DryRunNoNetworkTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        _set_transport(None)
+
+    def test_dry_run_no_omniroute_fallback_when_cache_absent(self) -> None:
+        """dry_run=True must never fall back to OmniRoute (or any network call)."""
+
+        network_calls: list[str] = []
+
+        def _explode(url: str, h: dict, p: bytes, timeout: float):
+            network_calls.append(url)
+            raise RuntimeError(f"network call not allowed in dry-run: {url}")
+
+        _set_transport(_explode)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # No sources-cache.json — the only source is OmniRoute, which must be skipped.
+            result = run_refresh_action(dry_run=True, env=_env(tmp))
+
+        self.assertEqual(network_calls, [], "dry_run must make zero network calls")
+        self.assertIsInstance(result, dict)
+        # The result must name the reason (sources_cache_missing or similar)
+        self.assertIn(
+            result.get("source") or result.get("dry_run_source") or "",
+            ("sources_cache_missing",),
+            "dry_run with no cache must report sources_cache_missing",
+        )
+
+    def test_dry_run_with_cache_still_uses_it_without_omniroute(self) -> None:
+        """dry_run=True with sources-cache.json must use the cache, not OmniRoute."""
+        import json as _json
+
+        network_calls: list[str] = []
+
+        def _explode(url: str, h: dict, p: bytes, timeout: float):
+            network_calls.append(url)
+            raise RuntimeError(f"network call in dry-run: {url}")
+
+        _set_transport(_explode)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _env(tmp)
+            discovery_dir = Path(tmp) / "discovery"
+            discovery_dir.mkdir(parents=True)
+            sources = [
+                {
+                    "capacity_class": "free",
+                    "capacity_fact": "plan_free",
+                    "route": {
+                        "provider": "p1",
+                        "model": "m1",
+                        "base_url": "http://localhost:9999/v1",
+                        "auth": "none",
+                    },
+                }
+            ]
+            (discovery_dir / "sources-cache.json").write_text(
+                _json.dumps(sources), encoding="utf-8"
+            )
+            result = run_refresh_action(dry_run=True, env=env)
+
+        self.assertEqual(network_calls, [], "dry_run must make zero network calls even with cache")
+        self.assertEqual(result["counts"]["input"], 1)
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: wall_budget_s enforced for tool-probe stage
+# ---------------------------------------------------------------------------
+
+
+class WallBudgetEnforcementTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        _set_transport(None)
+
+    def test_tool_probe_skipped_when_budget_already_exhausted(self) -> None:
+        """When wall_budget_s is already spent, tool probes must not run."""
+        route = _route()
+        tool_probe_calls: list[str] = []
+
+        def _t(url: str, h: dict, p: bytes, timeout: float):
+            if b'"tools"' in p:
+                # Tool probe — must not be called when budget is exhausted
+                tool_probe_calls.append(url)
+                return 200, {}, _tool_ok_body()
+            # Liveness probe — answers OK
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # wall_budget_s=-1.0 means the deadline is already in the past
+            reg = run_refresh(
+                [(route, "free", "plan_free")], context_tokens=0, wall_budget_s=-1.0, env=_env(tmp)
+            )
+
+        # Liveness probe ran and answered, but tool probe must have been skipped
+        self.assertEqual(len(reg.entries), 1)
+        self.assertTrue(reg.entries[0].answered, "liveness probe should still be counted")
+        self.assertFalse(reg.entries[0].tool_ok, "tool probe was skipped — not proved")
+        self.assertEqual(tool_probe_calls, [], "tool probe must not be called when budget is spent")
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: load_registry with naive written_at
+# ---------------------------------------------------------------------------
+
+
+class RegistryNaiveDatetimeTest(unittest.TestCase):
+    def test_load_registry_naive_written_at_returns_none(self) -> None:
+        """A naive (timezone-unaware) written_at must be treated as stale."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _env(tmp)
+            # Write a registry with a naive timestamp (no timezone)
+            reg = DiscoveryRegistry(
+                schema=REGISTRY_SCHEMA,
+                written_at="2026-11-20T00:00:00",  # naive — no +00:00 or Z
+                ttl_s=REGISTRY_TTL_S,
+                entries=[],
+            )
+            save_registry(reg, env)
+            result = load_registry(env)
+            self.assertIsNone(result, "naive written_at must be treated as stale (return None)")
+
+    def test_load_registry_aware_written_at_still_works(self) -> None:
+        """An aware written_at that is fresh must be loaded normally."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _env(tmp)
+            reg = DiscoveryRegistry(
+                schema=REGISTRY_SCHEMA,
+                written_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                ttl_s=REGISTRY_TTL_S,
+                entries=[],
+            )
+            save_registry(reg, env)
+            result = load_registry(env)
+            self.assertIsNotNone(result, "fresh aware written_at should load successfully")
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: _action_discovery_refresh parameter forwarding
+# ---------------------------------------------------------------------------
+
+
+class ActionDiscoveryRefreshTest(unittest.TestCase):
+    def test_unknown_kwargs_raise_value_error(self) -> None:
+        """_action_discovery_refresh must reject unknown parameters explicitly."""
+        from verdict.actions.registry import _action_discovery_refresh
+
+        with self.assertRaises(ValueError) as ctx:
+            _action_discovery_refresh(unknown_param="bad")
+        self.assertIn("unknown", str(ctx.exception).lower())
+
+    def test_known_kwargs_forwarded_to_run_refresh_action(self) -> None:
+        """context_tokens and wall_budget_s must be forwarded to run_refresh_action."""
+        from unittest.mock import patch
+
+        from verdict.actions.registry import _action_discovery_refresh
+
+        with patch("verdict.discovery.refresh.run_refresh_action") as mock_refresh:
+            mock_refresh.return_value = {
+                "schema": REGISTRY_SCHEMA,
+                "written_at": "2026-11-20T00:00:00+00:00",
+                "ttl_s": REGISTRY_TTL_S,
+                "dry_run": True,
+                "source": "sources_cache_missing",
+                "counts": {
+                    "input": 0,
+                    "total": 0,
+                    "answered": 0,
+                    "tool_ok": 0,
+                    "rate_limited": 0,
+                    "malformed_cache_entries": 0,
+                },
+                "by_provider": {},
+                "entries": [],
+            }
+            _action_discovery_refresh(
+                dry_run=True, context_tokens=1000, wall_budget_s=10.0, force=True
+            )
+        mock_refresh.assert_called_once_with(
+            dry_run=True, context_tokens=1000, wall_budget_s=10.0, force=True
+        )
 
 
 if __name__ == "__main__":

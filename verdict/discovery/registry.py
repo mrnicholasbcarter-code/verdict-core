@@ -159,13 +159,17 @@ def load_registry(env: Mapping[str, str] | None = None) -> DiscoveryRegistry | N
     except (KeyError, TypeError, ValueError):
         return None
 
-    # Check TTL against wall clock
+    # Check TTL against wall clock.  Naive timestamps (no tzinfo) are treated as
+    # stale: a naive written_at would cause "aware - naive" TypeError and cannot
+    # be compared safely to the current UTC time.
     try:
         written = datetime.datetime.fromisoformat(reg.written_at)
+        if written.tzinfo is None:
+            return None  # naive timestamp — treat as stale
         age_s = (datetime.datetime.now(datetime.timezone.utc) - written).total_seconds()
         if age_s > reg.ttl_s:
             return None  # stale
-    except (ValueError, OverflowError):
+    except (ValueError, OverflowError, TypeError):
         return None
 
     return reg
@@ -305,16 +309,23 @@ def run_refresh(
         if result.status == RATE_LIMITED:
             breaker.open_pool(result.route)
 
-    # Second stage: tool probe at agent size for UP routes (via tool_probe_all)
+    # Second stage: tool probe at agent size for UP routes (via tool_probe_all).
+    # Enforce the wall-clock budget: if the remaining budget is exhausted,
+    # skip tool probes entirely and record them as not-probed (tool_ok=False),
+    # never as passed or failed by a measurement.
     up_results = [r for r in probe_results if r.status == UP and not breaker.is_open(r.route)]
     remaining_budget = deadline - time.monotonic()
-    tool_results: dict[str, tuple[str, str | None, int | None, str | None]] = tool_probe_all(
-        up_results,
-        timeout=min(probe_timeout, max(5.0, remaining_budget)),
-        concurrency=1,  # per-pool rate respect: tool probes are heavy, serialise them
-        per_host=1,
-        context_tokens=context_tokens,
-    )
+    tool_results: dict[str, tuple[str, str | None, int | None, str | None]]
+    if remaining_budget <= 0 or not up_results:
+        tool_results = {}  # budget exhausted — tool probes skipped (wall_budget_exhausted)
+    else:
+        tool_results = tool_probe_all(
+            up_results,
+            timeout=min(probe_timeout, max(5.0, remaining_budget)),
+            concurrency=1,  # per-pool rate respect: tool probes are heavy, serialise them
+            per_host=1,
+            context_tokens=context_tokens,
+        )
     # Open breaker for any tool_error 429s
     for route_key, (t_status, t_detail, _, _) in tool_results.items():
         if t_status == "tool_error" and "429" in str(t_detail):

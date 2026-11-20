@@ -145,9 +145,19 @@ def run_refresh_action(
                 existing, dry_run=False, total_input=len(existing.entries), scores=_scores
             )
 
-    # Load source routes — track malformed cache entries so a corrupt cache
-    # never silently looks like a smaller valid one.
-    routes, malformed = load_probeable_routes(env)
+    # In dry-run mode, never make network calls — use only the local sources
+    # cache.  If the cache is absent or empty, report sources_cache_missing
+    # rather than falling back to OmniRoute (which would be a network call).
+    if dry_run:
+        cache = _load_sources_cache(env)
+        routes = cache.routes
+        malformed = cache.malformed
+        source = "sources_cache" if routes else "sources_cache_missing"
+    else:
+        # Load source routes — track malformed cache entries so a corrupt cache
+        # never silently looks like a smaller valid one.
+        routes, malformed = load_probeable_routes(env)
+        source = "sources_cache" if routes else "omniroute"
 
     # Load coding scores (cached/offline, never blocks the refresh)
     scores: ScoreIndex = load_scores(offline=True)
@@ -161,6 +171,7 @@ def run_refresh_action(
         total_input=len(routes),
         scores=scores,
         malformed_cache_entries=malformed,
+        source=source,
     )
 
 
@@ -171,6 +182,7 @@ def _registry_to_summary(
     total_input: int,
     scores: ScoreIndex | None = None,
     malformed_cache_entries: int = 0,
+    source: str = "sources_cache",
 ) -> dict[str, Any]:
     """Convert a DiscoveryRegistry to a human/machine-readable summary dict."""
     entries = registry.entries
@@ -193,6 +205,7 @@ def _registry_to_summary(
         "written_at": registry.written_at,
         "ttl_s": registry.ttl_s,
         "dry_run": dry_run,
+        "source": source,
         "counts": {
             "input": total_input,
             "total": len(entries),

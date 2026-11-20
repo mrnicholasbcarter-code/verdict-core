@@ -655,8 +655,17 @@ def _action_discovery_refresh(**kwargs: Any) -> ActionResult:
     """Probe free/subscription routes and write 12-hour proof registry."""
     from verdict.discovery.refresh import run_refresh_action
 
+    _known = {"dry_run", "force", "context_tokens", "wall_budget_s"}
+    unknown = set(kwargs) - _known
+    if unknown:
+        raise ValueError(f"unknown discovery.refresh parameter(s): {sorted(unknown)}")
     dry_run = bool(kwargs.get("dry_run", False))
-    result = run_refresh_action(dry_run=dry_run)
+    force = bool(kwargs.get("force", False))
+    context_tokens = int(kwargs.get("context_tokens", 18_000))
+    wall_budget_s = float(kwargs.get("wall_budget_s", 300.0))
+    result = run_refresh_action(
+        dry_run=dry_run, force=force, context_tokens=context_tokens, wall_budget_s=wall_budget_s
+    )
     return ActionResult(data=result)
 
 
