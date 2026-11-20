@@ -587,19 +587,55 @@ class TestStoreAndSchema:
         assert (
             "openrouter/meta-llama/llama-3.3-70b-instruct:free" in mapping.omniroute_to_models_dev
         )
-        # Public OpenRouter id equals models.dev target (including :free); gateway prefix only.
+        # OpenRouter free-tier endpoints map to their base models.dev record (no :free suffix).
         assert (
             mapping.omniroute_to_models_dev["openrouter/nvidia/nemotron-3-super-120b-a12b:free"]
-            == "nvidia/nemotron-3-super-120b-a12b:free"
+            == "nvidia/nemotron-3-super-120b-a12b"
         )
         assert (
             mapping.omniroute_to_models_dev["openrouter/poolside/laguna-s-2.1:free"]
-            == "poolside/laguna-s-2.1:free"
+            == "poolside/laguna-s-2.1"
         )
         assert (
             mapping.omniroute_to_models_dev["openrouter/poolside/laguna-xs-2.1:free"]
-            == "poolside/laguna-xs-2.1:free"
+            == "poolside/laguna-xs-2.1"
         )
+        # BOD-S2b new entries: :free-suffixed routes map to their base models.json records.
+        assert (
+            mapping.omniroute_to_models_dev["openrouter/google/gemma-4-26b-a4b-it:free"]
+            == "google/gemma-4-26b-a4b-it"
+        )
+        assert (
+            mapping.omniroute_to_models_dev["openrouter/google/gemma-4-31b-it:free"]
+            == "google/gemma-4-31b-it"
+        )
+        assert (
+            mapping.omniroute_to_models_dev["openrouter/inclusionai/ling-3.2-flash:free"]
+            == "inclusionai/ling-3.2-flash"
+        )
+        assert (
+            mapping.omniroute_to_models_dev["openrouter/nvidia/nemotron-3.5-lightning:free"]
+            == "nvidia/nemotron-3.5-lightning"
+        )
+        assert (
+            mapping.omniroute_to_models_dev["openrouter/particle-ai/particle-1:free"]
+            == "particle-ai/particle-1"
+        )
+
+    def test_no_models_dev_id_ends_in_free_suffix(self) -> None:
+        """Invariant: no models_dev_id in the shipped map ends in ':free'.
+
+        :free is an OpenRouter API endpoint variant, never a models.dev canonical id.
+        A models_dev_id ending in :free means the target record does not exist in
+        the Core store (models.dev models.json has no :free-suffixed records).
+        """
+        mapping = load_identity_map(default_mapping_path())
+        bad = [
+            f"{omni} -> {mdj}"
+            for omni, mdj in mapping.omniroute_to_models_dev.items()
+            if mdj.endswith(":free")
+        ]
+        assert bad == [], f"models_dev_id values must not end in :free: {bad}"
 
     def test_parse_api_rejects_non_object(self) -> None:
         with pytest.raises(ModelMetadataError):
@@ -609,7 +645,7 @@ class TestStoreAndSchema:
 
 
 class TestOpenRouterFreeExactMapJoin:
-    """Explicit openrouter/<id>:free → same models.dev id; pool/admission receipt join."""
+    """Explicit openrouter/<id>:free → base models.dev id (no :free suffix); pool/admission receipt join."""
 
     @staticmethod
     def _record(model_id: str, *, tools: bool = True) -> ModelMetadataRecord:
@@ -633,7 +669,8 @@ class TestOpenRouterFreeExactMapJoin:
 
         mapping = load_identity_map(default_mapping_path())
         route = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
-        target = "nvidia/nemotron-3-super-120b-a12b:free"
+        # :free suffix is an OpenRouter API endpoint variant; models.dev target is the base record.
+        target = "nvidia/nemotron-3-super-120b-a12b"
         assert mapping.omniroute_to_models_dev[route] == target
 
         snapshot = MetadataSnapshot(
@@ -685,9 +722,10 @@ class TestOpenRouterFreeExactMapJoin:
 
     def test_openrouter_poolside_free_rows_join(self) -> None:
         mapping = load_identity_map(default_mapping_path())
+        # Targets are base models.dev records (no :free suffix — that is an OpenRouter endpoint variant).
         pairs = (
-            ("openrouter/poolside/laguna-s-2.1:free", "poolside/laguna-s-2.1:free"),
-            ("openrouter/poolside/laguna-xs-2.1:free", "poolside/laguna-xs-2.1:free"),
+            ("openrouter/poolside/laguna-s-2.1:free", "poolside/laguna-s-2.1"),
+            ("openrouter/poolside/laguna-xs-2.1:free", "poolside/laguna-xs-2.1"),
         )
         records = tuple(self._record(target) for _, target in pairs)
         snapshot = MetadataSnapshot(
