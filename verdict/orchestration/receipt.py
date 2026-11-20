@@ -127,12 +127,16 @@ def _fsync_dir(directory: Path) -> None:
 class EventLog:
     """Append-only JSONL event log with strictly increasing ``seq`` (resume-safe)."""
 
-    def __init__(self, path: Path, *, clock: Callable[[], datetime] | None = None) -> None:
+    def __init__(
+        self, path: Path, *, clock: Callable[[], datetime] | None = None, repair: bool = True
+    ) -> None:
         self.path = Path(path)
         self._clock = clock or _utc_now
+        self._repair = repair
         self._lock = threading.Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._repair_torn_tail()
+        if repair:
+            self._repair_torn_tail()
         events = self.read()
         self._seq = events[-1].seq if events else 0
 
@@ -167,18 +171,33 @@ class EventLog:
         return event
 
     def read(self) -> list[RunEvent]:
+        """Parse all complete events from the log.
+
+        When constructed with ``repair=False`` (non-mutating / read-only mode),
+        an unparseable line is treated as end-of-log instead of raising; this
+        lets the API read a potentially torn tail without truncating the file.
+        In the default ``repair=True`` mode the behaviour is unchanged.
+        """
         if not self.path.exists():
             return []
         events: list[RunEvent] = []
         last = 0
-        for number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), 1):
+        # Use errors='replace' so a torn multi-byte sequence doesn't raise
+        # UnicodeDecodeError before we have a chance to handle the bad line.
+        raw_text = self.path.read_bytes().decode("utf-8", errors="replace")
+        for number, line in enumerate(raw_text.splitlines(), 1):
             if not line.strip():
                 continue
             try:
                 event = RunEvent.from_dict(json.loads(line))
             except (ValueError, KeyError, TypeError) as exc:
+                if not self._repair:
+                    # Non-mutating mode: a parse failure is a torn tail — stop.
+                    break
                 raise OrchestrationError(f"{self.path}:{number}: corrupt event: {exc}") from exc
             if event.seq <= last:
+                if not self._repair:
+                    break
                 raise OrchestrationError(
                     f"{self.path}:{number}: seq {event.seq} not greater than {last}"
                 )
@@ -661,12 +680,12 @@ def producer_from_started(started: RunEvent | None) -> dict[str, Any] | None:
     }
 
 
-def build_run_receipt(run_dir: Path) -> dict[str, Any]:
+def build_run_receipt(run_dir: Path, *, repair: bool = True) -> dict[str, Any]:
     run_dir = Path(run_dir)
     events_path = run_dir / EVENTS_FILE
     if not events_path.exists():
         raise OrchestrationError(f"missing {EVENTS_FILE} in {run_dir}")
-    events = EventLog(events_path).read() if events_path.stat().st_size else []
+    events = EventLog(events_path, repair=repair).read() if events_path.stat().st_size else []
     # A run that ended before a plan existed (startup, admission or planning
     # BLOCKED) has no graph or an empty one. It still gets a receipt with no
     # nodes, so its cause is verifiable like any other run's.
@@ -1007,8 +1026,14 @@ def write_run_receipt(run_dir: Path) -> Path:
     return target
 
 
-def verify_run_receipt(run_dir: Path) -> list[str]:
-    """Recompute the receipt from source files; empty list means valid."""
+def verify_run_receipt(run_dir: Path, *, repair: bool = True) -> list[str]:
+    """Recompute the receipt from source files; empty list means valid.
+
+    Pass ``repair=False`` for read-only callers (e.g. the API) to prevent
+    ``EventLog.__init__`` from truncating a torn tail on disk.  The digest
+    check will still catch any changes to events.jsonl; a torn tail caused
+    by a mid-write crash appears as an ``events_digest mismatch``.
+    """
     run_dir = Path(run_dir)
     path = run_dir / RECEIPT_FILE
     if not path.exists():
@@ -1026,7 +1051,7 @@ def verify_run_receipt(run_dir: Path) -> list[str]:
     if stored.get("events_digest") != _sha256_file(events_path):
         problems.append("events_digest mismatch: events.jsonl changed after receipt was written")
     try:
-        fresh = build_run_receipt(run_dir)
+        fresh = build_run_receipt(run_dir, repair=repair)
     except OrchestrationError as exc:
         return [*problems, f"cannot rebuild receipt: {exc}"]
     for key in sorted(set(fresh) | set(stored)):

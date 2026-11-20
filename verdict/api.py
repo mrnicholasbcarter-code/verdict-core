@@ -2971,11 +2971,6 @@ def _finish_evidence(
 # response.  Protects against huge runs that would exceed response limits.
 _RUNS_EVENTS_BYTE_BUDGET = 1 * 1024 * 1024  # 1 MiB
 
-# Window size for the bounded tail read in _events_tail_intact.  Reading only
-# the last 64 KiB is enough to find the last newline-terminated JSON line in
-# any sane log; a full-file fallback covers pathological single-line files.
-_EVENTS_TAIL_WINDOW = 64 * 1024  # 64 KiB
-
 # Maximum number of run directories scanned per /v1/runs request.  Prevents
 # O(n) work when the runs root contains thousands of old directories.
 _RUNS_SCAN_LIMIT = 500
@@ -3290,9 +3285,10 @@ async def get_run_events(
 async def get_run_receipt(run_id: str) -> Response:
     """Return the stored receipt and its verification result.
 
-    Calls the existing ``verify_run_receipt`` verifier without modifying it.
-    Returns ``verification.ok`` (bool) and ``verification.problems`` (list of
-    strings describing any mismatches).  Never writes to any file.
+    Calls ``verify_run_receipt(repair=False)`` so EventLog never truncates
+    events.jsonl, even if a live run appends a partial line between any
+    intermediate check and the actual disk reads.  Never writes to any file.
+    Returns ``verification.ok`` (bool) and ``verification.problems`` (list).
     """
     run_dir = _resolve_run_dir(run_id)
     if run_dir is None:
@@ -3304,42 +3300,6 @@ async def get_run_receipt(run_id: str) -> Response:
         raise HTTPException(
             status_code=404, detail={"error": {"message": "receipt not found for run"}}
         )
-
-    def _events_tail_intact(events_path: Path) -> bool:
-        """Return True iff the last non-empty line of events.jsonl decodes as JSON.
-
-        verify_run_receipt calls EventLog, whose __init__ repairs a torn tail by
-        truncating the file — a mutation.  Checking the tail first lets us skip
-        verify_run_receipt for torn files so that GET never writes to a run dir.
-
-        Reads only the last _EVENTS_TAIL_WINDOW bytes to bound memory on large
-        logs.  Falls back to a full read only when no newline is found in the
-        window (a pathological single-line file without intermediate newlines).
-        """
-        if not events_path.exists():
-            return True  # no file → no tail to tear; let verify_run_receipt report it
-        try:
-            with events_path.open("rb") as fh:
-                fh.seek(0, 2)  # seek to end
-                file_size = fh.tell()
-                read_offset = max(0, file_size - _EVENTS_TAIL_WINDOW)
-                fh.seek(read_offset)
-                window = fh.read()
-                if b"\n" not in window and read_offset > 0:
-                    # No newline in the tail window; fall back to the full file.
-                    fh.seek(0)
-                    window = fh.read()
-            last = b""
-            for raw in window.split(b"\n"):
-                stripped = raw.strip()
-                if stripped:
-                    last = stripped
-            if not last:
-                return True
-            json.loads(last)
-            return True
-        except Exception:
-            return False
 
     def _load_and_verify() -> dict[str, Any]:
         from verdict.orchestration.receipt import verify_run_receipt
@@ -3353,29 +3313,15 @@ async def get_run_receipt(run_id: str) -> Response:
                 "verification": {"ok": False, "problems": [f"cannot read receipt: {exc}"]},
             }
 
-        events_path = run_dir / "events.jsonl"
-        if not _events_tail_intact(events_path):
-            # Torn tail: calling verify_run_receipt would trigger EventLog repair
-            # (a write to events.jsonl).  Return a problem without mutating.
-            return {
-                "run_id": run_id,
-                # Redact receipt before returning; verification is skipped so raw
-                # bytes are never compared against the redacted copy.
-                "receipt": _redact_event_data(receipt_data),
-                "verification": {
-                    "ok": False,
-                    "problems": [
-                        "events.jsonl has a torn tail; "
-                        "full verification skipped to avoid mutation by GET"
-                    ],
-                },
-            }
-
-        # Verification reads the raw files from disk; it must complete before
-        # redaction so the digest comparison is always against unmodified bytes.
-        problems = verify_run_receipt(run_dir)
+        # Pass repair=False so EventLog never truncates events.jsonl.  This
+        # holds unconditionally — even if a live run appends a partial line
+        # between any earlier check and this call.  A torn tail causes an
+        # events_digest mismatch in the returned problems, which is the
+        # correct observable outcome for a mid-write state.
+        problems = verify_run_receipt(run_dir, repair=False)
         return {
             "run_id": run_id,
+            # Verification runs on raw file bytes first; redaction happens after.
             "receipt": _redact_event_data(receipt_data),
             "verification": {"ok": not problems, "problems": problems},
         }

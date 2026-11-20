@@ -570,13 +570,7 @@ class TestReadOnly:
     def test_runs_and_events_make_no_writes_with_torn_tail(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """GET /v1/runs and /events must never write even with a torn events.jsonl.
-
-        Note: GET /v1/runs/{id}/receipt calls verify_run_receipt, which uses
-        EventLog internally and may repair a torn tail as pre-existing behaviour.
-        That side-effect is out of scope here; we test only the two pure-read
-        endpoints.
-        """
+        """GET /v1/runs and /events must never write even with a torn events.jsonl."""
         run_dir = tmp_path / "ro-run"
         run_dir.mkdir()
         # Write events directly (no EventLog so no mkdir side-effect).
@@ -925,12 +919,13 @@ class TestOversizedEvents:
 
 
 # ---------------------------------------------------------------------------
-# _events_tail_intact: bounded seek works on large logs
+# Receipt endpoint: torn tail — file must be byte-identical, problems reported
 # ---------------------------------------------------------------------------
 
 
-class TestTailIntactBoundedSeek:
-    """_events_tail_intact reads only the last 64 KiB on large logs."""
+class TestReceiptLargeLog:
+    """Receipt endpoint uses EventLog(repair=False) so it never truncates the
+    events.jsonl, even on large logs and even if the tail is torn."""
 
     def _write_large_log(self, run_dir: Path, run_id: str) -> None:
         """Write a large events.jsonl (> 64 KiB) followed by proper run events.
@@ -962,11 +957,11 @@ class TestTailIntactBoundedSeek:
         log.emit("run_started", run_id=run_id, goal="tail test")
         log.emit("run_finished", outcome="BLOCKED", reason="tail test")
 
-    def test_large_intact_log_does_not_read_fully(
+    def test_large_intact_log_receipt_ok(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """A large intact events.jsonl (> 64 KiB) must have its receipt returned
-        without triggering a mutation.  Verifies the bounded seek path works."""
+        without mutation.  Uses repair=False path unconditionally."""
         from verdict.orchestration.receipt import write_run_receipt
 
         run_dir = tmp_path / "large-log"
@@ -980,10 +975,11 @@ class TestTailIntactBoundedSeek:
         body = r.json()
         assert isinstance(body["verification"]["ok"], bool)
 
-    def test_large_torn_log_reports_torn_tail(
+    def test_large_torn_log_file_unchanged_problem_reported(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """A large log with a torn tail is detected even with bounded seek."""
+        """A torn tail is reported (digest mismatch) and events.jsonl is never
+        mutated — repair=False holds even when the tail is torn at GET time."""
         from verdict.orchestration.receipt import write_run_receipt
 
         run_dir = tmp_path / "large-torn"
@@ -999,12 +995,107 @@ class TestTailIntactBoundedSeek:
         r = client.get("/v1/runs/large-torn/receipt", headers=AUTH)
         assert r.status_code == 200
         body = r.json()
+        # A torn tail changes the file hash → problems must be non-empty.
         assert body["verification"]["ok"] is False
-        problems = body["verification"]["problems"]
-        assert any("torn tail" in p for p in problems)
+        assert len(body["verification"]["problems"]) > 0
         # No mutation: file sizes and mtimes must be unchanged.
         after = {str(p): (p.stat().st_size, p.stat().st_mtime_ns) for p in run_dir.iterdir()}
         assert before == after
+
+
+# ---------------------------------------------------------------------------
+# TOCTOU: receipt endpoint never mutates even if torn tail appears mid-call
+# ---------------------------------------------------------------------------
+
+
+class TestReceiptTOCTOU:
+    """verify_run_receipt(repair=False) holds unconditionally so a torn tail
+    injected at any point between the HTTP call and the disk reads cannot
+    trigger EventLog's _repair_torn_tail truncation."""
+
+    def test_torn_tail_present_at_get_time_is_not_repaired(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Torn tail present when GET is received → byte-identical, problem reported.
+
+        This is the synchronous version of the race: the file is already torn
+        before the endpoint runs, so repair=False is immediately exercised.
+        """
+        from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+        run_dir = tmp_path / "toctou-sync"
+        run_dir.mkdir()
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("run_started", run_id="toctou-sync", goal="toctou test")
+        log.emit("run_finished", outcome="BLOCKED", reason="toctou")
+        write_run_receipt(run_dir)
+        # Tear the tail.
+        with (run_dir / "events.jsonl").open("ab") as f:
+            f.write(b'{"seq": 999, "partial')
+
+        before_bytes = (run_dir / "events.jsonl").read_bytes()
+        before_mtime = (run_dir / "events.jsonl").stat().st_mtime_ns
+
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/toctou-sync/receipt", headers=AUTH)
+        assert r.status_code == 200
+
+        after_bytes = (run_dir / "events.jsonl").read_bytes()
+        after_mtime = (run_dir / "events.jsonl").stat().st_mtime_ns
+
+        assert before_bytes == after_bytes, "events.jsonl was mutated"
+        assert before_mtime == after_mtime, "events.jsonl mtime changed"
+        # Digest mismatch must be reported.
+        body = r.json()
+        assert body["verification"]["ok"] is False
+
+    def test_torn_tail_injected_mid_call_is_not_repaired(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Torn tail injected AFTER receipt bytes are read but before verify runs.
+
+        Simulates the TOCTOU window: a live run appends a partial line between
+        any intermediate step and the EventLog open.  With repair=False the
+        file must still be byte-identical after the call.
+        """
+        from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+        run_dir = tmp_path / "toctou-race"
+        run_dir.mkdir()
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("run_started", run_id="toctou-race", goal="toctou race")
+        log.emit("run_finished", outcome="BLOCKED", reason="race")
+        write_run_receipt(run_dir)
+
+        events_path = run_dir / "events.jsonl"
+
+        # Monkeypatch verify_run_receipt to inject a torn tail just before it
+        # reads the file, simulating a concurrent append.
+        from verdict.orchestration import receipt as receipt_mod
+
+        original_verify_fn = receipt_mod.verify_run_receipt
+
+        def _inject_then_verify(rd: Any, *, repair: bool = True) -> list[str]:
+            # Inject the torn tail now — AFTER the endpoint has read receipt.json.
+            with events_path.open("ab") as f:
+                f.write(b'{"seq": 888, "injected')
+            return original_verify_fn(rd, repair=repair)
+
+        monkeypatch.setattr(receipt_mod, "verify_run_receipt", _inject_then_verify)
+
+        before_size_before_inject = events_path.stat().st_size
+
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/toctou-race/receipt", headers=AUTH)
+        assert r.status_code == 200
+
+        after_bytes = events_path.read_bytes()
+        # The injected bytes are there (we did that intentionally), but the
+        # file must NOT have been truncated by EventLog repair.
+        assert len(after_bytes) > before_size_before_inject, "inject didn't work"
+        body = r.json()
+        # With a torn tail the digest changes → problems must be non-empty.
+        assert body["verification"]["ok"] is False
 
 
 # ---------------------------------------------------------------------------
