@@ -2829,6 +2829,11 @@ class DagRuntime:
             lost_extra: dict[str, Any] = (
                 {"findings_lost": review.findings_lost} if review.findings_lost else {}
             )
+            budget_extra: dict[str, Any] = {}
+            if review.token_budget_used:
+                budget_extra["token_budget_used"] = review.token_budget_used
+            if review.token_budget_source:
+                budget_extra["token_budget_source"] = review.token_budget_source
             self.events.emit(
                 "review",
                 status=review.status,
@@ -2840,6 +2845,7 @@ class DagRuntime:
                 detail=review.detail[:300],
                 raw_ref=review.raw_ref,
                 **lost_extra,
+                **budget_extra,
             )
             if not review.passed:
                 return await self._finish(

@@ -111,6 +111,17 @@ def add_parsers(subparsers: Any) -> None:
     )
     orch.add_argument("--no-review", action="store_true", help="Skip OCR review (run ends BLOCKED)")
     orch.add_argument(
+        "--review-token-budget",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help=(
+            "OCR token budget (positive integer, max 4000000). "
+            "Overrides auto-scaling and VERDICT_REVIEW_TOKEN_BUDGET. "
+            "Default: auto-scaled from changed-file total bytes."
+        ),
+    )
+    orch.add_argument(
         "--inject",
         action="append",
         default=[],
@@ -721,7 +732,7 @@ def _follow_console(*, plain: bool, stream: Any = None) -> Any:
 def _orchestrate(args: argparse.Namespace) -> int:
     from verdict.orchestration.contracts import WorkGraph
     from verdict.orchestration.recovery import FailureIntelligence
-    from verdict.orchestration.review import OpenCodeReviewer
+    from verdict.orchestration.review import REVIEW_BUDGET_CEILING, OpenCodeReviewer
     from verdict.orchestration.run import resolve_api_key, run_golden_path
     from verdict.orchestration.tui import follow
 
@@ -836,11 +847,52 @@ def _orchestrate(args: argparse.Namespace) -> int:
         write_run_receipt(run_dir)
         print(f"BLOCKED: {reason}", file=sys.stderr)
         return 2
+    _review_budget: int | None = None
+    _review_budget_source: str = ""
+    _env_budget_raw = os.environ.get("VERDICT_REVIEW_TOKEN_BUDGET")
+    if args.review_token_budget is not None:
+        if args.review_token_budget > REVIEW_BUDGET_CEILING:
+            print(
+                f"BLOCKED: --review-token-budget {args.review_token_budget} exceeds"
+                f" ceiling {REVIEW_BUDGET_CEILING}",
+                file=sys.stderr,
+            )
+            return 2
+        _review_budget = args.review_token_budget
+        _review_budget_source = "flag"
+    elif _env_budget_raw is not None:
+        try:
+            _env_budget = int(_env_budget_raw)
+        except ValueError:
+            print(
+                f"BLOCKED: VERDICT_REVIEW_TOKEN_BUDGET={_env_budget_raw!r} is not an integer",
+                file=sys.stderr,
+            )
+            return 2
+        if _env_budget < 1:
+            print(
+                f"BLOCKED: VERDICT_REVIEW_TOKEN_BUDGET must be a positive integer; got {_env_budget}",
+                file=sys.stderr,
+            )
+            return 2
+        if _env_budget > REVIEW_BUDGET_CEILING:
+            print(
+                f"BLOCKED: VERDICT_REVIEW_TOKEN_BUDGET {_env_budget} exceeds"
+                f" ceiling {REVIEW_BUDGET_CEILING}",
+                file=sys.stderr,
+            )
+            return 2
+        _review_budget = _env_budget
+        _review_budget_source = "env"
     reviewer = (
         None
         if args.no_review
         else OpenCodeReviewer(
-            selector, out_dir=run_dir / "review", gateway_url=args.gateway.rstrip("/") + "/v1"
+            selector,
+            out_dir=run_dir / "review",
+            gateway_url=args.gateway.rstrip("/") + "/v1",
+            token_budget=_review_budget,
+            token_budget_source=_review_budget_source,
         )
     )
     policy = RuntimePolicy(

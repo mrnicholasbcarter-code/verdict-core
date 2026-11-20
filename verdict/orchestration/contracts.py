@@ -942,6 +942,11 @@ class ReviewResult:
     # (for example malformed JSON). Their findings are unknown, so a review with
     # any lost call is never a clean PASS.
     findings_lost: int = 0
+    # Token budget used for this review invocation and how it was determined.
+    # source: "scaled" (auto-computed), "flag" (--review-token-budget),
+    #         "env" (VERDICT_REVIEW_TOKEN_BUDGET), "default" (floor, no changed files).
+    token_budget_used: int = 0
+    token_budget_source: str = ""
 
     @property
     def passed(self) -> bool:
