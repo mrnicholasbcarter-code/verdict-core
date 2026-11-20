@@ -197,6 +197,14 @@ ignore_errors = true
 module = "scripts.prime_workflow"
 ignore_errors = true
 
+[[tool.mypy.overrides]]
+# opentelemetry is an optional dependency (verdict-core[tracing]).  When the
+# tracing extra is not installed the package is absent; ignore_missing_imports
+# suppresses [import-not-found] without requiring type: ignore comments that
+# would become [unused-ignore] when the package is present.
+module = ["opentelemetry", "opentelemetry.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
