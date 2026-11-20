@@ -93,18 +93,69 @@ def _load_sources_cache(env: Any = None) -> _CacheResult:
     return _CacheResult(result, malformed)
 
 
+_RATE_LIMITED_PROVIDERS: frozenset[str] = frozenset(
+    {"ovhcloud", "kilocode", "kilo-gateway", "pollinations", "llm7"}
+)
+
+
 def _load_omniroute_routes(env: Any = None) -> list[tuple[Route, str, str]]:
-    """Load routes from the OmniRoute catalog with capacity classification applied.
+    """Load routes from OmniRoute via the sources/omniroute adapter.
 
-    Returns an empty list when the OmniRoute key is absent or the catalog
-    cannot be fetched.  Never raises.
+    Uses ``fetch_omniroute_evidence`` as the single fetcher and
+    ``rows_from_evidence`` for opaque-route filtering and row normalisation.
+    Capacity is read from ``evidence.route_capacities`` / ``route_capacity_evidence``
+    (pre-computed by ``parse_omniroute_evidence`` from connection facts).
+
+    Returns an empty list when the OmniRoute key is absent or the fetch fails.
+    Never raises.
     """
-    try:
-        from verdict.discovery.omniroute_source import load_omniroute_classified
+    import os
 
-        return load_omniroute_classified(env=env)
+    try:
+        from verdict.discovery.sources.omniroute import rows_from_evidence
+        from verdict.omniroute_evidence import fetch_omniroute_evidence
+    except ImportError:
+        return []
+
+    _env = env if env is not None else os.environ
+    _key_vars = (
+        "OMNIROUTE_API_KEY",
+        "LLMGATE_API_KEY",
+        "VERDICT_OMNIROUTE_API_KEY",
+        "OMNIROUTE_ACCESS_TOKEN",
+    )
+    base = _env.get("OMNIROUTE_BASE_URL", "http://localhost:20128")
+    api_key = next((v for name in _key_vars if (v := _env.get(name, ""))), "")
+    if not api_key:
+        return []
+    auth_var = next((name for name in _key_vars if _env.get(name, "")), _key_vars[0])
+    mgmt_token = _env.get("OMNIROUTE_MANAGEMENT_TOKEN") or None
+
+    try:
+        evidence = fetch_omniroute_evidence(base, api_key=api_key, management_token=mgmt_token)
+        disc_rows = rows_from_evidence(evidence, base_url=base)
     except Exception:
         return []
+
+    result: list[tuple[Route, str, str]] = []
+    for row in disc_rows:
+        cap_class = evidence.route_capacities.get(row.id, "unknown")
+        cap_fact = evidence.route_capacity_evidence.get(row.id, "unknown")
+        if cap_class not in _PROBEABLE:
+            continue
+        route = Route(
+            provider="omniroute",
+            model=row.id,
+            base_url=(base.rstrip("/") + "/v1"),
+            auth=f"env:{auth_var}",
+            source="omniroute_catalog",
+            upstream=row.provider or None,
+            billing=cap_class,
+            max_parallel=1 if row.provider in _RATE_LIMITED_PROVIDERS else None,
+        )
+        result.append((route, cap_class, cap_fact))
+
+    return result
 
 
 def load_probeable_routes(env: Any = None) -> tuple[list[tuple[Route, str, str]], int]:

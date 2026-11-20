@@ -474,5 +474,96 @@ class TransportExceptionTest(unittest.TestCase):
         self.assertTrue(entries_by_key[route_b.key].answered)
 
 
+class LoadOmniRouteRoutesTest(unittest.TestCase):
+    """Tests for verdict.discovery.refresh._load_omniroute_routes.
+
+    Uses parse_omniroute_evidence offline and patches fetch_omniroute_evidence
+    so no network calls are made.
+    """
+
+    def _make_evidence(self, route_id: str, provider: str, cap_class: str, cap_fact: str) -> object:
+        from datetime import datetime, timezone
+
+        from verdict.omniroute_evidence import OmniRouteEvidence
+
+        return OmniRouteEvidence(
+            fetched_at=datetime(2026, 11, 20, tzinfo=timezone.utc),
+            connections=(),
+            usable_providers=frozenset(),
+            proven_by_traffic={},
+            cooled_models=frozenset(),
+            source_errors=(),
+            route_capacities={route_id: cap_class},
+            route_capacity_evidence={route_id: cap_fact},
+            inventory_rows={route_id: {"id": route_id, "owned_by": provider}},
+        )
+
+    def test_free_route_becomes_probeable_route(self) -> None:
+        """A route with capacity 'free' becomes a Route tuple in the result."""
+        from unittest.mock import patch
+
+        from verdict.discovery.refresh import _load_omniroute_routes
+
+        evidence = self._make_evidence(
+            "groq/llama-3.3-70b-versatile", "groq", "free", "plan_label_free"
+        )
+        with patch("verdict.omniroute_evidence.fetch_omniroute_evidence", return_value=evidence):
+            env = {"OMNIROUTE_API_KEY": "test-key", "OMNIROUTE_BASE_URL": "http://localhost:20128"}
+            result = _load_omniroute_routes(env=env)
+
+        self.assertEqual(len(result), 1)
+        route, cap_class, cap_fact = result[0]
+        self.assertEqual(route.model, "groq/llama-3.3-70b-versatile")
+        self.assertEqual(cap_class, "free")
+        self.assertEqual(cap_fact, "plan_label_free")
+        self.assertEqual(route.auth, "env:OMNIROUTE_API_KEY")
+        self.assertIsNone(route.max_parallel)  # groq is not rate-limited
+
+    def test_metered_route_excluded(self) -> None:
+        """A route with capacity 'metered' is not included in the result."""
+        from unittest.mock import patch
+
+        from verdict.discovery.refresh import _load_omniroute_routes
+
+        evidence = self._make_evidence(
+            "openai/gpt-4o", "openai", "metered", "apikey_positive_pricing"
+        )
+        with patch("verdict.omniroute_evidence.fetch_omniroute_evidence", return_value=evidence):
+            env = {"OMNIROUTE_API_KEY": "test-key"}
+            result = _load_omniroute_routes(env=env)
+
+        self.assertEqual(result, [])
+
+    def test_rate_limited_provider_gets_max_parallel_1(self) -> None:
+        """A free route from a rate-limited provider gets max_parallel=1."""
+        from unittest.mock import patch
+
+        from verdict.discovery.refresh import _load_omniroute_routes
+
+        evidence = self._make_evidence(
+            "ovhcloud/llama-3.3-70b", "ovhcloud", "free", "gateway_free_tier"
+        )
+        with patch("verdict.omniroute_evidence.fetch_omniroute_evidence", return_value=evidence):
+            env = {"OMNIROUTE_API_KEY": "test-key"}
+            result = _load_omniroute_routes(env=env)
+
+        self.assertEqual(len(result), 1)
+        route, _, _ = result[0]
+        self.assertEqual(route.max_parallel, 1)
+
+    def test_missing_api_key_returns_empty_without_fetch(self) -> None:
+        """When no API key is present, returns [] without calling fetch."""
+        from unittest.mock import MagicMock, patch
+
+        from verdict.discovery.refresh import _load_omniroute_routes
+
+        mock_fetch = MagicMock()
+        with patch("verdict.omniroute_evidence.fetch_omniroute_evidence", mock_fetch):
+            result = _load_omniroute_routes(env={})
+
+        self.assertEqual(result, [])
+        mock_fetch.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
