@@ -123,6 +123,19 @@ _REVOKING_CATEGORIES = frozenset({"authentication", "permission", "model_mismatc
 # TERMINAL_FAILURE (validated=False).  Together with validated=True these form the full
 # set of "rejected" outcomes that must start the next attempt from a clean base.
 _JUDGED_WORK_CATEGORIES = frozenset({"diff_rejected"})
+# Capability escalation: categories that count as judged failures for the escalation
+# counter.  Extends _JUDGED_WORK_CATEGORIES with verification_failed (can arrive via
+# either validated=True or validated=False).  repo_gate_failed is wrapped into
+# verification_failed by _run_repo_gates() / _verify_node() before reaching here.
+_ESCALATION_JUDGED_CATEGORIES = _JUDGED_WORK_CATEGORIES | frozenset({"verification_failed"})
+# After this many judged failures on the same node, the next attempt must use a route
+# with a strictly stronger capability tier than the one that last failed.
+_ESCALATION_JUDGED_FAILURE_THRESHOLD = 2
+# Ceiling used when the failing route's capability_tier is unknown (None).  Setting
+# this to 3 (the weakest known tier) means "require a route with a KNOWN tier at or
+# below 3"; the eligibility check then excludes unknown-tier routes when escalation
+# is active, so the escalation path prefers any route with measured capability.
+_ESCALATION_UNKNOWN_TIER_CEILING = 3
 _WORKER_OUTPUT_RESERVE = 1024
 _WORKER_SAFETY_RESERVE = 512
 
@@ -290,6 +303,18 @@ class NodeRun:
     # content in the salvage dir.  Forces clean-base on all future attempts of
     # this node until an interrupted save successfully replaces the dir.
     salvage_poisoned: bool = False
+    # Capability escalation fields.
+    # Number of judged work failures (categories in _ESCALATION_JUDGED_CATEGORIES,
+    # or validated=True) accumulated across all attempts of this node.
+    judged_failure_count: int = 0
+    # Capability tier of the most recently dispatched route (from RouteVerdict.
+    # capability_tier).  None when the tier is unknown.  Set each time a route
+    # is selected; read by _record_failure() to tighten the escalation ceiling.
+    last_selected_tier: int | None = None
+    # Monotone escalation ceiling: when judged_failure_count >=
+    # _ESCALATION_JUDGED_FAILURE_THRESHOLD this is set to (last_selected_tier - 1)
+    # and only decreases from there.  None = no ceiling active.
+    escalation_tier_ceiling: int | None = None
 
 
 @dataclass(frozen=True)
@@ -910,18 +935,68 @@ class DagRuntime:
                     evidence=run.reason,
                 )
                 return
-            requirements = TaskRequirements.for_node(
-                run.node,
-                exclude_routes=frozenset(tried),
-                exclude_pools=frozenset(run.excluded_pools),
-            )
-            # BOD-341: selection reads the health cache/inventory and can take
-            # seconds. Running it inline here would block the whole event loop
-            # (dispatch, slot release, other nodes' driving) for that long, so
-            # --max-parallel is never reached. Run it in a thread instead.
-            choice, considered, _post = await asyncio.to_thread(
-                self._select_with_stats, requirements, self.now()
-            )
+            # Capability escalation: if a tier ceiling is active (set after K judged
+            # failures), try a stricter selection first.  If that leaves no eligible
+            # route, fall back to the full admitted set so the budget stays bounded.
+            _esc_ceiling = run.escalation_tier_ceiling
+            if _esc_ceiling is not None:
+                _esc_requirements = TaskRequirements.for_node(
+                    run.node,
+                    exclude_routes=frozenset(tried),
+                    exclude_pools=frozenset(run.excluded_pools),
+                    escalation_max_tier=_esc_ceiling,
+                )
+                # BOD-341: run on a worker thread to avoid blocking the event loop.
+                _esc_choice, _esc_considered, _esc_post = await asyncio.to_thread(
+                    self._select_with_stats, _esc_requirements, self.now()
+                )
+            else:
+                _esc_choice = None
+
+            # Initialize so mypy knows choice/considered/_post are defined across
+            # both the escalation and fallback branches.
+            choice: RouteVerdict | None = None
+            considered: tuple[RouteVerdict, ...] = ()
+            _post: dict[str, int] = {}
+            if _esc_choice is not None:
+                # Escalation found a stronger route within the admitted set.
+                self.events.emit(
+                    "escalation",
+                    node_id,
+                    from_route=run.route_id,
+                    from_tier=run.last_selected_tier,
+                    to_route=_esc_choice.route_id,
+                    to_tier=_esc_choice.capability_tier,
+                    judged_failure_count=run.judged_failure_count,
+                    attempt=run.attempt + 1,
+                    reason="judged_failures_threshold",
+                )
+                run.history.append(
+                    {
+                        "attempt": run.attempt + 1,
+                        "route_id": _esc_choice.route_id,
+                        "outcome": "escalation",
+                        "from_route": run.route_id,
+                        "from_tier": run.last_selected_tier,
+                        "to_tier": _esc_choice.capability_tier,
+                        "judged_failure_count": run.judged_failure_count,
+                    }
+                )
+                choice, considered, _post = _esc_choice, _esc_considered, _esc_post
+            else:
+                # Normal selection (no escalation ceiling, or ceiling left no route).
+                # BOD-341: selection reads the health cache/inventory and can take
+                # seconds. Running it inline here would block the whole event loop
+                # (dispatch, slot release, other nodes' driving) for that long, so
+                # --max-parallel is never reached. Run it in a thread instead.
+                requirements = TaskRequirements.for_node(
+                    run.node,
+                    exclude_routes=frozenset(tried),
+                    exclude_pools=frozenset(run.excluded_pools),
+                )
+                choice, considered, _post = await asyncio.to_thread(
+                    self._select_with_stats, requirements, self.now()
+                )
             counts = _ladder_counts(considered)
             accounting = (_post or {}).pop("selection_accounting", None)
             if _post:
@@ -1057,6 +1132,8 @@ class DagRuntime:
             previous = run.route_id
             run.attempt += 1
             run.route_id = choice.route_id
+            # Track the dispatched route's tier for capability escalation.
+            run.last_selected_tier = choice.capability_tier
             run.selected_context_window = choice.context_window
             self.events.emit(
                 "eligibility",
@@ -2110,6 +2187,42 @@ class DagRuntime:
         # fix(retry-clean-base): track whether this attempt's work was judged wrong so
         # _attempt() can start the next attempt from the clean base.
         run.last_rejected = validated or failure.category in _JUDGED_WORK_CATEGORIES
+        # Capability escalation: count judged work failures and tighten the tier
+        # ceiling once the threshold is reached.  Interrupted failures (transport,
+        # timeout) do not count — only failures that mean the work was wrong.
+        if validated or failure.category in _ESCALATION_JUDGED_CATEGORIES:
+            run.judged_failure_count += 1
+            if run.judged_failure_count >= _ESCALATION_JUDGED_FAILURE_THRESHOLD:
+                t = run.last_selected_tier
+                if t is not None and t > 1:
+                    new_ceil = t - 1
+                    if (
+                        run.escalation_tier_ceiling is None
+                        or new_ceil < run.escalation_tier_ceiling
+                    ):
+                        run.escalation_tier_ceiling = new_ceil
+                elif t is None:
+                    # Unknown-tier route: treat as weaker than any known tier.
+                    # Set ceiling to _ESCALATION_UNKNOWN_TIER_CEILING (3) so the
+                    # eligibility check excludes unknown-tier routes while keeping
+                    # all routes with a measured capability_tier.
+                    new_ceil = _ESCALATION_UNKNOWN_TIER_CEILING
+                    if (
+                        run.escalation_tier_ceiling is None
+                        or new_ceil < run.escalation_tier_ceiling
+                    ):
+                        run.escalation_tier_ceiling = new_ceil
+                else:
+                    # t == 1: already at the strongest known tier; no stronger route
+                    # exists to escalate to.  Emit the exhausted event so the receipt
+                    # records it, but do not set a ceiling (there is nowhere to narrow).
+                    self.events.emit(
+                        "escalation_exhausted",
+                        run.node.node_id,
+                        from_tier=run.last_selected_tier,
+                        judged_failure_count=run.judged_failure_count,
+                        reason="at_strongest_tier",
+                    )
         if validated:
             self._set(run, NodeState.REJECTED, reason=failure.category)
         else:
