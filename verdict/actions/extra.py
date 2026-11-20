@@ -1199,6 +1199,35 @@ def _action_metadata_install_service(**kwargs: Any) -> ActionResult:
     return ActionResult(data=result)
 
 
+def _action_metadata_arena_coverage(**kwargs: Any) -> ActionResult:
+    """Report Arena leaderboard join coverage and reference-set sizes."""
+    from datetime import datetime, timezone
+
+    from verdict.arena.report import coverage_report
+    from verdict.arena.snapshot import load_snapshot
+    from verdict.metadata.records import ModelMetadataError
+    from verdict.metadata.store import load_store
+    from verdict.paths import verdict_home
+
+    now = datetime.now(timezone.utc)
+    store_path = kwargs.get("store_path")
+    snapshot_path = kwargs.get("snapshot_path")
+    resolved_store = (
+        Path(store_path).expanduser() if store_path else verdict_home() / "model-metadata.json"
+    )
+    snap_path = Path(snapshot_path).expanduser() if snapshot_path else None
+
+    try:
+        metadata = load_store(resolved_store)
+        store_ids = frozenset(r.id for r in metadata.records)
+    except (ModelMetadataError, OSError, ValueError):
+        store_ids = frozenset()
+
+    arena_snap = load_snapshot(snap_path)
+    report = coverage_report(arena_rows=[], store_ids=store_ids, snapshot=arena_snap, now=now)
+    return ActionResult(data=report)
+
+
 # ---------------------------------------------------------------------------
 # Upstream reference docs in ai-memory
 # ---------------------------------------------------------------------------
