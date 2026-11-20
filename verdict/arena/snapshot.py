@@ -23,7 +23,7 @@ import contextlib
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +90,8 @@ class ArenaSnapshot:
     reference_sets: dict[str, list[str]]  # role → sorted store_ids
     # records[store_id][config_name][effort] = ArenaSlot
     records: dict[str, dict[str, dict[str, ArenaSlot]]]
+    # coverage_summary[config_name] = {matched, dropped, total}
+    coverage_summary: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -104,6 +106,7 @@ class ArenaSnapshot:
                 }
                 for sid, configs in self.records.items()
             },
+            "coverage_summary": self.coverage_summary,
         }
 
     @classmethod
@@ -119,6 +122,7 @@ class ArenaSnapshot:
             leaderboard_publish_date=dict(d.get("leaderboard_publish_date", {})),
             reference_sets={k: list(v) for k, v in d.get("reference_sets", {}).items()},
             records=records,
+            coverage_summary={k: dict(v) for k, v in d.get("coverage_summary", {}).items()},
         )
 
 

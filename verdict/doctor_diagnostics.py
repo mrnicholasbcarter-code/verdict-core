@@ -1738,7 +1738,7 @@ def arena_snapshot_row(*, now: datetime | None = None) -> dict[str, str]:
     for cfg, pub_date in snap.leaderboard_publish_date.items():
         try:
             published = datetime.strptime(pub_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            if (clock - published).days > STALENESS_DAYS:
+            if clock - published > timedelta(days=STALENESS_DAYS):
                 stale_configs.append(cfg)
         except (ValueError, TypeError):
             pass

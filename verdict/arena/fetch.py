@@ -221,6 +221,7 @@ def build_snapshot_from_rows(
 
     all_records: dict[str, dict[str, dict[str, ArenaSlot]]] = {}
     publish_dates: dict[str, str] = {}
+    coverage_summary: dict[str, dict[str, int]] = {}
 
     for config_name, hf_config in _ARENA_CONFIG_TO_HF.items():
         rows = rows_by_config.get(hf_config, [])
@@ -232,7 +233,13 @@ def build_snapshot_from_rows(
         publish_date = latest_rows[0].get("leaderboard_publish_date", "")
         publish_dates[config_name] = publish_date
 
-        matches, _ = match_rows(latest_rows, index, crosswalk)
+        matches, drops = match_rows(latest_rows, index, crosswalk)
+        total = len([r for r in latest_rows if r.get("category") == "overall"])
+        coverage_summary[config_name] = {
+            "matched": len(matches),
+            "dropped": len(drops),
+            "total": total,
+        }
         fragment = _resolve_records(matches, config_name, publish_date)
         for sid, configs in fragment.items():
             all_records.setdefault(sid, {}).update(configs)
@@ -246,6 +253,7 @@ def build_snapshot_from_rows(
         leaderboard_publish_date=publish_dates,
         reference_sets=reference_sets,
         records=all_records,
+        coverage_summary=coverage_summary,
     )
 
 

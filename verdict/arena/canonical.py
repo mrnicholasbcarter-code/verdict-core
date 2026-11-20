@@ -33,6 +33,7 @@ DROP_NO_STORE_RECORD = "no_store_record"
 DROP_VARIANT_COLLISION = "variant_collision"
 DROP_CROSSWALK_DROP = "crosswalk_drop"
 DROP_CROSSWALK_TARGET_MISSING = "crosswalk_target_missing"
+DROP_AMBIGUOUS_EFFORT = "ambiguous_effort"
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,7 @@ def parse_name(
 
     # Classify paren tokens
     effort = "default"
+    effort_count = 0
     modes: list[str] = []
     dates: list[str] = []
     qualifiers: list[str] = []
@@ -109,6 +111,14 @@ def parse_name(
         tl = token.lower()
         if tl in EFFORT_VOCAB:
             effort = tl
+            effort_count += 1
+            if effort_count > 1:
+                return Drop(
+                    model_name=model_name,
+                    organization=organization,
+                    reason=DROP_AMBIGUOUS_EFFORT,
+                    detail=f"multiple effort tokens in: {paren_tokens!r}",
+                )
         elif tl in MODE_VOCAB:
             modes.append(tl)
         elif _DATE_PATTERN.match(tl):

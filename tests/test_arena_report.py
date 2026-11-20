@@ -124,3 +124,60 @@ def test_print_coverage_report_json_is_valid() -> None:
     parsed = json.loads(output)
     assert "matched" in parsed
     assert "by_config" in parsed
+
+
+# ---- _action_metadata_arena_coverage uses snapshot coverage_summary -----------
+
+
+def test_action_arena_coverage_reports_nonzero_matched(tmp_path: Path) -> None:
+    """_action_metadata_arena_coverage must report non-zero matched when given a real snapshot."""
+    from verdict.actions.extra import _action_metadata_arena_coverage
+    from verdict.arena.canonical import Drop, parse_name
+    from verdict.arena.crosswalk import load_crosswalk
+    from verdict.arena.fetch import build_snapshot_from_rows
+    from verdict.arena.snapshot import CONFIG_AGENT, CONFIG_TEXT, CONFIG_WEBDEV, save_snapshot
+
+    cw = load_crosswalk(CW_PATH)
+    all_rows = _load_all_rows()
+    text_rows = [r for r in all_rows if r.get("_config") == "text"]
+    webdev_rows = [r for r in all_rows if r.get("_config") == "webdev"]
+    agent_rows = [r for r in all_rows if r.get("_config") == "agent"]
+
+    ids: set[str] = set()
+    for row in all_rows:
+        parsed = parse_name(row["model_name"], row["organization"], cw.org_providers)
+        if isinstance(parsed, Drop):
+            continue
+        cw_key = (parsed.org, parsed.key)
+        if cw_key in cw.map_entries:
+            ids.update(cw.map_entries[cw_key].models_dev_ids)
+        else:
+            for prefix in cw.org_providers.get(parsed.org, [parsed.org]):
+                ids.add(f"{prefix}/{parsed.key}")
+    store_ids = frozenset(ids)
+
+    def _ts(dt: datetime) -> str:
+        return dt.isoformat().replace("+00:00", "Z")
+
+    rows_by_config = {"text": text_rows, "webdev": webdev_rows, "agent": agent_rows}
+    fetched_at = {CONFIG_TEXT: _ts(CLOCK), CONFIG_WEBDEV: _ts(CLOCK), CONFIG_AGENT: _ts(CLOCK)}
+    snap = build_snapshot_from_rows(rows_by_config, store_ids, cw, fetched_at, CLOCK)
+    snap_path = tmp_path / "arena-snapshot.json"
+    save_snapshot(snap, snap_path)
+
+    result = _action_metadata_arena_coverage(snapshot_path=str(snap_path))
+    assert result.ok, f"expected ok result, got {result}"
+    data = result.data
+    assert data.get("matched", 0) >= 1, f"expected ≥1 matched, got {data}"
+    assert "by_config" in data
+    assert data.get("status") != "no_snapshot"
+
+
+def test_action_arena_coverage_no_snapshot_named_state(tmp_path: Path) -> None:
+    """_action_metadata_arena_coverage must return a named state when no snapshot exists."""
+    from verdict.actions.extra import _action_metadata_arena_coverage
+
+    snap_path = tmp_path / "arena-snapshot.json"  # does not exist
+    result = _action_metadata_arena_coverage(snapshot_path=str(snap_path))
+    assert result.ok
+    assert result.data.get("status") == "no_snapshot"

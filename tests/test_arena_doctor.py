@@ -120,3 +120,34 @@ def test_stale_publish_date(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     # stale check fires before warning check
     row = arena_snapshot_row(now=CLOCK)
     assert row["status"] == "stale"
+
+
+# ---- Staleness boundary: exactly STALENESS_DAYS old is NOT stale ---------------
+
+
+def test_staleness_boundary_exactly_at_limit_is_not_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A snapshot published exactly STALENESS_DAYS days ago must NOT be stale."""
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    _save_minimal_snapshot(
+        tmp_path=tmp_path,
+        fetched_hours_ago=1.0,
+        published_days_ago=_STALENESS_DAYS,  # exactly at the boundary
+    )
+    row = arena_snapshot_row(now=CLOCK)
+    assert row["status"] != "stale", (
+        f"exactly {_STALENESS_DAYS} days old must not be stale, got {row['status']!r}"
+    )
+
+
+def test_staleness_boundary_one_day_over_limit_is_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A snapshot published STALENESS_DAYS + 1 days ago MUST be stale."""
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    _save_minimal_snapshot(
+        tmp_path=tmp_path, fetched_hours_ago=1.0, published_days_ago=_STALENESS_DAYS + 1
+    )
+    row = arena_snapshot_row(now=CLOCK)
+    assert row["status"] == "stale", f"one day over limit must be stale, got {row['status']!r}"

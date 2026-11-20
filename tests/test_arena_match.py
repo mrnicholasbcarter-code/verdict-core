@@ -175,3 +175,55 @@ def test_crosswalk_drop_entry_produces_drop() -> None:
     assert matches == []
     assert len(drops) == 1
     assert drops[0].reason == DROP_CROSSWALK_DROP
+
+
+# ---- Twin collision: all store_ids in a twin bucket must be caught -------------
+
+
+def test_collision_detection_covers_all_store_ids_for_twins() -> None:
+    """Twin store_ids (same slug, different variant) must be caught by per-sid collision check.
+
+    Bug case: store has two twins 'a/m' and 'a/m.0' (same slug 'a/m').
+    Row 1 (canonical) → store_ids_found = ('a/m', 'a/m.0') → registers both per-sid keys.
+    Row 2 (explicit map to just 'a/m.0') → must collide on the overlapping sid,
+    even though its store_ids_found[0] differs from row 1's store_ids_found[0].
+    """
+    from verdict.arena.crosswalk import Crosswalk, CrosswalkMapEntry
+
+    # 'anthropic/claude-m' and 'anthropic/claude-m.0' have the same slug 'claude-m' → twins
+    twin_a = "anthropic/claude-m"
+    twin_b = "anthropic/claude-m.0"
+    store_ids = frozenset({twin_a, twin_b})
+    index = build_store_index(store_ids)
+
+    mini_cw = Crosswalk(
+        schema_version="1",
+        org_providers={"Anthropic": ["anthropic"]},
+        map_entries={
+            # Explicit map: 'Claude M' (Anthropic) → only twin_b
+            ("Anthropic", "claude-m"): CrosswalkMapEntry(
+                arena_org="Anthropic",
+                arena_key="claude-m",
+                arena_name="Claude M",
+                models_dev_ids=(twin_b,),
+                source="test",
+                verified="2026-11-01",
+            )
+        },
+        drop_entries={},
+        all_keys=(("Anthropic", "claude-m"),),
+    )
+
+    rows = [
+        # Row 1: canonical join → both twins
+        _make_text_row("Claude M", "Anthropic", rank=1),
+        # Row 2: explicit map → only twin_b; collides with row 1 on twin_b
+        _make_text_row("Claude M", "Anthropic", rank=2),
+    ]
+    # With two identical rows the second hits the same crosswalk path and collides on twin_b
+    matches, drops = match_rows(rows, index, mini_cw)
+
+    # Both map to the same slot via overlap → both should be variant_collision drops
+    reasons = [d.reason for d in drops]
+    assert DROP_VARIANT_COLLISION in reasons, f"expected variant_collision in drops={drops}"
+    assert len(matches) == 0, f"expected 0 matches when collision detected, got {matches}"

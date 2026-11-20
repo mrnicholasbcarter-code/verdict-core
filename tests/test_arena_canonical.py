@@ -184,3 +184,29 @@ def test_no_fuzzy_imports(source_file: Path) -> None:
             assert top not in forbidden, (
                 f"{source_file.name}: forbidden import from {node.module!r}"
             )
+
+
+# ---- Multiple effort tokens → ambiguous_effort drop ---------------------------
+
+
+def test_parse_name_multiple_effort_tokens_is_drop(org_providers: dict[str, list[str]]) -> None:
+    """Two or more effort tokens in parens must be a named drop, not last-one-wins."""
+    from verdict.arena.canonical import DROP_AMBIGUOUS_EFFORT
+
+    result = parse_name("GPT-4o (high, max)", "OpenAI", org_providers)
+    assert isinstance(result, Drop), f"expected Drop, got {result!r}"
+    assert result.reason == DROP_AMBIGUOUS_EFFORT
+
+
+def test_parse_name_single_effort_token_is_not_ambiguous(
+    org_providers: dict[str, list[str]],
+) -> None:
+    """A single effort token must still produce a Parsed, not a Drop."""
+    result = parse_name("GPT-4o (high)", "OpenAI", org_providers)
+    # May be a Drop for org reasons, but NOT for ambiguous_effort
+    if isinstance(result, Drop):
+        from verdict.arena.canonical import DROP_AMBIGUOUS_EFFORT
+
+        assert result.reason != DROP_AMBIGUOUS_EFFORT, (
+            "single effort token should not be ambiguous_effort"
+        )

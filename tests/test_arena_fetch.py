@@ -146,3 +146,54 @@ def test_refresh_keeps_old_snapshot_on_fetch_failure(
     assert dict(reloaded.records) == original_records, (
         "snapshot records must be unchanged after fetch failure"
     )
+
+
+# ---- coverage_summary is populated by build_snapshot_from_rows ----------------
+
+
+def test_build_snapshot_from_rows_has_coverage_summary() -> None:
+    """build_snapshot_from_rows must populate coverage_summary with non-zero matched."""
+    import json
+    from pathlib import Path
+
+    from verdict.arena.crosswalk import load_crosswalk
+    from verdict.arena.fetch import build_snapshot_from_rows
+
+    fixtures = Path(__file__).parent / "fixtures"
+    text_rows: list[dict] = json.loads((fixtures / "arena-fixture-text.json").read_text())["rows"]
+    webdev_rows: list[dict] = json.loads((fixtures / "arena-fixture-webdev.json").read_text())[
+        "rows"
+    ]
+    agent_rows: list[dict] = json.loads((fixtures / "arena-fixture-agent.json").read_text())["rows"]
+
+    cw = load_crosswalk(CW_PATH)
+    # Derive store_ids from fixture rows via canonical parse
+    from verdict.arena.canonical import Drop, parse_name
+
+    ids: set[str] = set()
+    for row in text_rows + webdev_rows + agent_rows:
+        parsed = parse_name(row["model_name"], row["organization"], cw.org_providers)
+        if isinstance(parsed, Drop):
+            continue
+        cw_key = (parsed.org, parsed.key)
+        if cw_key in cw.map_entries:
+            ids.update(cw.map_entries[cw_key].models_dev_ids)
+        else:
+            for prefix in cw.org_providers.get(parsed.org, [parsed.org]):
+                ids.add(f"{prefix}/{parsed.key}")
+    store_ids = frozenset(ids)
+
+    rows_by_config = {"text": text_rows, "webdev": webdev_rows, "agent": agent_rows}
+    fetched_at = {CONFIG_TEXT: _ts(CLOCK), CONFIG_WEBDEV: _ts(CLOCK), CONFIG_AGENT: _ts(CLOCK)}
+
+    snap = build_snapshot_from_rows(rows_by_config, store_ids, cw, fetched_at, CLOCK)
+
+    assert snap.coverage_summary, "coverage_summary must not be empty"
+    total_matched = sum(v.get("matched", 0) for v in snap.coverage_summary.values())
+    assert total_matched >= 1, f"expected ≥1 matched row, got {snap.coverage_summary}"
+
+    # Each config entry must have matched + dropped + total
+    for cfg, stats in snap.coverage_summary.items():
+        assert "matched" in stats, f"{cfg} missing 'matched'"
+        assert "dropped" in stats, f"{cfg} missing 'dropped'"
+        assert "total" in stats, f"{cfg} missing 'total'"

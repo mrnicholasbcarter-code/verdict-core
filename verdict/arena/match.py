@@ -96,14 +96,14 @@ def match_rows(
     """
     matches: list[Match] = []
     drops: list[Drop] = []
-    # Track (store_id, config, slot) for collision detection
-    seen: dict[tuple[str, str, str], str] = {}  # → model_name of first match
+    # Track (store_id, config, slot) for collision detection — keyed per sid so twins are caught
+    seen_per_sid: dict[tuple[str, str, str], str] = {}  # (sid, config, effort) → model_name
 
     for row in arena_rows:
-        model_name = row.get("model_name", "")
-        organization = row.get("organization", "")
-        config = row.get("_config", "")
-        category = row.get("category", "")
+        model_name: str = str(row.get("model_name", ""))
+        organization: str = str(row.get("organization", ""))
+        config: str = str(row.get("_config", ""))
+        category: str = str(row.get("category", ""))
         if category != "overall":
             continue  # only 'overall' rows
 
@@ -175,41 +175,51 @@ def match_rows(
             store_ids_found = tuple(sorted(set(all_store_ids)))
             via = "canonical"
 
-        # Collision check: each (store_id, config, effort) can appear at most once
+        # Collision check: each (store_id, config, effort) can appear at most once.
+        # Key per individual sid so twins (multiple sids sharing a canonical key) are caught.
         collision = False
-        collision_key = (store_ids_found[0] if store_ids_found else "", config, parsed.effort)
-        if collision_key in seen:
-            # Drop both
+        colliding_name: str | None = None
+        for sid in store_ids_found:
+            slot_key: tuple[str, str, str] = (sid, config, parsed.effort)
+            if slot_key in seen_per_sid:
+                colliding_name = seen_per_sid[slot_key]
+                collision = True
+                break
+
+        if collision:
+            assert colliding_name is not None
+            # Drop the new duplicate
             drops.append(
                 Drop(
                     model_name=model_name,
                     organization=organization,
                     reason=DROP_VARIANT_COLLISION,
-                    detail=f"duplicate ({config!r}, {parsed.effort!r}) for {seen[collision_key]!r}",
+                    detail=f"duplicate ({config!r}, {parsed.effort!r}) for {colliding_name!r}",
                 )
             )
-            # Also retroactively drop the first match
+            # Retroactively drop the first match (any overlap in store_ids for same config+effort)
+            new_sids = set(store_ids_found)
             matches = [
                 m
                 for m in matches
                 if not (
-                    m.store_ids[0] == collision_key[0]
+                    bool(set(m.store_ids) & new_sids)
                     and m._config == config
                     and m.parsed.effort == parsed.effort
                 )
             ]
             drops.append(
                 Drop(
-                    model_name=seen[collision_key],
+                    model_name=colliding_name,
                     organization=organization,
                     reason=DROP_VARIANT_COLLISION,
                     detail=f"duplicate ({config!r}, {parsed.effort!r}) for {model_name!r}",
                 )
             )
-            collision = True
 
         if not collision:
-            seen[collision_key] = model_name
+            for sid in store_ids_found:
+                seen_per_sid[(sid, config, parsed.effort)] = model_name
             matches.append(
                 Match(
                     model_name=model_name,
