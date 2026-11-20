@@ -22,6 +22,7 @@ variable at runtime and never written into the repo, argv, or logs.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import os
@@ -55,7 +56,67 @@ from verdict.orchestration.controller_operations import (
 from verdict.orchestration.eligibility import _OPAQUE_PREFIXES
 from verdict.orchestration.provider_catalog import aliased_pools_for
 
-__all__ = ["OcrRun", "OcrRunner", "OpenCodeReviewer", "make_subprocess_runner"]
+__all__ = [
+    "REVIEW_BUDGET_CEILING",
+    "REVIEW_BUDGET_FLOOR",
+    "OcrRun",
+    "OcrRunner",
+    "OpenCodeReviewer",
+    "make_subprocess_runner",
+]
+
+# ---------------------------------------------------------------------------
+# Token-budget constants and helpers
+# ---------------------------------------------------------------------------
+
+#: Minimum OCR token budget; matches the original hard-coded value.
+REVIEW_BUDGET_FLOOR: int = 400_000
+
+#: Hard ceiling on the OCR token budget.  Set to comfortably cover real-world
+#: diffs where a reviewer needs ~4 M tokens for 200 KB of changed content.
+REVIEW_BUDGET_CEILING: int = 4_000_000
+
+# Scaling factor: total_changed_bytes * _BUDGET_BYTES_TO_TOKENS = estimated
+# token budget.  Calibrated from live run 20261120T054320Z: 4 files totalling
+# ~200 KB of diff content; reviewer consumed 437 k tokens against a 400 k
+# ceiling, failing 2 of 4 items.  The same reviewer requires approximately 4 M
+# tokens for diffs of this size.  Factor of 20 gives:
+#   20 KB → 400 k (floor),  50 KB → 1 M,  200 KB → 4 M (ceiling).
+_BUDGET_BYTES_TO_TOKENS: int = 20
+
+
+def _changed_file_total_bytes(
+    *, repo: Path, base_ref: str, head_ref: str, differ: DiffLister
+) -> int:
+    """Sum the byte sizes of all files changed between ``base_ref`` and ``head_ref``.
+
+    Returns 0 on any error so callers fall back to the floor budget.
+    Deleted files raise ``OSError`` on stat and are silently skipped.
+    """
+    try:
+        changed = differ(repo=repo, base_ref=base_ref, head_ref=head_ref)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return 0
+    total = 0
+    for raw in changed:
+        path = raw.replace("\\", "/").strip()
+        if not path:
+            continue
+        with contextlib.suppress(OSError):
+            total += (repo / path).stat().st_size
+    return total
+
+
+def _scaled_token_budget(total_bytes: int, *, floor: int, ceiling: int) -> int:
+    """Scale an OCR token budget from total changed-file bytes.
+
+    Formula: ``max(floor, min(ceiling, total_bytes * _BUDGET_BYTES_TO_TOKENS))``.
+
+    At 50 KB of changes the result is 1 M; at 200 KB the ceiling (4 M) applies.
+    """
+    estimated = total_bytes * _BUDGET_BYTES_TO_TOKENS
+    return max(floor, min(ceiling, estimated))
+
 
 # OCR severity vocabulary -> Verdict's normalized ladder.
 _SEVERITY_MAP: Mapping[str, str] = {
@@ -429,7 +490,8 @@ class OpenCodeReviewer:
         api_key_env: str = "VERDICT_OMNIROUTE_API_KEY",
         effort: str = "low",
         timeout_seconds: float = 900,
-        token_budget: int = 400_000,
+        token_budget: int | None = None,
+        token_budget_source: str = "",
         max_reviewer_attempts: int = 3,
         out_dir: Path,
         runner: OcrRunner | None = None,
@@ -442,7 +504,18 @@ class OpenCodeReviewer:
         self._api_key_env = api_key_env
         self._effort = effort
         self._timeout_seconds = float(timeout_seconds)
-        self._token_budget = int(token_budget)
+        if token_budget is not None:
+            budget_int = int(token_budget)
+            if budget_int < 1:
+                raise ValueError(f"token_budget must be a positive integer; got {budget_int}")
+            if budget_int > REVIEW_BUDGET_CEILING:
+                raise ValueError(
+                    f"token_budget {budget_int} exceeds ceiling {REVIEW_BUDGET_CEILING}"
+                )
+            self._token_budget_override: int | None = budget_int
+        else:
+            self._token_budget_override = None
+        self._token_budget_source: str = token_budget_source
         self._max_reviewer_attempts = max(1, int(max_reviewer_attempts))
         self._out_dir = Path(out_dir)
         self._idle_timeout_seconds = idle_timeout_seconds
@@ -640,6 +713,26 @@ class OpenCodeReviewer:
             return FailureClassification("upstream_temporary", "REROUTE", 300, "route", detail)
         return failure
 
+    def _compute_budget(self, *, repo: Path, base_ref: str, head_ref: str) -> tuple[int, str]:
+        """Return ``(budget_tokens, source)`` for this review invocation.
+
+        When the caller provided an explicit override (``token_budget`` kwarg),
+        use it verbatim with the caller-supplied source label.  Otherwise scale
+        from the total byte size of changed files; use ``"default"`` (floor)
+        when no changed files are found, ``"scaled"`` otherwise.
+        """
+        if self._token_budget_override is not None:
+            return self._token_budget_override, self._token_budget_source or "flag"
+        total_bytes = _changed_file_total_bytes(
+            repo=repo, base_ref=base_ref, head_ref=head_ref, differ=self._differ
+        )
+        if total_bytes == 0:
+            return REVIEW_BUDGET_FLOOR, "default"
+        scaled = _scaled_token_budget(
+            total_bytes, floor=REVIEW_BUDGET_FLOOR, ceiling=REVIEW_BUDGET_CEILING
+        )
+        return scaled, "scaled"
+
     async def _review_once(
         self,
         route_id: str,
@@ -661,6 +754,9 @@ class OpenCodeReviewer:
                 status="ERROR", reviewer=self._REVIEWER_PREFIX, route_id=route_id, detail=str(exc)
             )
 
+        budget, budget_source = self._compute_budget(
+            repo=repo, base_ref=base_ref, head_ref=head_ref
+        )
         try:
             self._write_isolated_config(home_dir, api_key)
             # Ephemeral --rule under review out_dir (same lifecycle as ocr-raw;
@@ -686,7 +782,7 @@ class OpenCodeReviewer:
                 "--effort",
                 self._effort,
                 "--max-tokens-budget",
-                str(self._token_budget),
+                str(budget),
                 "--provider",
                 self._PROVIDER,
                 "--model",
@@ -704,7 +800,7 @@ class OpenCodeReviewer:
         finally:
             shutil.rmtree(home_dir, ignore_errors=True)
 
-        return self._interpret(run, raw_path, route_id)
+        return self._interpret(run, raw_path, route_id, budget, budget_source)
 
     # -- internals ---------------------------------------------------------
 
@@ -729,7 +825,14 @@ class OpenCodeReviewer:
         }
         (cfg_dir / "config.json").write_text(json.dumps(config, indent=2))
 
-    def _interpret(self, run: OcrRun, raw_path: Path, route_id: str) -> ReviewResult:
+    def _interpret(
+        self,
+        run: OcrRun,
+        raw_path: Path,
+        route_id: str,
+        token_budget_used: int = 0,
+        token_budget_source: str = "",
+    ) -> ReviewResult:
         raw_ref = str(raw_path)
         if "ocr review cleanup UNKNOWN" in run.stderr:
             return self._error(route_id, raw_ref, run.stderr)
@@ -809,6 +912,8 @@ class OpenCodeReviewer:
             detail=detail,
             observed_model=observed or "",
             findings_lost=lost,
+            token_budget_used=token_budget_used,
+            token_budget_source=token_budget_source,
         )
 
     @staticmethod
@@ -913,15 +1018,27 @@ class OpenCodeReviewer:
         if isinstance(coverage, Mapping) and coverage.get("selected") == []:
             return "review skipped: no items selected"
 
+        # Veto 3: Partial review (budget exhausted before all items were reviewed).
+        # A partial result is not a pass: some files were never reviewed.
         summary = payload.get("summary")
+        status_val = str(payload.get("status", "")).strip().lower()
+        budget_exceeded = isinstance(summary, Mapping) and summary.get("budget_exceeded") is True
+        if status_val == "partial" or budget_exceeded:
+            total_tokens = (
+                int(summary["total_tokens"])
+                if isinstance(summary, Mapping) and isinstance(summary.get("total_tokens"), int)
+                else 0
+            )
+            token_part = f" after {total_tokens} tokens" if total_tokens else ""
+            return f"review partial: budget exhausted{token_part}; not all files were reviewed"
 
-        # Veto 3: Invalid file count
+        # Veto 4: Invalid file count
         if isinstance(summary, Mapping) and "files_reviewed" in summary:
             try:
                 count = int(summary["files_reviewed"])
             except (ValueError, TypeError, OverflowError):
                 return "review coverage invalid: files_reviewed is not a count"
-            # Veto 4: Zero or negative file count
+            # Veto 5: Zero or negative file count
             if count <= 0:
                 return "review skipped: zero files reviewed"
 

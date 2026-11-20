@@ -22,5 +22,20 @@
       "verdict.subagent_models"
     ],
     "reason": "Second selection authority beside the EligibilityLadder; no new production caller. M2 removes the remaining ones."
+  },
+  {
+    "symbol": "verdict.omniroute_pipeline.free_rule.classify_free",
+    "allowed_modules": [
+      "verdict.capacity",
+      "verdict.omniroute_pipeline.census_hook"
+    ],
+    "reason": "Low-level price-rule primitive. All capacity decisions must go through verdict.capacity.capacity_of (S1 ONE capacity classifier). No new direct callers."
+  },
+  {
+    "symbol": "verdict.orchestration.provider_catalog.connection_signals_free",
+    "allowed_modules": [
+      "verdict.capacity"
+    ],
+    "reason": "Low-level connection-signal primitive. All capacity decisions must go through verdict.capacity.capacity_of (S1 ONE capacity classifier). No new direct callers."
   }
 ]

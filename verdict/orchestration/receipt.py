@@ -20,6 +20,8 @@ Event ``data`` conventions read by the receipt (extra keys are ignored):
 * ``repo_gate``: ``name``, ``ok``, ``exit_code``, ``command``, ``executed_command``, ``source``, ``tail``
 * ``integrate``: ``commit``                        * ``review``: ``status``, ``reviewer``,
   ``route_id``, ``blocking``                       * ``reassign``/``cooldown``/``controller``: free-form
+* ``hydrate``: ``context_bytes``, ``prompt_tokens_estimated``, ``sources`` list (projected as
+  ``sources_count``), ``truncated`` — per-attempt context-pack evidence (omitted when absent)
 
 ``no_change_nodes`` is a derived summary of implement nodes whose validated
 attempt emitted an ok ``no_change`` barrier (zero file changes). It is omitted
@@ -470,6 +472,49 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                 last_success_seq = event.seq
         elif event.type == "integrate" and data.get("commit"):
             commit = str(data["commit"])
+        elif (
+            event.type == "hydrate"
+            and current in attempts
+            and data.get("context_bytes") is not None
+        ):
+            # Project context-pack provenance into the attempt that dispatched
+            # this hydration.  The hydrate event is emitted per-dispatch, so
+            # ``current`` already points at the right attempt row.
+            # Guard on context_bytes: legacy hydrate events carry
+            # prompt_bytes/budget_bytes/sources without context_bytes;
+            # projecting those would add a context_pack to committed receipts
+            # that pre-date context-pack wiring.
+            cp: dict[str, Any] = {}
+            # Coerce numeric fields defensively: a malformed field must not
+            # abort receipt building; record null + an omission instead.
+            cp_omissions: list[str] = []
+            try:
+                cp["context_bytes"] = int(data["context_bytes"])
+            except (ValueError, TypeError):
+                cp["context_bytes"] = None
+                cp_omissions.append("context_bytes_non_numeric")
+            if data.get("prompt_tokens_estimated") is not None:
+                try:
+                    cp["prompt_tokens_estimated"] = int(data["prompt_tokens_estimated"])
+                except (ValueError, TypeError):
+                    cp["prompt_tokens_estimated"] = None
+                    cp_omissions.append("prompt_tokens_estimated_non_numeric")
+            srcs = data.get("sources")
+            if isinstance(srcs, list):
+                cp["sources_count"] = len(srcs)
+            if data.get("truncated") is not None:
+                cp["truncated"] = bool(data["truncated"])
+            if cp_omissions:
+                cp["omissions"] = cp_omissions
+            # A later hydrate for the same attempt (e.g. in a rehydration
+            # cycle where dispatch increments the attempt before the second
+            # hydrate — which cannot happen today but would be silent data
+            # loss if it ever did).  Record the count so the overwrite is
+            # visible in the receipt.
+            existing = attempts[current].get("context_pack")
+            if existing is not None:
+                cp["hydrate_count"] = existing.get("hydrate_count", 1) + 1
+            attempts[current]["context_pack"] = cp
     # route identity tracking: compute route_identity for each attempt (after all events processed)
     for row in attempts.values():
         if "_terminal_ok" in row:
@@ -639,6 +684,13 @@ def _review_block(run_dir: Path, events: list[RunEvent]) -> dict[str, Any]:
     lost = source.get("findings_lost")
     if isinstance(lost, int) and not isinstance(lost, bool) and lost > 0:
         extra["findings_lost"] = lost
+    # Token budget: recorded only when present so older receipts still verify.
+    budget_used = source.get("token_budget_used")
+    if isinstance(budget_used, int) and not isinstance(budget_used, bool) and budget_used > 0:
+        extra["token_budget_used"] = budget_used
+    budget_source = source.get("token_budget_source")
+    if isinstance(budget_source, str) and budget_source:
+        extra["token_budget_source"] = budget_source
     return {
         "status": str(source.get("status") or "ERROR").upper(),
         "reviewer": str(source.get("reviewer", "")),

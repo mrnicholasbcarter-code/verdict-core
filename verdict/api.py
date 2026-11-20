@@ -2971,6 +2971,11 @@ def _finish_evidence(
 # response.  Protects against huge runs that would exceed response limits.
 _RUNS_EVENTS_BYTE_BUDGET = 1 * 1024 * 1024  # 1 MiB
 
+# Prefix read by _run_summary to find the run_started event.  run_started is
+# always the first event, so 64 KiB is a generous bound.  Reading the whole
+# file would cost hundreds of MB across _RUNS_SCAN_LIMIT runs per request.
+_RUNS_SUMMARY_PREFIX_BYTES = 64 * 1024  # 64 KiB
+
 # Maximum number of run directories scanned per /v1/runs request.  Prevents
 # O(n) work when the runs root contains thousands of old directories.
 _RUNS_SCAN_LIMIT = 500
@@ -3089,8 +3094,14 @@ def _run_summary(run_id: str, run_dir: Path) -> dict[str, Any]:
         events_path = run_dir / "events.jsonl"
         if events_path.exists():
             try:
-                events_raw = _read_bytes_nofollow(events_path)
-                for raw_line in events_raw.splitlines():
+                # Open with O_NOFOLLOW (atomic symlink rejection) and read
+                # only a bounded prefix — run_started is the first event so
+                # 64 KiB is always enough; reading the whole file would cost
+                # hundreds of MB across _RUNS_SCAN_LIMIT runs per request.
+                fd = os.open(str(events_path), os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(fd, "rb") as fh:
+                    prefix = fh.read(_RUNS_SUMMARY_PREFIX_BYTES)
+                for raw_line in prefix.splitlines():
                     line = raw_line.strip()
                     if not line:
                         continue

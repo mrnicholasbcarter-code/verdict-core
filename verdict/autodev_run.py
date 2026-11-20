@@ -2167,8 +2167,8 @@ def prepare_live_autodev(
     from verdict.probes import openai_probe_transport
     from verdict.subagent_resolver import public_execution_path_request
 
-    if not model.endswith(":free") or "/" not in model:
-        raise AutodevError("autodev bootstrap requires an explicit provider/model:free route")
+    if "/" not in model:
+        raise AutodevError("autodev bootstrap requires an explicit provider/model route")
     # The pin names the executor only; the planner comes from the live ladder,
     # chosen before the probe so an empty ladder fails closed without a send.
     planners = _select_live_planners(base_url)

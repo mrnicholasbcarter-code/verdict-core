@@ -1483,3 +1483,97 @@ class TestVerifyNoFollowOpens:
         assert all(f & os.O_NOFOLLOW for _, f in events_opens), (
             f"O_NOFOLLOW not set for events.jsonl: {events_opens}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Resource bound: _run_summary reads at most _RUNS_SUMMARY_PREFIX_BYTES
+# ---------------------------------------------------------------------------
+
+
+class TestSummaryPrefixBound:
+    """_run_summary must not read more than _RUNS_SUMMARY_PREFIX_BYTES of events.jsonl."""
+
+    def test_large_events_file_reads_only_prefix(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A 50 MB events.jsonl whose first line is run_started must be summarised
+        without reading more than _RUNS_SUMMARY_PREFIX_BYTES bytes."""
+        import verdict.api as api_mod
+
+        run_dir = tmp_path / "big-run"
+        run_dir.mkdir()
+
+        # First line is a valid run_started event.
+        first_line = (
+            json.dumps(
+                {
+                    "seq": 1,
+                    "at": "2026-06-01T00:00:00Z",
+                    "type": "run_started",
+                    "node_id": "",
+                    "data": {},
+                }
+            ).encode()
+            + b"\n"
+        )
+        # Fill the rest to 50 MB with valid-looking padding events.
+        padding_line = (
+            json.dumps(
+                {"seq": 2, "at": "2026-06-01T00:01:00Z", "type": "step", "node_id": "", "data": {}}
+            ).encode()
+            + b"\n"
+        )
+        target_size = 50 * 1024 * 1024
+        events_path = run_dir / "events.jsonl"
+        with events_path.open("wb") as fh:
+            fh.write(first_line)
+            written = len(first_line)
+            while written < target_size:
+                fh.write(padding_line)
+                written += len(padding_line)
+
+        # Patch os.open + os.fdopen to count bytes actually read.
+        bytes_read: list[int] = []
+        real_open = os.open
+        real_fdopen = os.fdopen
+
+        def _counting_open(path: str, flags: int, *args: object, **kwargs: object) -> int:
+            fd = real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+            return fd
+
+        class _CountingFile:
+            def __init__(self, inner: object) -> None:
+                self._inner = inner
+
+            def read(self, n: int = -1) -> bytes:
+                data: bytes = self._inner.read(n)  # type: ignore[union-attr]
+                bytes_read.append(len(data))
+                return data
+
+            def __enter__(self) -> _CountingFile:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                self._inner.__exit__(*args)  # type: ignore[union-attr]
+
+        def _counting_fdopen(fd: int, mode: str = "r", *args: object, **kwargs: object) -> object:
+            inner = real_fdopen(fd, mode, *args, **kwargs)
+            if str(events_path) in str(events_path):  # always true — wrap every fdopen
+                return _CountingFile(inner)
+            return inner
+
+        monkeypatch.setattr(os, "open", _counting_open)
+        monkeypatch.setattr(os, "fdopen", _counting_fdopen)
+
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs", headers=AUTH)
+        assert r.status_code == 200
+        row = next((x for x in r.json()["runs"] if x["run_id"] == "big-run"), None)
+        assert row is not None
+        # The run_started event must be found.
+        assert row["started_at"] == "2026-06-01T00:00:00Z"
+        # Total bytes read from events.jsonl must not exceed the prefix bound.
+        total_read = sum(bytes_read)
+        assert total_read <= api_mod._RUNS_SUMMARY_PREFIX_BYTES, (
+            f"read {total_read} bytes, expected at most {api_mod._RUNS_SUMMARY_PREFIX_BYTES}"
+        )

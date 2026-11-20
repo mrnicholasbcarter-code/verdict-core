@@ -875,3 +875,124 @@ def test_run_index_line_is_one_write_under_exclusive_lock(
     monkeypatch.setattr(receipt_module.os, "write", spy_write)
     receipt_module.append_run_index(tmp_path, Path("/runs/one"))
     assert calls == [("flock", fcntl.LOCK_EX), ("write", b"/runs/one\n")]
+
+
+# ---------------------------------------------------------------- hydrate → context_pack
+
+
+def test_hydrate_event_projected_into_attempt_context_pack(tmp_path: Path) -> None:
+    """context_pack is attached to the correct attempt when a hydrate event is present."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "graph.json").write_text(json.dumps(_graph().to_dict()))
+    log = EventLog(run_dir / "events.jsonl", clock=_clock)
+    log.emit("run_started", run_id="run-hydrate", goal="test hydrate projection")
+    log.emit("dispatch", node_id="a", attempt=1, route_id="gh/gpt-free", capacity_class="free")
+    log.emit(
+        "hydrate",
+        node_id="a",
+        attempt=1,
+        context_bytes=8192,
+        prompt_tokens_estimated=512,
+        sources=[{"path": "verdict/foo.py"}, {"path": "verdict/bar.py"}],
+        truncated=False,
+    )
+    log.emit("terminal", node_id="a", attempt=1, ok=True, duration_seconds=2.0)
+    log.emit("verify", node_id="a", ok=True, command=["pytest"], exit_code=0)
+    log.emit("dispatch", node_id="b", attempt=1, route_id="gh/gpt-free", capacity_class="free")
+    log.emit("terminal", node_id="b", attempt=1, ok=True, duration_seconds=1.0)
+    log.emit("verify", node_id="b", ok=True, command=["pytest"], exit_code=0)
+    log.emit("barrier", node_id="merge", name="int", ok=True)
+    log.emit("integrate", node_id="merge", commit="def456")
+    log.emit("terminal", node_id="merge", attempt=1, ok=True, route_id="local/git")
+    log.emit("verify", node_id="merge", ok=True, command=["pytest"], exit_code=0)
+    log.emit("run_finished", outcome="COMPLETE", reason="done")
+
+    receipt = build_run_receipt(run_dir)
+    nodes = {n["node_id"]: n for n in receipt["nodes"]}
+    attempt = nodes["a"]["attempts"][0]
+    assert "context_pack" in attempt
+    cp = attempt["context_pack"]
+    assert cp["context_bytes"] == 8192
+    assert cp["prompt_tokens_estimated"] == 512
+    assert cp["sources_count"] == 2
+    assert cp["truncated"] is False
+
+
+def test_hydrate_absent_means_no_context_pack(tmp_path: Path) -> None:
+    """When no hydrate event is emitted, context_pack is absent from the attempt."""
+    run_dir = _run(tmp_path, review=PASS)
+    receipt = build_run_receipt(run_dir)
+    nodes = {n["node_id"]: n for n in receipt["nodes"]}
+    for attempt in nodes["a"]["attempts"]:
+        assert "context_pack" not in attempt
+
+
+def test_hydrate_partial_fields_projected(tmp_path: Path) -> None:
+    """context_pack is emitted even when only some hydrate fields are present."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "graph.json").write_text(json.dumps(_graph().to_dict()))
+    log = EventLog(run_dir / "events.jsonl", clock=_clock)
+    log.emit("run_started", run_id="run-partial", goal="test partial hydrate")
+    log.emit("dispatch", node_id="a", attempt=1, route_id="gh/gpt-free", capacity_class="free")
+    # Only context_bytes provided; no sources or truncated
+    log.emit("hydrate", node_id="a", attempt=1, context_bytes=4096)
+    log.emit("terminal", node_id="a", attempt=1, ok=True, duration_seconds=1.0)
+    log.emit("verify", node_id="a", ok=True, command=["pytest"], exit_code=0)
+    log.emit("dispatch", node_id="b", attempt=1, route_id="gh/gpt-free", capacity_class="free")
+    log.emit("terminal", node_id="b", attempt=1, ok=True, duration_seconds=1.0)
+    log.emit("verify", node_id="b", ok=True, command=["pytest"], exit_code=0)
+    log.emit("barrier", node_id="merge", name="int", ok=True)
+    log.emit("integrate", node_id="merge", commit="ghi789")
+    log.emit("terminal", node_id="merge", attempt=1, ok=True, route_id="local/git")
+    log.emit("verify", node_id="merge", ok=True, command=["pytest"], exit_code=0)
+    log.emit("run_finished", outcome="COMPLETE", reason="done")
+
+    receipt = build_run_receipt(run_dir)
+    nodes = {n["node_id"]: n for n in receipt["nodes"]}
+    attempt = nodes["a"]["attempts"][0]
+    assert "context_pack" in attempt
+    cp = attempt["context_pack"]
+    assert cp["context_bytes"] == 4096
+    assert "sources_count" not in cp
+    assert "truncated" not in cp
+
+
+def test_verify_run_receipt_roundtrip_with_hydrate(tmp_path: Path) -> None:
+    """verify_run_receipt succeeds on a run that includes hydrate events."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "graph.json").write_text(json.dumps(_graph().to_dict()))
+    log = EventLog(run_dir / "events.jsonl", clock=_clock)
+    log.emit("run_started", run_id="run-verify-hydrate", goal="verify hydrate roundtrip")
+    log.emit("dispatch", node_id="a", attempt=1, route_id="gh/gpt-free", capacity_class="free")
+    log.emit(
+        "hydrate",
+        node_id="a",
+        attempt=1,
+        context_bytes=1024,
+        prompt_tokens_estimated=128,
+        sources=[],
+        truncated=True,
+    )
+    log.emit("terminal", node_id="a", attempt=1, ok=True, duration_seconds=1.0)
+    log.emit("verify", node_id="a", ok=True, command=["pytest"], exit_code=0)
+    log.emit("dispatch", node_id="b", attempt=1, route_id="gh/gpt-free", capacity_class="free")
+    log.emit("terminal", node_id="b", attempt=1, ok=True, duration_seconds=1.0)
+    log.emit("verify", node_id="b", ok=True, command=["pytest"], exit_code=0)
+    log.emit("barrier", node_id="merge", name="int", ok=True)
+    log.emit("integrate", node_id="merge", commit="jkl012")
+    log.emit("terminal", node_id="merge", attempt=1, ok=True, route_id="local/git")
+    log.emit("verify", node_id="merge", ok=True, command=["pytest"], exit_code=0)
+    (run_dir / "review.json").write_text(json.dumps(PASS))
+    log.emit("run_finished", outcome="COMPLETE", reason="done")
+
+    write_run_receipt(run_dir)
+    assert verify_run_receipt(run_dir) == []
+    # Confirm context_pack was projected
+    receipt = build_run_receipt(run_dir)
+    nodes = {n["node_id"]: n for n in receipt["nodes"]}
+    cp = nodes["a"]["attempts"][0]["context_pack"]
+    assert cp["context_bytes"] == 1024
+    assert cp["truncated"] is True

@@ -593,11 +593,11 @@ def _wrap_first_as(reviewer: OpenCodeReviewer, detail: str) -> Any:
     original = reviewer._interpret
     calls = {"n": 0}
 
-    def interpret(run: OcrRun, raw_path: Path, route_id: str) -> Any:
+    def interpret(run: OcrRun, raw_path: Path, route_id: str, *args: Any, **kwargs: Any) -> Any:
         calls["n"] += 1
         if calls["n"] == 1:
             return reviewer._error(route_id, str(raw_path), detail)
-        return original(run, raw_path, route_id)
+        return original(run, raw_path, route_id, *args, **kwargs)
 
     return interpret
 

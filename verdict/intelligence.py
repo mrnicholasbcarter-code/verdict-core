@@ -24,7 +24,7 @@ from verdict.candidate_pool import (
     build_candidate_pool,
 )
 from verdict.capability_gate import TaskRequirements, derive_requirements, gate_capability
-from verdict.capacity import CapacityClass, billing_capacity_override, classify_route_capacity
+from verdict.capacity import CapacityClass, billing_capacity_override, capacity_of
 from verdict.chooser import apply_best_of_admitted
 from verdict.classifier import classify
 from verdict.context_pack import ContextPlan
@@ -1146,7 +1146,7 @@ class IntelligenceService:
         cache = HealthCache(default_cache_path())
         connections = _provider_connections_by_name(snapshot.connections)
         catalog = {item.identity_id: item for item in snapshot.catalog}
-        gateway_free = {f"{row.provider}/{row.model_id}" for row in snapshot.free_tier}
+        gateway_free = {row.route_id for row in snapshot.free_tier}
         capacity: dict[str, CapacityClass] = {}
         for route_id in route_ids:
             if billing_capacity_override(cache, route_id, now):
@@ -1174,7 +1174,7 @@ class IntelligenceService:
             )
             if route_id in gateway_free:
                 row["gateway_free_tier"] = True
-            capacity[route_id] = classify_route_capacity(
+            capacity[route_id] = capacity_of(
                 conn, row, route_id=route_id, openrouter_free_set=free_set
             )[0]
         return capacity

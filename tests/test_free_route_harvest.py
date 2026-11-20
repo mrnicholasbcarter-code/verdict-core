@@ -79,7 +79,9 @@ def test_pick_best_live_is_min_latency_free_not_first_ready() -> None:
         {"model_id": "paid/gpt", "availability_state": "ready", "latency_ms": 10.0},
         {"model_id": "dead/free:free", "availability_state": "unavailable", "latency_ms": 5.0},
     ]
-    assert pick_best_live(observations) == "fast/free:free"
+    # free_ids must be explicit; a :free suffix is not evidence (FR-036)
+    free_ids = {"slow/free:free", "fast/free:free", "dead/free:free"}
+    assert pick_best_live(observations, free_ids=free_ids) == "fast/free:free"
 
 
 def test_keep_excludes_stated_missing_tool_calling_when_unit_requires_it() -> None:
@@ -177,11 +179,15 @@ def test_catalog_alone_never_yields_an_executable_route() -> None:
 
 
 def test_free_status_is_unknown_when_no_facet_and_no_marker() -> None:
-    """FR-036: absent pricing is not evidence of free. Live catalogs omit pricing entirely."""
+    """FR-036: absent pricing is not evidence of free. Live catalogs omit pricing entirely.
+
+    A ``:free`` suffix is also not evidence — only an explicit ``free_ids`` membership
+    decides (operator rule 2026-11-19: names never determine free-ness).
+    """
     from verdict.free_route_harvest import free_status
 
     assert free_status(_row("oc/plain-model")) == "UNKNOWN"
-    assert free_status(_row("oc/model:free")) == "free"
+    assert free_status(_row("oc/model:free")) == "UNKNOWN"  # name is not evidence
     assert free_status(_row("paid/gpt", pricing={"prompt": 2.5})) == "paid"
 
 
@@ -195,9 +201,12 @@ def test_free_status_uses_adapter_facet_when_supplied() -> None:
 
 
 def test_positively_free_ids_are_preferred_over_unknown() -> None:
-    """FR-036: UNKNOWN stays probe-eligible but must not outrank a positively-free id."""
+    """FR-036: UNKNOWN stays probe-eligible but must not outrank a positively-free id.
+
+    ``free_ids`` must be passed explicitly; the ``:free`` suffix alone is not evidence.
+    """
     rows = [_row("oc/unknown-cost"), _row("oc/known:free")]
-    keep = keep_free_compatible(rows, TaskNeed(chat=True))
+    keep = keep_free_compatible(rows, TaskNeed(chat=True), free_ids={"oc/known:free"})
     assert keep == ["oc/known:free", "oc/unknown-cost"]
     assert set(keep) == {"oc/known:free", "oc/unknown-cost"}
 
@@ -251,6 +260,8 @@ def test_same_kept_set_whether_or_not_the_gateway_declares_a_free_facet() -> Non
 
     A gateway exposing a free-tier catalog (OmniRoute) and one exposing nothing must
     admit the same identities, or Verdict would be locked to a single vendor.
+    A ``:free`` suffix is not evidence; without ``free_ids`` all rows are UNKNOWN
+    and ordering follows iteration order (operator rule 2026-11-19).
     """
     rows = [_row("oc/a"), _row("oc/b"), _row("oc/c:free")]
     need = TaskNeed(chat=True)
@@ -259,7 +270,8 @@ def test_same_kept_set_whether_or_not_the_gateway_declares_a_free_facet() -> Non
     assert set(facet_rich) == set(facet_free) == {"oc/a", "oc/b", "oc/c:free"}
     # the facet is used when present: a declared-free id ranks ahead of UNKNOWN
     assert facet_rich[0] == "oc/a"
-    assert facet_free[0] == "oc/c:free"
+    # without free_ids no row is positively free; iteration order is preserved
+    assert facet_free == ["oc/a", "oc/b", "oc/c:free"]
 
 
 def test_pool_alias_leaf_free_detected_in_any_segment() -> None:

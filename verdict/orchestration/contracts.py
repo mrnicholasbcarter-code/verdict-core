@@ -433,6 +433,12 @@ class TaskRequirements:
     # hard-dropped before ranking. Among sufficient routes the least-capable
     # (cheapest sufficient) wins; extra capability is never a ranking bonus.
     max_capability_tier: int = 3
+    # Escalation ceiling: after repeated judged failures, the runtime narrows
+    # the selection to routes strictly stronger than the failing tier by setting
+    # this to (failing_tier - 1).  Applied in addition to max_capability_tier;
+    # the effective ceiling is min(max_capability_tier, escalation_max_tier).
+    # None means no escalation ceiling is in effect.
+    escalation_max_tier: int | None = None
     # Goal-derived family for usage history, independent of role capability gates.
     task_family: str | None = None
 
@@ -549,6 +555,8 @@ EVENT_TYPES = frozenset(
         "openspec_conformance",  # BOD-205: strict OpenSpec validation evidence
         "operator_policy_denied",  # BOD-340: approved policy refused the run
         "salvage_clear_error",  # BOD-308: clear_salvage_dir failed after a rejected attempt
+        "escalation",  # capability escalation: next attempt must use a stronger route
+        "escalation_exhausted",  # capability escalation: already at strongest known tier
         "run_finished",
     }
 )
@@ -934,6 +942,11 @@ class ReviewResult:
     # (for example malformed JSON). Their findings are unknown, so a review with
     # any lost call is never a clean PASS.
     findings_lost: int = 0
+    # Token budget used for this review invocation and how it was determined.
+    # source: "scaled" (auto-computed), "flag" (--review-token-budget),
+    #         "env" (VERDICT_REVIEW_TOKEN_BUDGET), "default" (floor, no changed files).
+    token_budget_used: int = 0
+    token_budget_source: str = ""
 
     @property
     def passed(self) -> bool:

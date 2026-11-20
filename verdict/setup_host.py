@@ -48,8 +48,20 @@ PRIME = "host.prime-registry"
 REF_DOCS = "host.ref-docs-timer"
 DOCS_REFRESH = "host.docs-refresh-timer"
 PR_WATCHER = "host.pr-watcher-timer"
+CONTEXT_LIFT = "host.context-lift-timer"
 #: Apply order: Prime enable needs a healthy serve, so the serve unit comes first.
-ORDER = (OCR, METADATA, ACCEPTANCE, IDENTIFY, REF_DOCS, DOCS_REFRESH, PR_WATCHER, SERVE, PRIME)
+ORDER = (
+    OCR,
+    METADATA,
+    ACCEPTANCE,
+    IDENTIFY,
+    REF_DOCS,
+    DOCS_REFRESH,
+    PR_WATCHER,
+    CONTEXT_LIFT,
+    SERVE,
+    PRIME,
+)
 #: ``harness prime enable`` waits this many probes (one second apart) for serve.
 SERVE_HEALTH_ATTEMPTS = 15
 PRIME_SYNC_UNIT = "verdict-prime-sync.service"
@@ -343,6 +355,11 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
             unit_dir=env.unit_dir, dry_run=True, repos=repos
         )
         return _timer_problems(env, rendered, pr_watcher_service.TIMER)
+    if provider_id == CONTEXT_LIFT:
+        from verdict import context_lift_service
+
+        rendered = context_lift_service.manage_service(unit_dir=env.unit_dir, dry_run=True)
+        return _timer_problems(env, rendered, context_lift_service.TIMER)
     if provider_id == SERVE:
         from verdict import serve_service
 
@@ -443,6 +460,18 @@ _ACTIONS: dict[str, dict[str, str]] = {
         "postcondition": "verdict-pr-watch.timer is active.",
         "undo": "systemctl --user disable --now verdict-pr-watch.timer; remove verdict-pr-watch.service and verdict-pr-watch.timer",
         "install_command": "verdict setup --apply --allow host.pr-watcher-timer",
+    },
+    CONTEXT_LIFT: {
+        "description": "Install the daily context-lift bench timer (free capacity only).",
+        "security_impact": (
+            "Writes two systemd user units; the daily job runs "
+            "verdict bench context-lift --json on FREE capacity only, "
+            "making at most a handful of live model calls, and writes evidence "
+            "under $VERDICT_HOME/context-lift/. No paid routes are used."
+        ),
+        "postcondition": "verdict-context-lift.timer is active.",
+        "undo": "verdict bench context-lift --install-service --uninstall",
+        "install_command": "verdict setup --apply --allow host.context-lift-timer",
     },
     SERVE: {
         "description": (
@@ -669,6 +698,11 @@ def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[st
                 "plan": result.get("plan"),
                 "changed": result.get("changed"),
             }
+        if provider_id == CONTEXT_LIFT:
+            from verdict import context_lift_service
+
+            steps = _install_timers(env, context_lift_service.manage_service)
+            return {"status": "applied", "note": f"{context_lift_service.TIMER} enabled", **steps}
         if provider_id == SERVE:
             return _install_serve(env)
         if provider_id == PRIME:
