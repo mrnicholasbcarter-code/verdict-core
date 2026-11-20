@@ -106,6 +106,7 @@ hardening pass (successor for ADR-023).
 | [037](ADR-037-supervisor-concurrency-governor.md) — Supervisor concurrency governor | Bounded concurrent stories under one supervisor; `VERDICT_MULTI_STORY` off by default | Accepted | *(new — pending ecosystem re-audit)* | PARTIALLY_TRUE | — |
 | [038](ADR-038-improvement-cycle.md) — Measured improvement cycle | `verdict improve`: bounded cycles above a supervised run, measured only from recomputable receipt evidence, deterministic lessons, unchanged-relaunch refusal | Accepted | *(new — pending ecosystem re-audit)* | VERIFIED (offline tests + live cycles 2026-10-12) | Amends ADR-036 |
 | [042](ADR-042-dynamic-role-model-selection.md) — Dynamic role-based model selection | Pipeline-based selection for roles; shadow evaluation; capacity-aware | Proposed | *(new)* | — |
+| [046](ADR-046-arena-ratings-advisory-source.md) — Arena ratings as advisory reordering source | Exact (org, key) join, VR percentile, role chains, advisory-only integration; never affects admission | CURRENT | *(new)* | — |
 
 ## Duplicate / superseded copies (retain for inbound links)
 

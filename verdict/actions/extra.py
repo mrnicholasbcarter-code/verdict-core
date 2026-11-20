@@ -1158,6 +1158,20 @@ def _action_metadata_refresh(**kwargs: Any) -> ActionResult:
     resolved_store = str(
         Path(store_path).expanduser() if store_path else verdict_home() / "model-metadata.json"
     )
+    # Arena advisory snapshot: only fetch live when not in offline fixture mode.
+    arena_status: dict[str, Any] = {}
+    if not offline:
+        try:
+            from verdict.arena.fetch import refresh_arena_snapshot
+            from verdict.metadata.store import load_store
+
+            live_store = load_store(Path(resolved_store))
+            store_ids = frozenset(r.id for r in live_store.records)
+            arena_result = refresh_arena_snapshot(store_ids, now=now)
+            arena_status = arena_result
+        except Exception as exc:
+            arena_status = {"ok": False, "error": str(exc)}
+
     return ActionResult(
         data={
             "schema_version": snapshot.schema_version,
@@ -1168,6 +1182,7 @@ def _action_metadata_refresh(**kwargs: Any) -> ActionResult:
             "sources": {name: status.to_dict() for name, status in snapshot.sources.items()},
             "mapping": snapshot.mapping,
             "store": resolved_store,
+            "arena": arena_status,
         }
     )
 

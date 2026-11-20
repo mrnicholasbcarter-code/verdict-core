@@ -5072,6 +5072,41 @@ def cmd_outcome_import(
     present.kv({"stored": data["stored"]})
 
 
+def cmd_arena_coverage(
+    *,
+    store_path: str | Path | None = None,
+    snapshot_path: str | Path | None = None,
+    output_json: bool = False,
+) -> None:
+    """Print Arena join coverage and reference-set sizes from the on-disk snapshot."""
+    from datetime import datetime, timezone
+
+    from verdict.arena.report import coverage_report, print_coverage_report
+    from verdict.arena.snapshot import load_snapshot
+    from verdict.metadata.records import ModelMetadataError
+    from verdict.metadata.store import load_store
+    from verdict.paths import verdict_home
+
+    now = datetime.now(timezone.utc)
+    resolved_store = (
+        Path(store_path).expanduser() if store_path else verdict_home() / "model-metadata.json"
+    )
+    snap_path = Path(snapshot_path).expanduser() if snapshot_path else None
+
+    try:
+        metadata = load_store(resolved_store)
+        store_ids = frozenset(r.id for r in metadata.records)
+    except (ModelMetadataError, OSError, ValueError):
+        store_ids = frozenset()
+
+    arena_snap = load_snapshot(snap_path)
+
+    # Pass empty arena_rows: the report shows snapshot meta and reference-set sizes.
+    # Raw Arena rows are not cached; run verdict metadata refresh to populate.
+    report = coverage_report(arena_rows=[], store_ids=store_ids, snapshot=arena_snap, now=now)
+    print_coverage_report(report, json_output=output_json)
+
+
 def cmd_metadata(args: Any) -> None:
     command = getattr(args, "metadata_command", None)
     if command == "refresh":
@@ -5082,6 +5117,13 @@ def cmd_metadata(args: Any) -> None:
             models_dev_models_file=getattr(args, "models_dev_models_file", None),
             litellm_file=getattr(args, "litellm_file", None),
             include_p1=getattr(args, "include_p1", False),
+            output_json=getattr(args, "json", False),
+        )
+        return
+    if command == "arena-coverage":
+        cmd_arena_coverage(
+            store_path=getattr(args, "store_path", None),
+            snapshot_path=getattr(args, "snapshot_path", None),
             output_json=getattr(args, "json", False),
         )
         return

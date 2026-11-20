@@ -276,6 +276,30 @@ def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
         "ok": True,
         "problems": [],
     }
+    # Create a fresh arena snapshot so arena_snapshot_row() returns "ok".
+    _now_str = NOW.strftime("%Y-%m-%dT%H:%M:%SZ")
+    _today_str = NOW.strftime("%Y-%m-%d")
+    _arena_snap_path = tmp_path / ".verdict" / "arena-snapshot.json"
+    _arena_snap_path.parent.mkdir(parents=True, exist_ok=True)
+    _arena_snap_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "fetched_at": {
+                    "arena_text": _now_str,
+                    "arena_webdev": _now_str,
+                    "arena_agent": _now_str,
+                },
+                "leaderboard_publish_date": {
+                    "arena_text": _today_str,
+                    "arena_webdev": _today_str,
+                    "arena_agent": _today_str,
+                },
+                "reference_sets": {},
+                "records": {},
+            }
+        )
+    )
     rows = dd.installed_service_rows(
         now=NOW, timer_state=fake_timer, ref_docs_status=lambda: [synced]
     )

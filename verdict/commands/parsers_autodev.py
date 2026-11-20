@@ -199,6 +199,24 @@ def register(subparsers: Any) -> None:
     metadata_lookup_p.add_argument(
         "--json", action="store_true", help="Output machine-readable JSON"
     )
+    metadata_coverage_p = metadata_sub.add_parser(
+        "arena-coverage", help="Report Arena leaderboard join coverage and reference-set sizes"
+    )
+    metadata_coverage_p.add_argument(
+        "--json", action="store_true", help="Output machine-readable JSON"
+    )
+    metadata_coverage_p.add_argument(
+        "--store",
+        dest="store_path",
+        default=None,
+        help="Core metadata store path (default ~/.verdict/model-metadata.json)",
+    )
+    metadata_coverage_p.add_argument(
+        "--snapshot",
+        dest="snapshot_path",
+        default=None,
+        help="Arena snapshot path (default ~/.verdict/arena-snapshot.json)",
+    )
 
     suggest_p = subparsers.add_parser(
         "suggest", help="Review intelligence suggestions from past outcomes"
