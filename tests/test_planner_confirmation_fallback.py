@@ -22,9 +22,13 @@ REQ = TaskRequirements(frontier_worthy=True, max_capability_tier=2)
 
 
 def ladder(tmp_path: Path, *, fresh_free: bool = False, sub_ok: bool = True):
-    cold = [f"ghost/deepseek-v3-{i}" for i in range(10)]
+    # Use tier-0 cold routes (same tier as SUB and FREE) so this fixture tests
+    # within-tier proven-first behaviour as the module docstring describes.
+    # Provider "acold" sorts before "codex" so cold[0] wins the route_id
+    # tiebreaker when neither route is in the health cache.
+    cold = [f"acold/claude-opus-{i}" for i in range(10)]
     rows = [row(r) for r in cold] + [row(FREE, "freemodel-dev"), row(SUB)]
-    connections = [conn("ghost"), conn("freemodel-dev"), conn("codex")]
+    connections = [conn("acold"), conn("freemodel-dev"), conn("codex")]
     cache = HealthCache(tmp_path / "health-cache.json")
     for route in [SUB] + ([FREE] if fresh_free else []):
         cache.record(route, ProbeResult(category="ok", chat_ok=True, tool_ok=True), NOW)

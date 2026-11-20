@@ -2309,6 +2309,7 @@ def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
         coding=True,
         reasoning=True,
         frontier_worthy=True,
+        role_ordering="strongest_first",
     )
     try:
         _chosen, verdicts = selector.select(
