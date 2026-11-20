@@ -286,6 +286,10 @@ class NodeRun:
     # _JUDGED_WORK_CATEGORIES).  Read in _attempt() to decide clean-base vs
     # salvage-restore; overwritten by every _record_failure() call.
     last_rejected: bool = False
+    # True when clear_salvage_dir failed on a rejected attempt, leaving stale
+    # content in the salvage dir.  Forces clean-base on all future attempts of
+    # this node until an interrupted save successfully replaces the dir.
+    salvage_poisoned: bool = False
 
 
 @dataclass(frozen=True)
@@ -1452,9 +1456,10 @@ class DagRuntime:
             if run.attempt > 1 and run.node.owned_files:
                 salvage_dir = self.run_dir / "salvage" / run.node.node_id
                 was_rejected = run.last_rejected
-                # Reset now so the flag does not leak into further attempts.
+                salvage_tainted = run.salvage_poisoned
+                # Reset last_rejected; salvage_poisoned is managed by _fail().
                 run.last_rejected = False
-                if was_rejected:
+                if was_rejected or salvage_tainted:
                     # Previous attempt was rejected: start from the clean base.
                     # No files are restored; the event records the reason.
                     self.events.emit(
@@ -2296,7 +2301,27 @@ class DagRuntime:
                     # Work was judged wrong: wipe prior salvage so the next
                     # attempt starts from the clean base.  The restore event
                     # emitted in _attempt() records which path was taken.
-                    clear_salvage_dir(salvage_dir)
+                    clear_err = clear_salvage_dir(salvage_dir)
+                    if clear_err:
+                        # Could not remove the salvage dir; stale content remains.
+                        # Emit an event and poison the dir so _attempt() keeps
+                        # the node on the clean-base path until an interrupted
+                        # save successfully replaces the contents.
+                        self.events.emit(
+                            "salvage_clear_error",
+                            run.node.node_id,
+                            attempt=run.attempt,
+                            error=clear_err,
+                        )
+                        run.history.append(
+                            {
+                                "attempt": run.attempt,
+                                "route_id": run.route_id,
+                                "outcome": "salvage_clear_error",
+                                "error": clear_err,
+                            }
+                        )
+                        run.salvage_poisoned = True
                 else:
                     # Work was interrupted: preserve partial owned files.
                     changed = await self.git.changed_files(
@@ -2309,6 +2334,9 @@ class DagRuntime:
                         changed_files=changed,
                         replace_existing=True,
                     )
+                    if result.saved and not result.error:
+                        # Successful save replaced any prior stale content.
+                        run.salvage_poisoned = False
                     if result.saved or result.skipped or result.error:
                         saved_proj = list(result.saved[:_MAX_EVIDENCE_PATHS])
                         skipped_proj = list(result.skipped[:_MAX_EVIDENCE_PATHS])

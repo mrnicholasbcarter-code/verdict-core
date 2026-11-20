@@ -528,7 +528,7 @@ class FailureIntelligence:
         # the SEARCH text did not match the file on disk.  The work was judged
         # wrong; a fresh attempt must correct the implementation, not retry the
         # same diff.  No cooldown: the route is not at fault.
-        if terminal.error.startswith("diff_rejected"):
+        if error_text.startswith("diff_rejected"):
             return FailureClassification(
                 category="diff_rejected",
                 action="CORRECT_IMPLEMENTATION",
