@@ -304,6 +304,11 @@ core loop is `verdict/autodev_run.py` (proven on main by BOD-392).
 `autodev_run.py`. (3) `execution_hosts`: KEEP as ALLOWLIST, reason "documented contract
 (`docs/guides/execution-host-contract.md`); wire or retire under BOD-316". Reversible.
 
+> Path note (2026-11-20): the decision text above is kept as written. Since then
+> `AUTONOMOUS_DEV_LOOP.md` moved to [`docs/archive/AUTONOMOUS_DEV_LOOP.md`](../archive/AUTONOMOUS_DEV_LOOP.md),
+> and `docs/guides/execution-host-contract.md` was removed in a later cleanup; it
+> survives only in git history.
+
 ## D28: merge flow (2026-10-16)
 
 The core loop is proven on main (BOD-392), so the 2026-10-09 release-train preference
