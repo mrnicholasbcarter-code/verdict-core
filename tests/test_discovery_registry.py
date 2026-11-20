@@ -650,6 +650,24 @@ class WallBudgetEnforcementTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# load_registry: non-UTF-8 file must return None
+# ---------------------------------------------------------------------------
+
+
+class RegistryInvalidUtf8Test(unittest.TestCase):
+    def test_load_registry_invalid_utf8_returns_none(self) -> None:
+        """A registry file containing non-UTF-8 bytes must return None, not raise."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _env(tmp)
+            path = registry_path(env)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Write bytes that are not valid UTF-8 (lone continuation byte)
+            path.write_bytes(b"\xff\xfe{invalid utf-8}")
+            result = load_registry(env)
+            self.assertIsNone(result, "non-UTF-8 registry file must return None, not raise")
+
+
+# ---------------------------------------------------------------------------
 # Fix 3: load_registry with naive written_at
 # ---------------------------------------------------------------------------
 

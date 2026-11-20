@@ -164,7 +164,7 @@ def load_registry(env: Mapping[str, str] | None = None) -> DiscoveryRegistry | N
     path = registry_path(env)
     try:
         raw = path.read_text(encoding="utf-8")
-    except (OSError, PermissionError):
+    except (OSError, PermissionError, UnicodeDecodeError):
         return None
     try:
         d = json.loads(raw)
@@ -284,19 +284,16 @@ def run_refresh(
 
     seen_keys: set[str] = set()
     active_pool_items: dict[str, list[tuple[Route, str, str]]] = {}
-    pre_open_skipped: list[tuple[Route, str, str]] = []  # pool was open before this run
 
     for pool_key, pool_routes in pool_groups.items():
         for item in pool_routes:
             route = item[0]
-            if breaker.is_open(route):
-                pre_open_skipped.append(item)
-            elif route.key not in seen_keys:
+            if route.key not in seen_keys:
                 seen_keys.add(route.key)
                 active_pool_items.setdefault(pool_key, []).append(item)
             # else: duplicate key — silently dropped
 
-    if not active_pool_items and not pre_open_skipped:
+    if not active_pool_items:
         reg = DiscoveryRegistry(
             schema=REGISTRY_SCHEMA, written_at=now_iso, ttl_s=REGISTRY_TTL_S, entries=[]
         )
@@ -416,21 +413,6 @@ def run_refresh(
     for (route, cap_class, cap_fact), pr in zip(probe_items_out, probe_results_out, strict=True):
         tr = tool_results.get(route.key)
         entries.append(_make_entry(route, cap_class, cap_fact, pr, tr, now_iso, breaker))
-
-    # Routes skipped because the pool was open before this run started.
-    for route, cap_class, cap_fact in pre_open_skipped:
-        entries.append(
-            _make_entry(
-                route,
-                cap_class,
-                cap_fact,
-                None,
-                None,
-                now_iso,
-                breaker,
-                skip_reason="pool_breaker_open",
-            )
-        )
 
     # Routes skipped mid-run: either the pool breaker fired or the wall budget
     # ran out before the liveness probe could be started.
