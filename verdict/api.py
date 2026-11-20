@@ -3004,8 +3004,15 @@ def _resolve_run_dir(run_id: str) -> Path | None:
     """
     if not _RUN_ID_RE.match(run_id) or run_id in {".", ".."}:
         return None
+    # Path.name strips all path separators and gives only the final component.
+    # This is a recognised sanitizer for path-traversal in static analysis tools;
+    # the regex above independently rejects every non-simple character, so the
+    # two checks are defence-in-depth rather than alternatives.
+    safe_name = Path(run_id).name
+    if not safe_name or safe_name != run_id:
+        return None
     root = _runs_root().resolve()
-    candidate = (root / run_id).resolve()
+    candidate = (root / safe_name).resolve()
     # Must be a direct child — parent must equal the resolved root exactly.
     if candidate.parent != root:
         return None
