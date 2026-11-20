@@ -1282,5 +1282,209 @@ class LivenessWallBudgetTest(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Fix 5: Catalog unavailable must not overwrite prior registry
+# ---------------------------------------------------------------------------
+
+
+class CatalogUnavailableTest(unittest.TestCase):
+    """run_refresh_action must distinguish catalog failures from an empty catalog.
+
+    On failure (missing key, network error): keep the prior registry unchanged,
+    return source="catalog_unavailable".  Only write when the catalog is
+    genuinely reachable, even if it returns no probeable routes.
+    """
+
+    def tearDown(self) -> None:
+        _set_transport(None)
+
+    def _make_prior_registry(self, env: dict[str, str]) -> bytes:
+        """Write a minimal prior registry and return its raw bytes."""
+        prior = DiscoveryRegistry(
+            schema=REGISTRY_SCHEMA,
+            written_at="2026-11-19T12:00:00+00:00",
+            ttl_s=REGISTRY_TTL_S,
+            entries=[],
+        )
+        save_registry(prior, env)
+        return registry_path(env).read_bytes()
+
+    def test_missing_key_preserves_prior_registry(self) -> None:
+        """No API key: prior registry must be byte-identical after the call."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _env(tmp)
+            prior_bytes = self._make_prior_registry(env)
+            run_refresh_action(force=True, env=env)
+            after_bytes = registry_path(env).read_bytes()
+            self.assertEqual(
+                after_bytes, prior_bytes, "registry must not be overwritten when API key is absent"
+            )
+
+    def test_missing_key_reports_catalog_unavailable(self) -> None:
+        """No API key: source must be 'catalog_unavailable'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_refresh_action(force=True, env=_env(tmp))
+            self.assertEqual(result.get("source"), "catalog_unavailable")
+
+    def test_missing_key_no_prior_registry_does_not_write(self) -> None:
+        """No API key, no prior registry: nothing must be written to disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _env(tmp)
+            run_refresh_action(force=True, env=env)
+            self.assertFalse(
+                registry_path(env).exists(),
+                "no registry file must be written when catalog is unavailable",
+            )
+
+    def test_fetch_failure_preserves_prior_registry(self) -> None:
+        """When catalog fetch raises, prior registry must be preserved byte-identical."""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**_env(tmp), "OMNIROUTE_API_KEY": "test-key"}
+            prior_bytes = self._make_prior_registry(env)
+            with patch(
+                "verdict.omniroute_evidence.fetch_omniroute_evidence",
+                side_effect=RuntimeError("network down"),
+            ):
+                result = run_refresh_action(force=True, env=env)
+            after_bytes = registry_path(env).read_bytes()
+            self.assertEqual(
+                after_bytes, prior_bytes, "prior registry must be preserved when fetch raises"
+            )
+            self.assertEqual(result.get("source"), "catalog_unavailable")
+
+    def test_confirmed_empty_catalog_writes_empty_registry(self) -> None:
+        """A confirmed-empty catalog (available=True, routes=[]) must write an empty registry."""
+        from unittest.mock import patch
+
+        from verdict.discovery.refresh import CatalogResult
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _env(tmp)
+            with patch("verdict.discovery.refresh.load_probeable_routes") as mock_lpr:
+                mock_lpr.return_value = CatalogResult(routes=[], available=True, reason=None)
+                run_refresh_action(force=True, env=env)
+            self.assertTrue(
+                registry_path(env).exists(),
+                "empty registry must be written for a confirmed-empty catalog",
+            )
+            loaded = load_registry(env)
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertEqual(len(loaded.entries), 0)
+
+
+# ---------------------------------------------------------------------------
+# Fix 6: --force flag reaches run_refresh_action via CLI parser + dispatch
+# ---------------------------------------------------------------------------
+
+
+class ForceArgForwardingTest(unittest.TestCase):
+    def test_force_flag_accepted_by_parser(self) -> None:
+        """'verdict discovery refresh --force' must parse without error."""
+        import argparse
+
+        from verdict.commands.parsers_discovery import register
+
+        p = argparse.ArgumentParser()
+        sub = p.add_subparsers(dest="command")
+        register(sub)
+        args = p.parse_args(["discovery", "refresh", "--force"])
+        self.assertTrue(
+            getattr(args, "force", False), "--force must set force=True on the parsed namespace"
+        )
+
+    def test_dispatch_passes_force_to_run_refresh_action(self) -> None:
+        """dispatch must forward force=True when --force is set."""
+        import argparse
+        from unittest.mock import patch
+
+        from verdict.commands.parsers_discovery import register
+
+        p = argparse.ArgumentParser()
+        sub = p.add_subparsers(dest="command")
+        register(sub)
+        args = p.parse_args(["discovery", "refresh", "--force"])
+
+        with patch("verdict.discovery.refresh.run_refresh_action") as mock_refresh:
+            mock_refresh.return_value = {
+                "schema": REGISTRY_SCHEMA,
+                "written_at": "2026-11-20T00:00:00+00:00",
+                "ttl_s": REGISTRY_TTL_S,
+                "dry_run": False,
+                "source": "omniroute",
+                "counts": {"input": 0, "total": 0, "answered": 0, "tool_ok": 0, "rate_limited": 0},
+                "by_provider": {},
+                "entries": [],
+            }
+            from verdict.commands.dispatch import dispatch
+
+            dispatch(p, args)
+
+        call_kwargs = mock_refresh.call_args.kwargs
+        self.assertIs(call_kwargs.get("force"), True, "force=True must be forwarded by dispatch")
+
+
+# ---------------------------------------------------------------------------
+# Fix 7: rate_limited counts only measured 429 outcomes
+# ---------------------------------------------------------------------------
+
+
+class RateLimitedCountTest(unittest.TestCase):
+    """rate_limited in the summary must count only the route that got the measured 429,
+    not the sibling routes that were skipped because the pool breaker opened."""
+
+    def tearDown(self) -> None:
+        _set_transport(None)
+
+    def test_rate_limited_counts_only_measured_429_not_skipped_routes(self) -> None:
+        """Pool with 3 routes: first gets 429 at liveness; rate_limited must be 1."""
+        import urllib.parse
+
+        from verdict.discovery.refresh import _registry_to_summary
+
+        route_a = Route(provider="kilo", model="m-a", base_url="http://a.example.com/v1")
+        route_b = Route(provider="kilo", model="m-b", base_url="http://b.example.com/v1")
+        route_c = Route(provider="kilo", model="m-c", base_url="http://c.example.com/v1")
+
+        def _t(url: str, h: dict, p: bytes, timeout: float) -> tuple:
+            hostname = urllib.parse.urlsplit(url).hostname or ""
+            if hostname == "a.example.com":
+                return 429, {"retry-after": "60"}, _429_body()
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = run_refresh(
+                [
+                    (route_a, "free", "plan_free"),
+                    (route_b, "free", "plan_free"),
+                    (route_c, "free", "plan_free"),
+                ],
+                context_tokens=0,
+                wall_budget_s=300.0,
+                env=_env(tmp),
+            )
+
+        # All three entries must have breaker_state == "open" (pool was opened)
+        for e in reg.entries:
+            self.assertEqual(e.breaker_state, BREAKER_OPEN)
+
+        summary = _registry_to_summary(reg, dry_run=False, total_input=3)
+        counts = summary["counts"]
+        self.assertEqual(
+            counts["rate_limited"],
+            1,
+            "only the route that received the measured 429 must count as rate_limited",
+        )
+        self.assertEqual(
+            counts.get("not_probed_breaker", 0),
+            2,
+            "the two skipped routes must count as not_probed_breaker, not rate_limited",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

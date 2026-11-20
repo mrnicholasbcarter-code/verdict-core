@@ -515,8 +515,9 @@ class LoadOmniRouteRoutesTest(unittest.TestCase):
             env = {"OMNIROUTE_API_KEY": "test-key", "OMNIROUTE_BASE_URL": "http://localhost:20128"}
             result = _load_omniroute_routes(env=env)
 
-        self.assertEqual(len(result), 1)
-        route, cap_class, cap_fact = result[0]
+        self.assertTrue(result.available, "fetch succeeded; available must be True")
+        self.assertEqual(len(result.routes), 1)
+        route, cap_class, cap_fact = result.routes[0]
         self.assertEqual(route.model, "groq/llama-3.3-70b-versatile")
         self.assertEqual(cap_class, "free")
         self.assertEqual(cap_fact, "plan_label_free")
@@ -535,7 +536,8 @@ class LoadOmniRouteRoutesTest(unittest.TestCase):
             env = {"OMNIROUTE_API_KEY": "test-key"}
             result = _load_omniroute_routes(env=env)
 
-        self.assertEqual(result, [])
+        self.assertTrue(result.available, "fetch succeeded; available must be True")
+        self.assertEqual(result.routes, [], "metered route must be excluded")
 
     def test_missing_api_key_returns_empty_without_fetch(self) -> None:
         """When no API key is present, returns [] without calling fetch."""
@@ -547,7 +549,9 @@ class LoadOmniRouteRoutesTest(unittest.TestCase):
         with patch("verdict.omniroute_evidence.fetch_omniroute_evidence", mock_fetch):
             result = _load_omniroute_routes(env={})
 
-        self.assertEqual(result, [])
+        self.assertFalse(result.available, "missing key → available must be False")
+        self.assertEqual(result.reason, "api_key_missing")
+        self.assertEqual(result.routes, [])
         mock_fetch.assert_not_called()
 
 

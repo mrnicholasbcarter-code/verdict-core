@@ -1118,6 +1118,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
 
             refresh_result = run_refresh_action(
                 dry_run=getattr(args, "dry_run", False),
+                force=getattr(args, "force", False),
                 context_tokens=getattr(args, "context_tokens", 18000),
                 wall_budget_s=getattr(args, "wall_budget_s", 300.0),
             )

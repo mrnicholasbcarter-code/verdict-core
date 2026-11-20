@@ -38,12 +38,18 @@ def register(subparsers: Any) -> None:
         help="Emit machine-readable JSON (schema: verdict.discovery.registry/v1)",
     )
     refresh_p.add_argument(
+        "--force",
+        action="store_true",
+        dest="force",
+        help="Re-probe even when a fresh registry already exists (bypass TTL).",
+    )
+    refresh_p.add_argument(
         "--dry-run",
         action="store_true",
         dest="dry_run",
         help=(
-            "List routes that would be probed without making any calls. "
-            "No registry file is written."
+            "Zero network calls; returns dry_run_requires_catalog with no entries "
+            "(the OmniRoute catalog requires a live fetch). No registry file is written."
         ),
     )
     refresh_p.add_argument(
