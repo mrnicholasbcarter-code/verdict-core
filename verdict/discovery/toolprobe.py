@@ -12,7 +12,8 @@ accept a tiny probe can reject a real agent request (Groq answered HTTP 413
 to ~19 K-token requests).
 
 Statuses: ``tool_ok``, ``no_tool_call`` (answered in text), ``bad_tool_call``
-(wrong tool or arguments), ``tool_error`` (HTTP or transport failure).
+(wrong tool or arguments), ``tool_error`` (HTTP or transport failure),
+``rate_limited`` (HTTP 429 — reuses the liveness-stage constant).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import json
 import time
 
 from verdict.discovery import probe as _probe
-from verdict.discovery.model import NO_KEY, Route
+from verdict.discovery.model import NO_KEY, RATE_LIMITED, Route
 
 TOOL_OK = "tool_ok"
 NO_TOOL_CALL = "no_tool_call"
@@ -60,7 +61,14 @@ def filler(tokens: int) -> str:
 
 
 def classify(status_code: int, body: bytes) -> tuple[str, str | None]:
-    """Classify a tool-probe response into one of the TOOL_* statuses."""
+    """Classify a tool-probe response into one of the TOOL_* statuses.
+
+    HTTP 429 is returned as ``RATE_LIMITED`` (the typed signal) so callers
+    can detect it without parsing the detail string.
+    All other non-200 codes are returned as ``TOOL_ERROR``.
+    """
+    if status_code == 429:
+        return RATE_LIMITED, f"HTTP {status_code}"
     if status_code != 200:
         return TOOL_ERROR, f"HTTP {status_code}"
     try:

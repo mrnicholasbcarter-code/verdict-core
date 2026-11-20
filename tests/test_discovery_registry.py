@@ -579,17 +579,13 @@ class WallBudgetEnforcementTest(unittest.TestCase):
     def tearDown(self) -> None:
         _set_transport(None)
 
-    def test_tool_probe_skipped_when_budget_already_exhausted(self) -> None:
-        """When wall_budget_s is already spent, tool probes must not run."""
+    def test_budget_exhausted_before_start_skips_liveness_and_tool(self) -> None:
+        """When wall_budget_s is already spent, neither liveness nor tool probes run."""
         route = _route()
-        tool_probe_calls: list[str] = []
+        any_probe_calls: list[str] = []
 
         def _t(url: str, h: dict, p: bytes, timeout: float):
-            if b'"tools"' in p:
-                # Tool probe — must not be called when budget is exhausted
-                tool_probe_calls.append(url)
-                return 200, {}, _tool_ok_body()
-            # Liveness probe — answers OK
+            any_probe_calls.append(url)
             return 200, {}, _ok_body()
 
         _set_transport(_t)
@@ -600,12 +596,57 @@ class WallBudgetEnforcementTest(unittest.TestCase):
                 [(route, "free", "plan_free")], context_tokens=0, wall_budget_s=-1.0, env=_env(tmp)
             )
 
-        # Liveness probe ran and answered, but tool probe must have been skipped
+        # No HTTP call should have been made at all
+        self.assertEqual(any_probe_calls, [], "no probe must run when budget is already spent")
         self.assertEqual(len(reg.entries), 1)
-        self.assertTrue(reg.entries[0].answered, "liveness probe should still be counted")
-        self.assertIsNone(reg.entries[0].tool_ok, "skipped tool probe must be None, not False")
-        self.assertEqual(reg.entries[0].tool_skip_reason, "wall_budget_exhausted")
+        entry = reg.entries[0]
+        self.assertFalse(entry.answered, "route must not be answered (not probed)")
+        self.assertEqual(
+            entry.probe_skip_reason,
+            "wall_budget_exhausted",
+            "liveness probe must be skipped with wall_budget_exhausted",
+        )
+        self.assertIsNone(entry.tool_ok, "tool probe must be not_probed (None)")
+
+    def test_tool_probe_skipped_when_budget_exhausted_after_liveness(self) -> None:
+        """When the budget expires between liveness and tool stage, tool probes must not run."""
+        import unittest.mock as _mock
+
+        import verdict.discovery.registry as _reg_mod
+
+        route = _route()
+        clock: list[float] = [0.0]
+        _real_monotonic = __import__("time").monotonic
+        tool_probe_calls: list[str] = []
+
+        def _t(url: str, h: dict, p: bytes, timeout: float):
+            if b'"tools"' in p:
+                tool_probe_calls.append(url)
+                return 200, {}, _tool_ok_body()
+            # Liveness probe — advance clock past deadline on return
+            clock[0] = 1e12
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        def fake_monotonic() -> float:
+            return _real_monotonic() if clock[0] == 0.0 else clock[0]
+
+        with (
+            _mock.patch.object(_reg_mod.time, "monotonic", fake_monotonic),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            reg = run_refresh(
+                [(route, "free", "plan_free")], context_tokens=0, wall_budget_s=300.0, env=_env(tmp)
+            )
+
+        # Liveness ran; tool probe must have been skipped by the pre-stage budget check
         self.assertEqual(tool_probe_calls, [], "tool probe must not be called when budget is spent")
+        self.assertEqual(len(reg.entries), 1)
+        entry = reg.entries[0]
+        self.assertTrue(entry.answered, "liveness probe must have answered")
+        self.assertIsNone(entry.tool_ok, "skipped tool probe must be None, not False")
+        self.assertEqual(entry.tool_skip_reason, "wall_budget_exhausted")
 
 
 # ---------------------------------------------------------------------------
@@ -901,38 +942,67 @@ class PerRouteDeadlineTest(unittest.TestCase):
         self.assertEqual(entry_b.tool_skip_reason, "wall_budget_exhausted")
 
     def test_registry_records_not_probed_when_budget_exhausted_before_tool_stage(self) -> None:
-        """run_refresh stores tool_ok=None/wall_budget_exhausted when deadline passed.
+        """run_refresh stores tool_ok=None/wall_budget_exhausted when deadline passes
+        after all liveness probes complete but before the tool stage pre-check.
 
-        Uses the pre-stage exhausted-budget path (wall_budget_s=-1) so that the
-        tool stage is skipped for every UP route.  This verifies that _make_entry
-        maps TOOL_NOT_PROBED → (tool_ok=None, tool_skip_reason=…).
-        The per-route deadline check in the serial worker is tested by
-        test_per_route_deadline_crossing_marks_remaining_not_probed above.
+        Verifies that _make_entry maps TOOL_NOT_PROBED → (tool_ok=None, tool_skip_reason=…).
+        Uses two routes in different pools so liveness runs concurrently; the
+        clock is advanced past the deadline by the first liveness return so that
+        the remaining_budget <= 0 path fires before the tool stage begins.
+        The per-route deadline check inside the serial worker is tested separately by
+        test_per_route_deadline_crossing_marks_remaining_not_probed.
         """
-        route_a = Route(provider="kilo", model="m-a", base_url="http://a.example.com/v1")
-        route_b = Route(provider="kilo", model="m-b", base_url="http://b.example.com/v1")
+        import unittest.mock as _mock
+
+        import verdict.discovery.registry as _reg_mod
+
+        # Different pools (different upstream) → concurrent liveness
+        route_a = Route(
+            provider="p", model="m-a", base_url="http://a.example.com/v1", upstream="pool-a"
+        )
+        route_b = Route(
+            provider="p", model="m-b", base_url="http://b.example.com/v1", upstream="pool-b"
+        )
+
+        clock: list[float] = [0.0]
+        _real_monotonic = __import__("time").monotonic
 
         def _t(url: str, h: dict, p: bytes, timeout: float):
             if b'"tools"' in p:
                 raise AssertionError("tool probe must not run when budget exhausted")
+            # Advance clock past deadline on first liveness return
+            clock[0] = 1e12
             return 200, {}, _ok_body()
 
         _set_transport(_t)
 
-        with tempfile.TemporaryDirectory() as tmp:
+        def fake_monotonic() -> float:
+            return _real_monotonic() if clock[0] == 0.0 else clock[0]
+
+        with (
+            _mock.patch.object(_reg_mod.time, "monotonic", fake_monotonic),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
             reg = run_refresh(
                 [(route_a, "free", "plan_free"), (route_b, "free", "plan_free")],
                 context_tokens=0,
-                wall_budget_s=-1.0,  # deadline already in the past
+                wall_budget_s=300.0,
                 env=_env(tmp),
             )
 
         entries_by_key = {e.route_key: e for e in reg.entries}
+        # Both routes should have been attempted at liveness (answered=True or False)
+        # but tool probes must be skipped due to the pre-stage budget check.
         for key in (route_a.key, route_b.key):
             entry = entries_by_key[key]
-            self.assertTrue(entry.answered, f"{key}: liveness probe should still run")
+            # Route may or may not have been probed at liveness depending on clock,
+            # but tool_ok must be None with the wall_budget_exhausted reason.
             self.assertIsNone(entry.tool_ok, f"{key}: not_probed must be None not False")
-            self.assertEqual(entry.tool_skip_reason, "wall_budget_exhausted")
+            self.assertEqual(
+                entry.tool_skip_reason,
+                "wall_budget_exhausted",
+                f"{key}: tool_skip_reason must be wall_budget_exhausted",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1056,6 +1126,142 @@ class PoolBreakerCascadeTest(unittest.TestCase):
         self.assertTrue(entry_b.answered)
         self.assertIsNone(entry_b.tool_ok, "route_b tool probe was skipped by pool breaker")
         self.assertEqual(entry_b.tool_skip_reason, "pool_breaker_open")
+
+
+# ---------------------------------------------------------------------------
+# Typed RATE_LIMITED signal from tool_probe (issue #3)
+# ---------------------------------------------------------------------------
+
+
+class ToolProbeTypedRateLimitedTest(unittest.TestCase):
+    """classify() must return RATE_LIMITED (not TOOL_ERROR) for HTTP 429."""
+
+    def test_classify_429_returns_rate_limited(self) -> None:
+        """classify() with status_code=429 must return RATE_LIMITED as the first element."""
+        from verdict.discovery.model import RATE_LIMITED
+        from verdict.discovery.toolprobe import TOOL_ERROR, classify
+
+        status, detail = classify(429, b'{"error":"rate limited"}')
+        self.assertEqual(status, RATE_LIMITED, "HTTP 429 must return RATE_LIMITED, not TOOL_ERROR")
+        self.assertNotEqual(status, TOOL_ERROR)
+        self.assertIn("429", (detail or ""))
+
+    def test_classify_other_error_returns_tool_error(self) -> None:
+        """classify() with a non-429 error code must still return TOOL_ERROR."""
+        from verdict.discovery.toolprobe import TOOL_ERROR, classify
+
+        for code in (401, 403, 500, 503):
+            status, _ = classify(code, b"error")
+            self.assertEqual(status, TOOL_ERROR, f"HTTP {code} must return TOOL_ERROR")
+
+    def test_pool_429_during_tool_stage_uses_typed_check(self) -> None:
+        """Tool-stage breaker fires on RATE_LIMITED from classify(), not on a detail string."""
+        import urllib.parse
+
+        route_a = Route(provider="x", model="m-a", base_url="http://a.example.com/v1")
+        route_b = Route(provider="x", model="m-b", base_url="http://b.example.com/v1")
+
+        tool_probe_urls: list[str] = []
+
+        def _t(url: str, h: dict, p: bytes, timeout: float) -> tuple:
+            hostname = urllib.parse.urlsplit(url).hostname or ""
+            if b'"tools"' in p:
+                tool_probe_urls.append(hostname)
+                if hostname == "a.example.com":
+                    # Return a 429 body whose string representation does NOT
+                    # contain "429" so a string-scan check would miss it.
+                    return 429, {}, b'{"error":"quota"}'
+                return 200, {}, _tool_ok_body()
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = run_refresh(
+                [(route_a, "free", "plan_free"), (route_b, "free", "plan_free")],
+                context_tokens=0,
+                wall_budget_s=300.0,
+                env=_env(tmp),
+            )
+
+        # Typed check must have fired: route_b must be skipped despite the
+        # detail body not containing "429" as text.
+        self.assertIn("a.example.com", tool_probe_urls)
+        self.assertNotIn("b.example.com", tool_probe_urls)
+        entries_by_key = {e.route_key: e for e in reg.entries}
+        # route_a: 429 is a measured failure
+        self.assertIs(entries_by_key[route_a.key].tool_ok, False)
+        # route_b: skipped by pool breaker
+        self.assertIsNone(entries_by_key[route_b.key].tool_ok)
+        self.assertEqual(entries_by_key[route_b.key].tool_skip_reason, "pool_breaker_open")
+
+
+# ---------------------------------------------------------------------------
+# Liveness-stage wall budget (issue #4)
+# ---------------------------------------------------------------------------
+
+
+class LivenessWallBudgetTest(unittest.TestCase):
+    """When the wall budget runs out during the liveness stage, later routes
+    in the same pool are marked wall_budget_exhausted instead of being probed
+    with an inadequate timeout."""
+
+    def tearDown(self) -> None:
+        _set_transport(None)
+
+    def test_liveness_budget_exhausted_mid_pool_marks_remaining_routes(self) -> None:
+        """After route_a's liveness probe the clock advances past the deadline;
+        route_b must be marked probe_skip_reason='wall_budget_exhausted'."""
+        import unittest.mock as _mock
+        import urllib.parse
+
+        import verdict.discovery.registry as _reg_mod
+
+        route_a = Route(provider="kilo", model="m-a", base_url="http://a.example.com/v1")
+        route_b = Route(provider="kilo", model="m-b", base_url="http://b.example.com/v1")
+
+        probed_hosts: list[str] = []
+        clock: list[float] = [0.0]
+        _real_monotonic = __import__("time").monotonic
+
+        def _t(url: str, h: dict, p: bytes, timeout: float) -> tuple:
+            hostname = urllib.parse.urlsplit(url).hostname or ""
+            probed_hosts.append(hostname)
+            # Push the clock past any real deadline when route_a is probed.
+            clock[0] = 1e12
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        def fake_monotonic() -> float:
+            return _real_monotonic() if clock[0] == 0.0 else clock[0]
+
+        with (
+            _mock.patch.object(_reg_mod.time, "monotonic", fake_monotonic),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            reg = run_refresh(
+                [(route_a, "free", "plan_free"), (route_b, "free", "plan_free")],
+                context_tokens=0,
+                wall_budget_s=300.0,
+                env=_env(tmp),
+            )
+
+        # Only route_a must have been probed; route_b sees remaining < _MIN_PROBE_BUDGET_S
+        self.assertIn("a.example.com", probed_hosts)
+        self.assertNotIn("b.example.com", probed_hosts)
+
+        entries_by_key = {e.route_key: e for e in reg.entries}
+        entry_a = entries_by_key[route_a.key]
+        entry_b = entries_by_key[route_b.key]
+
+        self.assertTrue(entry_a.answered, "route_a liveness must have answered")
+        self.assertFalse(entry_b.answered, "route_b must not be answered (not probed)")
+        self.assertEqual(
+            entry_b.probe_skip_reason,
+            "wall_budget_exhausted",
+            "route_b must be skipped with wall_budget_exhausted, not pool_breaker_open",
+        )
 
 
 if __name__ == "__main__":

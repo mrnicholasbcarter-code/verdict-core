@@ -24,14 +24,9 @@ from verdict.discovery.registry import (
     load_registry,
     run_refresh,
 )
-from verdict.discovery.scores import ScoreIndex, load_scores
 
 # Capacity class strings that may be probed (all others are skipped)
 _PROBEABLE = frozenset({"free", "subscription"})
-
-_RATE_LIMITED_PROVIDERS: frozenset[str] = frozenset(
-    {"ovhcloud", "kilocode", "kilo-gateway", "pollinations", "llm7"}
-)
 
 
 def _load_omniroute_routes(env: Any = None) -> list[tuple[Route, str, str]]:
@@ -87,7 +82,6 @@ def _load_omniroute_routes(env: Any = None) -> list[tuple[Route, str, str]]:
             source="omniroute_catalog",
             upstream=row.provider or None,
             billing=cap_class,
-            max_parallel=1 if row.provider in _RATE_LIMITED_PROVIDERS else None,
         )
         result.append((route, cap_class, cap_fact))
 
@@ -122,10 +116,7 @@ def run_refresh_action(
     if not dry_run and not force:
         existing = load_registry(env)
         if existing is not None:
-            _scores: ScoreIndex = load_scores(offline=True)
-            return _registry_to_summary(
-                existing, dry_run=False, total_input=len(existing.entries), scores=_scores
-            )
+            return _registry_to_summary(existing, dry_run=False, total_input=len(existing.entries))
 
     if dry_run:
         # Never make network calls in dry-run; the OmniRoute catalog requires a
@@ -136,23 +127,14 @@ def run_refresh_action(
         routes = load_probeable_routes(env)
         source = "omniroute"
 
-    scores: ScoreIndex = load_scores(offline=True)
-
     registry = run_refresh(
         routes, context_tokens=context_tokens, wall_budget_s=wall_budget_s, env=env, dry_run=dry_run
     )
-    return _registry_to_summary(
-        registry, dry_run=dry_run, total_input=len(routes), scores=scores, source=source
-    )
+    return _registry_to_summary(registry, dry_run=dry_run, total_input=len(routes), source=source)
 
 
 def _registry_to_summary(
-    registry: DiscoveryRegistry,
-    *,
-    dry_run: bool,
-    total_input: int,
-    scores: ScoreIndex | None = None,
-    source: str = "omniroute",
+    registry: DiscoveryRegistry, *, dry_run: bool, total_input: int, source: str = "omniroute"
 ) -> dict[str, Any]:
     """Convert a DiscoveryRegistry to a human/machine-readable summary dict."""
     entries = registry.entries

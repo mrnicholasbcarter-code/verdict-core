@@ -1,13 +1,12 @@
-"""verdict.discovery — model prober, coding scores, and proof registry.
+"""verdict.discovery — model prober and proof registry.
 
-Port of freescan's probe/toolprobe/scores into verdict-core (S3).
+Port of freescan's probe/toolprobe into verdict-core (S3).
 Only routes classified free or subscription *by a fact* are probed.
 
 Public surface:
   verdict.discovery.model      — Route, ProbeResult, Score, status constants
   verdict.discovery.probe      — probe_one, _set_transport
   verdict.discovery.toolprobe  — tool_probe
-  verdict.discovery.scores     — load_scores, ScoreIndex
   verdict.discovery.registry   — RegistryEntry, DiscoveryRegistry,
                                   load_registry, save_registry, run_refresh
 
@@ -35,7 +34,6 @@ from verdict.discovery.model import (
     UP,
     ProbeResult,
     Route,
-    Score,
 )
 from verdict.discovery.registry import (
     REGISTRY_TTL_S,
@@ -133,7 +131,6 @@ __all__ = [
     "ProviderConfig",
     "RegistryEntry",
     "Route",
-    "Score",
     "fetch_models",
     "load_registry",
     "normalize_model_record",

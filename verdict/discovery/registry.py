@@ -10,11 +10,14 @@ Registry rules:
 - Only routes classified FREE or SUBSCRIPTION *by a fact* are probed; the
   capacity class and deciding fact are stored in each entry and are not
   re-decided here.
-- Per-provider rate quirks (OVH ~2/min, Kilo 200/hour, pollinations 1/45 s,
-  llm7 burst limits) are respected via ``Route.max_parallel=1`` on each
-  rate-limited route and a wall-clock budget on the refresh.
-- A 429 response sets the pool's breaker to "open" for the remainder of the
-  refresh, skipping further routes in that pool.
+- A wall-clock budget (``wall_budget_s``) limits total refresh time.  Routes
+  that cannot be reached before the budget expires are marked not-probed with
+  ``probe_skip_reason="wall_budget_exhausted"`` or
+  ``tool_skip_reason="wall_budget_exhausted"`` rather than starting a probe
+  with an inadequate timeout.
+- A 429 response (typed as ``RATE_LIMITED`` from both probe and tool_probe)
+  sets the pool's breaker to "open" for the remainder of the refresh, skipping
+  further routes in that pool.
 """
 
 from __future__ import annotations
@@ -50,6 +53,11 @@ AGENT_CONTEXT_TOKENS: int = 18_000
 # (stops further probes to that pool in this run)
 BREAKER_OPEN = "open"
 BREAKER_CLOSED = "closed"
+
+# Minimum remaining wall budget to start a new probe.  Routes that arrive with
+# less than this many seconds remaining are marked wall_budget_exhausted instead
+# of being started with an inadequate timeout.
+_MIN_PROBE_BUDGET_S: float = 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -305,27 +313,34 @@ def run_refresh(
     _result_lock = threading.Lock()
     probe_items_out: list[tuple[Route, str, str]] = []
     probe_results_out: list[ProbeResult] = []
-    mid_pool_live_skipped: list[tuple[Route, str, str]] = []
+    # Each entry is (item, skip_reason); skip_reason is "pool_breaker_open" or
+    # "wall_budget_exhausted" depending on why the liveness probe was skipped.
+    mid_pool_live_skipped: list[tuple[tuple[Route, str, str], str]] = []
 
     def _probe_pool_serial(pool_items: list[tuple[Route, str, str]]) -> None:
         local_probed: list[tuple[tuple[Route, str, str], ProbeResult]] = []
-        local_skipped: list[tuple[Route, str, str]] = []
+        local_skipped: list[tuple[tuple[Route, str, str], str]] = []
         for item in pool_items:
             route = item[0]
             with _breaker_lock:
                 is_open = breaker.is_open(route)
             if is_open:
-                local_skipped.append(item)
+                local_skipped.append((item, "pool_breaker_open"))
             else:
-                remaining = max(5.0, deadline - time.monotonic())
-                try:
-                    r = probe_one(route, timeout=min(probe_timeout, remaining))
-                except Exception as exc:
-                    r = ProbeResult(route=route, status=ERROR, detail=str(exc)[:200])
-                if r.status == RATE_LIMITED:
-                    with _breaker_lock:
-                        breaker.open_pool(route)
-                local_probed.append((item, r))
+                remaining = deadline - time.monotonic()
+                if remaining < _MIN_PROBE_BUDGET_S:
+                    # Not enough time for a useful probe; skip rather than
+                    # starting with an inadequate timeout.
+                    local_skipped.append((item, "wall_budget_exhausted"))
+                else:
+                    try:
+                        r = probe_one(route, timeout=min(probe_timeout, remaining))
+                    except Exception as exc:
+                        r = ProbeResult(route=route, status=ERROR, detail=str(exc)[:200])
+                    if r.status == RATE_LIMITED:
+                        with _breaker_lock:
+                            breaker.open_pool(route)
+                    local_probed.append((item, r))
         with _result_lock:
             for item, r in local_probed:
                 probe_items_out.append(item)
@@ -369,16 +384,23 @@ def run_refresh(
                         (r.route.key, (TOOL_NOT_PROBED, "wall_budget_exhausted", None, None))
                     )
                 else:
-                    remaining = max(5.0, deadline - time.monotonic())
-                    t = tool_probe(
-                        r.route,
-                        timeout=min(probe_timeout, remaining),
-                        context_tokens=context_tokens,
-                    )
-                    if t[0] == "tool_error" and "429" in str(t[1]):
-                        with _breaker_lock:
-                            breaker.open_pool(r.route)
-                    local.append((r.route.key, t))
+                    remaining = deadline - time.monotonic()
+                    if remaining < _MIN_PROBE_BUDGET_S:
+                        # Not enough time for a useful probe; skip rather than
+                        # starting with an inadequate timeout.
+                        local.append(
+                            (r.route.key, (TOOL_NOT_PROBED, "wall_budget_exhausted", None, None))
+                        )
+                    else:
+                        t = tool_probe(
+                            r.route,
+                            timeout=min(probe_timeout, remaining),
+                            context_tokens=context_tokens,
+                        )
+                        if t[0] == RATE_LIMITED:
+                            with _breaker_lock:
+                                breaker.open_pool(r.route)
+                        local.append((r.route.key, t))
             with _tool_result_lock:
                 for key, val in local:
                     tool_results[key] = val
@@ -410,18 +432,13 @@ def run_refresh(
             )
         )
 
-    # Routes skipped because the pool was opened mid-run (by a 429 in this pool).
-    for route, cap_class, cap_fact in mid_pool_live_skipped:
+    # Routes skipped mid-run: either the pool breaker fired or the wall budget
+    # ran out before the liveness probe could be started.
+    for item, skip_reason in mid_pool_live_skipped:
+        route, cap_class, cap_fact = item
         entries.append(
             _make_entry(
-                route,
-                cap_class,
-                cap_fact,
-                None,
-                None,
-                now_iso,
-                breaker,
-                skip_reason="pool_breaker_open",
+                route, cap_class, cap_fact, None, None, now_iso, breaker, skip_reason=skip_reason
             )
         )
 
@@ -483,7 +500,7 @@ def _make_entry(
         tool_ok = True
         tool_skip_reason = None
     else:
-        # Measured failure (no_tool_call, bad_tool_call, tool_error).
+        # Measured failure (no_tool_call, bad_tool_call, tool_error, rate_limited).
         tool_ok = False
         tool_skip_reason = None
 

@@ -47,13 +47,10 @@ class Route:
     # What using this route costs, as information (never a filter):
     # "free", "subscription", "priced" or "unknown".  None = not assessed.
     billing: str | None = field(default=None, compare=False, hash=False)
-    # Cap on simultaneous probes to this route's host, for providers that
-    # reject bursts from one IP.  None = use the probe's default per-host cap.
-    max_parallel: int | None = field(default=None, compare=False, hash=False)
 
     @property
     def key(self) -> str:
-        """Stable identity used to join probe results and scores."""
+        """Stable identity used to join probe results."""
         return f"{self.provider}/{self.model}"
 
 
@@ -67,13 +64,3 @@ class ProbeResult:
     retry_after_s: float | None = None
     answered_model: str | None = None  # "model" field of the response, when present
     tool: str | None = None  # tool-call check (toolprobe.py), when run
-
-
-@dataclass(frozen=True)
-class Score:
-    value: float  # 0-100, higher is better at coding work
-    basis: str  # what the number is, e.g. "aa_coding_index"
-    source: str  # where it was fetched from (URL or feed name)
-    as_of: str  # ISO date the source data was published or fetched
-    matched_id: str  # the id in the source that this route was matched to
-    exact: bool = True  # False when matched by normalised/fuzzy name

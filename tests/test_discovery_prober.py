@@ -45,16 +45,8 @@ def _route(
     base_url: str = "http://host.example.com/v1",
     auth: str = "none",
     upstream: str | None = None,
-    max_parallel: int | None = None,
 ) -> Route:
-    return Route(
-        provider=provider,
-        model=model,
-        base_url=base_url,
-        auth=auth,
-        upstream=upstream,
-        max_parallel=max_parallel,
-    )
+    return Route(provider=provider, model=model, base_url=base_url, auth=auth, upstream=upstream)
 
 
 def _ok_body(*, content: str = "ok", model: str = "test-model") -> dict[str, object]:
@@ -301,8 +293,20 @@ class ToolProbeClassifyTest(unittest.TestCase):
         self.assertEqual(classify(200, body), (NO_TOOL_CALL, None))
 
     def test_non_200_is_tool_error(self) -> None:
+        # Non-429 error codes → TOOL_ERROR
+        from verdict.discovery.toolprobe import TOOL_ERROR as _TE
+
+        for code in (401, 403, 500, 503):
+            status, detail = classify(code, b"")
+            self.assertEqual(status, _TE, f"HTTP {code} must be TOOL_ERROR")
+            self.assertIn(str(code), detail or "")
+
+    def test_429_is_rate_limited(self) -> None:
+        # HTTP 429 → RATE_LIMITED (typed signal, not TOOL_ERROR)
+        from verdict.discovery.model import RATE_LIMITED
+
         status, detail = classify(429, b"")
-        self.assertEqual(status, TOOL_ERROR)
+        self.assertEqual(status, RATE_LIMITED, "HTTP 429 must return RATE_LIMITED")
         self.assertIn("429", detail or "")
 
     def test_malformed_body(self) -> None:
@@ -517,7 +521,6 @@ class LoadOmniRouteRoutesTest(unittest.TestCase):
         self.assertEqual(cap_class, "free")
         self.assertEqual(cap_fact, "plan_label_free")
         self.assertEqual(route.auth, "env:OMNIROUTE_API_KEY")
-        self.assertIsNone(route.max_parallel)  # groq is not rate-limited
 
     def test_metered_route_excluded(self) -> None:
         """A route with capacity 'metered' is not included in the result."""
@@ -533,23 +536,6 @@ class LoadOmniRouteRoutesTest(unittest.TestCase):
             result = _load_omniroute_routes(env=env)
 
         self.assertEqual(result, [])
-
-    def test_rate_limited_provider_gets_max_parallel_1(self) -> None:
-        """A free route from a rate-limited provider gets max_parallel=1."""
-        from unittest.mock import patch
-
-        from verdict.discovery.refresh import _load_omniroute_routes
-
-        evidence = self._make_evidence(
-            "ovhcloud/llama-3.3-70b", "ovhcloud", "free", "gateway_free_tier"
-        )
-        with patch("verdict.omniroute_evidence.fetch_omniroute_evidence", return_value=evidence):
-            env = {"OMNIROUTE_API_KEY": "test-key"}
-            result = _load_omniroute_routes(env=env)
-
-        self.assertEqual(len(result), 1)
-        route, _, _ = result[0]
-        self.assertEqual(route.max_parallel, 1)
 
     def test_missing_api_key_returns_empty_without_fetch(self) -> None:
         """When no API key is present, returns [] without calling fetch."""
