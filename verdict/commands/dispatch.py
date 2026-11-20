@@ -214,7 +214,7 @@ def _cmd_bench_context_lift(args: argparse.Namespace) -> None:
     import json as _json
     from datetime import datetime, timezone
 
-    if getattr(args, "install_service", False):
+    if getattr(args, "install_service", False) or getattr(args, "uninstall", False):
         from verdict import context_lift_service
 
         result = context_lift_service.manage_service(uninstall=getattr(args, "uninstall", False))
@@ -225,15 +225,19 @@ def _cmd_bench_context_lift(args: argparse.Namespace) -> None:
             print(f"{context_lift_service.TIMER} {status}: {result.get('plan')}")
         return
 
-    from verdict.context_lift import run_context_lift
+    from verdict.context_lift import _RECEIPT_FIELDS, run_context_lift
     from verdict.live_routing import DEFAULT_GATEWAY
     from verdict.paths import verdict_home
 
     base_url = getattr(args, "base_url", None) or DEFAULT_GATEWAY
     execute = not getattr(args, "dry_run", False)
+    allow_priced = getattr(args, "allow_priced", False)
 
-    result = run_context_lift(base_url=base_url, execute=execute)
-    receipt = result.get("receipt", result)
+    result = run_context_lift(base_url=base_url, execute=execute, allow_priced=allow_priced)
+    # Build evidence from an explicit allowlist so that internal fields such as
+    # working_state never reach disk or stdout (CodeQL py/clear-text-storage).
+    raw = result.get("receipt") or {}
+    receipt = {k: raw.get(k) for k in _RECEIPT_FIELDS}
 
     # Write evidence under $VERDICT_HOME/context-lift/
     home = verdict_home()

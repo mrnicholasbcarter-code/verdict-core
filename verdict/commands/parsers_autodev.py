@@ -291,15 +291,27 @@ def register(subparsers: Any) -> None:
         help="Plan the context pack but do not make model calls",
     )
     context_lift_p.add_argument(
+        "--allow-priced",
+        action="store_true",
+        default=False,
+        dest="allow_priced",
+        help=(
+            "Also admit 'cheaper' (priced ≤ $1/M) routes. "
+            "Default: local and free-tier only. "
+            "The timer's ExecStart never passes this flag."
+        ),
+    )
+    _svc_grp = context_lift_p.add_mutually_exclusive_group()
+    _svc_grp.add_argument(
         "--install-service",
         action="store_true",
         default=False,
         dest="install_service",
         help="Install (or update) the daily systemd timer for this bench",
     )
-    context_lift_p.add_argument(
+    _svc_grp.add_argument(
         "--uninstall",
         action="store_true",
         default=False,
-        help="Remove the systemd units (use with --install-service)",
+        help="Remove the daily systemd timer (mutually exclusive with --install-service)",
     )
