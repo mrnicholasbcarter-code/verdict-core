@@ -1976,3 +1976,195 @@ async def test_authority_mode_denies_every_send_without_a_proof(repo: Path) -> N
     assert ex.calls == []
     assert result.nodes["a"].state is NodeState.BLOCKED
     assert ev.of("failure", "a")[0]["category"] == "dispatch_denied"
+
+
+# ---- L1g: environment failures are not route failures --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_missing_pytest_spends_one_attempt_and_fails_closed(repo: Path) -> None:
+    """Missing-pytest repro: exactly one attempt, fail-closed, no ledger or escalation.
+
+    When python -m pytest prints "No module named pytest" (exit 1) the runtime
+    must classify it as an environment_error, not a verification_failed.  The
+    expected outcomes are:
+    - exactly one attempt is consumed (not 4 like the real incident)
+    - node ends in BLOCKED state
+    - failure event category is "environment_error"
+    - judged_failure_count stays 0 (no escalation)
+    - no "escalation" events are emitted
+    - SessionLedger has no entry for the route
+    - HealthCache has no entry for the route
+    """
+    import sys
+    from collections.abc import Sequence
+
+    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+    from verdict.orchestration.runtime import subprocess_runner
+    from verdict.orchestration.session_evidence import SessionLedger
+
+    # A runner that returns "No module named pytest" on every verification call
+    # (argv contains "-m") and delegates git/other commands to subprocess_runner.
+    async def mock_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if "-m" in list(argv):
+            return (1, f"{sys.executable}: No module named pytest")
+        return await subprocess_runner(argv, cwd, timeout)
+
+    n = WorkNode(
+        "impl",
+        "implement something",
+        kind=NodeKind.IMPLEMENT,
+        owned_files=("impl.txt",),
+        verification_command=("python", "-m", "pytest", "tests/impl_test.py"),
+    )
+    graph = WorkGraph("g", (n,))
+    ex = Executor({("impl", "*"): "ok"})
+
+    events = Events()
+    selector = Selector(["cc/sonnet-3-5"])
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run_env",
+        graph=graph,
+        selector=selector,
+        executor=ex,
+        classifier=Classifier(),
+        events=events,
+        prompt_for=lambda nd, cwd: f"{nd.node_id}: {nd.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(max_attempts_per_node=4),
+        now=lambda: NOW,
+        runner=mock_runner,
+    )
+    result = await rt.run()
+
+    node_result = result.nodes["impl"]
+    assert node_result.state is NodeState.BLOCKED, f"expected BLOCKED, got {node_result.state}"
+    assert node_result.attempt == 1, (
+        f"expected exactly 1 attempt, got {node_result.attempt} "
+        "(env errors must not burn route attempts)"
+    )
+    assert node_result.judged_failure_count == 0, (
+        f"expected 0 judged failures (no escalation), got {node_result.judged_failure_count}"
+    )
+
+    failure_events = events.of("failure", "impl")
+    assert failure_events, "no failure event emitted"
+    assert failure_events[-1]["category"] == "environment_error", (
+        f"expected category environment_error, got {failure_events[-1]['category']}"
+    )
+
+    escalation_events = events.of("escalation", "impl")
+    assert escalation_events == [], f"expected no escalation events, got {escalation_events}"
+
+    # No session ledger entry: env errors are not route quality evidence.
+    assert SessionLedger().load() == (), "SessionLedger must be empty after an env error"
+
+    # No health-cache entry: the route is not at fault.
+    cache_path = default_cache_path()
+    assert not cache_path.exists() or HealthCache(cache_path).entry("cc/sonnet-3-5") is None, (
+        "HealthCache must not contain the route after an env error"
+    )
+
+
+@pytest.mark.asyncio
+async def test_exit_127_during_verify_is_env_error(repo: Path) -> None:
+    """Exit 127 during subprocess run (FileNotFoundError) classifies as environment_error.
+
+    subprocess_runner converts a missing-binary FileNotFoundError into (127, ...).
+    The classify_verify_env_error helper must catch that and return environment_error.
+    When the binary is not in PATH, the pre-dispatch check catches it first (attempt=0).
+    """
+    import sys
+    from collections.abc import Sequence
+
+    from verdict.orchestration.runtime import subprocess_runner as _sr
+
+    # Custom runner: returns 127 for the verification call (simulates subprocess
+    # FileNotFoundError → (127, "command not found")), delegates git via real runner.
+    async def exit127_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if argv and str(argv[0]) == sys.executable and "-m" in list(argv):
+            # Pretend the binary was found at pre-dispatch (python) but exits 127
+            # at subprocess time (e.g. binary was removed between check and exec).
+            return (127, f"{argv[0]}: No such file or directory")
+        return await _sr(argv, cwd, timeout)
+
+    n = WorkNode(
+        "impl2",
+        "implement something",
+        kind=NodeKind.IMPLEMENT,
+        owned_files=("impl2.txt",),
+        # python passes the pre-dispatch runner check; exit 127 happens at exec time.
+        verification_command=("python", "-m", "mymodule", "--check"),
+    )
+    graph = WorkGraph("g", (n,))
+    ex = Executor({("impl2", "*"): "ok"})
+    events = Events()
+    selector = Selector(["cc/sonnet-3-5"])
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run_env2",
+        graph=graph,
+        selector=selector,
+        executor=ex,
+        classifier=Classifier(),
+        events=events,
+        prompt_for=lambda nd, cwd: f"{nd.node_id}: {nd.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(max_attempts_per_node=4),
+        now=lambda: NOW,
+        runner=exit127_runner,
+    )
+    result = await rt.run()
+
+    node_result = result.nodes["impl2"]
+    assert node_result.state is NodeState.BLOCKED
+    # python passes pre-dispatch; env error happens during _validate (attempt=1 spent).
+    assert node_result.attempt == 1
+    assert node_result.judged_failure_count == 0
+    failure_events = events.of("failure", "impl2")
+    assert failure_events and failure_events[-1]["category"] == "environment_error"
+
+
+@pytest.mark.asyncio
+async def test_pre_dispatch_check_missing_runner_zero_attempts(repo: Path) -> None:
+    """Pre-dispatch check catches a completely missing runner before any attempt."""
+
+    # Verification command uses a non-existent binary (not python, not in PATH).
+    n = WorkNode(
+        "impl3",
+        "implement something",
+        kind=NodeKind.IMPLEMENT,
+        owned_files=("impl3.txt",),
+        # nonexistent-runner-xyzzy is not in PATH; pre-dispatch check catches it.
+        verification_command=("nonexistent-runner-xyzzy", "--test"),
+    )
+    graph = WorkGraph("g", (n,))
+    ex = Executor({("impl3", "*"): "ok"})
+    events = Events()
+    selector = Selector(["cc/sonnet-3-5"])
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / "run_env3",
+        graph=graph,
+        selector=selector,
+        executor=ex,
+        classifier=Classifier(),
+        events=events,
+        prompt_for=lambda nd, cwd: f"{nd.node_id}: {nd.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(max_attempts_per_node=4),
+        now=lambda: NOW,
+    )
+    result = await rt.run()
+
+    node_result = result.nodes["impl3"]
+    assert node_result.state is NodeState.BLOCKED
+    # Pre-dispatch: attempt==0 means nothing was dispatched.
+    assert node_result.attempt == 0, (
+        f"expected 0 attempts (pre-dispatch check), got {node_result.attempt}"
+    )
+    failure_events = events.of("failure", "impl3")
+    assert failure_events and failure_events[-1]["category"] == "environment_error"
+    # Executor never called: no worker was sent.
+    assert ex.calls == []

@@ -982,6 +982,7 @@ _CATEGORY_CLASS: Mapping[str, str] = {
     "empty_output": "stream_drop",
     "model_unavailable": "model_cooldown",
     "verification_failed": "test_failed",
+    "environment_error": "env_error",
     "ownership_violation": "spec_violation",
 }
 
