@@ -1111,6 +1111,21 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 print(_json.dumps(funnel, indent=2, sort_keys=True))
             else:
                 print(render_plain(funnel))
+        elif args.discovery_command == "refresh":
+            import json as _json
+
+            from verdict.discovery.refresh import render_refresh_plain, run_refresh_action
+
+            refresh_result = run_refresh_action(
+                dry_run=getattr(args, "dry_run", False),
+                force=getattr(args, "force", False),
+                context_tokens=getattr(args, "context_tokens", 18000),
+                wall_budget_s=getattr(args, "wall_budget_s", 300.0),
+            )
+            if getattr(args, "output_json", False):
+                print(_json.dumps(refresh_result, indent=2))
+            else:
+                print(render_refresh_plain(refresh_result))
         else:
             parser.print_help()
     elif args.command == "openspec":
