@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: filter
         if: github.event_name == 'pull_request'
         with:
@@ -191,6 +191,7 @@ jobs:
           name: coverage-shard-${{ matrix.group }}
           path: .coverage.shard.${{ matrix.group }}
           retention-days: 1
+          include-hidden-files: true
 
   coverage:
     # Combines coverage from all 4 shards, enforces the 70% floor, and verifies

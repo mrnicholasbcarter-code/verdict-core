@@ -151,12 +151,22 @@ def verify_version_claim(readme: Path) -> CommandResult:
 
 
 def _read_ci_fail_under() -> int | None:
-    """Read --cov-fail-under value from .github/workflows/ci.yml."""
+    """Read fail-under threshold from .github/workflows/ci.yml.
+
+    Checks both pytest-cov style (``--cov-fail-under=N``) and coverage.py CLI
+    style (``coverage report --fail-under=N``) so the function works whether
+    coverage enforcement lives in a pytest step or a dedicated combine step.
+    """
     ci_path = Path(".github/workflows/ci.yml")
     if not ci_path.exists():
         return None
     text = ci_path.read_text()
+    # pytest-cov style: pytest ... --cov-fail-under=70
     m = re.search(r"--cov-fail-under[=\s]+(\d+)", text)
+    if m:
+        return int(m.group(1))
+    # coverage.py CLI style: coverage report --fail-under=70
+    m = re.search(r"coverage\s+report\b[^\n]*--fail-under[=\s]+(\d+)", text)
     return int(m.group(1)) if m else None
 
 
