@@ -850,3 +850,188 @@ class TestReceiptRedaction:
         # find a digest mismatch.
         assert body["verification"]["ok"] is True
         assert body["verification"]["problems"] == []
+
+
+# ---------------------------------------------------------------------------
+# Byte budget: oversized single events must never exceed the response bound
+# ---------------------------------------------------------------------------
+
+
+class TestOversizedEvents:
+    """A single event larger than _RUNS_EVENTS_BYTE_BUDGET must be omitted,
+    truncated must be True, and the seq must appear in oversized_seqs."""
+
+    def test_oversized_event_omitted_and_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A 2 MiB event (> 1 MiB budget) must not be returned."""
+        from verdict.api import _RUNS_EVENTS_BYTE_BUDGET
+
+        large_payload = "x" * (_RUNS_EVENTS_BYTE_BUDGET + 1)
+        events = [
+            {
+                "seq": 1,
+                "at": "2026-01-01T00:00:00Z",
+                "type": "big_event",
+                "node_id": "",
+                "data": {"blob": large_payload},
+            }
+        ]
+        _make_run(tmp_path, "big-run", events=events)
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/big-run/events", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        # The oversized event must not be in the events list.
+        assert body["events"] == []
+        assert body["truncated"] is True
+        assert 1 in body["oversized_seqs"]
+
+    def test_oversized_event_followed_by_small_event(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An oversized seq is skipped but scanning continues; the small event
+        after it must still be returned."""
+        from verdict.api import _RUNS_EVENTS_BYTE_BUDGET
+
+        large_payload = "x" * (_RUNS_EVENTS_BYTE_BUDGET + 1)
+        events = [
+            {
+                "seq": 1,
+                "at": "2026-01-01T00:00:00Z",
+                "type": "big_event",
+                "node_id": "",
+                "data": {"blob": large_payload},
+            },
+            {
+                "seq": 2,
+                "at": "2026-01-01T00:00:01Z",
+                "type": "small_event",
+                "node_id": "",
+                "data": {},
+            },
+        ]
+        _make_run(tmp_path, "big-then-small", events=events)
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/big-then-small/events", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        # seq=1 oversized — omitted; seq=2 small — must be present.
+        seqs = [e["seq"] for e in body["events"]]
+        assert 1 not in seqs
+        assert 2 in seqs
+        assert body["truncated"] is True
+        assert 1 in body["oversized_seqs"]
+
+
+# ---------------------------------------------------------------------------
+# _events_tail_intact: bounded seek works on large logs
+# ---------------------------------------------------------------------------
+
+
+class TestTailIntactBoundedSeek:
+    """_events_tail_intact reads only the last 64 KiB on large logs."""
+
+    def _write_large_log(self, run_dir: Path, run_id: str) -> None:
+        """Write a large events.jsonl (> 64 KiB) followed by proper run events.
+
+        Padding events are written directly to the file (not via EventLog) to
+        avoid EventLog's event-type allowlist; EventLog is used only for the
+        typed run_started / run_finished events appended at the end.
+        """
+        from verdict.orchestration.receipt import EventLog
+
+        events_path = run_dir / "events.jsonl"
+        # Write ~1000 raw padding lines (each ~100 bytes) to exceed 64 KiB.
+        with events_path.open("w") as fh:
+            for i in range(1000):
+                fh.write(
+                    json.dumps(
+                        {
+                            "seq": i + 1,
+                            "at": "2026-01-01T00:00:00Z",
+                            "type": "heartbeat",
+                            "node_id": "",
+                            "data": {"padding": "p" * 60},
+                        }
+                    )
+                    + "\n"
+                )
+        # Append the proper typed events via EventLog (it reads the seq counter).
+        log = EventLog(events_path)
+        log.emit("run_started", run_id=run_id, goal="tail test")
+        log.emit("run_finished", outcome="BLOCKED", reason="tail test")
+
+    def test_large_intact_log_does_not_read_fully(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A large intact events.jsonl (> 64 KiB) must have its receipt returned
+        without triggering a mutation.  Verifies the bounded seek path works."""
+        from verdict.orchestration.receipt import write_run_receipt
+
+        run_dir = tmp_path / "large-log"
+        run_dir.mkdir()
+        self._write_large_log(run_dir, "large-log")
+        write_run_receipt(run_dir)
+
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/large-log/receipt", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body["verification"]["ok"], bool)
+
+    def test_large_torn_log_reports_torn_tail(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A large log with a torn tail is detected even with bounded seek."""
+        from verdict.orchestration.receipt import write_run_receipt
+
+        run_dir = tmp_path / "large-torn"
+        run_dir.mkdir()
+        self._write_large_log(run_dir, "large-torn")
+        write_run_receipt(run_dir)
+        # Append a partial line to tear the tail.
+        with (run_dir / "events.jsonl").open("ab") as f:
+            f.write(b'{"seq": 9999, "partial')
+
+        before = {str(p): (p.stat().st_size, p.stat().st_mtime_ns) for p in run_dir.iterdir()}
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs/large-torn/receipt", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["verification"]["ok"] is False
+        problems = body["verification"]["problems"]
+        assert any("torn tail" in p for p in problems)
+        # No mutation: file sizes and mtimes must be unchanged.
+        after = {str(p): (p.stat().st_size, p.stat().st_mtime_ns) for p in run_dir.iterdir()}
+        assert before == after
+
+
+# ---------------------------------------------------------------------------
+# _run_summary: errors are logged and exposed as summary_error
+# ---------------------------------------------------------------------------
+
+
+class TestRunSummaryError:
+    """When receipt.json is unreadable, the summary must include summary_error."""
+
+    def test_corrupt_receipt_exposes_summary_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A corrupt receipt.json must set receipt_status=unreadable and
+        include summary_error with the exception type name."""
+        run_dir = tmp_path / "corrupt-rcpt"
+        run_dir.mkdir()
+        (run_dir / "receipt.json").write_bytes(b"not valid json {{{")
+
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs", headers=AUTH)
+        assert r.status_code == 200
+        rows = r.json()["runs"]
+        row = next((x for x in rows if x["run_id"] == "corrupt-rcpt"), None)
+        assert row is not None
+        assert row["receipt_status"] == "unreadable"
+        assert "summary_error" in row
+        # The error name must be a non-empty string (e.g. "JSONDecodeError").
+        assert isinstance(row["summary_error"], str)
+        assert row["summary_error"]

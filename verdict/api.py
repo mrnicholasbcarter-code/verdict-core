@@ -2971,6 +2971,11 @@ def _finish_evidence(
 # response.  Protects against huge runs that would exceed response limits.
 _RUNS_EVENTS_BYTE_BUDGET = 1 * 1024 * 1024  # 1 MiB
 
+# Window size for the bounded tail read in _events_tail_intact.  Reading only
+# the last 64 KiB is enough to find the last newline-terminated JSON line in
+# any sane log; a full-file fallback covers pathological single-line files.
+_EVENTS_TAIL_WINDOW = 64 * 1024  # 64 KiB
+
 # Maximum number of run directories scanned per /v1/runs request.  Prevents
 # O(n) work when the runs root contains thousands of old directories.
 _RUNS_SCAN_LIMIT = 500
@@ -3055,10 +3060,16 @@ def _resolve_run_dir(run_id: str) -> Path | None:
 
 
 def _run_summary(run_id: str, run_dir: Path) -> dict[str, Any]:
-    """Build a summary dict for one run directory; never raises."""
+    """Build a summary dict for one run directory; never raises.
+
+    On read errors, logs a warning (exception type and run_id only — never file
+    contents) and includes ``summary_error`` in the result so API callers can
+    see that the entry is degraded.
+    """
     started_at: str | None = None
     outcome: str | None = None
     receipt_status: str = "missing"
+    summary_error: str | None = None
 
     receipt_path = run_dir / "receipt.json"
     if receipt_path.exists():
@@ -3068,8 +3079,12 @@ def _run_summary(run_id: str, run_dir: Path) -> dict[str, Any]:
                 started_at = rdata.get("started_at") or None
                 outcome = rdata.get("outcome") or rdata.get("claimed_outcome") or None
                 receipt_status = "present"
-        except Exception:
+        except Exception as exc:
             receipt_status = "unreadable"
+            summary_error = type(exc).__name__
+            logger.warning(
+                "_run_summary: %s reading receipt for run %s", type(exc).__name__, run_id
+            )
 
     if started_at is None:
         events_path = run_dir / "events.jsonl"
@@ -3087,15 +3102,22 @@ def _run_summary(run_id: str, run_dir: Path) -> dict[str, Any]:
                         if isinstance(evt, dict):
                             started_at = evt.get("at") or None
                         break
-            except Exception:
-                pass
+            except Exception as exc:
+                if summary_error is None:
+                    summary_error = type(exc).__name__
+                logger.warning(
+                    "_run_summary: %s reading events for run %s", type(exc).__name__, run_id
+                )
 
-    return {
+    result: dict[str, Any] = {
         "run_id": run_id,
         "started_at": started_at,
         "outcome": outcome,
         "receipt_status": receipt_status,
     }
+    if summary_error is not None:
+        result["summary_error"] = summary_error
+    return result
 
 
 @app.get("/v1/runs")
@@ -3114,7 +3136,9 @@ async def list_runs(
         return JSONResponse({"runs": [], "total": 0})
 
     def _collect() -> tuple[list[dict[str, Any]], int, bool]:
-        entries: list[tuple[str | None, str]] = []
+        # Store (started_at, name, summary) so each run is summarised exactly
+        # once during the scan; the page slice reuses the cached summary dict.
+        entries: list[tuple[str | None, str, dict[str, Any]]] = []
         scanned = 0
         scan_truncated = False
         for child in root.iterdir():
@@ -3131,12 +3155,12 @@ async def list_runs(
             if not _RUN_ID_RE.match(name) or name in {".", ".."}:
                 continue
             summary = _run_summary(name, child)
-            entries.append((summary.get("started_at"), name))
+            entries.append((summary.get("started_at"), name, summary))
 
         entries.sort(key=lambda t: t[0] or "", reverse=True)
         total = len(entries)
         page = entries[offset : offset + limit]
-        rows = [_run_summary(name, root / name) for _, name in page]
+        rows = [summary for _, _, summary in page]
         return rows, total, scan_truncated
 
     rows, total, scan_truncated = await asyncio.to_thread(_collect)
@@ -3175,6 +3199,7 @@ async def get_run_events(
             return {"events": [], "next_seq": None, "truncated": False}
 
         collected: list[dict[str, Any]] = []
+        oversized_seqs: list[int] = []
         byte_total = 0
         truncated = False
         next_seq: int | None = None
@@ -3206,12 +3231,20 @@ async def get_run_events(
                 # (top-level and all nested dicts/lists) before serving.
                 safe_evt = _redact_event_data(evt)
                 serialised = json.dumps(safe_evt, separators=(",", ":"))
-                byte_total += len(serialised.encode())
-                if byte_total > _RUNS_EVENTS_BYTE_BUDGET and collected:
-                    # Budget exhausted; remember where to continue.
+                event_size = len(serialised.encode())
+                if event_size > _RUNS_EVENTS_BYTE_BUDGET:
+                    # This single event is larger than the whole byte budget.
+                    # Omit it and continue scanning — a following event may fit.
+                    # Report the seq so the caller knows a seq was skipped.
+                    oversized_seqs.append(seq)
+                    truncated = True
+                    continue
+                if byte_total + event_size > _RUNS_EVENTS_BYTE_BUDGET:
+                    # Adding this event would exceed the byte budget; stop here.
                     next_seq = seq
                     truncated = True
                     break
+                byte_total += event_size
                 collected.append(safe_evt)
                 if len(collected) >= limit:
                     # Peek at the next matching event to populate next_seq.
@@ -3242,7 +3275,12 @@ async def get_run_events(
                         break
                     break
 
-        return {"events": collected, "next_seq": next_seq, "truncated": truncated}
+        return {
+            "events": collected,
+            "next_seq": next_seq,
+            "truncated": truncated,
+            "oversized_seqs": oversized_seqs,
+        }
 
     result = await asyncio.to_thread(_read)
     return JSONResponse(result)
@@ -3273,16 +3311,29 @@ async def get_run_receipt(run_id: str) -> Response:
         verify_run_receipt calls EventLog, whose __init__ repairs a torn tail by
         truncating the file — a mutation.  Checking the tail first lets us skip
         verify_run_receipt for torn files so that GET never writes to a run dir.
+
+        Reads only the last _EVENTS_TAIL_WINDOW bytes to bound memory on large
+        logs.  Falls back to a full read only when no newline is found in the
+        window (a pathological single-line file without intermediate newlines).
         """
         if not events_path.exists():
             return True  # no file → no tail to tear; let verify_run_receipt report it
         try:
-            last: bytes = b""
             with events_path.open("rb") as fh:
-                for line in fh:
-                    stripped = line.strip()
-                    if stripped:
-                        last = stripped
+                fh.seek(0, 2)  # seek to end
+                file_size = fh.tell()
+                read_offset = max(0, file_size - _EVENTS_TAIL_WINDOW)
+                fh.seek(read_offset)
+                window = fh.read()
+                if b"\n" not in window and read_offset > 0:
+                    # No newline in the tail window; fall back to the full file.
+                    fh.seek(0)
+                    window = fh.read()
+            last = b""
+            for raw in window.split(b"\n"):
+                stripped = raw.strip()
+                if stripped:
+                    last = stripped
             if not last:
                 return True
             json.loads(last)
