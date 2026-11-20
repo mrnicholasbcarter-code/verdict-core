@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import re
 import sys
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -19,7 +20,7 @@ from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Query, Request
     from pydantic import BaseModel, Field
     from starlette.responses import JSONResponse, Response, StreamingResponse
 except ImportError as exc:
@@ -2960,6 +2961,437 @@ def _finish_evidence(
         if stored is not None:
             return stored
     return updated
+
+
+# ---------------------------------------------------------------------------
+# Run-trace API (read-only; BOD plan 20261120-orchestration-adoption item 11)
+# ---------------------------------------------------------------------------
+
+# Maximum bytes of serialised events returned by a single /v1/runs/{id}/events
+# response.  Protects against huge runs that would exceed response limits.
+_RUNS_EVENTS_BYTE_BUDGET = 1 * 1024 * 1024  # 1 MiB
+
+# Prefix read by _run_summary to find the run_started event.  run_started is
+# always the first event, so 64 KiB is a generous bound.  Reading the whole
+# file would cost hundreds of MB across _RUNS_SCAN_LIMIT runs per request.
+_RUNS_SUMMARY_PREFIX_BYTES = 64 * 1024  # 64 KiB
+
+# Maximum number of run directories scanned per /v1/runs request.  Prevents
+# O(n) work when the runs root contains thousands of old directories.
+_RUNS_SCAN_LIMIT = 500
+
+# Maximum page sizes (also the FastAPI Query ``le=`` values; named here so
+# tests can reference them without magic numbers).
+_RUNS_PAGE_LIMIT_MAX = 100
+_RUNS_EVENTS_LIMIT_MAX = 500
+
+# Strict allowlist: alphanumeric start, then alphanumeric / dot / hyphen /
+# underscore.  Explicitly excludes every path-separator character.
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+# Event-data credential redaction.  Keys whose names match this pattern have
+# their values replaced with "[REDACTED]" in /v1/runs/{id}/events responses.
+# This is defence-in-depth: events are written by internal code, but a future
+# change might accidentally log a secret-shaped value.
+_CREDENTIAL_KEY_RE = re.compile(
+    r"^(api[_-]?key|password|secret|api[_-]?token|auth[_-]?token|credential)$", re.IGNORECASE
+)
+
+
+def _redact_event_data(data: Any) -> Any:
+    """Recursively redact values in *data* whose key names match credential patterns."""
+    if isinstance(data, dict):
+        return {
+            k: "[REDACTED]" if _CREDENTIAL_KEY_RE.match(k) else _redact_event_data(v)
+            for k, v in data.items()
+        }
+    if isinstance(data, list):
+        return [_redact_event_data(item) for item in data]
+    return data
+
+
+def _runs_root() -> Path:
+    """Configured runs directory; default ``<verdict_home()>/runs``.
+
+    Returns the absolute path; never creates the directory.
+    """
+    raw = os.getenv("VERDICT_RUNS_DIR", "").strip()
+    if raw:
+        return Path(raw).resolve()
+    from verdict.paths import verdict_home
+
+    return verdict_home() / "runs"
+
+
+def _resolve_run_dir(run_id: str) -> Path | None:
+    """Validate *run_id* and return its absolute path, or ``None`` on failure.
+
+    Returns ``None`` when:
+    * *run_id* does not match ``_RUN_ID_RE``,
+    * *run_id* is ``.`` or ``..``,
+    * no directory with that exact name exists as a direct child of the runs root.
+
+    The returned ``Path`` object is sourced from ``root.iterdir()`` (the
+    filesystem), not constructed from the user-supplied *run_id*.  Static
+    analysis taint tracking therefore cannot reach a file-system sink via
+    *run_id*: user input is used only in the ``entry.name == run_id``
+    comparison, which is a data-flow dead end, not a path expression.
+    """
+    if not _RUN_ID_RE.match(run_id) or run_id in {".", ".."}:
+        return None
+    root = _runs_root().resolve()
+    try:
+        for entry in root.iterdir():
+            if entry.name != run_id:
+                continue
+            # Reject symlinks: is_dir() follows symlinks, so a symlink to a
+            # directory outside the runs root would otherwise pass.
+            if entry.is_symlink():
+                return None
+            if not entry.is_dir():
+                return None
+            # Defence-in-depth: confirm the resolved path stays inside root.
+            if not entry.resolve().is_relative_to(root):
+                return None
+            return entry
+    except OSError:
+        pass
+    return None
+
+
+def _run_summary(run_id: str, run_dir: Path) -> dict[str, Any]:
+    """Build a summary dict for one run directory; never raises.
+
+    On read errors, logs a warning (exception type and run_id only — never file
+    contents) and includes ``summary_error`` in the result so API callers can
+    see that the entry is degraded.
+    """
+    started_at: str | None = None
+    outcome: str | None = None
+    receipt_status: str = "missing"
+    summary_error: str | None = None
+
+    # Both reads below use O_NOFOLLOW so a symlinked file inside a valid run
+    # dir cannot leak outside content into the summary.
+    from verdict.orchestration.receipt import _read_bytes_nofollow
+
+    receipt_path = run_dir / "receipt.json"
+    if receipt_path.exists():
+        try:
+            rdata: Any = json.loads(_read_bytes_nofollow(receipt_path))
+            if isinstance(rdata, dict):
+                started_at = rdata.get("started_at") or None
+                outcome = rdata.get("outcome") or rdata.get("claimed_outcome") or None
+                receipt_status = "present"
+        except Exception as exc:
+            receipt_status = "unreadable"
+            summary_error = type(exc).__name__
+            logger.warning(
+                "_run_summary: %s reading receipt for run %s", type(exc).__name__, run_id
+            )
+
+    if started_at is None:
+        events_path = run_dir / "events.jsonl"
+        if events_path.exists():
+            try:
+                # Open with O_NOFOLLOW (atomic symlink rejection) and read
+                # only a bounded prefix — run_started is the first event so
+                # 64 KiB is always enough; reading the whole file would cost
+                # hundreds of MB across _RUNS_SCAN_LIMIT runs per request.
+                fd = os.open(str(events_path), os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(fd, "rb") as fh:
+                    prefix = fh.read(_RUNS_SUMMARY_PREFIX_BYTES)
+                for raw_line in prefix.splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        evt = json.loads(line)
+                    except Exception:
+                        break
+                    # Only the run_started event carries the authoritative
+                    # start timestamp; ignore any earlier non-typed events.
+                    if isinstance(evt, dict) and evt.get("type") == "run_started":
+                        started_at = evt.get("at") or None
+                        break
+            except Exception as exc:
+                if summary_error is None:
+                    summary_error = type(exc).__name__
+                logger.warning(
+                    "_run_summary: %s reading events for run %s", type(exc).__name__, run_id
+                )
+
+    result: dict[str, Any] = {
+        "run_id": run_id,
+        "started_at": started_at,
+        "outcome": outcome,
+        "receipt_status": receipt_status,
+    }
+    if summary_error is not None:
+        result["summary_error"] = summary_error
+    return result
+
+
+@app.get("/v1/runs")
+async def list_runs(
+    limit: int = Query(default=20, ge=1, le=_RUNS_PAGE_LIMIT_MAX),
+    offset: int = Query(default=0, ge=0),
+) -> Response:
+    """List recent orchestration runs.
+
+    Returns run_id, started_at, outcome and receipt_status for each run,
+    sorted newest-first.  Reads ``VERDICT_RUNS_DIR`` (default
+    ``<verdict_home()>/runs``).  Never writes to any file.
+    """
+    root = _runs_root()
+    if not root.is_dir():
+        return JSONResponse({"runs": [], "total": 0})
+
+    def _collect() -> tuple[list[dict[str, Any]], int, bool]:
+        # Store (started_at, name, summary) so each run is summarised exactly
+        # once during the scan; the page slice reuses the cached summary dict.
+        entries: list[tuple[str | None, str, dict[str, Any]]] = []
+        scanned = 0
+        scan_truncated = False
+        for child in root.iterdir():
+            if scanned >= _RUNS_SCAN_LIMIT:
+                # More entries exist beyond the scan limit; total will be a
+                # lower bound.  Pick the bounded path: add total_scan_truncated
+                # to the response rather than scanning all directories.
+                scan_truncated = True
+                break
+            scanned += 1
+            if child.is_symlink() or not child.is_dir():
+                continue
+            name = child.name
+            if not _RUN_ID_RE.match(name) or name in {".", ".."}:
+                continue
+            summary = _run_summary(name, child)
+            entries.append((summary.get("started_at"), name, summary))
+
+        entries.sort(key=lambda t: t[0] or "", reverse=True)
+        total = len(entries)
+        page = entries[offset : offset + limit]
+        rows = [summary for _, _, summary in page]
+        return rows, total, scan_truncated
+
+    rows, total, scan_truncated = await asyncio.to_thread(_collect)
+    return JSONResponse({"runs": rows, "total": total, "total_scan_truncated": scan_truncated})
+
+
+@app.get("/v1/runs/{run_id}/events")
+async def get_run_events(
+    run_id: str,
+    node_id: list[str] = Query(default=[]),
+    type: list[str] = Query(default=[]),
+    after_seq: int | None = Query(default=None, ge=1),
+    seq_to: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=100, ge=1, le=_RUNS_EVENTS_LIMIT_MAX),
+) -> Response:
+    """Return a paginated window of events from one run's ``events.jsonl``.
+
+    Filters: ``node_id`` (repeatable), ``type`` (repeatable),
+    ``after_seq`` (exclusive lower bound), ``seq_to`` (inclusive upper bound).
+    Response is bounded to 1 MiB; ``truncated`` is true when the byte budget
+    was exhausted before the page limit was reached.  ``next_seq`` carries the
+    seq of the first event not returned, or null when the log is exhausted.
+    Never instantiates ``EventLog``; reads the file directly.
+    """
+    run_dir = _resolve_run_dir(run_id)
+    if run_dir is None:
+        raise HTTPException(status_code=404, detail={"error": {"message": "run not found"}})
+
+    node_id_set: frozenset[str] = frozenset(node_id)
+    type_set: frozenset[str] = frozenset(type)
+
+    def _read() -> dict[str, Any]:
+        events_path = run_dir / "events.jsonl"
+        # Open with O_NOFOLLOW so the check and the read are one atomic
+        # operation: a symlink swapped in after any earlier check is still
+        # rejected.  OSError (ELOOP, ENOENT, …) → empty events, no 500.
+        try:
+            fd = os.open(str(events_path), os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            return {"events": [], "next_seq": None, "truncated": False, "oversized_seqs": []}
+
+        collected: list[dict[str, Any]] = []
+        oversized_seqs: list[int] = []
+        byte_total = 0
+        truncated = False
+        next_seq: int | None = None
+        last_processed_seq: int | None = None  # tracks last seq emitted or skipped
+
+        with os.fdopen(fd, "rb") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    evt = json.loads(line)
+                except Exception:
+                    # Torn trailing line — treat as end of log, never repair.
+                    break
+                if not isinstance(evt, dict):
+                    continue
+                seq = evt.get("seq")
+                if not isinstance(seq, int):
+                    continue
+                if after_seq is not None and seq <= after_seq:
+                    continue
+                if seq_to is not None and seq > seq_to:
+                    break
+                if node_id_set and evt.get("node_id", "") not in node_id_set:
+                    continue
+                if type_set and evt.get("type", "") not in type_set:
+                    continue
+                # Redact credential-like keys across the whole event dict
+                # (top-level and all nested dicts/lists) before serving.
+                safe_evt = _redact_event_data(evt)
+                serialised = json.dumps(safe_evt, separators=(",", ":"))
+                event_size = len(serialised.encode())
+                if event_size > _RUNS_EVENTS_BYTE_BUDGET:
+                    # This single event is larger than the whole byte budget.
+                    # Omit it and continue scanning — a following event may fit.
+                    # Report the seq so the caller knows a seq was skipped.
+                    oversized_seqs.append(seq)
+                    truncated = True
+                    last_processed_seq = seq
+                    continue
+                if byte_total + event_size > _RUNS_EVENTS_BYTE_BUDGET:
+                    # Adding this event would exceed the byte budget; stop here.
+                    next_seq = seq
+                    truncated = True
+                    break
+                byte_total += event_size
+                collected.append(safe_evt)
+                last_processed_seq = seq
+                if len(collected) >= limit:
+                    # Peek at the next matching event to populate next_seq.
+                    # We read one more line from the file (already open).
+                    for peek_line in fh:
+                        peek = peek_line.strip()
+                        if not peek:
+                            continue
+                        try:
+                            peek_evt = json.loads(peek)
+                        except Exception:
+                            break
+                        if not isinstance(peek_evt, dict):
+                            continue
+                        pseq = peek_evt.get("seq")
+                        if not isinstance(pseq, int):
+                            continue
+                        # Only count this as next_seq if it passes the same filters.
+                        if after_seq is not None and pseq <= after_seq:
+                            continue
+                        if seq_to is not None and pseq > seq_to:
+                            break
+                        if node_id_set and peek_evt.get("node_id", "") not in node_id_set:
+                            continue
+                        if type_set and peek_evt.get("type", "") not in type_set:
+                            continue
+                        next_seq = pseq
+                        break
+                    break
+
+        # When truncated only because of oversized events (the byte-budget
+        # and limit-peek paths set next_seq themselves), set next_seq to
+        # one past the last emitted-or-skipped seq so the client always
+        # has a valid cursor.  Convention matches the other two paths:
+        # next_seq = first seq NOT in this response.
+        if truncated and next_seq is None and last_processed_seq is not None:
+            next_seq = last_processed_seq + 1
+        return {
+            "events": collected,
+            "next_seq": next_seq,
+            "truncated": truncated,
+            "oversized_seqs": oversized_seqs,
+        }
+
+    result = await asyncio.to_thread(_read)
+    return JSONResponse(result)
+
+
+@app.get("/v1/runs/{run_id}/receipt")
+async def get_run_receipt(run_id: str) -> Response:
+    """Return the stored receipt and its verification result.
+
+    Calls ``verify_run_receipt(repair=False)`` so EventLog never truncates
+    events.jsonl, even if a live run appends a partial line between any
+    intermediate check and the actual disk reads.  Never writes to any file.
+    Returns ``verification.ok`` (bool) and ``verification.problems`` (list).
+    """
+    run_dir = _resolve_run_dir(run_id)
+    if run_dir is None:
+        raise HTTPException(status_code=404, detail={"error": {"message": "run not found"}})
+
+    receipt_path = run_dir / "receipt.json"
+
+    class _ReceiptNotReadableError(Exception):
+        """Raised from _load_and_verify when the file is missing or is a symlink."""
+
+    def _load_and_verify() -> dict[str, Any]:
+        from verdict.orchestration.receipt import verify_run_receipt_from_bytes
+
+        # Open receipt.json with O_NOFOLLOW so the check and the read are one
+        # atomic operation: a symlink swapped in after any earlier check is
+        # still rejected.  OSError covers ELOOP (symlink), ENOENT (missing),
+        # and other access failures.
+        try:
+            fd = os.open(str(receipt_path), os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise _ReceiptNotReadableError from exc
+
+        try:
+            with os.fdopen(fd, "rb") as fh:
+                raw = fh.read()
+        except Exception as exc:
+            return {
+                "run_id": run_id,
+                "receipt": None,
+                "verification": {"ok": False, "problems": [f"cannot read receipt: {exc}"]},
+            }
+
+        try:
+            receipt_data: Any = json.loads(raw)
+        except Exception as exc:
+            return {
+                "run_id": run_id,
+                "receipt": None,
+                "verification": {"ok": False, "problems": [f"cannot read receipt: {exc}"]},
+            }
+
+        # Read events.jsonl once with O_NOFOLLOW.  Both files are read exactly
+        # once; verify_run_receipt_from_bytes uses these same bytes so the
+        # verification verdict and the returned receipt always describe the
+        # same content — no second read of either file.  OSError (ELOOP for
+        # a symlink, ENOENT for a missing file, …) → events_raw=None →
+        # verify_run_receipt_from_bytes reports a missing-events problem.
+        events_path = run_dir / "events.jsonl"
+        events_raw: bytes | None = None
+        try:
+            efd = os.open(str(events_path), os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(efd, "rb") as fh:
+                events_raw = fh.read()
+        except OSError:
+            pass
+
+        # Verification runs on raw file bytes; redaction happens after.
+        # A torn tail or digest mismatch appears as problems in the response.
+        problems = verify_run_receipt_from_bytes(raw, events_raw, run_dir)
+        return {
+            "run_id": run_id,
+            "receipt": _redact_event_data(receipt_data),
+            "verification": {"ok": not problems, "problems": problems},
+        }
+
+    try:
+        result = await asyncio.to_thread(_load_and_verify)
+    except _ReceiptNotReadableError:
+        raise HTTPException(
+            status_code=404, detail={"error": {"message": "receipt not found for run"}}
+        ) from None
+    return JSONResponse(result)
 
 
 @app.post(OMNIROUTE_WEBHOOK_PATH)

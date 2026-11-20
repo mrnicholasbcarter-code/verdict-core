@@ -30,6 +30,7 @@ when empty so existing committed receipts still verify.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -129,12 +130,16 @@ def _fsync_dir(directory: Path) -> None:
 class EventLog:
     """Append-only JSONL event log with strictly increasing ``seq`` (resume-safe)."""
 
-    def __init__(self, path: Path, *, clock: Callable[[], datetime] | None = None) -> None:
+    def __init__(
+        self, path: Path, *, clock: Callable[[], datetime] | None = None, repair: bool = True
+    ) -> None:
         self.path = Path(path)
         self._clock = clock or _utc_now
+        self._repair = repair
         self._lock = threading.Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._repair_torn_tail()
+        if repair:
+            self._repair_torn_tail()
         events = self.read()
         self._seq = events[-1].seq if events else 0
 
@@ -169,9 +174,27 @@ class EventLog:
         return event
 
     def read(self) -> list[RunEvent]:
+        """Parse all complete events from the log.
+
+        When constructed with ``repair=False`` (non-mutating / read-only mode),
+        only the very last non-empty line of a file that lacks a trailing newline
+        may be treated as a torn partial write; every other bad line raises
+        ``OrchestrationError`` as usual.  A torn final line raises with the
+        message ``"torn tail at line N"`` so callers can distinguish it from
+        genuine mid-file corruption.  In ``repair=True`` mode all bad lines
+        raise, which is unchanged from the original behaviour.
+        """
         if not self.path.exists():
             return []
-        events: list[RunEvent] = []
+
+        if not self._repair:
+            # Non-repair path: reject symlinks and read atomically so a
+            # malicious symlink swap cannot leak outside content.
+            raw_bytes = _read_bytes_nofollow(self.path)
+            return _parse_events_bytes(raw_bytes, self.path)
+
+        # Repair path (default): strict UTF-8, raise on any bad line.
+        events = []
         last = 0
         for number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), 1):
             if not line.strip():
@@ -194,6 +217,60 @@ class EventLog:
 
 def _sha256_file(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _read_bytes_nofollow(path: Path) -> bytes:
+    """Read *path* bytes without following symlinks.
+
+    Uses ``O_NOFOLLOW`` so the check and the read are one atomic operation:
+    a symlink cannot be substituted between an ``is_symlink()`` guard and the
+    actual open.  Raises ``OrchestrationError`` on a symlink (ELOOP) or any
+    other ``OSError`` (missing, permission denied, …).
+
+    Exported so ``verdict.api`` can use the same helper for the list-runs
+    summary path.
+    """
+    try:
+        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise OrchestrationError(f"cannot read {path.name}: {exc}") from exc
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read()
+
+
+def _parse_events_bytes(raw: bytes, path_hint: Path) -> list[RunEvent]:
+    """Parse a complete events log from raw bytes.
+
+    Uses the same algorithm as ``EventLog.read(repair=False)``: strict
+    monotonic-seq check and torn-tail detection on a file without a trailing
+    newline.  Pure function; no filesystem access.  ``path_hint`` is used
+    only in error messages.
+    """
+    has_trailing_newline = not raw or raw.endswith(b"\n")
+    all_lines = raw.decode("utf-8", errors="replace").splitlines()
+    last_nonempty_idx: int | None = None
+    for i in range(len(all_lines) - 1, -1, -1):
+        if all_lines[i].strip():
+            last_nonempty_idx = i
+            break
+    events: list[RunEvent] = []
+    last = 0
+    for number, line in enumerate(all_lines, 1):
+        if not line.strip():
+            continue
+        try:
+            event = RunEvent.from_dict(json.loads(line))
+        except (ValueError, KeyError, TypeError) as exc:
+            if not has_trailing_newline and (number - 1) == last_nonempty_idx:
+                raise OrchestrationError(f"torn tail at line {number}") from exc
+            raise OrchestrationError(f"{path_hint}:{number}: corrupt event: {exc}") from exc
+        if event.seq <= last:
+            raise OrchestrationError(
+                f"{path_hint}:{number}: seq {event.seq} not greater than {last}"
+            )
+        last = event.seq
+        events.append(event)
+    return events
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -713,12 +790,21 @@ def producer_from_started(started: RunEvent | None) -> dict[str, Any] | None:
     }
 
 
-def build_run_receipt(run_dir: Path) -> dict[str, Any]:
+def build_run_receipt(
+    run_dir: Path,
+    *,
+    repair: bool = True,
+    _preread_events: list[RunEvent] | None = None,
+    _preread_events_digest: str | None = None,
+) -> dict[str, Any]:
     run_dir = Path(run_dir)
     events_path = run_dir / EVENTS_FILE
-    if not events_path.exists():
-        raise OrchestrationError(f"missing {EVENTS_FILE} in {run_dir}")
-    events = EventLog(events_path).read() if events_path.stat().st_size else []
+    if _preread_events is not None:
+        events = _preread_events
+    else:
+        if not events_path.exists():
+            raise OrchestrationError(f"missing {EVENTS_FILE} in {run_dir}")
+        events = EventLog(events_path, repair=repair).read() if events_path.stat().st_size else []
     # A run that ended before a plan existed (startup, admission or planning
     # BLOCKED) has no graph or an empty one. It still gets a receipt with no
     # nodes, so its cause is verifiable like any other run's.
@@ -824,7 +910,11 @@ def build_run_receipt(run_dir: Path) -> dict[str, Any]:
             else {}
         ),
         "event_count": len(events),
-        "events_digest": _sha256_file(events_path),
+        "events_digest": (
+            _preread_events_digest
+            if _preread_events_digest is not None
+            else _sha256_file(events_path)
+        ),
         "started_at": (started.at if started else events[0].at) if events else None,
         "finished_at": finished[-1].at if finished else None,
     }
@@ -1059,28 +1149,111 @@ def write_run_receipt(run_dir: Path) -> Path:
     return target
 
 
-def verify_run_receipt(run_dir: Path) -> list[str]:
-    """Recompute the receipt from source files; empty list means valid."""
+def verify_run_receipt(run_dir: Path, *, repair: bool = True) -> list[str]:
+    """Recompute the receipt from source files; empty list means valid.
+
+    Pass ``repair=False`` for read-only callers (e.g. the API) to prevent
+    ``EventLog.__init__`` from truncating a torn tail on disk.  The digest
+    check will still catch any changes to events.jsonl; a torn tail caused
+    by a mid-write crash appears as an ``events_digest mismatch``.
+
+    The ``repair=False`` path reads both files with ``O_NOFOLLOW`` and
+    delegates to ``verify_run_receipt_from_bytes`` so the same bytes are
+    used for every check — there is no second read of either file.
+    """
     run_dir = Path(run_dir)
     path = run_dir / RECEIPT_FILE
     if not path.exists():
         return [f"missing {RECEIPT_FILE}"]
+    if repair:
+        try:
+            stored = _load_json(path)
+        except OrchestrationError as exc:
+            return [str(exc)]
+        problems: list[str] = []
+        if stored.get("schema") != RECEIPT_SCHEMA:
+            problems.append(f"unexpected schema {stored.get('schema')!r}")
+        events_path = run_dir / EVENTS_FILE
+        if not events_path.exists():
+            return [*problems, f"missing {EVENTS_FILE}"]
+        digest = _sha256_file(events_path)
+        if stored.get("events_digest") != digest:
+            problems.append(
+                "events_digest mismatch: events.jsonl changed after receipt was written"
+            )
+        try:
+            fresh = build_run_receipt(run_dir, repair=repair)
+        except OrchestrationError as exc:
+            return [*problems, f"cannot rebuild receipt: {exc}"]
+        for key in sorted(set(fresh) | set(stored)):
+            if key == "events_digest":
+                continue
+            if fresh.get(key) != stored.get(key):
+                problems.append(f"{key} mismatch: stored receipt differs from recomputed evidence")
+        return problems
+    else:
+        # Non-repair (API) path: read both files with O_NOFOLLOW, then
+        # delegate to verify_run_receipt_from_bytes so the same bytes are
+        # used for the digest check and the structural comparison.
+        try:
+            receipt_raw = _read_bytes_nofollow(path)
+        except OrchestrationError as exc:
+            return [str(exc)]
+        events_path = run_dir / EVENTS_FILE
+        events_raw: bytes | None = None
+        with contextlib.suppress(OrchestrationError):
+            events_raw = _read_bytes_nofollow(events_path)
+        return verify_run_receipt_from_bytes(receipt_raw, events_raw, run_dir)
+
+
+def verify_run_receipt_from_bytes(
+    receipt_bytes: bytes, events_bytes: bytes | None, run_dir: Path
+) -> list[str]:
+    """Verify a receipt using bytes already in memory; no second file read.
+
+    Both ``receipt_bytes`` and ``events_bytes`` must have been read from
+    their respective files with ``O_NOFOLLOW`` by the caller.  Pass
+    ``events_bytes`` as ``None`` when the caller could not open
+    ``events.jsonl`` (missing, symlink, or other OS error); a problem is
+    recorded without touching the filesystem.
+
+    Equivalent to ``verify_run_receipt(repair=False)`` but takes the bytes
+    already in memory so the receipt returned to the caller and the
+    verification result always describe the same content — no second read
+    of either file.
+    """
+    run_dir = Path(run_dir)
     try:
-        stored = _load_json(path)
-    except OrchestrationError as exc:
-        return [str(exc)]
+        stored_val: Any = json.loads(receipt_bytes)
+    except ValueError as exc:
+        return [f"cannot read {RECEIPT_FILE}: {exc}"]
+    if not isinstance(stored_val, dict):
+        return [f"{RECEIPT_FILE} must contain a JSON object"]
+    stored: dict[str, Any] = stored_val
+
     problems: list[str] = []
     if stored.get("schema") != RECEIPT_SCHEMA:
         problems.append(f"unexpected schema {stored.get('schema')!r}")
-    events_path = run_dir / EVENTS_FILE
-    if not events_path.exists():
+
+    if events_bytes is None:
         return [*problems, f"missing {EVENTS_FILE}"]
-    if stored.get("events_digest") != _sha256_file(events_path):
+
+    digest = "sha256:" + hashlib.sha256(events_bytes).hexdigest()
+    if stored.get("events_digest") != digest:
         problems.append("events_digest mismatch: events.jsonl changed after receipt was written")
+
     try:
-        fresh = build_run_receipt(run_dir)
+        preread: list[RunEvent] = _parse_events_bytes(events_bytes, run_dir / EVENTS_FILE)
     except OrchestrationError as exc:
         return [*problems, f"cannot rebuild receipt: {exc}"]
+
+    try:
+        fresh = build_run_receipt(
+            run_dir, repair=False, _preread_events=preread, _preread_events_digest=digest
+        )
+    except OrchestrationError as exc:
+        return [*problems, f"cannot rebuild receipt: {exc}"]
+
     for key in sorted(set(fresh) | set(stored)):
         if key == "events_digest":
             continue
