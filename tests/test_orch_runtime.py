@@ -11,7 +11,7 @@ import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -2127,20 +2127,36 @@ async def test_exit_127_during_verify_is_env_error(repo: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_pre_dispatch_check_missing_runner_zero_attempts(repo: Path) -> None:
-    """Pre-dispatch check catches a completely missing runner before any attempt."""
+async def test_missing_binary_during_verify_is_env_error(repo: Path) -> None:
+    """A completely missing runner (FileNotFoundError → exit 127) is classified
+    as environment_error after one attempt, not verification_failed.
 
-    # Verification command uses a non-existent binary (not python, not in PATH).
+    This complements test_exit_127_during_verify_is_env_error (which mocks the
+    runner return code) by using a real absent binary so subprocess_runner's
+    FileNotFoundError → (127, ...) path is exercised end-to-end.
+    """
+
+    # Verification command uses a non-existent binary (not in PATH).
     n = WorkNode(
         "impl3",
         "implement something",
         kind=NodeKind.IMPLEMENT,
         owned_files=("impl3.txt",),
-        # nonexistent-runner-xyzzy is not in PATH; pre-dispatch check catches it.
-        verification_command=("nonexistent-runner-xyzzy", "--test"),
+        verification_command=("__nonexistent_runner_xyzzy__", "--test"),
     )
     graph = WorkGraph("g", (n,))
-    ex = Executor({("impl3", "*"): "ok"})
+
+    class _OkExecutor:
+        calls: ClassVar[list[tuple[str, str]]] = []
+
+        async def run(
+            self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        ) -> WorkerTerminal:
+            self.calls.append((prompt.split(":")[0], route_id))
+            (cwd / "impl3.txt").write_text("done\n")
+            return WorkerTerminal(ok=True, output="RESULT: done", model=route_id)
+
+    ex = _OkExecutor()
     events = Events()
     selector = Selector(["cc/sonnet-3-5"])
     rt = DagRuntime(
@@ -2148,7 +2164,7 @@ async def test_pre_dispatch_check_missing_runner_zero_attempts(repo: Path) -> No
         run_dir=repo.parent / "run_env3",
         graph=graph,
         selector=selector,
-        executor=ex,
+        executor=ex,  # type: ignore[arg-type]
         classifier=Classifier(),
         events=events,
         prompt_for=lambda nd, cwd: f"{nd.node_id}: {nd.objective}",
@@ -2160,11 +2176,14 @@ async def test_pre_dispatch_check_missing_runner_zero_attempts(repo: Path) -> No
 
     node_result = result.nodes["impl3"]
     assert node_result.state is NodeState.BLOCKED
-    # Pre-dispatch: attempt==0 means nothing was dispatched.
-    assert node_result.attempt == 0, (
-        f"expected 0 attempts (pre-dispatch check), got {node_result.attempt}"
+    # Exactly one attempt was made (executor ran, verify ran, missing binary → 127).
+    assert node_result.attempt == 1, (
+        f"expected 1 attempt (missing binary via exit 127), got {node_result.attempt}"
     )
     failure_events = events.of("failure", "impl3")
-    assert failure_events and failure_events[-1]["category"] == "environment_error"
-    # Executor never called: no worker was sent.
-    assert ex.calls == []
+    assert failure_events, "expected at least one failure event"
+    assert failure_events[-1]["category"] == "environment_error", (
+        f"expected environment_error, got {failure_events[-1]['category']}"
+    )
+    # The executor ran (attempt was made).
+    assert len(ex.calls) == 1

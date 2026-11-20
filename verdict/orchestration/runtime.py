@@ -103,7 +103,6 @@ from verdict.orchestration.salvage import (
     restore_salvaged_files,
     salvage_owned_files,
 )
-from verdict.orchestration.verification import check_verify_runner as _check_verify_runner
 from verdict.orchestration.verification import (
     classify_verify_env_error as _classify_verify_env_error,
 )
@@ -918,24 +917,6 @@ class DagRuntime:
 
     # ------------------------------------------------------------------ node
 
-    def _pre_dispatch_env_check(self, node: WorkNode) -> str | None:
-        """Return an ``"environment_error: <reason>"`` string when the node
-        cannot possibly run before any attempt is dispatched.
-
-        Checks the verification command's runner is resolvable (argv[0] found
-        in PATH or via the python/python3 → sys.executable substitution).
-        Returns ``None`` when no pre-dispatch environment problem is found.
-
-        Note: owned-file parent directories are intentionally NOT checked here.
-        Workers routinely create new directories, so a missing parent is normal
-        and must not block dispatch.
-        """
-        if node.verification_command:
-            err = _check_verify_runner(node.verification_command)
-            if err is not None:
-                return err
-        return None
-
     async def _drive(self, node_id: str) -> None:
         run = self.nodes[node_id]
         if run.node.kind is NodeKind.REVIEW:
@@ -961,32 +942,6 @@ class DagRuntime:
         tried = run.excluded_routes
         waited_once = False
         revocations = 0
-
-        # Pre-dispatch environment check: fail closed before spending any
-        # attempt budget when the node's configuration cannot possibly work.
-        # Runs once per node so zero attempts are consumed on a broken env.
-        pre_env_err = self._pre_dispatch_env_check(run.node)
-        if pre_env_err is not None:
-            run.reason = pre_env_err
-            # At this point state is PLANNED; the only valid transition without
-            # dispatching an attempt is PLANNED → BLOCKED (attempt=0, nothing ran).
-            # Append the classification so the receipt can record the reason, and
-            # emit a failure event so observers and the TUI see the blocked reason.
-            failures.append(
-                FailureClassification("environment_error", "BLOCK", 0, "none", pre_env_err)
-            )
-            self.events.emit(
-                "failure",
-                node_id,
-                category="environment_error",
-                action="BLOCK",
-                route_id="",
-                evidence=pre_env_err[:300],
-                fault_injected=False,
-                attempt=0,
-            )
-            self._set(run, NodeState.BLOCKED, reason=pre_env_err)
-            return
 
         while True:
             if run.attempt >= self.policy.max_attempts_per_node:

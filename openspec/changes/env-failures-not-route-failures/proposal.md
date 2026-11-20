@@ -20,19 +20,16 @@ environment problem is even surfaced.
 
 ## What Changes
 
-- `verdict/orchestration/verification.py`: two new functions.
+- `verdict/orchestration/verification.py`: new function
   `classify_verify_env_error()` detects exit codes 126/127 and missing
-  `-m MODULE` as environment errors. `check_verify_runner()` resolves the
-  runner (argv[0]) before dispatch as a cheap pre-dispatch guard.
+  `-m MODULE` as environment errors.
 - `verdict/orchestration/runtime.py`: `_validate()` calls
   `classify_verify_env_error` and returns `"environment_error: …"` before
-  `"verification_failed: …"`. `_pre_dispatch_env_check()` checks the runner
-  and gates the node BLOCKED with zero attempts if the runner is missing.
-  `_attempt()` handles `"environment_error:"` prefix by appending a
-  `FailureClassification(category="environment_error", action="BLOCK",
-  cooldown_seconds=0, scope="none")`, then transitioning to REJECTED
-  (not incrementing `judged_failure_count`). `_drive()` applies the same
-  BLOCK action via its existing logic.
+  `"verification_failed: …"`. `_attempt()` handles `"environment_error:"`
+  prefix by appending a `FailureClassification(category="environment_error",
+  action="BLOCK", cooldown_seconds=0, scope="none")`, then transitioning to
+  REJECTED (not incrementing `judged_failure_count`). `_drive()` applies the
+  same BLOCK action via its existing logic.
 - `verdict/orchestration/recovery.py`: classifies `error.startswith(
   "environment_error")` → `FailureClassification(category=
   "environment_error", action="BLOCK", cooldown_seconds=0, scope="none")`.
@@ -50,12 +47,8 @@ environment problem is even surfaced.
 - `env-failures-not-route-failures`: when a verification command fails
   because the runner was missing (exit 126/127) or a `-m MODULE` target
   is not installed, the failure is classified `environment_error`, the
-  node is failed closed with zero attempts charged to the route, and no
-  session ledger or health-cache entries are written for that route.
-- `pre-dispatch-env-check`: before the first attempt on any node, the
-  verification command's runner (argv[0]) is resolved; if it cannot be
-  found, the node transitions directly to BLOCKED with no executor call
-  and attempt=0.
+  node is failed closed with zero route-level impact (no health-cache
+  write, no session ledger entry, no escalation).
 
 ### Modified Capabilities
 
@@ -78,5 +71,17 @@ variables, no dependency changes.
 2. When `subprocess_runner` returns `(127, "command not found")` during
    `_validate()`, the node is BLOCKED with
    `FailureClassification.category == "environment_error"`. No reassignment.
-3. When the runner (argv[0]) is not on PATH, `_pre_dispatch_env_check()`
-   blocks the node at `attempt == 0` before the executor is called.
+3. When a binary is completely absent from PATH, `subprocess_runner`'s
+   FileNotFoundError → (127, ...) path causes `classify_verify_env_error`
+   to classify the failure as `environment_error` at attempt=1.
+
+## Deviation from planned scope
+
+A runner pre-dispatch check (checking argv[0] resolves before dispatch)
+was dropped. It conflicts with the BOD-70 regression contract in
+`tests/test_orch_verify_command.py::test_runtime_verify_missing_binary_rejected_not_blocked`,
+which requires the verify event to be emitted with exit_code=127. It also
+fires for single-character argv[0] values produced when a string
+verification_command is converted to tuple in WorkNode.__post_init__. The
+`classify_verify_env_error()` classification at attempt 1 covers all the
+cases the story requires, including the missing-binary case via exit 127.

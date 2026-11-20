@@ -49,21 +49,6 @@ For any failure classified as `environment_error`, the runtime SHALL:
   `FailureClassification.cooldown_seconds == 0`, and no session
   ledger or health-cache entry is written for the route
 
-### Requirement: pre-dispatch runner check
-
-Before making the first executor call for a node whose verification command
-has a runner (argv[0]) that is not on PATH, the runtime SHALL:
-- Classify the failure as `environment_error` with `attempt = 0`
-- Transition the node directly to BLOCKED
-- NOT call the executor
-
-#### Scenario: missing runner blocks at attempt 0
-
-- **WHEN** the node's `verification_command` has argv[0] not resolvable
-  via `shutil.which()` and argv[0] is not `"python"` or `"python3"`
-- **THEN** the node is BLOCKED, `attempt == 0`, and the executor is never
-  called
-
 ## UNCHANGED Requirements
 
 `verification_failed` classification for genuine wrong-output failures is

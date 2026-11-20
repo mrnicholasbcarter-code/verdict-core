@@ -22,13 +22,17 @@ Goal: `environment_error` is a distinct category that fails the node closed
 (BLOCKED), does not charge the attempt to the route, and writes nothing
 to the session ledger or health-cache.
 
-Goal: cheap pre-dispatch check: if the runner (argv[0]) cannot be found
-before the first executor call, block immediately with attempt=0.
-
 Non-goal: detect all possible environment failures (e.g., disk full,
 permission denied on a file the test suite writes). Only the two reliable
 signals are detected: exit 126/127 and "No module named MODULE" for `-m`
 invocations.
+
+Non-goal: pre-dispatch runner check. Checking argv[0] before dispatch is
+too aggressive: it fires for single-character argv[0] values produced by
+WorkNode.__post_init__'s `tuple(str)` conversion of string
+verification_commands, and conflicts with the BOD-70 regression contract
+(`test_runtime_verify_missing_binary_rejected_not_blocked`) which requires
+the verify event to be emitted at exit_code=127.
 
 Non-goal: retry environment errors. They are systemic (the venv is broken
 for the whole run). A single BLOCK is correct.
@@ -37,9 +41,9 @@ for the whole run). A single BLOCK is correct.
 
 ### Classification via string prefix
 
-`classify_verify_env_error()` and `check_verify_runner()` live in
-`verdict/orchestration/verification.py`, alongside the existing argv
-resolution helpers. They return `"environment_error: <reason>"` or `None`.
+`classify_verify_env_error()` lives in `verdict/orchestration/verification.py`,
+alongside the existing argv resolution helpers. It returns
+`"environment_error: <reason>"` or `None`.
 
 The `"environment_error:"` prefix is the same contract as the existing
 `"verification_failed:"` prefix: callers key on the prefix to distinguish
@@ -61,16 +65,12 @@ through the state machine is:
 `_record_failure()` / `_fail()` are NOT called, so `judged_failure_count`
 is not incremented and the session ledger/health-cache are not written.
 
-### Pre-dispatch check
+### BLOCK is unconditional for environment_error
 
-`_pre_dispatch_env_check()` checks `check_verify_runner(node.verification_command)`
-before the `while True:` loop in `_drive()`. If the runner is missing,
-it emits a `"failure"` event with `attempt=0`, appends the classification
-to failures, and transitions directly to BLOCKED. The executor is never
-called.
-
-Owned-file parent directory presence is NOT checked here: workers routinely
-create new directories, so a missing directory is not an environment error.
+Environment errors always BLOCK regardless of what the classifier would
+return for a normal failure. The classifier is the route's fault
+assessment; environment errors are not the route's fault. The
+FailureClassification is hardcoded with `action="BLOCK"`.
 
 ## Risks / Trade-offs
 
@@ -92,9 +92,9 @@ Three acceptance tests in `tests/test_orch_runtime.py`:
    write (checked via absence of `SessionLedger.record_outcome` call).
 
 2. `test_exit_127_during_verify_is_env_error`:
-   runner passes pre-dispatch (python is found), but during `_validate()`
-   the mock returns 127 → `environment_error`.
+   runner passes (python is found), but during `_validate()` the mock
+   returns 127 → `environment_error`.
 
-3. `test_pre_dispatch_check_missing_runner_zero_attempts`:
-   runner is not on PATH → pre-dispatch blocks at attempt==0, executor
-   never called.
+3. `test_missing_binary_during_verify_is_env_error`:
+   real absent binary (not in PATH) → subprocess_runner's FileNotFoundError
+   → (127, ...) → `environment_error` at attempt==1, executor ran once.

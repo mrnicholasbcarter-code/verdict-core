@@ -38,26 +38,6 @@ def classify_verify_env_error(argv: Sequence[str], code: int, out: str) -> str |
     return None
 
 
-def check_verify_runner(argv: Sequence[str]) -> str | None:
-    """Return an ``"environment_error: <reason>"`` string when the verification
-    command's runner cannot be resolved before dispatch.
-
-    Checks only the executable (argv[0]); module presence is not checked here
-    because that requires the worktree.  Returns ``None`` when the runner is
-    resolvable (or the command is empty).
-    """
-    if not argv:
-        return None
-    runner = argv[0]
-    # Python substitution: resolve_verify_argv replaces bare python/python3
-    # with sys.executable when they are missing from PATH; treat as resolvable.
-    if runner in {"python", "python3"} and (shutil.which(runner) is not None or sys.executable):
-        return None
-    if shutil.which(runner) is None:
-        return f"environment_error: verification runner not found: {runner}"
-    return None
-
-
 def resolve_verify_argv(argv: Sequence[str]) -> tuple[list[str], str]:
     """Return the executed argv and an interpreter substitution, if one was needed.
 
