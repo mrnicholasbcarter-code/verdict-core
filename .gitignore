@@ -98,7 +98,7 @@ scripts/demo-results.json
 # Agent-workspace artifacts — never part of the published project
 evidence/
 exports/
-discovery/
+/discovery/
 .mcp.json
 CLAUDE.md.backup-*
 
