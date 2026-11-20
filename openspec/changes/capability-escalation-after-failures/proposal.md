@@ -32,8 +32,10 @@ the selection to routes strictly stronger than the failing tier, using only
     to `NodeRun`.
   - In `_record_failure`: after K=2 judged failures, tighten
     `escalation_tier_ceiling` to `last_selected_tier - 1`.
-  - In `_start_node`: two-phase selection — try with ceiling first; if no route
+  - In `_attempt`: two-phase selection — try with ceiling first; if no route
     is found, fall back to the full admitted set so the budget stays bounded.
+    Unknown-tier routes are excluded from the escalation path
+    (`unknown_capability_escalating`) so free-first workers escalate correctly.
   - Emit `"escalation"` event and append to `run.history` when escalation fires.
 - `tests/test_orch_escalation.py`: four failing-first tests covering the happy
   path, exclude-routes respected, fallback when no stronger route, and

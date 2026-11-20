@@ -843,6 +843,15 @@ class EligibilityLadder:
             if _effective_max_tier < 3:
                 a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, "unknown_capability"
                 return a
+            # When escalation is active, unknown-tier routes are treated as weaker
+            # than any known tier and must not be selected: the runtime is explicitly
+            # seeking a route with measured capability to escape repeated failures.
+            if requirements.escalation_max_tier is not None:
+                a.failed_stage, a.reason = (
+                    EligibilityStage.TASK_ELIGIBLE,
+                    "unknown_capability_escalating",
+                )
+                return a
             a.tier, a.slack, a.tier_known = 3, _UNKNOWN_SLACK, False
         else:
             a.tier, a.tier_known = tier, True

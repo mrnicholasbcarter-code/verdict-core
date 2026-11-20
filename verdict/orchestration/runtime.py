@@ -131,6 +131,11 @@ _ESCALATION_JUDGED_CATEGORIES = _JUDGED_WORK_CATEGORIES | frozenset({"verificati
 # After this many judged failures on the same node, the next attempt must use a route
 # with a strictly stronger capability tier than the one that last failed.
 _ESCALATION_JUDGED_FAILURE_THRESHOLD = 2
+# Ceiling used when the failing route's capability_tier is unknown (None).  Setting
+# this to 3 (the weakest known tier) means "require a route with a KNOWN tier at or
+# below 3"; the eligibility check then excludes unknown-tier routes when escalation
+# is active, so the escalation path prefers any route with measured capability.
+_ESCALATION_UNKNOWN_TIER_CEILING = 3
 _WORKER_OUTPUT_RESERVE = 1024
 _WORKER_SAFETY_RESERVE = 512
 
@@ -2191,6 +2196,17 @@ class DagRuntime:
                 t = run.last_selected_tier
                 if t is not None and t > 1:
                     new_ceil = t - 1
+                    if (
+                        run.escalation_tier_ceiling is None
+                        or new_ceil < run.escalation_tier_ceiling
+                    ):
+                        run.escalation_tier_ceiling = new_ceil
+                elif t is None:
+                    # Unknown-tier route: treat as weaker than any known tier.
+                    # Set ceiling to _ESCALATION_UNKNOWN_TIER_CEILING (3) so the
+                    # eligibility check excludes unknown-tier routes while keeping
+                    # all routes with a measured capability_tier.
+                    new_ceil = _ESCALATION_UNKNOWN_TIER_CEILING
                     if (
                         run.escalation_tier_ceiling is None
                         or new_ceil < run.escalation_tier_ceiling

@@ -10,7 +10,6 @@ Tests (failing-first per TDD):
 
 from __future__ import annotations
 
-import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,7 +45,6 @@ class Events:
         self.rows: list[dict[str, Any]] = []
 
     def emit(self, type: str, node_id: str = "", **data: Any) -> None:
-        json.dumps(data, default=str)
         self.rows.append({"type": type, "node_id": node_id, **data})
 
     def of(self, type: str, node_id: str | None = None) -> list[dict[str, Any]]:
@@ -68,7 +66,7 @@ class EscalationSelector:
     Routes in requirements.exclude_routes are always excluded regardless of tier.
     """
 
-    def __init__(self, routes: list[tuple[str, int]]) -> None:
+    def __init__(self, routes: list[tuple[str, int | None]]) -> None:
         self.routes = routes  # ordered by preference (first = cheapest / best)
         self.cool: dict[str, float] = {}
         self.successes: list[str] = []
@@ -118,14 +116,19 @@ class EscalationSelector:
                 continue
 
             # Apply escalation ceiling: routes too weak for the escalated floor are out.
-            if esc_max is not None and tier > esc_max:
+            # When escalation is active, unknown-tier routes are also excluded
+            # (they are weaker than any known tier).
+            if esc_max is not None and (tier is None or tier > esc_max):
+                reason = (
+                    "unknown_capability_escalating" if tier is None else "below_escalation_floor"
+                )
                 verdicts.append(
                     RouteVerdict(
                         route,
                         provider,
                         EligibilityStage.AVAILABLE,
                         EligibilityStage.TASK_ELIGIBLE,
-                        "below_escalation_floor",
+                        reason,
                         capability_tier=tier,
                     )
                 )
@@ -219,7 +222,7 @@ def make_esc(
     repo: Path,
     graph: WorkGraph,
     executor: CallCountingExecutor,
-    routes_with_tiers: list[tuple[str, int]],
+    routes_with_tiers: list[tuple[str, int | None]],
     reviewer: Reviewer | None = None,
     **policy: Any,
 ) -> tuple[DagRuntime, Events, EscalationSelector]:
@@ -413,4 +416,41 @@ async def test_non_judged_failure_does_not_count_toward_escalation(repo: Path) -
     assert len(esc_events) == 0, (
         f"unexpected escalation event from non-judged (quota) failure: {esc_events}"
     )
+    assert result.nodes["n"].state is NodeState.VALIDATED
+
+
+async def test_unknown_tier_judged_failures_escalate_to_known_tier_route(repo: Path) -> None:
+    """Two judged failures on a route with unknown capability_tier (None) must escalate
+    to a route with a known tier on the third attempt.
+
+    Unknown-tier routes represent free or uncatalogued models where the name-based
+    classifier has no entry.  After K=2 judged failures the runtime sets
+    escalation_tier_ceiling=_ESCALATION_UNKNOWN_TIER_CEILING (3).  The eligibility
+    check then excludes all unknown-tier routes (reason 'unknown_capability_escalating')
+    so the escalation path selects only routes with a measured capability_tier.
+
+    The 'escalation' event must be emitted with from_tier=None.
+    """
+
+    # cc/free has tier=None (unknown); cx/known has tier=2 (known).
+    def behaviour(node_id: str, route: str, call_num: int) -> str:
+        if route == "cc/free":
+            return "badcode"  # judged failure x 2 (rehydrate then tried)
+        return "ok"  # cx/known succeeds
+
+    ex = CallCountingExecutor(behaviour)
+    graph = WorkGraph("g", (node("n"),))
+    rt, ev, _sel = make_esc(repo, graph, ex, [("cc/free", None), ("cx/known", 2)])
+
+    result = await rt.run()
+
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    # An escalation event must be emitted with from_tier=None.
+    esc_events = ev.of("escalation")
+    assert len(esc_events) >= 1, "expected an escalation event from unknown-tier failures"
+    esc = esc_events[0]
+    assert esc["from_tier"] is None, f"expected from_tier=None, got {esc['from_tier']}"
+    assert esc["to_route"] == "cx/known"
+    assert esc["to_tier"] == 2
+    assert esc["reason"] == "judged_failures_threshold"
     assert result.nodes["n"].state is NodeState.VALIDATED
