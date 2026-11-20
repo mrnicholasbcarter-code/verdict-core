@@ -93,6 +93,18 @@ publication.
   holds host paths and is retained privately, digests recorded). One run, no
   speed or savings claim. Cockpit replay (README hero):
   [`live-cockpit.svg`](../assets/live-cockpit.svg).
+- [Live orchestrate run 20261120T113919Z](live-run-20261120T113919Z/README.md)
+  (LIVE, 2026-11-20, producer `2c85357f`): three subscription workers (all
+  `claude/claude-opus-5-5` or `cc/claude-opus-5-5`); `diagnostics_fix` failed
+  attempt 1 (`verification_failed`) and passed on attempt 2; in-run reviewer
+  `cc/claude-sonnet-5-5` (same `claude` family as implementers, route-level
+  independence only), PASS, 0 blocking comments; receipt integrity OK on private
+  run directory with Verdict at `a4acddf3` (origin/main). First story built
+  end-to-end by `verdict orchestrate` (PR #1191). Evidence record: the
+  digest-bound event log and receipt hold host paths and are retained privately,
+  with their digests recorded. graph.json and review output committed (no host
+  paths); outcome-records.jsonl gitignored (`*.jsonl`). Goal and constraints tuned over 15 prior
+  attempts. One run, no speed or savings claim.
 
 ## Explicitly not approved
 

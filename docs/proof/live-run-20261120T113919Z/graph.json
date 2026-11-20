@@ -1,0 +1,166 @@
+{
+  "schema_version": "verdict.orchestration/v1",
+  "goal": "doctor-capability-gateway-probe: verdict doctor reports gateway.inventory and gateway.execute as DEGRADED with health null on a machine whose OmniRoute gateway is healthy. Cause: verdict/capability_bootstrap.py doctor_capability_report() runs run_bootstrap() with no probe_gateway, so discover_providers() falls back to _default_gateway_probe, a setup plan-mode stub that never probes and always returns health_ok False (\"endpoint configured but not live-certified\"). Doctor already has a real authenticated gateway probe (verdict/doctor_diagnostics.py _cli_bootstrap() plus _gateway_probe_for(bootstrap), used by _doctor_gateway_lifecycle). Make the capability report use that real probe result.\nAcceptance: (1) doctor_capability_report gains a keyword argument probe_gateway: GatewayProbe | None = None that is passed through to run_bootstrap(probe_gateway=...); default behaviour unchanged. (2) verdict/doctor_diagnostics.py gains def _doctor_capability_gateway_probe() -> Callable[[str], dict[str, Any]] returning a probe: for provider_id \"gateway.omniroute\" it resolves bootstrap = _cli_bootstrap(), calls health = _gateway_probe_for(bootstrap)(bootstrap.gateway_url) and returns {\"reachable\": health.reachable, \"health_ok\": health.reachable, \"reason\": health.detail or (\"gateway healthy\" if reachable else \"gateway did not answer\"), \"endpoint\": redact_url(bootstrap.gateway_url)} (redact_url from verdict.provider_bootstrap); a BootstrapError (verdict.provider_bootstrap) or a missing gateway_url gives {\"reachable\": False, \"health_ok\": False, \"reason\": <reason_code or \"no gateway url\">}; any other provider_id gives {\"reachable\": False, \"health_ok\": False, \"reason\": \"not probed by doctor\"}. Never print or return the API key. (3) _collect_doctor_diagnostics calls doctor_capability_report(probe_gateway=_doctor_capability_gateway_probe()). (4) New tests in tests/test_doctor_capability_gateway_probe.py, no network: a healthy fake probe makes gateway.inventory and gateway.execute \"covered\" with selected_provider_id \"gateway.omniroute\" and health \"healthy\"; an unreachable fake keeps them not covered; the doctor probe maps a reachable GatewayHealth to health_ok True, an unreachable one to health_ok False with its detail as reason, a BootstrapError to its reason_code, and another provider id to \"not probed by doctor\" (monkeypatch verdict.doctor_diagnostics._cli_bootstrap and _gateway_probe_for). (5) An OpenSpec change openspec/changes/doctor-capability-gateway-probe that passes `openspec validate doctor-capability-gateway-probe --strict`.\nTest command: python -m pytest -q -p no:cacheprovider tests/test_doctor_capability_gateway_probe.py tests/test_capability_bootstrap.py tests/test_doctor_gateway_probe_key.py\n\n\nOPENSPEC SKELETON (for node probe_spec). The planner MUST copy everything between BEGIN and END verbatim into probe_spec's objective. probe_spec writes these five files with exactly this structure: keep every heading, label, bullet form and line order; you may expand the prose under each heading to describe the change accurately, and keep the Requirement header lines free of SHALL.\nBEGIN SKELETON\n=== FILE openspec/changes/doctor-capability-gateway-probe/.openspec.yaml ===\nschema: verdict-change-v1\n\n=== FILE openspec/changes/doctor-capability-gateway-probe/proposal.md ===\n# Proposal: doctor capability gateway probe\n\n## Why\nverdict doctor reports gateway capabilities as DEGRADED because the capability report never probes the gateway.\n\n## What Changes\n- doctor passes a real gateway probe into doctor_capability_report.\n\n## Capabilities\n\n### New Capabilities\n- `doctor-capability-gateway-probe`: doctor probes the configured gateway for capability coverage.\n\n### Modified Capabilities\n\n## Impact\nverdict/capability_bootstrap.py, verdict/doctor_diagnostics.py and one test file.\n\n## Acceptance criteria\n1. With a healthy fake probe, gateway capabilities are covered.\n2. With an unreachable fake probe, they stay not covered.\n\n## Evidence boundary\n- KNOWN: the default probe is a plan-mode stub.\n- INFERRED: a healthy gateway is reported DEGRADED today.\n- NOT AVAILABLE: live doctor output after the fix.\n\n=== FILE openspec/changes/doctor-capability-gateway-probe/design.md ===\n# Design\n\n## Context\nThe doctor capability report uses a stub probe.\n\n## Goals / Non-Goals\nGoal: probe the gateway. Non-goal: change run_bootstrap.\n\n## Decisions\nPass a probe callable through doctor_capability_report.\n\n## Risks / Trade-offs\nA probe error must never crash doctor.\n\n### Security / trust implications\nThe endpoint and detail are redacted; the key is never returned.\n\n### Routing / context / memory implications\nNone: diagnostics only.\n\n### Migration / rollback\nRevert the commit; no data migration.\n\n### ADR impact\nNone: no architectural change.\n\n=== FILE openspec/changes/doctor-capability-gateway-probe/specs/doctor-capability-gateway-probe/spec.md ===\n# Spec Delta\n\n## Purpose\nDoctor probes the gateway for capability coverage.\n\n## ADDED Requirements\n\n### Requirement: Doctor gateway probe\nDoctor SHALL pass a gateway probe into the capability report.\n\n#### Scenario: Healthy gateway\n- **WHEN** the fake probe reports the gateway reachable\n- **THEN** gateway capabilities are covered\n\n=== FILE openspec/changes/doctor-capability-gateway-probe/tasks.md ===\n# Tasks\n\n## 1. bootstrap_fix\nOwner: bootstrap_fix\nVerify: python -m pytest -q tests/test_capability_bootstrap.py\n- [x] 1.1 Add probe_gateway to doctor_capability_report and pass it to run_bootstrap\n\n## 2. diagnostics_fix\nOwner: diagnostics_fix\nVerify: python -m pytest -q tests/test_doctor_capability_gateway_probe.py\n- [x] 2.1 Add _doctor_capability_gateway_probe and wire it into _collect_doctor_diagnostics\n\n## 3. probe_spec\nOwner: probe_spec\nVerify: openspec validate doctor-capability-gateway-probe --strict\n- [x] 3.1 Write the OpenSpec change\n\nEND SKELETON",
+  "topology": "PARALLEL_WORK_UNITS",
+  "rationale": [
+    "nodes=4 implement_nodes=3 risk_hint=medium risks=['low', 'medium']",
+    "layers=3 widest_layer=2",
+    "decision=PARALLEL_WORK_UNITS: 3 implement nodes, widest_layer=2 -> max_parallel=min(3,2)=2"
+  ],
+  "max_parallel": 1,
+  "nodes": [
+    {
+      "node_id": "bootstrap_fix",
+      "objective": "Edit ONLY verdict/capability_bootstrap.py, using one FILE block that contains two minimal SEARCH/REPLACE pairs. Do not touch any other code. Do NOT edit run_bootstrap, which already accepts probe_gateway. GatewayProbe is already defined in this module, so add no import.\n\nBACKGROUND: doctor_capability_report() calls run_bootstrap() without probe_gateway. discover_providers() therefore falls back to _default_gateway_probe, a plan-mode stub that always returns health_ok False. As a result, gateway.inventory and gateway.execute show DEGRADED with health null even when the gateway is healthy.\n\nCHANGE 1a (function signature): the function is defined at module scope with no indentation. Copy these SEARCH lines verbatim:\nSEARCH> def doctor_capability_report(\nSEARCH>     *,\nSEARCH>     providers: Sequence[DiscoveredProvider] | None = None,\nSEARCH>     registry: SemanticCapabilityRegistry | None = None,\nSEARCH> ) -> dict[str, object]:\nREPLACE with the same lines plus a new keyword-only parameter on the line after registry:\nREPLACE> def doctor_capability_report(\nREPLACE>     *,\nREPLACE>     providers: Sequence[DiscoveredProvider] | None = None,\nREPLACE>     registry: SemanticCapabilityRegistry | None = None,\nREPLACE>     probe_gateway: GatewayProbe | None = None,\nREPLACE> ) -> dict[str, object]:\n\nCHANGE 1b (pass the probe through): immediately inside doctor_capability_report is the call `report = run_bootstrap(`. Its argument line has an 8-space indent and is one line:\nSEARCH>         providers=providers, mode=BootstrapMode.PLAN, non_interactive=True, registry=registry\nReplace it with one argument per line, keeping the 8-space indent:\nREPLACE>         providers=providers,\nREPLACE>         mode=BootstrapMode.PLAN,\nREPLACE>         non_interactive=True,\nREPLACE>         registry=registry,\nREPLACE>         probe_gateway=probe_gateway,\nKeep the closing paren and any trailing lines unchanged. The default behaviour (probe_gateway=None) must stay identical. Keep ruff clean, line length 100, and mypy --strict type hints.",
+      "kind": "implement",
+      "story": "doctor-capability-gateway-probe: let doctor_capability_report accept and forward a real gateway probe instead of always using the plan-mode stub.",
+      "depends_on": [],
+      "owned_files": [
+        "verdict/capability_bootstrap.py",
+        "tests/test_capability_bootstrap.py"
+      ],
+      "required_context": [
+        "verdict/capability_bootstrap.py",
+        "tests/test_capability_bootstrap.py"
+      ],
+      "acceptance": [
+        "doctor_capability_report has keyword-only parameter probe_gateway: GatewayProbe | None = None",
+        "run_bootstrap is called with probe_gateway=probe_gateway",
+        "default behaviour unchanged; tests/test_capability_bootstrap.py passes",
+        "ruff clean"
+      ],
+      "verification_command": [
+        "sh",
+        "-c",
+        "python -c \"import inspect,sys; from verdict.capability_bootstrap import doctor_capability_report as f; sys.exit(0 if 'probe_gateway' in inspect.signature(f).parameters else 'MISSING CHANGE 1a')\" && python -m ruff check verdict/capability_bootstrap.py && python -m pytest -q -p no:cacheprovider tests/test_capability_bootstrap.py"
+      ],
+      "barrier": "",
+      "risk": "low",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": false,
+      "min_context_tokens": 32000
+    },
+    {
+      "node_id": "diagnostics_fix",
+      "objective": "You own verdict/doctor_diagnostics.py, which gets ONE FILE block with two minimal SEARCH/REPLACE pairs. You also own the new tests/test_doctor_capability_gateway_probe.py. Prerequisite already done by bootstrap_fix: verdict.capability_bootstrap.doctor_capability_report(*, providers=None, registry=None, probe_gateway: GatewayProbe | None = None) forwards probe_gateway to run_bootstrap. Never print or return the API key, and never write host paths, credentialed URLs or real keys.\n\nCHANGE 2 (new function). Anchor on this module-level constant and insert the function above it:\nSEARCH> DOCTOR_GATEWAY_TIMEOUT_ENV = \"VERDICT_DOCTOR_GATEWAY_TIMEOUT_S\"\nREPLACE> def _doctor_capability_gateway_probe() -> Callable[[str], dict[str, Any]]:\nREPLACE>     ...full body...\nREPLACE>\nREPLACE>\nREPLACE> DOCTOR_GATEWAY_TIMEOUT_ENV = \"VERDICT_DOCTOR_GATEWAY_TIMEOUT_S\"\n\nBehaviour: the function returns an inner function `_probe(provider_id: str) -> dict[str, Any]`.\n- Any provider_id other than \"gateway.omniroute\" returns {\"reachable\": False, \"health_ok\": False, \"reason\": \"not probed by doctor\"}.\n- For \"gateway.omniroute\", import lazily inside the function: `from verdict.provider_bootstrap import BootstrapError, redact_url`. Then, inside try:\n  - bootstrap = _cli_bootstrap()\n  - if not bootstrap.gateway_url, return {\"reachable\": False, \"health_ok\": False, \"reason\": \"no gateway url\"}\n  - health = _gateway_probe_for(bootstrap)(bootstrap.gateway_url)\n- except BootstrapError as exc: return {\"reachable\": False, \"health_ok\": False, \"reason\": exc.reason_code or \"no gateway url\"}.\n- except Exception as exc: return {\"reachable\": False, \"health_ok\": False, \"reason\": f\"probe error: {type(exc).__name__}\"}. Never include the message, so doctor never crashes. Add `# noqa: BLE001` only if ruff flags it.\n- On success, with reachable = bool(health.reachable), return {\"reachable\": reachable, \"health_ok\": reachable, \"reason\": redact_url(health.detail) if health.detail else (\"gateway healthy\" if reachable else \"gateway did not answer\"), \"endpoint\": redact_url(bootstrap.gateway_url)}.\n- _cli_bootstrap and _gateway_probe_for must be looked up as module globals at call time so monkeypatching works.\n- Callable and Any: reuse the existing imports in the module. Add `from collections.abc import Callable` / `from typing import Any` only if they are missing. Add no other imports.\n\nCHANGE 3 (call site). Inside _collect_doctor_diagnostics, find the line (4-space indent):\nSEARCH>     capability_report = doctor_capability_report()\nREPLACE>     capability_report = doctor_capability_report(probe_gateway=_doctor_capability_gateway_probe())\nKeep this exact text; verification greps for it.\n\nTESTS: create tests/test_doctor_capability_gateway_probe.py. No network and no real ~/.verdict: use monkeypatch to point HOME and any VERDICT home env vars at tmp_path. Always monkeypatch verdict.doctor_diagnostics._cli_bootstrap to return types.SimpleNamespace(gateway_url=\"http://127.0.0.1:20128/v1\") or a similar fake. Always monkeypatch verdict.doctor_diagnostics._gateway_probe_for to return `lambda url: health`. Build health with GatewayHealth from verdict.gateway_lifecycle, as GatewayHealth(reachable=..., responded=..., detail=...); supply other required fields if the dataclass needs them. Build BootstrapError as `BootstrapError(\"reason_code\", (BootstrapDiagnostic(code=\"reason_code\", diagnostic_class=\"gateway_health\", field=\"gateway_url\", detail=\"probe failed\", remediation=\"check gateway url\"),))`, importing both from verdict.provider_bootstrap. diagnostic_class is a plain string. Read _collect_doctor_diagnostics and tests/test_capability_bootstrap.py to learn the call signature and where the capability report and its per-capability entries (status covered, selected_provider_id, health) appear in the output. Also check what discover_providers needs to discover gateway.omniroute (for example a gateway URL env or config), and set that up via monkeypatch or tmp files only.\n\nRequired tests:\n1. test_healthy_fake_probe_marks_gateway_capabilities_covered: call _collect_doctor_diagnostics with a reachable GatewayHealth. Assert gateway.inventory and gateway.execute are \"covered\" with selected_provider_id \"gateway.omniroute\" and health \"healthy\".\n2. test_unreachable_fake_probe_keeps_gateway_capabilities_not_covered: call _collect_doctor_diagnostics with reachable=False. Assert both are not covered. Tests 1 and 2 MUST call _collect_doctor_diagnostics, never doctor_capability_report directly.\n3. test_doctor_probe_reachable_maps_health_ok_true: _doctor_capability_gateway_probe()(\"gateway.omniroute\") has health_ok True and reachable True. Assert no key or secret appears in the returned values.\n4. test_doctor_probe_unreachable_uses_detail_as_reason: detail \"connection refused\" gives health_ok False and reason \"connection refused\".\n5. test_doctor_probe_bootstrap_error_uses_reason_code: _cli_bootstrap raises the BootstrapError above, giving reason \"reason_code\".\n6. test_doctor_probe_other_provider_not_probed: \"other.provider\" gives reason \"not probed by doctor\".\n7. test_doctor_probe_os_error_reports_probe_error: _cli_bootstrap raises OSError(\"boom\"), giving reason \"probe error: OSError\" with \"boom\" absent.\n8. test_doctor_probe_redacts_userinfo_in_detail: detail \"failed http://user:pw@gateway.invalid/v1\" gives a reason that does not contain \"user:pw\".\n\nIf a test reports 'probe error: X', your code raised X; fix the code or the fakes. Keep ruff clean, line length 100, and full type hints (mypy --strict).",
+      "kind": "implement",
+      "story": "doctor-capability-gateway-probe: doctor feeds its real authenticated gateway probe into the capability report, so a healthy OmniRoute gateway makes gateway.inventory and gateway.execute covered.",
+      "depends_on": [
+        "bootstrap_fix"
+      ],
+      "owned_files": [
+        "verdict/doctor_diagnostics.py",
+        "tests/test_doctor_capability_gateway_probe.py"
+      ],
+      "required_context": [
+        "verdict/doctor_diagnostics.py",
+        "verdict/capability_bootstrap.py",
+        "verdict/provider_bootstrap.py",
+        "verdict/gateway_lifecycle.py",
+        "tests/test_capability_bootstrap.py",
+        "tests/test_doctor_gateway_probe_key.py"
+      ],
+      "acceptance": [
+        "_doctor_capability_gateway_probe exists with signature () -> Callable[[str], dict[str, Any]] and maps outcomes as specified",
+        "_collect_doctor_diagnostics calls doctor_capability_report(probe_gateway=_doctor_capability_gateway_probe())",
+        "API key is never printed or returned; endpoint and detail are redacted",
+        "all 8 named tests pass without network",
+        "ruff clean"
+      ],
+      "verification_command": [
+        "sh",
+        "-c",
+        "python -c \"import re,sys; s=open('verdict/doctor_diagnostics.py').read(); sys.exit(0 if re.search(r'doctor_capability_report\\(\\s*probe_gateway=_doctor_capability_gateway_probe\\(\\)', s) else 'MISSING CHANGE 3 call site')\" && python -m ruff check verdict/doctor_diagnostics.py tests/test_doctor_capability_gateway_probe.py && python -m pytest -q -p no:cacheprovider tests/test_doctor_capability_gateway_probe.py"
+      ],
+      "barrier": "",
+      "risk": "medium",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": false,
+      "min_context_tokens": 32000
+    },
+    {
+      "node_id": "probe_spec",
+      "objective": "Write ONLY the five OpenSpec files under openspec/changes/doctor-capability-gateway-probe/. bootstrap_fix and diagnostics_fix do the code, so do not block on unowned code and do not edit any code.\n\nBehaviour to describe:\n- verdict doctor reported gateway.inventory and gateway.execute as DEGRADED with health null on machines whose OmniRoute gateway is healthy. The cause is that doctor_capability_report() ran run_bootstrap() without probe_gateway, so discover_providers() used _default_gateway_probe, a plan-mode stub that always returns health_ok False.\n- The fix adds a keyword argument probe_gateway: GatewayProbe | None = None to doctor_capability_report, which passes it to run_bootstrap. The default behaviour is unchanged.\n- verdict/doctor_diagnostics.py gains _doctor_capability_gateway_probe(). It uses _cli_bootstrap() and _gateway_probe_for(bootstrap) for \"gateway.omniroute\" and returns reachable, health_ok, a redacted reason and a redacted endpoint. A BootstrapError gives its reason_code. Other exceptions give 'probe error: <type>'. Other providers give 'not probed by doctor'. The API key is never returned.\n- _collect_doctor_diagnostics passes this probe.\n- Tests live in tests/test_doctor_capability_gateway_probe.py.\n\nCopy the skeleton below exactly. Each '=== FILE path ===' line marks a file; do not write those marker lines into the files. Keep every heading, label, bullet form and line order. You may expand the prose under each heading to describe the change accurately. Keep the Requirement header lines free of SHALL. The line right after each Requirement header must be one sentence containing SHALL, followed by a '#### Scenario:' with '- **WHEN**'/'- **THEN**' bullets. Keep '### Modified Capabilities' empty. Keep every task '- [x]'. Never write host paths, credentialed URLs or keys.\n\nBEGIN SKELETON\n=== FILE openspec/changes/doctor-capability-gateway-probe/.openspec.yaml ===\nschema: verdict-change-v1\n\n=== FILE openspec/changes/doctor-capability-gateway-probe/proposal.md ===\n# Proposal: doctor capability gateway probe\n\n## Why\nverdict doctor reports gateway capabilities as DEGRADED because the capability report never probes the gateway.\n\n## What Changes\n- doctor passes a real gateway probe into doctor_capability_report.\n\n## Capabilities\n\n### New Capabilities\n- `doctor-capability-gateway-probe`: doctor probes the configured gateway for capability coverage.\n\n### Modified Capabilities\n\n## Impact\nverdict/capability_bootstrap.py, verdict/doctor_diagnostics.py and one test file.\n\n## Acceptance criteria\n1. With a healthy fake probe, gateway capabilities are covered.\n2. With an unreachable fake probe, they stay not covered.\n\n## Evidence boundary\n- KNOWN: the default probe is a plan-mode stub.\n- INFERRED: a healthy gateway is reported DEGRADED today.\n- NOT AVAILABLE: live doctor output after the fix.\n\n=== FILE openspec/changes/doctor-capability-gateway-probe/design.md ===\n# Design\n\n## Context\nThe doctor capability report uses a stub probe.\n\n## Goals / Non-Goals\nGoal: probe the gateway. Non-goal: change run_bootstrap.\n\n## Decisions\nPass a probe callable through doctor_capability_report.\n\n## Risks / Trade-offs\nA probe error must never crash doctor.\n\n### Security / trust implications\nThe endpoint and detail are redacted; the key is never returned.\n\n### Routing / context / memory implications\nNone: diagnostics only.\n\n### Migration / rollback\nRevert the commit; no data migration.\n\n### ADR impact\nNone: no architectural change.\n\n=== FILE openspec/changes/doctor-capability-gateway-probe/specs/doctor-capability-gateway-probe/spec.md ===\n# Spec Delta\n\n## Purpose\nDoctor probes the gateway for capability coverage.\n\n## ADDED Requirements\n\n### Requirement: Doctor gateway probe\nDoctor SHALL pass a gateway probe into the capability report.\n\n#### Scenario: Healthy gateway\n- **WHEN** the fake probe reports the gateway reachable\n- **THEN** gateway capabilities are covered\n\n=== FILE openspec/changes/doctor-capability-gateway-probe/tasks.md ===\n# Tasks\n\n## 1. bootstrap_fix\nOwner: bootstrap_fix\nVerify: python -m pytest -q tests/test_capability_bootstrap.py\n- [x] 1.1 Add probe_gateway to doctor_capability_report and pass it to run_bootstrap\n\n## 2. diagnostics_fix\nOwner: diagnostics_fix\nVerify: python -m pytest -q tests/test_doctor_capability_gateway_probe.py\n- [x] 2.1 Add _doctor_capability_gateway_probe and wire it into _collect_doctor_diagnostics\n\n## 3. probe_spec\nOwner: probe_spec\nVerify: openspec validate doctor-capability-gateway-probe --strict\n- [x] 3.1 Write the OpenSpec change\n\nEND SKELETON",
+      "kind": "implement",
+      "story": "doctor-capability-gateway-probe: OpenSpec change documenting that doctor passes its real gateway probe into the capability report.",
+      "depends_on": [],
+      "owned_files": [
+        "openspec/changes/doctor-capability-gateway-probe/.openspec.yaml",
+        "openspec/changes/doctor-capability-gateway-probe/proposal.md",
+        "openspec/changes/doctor-capability-gateway-probe/design.md",
+        "openspec/changes/doctor-capability-gateway-probe/specs/doctor-capability-gateway-probe/spec.md",
+        "openspec/changes/doctor-capability-gateway-probe/tasks.md"
+      ],
+      "required_context": [
+        "docs/openspec/LIFECYCLE.md",
+        "verdict/openspec_vendor/validate_openspec_change.py"
+      ],
+      "acceptance": [
+        "five files written with skeleton structure intact",
+        "openspec validate doctor-capability-gateway-probe --strict passes",
+        "vendor validator passes",
+        "no unchecked tasks in tasks.md"
+      ],
+      "verification_command": [
+        "sh",
+        "-c",
+        "openspec validate doctor-capability-gateway-probe --strict --no-interactive && python verdict/openspec_vendor/validate_openspec_change.py openspec/changes/doctor-capability-gateway-probe && ! grep -q -- '- \\[ \\]' openspec/changes/doctor-capability-gateway-probe/tasks.md"
+      ],
+      "barrier": "",
+      "risk": "low",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": true,
+      "reasoning": false,
+      "min_context_tokens": 32000
+    },
+    {
+      "node_id": "integrate",
+      "objective": "Integrate the outputs of bootstrap_fix, diagnostics_fix and probe_spec. Run the combined test suite and confirm it passes. Expected state: doctor_capability_report accepts probe_gateway and forwards it to run_bootstrap. _collect_doctor_diagnostics passes _doctor_capability_gateway_probe(). The new tests in tests/test_doctor_capability_gateway_probe.py pass without network. The OpenSpec change exists. Make no unrelated edits.",
+      "kind": "integrate",
+      "story": "doctor-capability-gateway-probe: confirm the combined change passes the capability, doctor probe and boundary suites.",
+      "depends_on": [
+        "bootstrap_fix",
+        "diagnostics_fix",
+        "probe_spec"
+      ],
+      "owned_files": [],
+      "required_context": [
+        "verdict/capability_bootstrap.py",
+        "verdict/doctor_diagnostics.py",
+        "tests/test_doctor_capability_gateway_probe.py"
+      ],
+      "acceptance": [
+        "combined pytest suite passes"
+      ],
+      "verification_command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "tests/test_doctor_capability_gateway_probe.py",
+        "tests/test_capability_bootstrap.py",
+        "tests/test_doctor_gateway_probe_key.py",
+        "tests/test_actions_boundary.py"
+      ],
+      "barrier": "integration",
+      "risk": "low",
+      "required_capabilities": [
+        "tools"
+      ],
+      "coding": false,
+      "reasoning": false,
+      "min_context_tokens": 32000
+    }
+  ],
+  "run_id": "20261120T113919Z"
+}

@@ -1,0 +1,155 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "verdict-omniroute",
+    "model": "cc/claude-sonnet-5-5"
+  },
+  "message": "Review complete: 0 finding(s) across 4 selected item(s).",
+  "summary": {
+    "files_reviewed": 4,
+    "comments": 0,
+    "total_tokens": 85457,
+    "input_tokens": 82222,
+    "output_tokens": 3235,
+    "cache_read_tokens": 56182,
+    "cache_write_tokens": 20770,
+    "elapsed": "24s"
+  },
+  "tool_calls": {
+    "total": 8,
+    "by_tool": {
+      "code_search": 5,
+      "file_read": 3
+    },
+    "failure": 5,
+    "failure_by_tool": {
+      "code_search": 5
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 1,
+        "tool_name": "code_search",
+        "file_path": "openspec/changes/doctor-capability-gateway-probe/.openspec.yaml,tests/test_doctor_capability_gateway_probe.py,verdict/capability_bootstrap.py,verdict/doctor_diagnostics.py",
+        "arguments": "{\"search_text\":\"^import re|^from collections.abc import|^from typing import|^from __future__|Callable\",\"file_patterns\":[\"verdict/doctor_diagnostics.py\"],\"use_perl_regexp\":true}",
+        "error": "git grep failed: exit status 129: error: unknown option `max-count'"
+      },
+      {
+        "tool_call_number": 2,
+        "tool_name": "code_search",
+        "file_path": "openspec/changes/doctor-capability-gateway-probe/.openspec.yaml,tests/test_doctor_capability_gateway_probe.py,verdict/capability_bootstrap.py,verdict/doctor_diagnostics.py",
+        "arguments": "{\"search_text\":\"GatewayProbe\",\"file_patterns\":[\"verdict/capability_bootstrap.py\"]}",
+        "error": "git grep failed: exit status 129: error: unknown option `max-count'"
+      },
+      {
+        "tool_call_number": 3,
+        "tool_name": "code_search",
+        "file_path": "openspec/changes/doctor-capability-gateway-probe/.openspec.yaml,tests/test_doctor_capability_gateway_probe.py,verdict/capability_bootstrap.py,verdict/doctor_diagnostics.py",
+        "arguments": "{\"search_text\":\"def redact_url\",\"file_patterns\":[\"verdict/provider_bootstrap.py\"]}",
+        "error": "git grep failed: exit status 129: error: unknown option `max-count'"
+      },
+      {
+        "tool_call_number": 4,
+        "tool_name": "code_search",
+        "file_path": "openspec/changes/doctor-capability-gateway-probe/.openspec.yaml,tests/test_doctor_capability_gateway_probe.py,verdict/capability_bootstrap.py,verdict/doctor_diagnostics.py",
+        "arguments": "{\"search_text\":\"class GatewayHealth\",\"file_patterns\":[\"verdict/gateway_lifecycle.py\"]}",
+        "error": "git grep failed: exit status 129: error: unknown option `max-count'"
+      },
+      {
+        "tool_call_number": 7,
+        "tool_name": "code_search",
+        "file_path": "openspec/changes/doctor-capability-gateway-probe/.openspec.yaml,tests/test_doctor_capability_gateway_probe.py,verdict/capability_bootstrap.py,verdict/doctor_diagnostics.py",
+        "arguments": "{\"search_text\":\"GatewayProbe\",\"file_patterns\":[\"verdict/capability_bootstrap.py\"]}",
+        "error": "git grep failed: exit status 129: error: unknown option `max-count'"
+      }
+    ]
+  },
+  "comments": [],
+  "groups": [
+    {
+      "label": "Doctor capability gateway probe feature (spec, implementation, tests)",
+      "files": [
+        "openspec/changes/doctor-capability-gateway-probe/.openspec.yaml",
+        "tests/test_doctor_capability_gateway_probe.py",
+        "verdict/capability_bootstrap.py",
+        "verdict/doctor_diagnostics.py"
+      ]
+    }
+  ],
+  "session_id": "e5750013-dcfd-4f21-a513-cbc4ce2c5163",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "e5750013-dcfd-4f21-a513-cbc4ce2c5163",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "e3c724cb464d100f057412f94389b5bb89a4c2efdde808dfe540dafc6d642ff0"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "2c85357ffe339e4363c018d4576b99a501520d8d",
+      "requested_head": "1dd58fe2b10d2b656b92bfb7465a588d3de6bdea",
+      "resolved_base": "2c85357ffe339e4363c018d4576b99a501520d8d",
+      "resolved_head": "1dd58fe2b10d2b656b92bfb7465a588d3de6bdea",
+      "exact_range": "2c85357ffe339e4363c018d4576b99a501520d8d..1dd58fe2b10d2b656b92bfb7465a588d3de6bdea",
+      "source_artifact_sha256": "14011fa39b5f839aff61e420e6f7f30f116c524c9011527fed1b894c4779d8b1"
+    },
+    "execution": {
+      "ocr_version": "v1.12.9",
+      "provider": "verdict-omniroute",
+      "model": "cc/claude-sonnet-5-5",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "022e92518dfb76801a564bddd1a77d7b9cd19302532107df3cfdc7a667a9ab74",
+      "runtime_config_sha256": "766e2265f2989e20cfd7030526e29d876d5e0495f6d2f8f81a52a330d64f80ee"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "062bbe96cd59d8110d2084c2b1f73a5389b9489fdc007e7a6fb94cb692d9bf40",
+          "path": "verdict/doctor_diagnostics.py",
+          "fingerprint": "7e3970c7afc5fcfa966cfc8f447dec7ad644f36c608b17eecd49abf2edf5566a"
+        },
+        {
+          "item_id": "c0633ac3290d039f44b2d15e6ee45da586c5a19ce0d8bcf5c5b034a96ab887c1",
+          "path": "openspec/changes/doctor-capability-gateway-probe/.openspec.yaml",
+          "fingerprint": "75c7e1c6c23b070efe096fa6c7f7edff0cdc102499b422c8bca4768120f30a83"
+        },
+        {
+          "item_id": "ee7d451f3e2d548f3c19b9217ddf80f8bb486ffd70b22df2776063ba325edfa3",
+          "path": "verdict/capability_bootstrap.py",
+          "fingerprint": "b1b816ce204288e6042737f47faa438e54c7551a6e99c0129559d045d944099a"
+        },
+        {
+          "item_id": "faaf2ae7c94d8202c0459f7366dbc1881c31e23b60abace66b6c9ca9bddd7210",
+          "path": "tests/test_doctor_capability_gateway_probe.py",
+          "fingerprint": "30124a127b35b5e03caf628db48059a22060b06f832f787cb3e2b5c78471b337"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "062bbe96cd59d8110d2084c2b1f73a5389b9489fdc007e7a6fb94cb692d9bf40",
+          "path": "verdict/doctor_diagnostics.py",
+          "fingerprint": "7e3970c7afc5fcfa966cfc8f447dec7ad644f36c608b17eecd49abf2edf5566a"
+        },
+        {
+          "item_id": "c0633ac3290d039f44b2d15e6ee45da586c5a19ce0d8bcf5c5b034a96ab887c1",
+          "path": "openspec/changes/doctor-capability-gateway-probe/.openspec.yaml",
+          "fingerprint": "75c7e1c6c23b070efe096fa6c7f7edff0cdc102499b422c8bca4768120f30a83"
+        },
+        {
+          "item_id": "ee7d451f3e2d548f3c19b9217ddf80f8bb486ffd70b22df2776063ba325edfa3",
+          "path": "verdict/capability_bootstrap.py",
+          "fingerprint": "b1b816ce204288e6042737f47faa438e54c7551a6e99c0129559d045d944099a"
+        },
+        {
+          "item_id": "faaf2ae7c94d8202c0459f7366dbc1881c31e23b60abace66b6c9ca9bddd7210",
+          "path": "tests/test_doctor_capability_gateway_probe.py",
+          "fingerprint": "30124a127b35b5e03caf628db48059a22060b06f832f787cb3e2b5c78471b337"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 24230
+  }
+}

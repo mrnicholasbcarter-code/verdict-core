@@ -1,0 +1,395 @@
+diff --git a/openspec/changes/doctor-capability-gateway-probe/.openspec.yaml b/openspec/changes/doctor-capability-gateway-probe/.openspec.yaml
+new file mode 100644
+index 00000000..117277b8
+--- /dev/null
++++ b/openspec/changes/doctor-capability-gateway-probe/.openspec.yaml
+@@ -0,0 +1 @@
++schema: verdict-change-v1
+diff --git a/openspec/changes/doctor-capability-gateway-probe/design.md b/openspec/changes/doctor-capability-gateway-probe/design.md
+new file mode 100644
+index 00000000..46de34bb
+--- /dev/null
++++ b/openspec/changes/doctor-capability-gateway-probe/design.md
+@@ -0,0 +1,25 @@
++# Design
++
++## Context
++The doctor capability report uses a stub probe. doctor_capability_report() calls run_bootstrap() with no probe_gateway, so discover_providers() uses _default_gateway_probe. That function always reports health_ok False. Doctor already has a real authenticated gateway probe, built from _cli_bootstrap() and _gateway_probe_for(bootstrap) and used by _doctor_gateway_lifecycle. The capability report does not use it.
++
++## Goals / Non-Goals
++Goal: probe the gateway. The capability report should reflect the real gateway health result that doctor already computes. Non-goal: change run_bootstrap. run_bootstrap, discover_providers and the default plan-mode probe keep their current behaviour for every caller that does not pass a probe.
++
++## Decisions
++Pass a probe callable through doctor_capability_report. The function gains a keyword-only-style argument probe_gateway: GatewayProbe | None = None and forwards it to run_bootstrap(probe_gateway=...). _doctor_capability_gateway_probe() in verdict/doctor_diagnostics.py returns a callable that takes a provider_id. For "gateway.omniroute" it resolves the bootstrap and calls the existing gateway probe. It returns a dict with reachable, health_ok (equal to reachable), a reason, and the endpoint redacted with redact_url. The reason is the health detail, or "gateway healthy" / "gateway did not answer" when there is no detail. A BootstrapError maps to its reason_code. A missing gateway URL maps to "no gateway url". Any other exception maps to "probe error: <type>". Other provider ids map to "not probed by doctor". _collect_doctor_diagnostics wires the probe in.
++
++## Risks / Trade-offs
++A probe error must never crash doctor. Every failure path returns reachable False and health_ok False with a short reason, so the capability stays not covered instead of raising. The trade-off is one extra gateway health request during doctor, reusing the probe that doctor already runs.
++
++### Security / trust implications
++The endpoint and detail are redacted; the key is never returned. The probe result contains only reachability, a reason string and the redacted endpoint. The API key and credentialed URLs are never printed or included in the report.
++
++### Routing / context / memory implications
++None: diagnostics only. Routing, admission and memory do not consume this probe.
++
++### Migration / rollback
++Revert the commit; no data migration. The new argument defaults to None, so other callers keep working unchanged.
++
++### ADR impact
++None: no architectural change. The change reuses an existing probe through an existing injection point.
+diff --git a/openspec/changes/doctor-capability-gateway-probe/proposal.md b/openspec/changes/doctor-capability-gateway-probe/proposal.md
+new file mode 100644
+index 00000000..0f46d3c1
+--- /dev/null
++++ b/openspec/changes/doctor-capability-gateway-probe/proposal.md
+@@ -0,0 +1,26 @@
++# Proposal: doctor capability gateway probe
++
++## Why
++verdict doctor reports gateway capabilities as DEGRADED because the capability report never probes the gateway. doctor_capability_report() runs run_bootstrap() without a probe_gateway argument. As a result, discover_providers() falls back to _default_gateway_probe. That function is a setup plan-mode stub that never contacts the gateway and always returns health_ok False with the reason "endpoint configured but not live-certified". So gateway.inventory and gateway.execute show DEGRADED with health null, even on machines whose OmniRoute gateway is healthy.
++
++## What Changes
++- doctor passes a real gateway probe into doctor_capability_report. doctor_capability_report gains a keyword argument probe_gateway: GatewayProbe | None = None and passes it to run_bootstrap(probe_gateway=...). When the argument is omitted, the default behaviour is unchanged. verdict/doctor_diagnostics.py gains _doctor_capability_gateway_probe(). For provider "gateway.omniroute" it resolves _cli_bootstrap() and calls _gateway_probe_for(bootstrap)(bootstrap.gateway_url). It returns reachable, health_ok, a redacted reason and a redacted endpoint. A BootstrapError returns its reason_code, and a missing gateway URL returns "no gateway url". Any other exception returns "probe error: <type>". Other providers return "not probed by doctor". _collect_doctor_diagnostics passes this probe to doctor_capability_report.
++
++## Capabilities
++
++### New Capabilities
++- `doctor-capability-gateway-probe`: doctor probes the configured gateway for capability coverage, using the same authenticated probe as the doctor gateway lifecycle check.
++
++### Modified Capabilities
++
++## Impact
++verdict/capability_bootstrap.py, verdict/doctor_diagnostics.py and one test file, tests/test_doctor_capability_gateway_probe.py. The tests use fake probes and monkeypatched bootstrap helpers, so they need no network access.
++
++## Acceptance criteria
++1. With a healthy fake probe, gateway capabilities are covered. gateway.inventory and gateway.execute report selected_provider_id "gateway.omniroute" and health "healthy".
++2. With an unreachable fake probe, they stay not covered. The doctor probe maps an unreachable GatewayHealth to health_ok False with its detail as the reason. It maps a BootstrapError to its reason_code and any other provider to "not probed by doctor".
++
++## Evidence boundary
++- KNOWN: the default probe is a plan-mode stub that always returns health_ok False without contacting the gateway.
++- INFERRED: a healthy gateway is reported DEGRADED today, because the capability report never receives a real probe result.
++- NOT AVAILABLE: live doctor output after the fix; verification here uses fake probes only.
+diff --git a/openspec/changes/doctor-capability-gateway-probe/specs/doctor-capability-gateway-probe/spec.md b/openspec/changes/doctor-capability-gateway-probe/specs/doctor-capability-gateway-probe/spec.md
+new file mode 100644
+index 00000000..d504215e
+--- /dev/null
++++ b/openspec/changes/doctor-capability-gateway-probe/specs/doctor-capability-gateway-probe/spec.md
+@@ -0,0 +1,13 @@
++# Spec Delta
++
++## Purpose
++Doctor probes the gateway for capability coverage, so a healthy OmniRoute gateway is not reported as DEGRADED by the plan-mode stub probe.
++
++## ADDED Requirements
++
++### Requirement: Doctor gateway probe
++Doctor SHALL pass a gateway probe into the capability report so gateway capability coverage reflects the real redacted gateway health result.
++
++#### Scenario: Healthy gateway
++- **WHEN** the fake probe reports the gateway reachable
++- **THEN** gateway capabilities are covered, with gateway.inventory and gateway.execute selecting provider gateway.omniroute with health healthy
+diff --git a/openspec/changes/doctor-capability-gateway-probe/tasks.md b/openspec/changes/doctor-capability-gateway-probe/tasks.md
+new file mode 100644
+index 00000000..1b96948e
+--- /dev/null
++++ b/openspec/changes/doctor-capability-gateway-probe/tasks.md
+@@ -0,0 +1,16 @@
++# Tasks
++
++## 1. bootstrap_fix
++Owner: bootstrap_fix
++Verify: python -m pytest -q tests/test_capability_bootstrap.py
++- [x] 1.1 Add probe_gateway to doctor_capability_report and pass it to run_bootstrap
++
++## 2. diagnostics_fix
++Owner: diagnostics_fix
++Verify: python -m pytest -q tests/test_doctor_capability_gateway_probe.py
++- [x] 2.1 Add _doctor_capability_gateway_probe and wire it into _collect_doctor_diagnostics
++
++## 3. probe_spec
++Owner: probe_spec
++Verify: openspec validate doctor-capability-gateway-probe --strict
++- [x] 3.1 Write the OpenSpec change
+diff --git a/tests/test_doctor_capability_gateway_probe.py b/tests/test_doctor_capability_gateway_probe.py
+new file mode 100644
+index 00000000..4a111ab8
+--- /dev/null
++++ b/tests/test_doctor_capability_gateway_probe.py
+@@ -0,0 +1,182 @@
++"""Doctor's capability report uses doctor's real gateway probe (no network)."""
++
++from __future__ import annotations
++
++import types
++from pathlib import Path
++from typing import Any
++
++import pytest
++
++from verdict import capability_bootstrap, doctor_diagnostics
++from verdict.gateway_lifecycle import GatewayHealth
++from verdict.provider_bootstrap import BootstrapDiagnostic, BootstrapError
++
++GATEWAY_URL = "http://127.0.0.1:20128/v1"
++
++
++class _StopDoctorError(Exception):
++    """Raised after the capability report so the rest of doctor never runs."""
++
++
++def _health(reachable: bool, detail: str | None = None) -> Any:
++    try:
++        return GatewayHealth(reachable=reachable, responded=reachable, detail=detail)
++    except TypeError:
++        return types.SimpleNamespace(reachable=reachable, responded=reachable, detail=detail)
++
++
++def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++    home = tmp_path / "home"
++    home.mkdir()
++    monkeypatch.setenv("HOME", str(home))
++    monkeypatch.setenv("VERDICT_HOME", str(home / ".verdict"))
++    monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128")
++    monkeypatch.setenv("VERDICT_GATEWAY_URL", "http://127.0.0.1:20128")
++    for name in ("VERDICT_OMNIROUTE_API_KEY", "OMNIROUTE_API_KEY"):
++        monkeypatch.delenv(name, raising=False)
++    work = tmp_path / "work"
++    work.mkdir()
++    (work / "verdict.yaml").write_text("gateway_url: http://127.0.0.1:20128\n", encoding="utf-8")
++    monkeypatch.chdir(work)
++
++
++def _fake_gateway(monkeypatch: pytest.MonkeyPatch, health: Any) -> None:
++    monkeypatch.setattr(
++        doctor_diagnostics,
++        "_cli_bootstrap",
++        lambda: types.SimpleNamespace(gateway_url=GATEWAY_URL, providers={}),
++    )
++    monkeypatch.setattr(
++        doctor_diagnostics, "_gateway_probe_for", lambda bootstrap: lambda url: health
++    )
++
++
++def _report_via_doctor(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
++    captured: list[dict[str, Any]] = []
++    original = capability_bootstrap.doctor_capability_report
++
++    def _wrapper(**kwargs: Any) -> dict[str, Any]:
++        assert kwargs.get("probe_gateway") is not None
++        report = original(**kwargs)
++        captured.append(report)
++        raise _StopDoctorError
++
++    monkeypatch.setattr(capability_bootstrap, "doctor_capability_report", _wrapper)
++    with pytest.raises(_StopDoctorError):
++        doctor_diagnostics._collect_doctor_diagnostics(False, interactive=False)
++    assert captured
++    return captured[0]
++
++
++def _capability(report: dict[str, Any], name: str) -> dict[str, Any]:
++    for item in report.get("capabilities", []):
++        if not isinstance(item, dict):
++            continue
++        for key in ("capability", "capability_id", "id", "name"):
++            if item.get(key) == name:
++                return item
++    raise AssertionError(f"capability {name} missing from report")
++
++
++def test_healthy_fake_probe_marks_gateway_capabilities_covered(
++    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++) -> None:
++    _isolate(monkeypatch, tmp_path)
++    _fake_gateway(monkeypatch, _health(True))
++    report = _report_via_doctor(monkeypatch)
++    for name in ("gateway.inventory", "gateway.execute"):
++        item = _capability(report, name)
++        assert item["status"] == "covered"
++        assert item["selected_provider_id"] == "gateway.omniroute"
++        assert item["health"] == "healthy"
++
++
++def test_unreachable_fake_probe_keeps_gateway_capabilities_not_covered(
++    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++) -> None:
++    _isolate(monkeypatch, tmp_path)
++    _fake_gateway(monkeypatch, _health(False, "connection refused"))
++    report = _report_via_doctor(monkeypatch)
++    for name in ("gateway.inventory", "gateway.execute"):
++        assert _capability(report, name)["status"] != "covered"
++
++
++def test_doctor_probe_reachable_maps_health_ok_true(
++    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++) -> None:
++    _isolate(monkeypatch, tmp_path)
++    _fake_gateway(monkeypatch, _health(True))
++    result = doctor_diagnostics._doctor_capability_gateway_probe()("gateway.omniroute")
++    assert result["health_ok"] is True
++    assert result["reachable"] is True
++    assert "api_key" not in result
++    for value in result.values():
++        text = str(value).lower()
++        assert "sk-" not in text
++        assert "bearer" not in text
++
++
++def test_doctor_probe_unreachable_uses_detail_as_reason(
++    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++) -> None:
++    _isolate(monkeypatch, tmp_path)
++    _fake_gateway(monkeypatch, _health(False, "connection refused"))
++    result = doctor_diagnostics._doctor_capability_gateway_probe()("gateway.omniroute")
++    assert result["health_ok"] is False
++    assert result["reason"] == "connection refused"
++
++
++def test_doctor_probe_bootstrap_error_uses_reason_code(
++    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++) -> None:
++    _isolate(monkeypatch, tmp_path)
++    error = BootstrapError(
++        "reason_code",
++        (
++            BootstrapDiagnostic(
++                code="reason_code",
++                diagnostic_class="gateway_health",
++                field="gateway_url",
++                detail="probe failed",
++                remediation="check gateway url",
++            ),
++        ),
++    )
++
++    def _raise() -> Any:
++        raise error
++
++    monkeypatch.setattr(doctor_diagnostics, "_cli_bootstrap", _raise)
++    result = doctor_diagnostics._doctor_capability_gateway_probe()("gateway.omniroute")
++    assert result["health_ok"] is False
++    assert result["reason"] == "reason_code"
++
++
++def test_doctor_probe_other_provider_not_probed() -> None:
++    result = doctor_diagnostics._doctor_capability_gateway_probe()("other.provider")
++    assert result == {"reachable": False, "health_ok": False, "reason": "not probed by doctor"}
++
++
++def test_doctor_probe_os_error_reports_probe_error(
++    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++) -> None:
++    _isolate(monkeypatch, tmp_path)
++
++    def _raise() -> Any:
++        raise OSError("boom")
++
++    monkeypatch.setattr(doctor_diagnostics, "_cli_bootstrap", _raise)
++    result = doctor_diagnostics._doctor_capability_gateway_probe()("gateway.omniroute")
++    assert result["reason"] == "probe error: OSError"
++    assert "boom" not in str(result)
++
++
++def test_doctor_probe_redacts_userinfo_in_detail(
++    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++) -> None:
++    _isolate(monkeypatch, tmp_path)
++    _fake_gateway(monkeypatch, _health(False, "failed http://user:pw@gateway.invalid/v1"))
++    result = doctor_diagnostics._doctor_capability_gateway_probe()("gateway.omniroute")
++    assert result["health_ok"] is False
++    assert "user:pw" not in result["reason"]
+diff --git a/verdict/capability_bootstrap.py b/verdict/capability_bootstrap.py
+index 6b28bcd6..282e0b15 100644
+--- a/verdict/capability_bootstrap.py
++++ b/verdict/capability_bootstrap.py
+@@ -2010,11 +2010,16 @@ def doctor_capability_report(
+     *,
+     providers: Sequence[DiscoveredProvider] | None = None,
+     registry: SemanticCapabilityRegistry | None = None,
++    probe_gateway: GatewayProbe | None = None,
+ ) -> dict[str, object]:
+     """Capability → selected provider → authority → health for ``verdict doctor``."""
+ 
+     report = run_bootstrap(
+-        providers=providers, mode=BootstrapMode.PLAN, non_interactive=True, registry=registry
++        providers=providers,
++        mode=BootstrapMode.PLAN,
++        non_interactive=True,
++        registry=registry,
++        probe_gateway=probe_gateway,
+     )
+     active = registry if registry is not None else build_default_registry()
+     rows: list[dict[str, object]] = []
+diff --git a/verdict/doctor_diagnostics.py b/verdict/doctor_diagnostics.py
+index 3b98050e..0eb775a4 100644
+--- a/verdict/doctor_diagnostics.py
++++ b/verdict/doctor_diagnostics.py
+@@ -261,6 +261,60 @@ def _gateway_root(url: str) -> str:
+     )
+ 
+ 
++_USERINFO_RE = re.compile(r"(?<=://)[^/@\s]+@")
++
++
++def _strip_userinfo(text: str) -> str:
++    return _USERINFO_RE.sub("", text)
++
++
++def _doctor_capability_gateway_probe() -> Callable[[str], dict[str, Any]]:
++    """A capability-report gateway probe backed by doctor's authenticated probe.
++
++    Only ``gateway.omniroute`` is probed. The API key is never returned; the
++    endpoint and any detail text are redacted. A probe failure never raises.
++    """
++
++    def _probe(provider_id: str) -> dict[str, Any]:
++        if provider_id != "gateway.omniroute":
++            return {"reachable": False, "health_ok": False, "reason": "not probed by doctor"}
++        from verdict.provider_bootstrap import BootstrapError, redact_url
++
++        try:
++            bootstrap = _cli_bootstrap()
++            gateway_url = getattr(bootstrap, "gateway_url", None)
++            if not gateway_url:
++                return {"reachable": False, "health_ok": False, "reason": "no gateway url"}
++            health = _gateway_probe_for(bootstrap)(gateway_url)
++            reachable = bool(health.reachable)
++            detail = getattr(health, "detail", None)
++            if detail:
++                reason = _strip_userinfo(str(redact_url(str(detail))))
++            else:
++                reason = "gateway healthy" if reachable else "gateway did not answer"
++            endpoint = _strip_userinfo(str(redact_url(gateway_url)))
++        except BootstrapError as exc:
++            return {
++                "reachable": False,
++                "health_ok": False,
++                "reason": exc.reason_code or "no gateway url",
++            }
++        except Exception as exc:
++            return {
++                "reachable": False,
++                "health_ok": False,
++                "reason": f"probe error: {type(exc).__name__}",
++            }
++        return {
++            "reachable": reachable,
++            "health_ok": reachable,
++            "reason": reason,
++            "endpoint": endpoint,
++        }
++
++    return _probe
++
++
+ DOCTOR_GATEWAY_TIMEOUT_ENV = "VERDICT_DOCTOR_GATEWAY_TIMEOUT_S"
+ DEFAULT_DOCTOR_GATEWAY_TIMEOUT_S = 10.0
+ DOCTOR_HEALTH_TIMEOUT_ENV = "VERDICT_DOCTOR_HEALTH_TIMEOUT_S"
+@@ -632,7 +686,7 @@ def _collect_doctor_diagnostics(
+ 
+     from verdict.capability_bootstrap import doctor_capability_report
+ 
+-    capability_report = doctor_capability_report()
++    capability_report = doctor_capability_report(probe_gateway=_doctor_capability_gateway_probe())
+     diag.capability_report = capability_report
+     capabilities = capability_report.get("capabilities", [])
+     if not isinstance(capabilities, list):
