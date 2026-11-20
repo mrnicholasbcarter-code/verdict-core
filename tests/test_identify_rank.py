@@ -732,11 +732,18 @@ class TestShippedMapJoinsDotIdRatings:
     twin holds a score; the explicit map takes precedence and is preferred.
     """
 
-    DOT_TARGETS: ClassVar[dict[str, tuple[str, float]]] = {
-        "cc/claude-opus-5-5": ("anthropic/claude-opus-5.5", 80.0),
-        "claude/claude-opus-5-5": ("anthropic/claude-opus-5.5", 80.0),
-        "cc/claude-fable-5-1": ("anthropic/claude-fable-5.1", 81.6),
-        "cc/claude-sonnet-5-5": ("anthropic/claude-sonnet-5.5", 71.5),
+    # Explicit map target (dot form) → (canonical dash id, score).
+    # The canonical id is the models.json dash record; the dot twin supplies
+    # scores which are merged while capability facts are preserved.
+    DOT_TARGETS: ClassVar[dict[str, tuple[str, str, float]]] = {
+        "cc/claude-opus-5-5": ("anthropic/claude-opus-5.5", "anthropic/claude-opus-5-5", 80.0),
+        "claude/claude-opus-5-5": ("anthropic/claude-opus-5.5", "anthropic/claude-opus-5-5", 80.0),
+        "cc/claude-fable-5-1": ("anthropic/claude-fable-5.1", "anthropic/claude-fable-5-1", 81.6),
+        "cc/claude-sonnet-5-5": (
+            "anthropic/claude-sonnet-5.5",
+            "anthropic/claude-sonnet-5-5",
+            71.5,
+        ),
     }
 
     def _store_record(
@@ -784,12 +791,20 @@ class TestShippedMapJoinsDotIdRatings:
 
         snapshot = self._snapshot()
         mapping = self._shipped_map()
-        for route, (target, score) in self.DOT_TARGETS.items():
+        for route, (_target, canonical_id, score) in self.DOT_TARGETS.items():
             found = lookup_omniroute_id(snapshot, route, identity_map=mapping)
             assert found.record is not None, route
-            assert found.record.id == target, route
+            # The canonical id is the models.json (dash) record; capability facts
+            # must not be lost to the dot twin even though the explicit map names
+            # the dot target.
+            assert found.record.id == canonical_id, route
+            assert found.record.caps.context is not None, f"{route}: context cap lost"
+            assert found.record.caps.context.provenance.source == SOURCE_MODELS_DEV_MODELS, route
             assert found.drop is None, route
             assert found.join == "explicit", route
+            # Scores are merged from the dot twin.
+            assert found.record.scores.aa_coding is not None, route
+            assert found.record.scores.aa_coding.value == score, route
             rated = rate_model(route, metadata=snapshot, identity_map=mapping, now=NOW)
             assert (rated.basis, rated.score, rated.metric) == ("score", score, "aa_coding"), route
             assert rated.source == SOURCE_OPENROUTER_AA, route

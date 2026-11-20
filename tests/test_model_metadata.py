@@ -448,6 +448,76 @@ class TestMappingAndDrops:
         assert found.drop is not None
         assert found.drop.reason == DROP_UNMAPPED
 
+    def test_cross_provider_same_leaf_is_ambiguous_drop(self) -> None:
+        """Two providers with the same normalised leaf must yield an ambiguous drop.
+
+        Without the per-provider grouping, a dot-form record from one provider
+        could win the disambiguation and a lookup would join the wrong provider's
+        capabilities and ratings.
+        """
+        prov_a = FieldProvenance(
+            source=SOURCE_MODELS_DEV_MODELS, fetched_at=FETCHED_AT, version="fixture"
+        )
+        ctx_a = ProvenancedField(value=100_000, provenance=prov_a)
+        ctx_b = ProvenancedField(value=200_000, provenance=prov_a)
+        snapshot = MetadataSnapshot(
+            schema_version=METADATA_SCHEMA_VERSION,
+            refreshed_at=FETCHED_AT,
+            sources={},
+            records=(
+                # Two different providers have records for the same normalised leaf.
+                ModelMetadataRecord(id="acme/model-1-0", caps=CapabilityCaps(context=ctx_a)),
+                ModelMetadataRecord(id="other/model-1.0", caps=CapabilityCaps(context=ctx_b)),
+            ),
+        )
+        # cc/model-1-0 must not silently join other/model-1.0 and inherit its caps.
+        found = lookup_omniroute_id(snapshot, "cc/model-1-0")
+        assert found.record is None
+        assert found.drop is not None
+        assert found.drop.reason == DROP_UNMAPPED
+        assert "ambiguous" in (found.drop.detail or "").lower()
+
+    def test_zero_score_is_not_treated_as_missing(self) -> None:
+        """A real 0.0 score on the base record must not be overwritten by the twin.
+
+        ProvenancedField(value=0.0).__bool__ is falsy; the merge must use
+        ``is None`` rather than ``or`` so a zero score on the models.json record
+        is preserved and not silently replaced by the dot twin's score.
+        """
+        prov_models = FieldProvenance(
+            source=SOURCE_MODELS_DEV_MODELS, fetched_at=FETCHED_AT, version="fixture"
+        )
+        prov_litellm = FieldProvenance(source=SOURCE_LITELLM, fetched_at=FETCHED_AT)
+        prov_aa = FieldProvenance(source=SOURCE_OPENROUTER_AA, fetched_at=FETCHED_AT)
+        context_cap = ProvenancedField(value=512_000, provenance=prov_models)
+        litellm_context = ProvenancedField(value=200_000, provenance=prov_litellm)
+        # Dash record has a real zero score; dot twin has a non-zero score.
+        zero_score = ProvenancedField(value=0.0, provenance=prov_models)
+        twin_score = ProvenancedField(value=55.0, provenance=prov_aa)
+        snapshot = MetadataSnapshot(
+            schema_version=METADATA_SCHEMA_VERSION,
+            refreshed_at=FETCHED_AT,
+            sources={},
+            records=(
+                ModelMetadataRecord(
+                    id="acme/model-2-0",
+                    caps=CapabilityCaps(context=context_cap),
+                    scores=SoftScores(aa_coding=zero_score),
+                ),
+                ModelMetadataRecord(
+                    id="acme/model-2.0",
+                    caps=CapabilityCaps(context=litellm_context),
+                    scores=SoftScores(aa_coding=twin_score),
+                ),
+            ),
+        )
+        found = lookup_omniroute_id(snapshot, "cc/model-2-0")
+        assert found.record is not None
+        assert found.record.id == "acme/model-2-0"
+        assert found.record.scores.aa_coding is not None
+        # The zero score must be preserved — not overwritten by the twin's 55.0.
+        assert found.record.scores.aa_coding.value == 0.0
+
 
 class TestInventNever:
     def test_soft_scores_absent_unless_fetched(self, tmp_path: Path) -> None:
