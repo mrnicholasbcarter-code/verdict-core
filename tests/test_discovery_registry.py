@@ -1047,5 +1047,118 @@ class PerRouteDeadlineTest(unittest.TestCase):
             self.assertEqual(entry.tool_skip_reason, "wall_budget_exhausted")
 
 
+# ---------------------------------------------------------------------------
+# Per-pool breaker: 429 on first route stops remaining routes in that pool
+# ---------------------------------------------------------------------------
+
+
+class PoolBreakerCascadeTest(unittest.TestCase):
+    """A 429 on route[0] must stop routes[1] and [2] without probing them."""
+
+    def tearDown(self) -> None:
+        _set_transport(None)
+
+    def test_pool_429_on_first_route_skips_rest_with_pool_breaker_open(self) -> None:
+        """Pool with 3 routes: first returns 429, other two must NOT be probed."""
+        import urllib.parse
+
+        route_a = Route(provider="kilo", model="m-a", base_url="http://a.example.com/v1")
+        route_b = Route(provider="kilo", model="m-b", base_url="http://b.example.com/v1")
+        route_c = Route(provider="kilo", model="m-c", base_url="http://c.example.com/v1")
+
+        probed_urls: list[str] = []
+
+        def _t(url: str, h: dict, p: bytes, timeout: float) -> tuple:
+            hostname = urllib.parse.urlsplit(url).hostname or ""
+            probed_urls.append(hostname)
+            if hostname == "a.example.com":
+                return 429, {"retry-after": "60"}, _429_body()
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = run_refresh(
+                [
+                    (route_a, "free", "plan_free"),
+                    (route_b, "free", "plan_free"),
+                    (route_c, "free", "plan_free"),
+                ],
+                context_tokens=0,
+                wall_budget_s=300.0,
+                env=_env(tmp),
+            )
+
+        # Exactly one HTTP request must be made (to route_a); b and c are not probed
+        self.assertEqual(
+            probed_urls, ["a.example.com"], "only the first route in pool must be probed"
+        )
+        self.assertEqual(len(reg.entries), 3)
+
+        entries_by_key = {e.route_key: e for e in reg.entries}
+        # route_a: probed, got 429 → answered=False (not UP), tool_ok=None
+        entry_a = entries_by_key[route_a.key]
+        self.assertFalse(entry_a.answered)
+        self.assertIsNone(entry_a.tool_ok)
+
+        # route_b and route_c: not probed due to pool breaker
+        for key, label in [(route_b.key, "route_b"), (route_c.key, "route_c")]:
+            entry = entries_by_key[key]
+            self.assertFalse(entry.answered, f"{label}: must not be answered")
+            self.assertIsNone(entry.tool_ok, f"{label}: must be not_probed (None)")
+            self.assertEqual(
+                entry.tool_skip_reason,
+                "pool_breaker_open",
+                f"{label}: skip reason must be pool_breaker_open",
+            )
+
+    def test_pool_429_during_tool_stage_skips_remaining_tool_probes(self) -> None:
+        """In the tool stage, a 429 on the first tool probe stops the rest in that pool."""
+        import urllib.parse
+
+        route_a = Route(provider="kilo", model="m-a", base_url="http://a.example.com/v1")
+        route_b = Route(provider="kilo", model="m-b", base_url="http://b.example.com/v1")
+
+        tool_probe_urls: list[str] = []
+
+        def _t(url: str, h: dict, p: bytes, timeout: float) -> tuple:
+            hostname = urllib.parse.urlsplit(url).hostname or ""
+            if b'"tools"' in p:
+                tool_probe_urls.append(hostname)
+                # First tool probe returns 429 (tool_error with 429 detail)
+                if hostname == "a.example.com":
+                    return 429, {}, _429_body()
+                return 200, {}, _tool_ok_body()
+            # Liveness: both answer OK
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = run_refresh(
+                [(route_a, "free", "plan_free"), (route_b, "free", "plan_free")],
+                context_tokens=0,
+                wall_budget_s=300.0,
+                env=_env(tmp),
+            )
+
+        # route_a tool probe was attempted and returned 429; route_b must be skipped
+        self.assertIn("a.example.com", tool_probe_urls, "route_a must be tool-probed")
+        self.assertNotIn("b.example.com", tool_probe_urls, "route_b must not be tool-probed")
+
+        entries_by_key = {e.route_key: e for e in reg.entries}
+        entry_a = entries_by_key[route_a.key]
+        entry_b = entries_by_key[route_b.key]
+
+        # route_a answered liveness but tool probe returned 429 → tool_ok=False (measured)
+        self.assertTrue(entry_a.answered)
+        self.assertIs(entry_a.tool_ok, False, "tool 429 is a measured failure")
+
+        # route_b answered liveness but tool probe was skipped due to pool breaker
+        self.assertTrue(entry_b.answered)
+        self.assertIsNone(entry_b.tool_ok, "route_b tool probe was skipped by pool breaker")
+        self.assertEqual(entry_b.tool_skip_reason, "pool_breaker_open")
+
+
 if __name__ == "__main__":
     unittest.main()

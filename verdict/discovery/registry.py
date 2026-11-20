@@ -22,16 +22,18 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import threading
 import time
 from collections import defaultdict
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from verdict.discovery.model import RATE_LIMITED, UP, ProbeResult, Route
-from verdict.discovery.probe import probe_all
-from verdict.discovery.toolprobe import TOOL_NOT_PROBED, TOOL_OK, tool_probe_all
+from verdict.discovery.probe import probe_one
+from verdict.discovery.toolprobe import TOOL_NOT_PROBED, TOOL_OK, tool_probe
 from verdict.paths import verdict_home
 
 # ---------------------------------------------------------------------------
@@ -261,100 +263,148 @@ def run_refresh(
             schema=REGISTRY_SCHEMA, written_at=now_iso, ttl_s=REGISTRY_TTL_S, entries=entries
         )
 
-    # Group routes by pool key to respect per-pool sequencing
-    # (rate-limited providers use max_parallel=1 on the Route, which the probe
-    # fan-out respects via per-host semaphores).
+    # Group routes by pool key.  Dedupe by route.key across pools: keep only
+    # the first occurrence so that two routes sharing a key (same provider/model,
+    # different base_url or source) never cause one to inherit the other's proof.
     pool_groups: dict[str, list[tuple[Route, str, str]]] = defaultdict(list)
     for item in routes:
         pool_groups[breaker.pool_key(item[0])].append(item)
 
-    # Build a flat probe list, skipping already-open pools
-    probe_items: list[tuple[Route, str, str]] = []
-    skipped: list[tuple[Route, str, str]] = []
-    for pool_routes in pool_groups.values():
-        for item in pool_routes:
-            if breaker.is_open(item[0]):
-                skipped.append(item)
-            else:
-                probe_items.append(item)
+    seen_keys: set[str] = set()
+    active_pool_items: dict[str, list[tuple[Route, str, str]]] = {}
+    pre_open_skipped: list[tuple[Route, str, str]] = []  # pool was open before this run
 
-    if not probe_items:
+    for pool_key, pool_routes in pool_groups.items():
+        for item in pool_routes:
+            route = item[0]
+            if breaker.is_open(route):
+                pre_open_skipped.append(item)
+            elif route.key not in seen_keys:
+                seen_keys.add(route.key)
+                active_pool_items.setdefault(pool_key, []).append(item)
+            # else: duplicate key — silently dropped
+
+    if not active_pool_items and not pre_open_skipped:
         reg = DiscoveryRegistry(
             schema=REGISTRY_SCHEMA, written_at=now_iso, ttl_s=REGISTRY_TTL_S, entries=[]
         )
         save_registry(reg, env)
         return reg
 
-    # Dedupe by route.key — keep first occurrence so that two routes sharing a
-    # key (same provider/model, different base_url or source) never cause one to
-    # inherit the other's proof.  Duplicates are silently dropped; they would
-    # otherwise produce a conflated result_by_key dict entry.
-    seen_keys: set[str] = set()
-    deduped_items: list[tuple[Route, str, str]] = []
-    for item in probe_items:
-        if item[0].key not in seen_keys:
-            seen_keys.add(item[0].key)
-            deduped_items.append(item)
-    probe_items = deduped_items
+    # First stage: liveness probe.
+    # Each pool's routes are probed one-at-a-time (serial within pool).  The
+    # breaker is checked before every individual probe: a 429 on route[0] opens
+    # the pool immediately so routes[1..n] are recorded as not_probed with
+    # reason "pool_breaker_open" without being contacted.
+    # Different pools run in parallel across a small thread pool.
+    _breaker_lock = threading.Lock()
+    _result_lock = threading.Lock()
+    probe_items_out: list[tuple[Route, str, str]] = []
+    probe_results_out: list[ProbeResult] = []
+    mid_pool_live_skipped: list[tuple[Route, str, str]] = []
 
-    just_routes = [r for r, _, _ in probe_items]
+    def _probe_pool_serial(pool_items: list[tuple[Route, str, str]]) -> None:
+        local_probed: list[tuple[tuple[Route, str, str], ProbeResult]] = []
+        local_skipped: list[tuple[Route, str, str]] = []
+        for item in pool_items:
+            route = item[0]
+            with _breaker_lock:
+                is_open = breaker.is_open(route)
+            if is_open:
+                local_skipped.append(item)
+            else:
+                remaining = max(5.0, deadline - time.monotonic())
+                r = probe_one(route, timeout=min(probe_timeout, remaining))
+                if r.status == RATE_LIMITED:
+                    with _breaker_lock:
+                        breaker.open_pool(route)
+                local_probed.append((item, r))
+        with _result_lock:
+            for item, r in local_probed:
+                probe_items_out.append(item)
+                probe_results_out.append(r)
+            mid_pool_live_skipped.extend(local_skipped)
 
-    # First stage: liveness probe
+    pools = list(active_pool_items.values())
+    if pools:
+        with ThreadPoolExecutor(max_workers=min(len(pools), 32)) as executor:
+            list(executor.map(_probe_pool_serial, pools))
+
+    # Second stage: tool probe at agent size for UP routes.
+    # Routes are grouped by pool and processed serially within each pool so the
+    # breaker can fire mid-pool here too.  Budget is checked before each probe.
+    up_results = [r for r in probe_results_out if r.status == UP]
+    up_pool_groups: dict[str, list[ProbeResult]] = defaultdict(list)
+    for r in up_results:
+        up_pool_groups[breaker.pool_key(r.route)].append(r)
+
     remaining_budget = deadline - time.monotonic()
-    probe_results: list[ProbeResult] = probe_all(
-        just_routes,
-        timeout=min(probe_timeout, max(5.0, remaining_budget / max(1, len(just_routes)))),
-        concurrency=max(1, len(just_routes)),
-        per_host=1,  # per-pool concurrency of 1 for rate-limited providers
-    )
+    tool_results: dict[str, tuple[str, str | None, int | None, str | None]] = {}
 
-    # Open pools on 429
-    for result in probe_results:
-        if result.status == RATE_LIMITED:
-            breaker.open_pool(result.route)
-
-    # Second stage: tool probe at agent size for UP routes (via tool_probe_all).
-    # Enforce the wall-clock budget: if the remaining budget is already spent before
-    # the tool stage, mark every UP route as not_probed without making any calls.
-    # tool_probe_all also checks the deadline before each individual route so that
-    # a mid-stage budget overrun cannot produce false failures either.
-    up_results = [r for r in probe_results if r.status == UP and not breaker.is_open(r.route)]
-    remaining_budget = deadline - time.monotonic()
-    tool_results: dict[str, tuple[str, str | None, int | None, str | None]]
     if remaining_budget <= 0:
         # Budget spent before tool stage — mark all UP routes as not_probed.
-        tool_results = {
-            r.route.key: (TOOL_NOT_PROBED, "wall_budget_exhausted", None, None) for r in up_results
-        }
-    elif not up_results:
-        tool_results = {}
+        for r in up_results:
+            tool_results[r.route.key] = (TOOL_NOT_PROBED, "wall_budget_exhausted", None, None)
     else:
-        tool_results = tool_probe_all(
-            up_results,
-            timeout=min(probe_timeout, max(5.0, remaining_budget)),
-            concurrency=1,  # per-pool rate respect: tool probes are heavy, serialise them
-            per_host=1,
-            context_tokens=context_tokens,
-            deadline=deadline,
-        )
-    # Open breaker for any tool_error 429s
-    for route_key, (t_status, t_detail, _, _) in tool_results.items():
-        if t_status == "tool_error" and "429" in str(t_detail):
-            matching = next((r.route for r in probe_results if r.route.key == route_key), None)
-            if matching is not None:
-                breaker.open_pool(matching)
+        for pool_up in up_pool_groups.values():
+            for r in pool_up:
+                if breaker.is_open(r.route):
+                    # Pool was opened by an earlier tool probe in this pool.
+                    tool_results[r.route.key] = (TOOL_NOT_PROBED, "pool_breaker_open", None, None)
+                elif time.monotonic() >= deadline:
+                    tool_results[r.route.key] = (
+                        TOOL_NOT_PROBED,
+                        "wall_budget_exhausted",
+                        None,
+                        None,
+                    )
+                else:
+                    remaining = max(5.0, deadline - time.monotonic())
+                    t = tool_probe(
+                        r.route,
+                        timeout=min(probe_timeout, remaining),
+                        context_tokens=context_tokens,
+                    )
+                    tool_results[r.route.key] = t
+                    if t[0] == "tool_error" and "429" in str(t[1]):
+                        breaker.open_pool(r.route)
 
     # Build registry entries for all probed routes.
     # Use parallel iteration (zip) rather than a key-based dict so that proof
-    # is always attached to the exact route it was measured on; a dict would
-    # allow two routes with the same key to inherit each other's result.
-    for (route, cap_class, cap_fact), pr in zip(probe_items, probe_results, strict=True):
+    # is always attached to the exact route it was measured on.
+    for (route, cap_class, cap_fact), pr in zip(probe_items_out, probe_results_out, strict=True):
         tr = tool_results.get(route.key)
         entries.append(_make_entry(route, cap_class, cap_fact, pr, tr, now_iso, breaker))
 
-    # Skipped (breaker open) routes
-    for route, cap_class, cap_fact in skipped:
-        entries.append(_make_entry(route, cap_class, cap_fact, None, None, now_iso, breaker))
+    # Routes skipped because the pool was open before this run started.
+    for route, cap_class, cap_fact in pre_open_skipped:
+        entries.append(
+            _make_entry(
+                route,
+                cap_class,
+                cap_fact,
+                None,
+                None,
+                now_iso,
+                breaker,
+                skip_reason="pool_breaker_open",
+            )
+        )
+
+    # Routes skipped because the pool was opened mid-run (by a 429 in this pool).
+    for route, cap_class, cap_fact in mid_pool_live_skipped:
+        entries.append(
+            _make_entry(
+                route,
+                cap_class,
+                cap_fact,
+                None,
+                None,
+                now_iso,
+                breaker,
+                skip_reason="pool_breaker_open",
+            )
+        )
 
     registry = DiscoveryRegistry(
         schema=REGISTRY_SCHEMA, written_at=now_iso, ttl_s=REGISTRY_TTL_S, entries=entries
@@ -378,6 +428,8 @@ def _make_entry(
     tool: tuple[str, str | None, int | None, str | None] | None,
     checked_at: str,
     breaker: _Breaker,
+    *,
+    skip_reason: str | None = None,
 ) -> RegistryEntry:
     """Build a RegistryEntry from probe and tool results.
 
@@ -388,6 +440,10 @@ def _make_entry(
 
     Callers must treat ``None`` as *not proved*, never as a failure.  Old
     registry files that lack the field are loaded as ``None`` by ``from_dict``.
+
+    ``skip_reason`` overrides the default "not_answered" reason when ``tool``
+    is ``None``; use ``"pool_breaker_open"`` for routes skipped due to a
+    per-pool breaker trip.
     """
     answered = probe is not None and probe.status == UP
     retry_after_s: float | None = probe.retry_after_s if probe is not None else None
@@ -398,7 +454,7 @@ def _make_entry(
     if tool is None:
         # Route was not UP (not answered), so tool stage was never attempted.
         tool_ok: bool | None = None
-        tool_skip_reason: str | None = "not_answered"
+        tool_skip_reason: str | None = skip_reason or "not_answered"
     elif tool[0] == TOOL_NOT_PROBED:
         # Stage was skipped due to budget exhaustion (before or during the stage).
         tool_ok = None

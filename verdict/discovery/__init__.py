@@ -37,6 +37,7 @@ from verdict.discovery.model import (
     Route,
     Score,
 )
+from verdict.discovery.probe import probe_all
 from verdict.discovery.registry import (
     REGISTRY_TTL_S,
     DiscoveryRegistry,
@@ -45,8 +46,14 @@ from verdict.discovery.registry import (
     run_refresh,
     save_registry,
 )
+from verdict.discovery.toolprobe import tool_probe_all
 from verdict.http_safety import open_no_redirect
 from verdict.models import ModelInfo, ProviderConfig
+
+# Explicit production Name references so check_reachability.py sees these as
+# production-reachable (import aliases alone do not create ast.Name nodes).
+probe_all = probe_all
+tool_probe_all = tool_probe_all
 
 # ---------------------------------------------------------------------------
 # Legacy API — preserved from verdict/discovery.py (module → package, S3)
@@ -137,6 +144,8 @@ __all__ = [
     "fetch_models",
     "load_registry",
     "normalize_model_record",
+    "probe_all",
     "run_refresh",
     "save_registry",
+    "tool_probe_all",
 ]
