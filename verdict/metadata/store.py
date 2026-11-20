@@ -447,6 +447,7 @@ def lookup_omniroute_id(
                 reason=DROP_MAP_TARGET_MISSING,
                 detail=f"mapped to {models_dev_id} which is absent from the Core store",
             ),
+            join=join,
         )
     missing = []
     for name in required:

@@ -480,8 +480,7 @@ class MetadataLookup:
             "drop": None if self.drop is None else self.drop.to_dict(),
             "provenance": self.provenance_for_receipt(),
         }
-        if self.join is not None:
-            payload["join"] = self.join
+        payload["join"] = self.join
         return payload
 
 
