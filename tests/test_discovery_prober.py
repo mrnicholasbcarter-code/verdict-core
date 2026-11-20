@@ -6,6 +6,7 @@ No network calls; the injectable transport is used for all HTTP.
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -21,7 +22,7 @@ from verdict.discovery.model import (
     UP,
     Route,
 )
-from verdict.discovery.probe import _set_transport, probe_all, probe_one
+from verdict.discovery.probe import _set_transport, probe_one
 from verdict.discovery.toolprobe import (
     BAD_TOOL_CALL,
     NO_TOOL_CALL,
@@ -30,7 +31,6 @@ from verdict.discovery.toolprobe import (
     classify,
     filler,
     tool_probe,
-    tool_probe_all,
 )
 
 # ---------------------------------------------------------------------------
@@ -278,66 +278,6 @@ class ProbeOneStatusTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# probe_all — ordering and robustness
-# ---------------------------------------------------------------------------
-
-
-class ProbeAllTest(unittest.TestCase):
-    def tearDown(self) -> None:
-        _set_transport(None)
-
-    def test_returns_in_input_order(self) -> None:
-        routes = [_route(model=f"m{i}") for i in range(5)]
-
-        def _t(url, h, p, timeout):
-            return 200, {}, json.dumps(_ok_body()).encode()
-
-        _set_transport(_t)
-        results = probe_all(routes)
-        self.assertEqual(len(results), 5)
-        for i, r in enumerate(results):
-            self.assertEqual(r.route.model, f"m{i}")
-
-    def test_empty_routes(self) -> None:
-        results = probe_all([])
-        self.assertEqual(results, [])
-
-    def test_error_on_transport_exception(self) -> None:
-        def _t(url, h, p, timeout):
-            raise RuntimeError("boom")
-
-        _set_transport(_t)
-        results = probe_all([_route()])
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].status, ERROR)
-
-    def test_per_host_semaphore_serialises_one_provider(self) -> None:
-        """With max_parallel=1 only one concurrent probe per host is allowed."""
-        import threading
-
-        concurrent: list[int] = [0]
-        peak: list[int] = [0]
-        lock = threading.Lock()
-
-        def _t(url, h, p, timeout):
-            with lock:
-                concurrent[0] += 1
-                if concurrent[0] > peak[0]:
-                    peak[0] = concurrent[0]
-            import time
-
-            time.sleep(0.01)
-            with lock:
-                concurrent[0] -= 1
-            return 200, {}, json.dumps(_ok_body()).encode()
-
-        _set_transport(_t)
-        routes = [_route(model=f"m{i}", max_parallel=1) for i in range(4)]
-        probe_all(routes, per_host=1)
-        self.assertEqual(peak[0], 1)
-
-
-# ---------------------------------------------------------------------------
 # toolprobe — classify
 # ---------------------------------------------------------------------------
 
@@ -481,35 +421,57 @@ class ToolProbeTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# tool_probe_all
+# Transport exception — single route error must not crash the whole refresh
 # ---------------------------------------------------------------------------
 
 
-class ToolProbeAllTest(unittest.TestCase):
+class TransportExceptionTest(unittest.TestCase):
+    """An exception from the transport for one route must not abort the refresh."""
+
     def tearDown(self) -> None:
         _set_transport(None)
 
-    def test_only_probes_up_routes(self) -> None:
-        from verdict.discovery.model import ProbeResult
+    def test_transport_exception_records_error_and_keeps_other_routes(self) -> None:
+        """If transport raises for route_a, it gets status=ERROR; route_b is unaffected."""
+        import urllib.parse
 
-        called: list[str] = []
+        from verdict.discovery.registry import run_refresh
 
-        def _t(url, h, p, timeout):
-            body = json.loads(p)
-            called.append(body["model"])
-            return 200, {}, _tool_call_body()
+        route_a = _route(provider="p", model="boom", base_url="http://boom.example.com/v1")
+        route_b = _route(provider="q", model="ok", base_url="http://ok.example.com/v1")
+
+        def _ok_body():
+            return json.dumps(
+                {
+                    "id": "x",
+                    "object": "chat.completion",
+                    "choices": [{"message": {"content": "ok"}}],
+                }
+            ).encode()
+
+        def _t(url: str, h: dict, p: bytes, timeout: float):
+            hostname = urllib.parse.urlsplit(url).hostname or ""
+            if hostname == "boom.example.com":
+                raise RuntimeError("boom")
+            return 200, {}, _ok_body()
 
         _set_transport(_t)
-        up = ProbeResult(route=_route(provider="p", model="m1"), status=UP)
-        down = ProbeResult(route=_route(provider="p", model="m2"), status=DOWN)
-        result = tool_probe_all([up, down])
-        self.assertIn("p/m1", result)
-        self.assertNotIn("p/m2", result)
-        self.assertEqual(called, ["m1"])
 
-    def test_empty_input(self) -> None:
-        result = tool_probe_all([])
-        self.assertEqual(result, {})
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {"VERDICT_HOME": tmp, "HOME": tmp, "VERDICT_RECEIPTS_DB": ":memory:"}
+            reg = run_refresh(
+                [(route_a, "free", "plan_free"), (route_b, "free", "plan_free")],
+                context_tokens=0,
+                wall_budget_s=300.0,
+                env=env,
+            )
+
+        self.assertEqual(len(reg.entries), 2)
+        entries_by_key = {e.route_key: e for e in reg.entries}
+        # route_a: transport raised → answered=False (ERROR result)
+        self.assertFalse(entries_by_key[route_a.key].answered)
+        # route_b: separate pool, was not affected
+        self.assertTrue(entries_by_key[route_b.key].answered)
 
 
 if __name__ == "__main__":

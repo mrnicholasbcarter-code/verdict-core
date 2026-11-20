@@ -2,8 +2,8 @@
 
 - [x] Write tests before implementation: fixture-based, no live calls, VERDICT_HOME in temp dir.
 - [x] Add `verdict/discovery/model.py` with Route, ProbeResult, Score types and status constants.
-- [x] Add `verdict/discovery/probe.py` with injectable transport, probe_one, probe_all.
-- [x] Add `verdict/discovery/toolprobe.py` with filler, classify, tool_probe, tool_probe_all.
+- [x] Add `verdict/discovery/probe.py` with injectable transport, probe_one (probe_all removed — registry uses per-pool serial probing).
+- [x] Add `verdict/discovery/toolprobe.py` with filler, classify, tool_probe (tool_probe_all removed — registry uses per-pool serial tool probing).
 - [x] Add `verdict/discovery/scores.py` with ScoreIndex, load_scores, parse_openrouter, parse_fcm.
 - [x] Add `verdict/discovery/registry.py` with RegistryEntry, DiscoveryRegistry, load_registry, save_registry, _Breaker, run_refresh.
 - [x] Add `verdict/discovery/refresh.py` with load_probeable_routes and run_refresh_action.

@@ -31,7 +31,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from verdict.discovery.model import RATE_LIMITED, UP, ProbeResult, Route
+from verdict.discovery.model import ERROR, RATE_LIMITED, UP, ProbeResult, Route
 from verdict.discovery.probe import probe_one
 from verdict.discovery.toolprobe import TOOL_NOT_PROBED, TOOL_OK, tool_probe
 from verdict.paths import verdict_home
@@ -77,6 +77,9 @@ class RegistryEntry:
     retry_after_s: float | None  # for 429 responses
     breaker_state: str  # BREAKER_CLOSED or BREAKER_OPEN
     checked_at: str  # ISO-8601 datetime
+    probe_skip_reason: str | None = (
+        None  # set when probe was not attempted; e.g. "pool_breaker_open"
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -93,6 +96,7 @@ class RegistryEntry:
             answered=bool(d.get("answered", False)),
             tool_ok=None if d.get("tool_ok") is None else bool(d["tool_ok"]),
             tool_skip_reason=d.get("tool_skip_reason"),
+            probe_skip_reason=d.get("probe_skip_reason"),
             served_model=d.get("served_model"),
             latency_ms=d.get("latency_ms"),
             retry_after_s=d.get("retry_after_s"),
@@ -314,7 +318,10 @@ def run_refresh(
                 local_skipped.append(item)
             else:
                 remaining = max(5.0, deadline - time.monotonic())
-                r = probe_one(route, timeout=min(probe_timeout, remaining))
+                try:
+                    r = probe_one(route, timeout=min(probe_timeout, remaining))
+                except Exception as exc:
+                    r = ProbeResult(route=route, status=ERROR, detail=str(exc)[:200])
                 if r.status == RATE_LIMITED:
                     with _breaker_lock:
                         breaker.open_pool(route)
@@ -346,17 +353,20 @@ def run_refresh(
         for r in up_results:
             tool_results[r.route.key] = (TOOL_NOT_PROBED, "wall_budget_exhausted", None, None)
     else:
-        for pool_up in up_pool_groups.values():
-            for r in pool_up:
-                if breaker.is_open(r.route):
-                    # Pool was opened by an earlier tool probe in this pool.
-                    tool_results[r.route.key] = (TOOL_NOT_PROBED, "pool_breaker_open", None, None)
+        # Each pool's routes are probed one-at-a-time (serial within pool) so the
+        # breaker can fire mid-pool.  Different pools run concurrently.
+        _tool_result_lock = threading.Lock()
+
+        def _tool_probe_pool_serial(pool_results: list[ProbeResult]) -> None:
+            local: list[tuple[str, tuple[str, str | None, int | None, str | None]]] = []
+            for r in pool_results:
+                with _breaker_lock:
+                    is_open = breaker.is_open(r.route)
+                if is_open:
+                    local.append((r.route.key, (TOOL_NOT_PROBED, "pool_breaker_open", None, None)))
                 elif time.monotonic() >= deadline:
-                    tool_results[r.route.key] = (
-                        TOOL_NOT_PROBED,
-                        "wall_budget_exhausted",
-                        None,
-                        None,
+                    local.append(
+                        (r.route.key, (TOOL_NOT_PROBED, "wall_budget_exhausted", None, None))
                     )
                 else:
                     remaining = max(5.0, deadline - time.monotonic())
@@ -365,9 +375,18 @@ def run_refresh(
                         timeout=min(probe_timeout, remaining),
                         context_tokens=context_tokens,
                     )
-                    tool_results[r.route.key] = t
                     if t[0] == "tool_error" and "429" in str(t[1]):
-                        breaker.open_pool(r.route)
+                        with _breaker_lock:
+                            breaker.open_pool(r.route)
+                    local.append((r.route.key, t))
+            with _tool_result_lock:
+                for key, val in local:
+                    tool_results[key] = val
+
+        up_pool_list = list(up_pool_groups.values())
+        if up_pool_list:
+            with ThreadPoolExecutor(max_workers=min(len(up_pool_list), 32)) as executor:
+                list(executor.map(_tool_probe_pool_serial, up_pool_list))
 
     # Build registry entries for all probed routes.
     # Use parallel iteration (zip) rather than a key-based dict so that proof
@@ -449,6 +468,7 @@ def _make_entry(
     retry_after_s: float | None = probe.retry_after_s if probe is not None else None
     latency_ms: int | None = None
     served_model: str | None = None
+    probe_skip_reason: str | None = skip_reason if probe is None else None
 
     # Determine tri-state tool outcome.
     if tool is None:
@@ -487,6 +507,7 @@ def _make_entry(
         answered=answered,
         tool_ok=tool_ok,
         tool_skip_reason=tool_skip_reason,
+        probe_skip_reason=probe_skip_reason,
         served_model=served_model,
         latency_ms=latency_ms,
         retry_after_s=retry_after_s,

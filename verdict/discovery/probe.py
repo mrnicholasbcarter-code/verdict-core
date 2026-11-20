@@ -15,10 +15,8 @@ import socket
 import threading
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 
 from verdict.discovery.model import (
@@ -379,65 +377,3 @@ def probe_one(route: Route, *, timeout: float = 12.0, max_tokens: int = 256) -> 
         detail="first choice has no usable content",
         answered_model=answered_model,
     )
-
-
-# ---------------------------------------------------------------------------
-# Parallel fan-out
-# ---------------------------------------------------------------------------
-
-
-def probe_all(
-    routes: list[Route],
-    *,
-    timeout: float = 12.0,
-    concurrency: int = 48,
-    per_host: int = 8,
-    max_tokens: int = 256,
-) -> list[ProbeResult]:
-    """Probe all routes in parallel, return results in the same order as input.
-
-    Never raises; unexpected exceptions become ERROR results.
-    """
-    if not routes:
-        return []
-
-    _sems: dict[str, threading.Semaphore] = {}
-    _sems_lock = threading.Lock()
-
-    def _host_sem(route: Route) -> threading.Semaphore:
-        host = urllib.parse.urlparse(route.base_url).hostname or route.base_url
-        # Every OmniRoute route shares one local host; cap per upstream provider
-        # instead, so hundreds of gateway routes do not queue behind a small slot count.
-        if route.provider == "omniroute" and route.upstream:
-            host = f"{host}|{route.upstream}"
-        with _sems_lock:
-            if host not in _sems:
-                cap = min(per_host, route.max_parallel) if route.max_parallel else per_host
-                _sems[host] = threading.Semaphore(max(1, cap))
-            return _sems[host]
-
-    def _safe_probe(route: Route) -> ProbeResult:
-        sem = _host_sem(route)
-        with sem:
-            try:
-                return probe_one(route, timeout=timeout, max_tokens=max_tokens)
-            except Exception as exc:
-                return ProbeResult(route=route, status=ERROR, detail=str(exc)[:200])
-
-    workers = min(concurrency, len(routes))
-    results: list[ProbeResult | None] = [None] * len(routes)
-
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_safe_probe, r): i for i, r in enumerate(routes)}
-        for fut in as_completed(futures):
-            idx = futures[fut]
-            try:
-                results[idx] = fut.result()
-            except Exception as exc:
-                results[idx] = ProbeResult(route=routes[idx], status=ERROR, detail=str(exc)[:200])
-
-    # Fallback for any slot that somehow wasn't filled
-    return [
-        r if r is not None else ProbeResult(route=routes[i], status=ERROR, detail="unknown")
-        for i, r in enumerate(results)
-    ]

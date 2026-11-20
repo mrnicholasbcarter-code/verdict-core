@@ -18,13 +18,10 @@ Statuses: ``tool_ok``, ``no_tool_call`` (answered in text), ``bad_tool_call``
 from __future__ import annotations
 
 import json
-import threading
 import time
-import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
 
 from verdict.discovery import probe as _probe
-from verdict.discovery.model import NO_KEY, UP, ProbeResult, Route
+from verdict.discovery.model import NO_KEY, Route
 
 TOOL_OK = "tool_ok"
 NO_TOOL_CALL = "no_tool_call"
@@ -131,48 +128,3 @@ def tool_probe(
     if h.get("x-omniroute-provider") and h.get("x-omniroute-model"):
         served = f"{h['x-omniroute-provider']}/{h['x-omniroute-model']}"
     return status, detail, elapsed, served
-
-
-def tool_probe_all(
-    results: list[ProbeResult],
-    *,
-    timeout: float = 30.0,
-    concurrency: int = 48,
-    per_host: int = 4,
-    context_tokens: int = 0,
-    deadline: float | None = None,
-) -> dict[str, tuple[str, str | None, int | None, str | None]]:
-    """Tool-probe every UP result; returns {route.key: (status, detail, ms, served)}.
-
-    When ``deadline`` is set, each worker checks ``time.monotonic()`` before
-    sending the request.  Routes that are reached after the deadline are marked
-    ``(TOOL_NOT_PROBED, "wall_budget_exhausted", None, None)`` without making a
-    network call, so a stale budget can never produce a measured failure.
-    """
-    todo = [r.route for r in results if r.status == UP]
-    sems: dict[str, threading.Semaphore] = {}
-    lock = threading.Lock()
-
-    def host_sem(route: Route) -> threading.Semaphore:
-        host = urllib.parse.urlparse(route.base_url).hostname or route.base_url
-        if route.provider == "omniroute" and route.upstream:
-            host = f"{host}|{route.upstream}"
-        with lock:
-            if host not in sems:
-                cap = min(per_host, route.max_parallel) if route.max_parallel else per_host
-                sems[host] = threading.Semaphore(max(1, cap))
-            return sems[host]
-
-    def run(route: Route) -> tuple[str, tuple[str, str | None, int | None, str | None]]:
-        if deadline is not None and time.monotonic() >= deadline:
-            return route.key, (TOOL_NOT_PROBED, "wall_budget_exhausted", None, None)
-        with host_sem(route):
-            return route.key, tool_probe(route, timeout=timeout, context_tokens=context_tokens)
-
-    out: dict[str, tuple[str, str | None, int | None, str | None]] = {}
-    if not todo:
-        return out
-    with ThreadPoolExecutor(max_workers=max(1, min(concurrency, len(todo)))) as pool:
-        for key, value in pool.map(run, todo):
-            out[key] = value
-    return out

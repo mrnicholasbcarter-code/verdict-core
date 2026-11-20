@@ -952,73 +952,112 @@ class ToolOutcomeTriStateTest(unittest.TestCase):
         self.assertIsNone(reg.entries[0].tool_ok)
         self.assertEqual(reg.entries[0].tool_skip_reason, "wall_budget_exhausted")
 
+    def test_old_registry_missing_probe_skip_reason_loads_as_none(self) -> None:
+        """An old registry entry without probe_skip_reason must load as None."""
+        raw = {
+            "schema": REGISTRY_SCHEMA,
+            "written_at": "2026-11-20T00:00:00+00:00",
+            "ttl_s": REGISTRY_TTL_S,
+            "entries": [
+                {
+                    "route_key": "p/m",
+                    "capacity_class": "free",
+                    "capacity_fact": "plan_free",
+                    "base_url": "http://h/v1",
+                    "auth": "none",
+                    "upstream": None,
+                    "answered": False,
+                    "tool_ok": None,
+                    "tool_skip_reason": "not_answered",
+                    # probe_skip_reason intentionally absent (old file format)
+                    "served_model": None,
+                    "latency_ms": None,
+                    "retry_after_s": None,
+                    "breaker_state": "open",
+                    "checked_at": "2026-11-20T00:00:00+00:00",
+                }
+            ],
+        }
+        reg = DiscoveryRegistry.from_dict(raw)
+        self.assertIsNone(
+            reg.entries[0].probe_skip_reason,
+            "old entry without probe_skip_reason must load as None",
+        )
+
 
 # ---------------------------------------------------------------------------
-# Per-route deadline check inside tool_probe_all
+# Per-route deadline check in the serial tool-probe stage
 # ---------------------------------------------------------------------------
 
 
 class PerRouteDeadlineTest(unittest.TestCase):
-    """Deadline must be checked before each route in tool_probe_all."""
+    """Deadline is checked before each route in the serial tool-probe worker."""
 
     def tearDown(self) -> None:
         _set_transport(None)
 
     def test_per_route_deadline_crossing_marks_remaining_not_probed(self) -> None:
-        """When deadline crosses mid-stage, later routes get not_probed, not failures."""
+        """When deadline crosses mid tool-stage, later routes get not_probed, not failures."""
+        import unittest.mock as _mock
         import urllib.parse
-        from unittest.mock import patch
 
-        from verdict.discovery.model import UP as _UP
-        from verdict.discovery.model import ProbeResult
-        from verdict.discovery.toolprobe import TOOL_NOT_PROBED, TOOL_OK, tool_probe_all
+        import verdict.discovery.registry as _reg_mod
 
         route_a = Route(provider="kilo", model="m-a", base_url="http://a.example.com/v1")
         route_b = Route(provider="kilo", model="m-b", base_url="http://b.example.com/v1")
 
-        probed_hosts: list[str] = []
+        tool_probed: list[str] = []
+
+        # The transport advances a mutable clock past the deadline when route_a's
+        # tool probe fires, so route_b's inline deadline check sees it as expired.
+        # Routes are in the same provider pool so they're probed serially.
+        clock: list[float] = [0.0]
+        _real_monotonic = __import__("time").monotonic
 
         def _t(url: str, h: dict, p: bytes, timeout: float):
             hostname = urllib.parse.urlsplit(url).hostname or ""
-            probed_hosts.append(hostname)
-            return 200, {}, _tool_ok_body()
+            if b'"tools"' in p:
+                tool_probed.append(hostname)
+                clock[0] = 1e12  # push clock past any deadline (larger than any real monotonic)
+                return 200, {}, _tool_ok_body()
+            return 200, {}, _ok_body()
 
         _set_transport(_t)
 
-        # With concurrency=1 routes are dispatched serially: a then b.
-        # Fake clock: before-deadline for route_a's check, after for route_b's check.
-        # tool_probe also calls time.monotonic() once for latency; account for that.
-        deadline = 1000.0
-        call_count = 0
-
         def fake_monotonic() -> float:
-            nonlocal call_count
-            call_count += 1
-            # Calls 1,2 → route_a's deadline check + latency start (before deadline)
-            # Calls 3+ → route_b's deadline check (after deadline)
-            return 999.0 if call_count <= 2 else 1001.0
+            return _real_monotonic() if clock[0] == 0.0 else clock[0]
 
-        results = [ProbeResult(route=route_a, status=_UP), ProbeResult(route=route_b, status=_UP)]
+        with (
+            _mock.patch.object(_reg_mod.time, "monotonic", fake_monotonic),
+            tempfile.TemporaryDirectory() as tmp,
+        ):
+            reg = run_refresh(
+                [(route_a, "free", "plan_free"), (route_b, "free", "plan_free")],
+                context_tokens=0,
+                wall_budget_s=300.0,
+                env=_env(tmp),
+            )
 
-        with patch("verdict.discovery.toolprobe.time.monotonic", fake_monotonic):
-            out = tool_probe_all(results, timeout=5.0, concurrency=1, per_host=1, deadline=deadline)
+        # route_a was tool-probed, route_b was not
+        self.assertIn("a.example.com", tool_probed, "route_a must be tool-probed")
+        self.assertNotIn("b.example.com", tool_probed, "route_b must not be tool-probed")
 
-        # route_a was probed (deadline not yet reached), route_b was not
-        self.assertIn(route_a.key, out)
-        self.assertIn(route_b.key, out)
-        self.assertEqual(out[route_a.key][0], TOOL_OK, "route_a should have been probed")
-        self.assertEqual(out[route_b.key][0], TOOL_NOT_PROBED, "route_b deadline should fire")
-        self.assertEqual(out[route_b.key][1], "wall_budget_exhausted")
-        self.assertIn("a.example.com", probed_hosts, "route_a must be probed")
-        self.assertNotIn("b.example.com", probed_hosts, "route_b must not be probed")
+        entries_by_key = {e.route_key: e for e in reg.entries}
+        entry_a = entries_by_key[route_a.key]
+        entry_b = entries_by_key[route_b.key]
+        self.assertTrue(entry_a.answered, "route_a liveness probe answered")
+        self.assertIs(entry_a.tool_ok, True, "route_a tool probe succeeded")
+        self.assertTrue(entry_b.answered, "route_b liveness probe answered")
+        self.assertIsNone(entry_b.tool_ok, "route_b tool probe was skipped by deadline")
+        self.assertEqual(entry_b.tool_skip_reason, "wall_budget_exhausted")
 
-    def test_registry_records_not_probed_from_tool_probe_all_result(self) -> None:
-        """run_refresh stores tool_ok=None/wall_budget_exhausted from TOOL_NOT_PROBED results.
+    def test_registry_records_not_probed_when_budget_exhausted_before_tool_stage(self) -> None:
+        """run_refresh stores tool_ok=None/wall_budget_exhausted when deadline passed.
 
-        Uses the pre-stage exhausted-budget path (wall_budget_s=-1) so that
-        tool_probe_all returns TOOL_NOT_PROBED for every UP route.  This verifies
-        that _make_entry maps TOOL_NOT_PROBED → (tool_ok=None, tool_skip_reason=…).
-        The per-route deadline check in tool_probe_all itself is tested by
+        Uses the pre-stage exhausted-budget path (wall_budget_s=-1) so that the
+        tool stage is skipped for every UP route.  This verifies that _make_entry
+        maps TOOL_NOT_PROBED → (tool_ok=None, tool_skip_reason=…).
+        The per-route deadline check in the serial worker is tested by
         test_per_route_deadline_crossing_marks_remaining_not_probed above.
         """
         route_a = Route(provider="kilo", model="m-a", base_url="http://a.example.com/v1")
@@ -1101,6 +1140,11 @@ class PoolBreakerCascadeTest(unittest.TestCase):
         self.assertFalse(entry_a.answered)
         self.assertIsNone(entry_a.tool_ok)
 
+        # route_a: was probed (got 429), so probe_skip_reason must be None
+        self.assertIsNone(
+            entry_a.probe_skip_reason, "route_a was probed; no probe_skip_reason expected"
+        )
+
         # route_b and route_c: not probed due to pool breaker
         for key, label in [(route_b.key, "route_b"), (route_c.key, "route_c")]:
             entry = entries_by_key[key]
@@ -1110,6 +1154,11 @@ class PoolBreakerCascadeTest(unittest.TestCase):
                 entry.tool_skip_reason,
                 "pool_breaker_open",
                 f"{label}: skip reason must be pool_breaker_open",
+            )
+            self.assertEqual(
+                entry.probe_skip_reason,
+                "pool_breaker_open",
+                f"{label}: probe_skip_reason must be pool_breaker_open (not probed at liveness stage)",
             )
 
     def test_pool_429_during_tool_stage_skips_remaining_tool_probes(self) -> None:
