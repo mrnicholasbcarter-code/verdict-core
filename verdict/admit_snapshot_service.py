@@ -32,11 +32,19 @@ TIMER = "verdict-admit-snapshot.timer"
 
 
 def timer_state(unit: str = TIMER) -> dict[str, Any]:
-    """Timer state plus the service's last result, for doctor."""
-    from verdict import metadata_service
+    """Timer state plus the service's last result, for doctor.
 
-    values = metadata_service._show(unit, metadata_service._run_show)
-    service = metadata_service._show(SERVICE, metadata_service._run_show)
+    Returns ``{"state": "missing", "result": "unknown"}`` when systemd or
+    systemctl is unavailable (not installed, container, CI runner, etc.) so
+    that doctor rows stay ``failed``/``not-configured`` rather than raising.
+    """
+    try:
+        from verdict import metadata_service
+
+        values = metadata_service._show(unit, metadata_service._run_show)
+        service = metadata_service._show(SERVICE, metadata_service._run_show)
+    except Exception:
+        return {"state": "missing", "result": "unknown"}
     if values.get("LoadState") != "loaded":
         return {"state": "missing", "result": "unknown"}
     if values.get("ActiveState") == "failed" or service.get("ActiveState") == "failed":
@@ -100,9 +108,12 @@ def manage_service(
         commands = [["systemctl", "--user", "enable", "--now", TIMER]]
     rollback = None
     if not dry_run:
-        rollback = save_rollback(directory, plan)
+        # Create the directory before save_rollback so it can write the
+        # rollback manifest; on a fresh host the directory may not exist yet.
         if not uninstall:
             directory.mkdir(parents=True, exist_ok=True)
+        rollback = save_rollback(directory, plan)
+        if not uninstall:
             for name, body in files.items():
                 path = directory / name
                 if plan.get(name) in {"create", "replace"}:

@@ -235,7 +235,25 @@ def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
 
     monkeypatch.setattr(pars, "timer_state", fake_timer)
     monkeypatch.setattr(metadata_service, "timer_state", fake_timer)
+    import verdict.admit_snapshot_service as admit_snapshot_service
+
+    monkeypatch.setattr(admit_snapshot_service, "timer_state", fake_timer)
     import json
+
+    from verdict.free_tier_admit import default_admit_last_good_path
+
+    last_good = default_admit_last_good_path()
+    last_good.parent.mkdir(parents=True, exist_ok=True)
+    last_good.write_text(
+        json.dumps(
+            {
+                "http://127.0.0.1:20128": {
+                    "free_tier": {"fetched_at": NOW.isoformat(), "payload": {}}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     from verdict.identify_service import latest_report_path
 

@@ -346,7 +346,36 @@ def test_manage_service_uninstall_removes_units(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. installed_service_rows includes both new rows
+# 7. Bug fixes: mkdir before save_rollback; timer_state catches exceptions
+# ---------------------------------------------------------------------------
+
+
+def test_manage_service_install_on_nonexistent_directory(tmp_path: Path) -> None:
+    """manage_service must succeed when the unit_dir does not yet exist (fresh host)."""
+    unit_dir = tmp_path / "deep" / "nested" / "systemd" / "user"
+    assert not unit_dir.exists(), "precondition: directory must not exist"
+    manage_service(unit_dir=unit_dir, dry_run=False, run=lambda args: None)
+    assert (unit_dir / SERVICE).exists(), "service unit must be written"
+    assert (unit_dir / TIMER).exists(), "timer unit must be written"
+
+
+def test_timer_state_returns_missing_when_systemctl_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """timer_state catches exceptions from metadata_service._show and returns 'missing'."""
+    import verdict.admit_snapshot_service as asm
+
+    def _raise(*args: Any, **kwargs: Any) -> None:
+        raise OSError("systemctl not available")
+
+    import verdict.metadata_service as metadata_service
+
+    monkeypatch.setattr(metadata_service, "_run_show", _raise)
+    result = asm.timer_state()
+    assert result["state"] == "missing"
+    assert result["result"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# 8. installed_service_rows includes both new rows
 # ---------------------------------------------------------------------------
 
 
