@@ -3094,9 +3094,11 @@ def _run_summary(run_id: str, run_dir: Path) -> dict[str, Any]:
                             evt = json.loads(line)
                         except Exception:
                             break
-                        if isinstance(evt, dict):
+                        # Only the run_started event carries the authoritative
+                        # start timestamp; ignore any earlier non-typed events.
+                        if isinstance(evt, dict) and evt.get("type") == "run_started":
                             started_at = evt.get("at") or None
-                        break
+                            break
             except Exception as exc:
                 if summary_error is None:
                     summary_error = type(exc).__name__
@@ -3189,9 +3191,13 @@ async def get_run_events(
 
     def _read() -> dict[str, Any]:
         events_path = run_dir / "events.jsonl"
-        # Reject symlinks: a symlink could point outside the run dir.
-        if events_path.is_symlink() or not events_path.exists():
-            return {"events": [], "next_seq": None, "truncated": False}
+        # Open with O_NOFOLLOW so the check and the read are one atomic
+        # operation: a symlink swapped in after any earlier check is still
+        # rejected.  OSError (ELOOP, ENOENT, …) → empty events, no 500.
+        try:
+            fd = os.open(str(events_path), os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            return {"events": [], "next_seq": None, "truncated": False, "oversized_seqs": []}
 
         collected: list[dict[str, Any]] = []
         oversized_seqs: list[int] = []
@@ -3199,7 +3205,7 @@ async def get_run_events(
         truncated = False
         next_seq: int | None = None
 
-        with events_path.open("rb") as fh:
+        with os.fdopen(fd, "rb") as fh:
             for raw_line in fh:
                 line = raw_line.strip()
                 if not line:
@@ -3295,17 +3301,34 @@ async def get_run_receipt(run_id: str) -> Response:
         raise HTTPException(status_code=404, detail={"error": {"message": "run not found"}})
 
     receipt_path = run_dir / "receipt.json"
-    # Reject symlinks: receipt.json could point outside the run dir.
-    if receipt_path.is_symlink() or not receipt_path.exists():
-        raise HTTPException(
-            status_code=404, detail={"error": {"message": "receipt not found for run"}}
-        )
+
+    class _ReceiptNotReadableError(Exception):
+        """Raised from _load_and_verify when the file is missing or is a symlink."""
 
     def _load_and_verify() -> dict[str, Any]:
         from verdict.orchestration.receipt import verify_run_receipt
 
+        # Open with O_NOFOLLOW so the check and the read are one atomic
+        # operation: a symlink swapped in after any earlier check (e.g. an
+        # is_symlink() guard in the caller) is still rejected.  OSError covers
+        # ELOOP (symlink), ENOENT (missing), and other access failures.
         try:
-            receipt_data: Any = json.loads(receipt_path.read_bytes())
+            fd = os.open(str(receipt_path), os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise _ReceiptNotReadableError from exc
+
+        try:
+            with os.fdopen(fd, "rb") as fh:
+                raw = fh.read()
+        except Exception as exc:
+            return {
+                "run_id": run_id,
+                "receipt": None,
+                "verification": {"ok": False, "problems": [f"cannot read receipt: {exc}"]},
+            }
+
+        try:
+            receipt_data: Any = json.loads(raw)
         except Exception as exc:
             return {
                 "run_id": run_id,
@@ -3326,7 +3349,12 @@ async def get_run_receipt(run_id: str) -> Response:
             "verification": {"ok": not problems, "problems": problems},
         }
 
-    result = await asyncio.to_thread(_load_and_verify)
+    try:
+        result = await asyncio.to_thread(_load_and_verify)
+    except _ReceiptNotReadableError:
+        raise HTTPException(
+            status_code=404, detail={"error": {"message": "receipt not found for run"}}
+        ) from None
     return JSONResponse(result)
 
 

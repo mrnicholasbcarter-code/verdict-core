@@ -357,7 +357,12 @@ class TestGetRunEvents:
         client = _client(monkeypatch, tmp_path)
         r = client.get("/v1/runs/empty-run/events", headers=AUTH)
         assert r.status_code == 200
-        assert r.json() == {"events": [], "next_seq": None, "truncated": False}
+        assert r.json() == {
+            "events": [],
+            "next_seq": None,
+            "truncated": False,
+            "oversized_seqs": [],
+        }
 
     def test_run_not_found_returns_404(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1126,3 +1131,213 @@ class TestRunSummaryError:
         # The error name must be a non-empty string (e.g. "JSONDecodeError").
         assert isinstance(row["summary_error"], str)
         assert row["summary_error"]
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: corrupt middle line and torn final line must be reported
+# ---------------------------------------------------------------------------
+
+
+class TestCorruptionReporting:
+    """EventLog.read(repair=False) must report corruption, never silently truncate."""
+
+    def test_corrupt_middle_line_reported_not_silently_dropped(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A corrupt line mid-file must surface as a verification problem.
+
+        Before the fix, any parse failure in repair=False mode caused a silent
+        ``break`` that dropped every subsequent event.  After the fix it raises,
+        and ``verify_run_receipt`` captures the error in ``problems``.
+        """
+        from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+        run_dir = tmp_path / "runs" / "corrupt-mid"
+        run_dir.mkdir(parents=True)
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("run_started", run_id="corrupt-mid", goal="corruption test")
+        log.emit("run_finished", outcome="BLOCKED", reason="test")
+        write_run_receipt(run_dir)
+
+        # Inject a corrupt line between the two valid events.
+        events_path = run_dir / "events.jsonl"
+        lines = events_path.read_bytes().splitlines(keepends=True)
+        lines.insert(1, b'{"seq":999,"bad json without closing\n')
+        events_path.write_bytes(b"".join(lines))
+        after_inject = events_path.read_bytes()
+
+        client = _client(monkeypatch, tmp_path / "runs")
+        r = client.get("/v1/runs/corrupt-mid/receipt", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        # Corruption must be reported, not silently dropped.
+        assert body["verification"]["ok"] is False
+        problems = body["verification"]["problems"]
+        assert problems, "expected at least one problem for corrupt middle line"
+        # The problem text must mention corruption (not a hidden truncation).
+        low = " ".join(p.lower() for p in problems)
+        assert "corrupt" in low or "cannot rebuild" in low, (
+            f"problem text does not mention corruption: {problems}"
+        )
+        # File must be unchanged — no repair must have run.
+        assert events_path.read_bytes() == after_inject
+
+    def test_torn_final_line_reported_as_torn_tail(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A torn final line (no trailing newline) must be reported as a torn tail.
+
+        Only the very last line without a trailing newline may be treated as a
+        torn tail; it must surface in ``problems`` and the file must be unchanged.
+        """
+        from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+        run_dir = tmp_path / "runs" / "torn-final"
+        run_dir.mkdir(parents=True)
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("run_started", run_id="torn-final", goal="torn tail test")
+        log.emit("run_finished", outcome="BLOCKED", reason="test")
+        write_run_receipt(run_dir)
+
+        # Append a partial line WITHOUT a trailing newline to simulate a torn tail.
+        events_path = run_dir / "events.jsonl"
+        with events_path.open("ab") as fh:
+            fh.write(b'{"seq":999,"partial')
+        after_inject = events_path.read_bytes()
+        assert not after_inject.endswith(b"\n"), "test setup: file must not end with newline"
+
+        client = _client(monkeypatch, tmp_path / "runs")
+        r = client.get("/v1/runs/torn-final/receipt", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        # Torn tail must be reported as a problem.
+        assert body["verification"]["ok"] is False
+        problems = body["verification"]["problems"]
+        assert problems, "expected at least one problem for torn final line"
+        low = " ".join(p.lower() for p in problems)
+        assert "torn tail" in low or "cannot rebuild" in low, (
+            f"problem text does not mention torn tail: {problems}"
+        )
+        # File must be unchanged — no repair must have run.
+        assert events_path.read_bytes() == after_inject
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: O_NOFOLLOW is used for file opens (atomic symlink rejection)
+# ---------------------------------------------------------------------------
+
+
+class TestONoFollowUsed:
+    """os.open with O_NOFOLLOW must be called for events.jsonl and receipt.json."""
+
+    def test_events_open_uses_o_nofollow(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The events endpoint must open events.jsonl with O_NOFOLLOW."""
+        from verdict.orchestration.receipt import EventLog
+
+        run_dir = tmp_path / "runs" / "nofollow-evts"
+        run_dir.mkdir(parents=True)
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("run_started", run_id="nofollow-evts", goal="nofollow test")
+
+        opens: list[tuple[str, int]] = []
+        real_open = os.open
+
+        def _recording_open(path: str, flags: int, *args: object, **kwargs: object) -> int:
+            opens.append((str(path), flags))
+            return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(os, "open", _recording_open)
+
+        client = _client(monkeypatch, tmp_path / "runs")
+        r = client.get("/v1/runs/nofollow-evts/events", headers=AUTH)
+        assert r.status_code == 200
+
+        events_file = str(run_dir / "events.jsonl")
+        events_opens = [(p, f) for p, f in opens if p == events_file]
+        assert events_opens, f"os.open was not called for events.jsonl; all opens: {opens}"
+        assert all(f & os.O_NOFOLLOW for _, f in events_opens), (
+            f"O_NOFOLLOW not in flags for events.jsonl open: {events_opens}"
+        )
+
+    def test_receipt_open_uses_o_nofollow(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The receipt endpoint must open receipt.json with O_NOFOLLOW."""
+        from verdict.orchestration.receipt import EventLog, write_run_receipt
+
+        run_dir = tmp_path / "runs" / "nofollow-rcpt"
+        run_dir.mkdir(parents=True)
+        log = EventLog(run_dir / "events.jsonl")
+        log.emit("run_started", run_id="nofollow-rcpt", goal="nofollow receipt test")
+        log.emit("run_finished", outcome="BLOCKED", reason="test")
+        write_run_receipt(run_dir)
+
+        opens: list[tuple[str, int]] = []
+        real_open = os.open
+
+        def _recording_open(path: str, flags: int, *args: object, **kwargs: object) -> int:
+            opens.append((str(path), flags))
+            return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(os, "open", _recording_open)
+
+        client = _client(monkeypatch, tmp_path / "runs")
+        r = client.get("/v1/runs/nofollow-rcpt/receipt", headers=AUTH)
+        assert r.status_code == 200
+
+        receipt_file = str(run_dir / "receipt.json")
+        receipt_opens = [(p, f) for p, f in opens if p == receipt_file]
+        assert receipt_opens, f"os.open was not called for receipt.json; all opens: {opens}"
+        assert all(f & os.O_NOFOLLOW for _, f in receipt_opens), (
+            f"O_NOFOLLOW not in flags for receipt.json open: {receipt_opens}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: started_at comes from run_started event, not the first parseable event
+# ---------------------------------------------------------------------------
+
+
+class TestStartedAtFromRunStarted:
+    """_run_summary must take started_at from the run_started event only."""
+
+    def test_started_at_null_when_no_run_started_event(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """started_at is null when no run_started event exists in events.jsonl."""
+        run_dir = tmp_path / "run-no-start"
+        run_dir.mkdir()
+        # Write events with an `at` field but no run_started type.
+        (run_dir / "events.jsonl").write_text(
+            '{"seq":1,"at":"2025-01-01T00:00:00Z","type":"plan_created","node_id":"","data":{}}\n'
+        )
+
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs", headers=AUTH)
+        assert r.status_code == 200
+        row = next((x for x in r.json()["runs"] if x["run_id"] == "run-no-start"), None)
+        assert row is not None
+        assert row["started_at"] is None
+
+    def test_started_at_from_run_started_not_first_event(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """started_at must come from run_started, even when it is not the first event."""
+        run_dir = tmp_path / "run-late-start"
+        run_dir.mkdir()
+        # First event is plan_created (earlier timestamp); run_started comes second.
+        events = [
+            '{"seq":1,"at":"2025-01-01T00:00:00Z","type":"plan_created","node_id":"","data":{}}',
+            '{"seq":2,"at":"2026-06-15T12:00:00Z","type":"run_started","node_id":"","data":{}}',
+        ]
+        (run_dir / "events.jsonl").write_text("\n".join(events) + "\n")
+
+        client = _client(monkeypatch, tmp_path)
+        r = client.get("/v1/runs", headers=AUTH)
+        assert r.status_code == 200
+        row = next((x for x in r.json()["runs"] if x["run_id"] == "run-late-start"), None)
+        assert row is not None
+        # Must be from run_started (seq 2), not plan_created (seq 1).
+        assert row["started_at"] == "2026-06-15T12:00:00Z"

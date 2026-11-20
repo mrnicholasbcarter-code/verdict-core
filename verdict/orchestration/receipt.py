@@ -174,30 +174,61 @@ class EventLog:
         """Parse all complete events from the log.
 
         When constructed with ``repair=False`` (non-mutating / read-only mode),
-        an unparseable line is treated as end-of-log instead of raising; this
-        lets the API read a potentially torn tail without truncating the file.
-        In the default ``repair=True`` mode the behaviour is unchanged.
+        only the very last non-empty line of a file that lacks a trailing newline
+        may be treated as a torn partial write; every other bad line raises
+        ``OrchestrationError`` as usual.  A torn final line raises with the
+        message ``"torn tail at line N"`` so callers can distinguish it from
+        genuine mid-file corruption.  In ``repair=True`` mode all bad lines
+        raise, which is unchanged from the original behaviour.
         """
         if not self.path.exists():
             return []
-        events: list[RunEvent] = []
+
+        if not self._repair:
+            # Non-repair path: tolerant decode so a torn multi-byte sequence
+            # doesn't raise before we can inspect which line is bad.
+            raw_bytes = self.path.read_bytes()
+            # A file ending with "\n" has no torn tail: every line is complete.
+            has_trailing_newline = not raw_bytes or raw_bytes.endswith(b"\n")
+            all_lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
+            # Find the last non-empty line index (0-based) for torn-tail detection.
+            last_nonempty_idx: int | None = None
+            for i in range(len(all_lines) - 1, -1, -1):
+                if all_lines[i].strip():
+                    last_nonempty_idx = i
+                    break
+            events: list[RunEvent] = []
+            last = 0
+            for number, line in enumerate(all_lines, 1):
+                if not line.strip():
+                    continue
+                try:
+                    event = RunEvent.from_dict(json.loads(line))
+                except (ValueError, KeyError, TypeError) as exc:
+                    if not has_trailing_newline and (number - 1) == last_nonempty_idx:
+                        # Final line without trailing newline: possible torn write.
+                        raise OrchestrationError(f"torn tail at line {number}") from exc
+                    # Bad line mid-file is genuine corruption, not a torn tail.
+                    raise OrchestrationError(f"{self.path}:{number}: corrupt event: {exc}") from exc
+                if event.seq <= last:
+                    raise OrchestrationError(
+                        f"{self.path}:{number}: seq {event.seq} not greater than {last}"
+                    )
+                last = event.seq
+                events.append(event)
+            return events
+
+        # Repair path (default): strict UTF-8, raise on any bad line.
+        events = []
         last = 0
-        # Use errors='replace' so a torn multi-byte sequence doesn't raise
-        # UnicodeDecodeError before we have a chance to handle the bad line.
-        raw_text = self.path.read_bytes().decode("utf-8", errors="replace")
-        for number, line in enumerate(raw_text.splitlines(), 1):
+        for number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), 1):
             if not line.strip():
                 continue
             try:
                 event = RunEvent.from_dict(json.loads(line))
             except (ValueError, KeyError, TypeError) as exc:
-                if not self._repair:
-                    # Non-mutating mode: a parse failure is a torn tail — stop.
-                    break
                 raise OrchestrationError(f"{self.path}:{number}: corrupt event: {exc}") from exc
             if event.seq <= last:
-                if not self._repair:
-                    break
                 raise OrchestrationError(
                     f"{self.path}:{number}: seq {event.seq} not greater than {last}"
                 )
