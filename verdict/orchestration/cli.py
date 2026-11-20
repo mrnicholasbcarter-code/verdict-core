@@ -71,15 +71,17 @@ def _escalation_tier0_cap(capacity_filter: tuple[str, ...]) -> frozenset[Capacit
     - --capacity free                   → {FREE}
     - --capacity subscription           → {SUBSCRIPTION}
     - --capacity free,subscription      → {SUBSCRIPTION, FREE}
-    - --capacity metered (degenerate)   → {SUBSCRIPTION, FREE}  (safe fallback)
+    - --capacity metered                → frozenset()  (no tier-0 escalation)
+
+    An empty return value means "no tier-0 escalation is possible": the runtime
+    will emit 'escalation_exhausted' rather than selecting a subscription/free
+    tier-0 route.  This respects the operator's intent — if they filtered to
+    metered-only, escalation must not silently pick a subscription route.
     """
     if not capacity_filter:
         return _ESCALATION_TIER0_BASE
     allowed = frozenset(CapacityClass(v) for v in capacity_filter)
-    result = _ESCALATION_TIER0_BASE & allowed
-    # Degenerate case: --capacity metered/unknown leaves the intersection empty.
-    # Fall back to the full default so METERED/UNKNOWN still cannot slip in.
-    return result if result else _ESCALATION_TIER0_BASE
+    return _ESCALATION_TIER0_BASE & allowed
 
 
 # Planner constraints are prompt text; keep them a small, reviewable input.

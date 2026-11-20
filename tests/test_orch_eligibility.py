@@ -1683,7 +1683,7 @@ def test_escalation_capacity_excluded_rejects_metered_tier0_route(tmp_path: Path
     when escalation_capacity_classes restricts to {SUBSCRIPTION, FREE}.
 
     The capacity class filter fires AFTER the tier check passes (tier 0 <= ceiling 0).
-    It must not apply when escalation_capacity_classes is empty (default non-escalated).
+    It must not apply when escalation_capacity_classes is None (default; non-escalated path).
 
     Failing-first: before the capacity class check was added to _assess, the METERED
     tier-0 route would pass and be selected through the escalation path.
@@ -1708,12 +1708,12 @@ def test_escalation_capacity_excluded_rejects_metered_tier0_route(tmp_path: Path
         "METERED routes must be excluded when escalation_capacity_classes is set"
     )
 
-    # Without the restriction (default empty set), the METERED tier-0 route passes.
+    # Without the restriction (default None), the METERED tier-0 route passes.
     req_normal = TaskRequirements(max_capability_tier=3, escalation_max_tier=0)
     _, verdicts_normal = ladder.select(req_normal, now=NOW)
     metered_normal = by_route(verdicts_normal)["cx/gpt-6-sol"]
     assert metered_normal.failed_stage is None, (
-        "METERED tier-0 must pass when escalation_capacity_classes is empty (normal path)"
+        "METERED tier-0 must pass when escalation_capacity_classes is None (normal path)"
     )
 
 

@@ -324,9 +324,11 @@ class NodeRun:
     # and only decreases from there.  None = no ceiling active.
     escalation_tier_ceiling: int | None = None
     # Capacity class restriction active for the current escalation ceiling.
-    # Non-empty only when escalation_tier_ceiling == 0 (tier-0 escalation):
-    # restricts the escalated selection to subscription/free routes.
-    escalation_capacity_classes: frozenset[CapacityClass] = field(default_factory=frozenset)
+    # Set when escalation_tier_ceiling == 0 (tier-0 escalation).
+    # None = no restriction active (default).
+    # frozenset() (empty) = restriction active but nothing allowed →
+    #   escalation produces no candidates, _drive emits 'escalation_exhausted'.
+    escalation_capacity_classes: frozenset[CapacityClass] | None = None
 
 
 @dataclass(frozen=True)
@@ -979,7 +981,7 @@ class DagRuntime:
                             c.value for c in sorted(run.escalation_capacity_classes)
                         ]
                     }
-                    if run.escalation_capacity_classes
+                    if run.escalation_capacity_classes is not None
                     else {}
                 )
                 self.events.emit(
@@ -1019,7 +1021,7 @@ class DagRuntime:
                         judged_failure_count=run.judged_failure_count,
                         reason="at_strongest_tier",
                         capacity_classes_allowed=[
-                            c.value for c in sorted(run.escalation_capacity_classes)
+                            c.value for c in sorted(run.escalation_capacity_classes or ())
                         ],
                     )
                 # Normal selection (no escalation ceiling, or ceiling left no route).

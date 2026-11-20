@@ -153,7 +153,8 @@ class EscalationSelector:
                 continue
 
             # Apply capacity class restriction for escalation.
-            if esc_cap and capacity not in esc_cap:
+            # Use `is not None` not truthiness: frozenset() means "nothing allowed".
+            if esc_cap is not None and capacity not in esc_cap:
                 verdicts.append(
                     RouteVerdict(
                         route,
@@ -736,3 +737,50 @@ async def test_ordinary_first_selection_never_picks_tier0(repo: Path) -> None:
     dispatched = [e["route_id"] for e in terminal_events]
     assert "cc/opus" not in dispatched, f"tier-0 route dispatched without escalation: {dispatched}"
     assert result.nodes["n"].state is NodeState.VALIDATED
+
+
+async def test_empty_escalation_capacity_set_emits_exhausted_selects_nothing(repo: Path) -> None:
+    """When RuntimePolicy.escalation_tier0_capacity_classes is frozenset() (empty),
+    the tier-0 escalation path must select no route and emit 'escalation_exhausted'.
+
+    This models the '--capacity metered' operator filter: the intersection of
+    {SUBSCRIPTION, FREE} with {METERED} is empty, so _escalation_tier0_cap()
+    returns frozenset().  Every tier-0 candidate fails the capacity class check
+    (a.capacity not in frozenset() is always True), so _esc_choice is None and
+    'escalation_exhausted' is emitted.  The tier-0 subscription route must never
+    be dispatched through the escalation path.
+
+    Failing-first: before the None-vs-empty-frozenset fix, an empty frozenset was
+    treated as "no restriction" (falsy), so the SUBSCRIPTION tier-0 route would
+    have been selected despite the operator's metered-only filter.
+    """
+
+    def behaviour(node_id: str, route: str, call_num: int) -> str:
+        if route == "cc/sonnet":
+            return "badcode"
+        return "ok"  # cc/opus would succeed, but must not be reached via escalation
+
+    ex = CallCountingExecutor(behaviour)
+    graph = WorkGraph("g", (node("n"),))
+    rt, ev, _sel = make_esc(
+        repo,
+        graph,
+        ex,
+        [("cc/sonnet", 1, CapacityClass.SUBSCRIPTION), ("cc/opus", 0, CapacityClass.SUBSCRIPTION)],
+        # Empty set: models --capacity metered (no tier-0 escalation allowed).
+        escalation_tier0_capacity_classes=frozenset(),
+    )
+
+    await rt.run()
+
+    # The tier-0 subscription route must never be targeted by escalation.
+    esc_events = ev.of("escalation")
+    assert all(e.get("to_route") != "cc/opus" for e in esc_events), (
+        "tier-0 subscription route must not be targeted when escalation set is empty"
+    )
+    # escalation_exhausted must be emitted when the allowed set is empty.
+    exhaust = ev.of("escalation_exhausted")
+    assert len(exhaust) >= 1, (
+        "expected escalation_exhausted when escalation_tier0_capacity_classes is frozenset()"
+    )
+    assert exhaust[0]["reason"] == "at_strongest_tier"

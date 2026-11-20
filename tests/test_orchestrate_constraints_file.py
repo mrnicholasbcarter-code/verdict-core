@@ -161,9 +161,10 @@ def test_resume_requires_the_constraints_the_run_started_with(tmp_path: Path) ->
         (("subscription",), frozenset({CapacityClass.SUBSCRIPTION})),
         # --capacity free,subscription: both (same as default).
         (("free", "subscription"), frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})),
-        # --capacity metered: degenerate; falls back to full default
-        # (METERED and UNKNOWN can never be in the escalation set).
-        (("metered",), frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})),
+        # --capacity metered: intersection with {SUBSCRIPTION, FREE} is empty →
+        # frozenset() signals "no tier-0 escalation possible".  The runtime emits
+        # 'escalation_exhausted' rather than overriding the operator's filter.
+        (("metered",), frozenset()),
     ],
 )
 def test_escalation_tier0_cap_helper(
@@ -173,9 +174,13 @@ def test_escalation_tier0_cap_helper(
 
     METERED and UNKNOWN can never be in the escalation set regardless of
     --capacity.  An empty tuple (no flag) returns the full default.
+    When --capacity metered (or any value whose intersection with
+    {SUBSCRIPTION, FREE} is empty), returns frozenset() — meaning no tier-0
+    escalation is possible.  The runtime emits 'escalation_exhausted' instead
+    of overriding the operator's filter with a subscription route.
 
-    Failing-first: before _escalation_tier0_cap was added, --capacity free
-    had no effect on the tier-0 escalation path.
+    Failing-first: before this fix, --capacity metered fell back to
+    {SUBSCRIPTION, FREE}, overriding the operator's intent.
     """
     assert cli._escalation_tier0_cap(capacity_flag) == expected
 
