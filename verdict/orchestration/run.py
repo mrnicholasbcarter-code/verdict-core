@@ -447,6 +447,7 @@ async def plan_with_failover(
             exclude_pools=frozenset(tried_pools),
             max_capability_tier=PLANNER_MAX_CAPABILITY_TIER,
             task_family=task_family,
+            role_ordering="strongest_first",
         )
         choice, considered = selector.select(requirements, now=now())
         if choice is None:

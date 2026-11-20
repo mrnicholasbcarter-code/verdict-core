@@ -1421,6 +1421,62 @@ class TestCheapestSufficientFirst:
         assert chosen is not None and chosen.route_id == "kr/known-route"
 
 
+class TestRoleOrdering:
+    """role_ordering on TaskRequirements selects cheapest-sufficient vs strongest-first."""
+
+    def test_worker_node_picks_smallest_slack_sufficient_route(self, tmp_path: Path) -> None:
+        """An implement node uses cheapest_sufficient_first: slack=0 beats slack=1.
+
+        A tier-1 route (slack=0 for a tier-1 task) must beat a tier-0 route
+        (slack=1) when role_ordering is "cheapest_sufficient_first" (the default).
+        """
+        rows = [
+            {**row("cc/claude-opus-5", owned_by="claude"), "capability_tier": 0},  # slack=1
+            {**row("cc/claude-sonnet-5", owned_by="claude"), "capability_tier": 1},  # slack=0
+        ]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("claude")])
+        # Default role_ordering is "cheapest_sufficient_first".
+        req = TaskRequirements(max_capability_tier=1, role_ordering="cheapest_sufficient_first")
+        chosen, verdicts = ladder.select(req, now=NOW)
+        assert chosen is not None and chosen.route_id == "cc/claude-sonnet-5", (
+            "worker node must pick the smallest-slack sufficient route (cheapest_sufficient_first)"
+        )
+        rc = by_route(verdicts)
+        assert rc["cc/claude-sonnet-5"].rank_components is not None
+        assert rc["cc/claude-sonnet-5"].rank_components["slack"] == 0
+        assert (
+            rc["cc/claude-sonnet-5"].rank_components["ordering_basis"]
+            == "cheapest_sufficient_first"
+        )
+
+    def test_planner_node_picks_highest_rated_admitted_route(self, tmp_path: Path) -> None:
+        """A planner node uses strongest_first: tier-0 beats tier-1 even when slack is worse.
+
+        For a tier-1 max task, tier-0 (slack=1) has worse slack than tier-1 (slack=0),
+        but with role_ordering="strongest_first" the tier-0 route's lower rating_rank
+        wins because rating comes before slack in the sort key.
+        """
+        rows = [
+            # tier-0: rating_rank=2 (declared tier), slack=1 for a tier-1 task.
+            {**row("cc/claude-opus-5", owned_by="claude"), "capability_tier": 0},
+            # tier-1: rating_rank=2 (declared tier), slack=0 for a tier-1 task.
+            {**row("cc/claude-sonnet-5", owned_by="claude"), "capability_tier": 1},
+        ]
+        ladder, _ = make_ladder(tmp_path, rows, [conn("claude")])
+        req = TaskRequirements(max_capability_tier=1, role_ordering="strongest_first")
+        chosen, verdicts = ladder.select(req, now=NOW)
+        assert chosen is not None and chosen.route_id == "cc/claude-opus-5", (
+            "planner node must pick the highest-rated admitted route (strongest_first)"
+        )
+        rc = by_route(verdicts)
+        assert rc["cc/claude-opus-5"].rank_components is not None
+        assert rc["cc/claude-opus-5"].rank_components["ordering_basis"] == "strongest_first"
+        # Tier-0 has slack=1 yet wins because rating comes before slack.
+        assert rc["cc/claude-opus-5"].rank_components["slack"] == 1
+        assert rc["cc/claude-sonnet-5"].rank_components is not None
+        assert rc["cc/claude-sonnet-5"].rank_components["slack"] == 0
+
+
 def test_unknown_capability_is_never_promoted_to_sufficient(tmp_path: Path) -> None:
     """BOD-271: an unrecognized model is not silently medium tier."""
     rows = [row("kr/mystery-model", owned_by="kiro")]

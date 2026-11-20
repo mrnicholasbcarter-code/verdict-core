@@ -1,33 +1,60 @@
-# Spec Delta: Cheapest sufficient route first
+# Spec Delta: Cheapest sufficient route first with role split
 
 ## Purpose
 
 Ensure the route with the smallest tier overage above the node's floor (slack)
-ranks first within each capacity class, so the least capable route that still
-meets the requirement is preferred over a stronger (more expensive) one.
+ranks first within each capacity class for worker/implement nodes, so the least
+capable route that still meets the requirement is preferred over a stronger (more
+expensive) one.
+
+Planner and reviewer roles use the inverse ordering (strongest-first) because
+decomposition quality drives everything downstream.
+
+## ADDED Requirements
+
+### Requirement: `TaskRequirements` SHALL carry a `role_ordering` field
+
+`TaskRequirements` SHALL expose a `role_ordering: str` field with the default
+value `"cheapest_sufficient_first"`.  Callers that need strongest-first SHALL
+pass `role_ordering="strongest_first"` explicitly.
+
+#### Scenario: Default role_ordering is cheapest_sufficient_first
+
+- **WHEN** a `TaskRequirements` is constructed without `role_ordering`
+- **THEN** `requirements.role_ordering` SHALL equal `"cheapest_sufficient_first"`
 
 ## MODIFIED Requirements
 
-### Requirement: `_rank_key` SHALL place slack before rating within a capacity class
+### Requirement: `_rank_key` ordering SHALL depend on `role_ordering`
 
-The selection sort key SHALL order admitted routes by slack (ascending) before
-any rating-based key, so the route that most closely matches the floor (slack=0)
-wins over an over-qualified route (slack>0) with a better rating.
+`EligibilityLadder._rank_key` SHALL support two orderings, chosen by
+`requirements.role_ordering` passed to `_assess_all`:
 
-Subscription token usage SHALL follow slack and precede rating, preserving D3 of
-`2026-11-15-shared-selection-contract` for within-slack tie-breaking.
+**cheapest_sufficient_first** (worker/implement nodes, the default):
+Slack comes before rating so the least capable sufficient route wins.
+Subscription token usage follows slack and precedes rating (D3 preserved).
+Full sort key: `capacity_order → slack → subscription_tokens → rating_rank → …`
 
-The full sort key within a capacity class is therefore:
-`slack → subscription_tokens → rating_rank → neg_rating → declared_tier → …`
+**strongest_first** (planner and reviewer roles):
+Rating and declared tier come before slack so the highest-quality admitted route
+wins.  Subscription token usage follows capacity_order, then rating.
+Full sort key: `capacity_order → subscription_tokens → rating_rank → … → slack`
 
-#### Scenario: Tier-1 route beats tier-0 route for a tier-1 required task
+#### Scenario: Worker node picks the smallest-slack sufficient route
 
-- **WHEN** a task requires `max_capability_tier=1`
+- **WHEN** `role_ordering="cheapest_sufficient_first"`
 - **AND** the admitted set contains a tier-1 subscription route (slack=0) and a
-  tier-0 subscription route (slack=1)
+  tier-0 subscription route (slack=1) for a tier-1 required task
 - **THEN** the tier-1 route SHALL be selected
-- **AND** `rank_components["slack"]` SHALL be 0 for the tier-1 route and 1 for
-  the tier-0 route
+- **AND** `rank_components["ordering_basis"]` SHALL equal `"cheapest_sufficient_first"`
+
+#### Scenario: Planner node picks the highest-rated admitted route
+
+- **WHEN** `role_ordering="strongest_first"`
+- **AND** the admitted set contains a tier-0 subscription route (slack=1) and a
+  tier-1 subscription route (slack=0) for a tier-1 required task
+- **THEN** the tier-0 route SHALL be selected (better rated despite worse slack)
+- **AND** `rank_components["ordering_basis"]` SHALL equal `"strongest_first"`
 
 #### Scenario: Escalation to ceiling=0 selects tier-0 when tier-1 is excluded
 
@@ -36,9 +63,10 @@ The full sort key within a capacity class is therefore:
 - **THEN** the tier-1 route SHALL fail with reason `below_escalation_floor`
 - **AND** the tier-0 route SHALL be selected
 
-#### Scenario: Equal slack is broken by rating quality
+#### Scenario: Equal slack is broken by rating quality (cheapest_sufficient_first)
 
-- **WHEN** two admitted routes have the same slack
+- **WHEN** `role_ordering="cheapest_sufficient_first"` (or default)
+- **AND** two admitted routes have the same slack
 - **AND** one has declared-tier evidence (rating_rank=2) and the other has
   unknown rating (rating_rank=3)
 - **THEN** the route with declared-tier evidence SHALL be selected
@@ -46,11 +74,12 @@ The full sort key within a capacity class is therefore:
 ### Requirement: `rank_components` SHALL expose `ordering_basis`
 
 The `rank_components` and `_rank_components_for_display` dicts SHALL include the
-key `"ordering_basis"` with the constant value `"cheapest_sufficient_first"` so
-consumers can confirm which policy produced the selection.
+key `"ordering_basis"` whose value reflects the ordering actually used:
+`"cheapest_sufficient_first"` or `"strongest_first"`.
 
-#### Scenario: Rank components include ordering_basis
+#### Scenario: Rank components reflect the active ordering
 
-- **WHEN** any route is assessed by `EligibilityLadder`
-- **THEN** `rank_components["ordering_basis"]` SHALL equal
-  `"cheapest_sufficient_first"`
+- **WHEN** a route is assessed by `EligibilityLadder` with `role_ordering="strongest_first"`
+- **THEN** `rank_components["ordering_basis"]` SHALL equal `"strongest_first"`
+- **WHEN** a route is assessed with `role_ordering="cheapest_sufficient_first"` (or default)
+- **THEN** `rank_components["ordering_basis"]` SHALL equal `"cheapest_sufficient_first"`
