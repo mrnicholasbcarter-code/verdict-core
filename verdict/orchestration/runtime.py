@@ -198,6 +198,14 @@ class RuntimePolicy:
     # BOD-433 authority mode: every worker send needs a minted dispatch permit.
     # Without a DispatchAuthority to prove routes, every send is denied.
     require_dispatch_permit: bool = False
+    # Capacity classes allowed for tier-0 escalation.  When a tier-1 route
+    # accumulates K judged failures, the runtime attempts to escalate to tier-0
+    # but restricts selection to these classes so that METERED (pay-per-token)
+    # and UNKNOWN-capacity tier-0 routes are never selected through escalation.
+    # Subscription and free tier-0 routes (e.g. Claude Max / Opus cc/) are safe.
+    escalation_tier0_capacity_classes: frozenset[CapacityClass] = frozenset(
+        {CapacityClass.SUBSCRIPTION, CapacityClass.FREE}
+    )
 
 
 @dataclass(frozen=True)
@@ -315,6 +323,10 @@ class NodeRun:
     # _ESCALATION_JUDGED_FAILURE_THRESHOLD this is set to (last_selected_tier - 1)
     # and only decreases from there.  None = no ceiling active.
     escalation_tier_ceiling: int | None = None
+    # Capacity class restriction active for the current escalation ceiling.
+    # Non-empty only when escalation_tier_ceiling == 0 (tier-0 escalation):
+    # restricts the escalated selection to subscription/free routes.
+    escalation_capacity_classes: frozenset[CapacityClass] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -945,6 +957,7 @@ class DagRuntime:
                     exclude_routes=frozenset(tried),
                     exclude_pools=frozenset(run.excluded_pools),
                     escalation_max_tier=_esc_ceiling,
+                    escalation_capacity_classes=run.escalation_capacity_classes,
                 )
                 # BOD-341: run on a worker thread to avoid blocking the event loop.
                 _esc_choice, _esc_considered, _esc_post = await asyncio.to_thread(
@@ -960,6 +973,15 @@ class DagRuntime:
             _post: dict[str, int] = {}
             if _esc_choice is not None:
                 # Escalation found a stronger route within the admitted set.
+                _cap_data: dict[str, Any] = (
+                    {
+                        "capacity_classes_allowed": [
+                            c.value for c in sorted(run.escalation_capacity_classes)
+                        ]
+                    }
+                    if run.escalation_capacity_classes
+                    else {}
+                )
                 self.events.emit(
                     "escalation",
                     node_id,
@@ -970,6 +992,7 @@ class DagRuntime:
                     judged_failure_count=run.judged_failure_count,
                     attempt=run.attempt + 1,
                     reason="judged_failures_threshold",
+                    **_cap_data,
                 )
                 run.history.append(
                     {
@@ -984,6 +1007,21 @@ class DagRuntime:
                 )
                 choice, considered, _post = _esc_choice, _esc_considered, _esc_post
             else:
+                # When the tier-0 escalation ceiling is active but the restricted
+                # selection found no qualifying route (no subscription/free tier-0
+                # candidate exists), emit 'escalation_exhausted' so the receipt
+                # records the failed escalation attempt before the fallback runs.
+                if _esc_ceiling == 0:
+                    self.events.emit(
+                        "escalation_exhausted",
+                        node_id,
+                        from_tier=run.last_selected_tier,
+                        judged_failure_count=run.judged_failure_count,
+                        reason="at_strongest_tier",
+                        capacity_classes_allowed=[
+                            c.value for c in sorted(run.escalation_capacity_classes)
+                        ],
+                    )
                 # Normal selection (no escalation ceiling, or ceiling left no route).
                 # BOD-341: selection reads the health cache/inventory and can take
                 # seconds. Running it inline here would block the whole event loop
@@ -2212,10 +2250,26 @@ class DagRuntime:
                         or new_ceil < run.escalation_tier_ceiling
                     ):
                         run.escalation_tier_ceiling = new_ceil
+                elif t == 1:
+                    # t == 1 (Sonnet-class): attempt to escalate to tier-0 (frontier).
+                    # Restrict selection to subscription/free capacity so the runtime
+                    # never reaches for METERED or UNKNOWN-capacity tier-0 routes
+                    # through the escalation path.  Whether a qualifying tier-0
+                    # candidate exists is resolved lazily by _drive; if none is found,
+                    # _drive emits 'escalation_exhausted'.
+                    new_ceil = 0
+                    if (
+                        run.escalation_tier_ceiling is None
+                        or new_ceil < run.escalation_tier_ceiling
+                    ):
+                        run.escalation_tier_ceiling = new_ceil
+                        run.escalation_capacity_classes = (
+                            self.policy.escalation_tier0_capacity_classes
+                        )
                 else:
-                    # t == 1: already at the strongest known tier; no stronger route
-                    # exists to escalate to.  Emit the exhausted event so the receipt
-                    # records it, but do not set a ceiling (there is nowhere to narrow).
+                    # t == 0: already running at tier-0 (frontier); no stronger tier
+                    # exists.  Emit exhausted from _record_failure so the receipt
+                    # captures it immediately (no escalation ceiling can be set here).
                     self.events.emit(
                         "escalation_exhausted",
                         run.node.node_id,

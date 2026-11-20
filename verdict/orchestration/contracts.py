@@ -439,6 +439,13 @@ class TaskRequirements:
     # the effective ceiling is min(max_capability_tier, escalation_max_tier).
     # None means no escalation ceiling is in effect.
     escalation_max_tier: int | None = None
+    # Capacity class restriction for escalation.  When non-empty, only routes
+    # whose capacity class is in this set are eligible during the escalated
+    # attempt.  Used for tier-0 escalation to restrict selection to
+    # subscription/free routes and prevent accidental selection of METERED
+    # (pay-per-token) or UNKNOWN-capacity tier-0 routes.
+    # Empty frozenset means no restriction (default; non-escalated selection).
+    escalation_capacity_classes: frozenset[CapacityClass] = frozenset()
     # Goal-derived family for usage history, independent of role capability gates.
     task_family: str | None = None
 

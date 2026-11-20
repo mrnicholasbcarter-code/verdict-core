@@ -1676,3 +1676,70 @@ def test_unknown_capability_escalating_reason_pins_at_ceiling_below_3(tmp_path: 
         f"expected 'unknown_capability_escalating' but got {mystery.reason!r}; "
         "eligibility._assess must check escalation_max_tier before _effective_max_tier"
     )
+
+
+def test_escalation_capacity_excluded_rejects_metered_tier0_route(tmp_path: Path) -> None:
+    """A tier-0 METERED route must be rejected with reason 'escalation_capacity_excluded'
+    when escalation_capacity_classes restricts to {SUBSCRIPTION, FREE}.
+
+    The capacity class filter fires AFTER the tier check passes (tier 0 <= ceiling 0).
+    It must not apply when escalation_capacity_classes is empty (default non-escalated).
+
+    Failing-first: before the capacity class check was added to _assess, the METERED
+    tier-0 route would pass and be selected through the escalation path.
+    """
+    # Tier-0 METERED route: apikey auth + positive pricing → METERED capacity.
+    rows = [{**row("cx/gpt-6-sol", owned_by="codex"), "capability_tier": 0}]
+    ladder, _ = make_ladder(tmp_path, rows, [conn("codex", auth="apikey", plan="pay")])
+
+    # With escalation_capacity_classes restricting to SUBSCRIPTION/FREE:
+    req_escalated = TaskRequirements(
+        max_capability_tier=3,
+        escalation_max_tier=0,
+        escalation_capacity_classes=frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE}),
+    )
+    _, verdicts = ladder.select(req_escalated, now=NOW)
+    metered_route = by_route(verdicts)["cx/gpt-6-sol"]
+    assert metered_route.failed_stage == EligibilityStage.TASK_ELIGIBLE, (
+        f"expected TASK_ELIGIBLE but got {metered_route.failed_stage!r}"
+    )
+    assert metered_route.reason == "escalation_capacity_excluded", (
+        f"expected 'escalation_capacity_excluded' but got {metered_route.reason!r}; "
+        "METERED routes must be excluded when escalation_capacity_classes is set"
+    )
+
+    # Without the restriction (default empty set), the METERED tier-0 route passes.
+    req_normal = TaskRequirements(max_capability_tier=3, escalation_max_tier=0)
+    _, verdicts_normal = ladder.select(req_normal, now=NOW)
+    metered_normal = by_route(verdicts_normal)["cx/gpt-6-sol"]
+    assert metered_normal.failed_stage is None, (
+        "METERED tier-0 must pass when escalation_capacity_classes is empty (normal path)"
+    )
+
+
+def test_escalation_capacity_allows_subscription_tier0_route(tmp_path: Path) -> None:
+    """A tier-0 SUBSCRIPTION route must pass when escalation_capacity_classes
+    includes SUBSCRIPTION.
+
+    oauth auth_type produces SUBSCRIPTION capacity.  With escalation ceiling=0
+    and capacity classes {SUBSCRIPTION, FREE}, the route must reach SELECTED.
+
+    Failing-first: if the capacity check mistakenly blocked all routes, this
+    would fail even for the subscription route that should be allowed.
+    """
+    rows = [{**row("cc/claude-opus-5", owned_by="claude"), "capability_tier": 0}]
+    ladder, _ = make_ladder(tmp_path, rows, [conn("claude", auth="oauth")])
+
+    req = TaskRequirements(
+        max_capability_tier=3,
+        escalation_max_tier=0,
+        escalation_capacity_classes=frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE}),
+    )
+    chosen, verdicts = ladder.select(req, now=NOW)
+    sub_route = by_route(verdicts)["cc/claude-opus-5"]
+    assert sub_route.failed_stage is None, (
+        f"subscription tier-0 must pass escalation capacity check; got {sub_route.reason!r}"
+    )
+    assert chosen is not None and chosen.route_id == "cc/claude-opus-5", (
+        "subscription tier-0 must be selected when escalation_capacity_classes includes SUBSCRIPTION"
+    )

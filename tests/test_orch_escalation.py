@@ -6,6 +6,10 @@ Tests (failing-first per TDD):
 2. Escalation never selects a route excluded from the admitted set (exclude_routes respected).
 3. With no stronger route the runtime falls back to the best available, budget bounded.
 4. An interrupted (non-judged, e.g. quota) failure does not count toward escalation.
+5. Two judged failures on a tier-1 subscription route escalate to a tier-0 subscription route.
+6. Only a METERED tier-0 route available → escalation_exhausted; never selected through escalation.
+7. Free-only policy excludes subscription tier-0 from escalation path.
+8. Ordinary (non-escalated) first selection never picks tier-0.
 """
 
 from __future__ import annotations
@@ -58,16 +62,29 @@ class Events:
 class EscalationSelector:
     """Tier-aware selector for escalation tests.
 
-    Each route is registered as (route_id, capability_tier).  When
-    requirements.escalation_max_tier is set, routes whose tier is strictly
-    above the ceiling are excluded (returned with reason "below_escalation_floor"
-    at TASK_ELIGIBLE stage, mirroring what the real eligibility ladder does).
+    Each route is registered as a 2-tuple (route_id, capability_tier) or a
+    3-tuple (route_id, capability_tier, CapacityClass).  2-tuples default to
+    CapacityClass.SUBSCRIPTION.
+
+    When requirements.escalation_max_tier is set, routes whose tier is strictly
+    above the ceiling are excluded (reason "below_escalation_floor" at
+    TASK_ELIGIBLE stage, mirroring the real eligibility ladder).
+
+    When requirements.escalation_capacity_classes is non-empty, routes whose
+    capacity class is not in the allowed set are excluded (reason
+    "escalation_capacity_excluded" at TASK_ELIGIBLE stage).
 
     Routes in requirements.exclude_routes are always excluded regardless of tier.
     """
 
-    def __init__(self, routes: list[tuple[str, int | None]]) -> None:
-        self.routes = routes  # ordered by preference (first = cheapest / best)
+    def __init__(
+        self, routes: list[tuple[str, int | None] | tuple[str, int | None, CapacityClass]]
+    ) -> None:
+        # Normalise to 3-tuples; default capacity = SUBSCRIPTION.
+        self._routes: list[tuple[str, int | None, CapacityClass]] = []
+        for r in routes:
+            cap = r[2] if len(r) > 2 else CapacityClass.SUBSCRIPTION  # type: ignore[misc]
+            self._routes.append((r[0], r[1], cap))
         self.cool: dict[str, float] = {}
         self.successes: list[str] = []
 
@@ -82,8 +99,9 @@ class EscalationSelector:
         verdicts: list[RouteVerdict] = []
         chosen: RouteVerdict | None = None
         esc_max = requirements.escalation_max_tier
+        esc_cap = requirements.escalation_capacity_classes
 
-        for rank, (route, tier) in enumerate(self.routes, 1):
+        for rank, (route, tier, capacity) in enumerate(self._routes, 1):
             provider = route.split("/")[0]
 
             if route in requirements.exclude_routes:
@@ -134,13 +152,28 @@ class EscalationSelector:
                 )
                 continue
 
+            # Apply capacity class restriction for escalation.
+            if esc_cap and capacity not in esc_cap:
+                verdicts.append(
+                    RouteVerdict(
+                        route,
+                        provider,
+                        EligibilityStage.AVAILABLE,
+                        EligibilityStage.TASK_ELIGIBLE,
+                        "escalation_capacity_excluded",
+                        capacity,
+                        capability_tier=tier,
+                    )
+                )
+                continue
+
             v = RouteVerdict(
                 route,
                 provider,
                 EligibilityStage.SELECTED,
                 None,
                 "ok",
-                CapacityClass.SUBSCRIPTION,
+                capacity,
                 rank=rank,
                 capability_tier=tier,
             )
@@ -518,3 +551,188 @@ async def test_unknown_tier_escalation_succeeds_when_ceiling_is_below_3(repo: Pa
     esc = esc_events[0]
     assert esc["from_tier"] is None
     assert esc["to_route"] == "cc/strong"
+
+
+# ---------------------------------------------------------------------------
+# Tier-0 escalation tests (failing-first)
+# ---------------------------------------------------------------------------
+
+
+async def test_tier1_subscription_route_escalates_to_tier0_subscription_route(repo: Path) -> None:
+    """Two judged failures on a tier-1 subscription route must escalate to a tier-0
+    subscription route on the third attempt.
+
+    Route pool: cc/sonnet (tier 1, subscription) chosen first; cc/opus (tier 0,
+    subscription) listed second.
+
+    After 2 judged failures on cc/sonnet, the runtime sets escalation_tier_ceiling=0
+    with capacity classes {SUBSCRIPTION, FREE}.  The escalation path must pick
+    cc/opus (tier 0, subscription).  An 'escalation' event is emitted with
+    from_tier=1, to_tier=0, and capacity_classes_allowed.
+
+    Failing-first: before the t==1 branch was added, the runtime emitted
+    'escalation_exhausted' at tier-1 and never attempted tier-0.
+    """
+
+    def behaviour(node_id: str, route: str, call_num: int) -> str:
+        if route == "cc/sonnet":
+            return "badcode"
+        return "ok"  # cc/opus succeeds
+
+    ex = CallCountingExecutor(behaviour)
+    graph = WorkGraph("g", (node("n"),))
+    rt, ev, _sel = make_esc(
+        repo,
+        graph,
+        ex,
+        [("cc/sonnet", 1, CapacityClass.SUBSCRIPTION), ("cc/opus", 0, CapacityClass.SUBSCRIPTION)],
+    )
+
+    result = await rt.run()
+
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    # An escalation event must be emitted with from_tier=1, to_tier=0.
+    esc_events = ev.of("escalation")
+    assert len(esc_events) >= 1, "expected an escalation event from tier-1 to tier-0"
+    esc = esc_events[0]
+    assert esc["from_tier"] == 1, f"expected from_tier=1, got {esc['from_tier']}"
+    assert esc["to_tier"] == 0, f"expected to_tier=0, got {esc['to_tier']}"
+    assert esc["to_route"] == "cc/opus"
+    assert esc["reason"] == "judged_failures_threshold"
+    # capacity_classes_allowed must appear in the escalation event for the 1→0 step.
+    assert "capacity_classes_allowed" in esc, (
+        "escalation event for 1→0 step must include capacity_classes_allowed"
+    )
+    assert result.nodes["n"].state is NodeState.VALIDATED
+    # No escalation_exhausted: the tier-0 subscription route was found.
+    exhaust = ev.of("escalation_exhausted")
+    assert len(exhaust) == 0, (
+        f"unexpected escalation_exhausted when tier-0 subscription route is available: {exhaust}"
+    )
+
+
+async def test_only_metered_tier0_available_escalation_exhausted(repo: Path) -> None:
+    """When only a METERED (pay-per-token) tier-0 route is available, the escalation
+    path must NOT select it and must emit escalation_exhausted.
+
+    After 2 judged failures on cc/sonnet (tier 1, subscription), the escalation
+    ceiling is set to 0 with capacity classes {SUBSCRIPTION, FREE}.  The only
+    tier-0 route (or/gpt6) is METERED and is excluded by the capacity class
+    restriction.  The escalation path must emit 'escalation_exhausted' and must
+    never dispatch or/gpt6 through the escalation selection.
+
+    Failing-first: without the capacity class restriction, the METERED tier-0 route
+    would be selected through escalation, incurring unexpected cost.
+    """
+
+    def behaviour(node_id: str, route: str, call_num: int) -> str:
+        return "badcode"  # all routes always fail (the METERED route should not be reached)
+
+    ex = CallCountingExecutor(behaviour)
+    graph = WorkGraph("g", (node("n"),))
+    rt, ev, _sel = make_esc(
+        repo,
+        graph,
+        ex,
+        [("cc/sonnet", 1, CapacityClass.SUBSCRIPTION), ("or/gpt6", 0, CapacityClass.METERED)],
+        max_attempts_per_node=6,
+    )
+
+    result = await rt.run()
+
+    # The METERED tier-0 route must never be targeted by the escalation path.
+    esc_events = ev.of("escalation")
+    assert all(e.get("to_route") != "or/gpt6" for e in esc_events), (
+        "METERED tier-0 route must not be targeted by escalation"
+    )
+    # escalation_exhausted must be emitted when the restricted escalation finds nothing.
+    exhaust = ev.of("escalation_exhausted")
+    assert len(exhaust) >= 1, "expected escalation_exhausted when only METERED tier-0 available"
+    assert exhaust[0]["reason"] == "at_strongest_tier"
+    # Budget must be bounded.
+    assert result.outcome is not RunOutcome.COMPLETE
+
+
+async def test_free_only_policy_excludes_subscription_tier0_from_escalation(repo: Path) -> None:
+    """When RuntimePolicy.escalation_tier0_capacity_classes is {FREE}, a tier-0
+    SUBSCRIPTION route must not be selected through the escalation path.
+
+    This models the '--capacity free' operator filter: if the operator wants only
+    free routes for escalation, the tier-0 candidate must have FREE capacity.
+
+    After 2 judged failures on cc/sonnet (tier 1, subscription), the ceiling is
+    set to 0.  The capacity classes on the escalation requirements come from
+    policy.escalation_tier0_capacity_classes = {FREE}.  cc/opus (tier 0,
+    SUBSCRIPTION) is excluded.  'escalation_exhausted' is emitted instead of an
+    'escalation' event pointing to cc/opus.
+
+    Failing-first: without respecting the policy capacity classes, the subscription
+    tier-0 route would be selected even when the operator filtered to free-only.
+    """
+
+    def behaviour(node_id: str, route: str, call_num: int) -> str:
+        if route == "cc/sonnet":
+            return "badcode"
+        return "ok"
+
+    ex = CallCountingExecutor(behaviour)
+    graph = WorkGraph("g", (node("n"),))
+    rt, ev, _sel = make_esc(
+        repo,
+        graph,
+        ex,
+        [("cc/sonnet", 1, CapacityClass.SUBSCRIPTION), ("cc/opus", 0, CapacityClass.SUBSCRIPTION)],
+        escalation_tier0_capacity_classes=frozenset({CapacityClass.FREE}),
+    )
+
+    await rt.run()
+
+    # The subscription tier-0 route must not be targeted by escalation.
+    esc_events = ev.of("escalation")
+    assert all(e.get("to_route") != "cc/opus" for e in esc_events), (
+        "subscription tier-0 must not be targeted by escalation when free-only policy is active"
+    )
+    # escalation_exhausted must be emitted when escalation finds no free tier-0 route.
+    exhaust = ev.of("escalation_exhausted")
+    assert len(exhaust) >= 1, (
+        "expected escalation_exhausted when subscription tier-0 is excluded by free-only policy"
+    )
+    assert exhaust[0]["reason"] == "at_strongest_tier"
+
+
+async def test_ordinary_first_selection_never_picks_tier0(repo: Path) -> None:
+    """With no escalation active (immediate success on tier-1), tier-0 routes are
+    never dispatched.
+
+    This guards against the new code accidentally selecting tier-0 for ordinary
+    (non-escalated) first picks.  The first selected route must be the cheapest
+    sufficient one (tier-1 in this pool); tier-0 is only reached through the
+    explicit escalation path after K judged failures.
+
+    Failing-first: if escalation_capacity_classes were applied to non-escalated
+    selections, it would inadvertently restrict ordinary picks.
+    """
+
+    def behaviour(node_id: str, route: str, call_num: int) -> str:
+        return "ok"  # cc/sonnet succeeds immediately on first pick
+
+    ex = CallCountingExecutor(behaviour)
+    graph = WorkGraph("g", (node("n"),))
+    rt, ev, _sel = make_esc(
+        repo,
+        graph,
+        ex,
+        [("cc/sonnet", 1, CapacityClass.SUBSCRIPTION), ("cc/opus", 0, CapacityClass.SUBSCRIPTION)],
+    )
+
+    result = await rt.run()
+
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    # No escalation triggered: tier-1 succeeded immediately.
+    assert len(ev.of("escalation")) == 0, "no escalation expected when tier-1 succeeds"
+    assert len(ev.of("escalation_exhausted")) == 0, "no exhausted event expected"
+    # cc/opus (tier-0) must not have been dispatched.
+    terminal_events = ev.of("terminal", "n")
+    dispatched = [e["route_id"] for e in terminal_events]
+    assert "cc/opus" not in dispatched, f"tier-0 route dispatched without escalation: {dispatched}"
+    assert result.nodes["n"].state is NodeState.VALIDATED
