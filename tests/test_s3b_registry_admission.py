@@ -524,6 +524,58 @@ class TestFreshAgenticFailureNotOverriddenByRegistry:
         )
         assert by_id["free/model-a"].reason == "no_agentic_probe"
 
+    def test_future_dated_agentic_failure_also_blocks_registry_proof(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed agentic probe stamped 1 h in the future (clock skew) is
+        anomalous evidence; it must fail closed, not fall through to the
+        registry proof."""
+        from verdict.orchestration.health_cache import AGENTIC_PROBE_TTL_SECONDS, HealthCache
+
+        monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+
+        # Fresh registry proof.
+        entry = _entry("free/model-a")  # checked_at = NOW - 1h, tool_ok=True
+        reg = _registry([entry])
+        _write_registry(tmp_path, reg)
+
+        # Health cache: agentic probe ran 1 h ago and FAILED.
+        agentic_checked = NOW + datetime.timedelta(hours=1)
+        assert (NOW - agentic_checked).total_seconds() < AGENTIC_PROBE_TTL_SECONDS
+
+        cache = HealthCache(tmp_path / "health-cache.json")
+        from verdict.orchestration.health_cache import HealthEntry
+
+        # Route passed the single-call liveness probe (healthy=True) but the
+        # 3-turn agentic probe ran 1 h ago and FAILED (agentic_ok=False).
+        failing_entry = HealthEntry(
+            route_id="free/model-a",
+            category="",
+            checked_at=NOW - datetime.timedelta(minutes=5),
+            until=NOW + datetime.timedelta(hours=1),
+            consecutive_failures=0,
+            chat_ok=True,
+            tool_ok=True,
+            healthy=True,
+            probe_class="single_call",
+            agentic_ok=False,
+            agentic_checked_at=agentic_checked,
+        )
+        cache._routes["free/model-a"] = failing_entry
+        cache.save()
+
+        rows = [_row("free/model-a", owned_by="free", pricing={"input": 0.0, "output": 0.0})]
+        conns = [_conn("free", auth="apikey", plan="free", free_only=True)]
+        ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
+
+        verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
+        by_id = {v.route_id: v for v in verdicts}
+
+        assert by_id["free/model-a"].rank is None, (
+            "a future-dated agentic failure must not be overridden by registry tool_ok=True"
+        )
+        assert by_id["free/model-a"].reason == "no_agentic_probe"
+
     def test_expired_agentic_failure_plus_fresh_registry_proof_is_admitted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

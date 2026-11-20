@@ -972,7 +972,9 @@ class EligibilityLadder:
                     proof["source"] == "agentic_probe"
                     and _e is not None
                     and _e.agentic_checked_at is not None
-                    and 0 <= (gate_now - _e.agentic_checked_at).total_seconds() <= _AGENTIC_TTL
+                    # No lower bound: a future-dated failure (clock skew) is
+                    # anomalous evidence and must fail closed.
+                    and (gate_now - _e.agentic_checked_at).total_seconds() <= _AGENTIC_TTL
                     and not _e.agentic_ok
                 )
                 if _fresh_agentic_failure:
