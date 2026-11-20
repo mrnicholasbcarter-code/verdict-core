@@ -261,6 +261,60 @@ def _gateway_probe_for(bootstrap: Any) -> Any:
     )
 
 
+_USERINFO_RE = re.compile(r"(?<=://)[^/@\s]+@")
+
+
+def _strip_userinfo(text: str) -> str:
+    return _USERINFO_RE.sub("", text)
+
+
+def _doctor_capability_gateway_probe() -> Callable[[str], dict[str, Any]]:
+    """A capability-report gateway probe backed by doctor's authenticated probe.
+
+    Only ``gateway.omniroute`` is probed. The API key is never returned; the
+    endpoint and any detail text are redacted. A probe failure never raises.
+    """
+
+    def _probe(provider_id: str) -> dict[str, Any]:
+        if provider_id != "gateway.omniroute":
+            return {"reachable": False, "health_ok": False, "reason": "not probed by doctor"}
+        from verdict.provider_bootstrap import BootstrapError, redact_url
+
+        try:
+            bootstrap = _cli_bootstrap()
+            gateway_url = getattr(bootstrap, "gateway_url", None)
+            if not gateway_url:
+                return {"reachable": False, "health_ok": False, "reason": "no gateway url"}
+            health = _gateway_probe_for(bootstrap)(gateway_url)
+            reachable = bool(health.reachable)
+            detail = getattr(health, "detail", None)
+            if detail:
+                reason = _strip_userinfo(str(redact_url(str(detail))))
+            else:
+                reason = "gateway healthy" if reachable else "gateway did not answer"
+            endpoint = _strip_userinfo(str(redact_url(gateway_url)))
+        except BootstrapError as exc:
+            return {
+                "reachable": False,
+                "health_ok": False,
+                "reason": exc.reason_code or "no gateway url",
+            }
+        except Exception as exc:
+            return {
+                "reachable": False,
+                "health_ok": False,
+                "reason": f"probe error: {type(exc).__name__}",
+            }
+        return {
+            "reachable": reachable,
+            "health_ok": reachable,
+            "reason": reason,
+            "endpoint": endpoint,
+        }
+
+    return _probe
+
+
 DOCTOR_GATEWAY_TIMEOUT_ENV = "VERDICT_DOCTOR_GATEWAY_TIMEOUT_S"
 DEFAULT_DOCTOR_GATEWAY_TIMEOUT_S = 10.0
 DOCTOR_HEALTH_TIMEOUT_ENV = "VERDICT_DOCTOR_HEALTH_TIMEOUT_S"
@@ -632,7 +686,7 @@ def _collect_doctor_diagnostics(
 
     from verdict.capability_bootstrap import doctor_capability_report
 
-    capability_report = doctor_capability_report()
+    capability_report = doctor_capability_report(probe_gateway=_doctor_capability_gateway_probe())
     diag.capability_report = capability_report
     capabilities = capability_report.get("capabilities", [])
     if not isinstance(capabilities, list):
