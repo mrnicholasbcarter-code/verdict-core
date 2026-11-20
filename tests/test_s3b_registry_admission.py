@@ -460,3 +460,151 @@ class TestFunnelRegistryProofCount:
         assert isinstance(tool_ok_stage["registry_proof"], int)
         # The two entries with tool_ok=True are proved; the None one is not.
         assert tool_ok_stage["registry_proof"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Defect fixes (admission-safety hardening)
+# ---------------------------------------------------------------------------
+
+
+class TestFreshAgenticFailureNotOverriddenByRegistry:
+    """Defect 1: a fresh measured agentic FAILURE must not be overridden by a
+    registry tool_ok=True entry.  Weaker positive evidence never beats a fresh
+    stronger negative result."""
+
+    def test_fresh_agentic_failure_blocks_despite_fresh_registry_proof(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Health cache has agentic_ok=False with agentic_checked_at 1 h ago
+        (well within AGENTIC_PROBE_TTL_SECONDS=24 h).  Registry has a fresh
+        tool_ok=True FREE entry.  The route must stay rejected."""
+        from verdict.orchestration.health_cache import AGENTIC_PROBE_TTL_SECONDS, HealthCache
+
+        monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+
+        # Fresh registry proof.
+        entry = _entry("free/model-a")  # checked_at = NOW - 1h, tool_ok=True
+        reg = _registry([entry])
+        _write_registry(tmp_path, reg)
+
+        # Health cache: agentic probe ran 1 h ago and FAILED.
+        agentic_checked = NOW - datetime.timedelta(hours=1)
+        assert (NOW - agentic_checked).total_seconds() < AGENTIC_PROBE_TTL_SECONDS
+
+        cache = HealthCache(tmp_path / "health-cache.json")
+        from verdict.orchestration.health_cache import HealthEntry
+
+        # Route passed the single-call liveness probe (healthy=True) but the
+        # 3-turn agentic probe ran 1 h ago and FAILED (agentic_ok=False).
+        failing_entry = HealthEntry(
+            route_id="free/model-a",
+            category="",
+            checked_at=NOW - datetime.timedelta(minutes=5),
+            until=NOW + datetime.timedelta(hours=1),
+            consecutive_failures=0,
+            chat_ok=True,
+            tool_ok=True,
+            healthy=True,
+            probe_class="single_call",
+            agentic_ok=False,
+            agentic_checked_at=agentic_checked,
+        )
+        cache._routes["free/model-a"] = failing_entry
+        cache.save()
+
+        rows = [_row("free/model-a", owned_by="free", pricing={"input": 0.0, "output": 0.0})]
+        conns = [_conn("free", auth="apikey", plan="free", free_only=True)]
+        ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
+
+        verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
+        by_id = {v.route_id: v for v in verdicts}
+
+        assert by_id["free/model-a"].rank is None, (
+            "fresh agentic failure must not be overridden by registry tool_ok=True"
+        )
+        assert by_id["free/model-a"].reason == "no_agentic_probe"
+
+    def test_expired_agentic_failure_plus_fresh_registry_proof_is_admitted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mirror test: agentic_ok=False with agentic_checked_at older than
+        AGENTIC_PROBE_TTL_SECONDS plus a fresh registry proof IS admitted.
+        An expired measurement does not veto new positive evidence."""
+        from verdict.orchestration.health_cache import AGENTIC_PROBE_TTL_SECONDS, HealthCache
+
+        monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+
+        entry = _entry("free/model-a")  # checked_at = NOW - 1h, tool_ok=True
+        reg = _registry([entry])
+        _write_registry(tmp_path, reg)
+
+        # Agentic probe ran over TTL ago and failed — the measurement is expired.
+        agentic_checked = NOW - datetime.timedelta(seconds=AGENTIC_PROBE_TTL_SECONDS + 3600)
+        assert (NOW - agentic_checked).total_seconds() > AGENTIC_PROBE_TTL_SECONDS
+
+        cache = HealthCache(tmp_path / "health-cache.json")
+        from verdict.orchestration.health_cache import HealthEntry
+
+        # Route is healthy; agentic probe ran over TTL ago and failed — expired.
+        old_failing_entry = HealthEntry(
+            route_id="free/model-a",
+            category="",
+            checked_at=NOW - datetime.timedelta(minutes=5),
+            until=NOW + datetime.timedelta(hours=1),
+            consecutive_failures=0,
+            chat_ok=True,
+            tool_ok=True,
+            healthy=True,
+            probe_class="single_call",
+            agentic_ok=False,
+            agentic_checked_at=agentic_checked,
+        )
+        cache._routes["free/model-a"] = old_failing_entry
+        cache.save()
+
+        rows = [_row("free/model-a", owned_by="free", pricing={"input": 0.0, "output": 0.0})]
+        conns = [_conn("free", auth="apikey", plan="free", free_only=True)]
+        ladder, _ = _make(tmp_path, rows, conns, health_cache=cache)
+
+        verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
+        by_id = {v.route_id: v for v in verdicts}
+
+        assert by_id["free/model-a"].rank is not None, (
+            "expired agentic failure + fresh registry proof should admit the route"
+        )
+        assert by_id["free/model-a"].reason != "no_agentic_probe"
+
+
+class TestRegistryTtlCappedAtCodeConstant:
+    """Defect 2: a registry file that declares a huge ttl_s must not extend
+    per-entry freshness beyond REGISTRY_TTL_S."""
+
+    def test_huge_file_ttl_does_not_make_old_entry_fresh(self) -> None:
+        """Entry checked_at 13 h ago with ttl_s=10**9 in the file.
+        REGISTRY_TTL_S is 12 h (43200 s), so the entry must be rejected as stale."""
+        from verdict.discovery.registry import REGISTRY_TTL_S, tool_ok_proof
+
+        # Build a registry with an enormous TTL declared in the file.
+        huge_ttl = 10**9
+        assert huge_ttl > REGISTRY_TTL_S
+
+        # Entry is 13 hours old — older than REGISTRY_TTL_S.
+        entry_age_s = 13 * 3600
+        assert entry_age_s > REGISTRY_TTL_S
+
+        checked = NOW - datetime.timedelta(seconds=entry_age_s)
+        entry = _entry("free/model-a", checked_at=checked)
+
+        reg = DiscoveryRegistry(
+            schema=REGISTRY_SCHEMA,
+            written_at=_utcnow().isoformat(),
+            ttl_s=huge_ttl,
+            entries=[entry],
+        )
+
+        result = tool_ok_proof("free/model-a", reg, NOW)
+
+        assert result["qualified"] is False, (
+            "enormous ttl_s in file must not make a 13-h-old entry qualify"
+        )
+        assert result["reason"] == "entry_stale"

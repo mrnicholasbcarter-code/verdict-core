@@ -276,6 +276,14 @@ def tool_ok_proof(
     # Entry-level freshness: checked_at must be tz-aware, non-future, and
     # within the registry TTL.  (Registry-level TTL was checked by
     # load_registry, but individual entries may have been probed earlier.)
+    # Cap against the code constant so a file that declares an enormous
+    # ttl_s cannot extend freshness beyond what the operator deployed.
+    import math as _math
+
+    _file_ttl = registry.ttl_s
+    if not isinstance(_file_ttl, (int, float)) or not _math.isfinite(_file_ttl) or _file_ttl <= 0:
+        _file_ttl = REGISTRY_TTL_S
+    effective_ttl = min(_file_ttl, REGISTRY_TTL_S)
     try:
         checked = datetime.datetime.fromisoformat(entry.checked_at)
         if checked.tzinfo is None:
@@ -284,7 +292,7 @@ def tool_ok_proof(
         if age_s < 0:
             # Future timestamp — clock skew or test anomaly; not proof.
             return {"qualified": False, "reason": "future_timestamp", "entry": entry}
-        if age_s > registry.ttl_s:
+        if age_s > effective_ttl:
             return {"qualified": False, "reason": "entry_stale", "entry": entry}
     except (ValueError, OverflowError, TypeError):
         return {"qualified": False, "reason": "invalid_timestamp", "entry": entry}

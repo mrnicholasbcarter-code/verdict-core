@@ -959,6 +959,24 @@ class EligibilityLadder:
             lookup = cache.lookup(route_id, gate_now)
             proof = agentic_capability(lookup.entry, gate_now)
             if not proof["qualified"]:
+                # A fresh measured agentic FAILURE (agentic_checked_at within
+                # AGENTIC_PROBE_TTL_SECONDS and agentic_ok=False) is stronger
+                # negative evidence than any registry entry.  It must not be
+                # overridden by a registry tool_ok=True.
+                from verdict.orchestration.health_cache import (
+                    AGENTIC_PROBE_TTL_SECONDS as _AGENTIC_TTL,
+                )
+
+                _e = lookup.entry
+                _fresh_agentic_failure = (
+                    proof["source"] == "agentic_probe"
+                    and _e is not None
+                    and _e.agentic_checked_at is not None
+                    and 0 <= (gate_now - _e.agentic_checked_at).total_seconds() <= _AGENTIC_TTL
+                    and not _e.agentic_ok
+                )
+                if _fresh_agentic_failure:
+                    return "no_agentic_probe"
                 if lookup.entry is None or (
                     proof["source"] == "agentic_probe" and not lookup.entry.agentic_ok
                 ):
