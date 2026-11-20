@@ -221,7 +221,7 @@ def match_rows(
                 drops.append(
                     Drop(
                         model_name=rm.model_name,
-                        organization=organization,
+                        organization=rm.organization,
                         reason=DROP_VARIANT_COLLISION,
                         detail=f"duplicate ({config!r}, {parsed.effort!r}) for {model_name!r}",
                         config=config,

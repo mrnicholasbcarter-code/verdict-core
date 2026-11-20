@@ -295,3 +295,29 @@ def test_third_row_after_collision_does_not_false_collide() -> None:
     collision_drops = [d for d in drops if d.reason == DROP_VARIANT_COLLISION]
     # Rows 1 and 2 each get a collision drop
     assert len(collision_drops) == 2, f"expected 2 collision drops, got {collision_drops}"
+
+
+# ---- retroactive collision drop keeps the removed match's own organization -----
+
+
+def test_retroactive_collision_drop_keeps_removed_match_organization() -> None:
+    """Two Arena orgs resolving to the same store slot both drop; each drop names its own org."""
+    store_ids = frozenset({"anthropic/claude-m"})
+    index = build_store_index(store_ids)
+    mini_cw = Crosswalk(
+        schema_version="1",
+        org_providers={"Anthropic": ["anthropic"], "Anthropic PBC": ["anthropic"]},
+        map_entries={},
+        drop_entries={},
+        all_keys=(),
+    )
+    rows = [
+        _make_text_row("Claude M", "Anthropic", rank=1),
+        _make_text_row("Claude M", "Anthropic PBC", rank=2),
+    ]
+
+    matches, drops = match_rows(rows, index, mini_cw)
+
+    collision_orgs = sorted(d.organization for d in drops if d.reason == DROP_VARIANT_COLLISION)
+    assert matches == []
+    assert collision_orgs == ["Anthropic", "Anthropic PBC"], drops
