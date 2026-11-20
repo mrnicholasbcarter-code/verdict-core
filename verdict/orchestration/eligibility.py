@@ -868,6 +868,19 @@ class EligibilityLadder:
                 a.failed_stage = EligibilityStage.TASK_ELIGIBLE
                 a.reason = "below_escalation_floor"
                 return a
+            # Capacity class restriction for escalation: when not None, only routes
+            # whose capacity class is in the allowed set are eligible.  This prevents
+            # METERED/UNKNOWN tier-0 routes from being selected through the escalation
+            # path.  Applied only when a restriction is active (None = no restriction).
+            # An empty frozenset means "nothing allowed": all routes are excluded and
+            # _drive will emit 'escalation_exhausted' (e.g. --capacity metered).
+            if (
+                requirements.escalation_capacity_classes is not None
+                and a.capacity not in requirements.escalation_capacity_classes
+            ):
+                a.failed_stage = EligibilityStage.TASK_ELIGIBLE
+                a.reason = "escalation_capacity_excluded"
+                return a
             a.slack = requirements.max_capability_tier - a.tier
         if (
             a.capacity == CapacityClass.FREE
