@@ -14,8 +14,8 @@ digest-bound bundles, the push gate rejects home paths under `docs/proof/`, and
 [REDACTION_POLICY.md](../REDACTION_POLICY.md) says private values are replaced
 by a digest. So this directory is an evidence record, not a fully verifiable
 bundle: `verdict run-receipt` must be run on the private run directory, not on
-this directory. The operator ran it on the private run directory; its output is
-quoted below.
+this directory. The controller agent ran it on the operator's host, against the
+private run directory; its output is quoted below.
 
 ## Run
 
