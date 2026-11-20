@@ -132,10 +132,6 @@
     "reason": "KEEP: refuse_secret_write has only non-production references; Paired cheaper-model lift: plant a fact, pack it, score unaided vs packed (verdict/context_lift.py)."
   },
   {
-    "qualified_name": "verdict.context_lift.run_context_lift",
-    "reason": "KEEP: run_context_lift has only non-production references; Paired cheaper-model lift: plant a fact, pack it, score unaided vs packed (verdict/context_lift.py)."
-  },
-  {
     "qualified_name": "verdict.context_sources.CapabilityProviderProtocol",
     "reason": "KEEP: structural typing Protocol documenting the CapabilityProvider contract for external/MCP adapters (see module docstring); uncalled. No concrete subclass needs to reference it by name under duck typing, but it is the documented extension point for future providers."
   },

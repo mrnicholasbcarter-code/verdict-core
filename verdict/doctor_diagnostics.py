@@ -1137,6 +1137,7 @@ def installed_service_rows(
     rows.append(_ref_docs_timer_row(injected_timer_state))
     rows.append(_docs_refresh_timer_row(injected_timer_state))
     rows.append(_pr_watcher_timer_row(injected_timer_state))
+    rows.append(_context_lift_timer_row(injected_timer_state))
     rows.extend(_ref_docs_rows(ref_docs_status))
     rows.append(report_row(now=now))
     rows.append(omniroute_webhook_row(now=now))
@@ -1400,6 +1401,34 @@ def _pr_watcher_timer_row(
         detail += (
             "; repair: verdict pr-watch --json; "
             f"logs: journalctl --user -u {pr_watcher_service.SERVICE}"
+        )
+    return {"label": label, "status": "failed", "detail": detail}
+
+
+def _context_lift_timer_row(
+    timer_state: Callable[[str], dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """The daily context-lift bench timer is active and its last run succeeded."""
+    from verdict import context_lift_service
+    from verdict.setup_host import CONTEXT_LIFT, setup_repair
+
+    unit = context_lift_service.TIMER
+    state = (timer_state or context_lift_service.timer_state)(unit)
+    name, result = str(state.get("state", "unknown")), str(state.get("result", "unknown"))
+    detail = f"{unit} is {name}; last result {result}"
+    label = "Context-lift bench timer"
+
+    if name == "active" and result in {"success", "unknown"}:
+        return {"label": label, "status": "ok", "detail": detail}
+    if name == "missing":
+        detail += f"; repair: {setup_repair(CONTEXT_LIFT)}"
+        return {"label": label, "status": "failed", "detail": detail}
+    if name == "inactive":
+        detail += f"; repair: systemctl --user enable --now {unit}"
+    else:
+        detail += (
+            "; repair: verdict bench context-lift --json; "
+            f"logs: journalctl --user -u {context_lift_service.SERVICE}"
         )
     return {"label": label, "status": "failed", "detail": detail}
 

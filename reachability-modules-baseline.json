@@ -8,14 +8,6 @@
     "reason": "WIRE: BOD-38 session compaction contract; no production importer (the Prime extension only cites it in a comment)."
   },
   {
-    "qualified_name": "verdict.context_lift",
-    "reason": "KEEP: paired cheaper-model lift. No production importer; the live lift test and benchmark doc call it. Catalog fetch now comes from verdict.live_routing."
-  },
-  {
-    "qualified_name": "verdict.live_routing",
-    "reason": "KEEP: classify, select, explain, and live catalog fetch, probe, and chat execute used by the routing demo and context lift. No production entry point reaches this module."
-  },
-  {
     "qualified_name": "verdict.memory_migration",
     "reason": "DELETE candidate: BOD-259 legacy memory migration helpers; only tests import the module."
   },

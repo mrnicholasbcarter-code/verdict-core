@@ -199,6 +199,60 @@ def _cmd_pr_watch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     sys.exit(0 if result.get("ok") else 1)
 
 
+def _cmd_bench(args: argparse.Namespace) -> None:
+    """Handle ``verdict bench <sub>`` CLI commands."""
+    if args.bench_command == "context-lift":
+        _cmd_bench_context_lift(args)
+
+
+def _cmd_bench_context_lift(args: argparse.Namespace) -> None:
+    """``verdict bench context-lift``: measure context-pack lift on a free model.
+
+    FREE capacity only.  A blocked or missing gateway result exits 0 and writes
+    a blocked receipt so the daily timer never fails over capacity issues.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    if getattr(args, "install_service", False):
+        from verdict import context_lift_service
+
+        result = context_lift_service.manage_service(uninstall=getattr(args, "uninstall", False))
+        if getattr(args, "json", False):
+            print(_json.dumps(result, indent=2))
+        else:
+            status = "uninstalled" if getattr(args, "uninstall", False) else "installed"
+            print(f"{context_lift_service.TIMER} {status}: {result.get('plan')}")
+        return
+
+    from verdict.context_lift import run_context_lift
+    from verdict.live_routing import DEFAULT_GATEWAY
+    from verdict.paths import verdict_home
+
+    base_url = getattr(args, "base_url", None) or DEFAULT_GATEWAY
+    execute = not getattr(args, "dry_run", False)
+
+    result = run_context_lift(base_url=base_url, execute=execute)
+    receipt = result.get("receipt", result)
+
+    # Write evidence under $VERDICT_HOME/context-lift/
+    home = verdict_home()
+    out_dir = home / "context-lift"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_file = out_dir / f"{stamp}.json"
+    payload = _json.dumps(receipt, indent=2)
+    out_file.write_text(payload, encoding="utf-8")
+    (out_dir / "latest.json").write_text(payload, encoding="utf-8")
+
+    if getattr(args, "json", False):
+        print(payload)
+    else:
+        conclusion = receipt.get("conclusion", "unknown")
+        identity = receipt.get("identity_id", "unknown")
+        print(f"context-lift: {conclusion} ({identity}); evidence written to {out_file}")
+
+
 def _cmd_demo(args: argparse.Namespace) -> None:
     """Handle ``verdict demo`` CLI command."""
     import json
@@ -585,6 +639,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             savings=args.savings,
             live_paired=args.live_paired,
         )
+    elif args.command == "bench":
+        _cmd_bench(args)
     elif args.command == "quickstart":
         legacy.cmd_quickstart(
             output_json=args.json, non_interactive=args.non_interactive, dry_run=args.dry_run
