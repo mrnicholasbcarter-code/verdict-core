@@ -415,14 +415,36 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             # prompt_bytes/budget_bytes/sources without context_bytes;
             # projecting those would add a context_pack to committed receipts
             # that pre-date context-pack wiring.
-            cp: dict[str, Any] = {"context_bytes": int(data["context_bytes"])}
+            cp: dict[str, Any] = {}
+            # Coerce numeric fields defensively: a malformed field must not
+            # abort receipt building; record null + an omission instead.
+            cp_omissions: list[str] = []
+            try:
+                cp["context_bytes"] = int(data["context_bytes"])
+            except (ValueError, TypeError):
+                cp["context_bytes"] = None
+                cp_omissions.append("context_bytes_non_numeric")
             if data.get("prompt_tokens_estimated") is not None:
-                cp["prompt_tokens_estimated"] = int(data["prompt_tokens_estimated"])
+                try:
+                    cp["prompt_tokens_estimated"] = int(data["prompt_tokens_estimated"])
+                except (ValueError, TypeError):
+                    cp["prompt_tokens_estimated"] = None
+                    cp_omissions.append("prompt_tokens_estimated_non_numeric")
             srcs = data.get("sources")
             if isinstance(srcs, list):
                 cp["sources_count"] = len(srcs)
             if data.get("truncated") is not None:
                 cp["truncated"] = bool(data["truncated"])
+            if cp_omissions:
+                cp["omissions"] = cp_omissions
+            # A later hydrate for the same attempt (e.g. in a rehydration
+            # cycle where dispatch increments the attempt before the second
+            # hydrate — which cannot happen today but would be silent data
+            # loss if it ever did).  Record the count so the overwrite is
+            # visible in the receipt.
+            existing = attempts[current].get("context_pack")
+            if existing is not None:
+                cp["hydrate_count"] = existing.get("hydrate_count", 1) + 1
             attempts[current]["context_pack"] = cp
     # route identity tracking: compute route_identity for each attempt (after all events processed)
     for row in attempts.values():
