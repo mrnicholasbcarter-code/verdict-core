@@ -65,11 +65,13 @@ Rank key (ascending):
 
 Callers that pass `role_ordering="strongest_first"` (verified against source):
 
-- `verdict/orchestration/run.py` line 450 — planner `TaskRequirements`
-- `verdict/orchestration/review.py` line 548 — reviewer `TaskRequirements`
-- `verdict/role_selection.py` line 172 — `PLANNER_REQUIREMENTS` (used by
-  `build_ladder` for the planner role)
-- `verdict/autodev_run.py` line 2312 — autodev planner
+- `verdict/orchestration/run.py` — planner `TaskRequirements` in
+  `plan_with_failover`
+- `verdict/orchestration/review.py` — reviewer `TaskRequirements` in `review`
+- `verdict/role_selection.py` — the module-level constant
+  `PLANNER_REQUIREMENTS` (used by `build_ladder` for the planner role)
+- `verdict/autodev_run.py` — autodev planner `TaskRequirements` in
+  `_live_planner_models`
 
 All other callers use the default `cheapest_sufficient_first`.
 
