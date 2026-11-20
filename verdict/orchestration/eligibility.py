@@ -828,11 +828,19 @@ class EligibilityLadder:
             a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, reason
             return a
         tier = _capability_tier(row, route_id)
+        # Effective tier ceiling: the task floor plus any escalation ceiling.
+        # Escalation never widens (it only narrows within the admitted set).
+        _esc = requirements.escalation_max_tier
+        _effective_max_tier = (
+            min(requirements.max_capability_tier, _esc)
+            if _esc is not None
+            else requirements.max_capability_tier
+        )
         if tier is None:
             # Unknown capability is never promoted to sufficient. It only
             # passes when the work accepts any tier, and then ranks after every
             # route whose capability is known (it cannot win on a guess).
-            if requirements.max_capability_tier < 3:
+            if _effective_max_tier < 3:
                 a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, "unknown_capability"
                 return a
             a.tier, a.slack, a.tier_known = 3, _UNKNOWN_SLACK, False
@@ -842,6 +850,11 @@ class EligibilityLadder:
                 # Insufficient for this work: dropped before ranking, however cheap.
                 a.failed_stage = EligibilityStage.TASK_ELIGIBLE
                 a.reason = "insufficient_capability"
+                return a
+            if a.tier > _effective_max_tier:
+                # Below the escalation ceiling: too weak for the current escalated attempt.
+                a.failed_stage = EligibilityStage.TASK_ELIGIBLE
+                a.reason = "below_escalation_floor"
                 return a
             a.slack = requirements.max_capability_tier - a.tier
         if (
