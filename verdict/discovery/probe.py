@@ -34,6 +34,7 @@ from verdict.discovery.model import (
     ProbeResult,
     Route,
 )
+from verdict.http_safety import open_no_redirect
 
 # ---------------------------------------------------------------------------
 # Injectable transport — overridden in tests to avoid any network call
@@ -60,10 +61,10 @@ def _get_transport() -> Transport:
 def _real_http(
     url: str, headers: dict[str, str], body: bytes, timeout: float
 ) -> tuple[int, dict[str, str], bytes]:
-    """Real HTTP POST via urllib; returns (status, headers_dict, body_bytes)."""
+    """Real HTTP POST via open_no_redirect; returns (status, headers_dict, body_bytes)."""
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
+        with open_no_redirect(req, timeout=timeout) as resp:
             return int(resp.status), dict(resp.headers), resp.read()
     except urllib.error.HTTPError as exc:
         body_bytes = b""

@@ -55,8 +55,11 @@ def load_omniroute_classified(env: Mapping[str, str] | None = None) -> list[tupl
         openrouter_free = None
 
     try:
+        import json
         import os
         import urllib.request
+
+        from verdict.http_safety import open_no_redirect
 
         # Try to get the OmniRoute base URL and key
         base = os.environ.get("OMNIROUTE_BASE_URL", "http://localhost:20128")
@@ -73,9 +76,7 @@ def load_omniroute_classified(env: Mapping[str, str] | None = None) -> list[tupl
         req = urllib.request.Request(
             url, headers={"Authorization": f"Bearer {key}", "User-Agent": "verdict/0.1"}
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310
-            import json
-
+        with open_no_redirect(req, timeout=30) as resp:
             catalog = json.load(resp)
     except Exception:
         return []
