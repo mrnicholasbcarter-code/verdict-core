@@ -99,6 +99,7 @@ scripts/demo-results.json
 evidence/
 exports/
 discovery/
+!verdict/discovery/
 .mcp.json
 CLAUDE.md.backup-*
 
