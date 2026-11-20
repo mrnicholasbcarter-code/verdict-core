@@ -615,6 +615,13 @@ def _review_block(run_dir: Path, events: list[RunEvent]) -> dict[str, Any]:
     lost = source.get("findings_lost")
     if isinstance(lost, int) and not isinstance(lost, bool) and lost > 0:
         extra["findings_lost"] = lost
+    # Token budget: recorded only when present so older receipts still verify.
+    budget_used = source.get("token_budget_used")
+    if isinstance(budget_used, int) and not isinstance(budget_used, bool) and budget_used > 0:
+        extra["token_budget_used"] = budget_used
+    budget_source = source.get("token_budget_source")
+    if isinstance(budget_source, str) and budget_source:
+        extra["token_budget_source"] = budget_source
     return {
         "status": str(source.get("status") or "ERROR").upper(),
         "reviewer": str(source.get("reviewer", "")),
