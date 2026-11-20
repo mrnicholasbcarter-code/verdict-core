@@ -903,6 +903,288 @@ class TestDagRuntimeSalvageRestore:
         all_events_str = json.dumps(events.rows)
         assert secret_content not in all_events_str
 
+    # ------------------------------------------------------------------
+    # fix(retry-clean-base): REJECTED attempts start from the clean base
+    # ------------------------------------------------------------------
+
+    def test_rejected_attempt_starts_from_clean_base(self, repo: Path) -> None:
+        """After a verification-rejected attempt the next attempt starts from
+        the clean base: no salvage is saved, the restore event carries
+        reason='clean_base', and the rejected content is NOT present in the
+        second attempt's worktree."""
+        run_dir = repo.parent / "run-rejected"
+        events = Events()
+
+        class RejectingExecutor:
+            """First attempt writes FAIL content (verification rejects it),
+            second attempt records what was in the worktree at start and
+            writes valid content."""
+
+            def __init__(self) -> None:
+                self.attempt = 0
+                self.second_start_content: str | None = None
+
+            async def run(
+                self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+            ) -> WorkerTerminal:
+                node_id = prompt.split(":", 1)[0]
+                self.attempt += 1
+                owned = cwd / f"{node_id}.txt"
+                if self.attempt == 1:
+                    # Write FAIL content; verification_command checks !grep -q FAIL
+                    owned.write_text("FAIL: bad implementation\n")
+                    return WorkerTerminal(
+                        ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+                    )
+                # Record what the worktree contained before we write to it
+                self.second_start_content = owned.read_text() if owned.exists() else ""
+                owned.write_text("done\n")
+                return WorkerTerminal(
+                    ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+                )
+
+        executor = RejectingExecutor()
+        runtime = DagRuntime(
+            repo=repo,
+            run_dir=run_dir,
+            graph=WorkGraph("g", (_node("a"),)),
+            selector=Selector(["r1/m1", "r2/m2"]),
+            executor=executor,
+            classifier=SimpleClassifier(),
+            events=events,
+            prompt_for=lambda n, cwd, **kw: f"{n.node_id}: {n.objective}",
+            reviewer=None,
+            policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+            now=lambda: NOW,
+        )
+
+        result = asyncio.run(runtime.run())
+        assert result.outcome is RunOutcome.COMPLETE, result.reason
+
+        # Rejected work must NOT be salvaged
+        assert not events.of("salvage"), "rejected work must not be saved to salvage"
+
+        # A restore event is still emitted to record the path taken
+        restore_events = events.of("restore", "a")
+        assert len(restore_events) == 1, restore_events
+        r = restore_events[0]
+        assert r["reason"] == "clean_base"
+        assert r["restored"] == []
+        assert r["restored_count"] == 0
+
+        # The second attempt's worktree was clean — rejected content was not there
+        assert executor.second_start_content == "", (
+            f"expected clean worktree but got: {executor.second_start_content!r}"
+        )
+
+    def test_diff_rejected_category_starts_from_clean_base(self, repo: Path) -> None:
+        """diff_rejected failures (category in _JUDGED_WORK_CATEGORIES) are
+        treated as 'work judged wrong': no salvage, next attempt starts from
+        the clean base."""
+        run_dir = repo.parent / "run-diff-rejected"
+        events = Events()
+
+        class DiffRejectedClassifier:
+            def classify(self, terminal: WorkerTerminal, *, now: datetime) -> FailureClassification:
+                if terminal.error.startswith("diff_rejected"):
+                    return FailureClassification(
+                        "diff_rejected", "CORRECT_IMPLEMENTATION", 0, "none", terminal.error[:200]
+                    )
+                return FailureClassification(
+                    "worker_error", "REROUTE", 300, "route", terminal.error[:200]
+                )
+
+        class DiffExecutor:
+            def __init__(self) -> None:
+                self.attempt = 0
+                self.second_start_content: str | None = None
+
+            async def run(
+                self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+            ) -> WorkerTerminal:
+                node_id = prompt.split(":", 1)[0]
+                self.attempt += 1
+                owned = cwd / f"{node_id}.txt"
+                if self.attempt == 1:
+                    owned.write_text("partial diff work\n")
+                    return WorkerTerminal(
+                        ok=False,
+                        model=route_id,
+                        error="diff_rejected: SEARCH text not found in a.txt",
+                    )
+                self.second_start_content = owned.read_text() if owned.exists() else ""
+                owned.write_text("done\n")
+                return WorkerTerminal(
+                    ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+                )
+
+        executor = DiffExecutor()
+        runtime = DagRuntime(
+            repo=repo,
+            run_dir=run_dir,
+            graph=WorkGraph("g", (_node("a"),)),
+            selector=Selector(["r1/m1", "r2/m2"]),
+            executor=executor,
+            classifier=DiffRejectedClassifier(),
+            events=events,
+            prompt_for=lambda n, cwd, **kw: f"{n.node_id}: {n.objective}",
+            reviewer=None,
+            policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+            now=lambda: NOW,
+        )
+
+        result = asyncio.run(runtime.run())
+        assert result.outcome is RunOutcome.COMPLETE, result.reason
+
+        assert not events.of("salvage"), "diff_rejected work must not be salvaged"
+
+        restore_events = events.of("restore", "a")
+        assert len(restore_events) == 1, restore_events
+        assert restore_events[0]["reason"] == "clean_base"
+        assert restore_events[0]["restored"] == []
+
+        assert executor.second_start_content == "", (
+            f"expected clean worktree but got: {executor.second_start_content!r}"
+        )
+
+    def test_interrupted_restore_emits_reason_and_clears_research_pack(self, repo: Path) -> None:
+        """After an interrupted (non-rejected) failure, partial work is restored
+        and the reason field on the restore event is 'interrupted'.  If a cached
+        research pack exists for the node it is deleted so the next attempt
+        re-reads the restored worktree state."""
+        run_dir = repo.parent / "run-interrupted-pack"
+        events = Events()
+
+        # Plant a stale research pack before the run
+        pack_dir = run_dir / "context_artifacts"
+        pack_dir.mkdir(parents=True, exist_ok=True)
+        pack_path = pack_dir / "a.json"
+        pack_path.write_text('{"stale": true}')
+
+        executor = Executor(fail_on={("a", "r1/m1")}, partial_content="partial from attempt 1")
+        runtime = DagRuntime(
+            repo=repo,
+            run_dir=run_dir,
+            graph=WorkGraph("g", (_node("a"),)),
+            selector=Selector(["r1/m1", "r2/m2"]),
+            executor=executor,
+            classifier=SimpleClassifier(),
+            events=events,
+            prompt_for=lambda n, cwd, **kw: f"{n.node_id}: {n.objective}",
+            reviewer=None,
+            policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+            now=lambda: NOW,
+        )
+
+        result = asyncio.run(runtime.run())
+        assert result.outcome is RunOutcome.COMPLETE, result.reason
+
+        # Salvage was saved (interrupted, not rejected)
+        assert len(events.of("salvage", "a")) == 1
+
+        # Restore event carries reason=interrupted
+        restore_events = events.of("restore", "a")
+        assert len(restore_events) == 1, restore_events
+        r = restore_events[0]
+        assert r["reason"] == "interrupted"
+        assert r["restored"] == ["a.txt"]
+
+        # Stale research pack was deleted after files were restored
+        assert not pack_path.exists(), (
+            "stale research pack must be removed after interrupted-restore"
+        )
+
+    def test_clear_error_on_rejection_keeps_clean_base_through_interrupted_attempt(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """fix(reviewer): when clear_salvage_dir fails after a rejected attempt the
+        salvage dir is poisoned.  A later interrupted attempt that also fails to
+        replace the dir must NOT restore the stale content on its next attempt."""
+        run_dir = repo.parent / "run-clear-error"
+        events = Events()
+
+        # Pre-populate a salvage dir with stale content so restore_salvaged_files
+        # would have something to put into the worktree if the poison is ignored.
+        stale_salvage = run_dir / "salvage" / "a"
+        stale_salvage.mkdir(parents=True, exist_ok=True)
+        (stale_salvage / "a.txt").write_text("stale rejected content\n")
+
+        # Patch both clear entry-points so the salvage dir is never wiped.
+        import verdict.orchestration.runtime as runtime_mod
+        import verdict.orchestration.salvage as salvage_mod
+
+        def always_fail_clear(path: Path) -> str:
+            return "OSError"
+
+        monkeypatch.setattr(runtime_mod, "clear_salvage_dir", always_fail_clear)
+        monkeypatch.setattr(salvage_mod, "_clear_existing_salvage_dir", always_fail_clear)
+
+        class ThreeAttemptExecutor:
+            """Attempt 1: rejected (writes FAIL, ok=True).
+            Attempt 2: interrupted (writes partial, ok=False).
+            Attempt 3: succeeds (records start content)."""
+
+            def __init__(self) -> None:
+                self.attempt = 0
+                self.third_start_content: str | None = None
+
+            async def run(
+                self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+            ) -> WorkerTerminal:
+                node_id = prompt.split(":", 1)[0]
+                self.attempt += 1
+                owned = cwd / f"{node_id}.txt"
+                if self.attempt == 1:
+                    # Write FAIL content; verification_command checks !grep -q FAIL
+                    owned.write_text("FAIL: bad implementation\n")
+                    return WorkerTerminal(
+                        ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+                    )
+                if self.attempt == 2:
+                    owned.write_text("interrupted partial\n")
+                    return WorkerTerminal(ok=False, model=route_id, error="worker failed")
+                # Attempt 3: record what the worktree contained at start
+                self.third_start_content = owned.read_text() if owned.exists() else ""
+                owned.write_text("done\n")
+                return WorkerTerminal(
+                    ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+                )
+
+        executor = ThreeAttemptExecutor()
+        runtime = DagRuntime(
+            repo=repo,
+            run_dir=run_dir,
+            graph=WorkGraph("g", (_node("a"),)),
+            selector=Selector(["r1/m1", "r2/m2", "r3/m3"]),
+            executor=executor,
+            classifier=SimpleClassifier(),
+            events=events,
+            prompt_for=lambda n, cwd, **kw: f"{n.node_id}: {n.objective}",
+            reviewer=None,
+            policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+            now=lambda: NOW,
+        )
+
+        result = asyncio.run(runtime.run())
+        assert result.outcome is RunOutcome.COMPLETE, result.reason
+
+        # A salvage_clear_error event was emitted on the rejected attempt
+        clear_errors = events.of("salvage_clear_error", "a")
+        assert len(clear_errors) == 1, clear_errors
+        assert clear_errors[0]["error"] == "OSError"
+
+        # All restore events use clean_base: stale content was never restored
+        restore_events = events.of("restore", "a")
+        for r in restore_events:
+            assert r["reason"] == "clean_base", (
+                f"expected clean_base but got reason={r['reason']!r}"
+            )
+
+        # Third attempt saw an empty worktree, not the stale rejected content
+        assert executor.third_start_content == "", (
+            f"expected clean worktree but found: {executor.third_start_content!r}"
+        )
+
 
 class TestEvidencePathListCap:
     """BOD-308 followup: path lists in salvage/restore events and

@@ -438,6 +438,31 @@ class TestClassifierVersion:
         assert CLASSIFIER_VERSION == "v1"
 
 
+class TestDiffRejectedClassification:
+    """fix(retry-clean-base): diff_rejected uses error_text (normalized), not terminal.error."""
+
+    def test_diff_rejected_prefix_classifies_correctly(
+        self, classifier: FailureIntelligence, now: datetime
+    ) -> None:
+        """diff_rejected: prefix → category=diff_rejected, CORRECT_IMPLEMENTATION, no cooldown."""
+        terminal = WorkerTerminal(ok=False, error="diff_rejected: SEARCH text not found in a.py")
+        result = classifier.classify(terminal, now=now)
+        assert result.category == "diff_rejected"
+        assert result.action == "CORRECT_IMPLEMENTATION"
+        assert result.cooldown_seconds == 0
+        assert result.scope == "none"
+
+    def test_diff_rejected_uses_normalized_error_text(
+        self, classifier: FailureIntelligence, now: datetime
+    ) -> None:
+        """The diff_rejected check uses error_text (= terminal.error or ''), not terminal.error
+        directly.  An empty error must not raise AttributeError and must fall through."""
+        terminal = WorkerTerminal(ok=False, error="")
+        result = classifier.classify(terminal, now=now)
+        # Empty error falls through to 'unknown', not 'diff_rejected'
+        assert result.category != "diff_rejected"
+
+
 def test_gateway_admission_shed_is_not_a_model_failure() -> None:
     from verdict.orchestration.contracts import WorkerTerminal
 

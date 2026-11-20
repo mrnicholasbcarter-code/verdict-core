@@ -99,6 +99,7 @@ from verdict.orchestration.research_metrics import (
 )
 from verdict.orchestration.salvage import (
     _MAX_EVIDENCE_PATHS,
+    clear_salvage_dir,
     restore_salvaged_files,
     salvage_owned_files,
 )
@@ -118,6 +119,10 @@ from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
 _sleep = asyncio.sleep
 # BOD-433: failures that revoke the permit scope (credential denial, wrong model served).
 _REVOKING_CATEGORIES = frozenset({"authentication", "permission", "model_mismatch"})
+# fix(retry-clean-base): categories that mean "work was judged wrong" but arrive as
+# TERMINAL_FAILURE (validated=False).  Together with validated=True these form the full
+# set of "rejected" outcomes that must start the next attempt from a clean base.
+_JUDGED_WORK_CATEGORIES = frozenset({"diff_rejected"})
 _WORKER_OUTPUT_RESERVE = 1024
 _WORKER_SAFETY_RESERVE = 512
 
@@ -276,6 +281,15 @@ class NodeRun:
     effort_reason: dict[str, Any] = field(default_factory=dict)
     effort_route_id: str = ""
     effort_attempt: int = 0
+    # fix(retry-clean-base): True when the most recently completed attempt ended
+    # with its work JUDGED WRONG (validated=True → REJECTED, or category in
+    # _JUDGED_WORK_CATEGORIES).  Read in _attempt() to decide clean-base vs
+    # salvage-restore; overwritten by every _record_failure() call.
+    last_rejected: bool = False
+    # True when clear_salvage_dir failed on a rejected attempt, leaving stale
+    # content in the salvage dir.  Forces clean-base on all future attempts of
+    # this node until an interrupted save successfully replaces the dir.
+    salvage_poisoned: bool = False
 
 
 @dataclass(frozen=True)
@@ -1125,6 +1139,10 @@ class DagRuntime:
                     )
                 elif last.category == "verification_failed":
                     run.failure_feedback = last.evidence[-2000:]
+                elif last.category == "diff_rejected":
+                    # fix(retry-clean-base): pass the diff rejection reason as advisory
+                    # context so the next worker knows what search/replace failed.
+                    run.failure_feedback = last.evidence[-2000:]
             if failures and failures[-1].action == "RETRY_INFRA":
                 # Gateway-local transient: same route is still healthy; wait and retry.
                 await asyncio.sleep(min(failures[-1].cooldown_seconds, 60.0))
@@ -1431,40 +1449,88 @@ class DagRuntime:
             base = await self._node_base(node)
             await self.git.add_worktree(worktree, branch, base)
             # BOD-308: restore salvaged partial work from a previous attempt.
+            # fix(retry-clean-base): after a REJECTED attempt (work was judged wrong)
+            # start from the clean base instead of restoring stale partial files.
+            # Only INTERRUPTED attempts (timeout, transport) have their saved state
+            # restored.  The restore event always records which path was taken.
             if run.attempt > 1 and run.node.owned_files:
                 salvage_dir = self.run_dir / "salvage" / run.node.node_id
-                restore = restore_salvaged_files(salvage_dir, worktree, run.node.owned_files)
-                if restore.restored or restore.error:
-                    restored_proj = list(restore.restored[:_MAX_EVIDENCE_PATHS])
-                    skipped_proj = list(restore.skipped[:_MAX_EVIDENCE_PATHS])
-                    restore_truncated = (
-                        len(restore.restored) > _MAX_EVIDENCE_PATHS
-                        or len(restore.skipped) > _MAX_EVIDENCE_PATHS
-                    )
+                was_rejected = run.last_rejected
+                salvage_tainted = run.salvage_poisoned
+                # Reset last_rejected; salvage_poisoned is managed by _fail().
+                run.last_rejected = False
+                if was_rejected or salvage_tainted:
+                    # Previous attempt was rejected: start from the clean base.
+                    # No files are restored; the event records the reason.
                     self.events.emit(
                         "restore",
                         node.node_id,
-                        restored=restored_proj,
-                        restored_count=len(restore.restored),
-                        skipped=skipped_proj,
-                        total_bytes=restore.total_bytes,
+                        restored=[],
+                        restored_count=0,
+                        skipped=[],
+                        total_bytes=0,
                         attempt=run.attempt,
-                        evidence_truncated=restore_truncated,
-                        error=restore.error,
+                        evidence_truncated=False,
+                        error="",
+                        reason="clean_base",
                     )
                     run.history.append(
                         {
                             "attempt": run.attempt,
                             "route_id": run.route_id,
                             "outcome": "restore",
-                            "restored": restored_proj,
-                            "restored_count": len(restore.restored),
-                            "skipped": skipped_proj,
-                            "total_bytes": restore.total_bytes,
-                            "evidence_truncated": restore_truncated,
-                            "error": restore.error,
+                            "restored": [],
+                            "restored_count": 0,
+                            "skipped": [],
+                            "total_bytes": 0,
+                            "evidence_truncated": False,
+                            "error": "",
+                            "reason": "clean_base",
                         }
                     )
+                else:
+                    # Previous attempt was interrupted: restore partial owned files.
+                    restore = restore_salvaged_files(salvage_dir, worktree, run.node.owned_files)
+                    if restore.restored or restore.error:
+                        restored_proj = list(restore.restored[:_MAX_EVIDENCE_PATHS])
+                        skipped_proj = list(restore.skipped[:_MAX_EVIDENCE_PATHS])
+                        restore_truncated = (
+                            len(restore.restored) > _MAX_EVIDENCE_PATHS
+                            or len(restore.skipped) > _MAX_EVIDENCE_PATHS
+                        )
+                        self.events.emit(
+                            "restore",
+                            node.node_id,
+                            restored=restored_proj,
+                            restored_count=len(restore.restored),
+                            skipped=skipped_proj,
+                            total_bytes=restore.total_bytes,
+                            attempt=run.attempt,
+                            evidence_truncated=restore_truncated,
+                            error=restore.error,
+                            reason="interrupted",
+                        )
+                        run.history.append(
+                            {
+                                "attempt": run.attempt,
+                                "route_id": run.route_id,
+                                "outcome": "restore",
+                                "restored": restored_proj,
+                                "restored_count": len(restore.restored),
+                                "skipped": skipped_proj,
+                                "total_bytes": restore.total_bytes,
+                                "evidence_truncated": restore_truncated,
+                                "error": restore.error,
+                                "reason": "interrupted",
+                            }
+                        )
+                        if restore.restored:
+                            # Files were written into the worktree: invalidate the
+                            # cached research pack so the next attempt re-reads the
+                            # restored state rather than the base-revision snapshot.
+                            pack_path = self.run_dir / "context_artifacts" / f"{node.node_id}.json"
+                            with contextlib.suppress(OSError):
+                                pack_path.unlink(missing_ok=True)
             self.inflight[node.node_id] = run.route_id
             origin_pinned = False
             try:
@@ -2041,6 +2107,9 @@ class DagRuntime:
         if failure is None:
             failure = self.classifier.classify(terminal, now=self.now())
         failures.append(failure)
+        # fix(retry-clean-base): track whether this attempt's work was judged wrong so
+        # _attempt() can start the next attempt from the clean base.
+        run.last_rejected = validated or failure.category in _JUDGED_WORK_CATEGORIES
         if validated:
             self._set(run, NodeState.REJECTED, reason=failure.category)
         else:
@@ -2109,6 +2178,7 @@ class DagRuntime:
                 "route_id": run.route_id,
                 "outcome": failure.category,
                 "fault_injected": terminal.executor_kind == "fault-injected",
+                "rejected": run.last_rejected,
             }
         )
 
@@ -2218,56 +2288,89 @@ class DagRuntime:
                     )
                 )
             # BOD-308: salvage owned partial work before discarding the worktree.
+            # fix(retry-clean-base): when the attempt was REJECTED (work judged wrong),
+            # clear any stale salvage instead of saving, so the next attempt starts
+            # from the clean base.  Only INTERRUPTED attempts (timeout, transport) save.
             if (
                 run.node.owned_files
                 and worktree.exists()
                 and terminal.executor_kind != "fault-injected"
             ):
                 salvage_dir = self.run_dir / "salvage" / run.node.node_id
-                changed = await self.git.changed_files(
-                    worktree, await self._node_base(run.node), owned_files=run.node.owned_files
-                )
-                result = salvage_owned_files(
-                    worktree,
-                    run.node.owned_files,
-                    salvage_dir,
-                    changed_files=changed,
-                    replace_existing=True,
-                )
-                if result.saved or result.skipped or result.error:
-                    saved_proj = list(result.saved[:_MAX_EVIDENCE_PATHS])
-                    skipped_proj = list(result.skipped[:_MAX_EVIDENCE_PATHS])
-                    evidence_truncated = (
-                        result.evidence_truncated
-                        or len(result.saved) > _MAX_EVIDENCE_PATHS
-                        or len(result.skipped) > _MAX_EVIDENCE_PATHS
+                if run.last_rejected:
+                    # Work was judged wrong: wipe prior salvage so the next
+                    # attempt starts from the clean base.  The restore event
+                    # emitted in _attempt() records which path was taken.
+                    clear_err = clear_salvage_dir(salvage_dir)
+                    if clear_err:
+                        # Could not remove the salvage dir; stale content remains.
+                        # Emit an event and poison the dir so _attempt() keeps
+                        # the node on the clean-base path until an interrupted
+                        # save successfully replaces the contents.
+                        self.events.emit(
+                            "salvage_clear_error",
+                            run.node.node_id,
+                            attempt=run.attempt,
+                            error=clear_err,
+                        )
+                        run.history.append(
+                            {
+                                "attempt": run.attempt,
+                                "route_id": run.route_id,
+                                "outcome": "salvage_clear_error",
+                                "error": clear_err,
+                            }
+                        )
+                        run.salvage_poisoned = True
+                else:
+                    # Work was interrupted: preserve partial owned files.
+                    changed = await self.git.changed_files(
+                        worktree, await self._node_base(run.node), owned_files=run.node.owned_files
                     )
-                    self.events.emit(
-                        "salvage",
-                        run.node.node_id,
-                        saved=saved_proj,
-                        saved_count=len(result.saved),
-                        skipped=skipped_proj,
-                        files=list(result.files),
-                        evidence_truncated=evidence_truncated,
-                        total_bytes=result.total_bytes,
-                        attempt=run.attempt,
-                        error=result.error,
+                    result = salvage_owned_files(
+                        worktree,
+                        run.node.owned_files,
+                        salvage_dir,
+                        changed_files=changed,
+                        replace_existing=True,
                     )
-                    run.history.append(
-                        {
-                            "attempt": run.attempt,
-                            "route_id": run.route_id,
-                            "outcome": "salvage",
-                            "saved": saved_proj,
-                            "saved_count": len(result.saved),
-                            "skipped": skipped_proj,
-                            "files": list(result.files),
-                            "evidence_truncated": evidence_truncated,
-                            "total_bytes": result.total_bytes,
-                            "error": result.error,
-                        }
-                    )
+                    if result.saved and not result.error:
+                        # Successful save replaced any prior stale content.
+                        run.salvage_poisoned = False
+                    if result.saved or result.skipped or result.error:
+                        saved_proj = list(result.saved[:_MAX_EVIDENCE_PATHS])
+                        skipped_proj = list(result.skipped[:_MAX_EVIDENCE_PATHS])
+                        evidence_truncated = (
+                            result.evidence_truncated
+                            or len(result.saved) > _MAX_EVIDENCE_PATHS
+                            or len(result.skipped) > _MAX_EVIDENCE_PATHS
+                        )
+                        self.events.emit(
+                            "salvage",
+                            run.node.node_id,
+                            saved=saved_proj,
+                            saved_count=len(result.saved),
+                            skipped=skipped_proj,
+                            files=list(result.files),
+                            evidence_truncated=evidence_truncated,
+                            total_bytes=result.total_bytes,
+                            attempt=run.attempt,
+                            error=result.error,
+                        )
+                        run.history.append(
+                            {
+                                "attempt": run.attempt,
+                                "route_id": run.route_id,
+                                "outcome": "salvage",
+                                "saved": saved_proj,
+                                "saved_count": len(result.saved),
+                                "skipped": skipped_proj,
+                                "files": list(result.files),
+                                "evidence_truncated": evidence_truncated,
+                                "total_bytes": result.total_bytes,
+                                "error": result.error,
+                            }
+                        )
         finally:
             await self.git.remove_worktree(worktree)
         return False
