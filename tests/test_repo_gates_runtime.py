@@ -12,7 +12,14 @@ import pytest
 from tests.test_orch_runtime import NOW, Events, Executor, Reviewer, Selector
 from tests.test_orch_runtime import repo as repo
 from verdict.orchestration import verification
-from verdict.orchestration.contracts import NodeKind, NodeState, RunOutcome, WorkGraph, WorkNode
+from verdict.orchestration.contracts import (
+    NodeKind,
+    NodeState,
+    RunOutcome,
+    WorkerTerminal,
+    WorkGraph,
+    WorkNode,
+)
 from verdict.orchestration.controls import ControlRequest
 from verdict.orchestration.recovery import FailureIntelligence
 from verdict.orchestration.runtime import DagRuntime, NodeRun, RuntimePolicy, subprocess_runner
@@ -29,7 +36,12 @@ def gate_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def make_runtime(
-    repo: Path, config: str, *, fail: str = "", run_repo_gates: bool | None = None
+    repo: Path,
+    config: str,
+    *,
+    fail: str = "",
+    run_repo_gates: bool | None = None,
+    owned_file: str = "a.txt",
 ) -> tuple[DagRuntime, Events, list[tuple[list[str], Path, float]]]:
     if config:
         (repo / "pyproject.toml").write_text(config)
@@ -49,7 +61,7 @@ def make_runtime(
         return 0, "passed"
 
     worker = WorkNode(
-        "a", "write a", owned_files=("a.txt",), verification_command=("python", "-m", "pytest")
+        "a", "write a", owned_files=(owned_file,), verification_command=("python", "-m", "pytest")
     )
     integrate = WorkNode(
         "i",
@@ -62,12 +74,29 @@ def make_runtime(
     policy = (
         RuntimePolicy() if run_repo_gates is None else RuntimePolicy(run_repo_gates=run_repo_gates)
     )
+    # When a non-default owned file is used, substitute a minimal executor that
+    # writes that file so git.changed_files picks it up with the right extension.
+    if owned_file == "a.txt":
+        executor: object = Executor({}, delay=0)
+    else:
+        _of = owned_file
+
+        class _FileExecutor:
+            async def run(
+                self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+            ) -> WorkerTerminal:
+                (cwd / _of).write_text(f"a by {route_id}\n")
+                return WorkerTerminal(
+                    ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+                )
+
+        executor = _FileExecutor()
     runtime = DagRuntime(
         repo=repo,
         run_dir=repo.parent / "run1",
         graph=WorkGraph("g", (worker, integrate)),
         selector=Selector(["cc/s"]),
-        executor=Executor({}, delay=0),
+        executor=executor,
         classifier=FailureIntelligence(),
         events=events,
         prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
@@ -441,7 +470,7 @@ async def test_formatting_only_failure_is_repaired_with_the_formatter(
     _apply_lint_autofix.  The gate sees already-formatted code and passes.
     A lint_autofix event records the autofix run.
     """
-    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n", owned_file="a.py")
     normal_runner = runtime.runner
     formatted = {"done": False}
 
@@ -452,7 +481,7 @@ async def test_formatting_only_failure_is_repaired_with_the_formatter(
             and list(argv[1:3]) == ["format", "--check"]
             and cwd.name.startswith("a-")
         ):
-            return (0, "") if formatted["done"] else (1, "Would reformat: a.txt")
+            return (0, "") if formatted["done"] else (1, "Would reformat: a.py")
         if name == "ruff" and argv[1] == "format" and "--check" not in argv:
             formatted["done"] = True
             return 0, "1 file reformatted"
@@ -494,7 +523,7 @@ async def test_lint_autofix_runs_before_verification_and_gate(repo: Path, gate_b
     The contract: _apply_lint_autofix is called in _validate before both the
     verification command and _run_repo_gates, so both see the corrected code.
     """
-    runtime, _events, _ = make_runtime(repo, "[tool.ruff]\n")
+    runtime, _events, _ = make_runtime(repo, "[tool.ruff]\n", owned_file="a.py")
     normal_runner = runtime.runner
     call_order: list[str] = []
 
@@ -579,7 +608,7 @@ async def test_ruff_missing_records_event_gates_proceed(
         return orig(argv, cwd)
 
     monkeypatch.setattr(_rt_mod, "_resolve_gate_argv", missing_ruff_fix_only)
-    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n", owned_file="a.py")
     result = await runtime.run()
     # Autofix path could not find ruff → ruff_missing=True, skipped=False.
     autofix_evts = events.of("lint_autofix", "a")
@@ -625,7 +654,7 @@ async def test_fixable_f401_is_corrected_in_file_and_node_validates(
     target file proves the full contract: file digest changes, changed_files is
     non-empty in the event, the gate then sees clean code, and the node validates.
     """
-    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n", owned_file="a.py")
     normal_runner = runtime.runner
 
     async def fixing_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
@@ -671,22 +700,131 @@ async def test_unowned_changed_file_is_never_passed_to_ruff(
 
     runtime.runner = track_fix
 
-    # Fake worktree: a.txt is owned, b.txt is not; both present and in changed.
+    # Fake worktree: a.py is owned, b.py is not; both present and in changed.
     worktree = tmp_path / "wt"
     worktree.mkdir()
     (worktree / "pyproject.toml").write_text("[tool.ruff]\n")
-    (worktree / "a.txt").write_text("import os  # F401 candidate\n")
-    (worktree / "b.txt").write_text("unowned content\n")
+    (worktree / "a.py").write_text("import os  # F401 candidate\n")
+    (worktree / "b.py").write_text("import sys  # unowned\n")
 
     run = NodeRun(
         node=WorkNode(
-            "a", "write a", owned_files=("a.txt",), verification_command=("python", "-m", "pytest")
+            "a", "write a", owned_files=("a.py",), verification_command=("python", "-m", "pytest")
         )
     )
-    await runtime._apply_lint_autofix(run, worktree, ["a.txt", "b.txt"])
+    await runtime._apply_lint_autofix(run, worktree, ["a.py", "b.py"])
 
-    # At least one ruff --fix call must have happened (a.txt is owned and exists).
+    # At least one ruff --fix call must have happened (a.py is owned and exists).
     assert fix_argvs, "ruff --fix was never called"
-    # b.txt must never appear as an argv element in any --fix invocation.
+    # b.py must never appear as an argv element in any --fix invocation.
     for argv in fix_argvs:
-        assert "b.txt" not in argv, f"unowned b.txt was passed to ruff --fix; full argv: {argv}"
+        assert "b.py" not in argv, f"unowned b.py was passed to ruff --fix; full argv: {argv}"
+
+
+async def test_non_python_owned_files_are_never_passed_to_ruff(
+    repo: Path, gate_bin: Path, tmp_path: Path
+) -> None:
+    """Regression: ruff must not receive YAML or Markdown files even when they
+    are owned and changed.  When ruff gets an explicitly named non-.py file it
+    silently reformats it as Python syntax, corrupting the content.
+
+    Live failure (2026-11-20): probe_spec node passed
+    ``openspec/changes/doctor-capability-gateway-probe/.openspec.yaml`` to ruff
+    format and it rewrote ``schema: verdict-change-v1`` to
+    ``schema: verdict - change - v1``.
+
+    _apply_lint_autofix is called directly to test the extension filter in
+    isolation.
+    """
+    runtime, events, _ = make_runtime(repo, "")
+    all_ruff_argvs: list[list[str]] = []
+    normal_runner = runtime.runner
+
+    async def track_ruff(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "ruff":
+            all_ruff_argvs.append(list(argv))
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = track_ruff
+
+    # Fake worktree: .py is owned and Python; .yaml and .md are owned but not Python.
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / "pyproject.toml").write_text("[tool.ruff]\n")
+    (worktree / "a.py").write_text("import os\n")
+    yaml_content = "schema: verdict-change-v1\n"
+    (worktree / "config.yaml").write_text(yaml_content)
+    (worktree / "docs.md").write_text("# heading\n")
+
+    run = NodeRun(
+        node=WorkNode(
+            "probe",
+            "write probe",
+            owned_files=("a.py", "config.yaml", "docs.md"),
+            verification_command=("python", "-m", "pytest"),
+        )
+    )
+    await runtime._apply_lint_autofix(run, worktree, ["a.py", "config.yaml", "docs.md"])
+
+    # Only a.py should appear in ruff invocations; .yaml and .md must not.
+    for argv in all_ruff_argvs:
+        assert "config.yaml" not in argv, f"config.yaml passed to ruff; full argv: {argv}"
+        assert "docs.md" not in argv, f"docs.md passed to ruff; full argv: {argv}"
+
+    # The yaml file's bytes must be byte-for-byte identical after autofix.
+    assert (worktree / "config.yaml").read_text() == yaml_content, (
+        "config.yaml was corrupted by autofix"
+    )
+
+    # The lint_autofix event records the skipped non-Python files.
+    autofix_evts = events.of("lint_autofix", "probe")
+    assert autofix_evts, "lint_autofix event not emitted"
+    skipped = autofix_evts[0].get("skipped_non_python", [])
+    assert "config.yaml" in skipped, f"config.yaml not in skipped_non_python: {skipped}"
+    assert "docs.md" in skipped, f"docs.md not in skipped_non_python: {skipped}"
+
+
+async def test_all_non_python_owned_files_emit_no_ruff_calls(
+    repo: Path, gate_bin: Path, tmp_path: Path
+) -> None:
+    """When every owned changed file is non-Python, ruff must not be called at
+    all, and the event records the skipped files with files=[]."""
+    runtime, events, _ = make_runtime(repo, "")
+    ruff_argvs: list[list[str]] = []
+    normal_runner = runtime.runner
+
+    async def track_ruff(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "ruff":
+            ruff_argvs.append(list(argv))
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = track_ruff
+
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / "pyproject.toml").write_text("[tool.ruff]\n")
+    (worktree / "spec.yaml").write_text("schema: verdict-change-v1\n")
+    (worktree / "README.md").write_text("# docs\n")
+
+    run = NodeRun(
+        node=WorkNode(
+            "a",
+            "write a",
+            owned_files=("spec.yaml", "README.md"),
+            verification_command=("python", "-m", "pytest"),
+        )
+    )
+    await runtime._apply_lint_autofix(run, worktree, ["spec.yaml", "README.md"])
+
+    assert not ruff_argvs, f"ruff was called but no Python files exist: {ruff_argvs}"
+
+    autofix_evts = events.of("lint_autofix", "a")
+    assert autofix_evts, "lint_autofix event not emitted"
+    evt = autofix_evts[0]
+    assert evt.get("files") == [], f"expected files=[], got {evt.get('files')!r}"
+    assert evt.get("changed_files") == [], (
+        f"expected changed_files=[], got {evt.get('changed_files')!r}"
+    )
+    skipped = evt.get("skipped_non_python", [])
+    assert "spec.yaml" in skipped
+    assert "README.md" in skipped

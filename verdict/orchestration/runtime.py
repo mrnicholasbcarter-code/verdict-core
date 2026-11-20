@@ -138,6 +138,11 @@ _ESCALATION_JUDGED_FAILURE_THRESHOLD = 2
 _ESCALATION_UNKNOWN_TIER_CEILING = 3
 _WORKER_OUTPUT_RESERVE = 1024
 _WORKER_SAFETY_RESERVE = 512
+# File extensions that ruff treats as Python source.  Explicitly named files
+# with any other extension (YAML, Markdown, TOML, …) are reformatted as Python
+# syntax, corrupting their content.  Only these extensions are passed to
+# ruff check --fix / ruff format.
+_RUFF_PYTHON_EXTENSIONS: frozenset[str] = frozenset((".py", ".pyi"))
 
 
 class EventSink(Protocol):
@@ -2587,9 +2592,13 @@ class DagRuntime:
         is missing, records ``ruff_missing=True`` and returns without touching any
         file.  The repo gates always run afterward; this step does not replace them.
 
-        Only owned files that exist in the worktree are touched; unowned files are
-        never modified.  Exit codes from ``--fix`` and ``format`` are recorded in
-        the event but never treated as failures: the subsequent gate run decides.
+        Only ``.py`` and ``.pyi`` files are passed to ruff.  Other owned files
+        (YAML, Markdown, TOML, …) are recorded in the event as
+        ``skipped_non_python`` but never passed to ruff: when ruff receives an
+        explicitly named file it processes it as Python regardless of extension,
+        which corrupts non-Python content.  Exit codes from ``--fix`` and
+        ``format`` are recorded in the event but never treated as failures: the
+        subsequent gate run decides.
         """
         node_id = run.node.node_id
         try:
@@ -2629,19 +2638,40 @@ class DagRuntime:
             )
             return
 
-        before = {p: hashlib.sha256((worktree / p).read_bytes()).hexdigest() for p in targets}
+        # Only Python source files are eligible for ruff; passing a non-Python
+        # file by explicit path causes ruff to interpret it as Python, corrupting
+        # YAML, Markdown, TOML and other formats.
+        python_targets = [p for p in targets if Path(p).suffix in _RUFF_PYTHON_EXTENSIONS]
+        non_python_targets = [p for p in targets if Path(p).suffix not in _RUFF_PYTHON_EXTENSIONS]
+
+        if not python_targets:
+            self.events.emit(
+                "lint_autofix",
+                node_id,
+                files=[],
+                changed_files=[],
+                skipped=False,
+                ruff_missing=False,
+                skipped_non_python=non_python_targets,
+            )
+            return
+
+        before = {
+            p: hashlib.sha256((worktree / p).read_bytes()).hexdigest() for p in python_targets
+        }
 
         try:
-            check_argv = _resolve_gate_argv(("ruff", "check", "--fix", *targets), worktree)
-            fmt_argv = _resolve_gate_argv(("ruff", "format", *targets), worktree)
+            check_argv = _resolve_gate_argv(("ruff", "check", "--fix", *python_targets), worktree)
+            fmt_argv = _resolve_gate_argv(("ruff", "format", *python_targets), worktree)
         except FileNotFoundError:
             self.events.emit(
                 "lint_autofix",
                 node_id,
-                files=targets,
+                files=python_targets,
                 changed_files=[],
                 skipped=False,
                 ruff_missing=True,
+                skipped_non_python=non_python_targets,
             )
             return
 
@@ -2654,25 +2684,26 @@ class DagRuntime:
 
         after = {
             p: hashlib.sha256((worktree / p).read_bytes()).hexdigest()
-            for p in targets
+            for p in python_targets
             if (worktree / p).is_file()
         }
-        fixed_files = [p for p in targets if before.get(p) != after.get(p)]
+        fixed_files = [p for p in python_targets if before.get(p) != after.get(p)]
 
         self.events.emit(
             "lint_autofix",
             node_id,
-            files=targets,
+            files=python_targets,
             changed_files=fixed_files,
             skipped=False,
             ruff_missing=False,
-            check_command=shlex.join(["ruff", "check", "--fix", *targets]),
-            format_command=shlex.join(["ruff", "format", *targets]),
+            check_command=shlex.join(["ruff", "check", "--fix", *python_targets]),
+            format_command=shlex.join(["ruff", "format", *python_targets]),
             ruff_check_exit=check_code,
             ruff_format_exit=fmt_code,
             check_tail=check_out[-300:],
-            before_digests={p: before[p][:16] for p in targets},
-            after_digests={p: after.get(p, before[p])[:16] for p in targets},
+            before_digests={p: before[p][:16] for p in python_targets},
+            after_digests={p: after.get(p, before[p])[:16] for p in python_targets},
+            skipped_non_python=non_python_targets,
         )
 
     async def _gate_fails_on_base(self, gate_reason: str, base: str) -> bool:
