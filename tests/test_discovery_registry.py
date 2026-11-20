@@ -95,6 +95,7 @@ class RegistryEntryTest(unittest.TestCase):
             upstream=None,
             answered=True,
             tool_ok=True,
+            tool_skip_reason=None,
             served_model="provider/model",
             latency_ms=250,
             retry_after_s=None,
@@ -142,6 +143,7 @@ class DiscoveryRegistryTest(unittest.TestCase):
             upstream="provider-a",
             answered=True,
             tool_ok=False,
+            tool_skip_reason=None,
             served_model=None,
             latency_ms=100,
             retry_after_s=None,
@@ -306,7 +308,10 @@ class RunRefreshDryRunTest(unittest.TestCase):
             self.assertEqual(len(reg.entries), 3)
             for entry in reg.entries:
                 self.assertFalse(entry.answered)
-                self.assertFalse(entry.tool_ok)
+                self.assertIsNone(
+                    entry.tool_ok, "dry-run entries are not probed — tool_ok must be None"
+                )
+                self.assertEqual(entry.tool_skip_reason, "not_answered")
 
     def test_dry_run_does_not_write_registry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -742,7 +747,8 @@ class WallBudgetEnforcementTest(unittest.TestCase):
         # Liveness probe ran and answered, but tool probe must have been skipped
         self.assertEqual(len(reg.entries), 1)
         self.assertTrue(reg.entries[0].answered, "liveness probe should still be counted")
-        self.assertFalse(reg.entries[0].tool_ok, "tool probe was skipped — not proved")
+        self.assertIsNone(reg.entries[0].tool_ok, "skipped tool probe must be None, not False")
+        self.assertEqual(reg.entries[0].tool_skip_reason, "wall_budget_exhausted")
         self.assertEqual(tool_probe_calls, [], "tool probe must not be called when budget is spent")
 
 
@@ -826,6 +832,219 @@ class ActionDiscoveryRefreshTest(unittest.TestCase):
         mock_refresh.assert_called_once_with(
             dry_run=True, context_tokens=1000, wall_budget_s=10.0, force=True
         )
+
+
+# ---------------------------------------------------------------------------
+# Tri-state tool_ok: not_probed vs. measured failure vs. measured ok
+# ---------------------------------------------------------------------------
+
+
+class ToolOutcomeTriStateTest(unittest.TestCase):
+    """tool_ok must be True/False/None — skipped routes must never read as failures."""
+
+    def tearDown(self) -> None:
+        _set_transport(None)
+
+    def test_measured_tool_failure_has_tool_ok_false(self) -> None:
+        """A route that answers liveness but fails the tool call → tool_ok=False."""
+        route = _route()
+        no_tool_body = json.dumps(
+            {"choices": [{"message": {"role": "assistant", "content": "text only"}}]}
+        ).encode()
+
+        def _t(url: str, h: dict, p: bytes, timeout: float):
+            return 200, {}, _ok_body() if b'"tools"' not in p else no_tool_body
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = run_refresh(
+                [(route, "free", "plan_free")], context_tokens=0, wall_budget_s=300.0, env=_env(tmp)
+            )
+
+        self.assertEqual(len(reg.entries), 1)
+        entry = reg.entries[0]
+        self.assertTrue(entry.answered)
+        self.assertIs(entry.tool_ok, False, "measured failure must be False, not None")
+        self.assertIsNone(entry.tool_skip_reason, "measured failure carries no skip reason")
+
+    def test_not_probed_does_not_count_as_tool_failure_in_summary(self) -> None:
+        """A not_probed route must not inflate the 'tool_ok' count or look like a failure."""
+        route = _route()
+
+        def _t(url: str, h: dict, p: bytes, timeout: float):
+            if b'"tools"' in p:
+                raise AssertionError("tool probe must not run when budget is exhausted")
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = run_refresh(
+                [(route, "free", "plan_free")], context_tokens=0, wall_budget_s=-1.0, env=_env(tmp)
+            )
+
+        entry = reg.entries[0]
+        self.assertIsNone(entry.tool_ok)
+        # tool_ok=None must not count as ok *or* as a measured failure
+        ok_count = sum(1 for e in reg.entries if e.tool_ok is True)
+        fail_count = sum(1 for e in reg.entries if e.tool_ok is False)
+        self.assertEqual(ok_count, 0, "not_probed must not count as ok")
+        self.assertEqual(fail_count, 0, "not_probed must not count as a measured failure")
+
+    def test_old_registry_missing_tool_ok_loads_as_not_probed(self) -> None:
+        """An old registry entry without tool_ok must load as None (not False)."""
+        raw = {
+            "schema": REGISTRY_SCHEMA,
+            "written_at": "2026-11-20T00:00:00+00:00",
+            "ttl_s": REGISTRY_TTL_S,
+            "entries": [
+                {
+                    "route_key": "p/m",
+                    "capacity_class": "free",
+                    "capacity_fact": "plan_free",
+                    "base_url": "http://h/v1",
+                    "auth": "none",
+                    "upstream": None,
+                    "answered": True,
+                    # tool_ok intentionally absent (old file format)
+                    "served_model": None,
+                    "latency_ms": None,
+                    "retry_after_s": None,
+                    "breaker_state": "closed",
+                    "checked_at": "2026-11-20T00:00:00+00:00",
+                }
+            ],
+        }
+        reg = DiscoveryRegistry.from_dict(raw)
+        self.assertEqual(len(reg.entries), 1)
+        self.assertIsNone(
+            reg.entries[0].tool_ok,
+            "old entry without tool_ok must load as None (not_probed), never as False",
+        )
+
+    def test_null_tool_ok_in_registry_file_loads_as_not_probed(self) -> None:
+        """An entry with explicit tool_ok=null must also load as None."""
+        raw = {
+            "schema": REGISTRY_SCHEMA,
+            "written_at": "2026-11-20T00:00:00+00:00",
+            "ttl_s": REGISTRY_TTL_S,
+            "entries": [
+                {
+                    "route_key": "p/m",
+                    "capacity_class": "free",
+                    "capacity_fact": "plan_free",
+                    "base_url": "http://h/v1",
+                    "auth": "none",
+                    "upstream": None,
+                    "answered": True,
+                    "tool_ok": None,
+                    "tool_skip_reason": "wall_budget_exhausted",
+                    "served_model": None,
+                    "latency_ms": None,
+                    "retry_after_s": None,
+                    "breaker_state": "closed",
+                    "checked_at": "2026-11-20T00:00:00+00:00",
+                }
+            ],
+        }
+        reg = DiscoveryRegistry.from_dict(raw)
+        self.assertIsNone(reg.entries[0].tool_ok)
+        self.assertEqual(reg.entries[0].tool_skip_reason, "wall_budget_exhausted")
+
+
+# ---------------------------------------------------------------------------
+# Per-route deadline check inside tool_probe_all
+# ---------------------------------------------------------------------------
+
+
+class PerRouteDeadlineTest(unittest.TestCase):
+    """Deadline must be checked before each route in tool_probe_all."""
+
+    def tearDown(self) -> None:
+        _set_transport(None)
+
+    def test_per_route_deadline_crossing_marks_remaining_not_probed(self) -> None:
+        """When deadline crosses mid-stage, later routes get not_probed, not failures."""
+        import urllib.parse
+        from unittest.mock import patch
+
+        from verdict.discovery.model import UP as _UP
+        from verdict.discovery.model import ProbeResult
+        from verdict.discovery.toolprobe import TOOL_NOT_PROBED, TOOL_OK, tool_probe_all
+
+        route_a = Route(provider="kilo", model="m-a", base_url="http://a.example.com/v1")
+        route_b = Route(provider="kilo", model="m-b", base_url="http://b.example.com/v1")
+
+        probed_hosts: list[str] = []
+
+        def _t(url: str, h: dict, p: bytes, timeout: float):
+            hostname = urllib.parse.urlsplit(url).hostname or ""
+            probed_hosts.append(hostname)
+            return 200, {}, _tool_ok_body()
+
+        _set_transport(_t)
+
+        # With concurrency=1 routes are dispatched serially: a then b.
+        # Fake clock: before-deadline for route_a's check, after for route_b's check.
+        # tool_probe also calls time.monotonic() once for latency; account for that.
+        deadline = 1000.0
+        call_count = 0
+
+        def fake_monotonic() -> float:
+            nonlocal call_count
+            call_count += 1
+            # Calls 1,2 → route_a's deadline check + latency start (before deadline)
+            # Calls 3+ → route_b's deadline check (after deadline)
+            return 999.0 if call_count <= 2 else 1001.0
+
+        results = [ProbeResult(route=route_a, status=_UP), ProbeResult(route=route_b, status=_UP)]
+
+        with patch("verdict.discovery.toolprobe.time.monotonic", fake_monotonic):
+            out = tool_probe_all(results, timeout=5.0, concurrency=1, per_host=1, deadline=deadline)
+
+        # route_a was probed (deadline not yet reached), route_b was not
+        self.assertIn(route_a.key, out)
+        self.assertIn(route_b.key, out)
+        self.assertEqual(out[route_a.key][0], TOOL_OK, "route_a should have been probed")
+        self.assertEqual(out[route_b.key][0], TOOL_NOT_PROBED, "route_b deadline should fire")
+        self.assertEqual(out[route_b.key][1], "wall_budget_exhausted")
+        self.assertIn("a.example.com", probed_hosts, "route_a must be probed")
+        self.assertNotIn("b.example.com", probed_hosts, "route_b must not be probed")
+
+    def test_registry_records_not_probed_from_tool_probe_all_result(self) -> None:
+        """run_refresh stores tool_ok=None/wall_budget_exhausted from TOOL_NOT_PROBED results.
+
+        Uses the pre-stage exhausted-budget path (wall_budget_s=-1) so that
+        tool_probe_all returns TOOL_NOT_PROBED for every UP route.  This verifies
+        that _make_entry maps TOOL_NOT_PROBED → (tool_ok=None, tool_skip_reason=…).
+        The per-route deadline check in tool_probe_all itself is tested by
+        test_per_route_deadline_crossing_marks_remaining_not_probed above.
+        """
+        route_a = Route(provider="kilo", model="m-a", base_url="http://a.example.com/v1")
+        route_b = Route(provider="kilo", model="m-b", base_url="http://b.example.com/v1")
+
+        def _t(url: str, h: dict, p: bytes, timeout: float):
+            if b'"tools"' in p:
+                raise AssertionError("tool probe must not run when budget exhausted")
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = run_refresh(
+                [(route_a, "free", "plan_free"), (route_b, "free", "plan_free")],
+                context_tokens=0,
+                wall_budget_s=-1.0,  # deadline already in the past
+                env=_env(tmp),
+            )
+
+        entries_by_key = {e.route_key: e for e in reg.entries}
+        for key in (route_a.key, route_b.key):
+            entry = entries_by_key[key]
+            self.assertTrue(entry.answered, f"{key}: liveness probe should still run")
+            self.assertIsNone(entry.tool_ok, f"{key}: not_probed must be None not False")
+            self.assertEqual(entry.tool_skip_reason, "wall_budget_exhausted")
 
 
 if __name__ == "__main__":

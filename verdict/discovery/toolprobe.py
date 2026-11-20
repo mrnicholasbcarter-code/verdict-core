@@ -30,6 +30,7 @@ TOOL_OK = "tool_ok"
 NO_TOOL_CALL = "no_tool_call"
 BAD_TOOL_CALL = "bad_tool_call"
 TOOL_ERROR = "tool_error"
+TOOL_NOT_PROBED = "not_probed"  # deadline passed or stage skipped — no measurement made
 
 TOOL = {
     "type": "function",
@@ -139,8 +140,15 @@ def tool_probe_all(
     concurrency: int = 48,
     per_host: int = 4,
     context_tokens: int = 0,
+    deadline: float | None = None,
 ) -> dict[str, tuple[str, str | None, int | None, str | None]]:
-    """Tool-probe every UP result; returns {route.key: (status, detail, ms, served)}."""
+    """Tool-probe every UP result; returns {route.key: (status, detail, ms, served)}.
+
+    When ``deadline`` is set, each worker checks ``time.monotonic()`` before
+    sending the request.  Routes that are reached after the deadline are marked
+    ``(TOOL_NOT_PROBED, "wall_budget_exhausted", None, None)`` without making a
+    network call, so a stale budget can never produce a measured failure.
+    """
     todo = [r.route for r in results if r.status == UP]
     sems: dict[str, threading.Semaphore] = {}
     lock = threading.Lock()
@@ -156,6 +164,8 @@ def tool_probe_all(
             return sems[host]
 
     def run(route: Route) -> tuple[str, tuple[str, str | None, int | None, str | None]]:
+        if deadline is not None and time.monotonic() >= deadline:
+            return route.key, (TOOL_NOT_PROBED, "wall_budget_exhausted", None, None)
         with host_sem(route):
             return route.key, tool_probe(route, timeout=timeout, context_tokens=context_tokens)
 

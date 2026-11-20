@@ -31,7 +31,7 @@ from typing import Any
 
 from verdict.discovery.model import RATE_LIMITED, UP, ProbeResult, Route
 from verdict.discovery.probe import probe_all
-from verdict.discovery.toolprobe import TOOL_OK, tool_probe_all
+from verdict.discovery.toolprobe import TOOL_NOT_PROBED, TOOL_OK, tool_probe_all
 from verdict.paths import verdict_home
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,10 @@ class RegistryEntry:
     auth: str  # sanitized: "none", "env:NAME", or "literal" (not "literal:xxx")
     upstream: str | None  # gateway upstream provider, when known
     answered: bool  # probe returned HTTP 200 with usable content
-    tool_ok: bool  # tool call at agent size was correct
+    tool_ok: bool | None  # True=proved, False=measured fail, None=not probed (no measurement)
+    tool_skip_reason: (
+        str | None
+    )  # e.g. "wall_budget_exhausted", "not_answered" (when tool_ok is None)
     served_model: str | None  # from x-omniroute-model / x-omniroute-provider headers
     latency_ms: int | None
     retry_after_s: float | None  # for 429 responses
@@ -86,7 +89,8 @@ class RegistryEntry:
             auth=str(d["auth"]),
             upstream=d.get("upstream"),
             answered=bool(d.get("answered", False)),
-            tool_ok=bool(d.get("tool_ok", False)),
+            tool_ok=None if d.get("tool_ok") is None else bool(d["tool_ok"]),
+            tool_skip_reason=d.get("tool_skip_reason"),
             served_model=d.get("served_model"),
             latency_ms=d.get("latency_ms"),
             retry_after_s=d.get("retry_after_s"),
@@ -310,14 +314,20 @@ def run_refresh(
             breaker.open_pool(result.route)
 
     # Second stage: tool probe at agent size for UP routes (via tool_probe_all).
-    # Enforce the wall-clock budget: if the remaining budget is exhausted,
-    # skip tool probes entirely and record them as not-probed (tool_ok=False),
-    # never as passed or failed by a measurement.
+    # Enforce the wall-clock budget: if the remaining budget is already spent before
+    # the tool stage, mark every UP route as not_probed without making any calls.
+    # tool_probe_all also checks the deadline before each individual route so that
+    # a mid-stage budget overrun cannot produce false failures either.
     up_results = [r for r in probe_results if r.status == UP and not breaker.is_open(r.route)]
     remaining_budget = deadline - time.monotonic()
     tool_results: dict[str, tuple[str, str | None, int | None, str | None]]
-    if remaining_budget <= 0 or not up_results:
-        tool_results = {}  # budget exhausted — tool probes skipped (wall_budget_exhausted)
+    if remaining_budget <= 0:
+        # Budget spent before tool stage — mark all UP routes as not_probed.
+        tool_results = {
+            r.route.key: (TOOL_NOT_PROBED, "wall_budget_exhausted", None, None) for r in up_results
+        }
+    elif not up_results:
+        tool_results = {}
     else:
         tool_results = tool_probe_all(
             up_results,
@@ -325,6 +335,7 @@ def run_refresh(
             concurrency=1,  # per-pool rate respect: tool probes are heavy, serialise them
             per_host=1,
             context_tokens=context_tokens,
+            deadline=deadline,
         )
     # Open breaker for any tool_error 429s
     for route_key, (t_status, t_detail, _, _) in tool_results.items():
@@ -368,12 +379,37 @@ def _make_entry(
     checked_at: str,
     breaker: _Breaker,
 ) -> RegistryEntry:
-    """Build a RegistryEntry from probe and tool results."""
+    """Build a RegistryEntry from probe and tool results.
+
+    ``tool_ok`` is tri-state:
+      - ``True``  — tool call was measured and passed.
+      - ``False`` — tool call was measured and failed.
+      - ``None``  — no measurement was made (see ``tool_skip_reason``).
+
+    Callers must treat ``None`` as *not proved*, never as a failure.  Old
+    registry files that lack the field are loaded as ``None`` by ``from_dict``.
+    """
     answered = probe is not None and probe.status == UP
-    tool_ok = tool is not None and tool[0] == TOOL_OK
     retry_after_s: float | None = probe.retry_after_s if probe is not None else None
     latency_ms: int | None = None
     served_model: str | None = None
+
+    # Determine tri-state tool outcome.
+    if tool is None:
+        # Route was not UP (not answered), so tool stage was never attempted.
+        tool_ok: bool | None = None
+        tool_skip_reason: str | None = "not_answered"
+    elif tool[0] == TOOL_NOT_PROBED:
+        # Stage was skipped due to budget exhaustion (before or during the stage).
+        tool_ok = None
+        tool_skip_reason = tool[1] or "wall_budget_exhausted"
+    elif tool[0] == TOOL_OK:
+        tool_ok = True
+        tool_skip_reason = None
+    else:
+        # Measured failure (no_tool_call, bad_tool_call, tool_error).
+        tool_ok = False
+        tool_skip_reason = None
 
     if probe is not None and probe.latency_ms is not None:
         latency_ms = probe.latency_ms
@@ -394,6 +430,7 @@ def _make_entry(
         upstream=route.upstream,
         answered=answered,
         tool_ok=tool_ok,
+        tool_skip_reason=tool_skip_reason,
         served_model=served_model,
         latency_ms=latency_ms,
         retry_after_s=retry_after_s,
