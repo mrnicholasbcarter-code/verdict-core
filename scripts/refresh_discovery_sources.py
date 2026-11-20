@@ -23,13 +23,14 @@ Each source writes a separate file:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
 import tempfile
-import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # Ensure the repo root is importable when run as a script.
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +38,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from verdict.discovery.collect import collect_sources  # noqa: E402
-from verdict.discovery.sources._fetcher import default_fetcher  # noqa: E402
+from verdict.discovery.sources._fetcher import Fetcher, default_fetcher  # noqa: E402
 from verdict.discovery.sources._types import DiscoveryRow  # noqa: E402
 from verdict.discovery.sources.community import CommunityConfig  # noqa: E402
 from verdict.discovery.sources.omniroute import (  # noqa: E402
@@ -65,9 +66,34 @@ _SOURCE_TO_FILE: dict[str, str] = {
     "dsh_our_free_model": "dsh_our_free_model",
 }
 
+# Maximum characters logged from an exception message.  Keeps secrets out of
+# logs even when they accidentally appear in an exception string.
+_MSG_LIMIT = 200
+
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _safe_msg(exc: BaseException) -> str:
+    """Return a truncated, sanitized log message from an exception.
+
+    Logs only the exception type name and the first ``_MSG_LIMIT`` characters
+    of ``str(exc)``.  Never calls ``traceback.print_exc`` or equivalent: full
+    stack frames can expose auth headers or keys from locals.
+    """
+    return f"{type(exc).__name__}: {str(exc)[:_MSG_LIMIT]}"
+
+
+def _remove_stale_cache(cache_dir: Path, name: str) -> None:
+    """Remove a source cache file that is now stale due to a fetch failure.
+
+    Uses ``contextlib.suppress`` so a missing file is silently ignored.
+    Callers must call this whenever a source fails so readers never see
+    old rows as if they were current.
+    """
+    with contextlib.suppress(OSError):
+        (cache_dir / f"{name}.json").unlink()
 
 
 def _write_cache_atomic(cache_dir: Path, name: str, rows: list[DiscoveryRow]) -> None:
@@ -88,8 +114,6 @@ def _write_cache_atomic(cache_dir: Path, name: str, rows: list[DiscoveryRow]) ->
             fh.write(text)
         os.replace(tmp, path)
     except BaseException:
-        import contextlib
-
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
@@ -98,8 +122,6 @@ def _write_cache_atomic(cache_dir: Path, name: str, rows: list[DiscoveryRow]) ->
 
 def _write_index_atomic(idx_path: Path, result: dict[str, object]) -> None:
     """Write the _index.json file atomically (temp file + os.replace)."""
-    import contextlib
-
     idx_path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(result, indent=2, sort_keys=True)
     fd, tmp = tempfile.mkstemp(dir=idx_path.parent, prefix="._index-", suffix=".json.tmp")
@@ -113,18 +135,48 @@ def _write_index_atomic(idx_path: Path, result: dict[str, object]) -> None:
         raise
 
 
+def _make_index_entry(
+    source: str,
+    *,
+    row_count: int,
+    error: str | None,
+    free_tier_warning: str | None,
+    fetched_at: str,
+) -> dict[str, Any]:
+    """Return a uniform _index.json entry.  All callers use this factory so
+    success and failure entries always carry the same set of keys.
+    """
+    return {
+        "error": error,
+        "fetched_at": fetched_at,
+        "free_tier_warning": free_tier_warning,
+        "row_count": row_count,
+        "source": source,
+    }
+
+
 def run(
     *,
     sources: list[str] | None = None,
     cache_dir: Path | None = None,
     community: CommunityConfig | None = None,
     omniroute_base_url: str = "http://localhost:20128",
-) -> dict[str, object]:
-    """Run enabled adapters, cache the results, return an index dict."""
+    fetcher: Fetcher = default_fetcher,
+) -> dict[str, Any]:
+    """Run enabled adapters, cache the results, return an index dict.
+
+    Args:
+        sources: Which sources to refresh (default: all).
+        cache_dir: Directory for cache files (default: ``$VERDICT_HOME/discovery/sources/``).
+        community: Community list pin config.
+        omniroute_base_url: OmniRoute base URL.
+        fetcher: HTTP fetcher injected for the network adapters; override in
+            tests with :func:`tests.helpers_discovery.make_stub_fetcher`.
+    """
     enabled = set(sources or _ALL_SOURCES)
     cfg = community or CommunityConfig()
     home = cache_dir or (verdict_home() / "discovery" / "sources")
-    index: list[dict[str, object]] = []
+    index: list[dict[str, Any]] = []
 
     print(f"Refreshing discovery sources → {home}", flush=True)
 
@@ -141,34 +193,41 @@ def run(
             evidence = fetch_omniroute_evidence(base, api_key=api_key, management_token=mgmt_token)
             # Try free-tier summary separately; log but do not abort on failure.
             free_tier_payload = None
-            free_tier_error: str | None = None
+            free_tier_warning: str | None = None
             try:
-                raw_ft = default_fetcher(base.rstrip("/") + "/api/free-tier/summary", timeout=20.0)
+                raw_ft = fetcher(base.rstrip("/") + "/api/free-tier/summary", timeout=20.0)
                 free_tier_payload = json.loads(raw_ft)
             except Exception as ft_exc:
-                free_tier_error = f"{type(ft_exc).__name__}: {ft_exc}"
+                free_tier_warning = _safe_msg(ft_exc)
                 print(
-                    f"  WARNING [omniroute/free-tier]: {free_tier_error}",
+                    f"  WARNING [omniroute/free-tier]: {free_tier_warning}",
                     file=sys.stderr,
                     flush=True,
                 )
             free_ids = parse_free_tier_ids(free_tier_payload) if free_tier_payload else ()
             or_rows = rows_from_evidence(evidence, base_url=base, free_tier_ids=free_ids)
             index.append(
-                {
-                    "source": "omniroute",
-                    "row_count": len(or_rows),
-                    "error": None,
-                    "free_tier_warning": free_tier_error,
-                    "fetched_at": _iso_now(),
-                }
+                _make_index_entry(
+                    "omniroute",
+                    row_count=len(or_rows),
+                    error=None,
+                    free_tier_warning=free_tier_warning,
+                    fetched_at=_iso_now(),
+                )
             )
         except Exception as exc:
-            msg = f"{type(exc).__name__}: {exc}"
+            msg = _safe_msg(exc)
             print(f"  ERROR [omniroute]: {msg}", file=sys.stderr, flush=True)
-            traceback.print_exc(file=sys.stderr)
+            # Remove stale cache so readers cannot mistake old rows for current data.
+            _remove_stale_cache(home, "omniroute")
             index.append(
-                {"source": "omniroute", "row_count": 0, "error": msg, "fetched_at": _iso_now()}
+                _make_index_entry(
+                    "omniroute",
+                    row_count=0,
+                    error=msg,
+                    free_tier_warning=None,
+                    fetched_at=_iso_now(),
+                )
             )
         if or_rows:
             _write_cache_atomic(home, "omniroute", or_rows)
@@ -177,7 +236,7 @@ def run(
     # collect_sources records per-source errors so we can tell failed sources
     # apart from successfully-empty ones.
     net_result = collect_sources(
-        fetcher=default_fetcher,
+        fetcher=fetcher,
         community=cfg,
         include_omniroute=False,
         include_openrouter="openrouter" in enabled,
@@ -214,32 +273,36 @@ def run(
 
         if source_key in errored_sources:
             err = errored_sources[source_key]
+            # Remove stale cache so a reader cannot mistake old rows for current data.
+            _remove_stale_cache(home, file_name)
             index.append(
-                {
-                    "source": source_key,
-                    "row_count": 0,
-                    "error": f"{err.error_type}: {err.message}",
-                    "fetched_at": _iso_now(),
-                }
+                _make_index_entry(
+                    source_key,
+                    row_count=0,
+                    error=f"{err.error_type}: {err.message}",
+                    free_tier_warning=None,
+                    fetched_at=_iso_now(),
+                )
             )
         else:
             src_rows = rows_by_source.get(source_key, [])
             index.append(
-                {
-                    "source": source_key,
-                    "row_count": len(src_rows),
-                    "error": None,
-                    "fetched_at": src_rows[0].fetched_at if src_rows else _iso_now(),
-                }
+                _make_index_entry(
+                    source_key,
+                    row_count=len(src_rows),
+                    error=None,
+                    free_tier_warning=None,
+                    fetched_at=src_rows[0].fetched_at if src_rows else _iso_now(),
+                )
             )
             if src_rows:
                 _write_cache_atomic(home, file_name, src_rows)
 
-    result: dict[str, object] = {
+    result: dict[str, Any] = {
         "schema": "verdict.discovery.sources.index/v1",
         "written_at": _iso_now(),
         "sources": index,
-        "total_rows": sum(e.get("row_count", 0) for e in index),  # type: ignore[call-overload]
+        "total_rows": sum(e.get("row_count", 0) for e in index),
     }
     idx_path = home / "_index.json"
     _write_index_atomic(idx_path, result)

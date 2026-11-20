@@ -7,6 +7,8 @@ fixture dicts directly to the parse functions.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -719,3 +721,101 @@ class TestCollectSources:
         )
         assert result.rows == []
         assert result.errors == []
+
+
+# ---------------------------------------------------------------------------
+# refresh_discovery_sources.py run() behavior
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshScriptBehavior:
+    """Tests for scripts/refresh_discovery_sources.py run() function.
+
+    Fully offline: HTTP calls injected via the ``fetcher`` parameter added to
+    ``run()`` for testability; OmniRoute evidence is monkeypatched.
+    No live or paid provider calls.
+    """
+
+    _OPENROUTER_PAYLOAD: ClassVar[dict] = {
+        "data": [
+            {
+                "id": "openrouter/google/gemini-flash:free",
+                "pricing": {"prompt": "0", "completion": "0"},
+                "context_length": 1000000,
+            }
+        ]
+    }
+
+    def test_stale_cache_removed_on_source_failure(self, tmp_path: Path) -> None:
+        """After a successful run a subsequent failure must leave no stale rows on disk."""
+        from scripts.refresh_discovery_sources import run as refresh_run
+        from verdict.discovery.sources.openrouter import OPENROUTER_MODELS_URL
+
+        cache_dir = tmp_path / "sources"
+
+        # First run: openrouter succeeds → cache written.
+        success_fetcher = make_stub_fetcher({OPENROUTER_MODELS_URL: self._OPENROUTER_PAYLOAD})
+        refresh_run(sources=["openrouter"], cache_dir=cache_dir, fetcher=success_fetcher)
+        stale = cache_dir / "openrouter.json"
+        assert stale.exists(), "sanity: cache must be written on success"
+
+        # Second run: openrouter fails (no URL in stub → KeyError).
+        fail_fetcher = make_stub_fetcher({})
+        refresh_run(sources=["openrouter"], cache_dir=cache_dir, fetcher=fail_fetcher)
+
+        # Stale file must be gone so readers cannot see stale rows as fresh.
+        assert not stale.exists(), "stale cache file must be removed after source failure"
+        # Index must record the error, not an empty-success.
+        idx = json.loads((cache_dir / "_index.json").read_text())
+        entry = next(e for e in idx["sources"] if e["source"] == "openrouter")
+        assert entry["error"] is not None, "index must record the error"
+        assert entry["row_count"] == 0
+
+    def test_omniroute_failure_no_traceback_in_stderr(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An OmniRoute fetch failure must not dump a full traceback to stderr."""
+        import verdict.omniroute_evidence as omni_mod
+        from scripts.refresh_discovery_sources import run as refresh_run
+
+        # The key prefix + "auth failed: " prefix together leave < 200 chars for the
+        # X's, so the 200-char tail is split across the truncation boundary — the full
+        # 200 consecutive X's cannot appear in logged output.
+        fake_key_xs = "X" * 200
+        fake_key = "sk-ant-api03-" + fake_key_xs
+
+        def _raise(*args: object, **kwargs: object) -> None:
+            raise RuntimeError(f"auth failed: {fake_key}")
+
+        monkeypatch.setattr(omni_mod, "fetch_omniroute_evidence", _raise)
+
+        refresh_run(sources=["omniroute"], cache_dir=tmp_path / "s")
+        captured = capsys.readouterr()
+
+        assert "Traceback (most recent call last):" not in captured.err, (
+            "traceback.print_exc must not be called on adapter failures"
+        )
+        # The 200 consecutive X's must not appear because the message is truncated to 200 chars,
+        # and the prefix ("auth failed: sk-ant-api03-") already consumes chars before the X's.
+        assert fake_key_xs not in captured.err, (
+            "exception message must be truncated so long secrets are not fully logged"
+        )
+
+    def test_index_entries_have_uniform_schema(self, tmp_path: Path) -> None:
+        """Every _index.json sources entry must carry the same set of keys."""
+        from scripts.refresh_discovery_sources import run as refresh_run
+        from verdict.discovery.sources.openrouter import OPENROUTER_MODELS_URL
+
+        # openrouter succeeds; kilo has no URL in stub so collect_sources records an error.
+        fetcher = make_stub_fetcher({OPENROUTER_MODELS_URL: self._OPENROUTER_PAYLOAD})
+        refresh_run(sources=["openrouter", "kilo"], cache_dir=tmp_path / "s", fetcher=fetcher)
+
+        idx = json.loads((tmp_path / "s" / "_index.json").read_text())
+        assert idx["sources"], "must have at least one entry"
+
+        expected_keys = {"source", "row_count", "error", "free_tier_warning", "fetched_at"}
+        for entry in idx["sources"]:
+            assert set(entry.keys()) == expected_keys, (
+                f"entry '{entry['source']}' has schema {set(entry.keys())}, "
+                f"expected {expected_keys}"
+            )

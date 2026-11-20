@@ -67,3 +67,34 @@ partial write.  Failed sources SHALL appear in the index with a non-null
 #### Scenario: Index is written on success
 - **WHEN** `run()` is called with one enabled source that returns rows
 - **THEN** `_index.json` exists and its `total_rows` equals the row count
+
+### Requirement: Stale cache files SHALL be removed when a source fails
+When a source adapter fails, `run()` SHALL remove the previous `{source}.json`
+cache file (if present) before writing `_index.json`.  A reader that sees a
+non-null `error` in `_index.json` SHALL therefore find no corresponding cache
+file; it must not treat stale rows as current data.
+
+#### Scenario: Stale cache removed on failure
+- **WHEN** a source succeeds (cache written), then the same source fails on a later run
+- **THEN** the cache file is gone after the failed run
+- **AND** the index entry has a non-null `error` and `row_count: 0`
+
+### Requirement: `_index.json` entries SHALL share a uniform schema
+Every entry in the `sources` array SHALL carry exactly the keys `source`,
+`row_count`, `error`, `free_tier_warning`, and `fetched_at`.  Absent fields
+SHALL be `null`, never omitted, so consumers need no field-presence checks.
+
+#### Scenario: All entries share the same keys
+- **WHEN** `run()` is called with both a succeeding and a failing source
+- **THEN** every `sources` entry in `_index.json` has the same set of keys
+
+### Requirement: Adapter failure logs SHALL not dump full tracebacks
+On any adapter failure the script SHALL log only the exception type name and a
+message truncated to at most 200 characters to stderr.  It SHALL NOT call
+`traceback.print_exc` or equivalent; full stack frames can expose auth
+credentials that appear in exception messages or locals.
+
+#### Scenario: No traceback on adapter failure
+- **WHEN** `run()` is called and an adapter raises
+- **THEN** stderr does not contain "Traceback (most recent call last):"
+- **AND** long exception messages are truncated before being logged
