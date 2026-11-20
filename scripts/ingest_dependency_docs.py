@@ -28,6 +28,7 @@ from verdict.dependency_ingest import (
     report_rows,
 )
 from verdict.memory_plane import MemoryPlane
+from verdict.paths import verdict_home
 
 
 def _context7_fetcher() -> object:
@@ -84,7 +85,7 @@ def _trim(text: str, limit: int = 200_000) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
-    parser.add_argument("--memory-path", type=Path, default=Path.home() / ".verdict" / "memory.db")
+    parser.add_argument("--memory-path", type=Path, default=verdict_home() / "memory.db")
     parser.add_argument("--cap", type=int, default=12)
     parser.add_argument("--discover-only", action="store_true")
     args = parser.parse_args()

@@ -202,6 +202,7 @@ _HOST_STATE_ENV = (
     # ~/.verdict, ~/.config/verdict or ~/.local/share stores (HOME is already
     # isolated by _isolate_home; these override HOME-relative defaults).
     "VERDICT_HOME",
+    "VERDICT_SESSION_EVIDENCE",
     "VERDICT_HEALTH_CACHE",
     "VERDICT_OUTCOME_SHADOW_ROOTS",
     "VERDICT_PROVE_AT_REST_STATE",

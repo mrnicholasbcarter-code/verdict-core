@@ -535,10 +535,9 @@ def _log_tail(path: Path, limit: int = 8192) -> str:
 
 def ladder_state_path(env: Mapping[str, str] | None = None) -> Path:
     """The ladder state that canonical live admission reads for cooldowns."""
-    source = os.environ if env is None else env
-    return (
-        Path(source.get("VERDICT_HOME") or Path.home() / ".verdict") / "orchestration-health.json"
-    )
+    from verdict.paths import verdict_home
+
+    return verdict_home(env) / "orchestration-health.json"
 
 
 def classify_generation_failure(
@@ -1022,9 +1021,11 @@ def _load_prime_target_map_from_config(repo: Path) -> dict[str, Any]:
     Looks for ``.verdict/prime-target-map.json`` under the repo, then
     ``~/.verdict/prime-target-map.json``. Never invents identity-copy bindings.
     """
+    from verdict.paths import verdict_home
+
     candidates = [
         repo / ".verdict" / "prime-target-map.json",
-        Path.home() / ".verdict" / "prime-target-map.json",
+        verdict_home() / "prime-target-map.json",
     ]
     env_path = os.environ.get("VERDICT_PRIME_TARGET_MAP")
     if env_path and str(env_path).strip():
@@ -1087,6 +1088,7 @@ def _build_intelligence_service_from_config(*, repo: Path, state_dir: Path) -> A
     ``os.environ``.
     """
     from verdict.intelligence import IntelligenceService
+    from verdict.paths import verdict_home
     from verdict.provider_bootstrap import (
         BootstrapError,
         load_credential_store_env,
@@ -1102,8 +1104,9 @@ def _build_intelligence_service_from_config(*, repo: Path, state_dir: Path) -> A
             "production_factory_unavailable", _bootstrap_failure_detail(exc)
         ) from exc
 
-    passport_store = Path.home() / ".verdict" / "prove-at-rest" / "state.json"
-    metadata_store = Path.home() / ".verdict" / "model-metadata.json"
+    _home = verdict_home()
+    passport_store = _home / "prove-at-rest" / "state.json"
+    metadata_store = _home / "model-metadata.json"
     return IntelligenceService(
         primary_model=bootstrap.primary_model,
         providers=bootstrap.provider_configs(),
