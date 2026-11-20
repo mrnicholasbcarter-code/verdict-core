@@ -805,13 +805,19 @@ class TestShippedMapJoinsDotIdRatings:
     def test_dot_spelled_inventory_id_resolves_via_leaf_join(self) -> None:
         """A dot-spelled inventory id that is not in the explicit map still
         resolves via the normalised-leaf index: the leaf ``claude-opus-5.5``
-        is already in its normalised form, so the index returns the dot record
-        directly.  ``join`` is ``"leaf"`` because no explicit entry matched.
+        is already in its normalised form, so the index matches the models.json
+        dash record (which normalises to that leaf).  Scores from the dot twin
+        are merged in.  ``join`` is ``"leaf"`` because no explicit entry matched.
         """
         snapshot = self._snapshot()
         mapping = self._shipped_map()
         found = lookup_omniroute_id(snapshot, "cc/claude-opus-5.5", identity_map=mapping)
         assert found.record is not None
-        assert found.record.id == "anthropic/claude-opus-5.5"
+        # The models.json (dash) record is kept as the canonical record so that
+        # capability facts are never lost to a dot-twin swap.
+        assert found.record.id == "anthropic/claude-opus-5-5"
         assert found.drop is None
         assert found.join == "leaf"
+        # Scores from the dot twin are merged in.
+        assert found.record.scores.aa_coding is not None
+        assert found.record.scores.aa_coding.value == 80.0
