@@ -97,10 +97,10 @@ The per-attempt node record in the receipt carries the `lint_autofix` data.
 ## Consequences
 
 - Trivially fixable lint issues (unused imports, naming conventions) no longer
-  cause retry cycles that waste paid tokens.
-- `test_lint_failures_are_never_auto_fixed` was renamed and its assertion
-  updated to verify the `lint_autofix` event (PR #1188). The old test name is
-  no longer accurate.
+  cause retry cycles that waste tokens and quota.
+- `test_lint_failures_are_never_auto_fixed` keeps its old name, but PR #1188
+  updated its docstring and assertion to verify the `lint_autofix` event. The
+  name no longer describes what the test checks; renaming it is a follow-up.
 - OpenSpec changes: `lint-autofix-before-gates` (#1188, merge SHA
   `fbc06ab5f67a0cca81232e34056fc94f90269bdf`) and `lint-autofix-python-only`
   (#1190, merge SHA `2c85357ffe339e4363c018d4576b99a501520d8d`).
