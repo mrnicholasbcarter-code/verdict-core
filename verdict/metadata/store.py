@@ -295,23 +295,33 @@ def _normalize_leaf_version(leaf: str) -> str:
 def all_records_normalized_leaf_index(
     snapshot: MetadataSnapshot,
 ) -> dict[str, ModelMetadataRecord | tuple[str, ...]]:
-    """Index ALL store records by their normalised leaf.
+    """Index models.json records by their normalised leaf.
 
-    Normalised leaf = :func:`_normalize_leaf_version` applied to the raw leaf
-    after the last ``/``.  Disambiguation when multiple records share the same
-    normalised leaf:
+    Only models.json records are indexed (via :func:`_record_from_models_json`),
+    consistent with :func:`unique_leaf_models_json_index`.  This prevents
+    provider-mirror api.json rows from creating spurious ambiguity when several
+    providers carry the same model (e.g. ``gemini-3.1-flash-lite`` via Google,
+    Vertex, Requesty, etc.).
+
+    Normalised leaf = :func:`_normalize_leaf_version` applied to the raw leaf.
+    Disambiguation when multiple models.json records share the same normalised
+    leaf:
 
     1. Prefer records whose raw leaf already equals the normalised leaf (the
-       already-normalised / dot-format record wins over its dash twin).
+       dot-format record wins over its dash twin).
     2. If exactly one record survives that filter → use it.
     3. Otherwise the leaf is ambiguous: a sorted tuple of competing ids is
        stored; ``lookup_omniroute_id`` will produce a named drop.
 
-    The explicit map and ``_omniroute_index`` are tried first in
-    ``lookup_omniroute_id``; this index is the final fallback.
+    After a unique match, callers should attempt a dot-twin upgrade: if the
+    matched record's raw leaf differs from the normalised leaf, check whether a
+    record keyed ``{provider}/{norm_leaf}`` (the scored dot form) exists in the
+    full store and use that instead.
     """
     buckets: dict[str, list[ModelMetadataRecord]] = {}
     for item in snapshot.records:
+        if not _record_from_models_json(item):
+            continue
         norm = _normalize_leaf_version(model_id_leaf(item.id))
         buckets.setdefault(norm, []).append(item)
     index: dict[str, ModelMetadataRecord | tuple[str, ...]] = {}
@@ -320,9 +330,7 @@ def all_records_normalized_leaf_index(
             index[norm_leaf] = items[0]
             continue
         # Prefer records whose raw leaf == normalised leaf (dot form wins
-        # over its dash twin).  This resolves anthropic/claude-opus-5-5 vs
-        # anthropic/claude-opus-5.5 to the dot record without over-riding
-        # genuine collisions between different models from different vendors.
+        # over its dash twin).
         already_norm = [r for r in items if model_id_leaf(r.id) == norm_leaf]
         candidates = already_norm if already_norm else items
         if len(candidates) == 1:
@@ -349,8 +357,10 @@ def lookup_omniroute_id(
     1. Explicit identity map (``identity_map.models_dev_id_for``).
     2. Exact ``_omniroute_index`` hit (record carries this id as an
        ``omniroute_id``).
-    3. Normalised-leaf index across all records: strip provider prefix, replace
-       digit-dash-digit with digit-dot-digit, then match a unique record.
+    3. Normalised-leaf index (models.json records only): strip provider prefix,
+       replace digit-dash-digit with digit-dot-digit, then match a unique
+       models.json record.  If that record is a dash form with a scored dot
+       twin in the same provider namespace, the dot twin is returned.
        Ambiguous normalised leaves are named drops (never an arbitrary pick).
 
     Join provenance is recorded in ``MetadataLookup.join``: ``"explicit"`` for
@@ -385,12 +395,21 @@ def lookup_omniroute_id(
         models_dev_id = index[key].id
         join = "explicit"
     if models_dev_id is None:
-        # Step 3: normalised-leaf index covering all store records.
+        # Step 3: normalised-leaf index (models.json records only).
         leaf = model_id_leaf(key)
         norm_leaf = _normalize_leaf_version(leaf)
         norm_hit = snapshot._normalized_leaf_index.get(norm_leaf)
         if isinstance(norm_hit, ModelMetadataRecord):
-            models_dev_id = norm_hit.id
+            # Unique models.json record found.  If the matched record is a dash
+            # form (raw leaf ≠ normalised leaf), try to upgrade to a scored dot
+            # twin in the same provider namespace.
+            raw_hit_leaf = model_id_leaf(norm_hit.id)
+            if raw_hit_leaf != norm_leaf:
+                provider_ns = norm_hit.id[: norm_hit.id.rfind("/") + 1]
+                dot_twin = snapshot.record_by_id(provider_ns + norm_leaf)
+                models_dev_id = dot_twin.id if dot_twin is not None else norm_hit.id
+            else:
+                models_dev_id = norm_hit.id
             join = "leaf"
         elif isinstance(norm_hit, tuple):
             return MetadataLookup(
