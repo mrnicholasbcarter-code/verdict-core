@@ -125,9 +125,14 @@ def run_refresh_action(
     force: bool = False,
     context_tokens: int = 18_000,
     wall_budget_s: float = 300.0,
+    free_only: bool = False,
     env: Any = None,
 ) -> dict[str, Any]:
     """Probe routes and return a dict suitable for json.dumps.
+
+    ``free_only=True`` restricts probing to FREE-capacity routes only; no paid
+    or subscription calls are made.  The resulting registry contains only free
+    entries — any subscription entries from a prior full refresh are dropped.
 
     ``dry_run=True`` returns an empty result immediately with no network calls
     and no registry write; source is ``"dry_run_requires_catalog"`` because the
@@ -183,6 +188,8 @@ def run_refresh_action(
             base_result["reason"] = catalog.reason
             return base_result
         routes = catalog.routes
+        if free_only:
+            routes = [(r, cc, cf) for (r, cc, cf) in routes if cc == "free"]
         source = "omniroute"
 
     registry = run_refresh(

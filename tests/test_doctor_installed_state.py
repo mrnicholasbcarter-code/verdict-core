@@ -240,6 +240,9 @@ def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
     import verdict.admit_snapshot_service as admit_snapshot_service
 
     monkeypatch.setattr(admit_snapshot_service, "timer_state", fake_timer)
+    import verdict.discovery_refresh_service as discovery_refresh_service
+
+    monkeypatch.setattr(discovery_refresh_service, "timer_state", fake_timer)
     import json
 
     from verdict.free_tier_admit import default_admit_last_good_path
@@ -252,6 +255,24 @@ def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
                 "http://127.0.0.1:20128": {
                     "free_tier": {"fetched_at": NOW.isoformat(), "payload": {}}
                 }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Write a fresh discovery registry so the freshness row is "ok".
+    from verdict.discovery.registry import REGISTRY_SCHEMA, REGISTRY_TTL_S, registry_path
+
+    reg_path = registry_path()
+    reg_path.parent.mkdir(parents=True, exist_ok=True)
+    reg_path.write_text(
+        json.dumps(
+            {
+                "schema": REGISTRY_SCHEMA,
+                "written_at": NOW.isoformat(),
+                "ttl_s": REGISTRY_TTL_S,
+                "entries": [],
+                "counts": {"tool_ok": 0},
             }
         ),
         encoding="utf-8",
