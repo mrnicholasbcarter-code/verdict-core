@@ -230,7 +230,12 @@ def _sha256_no_follow(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _clear_existing_salvage_dir(salvage_dir: Path) -> str:
+def clear_salvage_dir(salvage_dir: Path) -> str:
+    """Remove a node's salvage directory, returning an error string on failure.
+
+    Safe against symlink races: refuses non-directories.  Empty string means
+    success (or nothing to clear).  Callers emit no content from this result.
+    """
     if not salvage_dir.exists():
         return ""
     if not _is_dir_no_follow(salvage_dir):
@@ -240,6 +245,11 @@ def _clear_existing_salvage_dir(salvage_dir: Path) -> str:
     except OSError as exc:
         return type(exc).__name__
     return ""
+
+
+# Keep the old private name as an alias so internal callers that have not
+# been updated yet continue to work without a separate import change.
+_clear_existing_salvage_dir = clear_salvage_dir
 
 
 def _iter_regular_relative_files(root: Path) -> tuple[list[str], list[str]]:
