@@ -392,3 +392,39 @@ def test_installed_service_rows_includes_admit_snapshot_rows(tmp_path: Path) -> 
     labels = [r["label"] for r in rows]
     assert "Admit-snapshot keeper timer" in labels
     assert "Admit-last-good freshness" in labels
+
+
+# ---------------------------------------------------------------------------
+# 9. systemd must reload unit files after they change
+# ---------------------------------------------------------------------------
+
+
+def test_install_reloads_systemd_before_enabling_the_timer(tmp_path: Path) -> None:
+    """A changed unit must be reloaded before enable --now, as every other service installer does."""
+    unit_dir = tmp_path / "systemd-user"
+    calls: list[list[str]] = []
+    manage_service(unit_dir=unit_dir, dry_run=False, run=lambda args: calls.append(list(args)))
+    reload_idx = calls.index(["systemctl", "--user", "daemon-reload"])
+    enable_idx = next(i for i, c in enumerate(calls) if "enable" in c)
+    assert reload_idx < enable_idx, calls
+
+
+def test_unchanged_install_does_not_reload(tmp_path: Path) -> None:
+    """A second install with identical units changes nothing and needs no reload."""
+    unit_dir = tmp_path / "systemd-user"
+    manage_service(unit_dir=unit_dir, dry_run=False, run=lambda args: None)
+    calls: list[list[str]] = []
+    manage_service(unit_dir=unit_dir, dry_run=False, run=lambda args: calls.append(list(args)))
+    assert ["systemctl", "--user", "daemon-reload"] not in calls, calls
+
+
+def test_uninstall_reloads_systemd_after_removing_units(tmp_path: Path) -> None:
+    """Removing units must be followed by a reload so systemd forgets them."""
+    unit_dir = tmp_path / "systemd-user"
+    manage_service(unit_dir=unit_dir, dry_run=False, run=lambda args: None)
+    calls: list[list[str]] = []
+    manage_service(
+        unit_dir=unit_dir, dry_run=False, uninstall=True, run=lambda args: calls.append(list(args))
+    )
+    assert calls[-1] == ["systemctl", "--user", "daemon-reload"], calls
+    assert not (unit_dir / TIMER).exists()

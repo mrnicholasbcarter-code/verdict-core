@@ -118,9 +118,14 @@ def manage_service(
                 path = directory / name
                 if plan.get(name) in {"create", "replace"}:
                     path.write_text(body, encoding="utf-8")
+            # systemd must load changed unit files before enable --now.
+            if changed:
+                run(["systemctl", "--user", "daemon-reload"])
         for args in commands:
             run(args)
         if uninstall:
             for name in (SERVICE, TIMER):
                 (directory / name).unlink(missing_ok=True)
+            if changed:
+                run(["systemctl", "--user", "daemon-reload"])
     return {"plan": plan, "changed": changed, "rollback": rollback, "dry_run": dry_run}
