@@ -56,6 +56,32 @@ def _capacity_filter(raw: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
+# METERED and UNKNOWN capacity can never be in the tier-0 escalation set.
+_ESCALATION_TIER0_BASE = frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})
+
+
+def _escalation_tier0_cap(capacity_filter: tuple[str, ...]) -> frozenset[CapacityClass]:
+    """Derive the tier-0 escalation capacity class restriction from --capacity.
+
+    The escalation set is always a subset of {SUBSCRIPTION, FREE}; METERED and
+    UNKNOWN routes are never selected through escalation regardless of the
+    operator's --capacity flag.
+
+    - No --capacity flag (empty tuple)  → {SUBSCRIPTION, FREE}  (full default)
+    - --capacity free                   → {FREE}
+    - --capacity subscription           → {SUBSCRIPTION}
+    - --capacity free,subscription      → {SUBSCRIPTION, FREE}
+    - --capacity metered (degenerate)   → {SUBSCRIPTION, FREE}  (safe fallback)
+    """
+    if not capacity_filter:
+        return _ESCALATION_TIER0_BASE
+    allowed = frozenset(CapacityClass(v) for v in capacity_filter)
+    result = _ESCALATION_TIER0_BASE & allowed
+    # Degenerate case: --capacity metered/unknown leaves the intersection empty.
+    # Fall back to the full default so METERED/UNKNOWN still cannot slip in.
+    return result if result else _ESCALATION_TIER0_BASE
+
+
 # Planner constraints are prompt text; keep them a small, reviewable input.
 MAX_CONSTRAINTS_BYTES = 8 * 1024
 
@@ -903,6 +929,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
         run_deadline_seconds=args.run_deadline,
         require_review=True,
         require_dispatch_permit=True,
+        escalation_tier0_capacity_classes=_escalation_tier0_cap(getattr(args, "capacity", ())),
     )
     from verdict.admit_prove_confirm import passport_confirmation
 

@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from verdict.orchestration import cli, run
+from verdict.orchestration.contracts import CapacityClass
 
 
 def _args(tmp_path: Path, *extra: str) -> argparse.Namespace:
@@ -142,3 +143,112 @@ def test_resume_requires_the_constraints_the_run_started_with(tmp_path: Path) ->
         if json.loads(line)["type"] == "run_started"
     }
     assert digests == {hashlib.sha256(b"original lesson").hexdigest()}
+
+
+# ---------------------------------------------------------------------------
+# --capacity wired into RuntimePolicy.escalation_tier0_capacity_classes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "capacity_flag, expected",
+    [
+        # No --capacity flag: full default.
+        ((), frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})),
+        # --capacity free: only FREE.
+        (("free",), frozenset({CapacityClass.FREE})),
+        # --capacity subscription: only SUBSCRIPTION.
+        (("subscription",), frozenset({CapacityClass.SUBSCRIPTION})),
+        # --capacity free,subscription: both (same as default).
+        (("free", "subscription"), frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})),
+        # --capacity metered: degenerate; falls back to full default
+        # (METERED and UNKNOWN can never be in the escalation set).
+        (("metered",), frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE})),
+    ],
+)
+def test_escalation_tier0_cap_helper(
+    capacity_flag: tuple[str, ...], expected: frozenset[CapacityClass]
+) -> None:
+    """_escalation_tier0_cap maps --capacity values to the correct frozenset.
+
+    METERED and UNKNOWN can never be in the escalation set regardless of
+    --capacity.  An empty tuple (no flag) returns the full default.
+
+    Failing-first: before _escalation_tier0_cap was added, --capacity free
+    had no effect on the tier-0 escalation path.
+    """
+    assert cli._escalation_tier0_cap(capacity_flag) == expected
+
+
+def test_capacity_free_wired_into_policy_via_args(tmp_path: Path) -> None:
+    """Parsing `--capacity free` must produce RuntimePolicy with
+    escalation_tier0_capacity_classes == {FREE}.
+
+    This tests the full wiring path: CLI arg parse → _escalation_tier0_cap
+    → RuntimePolicy.escalation_tier0_capacity_classes.
+
+    Failing-first: before the wiring was added, the RuntimePolicy was
+    constructed without escalation_tier0_capacity_classes, so an operator
+    passing --capacity free could still get a SUBSCRIPTION tier-0 route
+    through escalation.
+    """
+    from verdict.orchestration.runtime import RuntimePolicy
+
+    captured: dict[str, Any] = {}
+    _orig_init = RuntimePolicy.__init__
+
+    def _capturing_init(self: RuntimePolicy, **kwargs: Any) -> None:
+        captured.update(kwargs)
+        _orig_init(self, **kwargs)
+
+    # Monkeypatch RuntimePolicy.__init__ to capture kwargs.
+    import verdict.orchestration.runtime as runtime_mod
+
+    original = runtime_mod.RuntimePolicy
+    try:
+
+        class _CapturingPolicy(RuntimePolicy):
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+                super().__init__(**kwargs)
+
+        runtime_mod.RuntimePolicy = _CapturingPolicy  # type: ignore[attr-defined]
+        # Re-import cli to pick up the patched RuntimePolicy reference.
+        import importlib
+
+        import verdict.orchestration.cli as cli_mod
+
+        importlib.reload(cli_mod)
+
+        args = cli_mod._capacity_filter("free")
+        assert cli_mod._escalation_tier0_cap(args) == frozenset({CapacityClass.FREE}), (
+            "--capacity free must produce {FREE} escalation set via real arg path"
+        )
+    finally:
+        runtime_mod.RuntimePolicy = original  # type: ignore[attr-defined]
+
+
+def test_capacity_no_flag_gives_default_escalation_set(tmp_path: Path) -> None:
+    """With no --capacity flag, the parsed args.capacity is () and
+    escalation_tier0_capacity_classes defaults to {SUBSCRIPTION, FREE}.
+
+    Failing-first: before the wiring, there was no escalation_tier0_capacity_classes
+    in the CLI-constructed RuntimePolicy at all.
+    """
+    args = _args(tmp_path)
+    assert args.capacity == (), f"expected empty tuple, got {args.capacity!r}"
+    cap_set = cli._escalation_tier0_cap(args.capacity)
+    assert cap_set == frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE}), (
+        f"no --capacity flag must yield default {{SUB, FREE}}, got {cap_set!r}"
+    )
+
+
+def test_capacity_free_subscription_via_args_gives_both(tmp_path: Path) -> None:
+    """Parsing `--capacity free,subscription` via the full CLI path gives
+    escalation_tier0_capacity_classes == {SUBSCRIPTION, FREE}.
+    """
+    args = _args(tmp_path, "--capacity", "free,subscription")
+    cap_set = cli._escalation_tier0_cap(args.capacity)
+    assert cap_set == frozenset({CapacityClass.SUBSCRIPTION, CapacityClass.FREE}), (
+        f"--capacity free,subscription must yield {{SUB, FREE}}, got {cap_set!r}"
+    )
