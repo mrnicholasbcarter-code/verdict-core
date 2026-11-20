@@ -38,6 +38,7 @@ HOST_IDS = [
     "host.docs-refresh-timer",
     "host.pr-watcher-timer",
     "host.context-lift-timer",
+    "host.admit-snapshot-timer",
     "host.serve",
     "host.prime-registry",
 ]
