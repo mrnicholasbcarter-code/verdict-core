@@ -78,7 +78,9 @@ def _hermetic_timer_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     import verdict.discovery_refresh_service as discovery_refresh_service
 
     monkeypatch.setattr(
-        discovery_refresh_service, "timer_state", lambda unit: {"state": "active", "result": "success"}
+        discovery_refresh_service,
+        "timer_state",
+        lambda unit: {"state": "active", "result": "success"},
     )
     from datetime import datetime, timezone
 
