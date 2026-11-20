@@ -598,6 +598,7 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `VERDICT_OUTCOME_SHADOW_ROOTS` | BOD-304/BOD-426 outcome-shadow run directories (OS path-separator list, or one manifest file with one run dir per line). Default unset: shadow disabled and nothing persisted. When set, every admission receipt's `outcome_shadow` block is also appended to `outcome_shadow.jsonl` next to the first entry; see [Outcome shadow sink](#outcome-shadow-sink) |
 | `VERDICT_WORKER_IDLE_SECONDS` | BOD-312 idle-output bound for `verdict orchestrate` Prime headless workers: a worker that writes nothing to stdout or stderr for this many seconds has its process group killed, the attempt ends `stalled`, and recovery moves the node to a different route within the attempt budget. Default `300`; an empty, zero, negative or non-numeric value keeps the default |
 | `VERDICT_REVIEW_TOKEN_BUDGET` | Explicit OCR token budget for `verdict orchestrate`, overriding the default auto-scaling from diff size. Must be a positive integer no greater than 4,000,000. Invalid values produce a `BLOCKED:` error before the run starts. Overridden by `--review-token-budget` when both are set. Default: auto-scaled (`max(400_000, min(4_000_000, total_changed_bytes * 20))`). |
+| `VERDICT_RUNS_DIR` | Absolute path to the runs directory read by `GET /v1/runs` and related trace endpoints. Default `<VERDICT_HOME>/runs`. Must be an existing directory; a missing directory returns an empty list rather than an error |
 
 #### Serve authentication and receipts
 

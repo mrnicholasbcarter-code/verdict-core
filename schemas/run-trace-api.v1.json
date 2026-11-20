@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "verdict.run-trace-api/v1",
+  "title": "Verdict run-trace API response schemas",
+  "description": "Schemas for GET /v1/runs, /v1/runs/{id}/events and /v1/runs/{id}/receipt",
+  "definitions": {
+    "run_summary": {
+      "type": "object",
+      "required": ["run_id", "receipt_status"],
+      "additionalProperties": false,
+      "properties": {
+        "run_id":         { "type": "string" },
+        "started_at":     { "type": ["string", "null"] },
+        "outcome":        { "type": ["string", "null"] },
+        "receipt_status": { "enum": ["present", "missing", "unreadable"] },
+        "summary_error":  {
+          "type": "string",
+          "description": "Exception type name logged when _run_summary encountered a read error; present only on degraded entries."
+        }
+      }
+    },
+    "run_event": {
+      "type": "object",
+      "description": "A single orchestration event. additionalProperties mirrors the raw file; any key whose name matches a credential pattern (api_key, password, secret, api_token, auth_token, credential) is replaced with \"[REDACTED]\" at every depth by the server before the event is included in a response.",
+      "required": ["seq", "at", "type"],
+      "additionalProperties": true,
+      "properties": {
+        "seq":     { "type": "integer", "minimum": 1 },
+        "at":      { "type": "string" },
+        "type":    { "type": "string" },
+        "node_id": { "type": "string" },
+        "data":    {}
+      }
+    },
+    "runs_response": {
+      "type": "object",
+      "required": ["runs", "total", "total_scan_truncated"],
+      "additionalProperties": false,
+      "properties": {
+        "runs":  {
+          "type": "array",
+          "items": { "$ref": "#/definitions/run_summary" },
+          "maxItems": 100
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of valid run directories found during the scan. When total_scan_truncated is true the scan was capped at _RUNS_SCAN_LIMIT (500) entries, so this is a lower bound on the actual number of run directories."
+        },
+        "total_scan_truncated": {
+          "type": "boolean",
+          "description": "true when the runs directory has more than _RUNS_SCAN_LIMIT (500) entries; total is then a lower bound on the actual number of valid run dirs"
+        }
+      }
+    },
+    "events_response": {
+      "type": "object",
+      "required": ["events", "truncated"],
+      "additionalProperties": false,
+      "properties": {
+        "events":    {
+          "type": "array",
+          "items": { "$ref": "#/definitions/run_event" },
+          "maxItems": 500
+        },
+        "next_seq":  { "type": ["integer", "null"], "minimum": 1 },
+        "truncated": { "type": "boolean" },
+        "oversized_seqs": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "description": "Seq numbers of events omitted because a single event exceeded the byte budget (_RUNS_EVENTS_BYTE_BUDGET). The client may use these to know which seqs were skipped."
+        }
+      }
+    },
+    "verification_result": {
+      "type": "object",
+      "required": ["ok", "problems"],
+      "additionalProperties": false,
+      "properties": {
+        "ok":       { "type": "boolean" },
+        "problems": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "receipt_response": {
+      "type": "object",
+      "description": "Receipt and verification for a completed run. additionalProperties mirrors the raw receipt file; any key whose name matches a credential pattern (api_key, password, secret, api_token, auth_token, credential) is replaced with \"[REDACTED]\" at every depth by the server before being served. Digest verification runs on the raw file bytes before redaction so the verify result is correct.",
+      "required": ["run_id", "verification"],
+      "additionalProperties": true,
+      "properties": {
+        "run_id":       { "type": "string" },
+        "receipt":      { "type": ["object", "null"] },
+        "verification": { "$ref": "#/definitions/verification_result" }
+      }
+    }
+  }
+}
