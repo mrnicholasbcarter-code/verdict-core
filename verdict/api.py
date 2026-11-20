@@ -2999,26 +2999,24 @@ def _resolve_run_dir(run_id: str) -> Path | None:
     Returns ``None`` when:
     * *run_id* does not match ``_RUN_ID_RE``,
     * *run_id* is ``.`` or ``..``,
-    * the resolved path is not a direct child of the runs root, or
-    * no directory exists at the resolved path.
+    * no directory with that exact name exists as a direct child of the runs root.
+
+    The returned ``Path`` object is sourced from ``root.iterdir()`` (the
+    filesystem), not constructed from the user-supplied *run_id*.  Static
+    analysis taint tracking therefore cannot reach a file-system sink via
+    *run_id*: user input is used only in the ``entry.name == run_id``
+    comparison, which is a data-flow dead end, not a path expression.
     """
     if not _RUN_ID_RE.match(run_id) or run_id in {".", ".."}:
         return None
-    # os.path.basename strips all directory separators and gives only the final
-    # component.  It is a recognised path-traversal sanitizer in CodeQL's Python
-    # taint-tracking models; the regex above independently rejects every
-    # non-simple character, so the two checks are defence-in-depth.
-    safe_name = os.path.basename(run_id)
-    if not safe_name or safe_name != run_id:
-        return None
     root = _runs_root().resolve()
-    candidate = (root / safe_name).resolve()
-    # Must be a direct child — parent must equal the resolved root exactly.
-    if candidate.parent != root:
-        return None
-    if not candidate.is_dir():
-        return None
-    return candidate
+    try:
+        for entry in root.iterdir():
+            if entry.name == run_id and entry.is_dir():
+                return entry
+    except OSError:
+        pass
+    return None
 
 
 def _run_summary(run_id: str, run_dir: Path) -> dict[str, Any]:
@@ -3217,10 +3215,8 @@ async def get_run_receipt(run_id: str) -> Response:
     if run_dir is None:
         raise HTTPException(status_code=404, detail={"error": {"message": "run not found"}})
 
-    # run_dir is validated by _resolve_run_dir: regex + os.path.basename + parent
-    # check guarantee it is a direct child of the configured runs root.
-    receipt_path = run_dir / "receipt.json"  # codeql[py/path-injection]
-    if not receipt_path.exists():  # codeql[py/path-injection]
+    receipt_path = run_dir / "receipt.json"
+    if not receipt_path.exists():
         raise HTTPException(
             status_code=404, detail={"error": {"message": "receipt not found for run"}}
         )
@@ -3229,7 +3225,7 @@ async def get_run_receipt(run_id: str) -> Response:
         from verdict.orchestration.receipt import verify_run_receipt
 
         try:
-            receipt_data: Any = json.loads(receipt_path.read_bytes())  # codeql[py/path-injection]
+            receipt_data: Any = json.loads(receipt_path.read_bytes())
         except Exception as exc:
             return {
                 "run_id": run_id,
