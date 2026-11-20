@@ -403,24 +403,27 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                 last_success_seq = event.seq
         elif event.type == "integrate" and data.get("commit"):
             commit = str(data["commit"])
-        elif event.type == "hydrate" and current in attempts:
+        elif (
+            event.type == "hydrate"
+            and current in attempts
+            and data.get("context_bytes") is not None
+        ):
             # Project context-pack provenance into the attempt that dispatched
             # this hydration.  The hydrate event is emitted per-dispatch, so
             # ``current`` already points at the right attempt row.
-            # Only project context_pack when context_bytes is present.
-            # Legacy hydrate events carry prompt_bytes/budget_bytes/sources
-            # without context_bytes; projecting those would add a context_pack
-            # to committed receipts that pre-date context-pack wiring.
-            if data.get("context_bytes") is not None:
-                cp: dict[str, Any] = {"context_bytes": int(data["context_bytes"])}
-                if data.get("prompt_tokens_estimated") is not None:
-                    cp["prompt_tokens_estimated"] = int(data["prompt_tokens_estimated"])
-                srcs = data.get("sources")
-                if isinstance(srcs, list):
-                    cp["sources_count"] = len(srcs)
-                if data.get("truncated") is not None:
-                    cp["truncated"] = bool(data["truncated"])
-                attempts[current]["context_pack"] = cp
+            # Guard on context_bytes: legacy hydrate events carry
+            # prompt_bytes/budget_bytes/sources without context_bytes;
+            # projecting those would add a context_pack to committed receipts
+            # that pre-date context-pack wiring.
+            cp: dict[str, Any] = {"context_bytes": int(data["context_bytes"])}
+            if data.get("prompt_tokens_estimated") is not None:
+                cp["prompt_tokens_estimated"] = int(data["prompt_tokens_estimated"])
+            srcs = data.get("sources")
+            if isinstance(srcs, list):
+                cp["sources_count"] = len(srcs)
+            if data.get("truncated") is not None:
+                cp["truncated"] = bool(data["truncated"])
+            attempts[current]["context_pack"] = cp
     # route identity tracking: compute route_identity for each attempt (after all events processed)
     for row in attempts.values():
         if "_terminal_ok" in row:
