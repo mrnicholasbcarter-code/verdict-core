@@ -315,3 +315,67 @@ def register(subparsers: Any) -> None:
         default=False,
         help="Remove the daily systemd timer (mutually exclusive with --install-service)",
     )
+
+    fusion_plan_p = bench_sub.add_parser(
+        "fusion-plan",
+        help=(
+            "FU1 fusion planning benchmark: panel of FREE lesser-model planners "
+            "plus synthesis; writes results to VERDICT_HOME/fusion-bench/. "
+            "Panel and synthesizer option (b) require FREE capacity. "
+            "Never METERED or UNKNOWN. Fails closed if the minimum panel size "
+            "cannot be reached."
+        ),
+    )
+    fusion_plan_p.add_argument(
+        "--json", action="store_true", default=False, help="Print full report as JSON on stdout"
+    )
+    fusion_plan_p.add_argument(
+        "--base-url",
+        default=None,
+        metavar="URL",
+        dest="base_url",
+        help="Gateway URL (default: OmniRoute at localhost:20128)",
+    )
+    fusion_plan_p.add_argument(
+        "--goals-fixture",
+        default=None,
+        metavar="FILE",
+        dest="goals_fixture",
+        help=(
+            "Path to a JSON goals fixture file "
+            "(default: benchmarks/fixtures/fusion-plan-bench-goals.json "
+            "relative to the repo root). "
+            'Schema: {"goals": [{"id": str, "goal": str, "constraints": str}]}'
+        ),
+    )
+    fusion_plan_p.add_argument(
+        "--panel-size",
+        type=int,
+        default=3,
+        metavar="N",
+        dest="panel_size",
+        help="Number of FREE panel planners to run (default: 3, minimum: 2)",
+    )
+    fusion_plan_p.add_argument(
+        "--max-calls",
+        type=int,
+        default=10,
+        metavar="N",
+        dest="max_calls",
+        help="Total LLM-call cap for the whole run (default: 10)",
+    )
+    fusion_plan_p.add_argument(
+        "--max-tokens",
+        type=int,
+        default=500_000,
+        metavar="N",
+        dest="max_tokens",
+        help="Total input+output token cap for the whole run (default: 500000)",
+    )
+    fusion_plan_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        dest="dry_run",
+        help="Validate config and load goals but do not make any model calls",
+    )
