@@ -128,6 +128,7 @@ dev = [
     # pip-audit pulls in filelock; its fixes (GHSA-69hj-f68j-2879, GHSA-8mx5-7m5m-r77g)
     # need filelock>=4.2.1, which requires Python 3.11. The audit runs on 3.13 in CI.
     "pip-audit>=2.10.1,<3.0; python_version >= '3.11'",
+    "pytest-split>=0.11.0",
 ]
 
 [project.scripts]
