@@ -219,17 +219,27 @@ class ProbeOneStatusTest(unittest.TestCase):
         self.assertEqual(r.retry_after_s, 60.0)
 
     def test_retry_after_http_date(self) -> None:
-        future = datetime.now(timezone.utc) + timedelta(seconds=90)
+        import unittest.mock as _mock
+
+        # Use a fixed "now" so the result is exact even on slow CI.
+        # patch() replaces the `datetime` module reference inside probe.py so
+        # datetime.datetime.now() returns fixed_now.  Only line 91 of probe.py
+        # uses the datetime module, so nothing else is affected.
+        fixed_now = datetime(2026, 11, 20, 12, 0, 0, tzinfo=timezone.utc)
+        future = fixed_now + timedelta(seconds=90)
         date_str = format_datetime(future)
 
         def _t(url, h, p, timeout):
             return 429, {"Retry-After": date_str}, b""
 
         _set_transport(_t)
-        r = probe_one(_route())
+        with _mock.patch("verdict.discovery.probe.datetime") as mock_dt:
+            mock_dt.datetime.now.return_value = fixed_now
+            mock_dt.timezone.utc = timezone.utc
+            r = probe_one(_route())
         self.assertIsNotNone(r.retry_after_s)
         assert r.retry_after_s is not None
-        self.assertGreater(r.retry_after_s, 60.0)
+        self.assertAlmostEqual(r.retry_after_s, 90.0, places=0)
 
     def test_literal_auth_bearer_sent(self) -> None:
         seen: list[dict[str, str]] = []

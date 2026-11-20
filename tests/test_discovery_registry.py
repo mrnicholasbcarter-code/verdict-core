@@ -458,6 +458,12 @@ class RunRefreshLiveTest(unittest.TestCase):
             any(_uparse.urlsplit(u).hostname == "b.example.com" for u in urls_called),
             "route_b shares route_a's key and must not be probed separately",
         )
+        # The single entry must carry route_a's measured 200 OK, never route_b's 503
+        entry = registry.entries[0]
+        self.assertTrue(
+            entry.answered,
+            "the deduped entry must carry route_a's 200 OK result, not route_b's unanswered 503",
+        )
 
     def test_served_model_recorded_from_headers(self) -> None:
         def _t(url, h, p, timeout):
@@ -1424,6 +1430,71 @@ class ForceArgForwardingTest(unittest.TestCase):
 
         call_kwargs = mock_refresh.call_args.kwargs
         self.assertIs(call_kwargs.get("force"), True, "force=True must be forwarded by dispatch")
+
+    def test_force_true_reprobe_despite_fresh_registry(self) -> None:
+        """force=True must re-probe even when a fresh registry is within its TTL."""
+        from unittest.mock import patch
+
+        from verdict.discovery.refresh import CatalogResult
+
+        transport_calls: list[str] = []
+
+        def _t(url: str, h: dict, p: bytes, timeout: float) -> tuple:
+            transport_calls.append(url)
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _env(tmp)
+            # Write a fresh registry (within TTL)
+            fresh = DiscoveryRegistry(
+                schema=REGISTRY_SCHEMA,
+                written_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                ttl_s=REGISTRY_TTL_S,
+                entries=[],
+            )
+            save_registry(fresh, env)
+            old_bytes = registry_path(env).read_bytes()
+
+            with patch("verdict.discovery.refresh.load_probeable_routes") as mock_lpr:
+                mock_lpr.return_value = CatalogResult(
+                    routes=[(_route(), "free", "plan_free")], available=True
+                )
+                run_refresh_action(force=True, env=env)
+
+            self.assertGreater(
+                len(transport_calls), 0, "force=True must re-probe: transport must be called"
+            )
+            new_bytes = registry_path(env).read_bytes()
+            self.assertNotEqual(new_bytes, old_bytes, "force=True must rewrite the registry")
+
+    def test_no_force_returns_cached_without_probing(self) -> None:
+        """Without force, a fresh registry is returned without any transport calls."""
+        transport_calls: list[str] = []
+
+        def _t(url: str, h: dict, p: bytes, timeout: float) -> tuple:
+            transport_calls.append(url)
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _env(tmp)
+            # Write a fresh registry (within TTL)
+            fresh = DiscoveryRegistry(
+                schema=REGISTRY_SCHEMA,
+                written_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                ttl_s=REGISTRY_TTL_S,
+                entries=[],
+            )
+            save_registry(fresh, env)
+            result = run_refresh_action(env=env)
+
+        self.assertEqual(transport_calls, [], "without force, transport must not be called")
+        self.assertNotEqual(
+            result.get("source"), "catalog_unavailable", "cached result must not be unavailable"
+        )
 
 
 # ---------------------------------------------------------------------------
