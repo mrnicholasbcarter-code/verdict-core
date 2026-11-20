@@ -412,9 +412,7 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             # without context_bytes; projecting those would add a context_pack
             # to committed receipts that pre-date context-pack wiring.
             if data.get("context_bytes") is not None:
-                cp: dict[str, Any] = {
-                    "context_bytes": int(data["context_bytes"]),
-                }
+                cp: dict[str, Any] = {"context_bytes": int(data["context_bytes"])}
                 if data.get("prompt_tokens_estimated") is not None:
                     cp["prompt_tokens_estimated"] = int(data["prompt_tokens_estimated"])
                 srcs = data.get("sources")
