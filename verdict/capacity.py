@@ -61,6 +61,10 @@ def classify_route_capacity(
     0/0 set (BOD-418); connection facts through ``connection_signals_free``.
     A ``:free`` suffix, a provider prefix or a provider-name list decides
     nothing. Without a signal the route is UNKNOWN, and unknown is never free.
+
+    ADR-049 (Proposed, 2026-11-21) supersedes "unknown is never free": a route
+    is PAID only from declared or observed facts. CP1 implements it; until then
+    this function's behaviour is unchanged.
     """
     if conn is None:
         return CapacityClass.UNKNOWN, "", "no_connection"
