@@ -22,6 +22,17 @@ If FU1's factoring is not merged, RS1 waits. It does not fork the harness.
 
 The worker route, worker budget, tools and verification command are the same in every arm. Only the pack differs.
 
+### Arm C padding
+
+- **Source:** `build_worker_context`'s own ranked retrieval for the task. Arm C takes the items arm A cut, in the
+  same order. Ties keep that function's existing deterministic order (rank, then path), so the same task always
+  pads the same way.
+- **Stop:** add whole items until the next one would take the pack past arm B's token count, counted with the
+  same tokenizer the worker budget uses. An item is never truncated.
+- **Check:** the padded size must be within 5% of arm B's pack, or below it only because retrieval ran out of
+  items. Otherwise the task is reported as `size_control_invalid` and excluded from the A/B/C comparison.
+- **Report:** the token count of all three packs, per task.
+
 ## Researchers
 
 - Researchers use `FREE` routes admitted with tool proof, read-only. The bench grants only read tools: read file, search code, read doc, memory search.

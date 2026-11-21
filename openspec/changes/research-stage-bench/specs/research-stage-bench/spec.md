@@ -9,6 +9,15 @@ The bench SHALL run arm A (today's retrieval-only pack), arm B (free researchers
 - **WHEN** the bench runs one task in all three arms
 - **THEN** the worker route, budget, tools and verification command are identical, and only the pack differs
 
+### Requirement: Arm C is a deterministic size control
+
+Arm C SHALL extend arm A's pack with the next-ranked items from the same retrieval, in that retrieval's deterministic order, adding whole items until the next would exceed arm B's pack size in worker-budget tokens. A task whose padded pack is not within 5% of arm B's size, unless retrieval ran out of items, SHALL be reported as `size_control_invalid` and excluded from the comparison. The report SHALL list all three pack sizes per task.
+
+#### Scenario: Retrieval runs out before reaching arm B's size
+
+- **WHEN** arm A's retrieval has no more items before the padded pack reaches arm B's size
+- **THEN** arm C uses every item, the task stays in the comparison, and the report shows the smaller size
+
 ### Requirement: Researchers are free, read-only and bounded
 
 Arm B's researchers SHALL run on `FREE` routes admitted with tool proof, with read-only tools only, and within a recorded cap on calls and tokens. A finding without a primary-source citation SHALL be dropped before synthesis.
