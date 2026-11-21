@@ -251,7 +251,6 @@ def _isolate_systemctl_writes(monkeypatch: pytest.MonkeyPatch) -> None:
         identify_service,
         metadata_service,
         prove_at_rest_service,
-        ref_docs_service,
     )
 
     for installer in (
@@ -261,7 +260,6 @@ def _isolate_systemctl_writes(monkeypatch: pytest.MonkeyPatch) -> None:
         identify_service.manage_service,
         metadata_service.manage_service,
         prove_at_rest_service.manage_service,
-        ref_docs_service.manage_service,
     ):
         monkeypatch.setitem(installer.__kwdefaults__, "run", refuse)
 

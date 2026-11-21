@@ -34,7 +34,6 @@ HOST_IDS = [
     "host.metadata",
     "host.acceptance-timer",
     "host.identify-timers",
-    "host.ref-docs-timer",
     "host.docs-refresh-timer",
     "host.pr-watcher-timer",
     "host.context-lift-timer",
@@ -309,8 +308,6 @@ def test_apply_with_consent_installs_every_prerequisite_through_the_existing_ins
         "verdict-identify.timer",
         "verdict-identify-screen.service",
         "verdict-identify-screen.timer",
-        "verdict-ref-docs.service",
-        "verdict-ref-docs.timer",
         "verdict-docs-refresh.service",
         "verdict-docs-refresh.timer",
         "verdict-serve.service",
@@ -327,7 +324,6 @@ def test_apply_with_consent_installs_every_prerequisite_through_the_existing_ins
         "verdict-acceptance.timer",
         "verdict-identify.timer",
         "verdict-identify-screen.timer",
-        "verdict-ref-docs.timer",
         "verdict-docs-refresh.timer",
         "verdict-serve.service",
     } <= enabled
@@ -453,26 +449,6 @@ def test_rollback_names_manual_undo_for_host_actions(host: FakeHost) -> None:
     manual = stage["details"]["manual_undo_required"]
     assert [item["provider_id"] for item in manual] == HOST_IDS
     assert all(item["undo"] for item in manual)
-
-
-def test_ref_docs_timer_is_planned_until_installed_and_active(host: FakeHost) -> None:
-    def planned() -> list[str]:
-        return [a.provider_id or "" for a in setup_host.plan_host_actions(host.env)]
-
-    assert "host.ref-docs-timer" in planned()
-    report = host.apply(allowlist=["host.ref-docs-timer"], non_interactive=True)
-    result = _results(report)["bootstrap:host:ref-docs-timer"]
-    assert result["status"] == "applied" and "verdict-ref-docs.timer" in result["note"]
-    assert ["systemctl", "--user", "enable", "--now", "verdict-ref-docs.timer"] in (
-        host.systemctl_calls
-    )
-    assert "host.ref-docs-timer" not in planned()
-    host.active.discard("verdict-ref-docs.timer")
-    [action] = [
-        a for a in setup_host.plan_host_actions(host.env) if a.provider_id == "host.ref-docs-timer"
-    ]
-    assert action.reason == "verdict-ref-docs.timer is missing"
-    assert action.undo == "verdict memory ref-docs install-service --uninstall"
 
 
 def test_docs_refresh_timer_is_planned_until_installed_and_active(host: FakeHost) -> None:

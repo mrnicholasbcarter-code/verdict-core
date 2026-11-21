@@ -1,9 +1,0 @@
-# API reference
-
-## POST /v1/route
-
-Returns the chosen route for a request.
-
-## GET /v1/models
-
-Lists the models Widget can route to.
