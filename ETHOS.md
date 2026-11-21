@@ -20,7 +20,7 @@ exist to serve this. New work must say how it advances it.
 
 ## NOW
 
-MEM2 (#1254) PR open (#1256): all ai-memory integrations removed. MEM1 (#1253) merged; Hindsight is the memory of record (ADR-050, D33, D34).
+MEM1 (#1253, PR #1255) and MEM2 (#1254, PR #1256) merged and installed (installed-main df4cb61c, 2026-11-21); post-merge checks pass. Hindsight is the memory of record (ADR-050, D33, D34). Open: DoD evidence (fresh run and parent confirmation), then archive both changes and close the tickets.
 
 ## Decisions
 

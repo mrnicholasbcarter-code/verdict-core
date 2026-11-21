@@ -47,7 +47,10 @@
 
 ## 4. Post-merge live check
 
-- [ ] (post-merge) 4.1 After installed-main is reinstalled from merged main and the old
+- [x] (post-merge) 4.1 After installed-main is reinstalled from merged main and the old
   binary removed the ref-docs timer (`verdict memory ref-docs install-service
   --uninstall`; `systemctl --user daemon-reload`), `verdict doctor` is green with
   `ai-memory.service` stopped.
+  Done 2026-11-21T21:31Z on installed-main df4cb61c: `systemctl --user list-unit-files`
+  and `list-timers --all` show no ref-docs units; `ai-memory.service` is inactive;
+  `verdict doctor --json` returns `status: ok`, `issues: []`.
