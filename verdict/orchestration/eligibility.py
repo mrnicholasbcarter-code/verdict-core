@@ -652,7 +652,9 @@ class EligibilityLadder:
             return CapacityClass.METERED, "", "billing_402_metered"
         # U1: a route proven to charge per-request during a discovery probe is
         # permanently METERED and must never be admitted as free-tier again.
-        if not self._metered_overrides_loaded:
+        # Use getattr with defaults because some tests create this object via
+        # __new__ without calling __init__.
+        if not getattr(self, "_metered_overrides_loaded", False):
             try:
                 from verdict.discovery.metered import load_metered_overrides as _load_metered
 
@@ -660,7 +662,7 @@ class EligibilityLadder:
             except Exception:
                 self._metered_overrides = frozenset()
             self._metered_overrides_loaded = True
-        if route_id in self._metered_overrides:
+        if route_id in getattr(self, "_metered_overrides", frozenset()):
             return CapacityClass.METERED, "", "discovery_observed_charge"
         return _classify_capacity(
             conn,
