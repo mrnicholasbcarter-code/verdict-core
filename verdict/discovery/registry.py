@@ -70,7 +70,7 @@ class RegistryEntry:
     """One probed route in the registry."""
 
     route_key: str  # provider/model (stable join key)
-    capacity_class: str  # "free" or "subscription" (passed in, not decided here)
+    capacity_class: str  # "free", "subscription", or "unknown" (passed in, not decided here)
     capacity_fact: str  # e.g. "plan_free", "free_tier_summary", "zero_price"
     base_url: str
     auth: str  # sanitized: "none", "env:NAME", or "literal" (not "literal:xxx")
@@ -250,8 +250,9 @@ def tool_ok_proof(
     if entry is None:
         return {"qualified": False, "reason": "not_in_registry", "entry": None}
 
-    # Subscription or unknown-capacity routes are never promoted via registry.
-    if entry.capacity_class != "free":
+    # U1: FREE and UNKNOWN capacity both qualify via registry proof.
+    # Subscription, metered, and any other class are never promoted.
+    if entry.capacity_class not in {"free", "unknown"}:
         return {"qualified": False, "reason": "not_free_capacity", "entry": entry}
 
     # Must have been answered by a live HTTP probe.
@@ -415,6 +416,10 @@ def run_refresh(
     # Different pools run in parallel across a small thread pool.
     _breaker_lock = threading.Lock()
     _result_lock = threading.Lock()
+    # U1: routes whose probe returned a non-zero cost are stored here so the
+    # tool-probe stage skips them (a charged liveness probe is proof enough).
+    _metered_lock = threading.Lock()
+    _metered_new: set[str] = set()  # canonical keys (no omniroute/ prefix)
     probe_items_out: list[tuple[Route, str, str]] = []
     probe_results_out: list[ProbeResult] = []
     # Each entry is (item, skip_reason); skip_reason is "pool_breaker_open" or
@@ -450,6 +455,22 @@ def run_refresh(
                         if r.status == RATE_LIMITED:
                             with _breaker_lock:
                                 breaker.open_pool(route)
+                        # U1: a non-zero cost on an UP probe proves the route
+                        # charges per-request — persist a METERED override.
+                        if r.status == UP and r.observed_cost is not None and r.observed_cost > 0:
+                            _rk = route.key
+                            if _rk.startswith(_GATEWAY_PREFIX):
+                                _rk = _rk[len(_GATEWAY_PREFIX) :]
+                            try:
+                                from verdict.discovery.metered import (
+                                    add_metered_override as _add_metered,
+                                )
+
+                                _add_metered(_rk, r.observed_cost, "discovery_observed_charge", env)
+                            except Exception:
+                                pass
+                            with _metered_lock:
+                                _metered_new.add(_rk)
                         local_probed.append((item, r))
         with _result_lock:
             for item, r in local_probed:
@@ -485,6 +506,13 @@ def run_refresh(
         def _tool_probe_pool_serial(pool_results: list[ProbeResult]) -> None:
             local: list[tuple[str, tuple[str, str | None, int | None, str | None]]] = []
             for r in pool_results:
+                # U1: skip tool probe for routes proven to charge per-request.
+                _rk_canonical = r.route.key
+                if _rk_canonical.startswith(_GATEWAY_PREFIX):
+                    _rk_canonical = _rk_canonical[len(_GATEWAY_PREFIX) :]
+                if _rk_canonical in _metered_new:
+                    local.append((r.route.key, (TOOL_NOT_PROBED, "metered_override", None, None)))
+                    continue
                 with _breaker_lock:
                     is_open = breaker.is_open(r.route)
                 if is_open:

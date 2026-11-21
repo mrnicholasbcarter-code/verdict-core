@@ -361,7 +361,7 @@ def build_funnel(
 
         rp_count = 0
         for entry in getattr(registry, "entries", []):
-            if entry.capacity_class == "free" and entry.tool_ok is True:
+            if entry.capacity_class in {"free", "unknown"} and entry.tool_ok is True:
                 result = _tok_proof(entry.route_key, registry, now)
                 if result["qualified"]:
                     rp_count += 1
