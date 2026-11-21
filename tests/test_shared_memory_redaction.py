@@ -1,20 +1,16 @@
 """BOD-430: bare API-token rule in ``verdict.shared_memory.redact_secrets``.
 
 Same word-bounded pattern set as ``verdict_memory`` (BOD-423, PR #906). Fake tokens
-are assembled at runtime so no secret-shaped literal sits in the source. Covers the
-Hermes adapter's local JSONL outbox, where the live smoke on 2026-10-16 stored a bare
-``sk-`` token raw.
+are assembled at runtime so no secret-shaped literal sits in the source.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from pathlib import Path
 
 import pytest
 
-from verdict import harness_hermes_memory as hm
 from verdict.shared_memory import redact_secrets
 
 
@@ -81,27 +77,3 @@ def test_redaction_is_idempotent(name: str) -> None:
 def test_existing_rules_still_apply() -> None:
     out = redact_secrets("api_key=abc123 Bearer abcdefghijklmnop https://u:p@example.com/x")
     assert out == "api_key=[REDACTED] Bearer [REDACTED] https://[REDACTED]@example.com/x"
-
-
-def test_hermes_local_outbox_never_stores_bare_tokens(tmp_path: Path) -> None:
-    """Regression for the 2026-10-16 live redaction smoke (bare token stored raw)."""
-    tokens = [make() for make in TOKENS.values()]
-    outbox_path = tmp_path / "outbox.jsonl"
-    bridge = hm.HermesMemoryBridge(
-        provider=None, outbox=hm.BoundedJsonlOutbox(outbox_path), project="proj-a"
-    )
-    payload = {
-        "session_id": "20261017_000000_abc123",
-        "turn_id": "t-1",
-        "assistant_response": "keys: " + " ".join(tokens) + " and task-runner-config ok",
-        "model": "fake-model",
-        "cwd": "/home/USER/dev/project-a",
-    }
-    response = bridge.handle("post_llm_call", payload)
-    assert response.status == "queued"
-    raw = outbox_path.read_text(encoding="utf-8")
-    assert raw.strip(), "the capture must still be queued, redacted"
-    for token in tokens:
-        assert token not in raw
-    assert "FAKE" not in raw
-    assert "task-runner-config ok" in raw

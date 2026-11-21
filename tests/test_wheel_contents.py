@@ -29,10 +29,7 @@ ALLOWED_PACKAGE_SUFFIXES = {".py", ".json", ".typed", ".md"}
 ALLOWED_VERDICT_MEMORY_ROOTS = {"verdict_memory"}
 
 # Exact non-suffix package data the runtime reads from the installed package.
-ALLOWED_PACKAGE_FILES = {
-    # Hermes plugin manifest copied by verdict.harness_hermes_memory.install().
-    "verdict/hermes_plugin/verdict_memory/plugin.yaml"
-}
+ALLOWED_PACKAGE_FILES: set[str] = set()
 
 # Each shipped demo module must be a documented entry point or a runtime import of one.
 ALLOWED_DEMO_MODULES = {
