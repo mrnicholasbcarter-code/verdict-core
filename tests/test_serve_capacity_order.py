@@ -351,6 +351,31 @@ def test_route_name_never_makes_a_route_free(provider, route_id):
     assert evidence == "no_free_evidence"
 
 
+@pytest.mark.parametrize(
+    "provider,route_id",
+    [
+        ("openai", "openai/gpt-5-pro"),
+        ("anthropic", "anthropic/claude-opus-5-5"),
+        ("paid", "paid/model-paid"),
+        ("metered", "metered/premium-model"),
+        ("x", "x/model:paid"),
+        ("enterprise", "enterprise/vendor/pro-max"),
+    ],
+)
+def test_route_name_never_makes_a_route_paid(provider, route_id):
+    """Catches a paid-sounding name or provider deciding a route is paid.
+
+    ADR-049 (operator, 2026-11-21): "the rule should say paid only from facts".
+    With no price, billing fact or observed charge, a name never makes a route
+    METERED.
+    """
+    from verdict.capacity import CapacityClass
+
+    cls, evidence = _classify(provider, route_id)
+    assert cls is not CapacityClass.METERED, (cls, evidence)
+    assert evidence != "apikey_positive_pricing"
+
+
 def test_declared_zero_price_makes_any_route_free():
     """Catches the fact path being lost with the name rules: 0/0 is FREE whatever the name."""
     from verdict.capacity import CapacityClass

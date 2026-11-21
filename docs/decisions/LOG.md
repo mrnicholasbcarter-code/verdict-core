@@ -367,3 +367,17 @@ weakened test. Reversible.
 * **Rule going forward:** before any bulk `move-session`, count each session's
   observations by project and skip any session that touches `operator` or `ref-*`.
   The process gap is logged as BOD-348 N50.
+
+## D32: a route is paid only from facts (operator, 2026-11-21; ADR-049, accepted)
+
+(D31 is reserved by PR #1242, story U1, which is parked.)
+
+* **Decision:** a route is PAID only from declared or observed facts, never from its name. A route
+  with no cost facts is treated as free; its class can still read `UNKNOWN` in receipts. The cost
+  order is per-operator policy, and an unknown-cost mode (`assume_free`, `probe_only`, `exclude`)
+  decides how `UNKNOWN` routes run. This operator: `assume_free`. Default for other operators:
+  `probe_only`. Pay-per-token routes are on by default (ranked by the cost order). Each `UNKNOWN`
+  route gets a per-route daily call cap until its first fact; CP1 sets the value.
+* **Supersedes:** the 2026-11-19 rule "unknown is never free".
+* **Record:** [ADR-049](../adr/ADR-049-cost-policy-and-unknown-handling.md). Implemented by CP2
+  (#1245) and CP1 (#1244); main's behaviour is unchanged until CP1 lands.
