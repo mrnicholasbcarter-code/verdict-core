@@ -76,15 +76,43 @@
     },
     {
       "omniroute_id": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
-      "models_dev_id": "nvidia/nemotron-3-super-120b-a12b:free"
+      "models_dev_id": "nvidia/nemotron-3-super-120b-a12b",
+      "source": "BOD-S2b (verified 2026-11-20): OpenRouter free-tier endpoint for nvidia/nemotron-3-super-120b-a12b. models.dev models.json has the base record nvidia/nemotron-3-super-120b-a12b (models.json=True); the :free suffix is an OpenRouter API endpoint variant, not a models.dev record. Confirmed via load_store(~/.verdict/model-metadata.json).record_by_id."
     },
     {
       "omniroute_id": "openrouter/poolside/laguna-s-2.1:free",
-      "models_dev_id": "poolside/laguna-s-2.1:free"
+      "models_dev_id": "poolside/laguna-s-2.1",
+      "source": "BOD-S2b (verified 2026-11-20): OpenRouter free-tier endpoint for poolside/laguna-s-2.1. models.dev models.json has the base record poolside/laguna-s-2.1 (models.json=True); :free suffix is an OpenRouter API endpoint variant."
     },
     {
       "omniroute_id": "openrouter/poolside/laguna-xs-2.1:free",
-      "models_dev_id": "poolside/laguna-xs-2.1:free"
+      "models_dev_id": "poolside/laguna-xs-2.1",
+      "source": "BOD-S2b (verified 2026-11-20): OpenRouter free-tier endpoint for poolside/laguna-xs-2.1. models.dev models.json has the base record poolside/laguna-xs-2.1 (models.json=True); :free suffix is an OpenRouter API endpoint variant."
+    },
+    {
+      "omniroute_id": "openrouter/google/gemma-4-26b-a4b-it:free",
+      "models_dev_id": "google/gemma-4-26b-a4b-it",
+      "source": "BOD-S2b (verified 2026-11-20): OpenRouter free-tier endpoint. models.dev models.json record google/gemma-4-26b-a4b-it confirmed via load_store(~/.verdict/model-metadata.json).record_by_id (models.json=True). The :free-suffixed store record is an api.json mirror row excluded from the leaf index by design."
+    },
+    {
+      "omniroute_id": "openrouter/google/gemma-4-31b-it:free",
+      "models_dev_id": "google/gemma-4-31b-it",
+      "source": "BOD-S2b (verified 2026-11-20): OpenRouter free-tier endpoint. models.dev models.json record google/gemma-4-31b-it confirmed (models.json=True)."
+    },
+    {
+      "omniroute_id": "openrouter/inclusionai/ling-3.2-flash:free",
+      "models_dev_id": "inclusionai/ling-3.2-flash",
+      "source": "BOD-S2b (verified 2026-11-20): OpenRouter free-tier endpoint. models.dev models.json record inclusionai/ling-3.2-flash confirmed (models.json=True)."
+    },
+    {
+      "omniroute_id": "openrouter/nvidia/nemotron-3.5-lightning:free",
+      "models_dev_id": "nvidia/nemotron-3.5-lightning",
+      "source": "BOD-S2b (verified 2026-11-20): OpenRouter free-tier endpoint. models.dev models.json record nvidia/nemotron-3.5-lightning confirmed (models.json=True)."
+    },
+    {
+      "omniroute_id": "openrouter/particle-ai/particle-1:free",
+      "models_dev_id": "particle-ai/particle-1",
+      "source": "BOD-S2b (verified 2026-11-20): OpenRouter free-tier endpoint. models.dev models.json record particle-ai/particle-1 confirmed (models.json=True)."
     },
     {
       "omniroute_id": "cc/claude-opus-5-5",
