@@ -88,7 +88,7 @@ def test_setup_confirms_backup_and_completion(home_ui, monkeypatch, tmp_path):
 
     save_setup_config({"primary_model": "fixture"})
     monkeypatch.setattr("verdict.home.probe_gateway", lambda *a, **k: (True, 2, None))
-    # gateway + check; three choices/confirms; five catalog reviews; three manual;
+    # gateway + check; three choices/confirms; five catalog reviews; two manual (ai-memory removed, MEM2);
     # identify maintenance and metadata choices/confirms; final save.
     answers = [
         "http://fixture",
@@ -99,7 +99,7 @@ def test_setup_confirms_backup_and_completion(home_ui, monkeypatch, tmp_path):
         "n",
         "keep",
         "n",
-        *(["n"] * 8),
+        *(["n"] * 7),
         "off",
         "n",
         "off",
@@ -123,7 +123,6 @@ def test_setup_dependencies_show_manual_and_skips(home_ui):
         "adapter.context7",
         "context-mode",
         "open-code-review",
-        "ai-memory",
     ):
         assert term in output
     assert "Install:" in output and "Version" in output
