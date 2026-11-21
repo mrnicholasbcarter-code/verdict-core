@@ -30,6 +30,27 @@ Read-only checks against the running gateway and the installed package; no model
 4. **Free facts from the live summary.** `freeType` and `hardStopGuaranteed` are
    read where membership is read today. No snapshot is needed.
 
+## OmniRoute pricing sync (`PRICING_SYNC_ENABLED`)
+
+OmniRoute can fetch model prices from external sources (`src/lib/pricingSync.ts`). The switch is the opt-in
+environment flag `PRICING_SYNC_ENABLED=true` (default false). Its source is `PRICING_SYNC_SOURCES` (default
+`litellm`) and its interval is `PRICING_SYNC_INTERVAL` (default 86400 s). Synced prices are stored in their own
+namespace (`pricing_synced`), and the resolution order is user overrides, then synced external, then hardcoded
+defaults. On 3.8.53 with the flag off, `/v1/models` listed 4,414 rows: 2,882 with no price, 1,369 with a
+positive price, 163 with an all-zero price.
+
+These are list prices for a MODEL, not facts about a CONNECTION. A free-tier API-key connection serving a model
+that LiteLLM lists at a positive price would show that price. OmniRoute's estimated cost header is computed
+from the same table, so it would also turn nonzero for that free-tier call. If Verdict read either as ADR-049's
+paid evidence, free routes would become `METERED`. So, when the flag is on:
+
+- A price counts as paid evidence only when its source is known and it applies to the connection: a provider or
+  user price for that connection, or a synced list price on a connection whose billing fact is `metered`.
+- A synced list price on a connection with billing `subscription` or `keyless`, or on a model in the gateway's
+  free-tier list, is recorded as a list price and decides nothing.
+- Before the flag is turned on for the operator, a read-only comparison of `verdict discovery connections` and
+  the funnel, with the flag off and on, is saved as evidence.
+
 ## Rules
 
 - Order inside `classify_route_capacity` stays fact-first. OpenRouter public 0/0
