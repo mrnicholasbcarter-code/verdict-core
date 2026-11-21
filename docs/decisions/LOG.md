@@ -381,3 +381,12 @@ weakened test. Reversible.
 * **Supersedes:** the 2026-11-19 rule "unknown is never free".
 * **Record:** [ADR-049](../adr/ADR-049-cost-policy-and-unknown-handling.md). Implemented by CP2
   (#1245) and CP1 (#1244); main's behaviour is unchanged until CP1 lands.
+
+## D33: Hindsight is the memory of record (operator, 2026-11-21; ADR-050, accepted)
+
+* **Decision:** Hindsight (self-hosted at `http://127.0.0.1:8888`, bank `shared`) replaces
+  ai-memory as the cross-session, cross-harness memory store. MEM1 (#1253) removes the
+  ai-memory ref-docs sync chain (the only ai-memory dependency in doctor/setup paths).
+  MEM2 (#1254) removes the Hermes per-turn recall hook and AI_MEMORY_AUTH_TOKEN.
+* **Supersedes:** D1 (ai-memory as memory of record).
+* **Record:** [ADR-050](../adr/ADR-050-hindsight-memory-of-record.md).

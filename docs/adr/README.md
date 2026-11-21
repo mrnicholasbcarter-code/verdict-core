@@ -116,6 +116,7 @@ hardening pass (successor for ADR-023).
 | [047](ADR-047-verdict-native-fusion-planning.md) — Verdict-native fusion planning benchmark | `verdict bench fusion-plan` runs a panel of FREE admitted planners from different families, anonymises and synthesises plans via `verdict/fusion_plan_bench.py`; production planning unchanged | Accepted (operator, 2026-11-20) | *(new — pending ecosystem re-audit)* | NOT_VERIFIED | Benchmark only; relates to ADR-043 |
 | 048 — Unknown is free until proven otherwise (not on main) | Reserved by PR #1242 (story U1, parked); its approach is superseded by ADR-049 | — | *(reserved)* | — | Do not reuse the number |
 | [049](ADR-049-cost-policy-and-unknown-handling.md) — Cost policy and unknown-cost handling | A route is PAID only from declared or observed facts, never from its name; per-operator cost order; unknown-cost mode `assume_free` / `probe_only` / `exclude` | Accepted (operator, 2026-11-21) | *(new — pending ecosystem re-audit)* | NOT_VERIFIED | Implemented by CP2 (#1245) and CP1 (#1244) |
+| [050](ADR-050-hindsight-memory-of-record.md) — Hindsight is the memory of record | Hindsight replaces ai-memory as the cross-session memory store; ai-memory ref-docs sync chain removed (MEM1); Hermes/harness hooks removed in MEM2 | Accepted (operator, 2026-11-21) | *(new)* | NOT_VERIFIED | Supersedes D1; relates to #1253/#1254 |
 
 ## Duplicate / superseded copies (retain for inbound links)
 
