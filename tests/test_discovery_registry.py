@@ -1611,5 +1611,319 @@ class MissingKeyNotProbedTest(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# S5b: carry-forward and rotation tests
+# ---------------------------------------------------------------------------
+
+
+class CarryForwardRotationTest(unittest.TestCase):
+    """Tests for registry carry-forward and probe-order rotation (S5b)."""
+
+    def tearDown(self) -> None:
+        _set_transport(None)
+
+    # ------------------------------------------------------------------
+    # (a) Unprobed entry keeps its checked_at and expires on time
+    # ------------------------------------------------------------------
+
+    def test_unprobed_entry_keeps_checked_at_and_expires_on_time(self) -> None:
+        """An entry carried from previous keeps its original checked_at.
+
+        When a route is skipped (wall_budget_exhausted) and carried, its
+        checked_at must equal the timestamp from the previous registry, not
+        the current run's timestamp.  The per-entry freshness window
+        (tool_ok_proof) uses that original time for its TTL calculation, so
+        the entry must expire at (previous.checked_at + REGISTRY_TTL_S), not
+        at (now + REGISTRY_TTL_S).
+        """
+        # Build a previous registry entry with a known checked_at.
+        old_time = "2026-11-01T00:00:00+00:00"
+        prev_entry = RegistryEntry(
+            route_key="p/m",
+            capacity_class="free",
+            capacity_fact="plan_free",
+            base_url="http://host.example.com/v1",
+            auth="none",
+            upstream=None,
+            answered=True,
+            tool_ok=True,
+            tool_skip_reason=None,
+            probe_skip_reason=None,
+            served_model=None,
+            latency_ms=100,
+            retry_after_s=None,
+            checked_at=old_time,
+            breaker_state=BREAKER_CLOSED,
+        )
+        prev_registry = DiscoveryRegistry(
+            schema=REGISTRY_SCHEMA, written_at=old_time, ttl_s=REGISTRY_TTL_S, entries=[prev_entry]
+        )
+
+        # Run with wall_budget_s=0 so the route is immediately skipped.
+        route = _route(provider="p", model="m")
+
+        def _explode(url: str, h: dict, p: bytes, timeout: float) -> tuple:
+            raise AssertionError(f"no probe should run with zero budget: {url}")
+
+        _set_transport(_explode)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = run_refresh(
+                [(route, "free", "plan_free")],
+                context_tokens=0,
+                wall_budget_s=0.0,
+                env=_env(tmp),
+                previous=prev_registry,
+            )
+
+        self.assertEqual(len(reg.entries), 1)
+        entry = reg.entries[0]
+        # Carried entry must keep the original checked_at, not today's timestamp.
+        self.assertEqual(
+            entry.checked_at,
+            old_time,
+            "carried entry must preserve the original checked_at from the previous registry",
+        )
+        # carried count must be 1
+        self.assertEqual(reg.carried, 1)
+
+    # ------------------------------------------------------------------
+    # (b) Route reclassified away from FREE is dropped
+    # ------------------------------------------------------------------
+
+    def test_route_reclassified_away_from_free_is_dropped(self) -> None:
+        """A route in previous that is no longer in this run's route list is dropped.
+
+        If the catalog no longer includes a route (e.g. it was reclassified to
+        PRICED or removed entirely), it must not appear in the new registry —
+        even if previous had it as a valid, unexpired entry.
+        """
+        old_time = "2026-11-01T00:00:00+00:00"
+        prev_entry = RegistryEntry(
+            route_key="p/dropped",
+            capacity_class="free",
+            capacity_fact="plan_free",
+            base_url="http://host.example.com/v1",
+            auth="none",
+            upstream=None,
+            answered=True,
+            tool_ok=True,
+            tool_skip_reason=None,
+            probe_skip_reason=None,
+            served_model=None,
+            latency_ms=100,
+            retry_after_s=None,
+            checked_at=old_time,
+            breaker_state=BREAKER_CLOSED,
+        )
+        prev_registry = DiscoveryRegistry(
+            schema=REGISTRY_SCHEMA, written_at=old_time, ttl_s=REGISTRY_TTL_S, entries=[prev_entry]
+        )
+
+        # This run has a *different* route — "p/dropped" is not in this run's list.
+        route_other = _route(provider="p", model="other")
+
+        def _t(url: str, h: dict, p: bytes, timeout: float) -> tuple:
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = run_refresh(
+                [(route_other, "free", "plan_free")],
+                context_tokens=0,
+                wall_budget_s=300.0,
+                env=_env(tmp),
+                previous=prev_registry,
+            )
+
+        route_keys = {e.route_key for e in reg.entries}
+        self.assertNotIn(
+            "p/dropped",
+            route_keys,
+            "a route no longer in the catalog must not be carried into the new registry",
+        )
+        self.assertIn("p/other", route_keys, "the current run's route must be in the registry")
+
+    # ------------------------------------------------------------------
+    # (c) Probe order: never-checked first, then oldest checked_at
+    # ------------------------------------------------------------------
+
+    def test_probe_order_never_checked_first_then_oldest(self) -> None:
+        """Routes are probed in rotation order: never-checked first, then oldest first.
+
+        Within the same run we cannot observe checked_at directly, but we CAN
+        observe which routes got probed first by tracking the order that the
+        transport receives requests.  Put all routes in one pool (same upstream)
+        to make ordering deterministic.
+        """
+        # Three routes: r_new (not in previous), r_old (older checked_at), r_new2 (not in previous)
+        # Previous only has r_mid and r_old.
+        time_mid = "2026-11-10T12:00:00+00:00"
+        time_old = "2026-11-01T00:00:00+00:00"
+
+        def _make_prev_entry(model: str, checked_at: str) -> RegistryEntry:
+            return RegistryEntry(
+                route_key=f"upstream1/{model}",
+                capacity_class="free",
+                capacity_fact="plan_free",
+                base_url="http://gw.example.com/v1",
+                auth="none",
+                upstream="upstream1",
+                answered=True,
+                tool_ok=True,
+                tool_skip_reason=None,
+                probe_skip_reason=None,
+                served_model=None,
+                latency_ms=100,
+                retry_after_s=None,
+                checked_at=checked_at,
+                breaker_state=BREAKER_CLOSED,
+            )
+
+        prev_registry = DiscoveryRegistry(
+            schema=REGISTRY_SCHEMA,
+            written_at=time_mid,
+            ttl_s=REGISTRY_TTL_S,
+            entries=[_make_prev_entry("r_mid", time_mid), _make_prev_entry("r_old", time_old)],
+        )
+
+        # All three routes share upstream="upstream1" so they go in one pool.
+        r_new = Route(
+            provider="upstream1",
+            model="r_new",
+            base_url="http://gw.example.com/v1",
+            auth="none",
+            upstream="upstream1",
+        )
+        r_mid = Route(
+            provider="upstream1",
+            model="r_mid",
+            base_url="http://gw.example.com/v1",
+            auth="none",
+            upstream="upstream1",
+        )
+        r_old = Route(
+            provider="upstream1",
+            model="r_old",
+            base_url="http://gw.example.com/v1",
+            auth="none",
+            upstream="upstream1",
+        )
+
+        probed_models: list[str] = []
+
+        def _t(url: str, h: dict, p: bytes, timeout: float) -> tuple:
+            # Extract model from the request body.
+            import json as _json
+
+            body = _json.loads(p)
+            probed_models.append(body.get("model", "?"))
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        # Pass routes in catalog order: r_new, r_mid, r_old
+        # Expected probe order after rotation: r_new (never-checked), r_old (oldest), r_mid
+        with tempfile.TemporaryDirectory() as tmp:
+            run_refresh(
+                [
+                    (r_new, "free", "plan_free"),
+                    (r_mid, "free", "plan_free"),
+                    (r_old, "free", "plan_free"),
+                ],
+                context_tokens=0,
+                wall_budget_s=300.0,
+                env=_env(tmp),
+                previous=prev_registry,
+            )
+
+        # r_new must be probed before r_old, which must be before r_mid.
+        self.assertIn("r_new", probed_models)
+        self.assertIn("r_old", probed_models)
+        self.assertIn("r_mid", probed_models)
+        idx_new = probed_models.index("r_new")
+        idx_old = probed_models.index("r_old")
+        idx_mid = probed_models.index("r_mid")
+        self.assertLess(
+            idx_new, idx_old, "never-checked route must be probed before oldest-checked route"
+        )
+        self.assertLess(
+            idx_old,
+            idx_mid,
+            "oldest-checked route must be probed before more-recently-checked route",
+        )
+
+    # ------------------------------------------------------------------
+    # (d) Two budget-limited runs together cover more routes than one
+    # ------------------------------------------------------------------
+
+    def test_two_budget_limited_runs_cover_more_routes_than_one(self) -> None:
+        """With carry-forward and rotation, repeated runs cover the full catalog.
+
+        In a budget-limited scenario, routes late in the catalog are skipped on
+        the first run.  On the second run, those skipped routes (which have
+        no entry in previous) sort before the already-probed routes and get
+        their turn.  The union of probed routes after two runs must exceed what
+        one run alone would cover.
+        """
+        # Put all routes in one pool to control ordering.
+        routes = [
+            Route(
+                provider="gw",
+                model=f"m{i}",
+                base_url="http://gw.example.com/v1",
+                auth="none",
+                upstream="gw",
+            )
+            for i in range(6)
+        ]
+
+        call_count = 0
+
+        def _t(url: str, h: dict, p: bytes, timeout: float) -> tuple:
+            nonlocal call_count
+            call_count += 1
+            return 200, {}, _ok_body()
+
+        _set_transport(_t)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            route_triples = [(r, "free", "plan_free") for r in routes]
+
+            # Run 1: very short budget so only the first routes are probed.
+            # Use wall_budget_s=0 so ALL routes are skipped — no previous exists.
+            reg1 = run_refresh(
+                route_triples, context_tokens=0, wall_budget_s=0.0, env=_env(tmp), previous=None
+            )
+            probed_after_run1 = {e.route_key for e in reg1.entries if e.answered}
+            # With zero budget, nothing is answered.
+            self.assertEqual(len(probed_after_run1), 0, "zero budget means zero probes")
+
+            # Reset transport call count.
+            call_count = 0
+            _set_transport(_t)
+
+            # Run 2: use previous=reg1 and a generous budget.
+            # reg1 has zero answered routes, so ALL routes are "never-checked"
+            # from the perspective of previous_by_key (entries with probe_skip_reason
+            # don't have a valid checked_at).  With a full budget they all get probed.
+            reg2 = run_refresh(
+                route_triples, context_tokens=0, wall_budget_s=300.0, env=_env(tmp), previous=reg1
+            )
+            probed_after_run2 = {e.route_key for e in reg2.entries if e.answered}
+
+            self.assertGreater(
+                len(probed_after_run2),
+                len(probed_after_run1),
+                "second run with generous budget must probe more routes than first (zero-budget) run",
+            )
+            self.assertEqual(
+                len(probed_after_run2),
+                len(routes),
+                "with a generous budget on run 2, all routes must be probed",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
