@@ -62,7 +62,7 @@ def classify_route_capacity(
     A ``:free`` suffix, a provider prefix or a provider-name list decides
     nothing. Without a signal the route is UNKNOWN, and unknown is never free.
 
-    ADR-049 (Proposed, 2026-11-21) supersedes "unknown is never free": a route
+    ADR-049 (accepted 2026-11-21) supersedes "unknown is never free": a route
     is PAID only from declared or observed facts. CP1 implements it; until then
     this function's behaviour is unchanged.
     """

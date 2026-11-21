@@ -1,6 +1,6 @@
 # ADR-049: Cost policy, unknown-cost handling and per-operator cost ordering
 
-**Status:** Proposed (drafted 2026-11-21; the operator accepts or amends the open points below)
+**Status:** Accepted (operator, 2026-11-21: "the rule should say paid only from facts"; open points settled the same day)
 **Date:** 2026-11-21
 **Deciders:** Operator
 **Supersedes:** the 2026-11-19 rule "unknown is never free" (docstring of
@@ -85,24 +85,23 @@ A pay-as-you-go account that bills silently (no error, no declared price, no pri
 OmniRoute's table) is not detected by any of the facts above. Under `assume_free` such a route is
 used as free until a fact appears. This operator accepts that risk.
 
-## Open points (operator to settle; proposed answers first)
+## Settled points (operator, 2026-11-21)
 
-1. **Default mode for other operators.** *Proposed:* `probe_only`. A new operator's accounts are
-   unknown to Verdict, and `probe_only` keeps a silently billing account from being used before a
-   probe has run. This operator sets `assume_free` explicitly.
-2. **Pay-per-token routes.** *Proposed:* opt-in, off by default. `METERED` routes are candidates
-   only when the operator's policy names them. This matches the standing "no pay-per-token spend"
-   constraint.
-3. **A cap on `UNKNOWN` routes before their first fact.** *Proposed:* yes. Each `UNKNOWN` route
-   gets a per-route daily call cap, set in configuration, so a silently billing route cannot run
-   up an unbounded bill. The cap lifts when a fact classifies the route. CP1 sets the default
-   value.
+1. **Default mode for other operators: `probe_only`.** A new operator's accounts are unknown to
+   Verdict, and `probe_only` keeps a silently billing account from being used before a probe has
+   run. This operator sets `assume_free` explicitly.
+2. **Pay-per-token routes: on by default.** `METERED` routes are candidates, ranked by the
+   operator's cost order (last in the default order). An operator can turn them off in policy.
+   This operator's standing rule of no pay-per-token spend is unchanged.
+3. **A cap on `UNKNOWN` routes before their first fact: yes.** Each `UNKNOWN` route gets a
+   per-route daily call cap, set in configuration, so a silently billing route cannot run up an
+   unbounded bill. The cap lifts when a fact classifies the route. CP1 sets the default value.
 
 ## Consequences
 
 - The free supply the operator already has becomes usable without a manual allow-list.
 - A silently billing account can spend money under `assume_free` until a fact appears. The cap in
-  open point 3 bounds that spend; the receipts keep `UNKNOWN` visible so the gap can be audited.
+  settled point 3 bounds that spend; the receipts keep `UNKNOWN` visible so the gap can be audited.
 - Cost order becomes configuration, so tests that pin `CAPACITY_ORDER` change in CP1.
 - The AGENTS.md invariant row changes when the code makes it true. Until CP1 lands, main still
   ranks `UNKNOWN` last, so the row says what main enforces: a name never decides a route's cost
@@ -134,6 +133,6 @@ This ADR changes none of their behaviour.
 | `verdict/actions/model_refresh.py`, `verdict/identify_pools.py` | Read `CAPACITY_ORDER` for grouping and approval lists. |
 | `verdict/orchestration/eligibility.py`, `verdict/orchestration/runtime.py`, `verdict/candidate_pool.py` | Places that treat `UNKNOWN` specially at admission, dispatch and pool building; CP1 routes them through the unknown-cost mode. |
 | `docs/CONFIGURATION.md` "Capacity classification" | "unknown is never free" becomes the mode description (CP1). |
-| `tests/test_serve_capacity_order.py` | `::test_route_name_never_makes_a_route_free` keeps its name, and its docstring loses "unknown is never free". `::test_route_name_never_makes_a_route_paid` (added with this ADR) stays as is. Tests asserting the fixed order (the identity of `CAPACITY_ORDER` across modules, `capacity_order == 2` for the last tier) follow the configured order. |
+| `tests/test_serve_capacity_order.py` | In CP1, `::test_route_name_never_makes_a_route_free` keeps its name and its docstring drops "unknown is never free" (this ADR's PR leaves it unchanged). `::test_route_name_never_makes_a_route_paid` (added in this ADR's PR) stays as is. Tests asserting the fixed order (the identity of `CAPACITY_ORDER` across modules, `capacity_order == 2` for the last tier) follow the configured order. |
 | `tests/test_catalog_truth.py`, `tests/test_one_capacity_classifier.py`, `tests/test_orchestration_capacity_bounds.py`, `tests/test_authoritative_eligibility.py` | Comments and assertions that say unknown is never free, or that rank by the fixed order. |
 | `AGENTS.md` invariant row | Becomes "A route is PAID only from declared or observed facts, never from its name" in CP1. |

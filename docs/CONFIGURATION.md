@@ -920,7 +920,7 @@ tier). oauth without a free signal is `SUBSCRIPTION`; a positive price or an obs
 is `METERED`. A `:free` suffix or a provider name decides nothing: with no fact the route is
 `UNKNOWN` (`no_free_evidence`), and unknown is never free.
 
-[ADR-049](adr/ADR-049-cost-policy-and-unknown-handling.md) (Proposed) changes how `UNKNOWN` is used:
+[ADR-049](adr/ADR-049-cost-policy-and-unknown-handling.md) (accepted 2026-11-21) changes how `UNKNOWN` is used:
 a route is paid only from facts, and an unknown-cost mode decides whether `UNKNOWN` routes run.
 The behaviour above stays in force until CP1 lands.
 

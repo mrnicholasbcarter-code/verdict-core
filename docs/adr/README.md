@@ -115,7 +115,7 @@ hardening pass (successor for ADR-023).
 | [046](ADR-046-arena-ratings-advisory-source.md) — Arena ratings as advisory reordering source | Exact (org, key) join, VR percentile, role chains, advisory-only integration; never affects admission | CURRENT | *(new)* | — |
 | [047](ADR-047-verdict-native-fusion-planning.md) — Verdict-native fusion planning benchmark | `verdict bench fusion-plan` runs a panel of FREE admitted planners from different families, anonymises and synthesises plans via `verdict/fusion_plan_bench.py`; production planning unchanged | Accepted (operator, 2026-11-20) | *(new — pending ecosystem re-audit)* | NOT_VERIFIED | Benchmark only; relates to ADR-043 |
 | 048 — Unknown is free until proven otherwise (not on main) | Reserved by PR #1242 (story U1, parked); its approach is superseded by ADR-049 | — | *(reserved)* | — | Do not reuse the number |
-| [049](ADR-049-cost-policy-and-unknown-handling.md) — Cost policy and unknown-cost handling | A route is PAID only from declared or observed facts, never from its name; per-operator cost order; unknown-cost mode `assume_free` / `probe_only` / `exclude` | Proposed (2026-11-21) | *(new — pending ecosystem re-audit)* | NOT_VERIFIED | Implemented by CP2 (#1245) and CP1 (#1244) |
+| [049](ADR-049-cost-policy-and-unknown-handling.md) — Cost policy and unknown-cost handling | A route is PAID only from declared or observed facts, never from its name; per-operator cost order; unknown-cost mode `assume_free` / `probe_only` / `exclude` | Accepted (operator, 2026-11-21) | *(new — pending ecosystem re-audit)* | NOT_VERIFIED | Implemented by CP2 (#1245) and CP1 (#1244) |
 
 ## Duplicate / superseded copies (retain for inbound links)
 
