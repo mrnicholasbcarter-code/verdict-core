@@ -20,12 +20,12 @@ exist to serve this. New work must say how it advances it.
 
 ## NOW
 
-Ticket 1 (harness-agnostic memory) in progress. Done: every harness writes to one ai-memory project (`default/verdict`), and Hermes gets per-turn recall. Open: operator recall eval at hit@5 0.85 against the 0.90 bar (BOD-348 N51). N02 retest queued behind it.
+MEM1 (#1253) in progress: Hindsight is the memory of record (ADR-050), ai-memory ref-docs sync chain removed. MEM2 (#1254) next: remove Hermes per-turn recall hook and AI_MEMORY_AUTH_TOKEN.
 
 ## Decisions
 
 Decisions: Linear BOD-342. Failures: BOD-348. Read both before changing prior
-work. Memory = ai-memory (D1).
+work. Memory = Hindsight (D33 / ADR-050; supersedes D1).
 
 ## Parked
 

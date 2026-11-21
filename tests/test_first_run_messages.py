@@ -101,7 +101,6 @@ def test_serve_with_both_settings_still_starts(monkeypatch: pytest.MonkeyPatch) 
         "verdict-identify.timer is missing; repair: verdict identify install-service",
         "verdict-serve.service is not installed; repair: verdict setup --apply --allow host.serve",
         "/x/health-cache.json does not exist; no screening or passive evidence yet",
-        "tag None, 0 pages; never synced (/x/m.json is missing); repair: verdict memory ref-docs sync",
         "not on PATH; verdict.ocr_release pins v1.12.9; repair: verdict setup --apply --allow host.ocr",
     ],
 )

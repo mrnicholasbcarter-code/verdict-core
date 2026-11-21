@@ -14,7 +14,6 @@ These six were done by hand on the operator host on 2026-11-05:
 
 Added later:
 
-* ``host.ref-docs-timer``: the hourly ``verdict memory ref-docs sync`` timer.
 * ``host.docs-refresh-timer``: the six-hourly ``verdict memory docs --fix`` timer that keeps
   the authoritative project documentation fresh for ``verdict doctor``.
 
@@ -45,7 +44,6 @@ ACCEPTANCE = "host.acceptance-timer"
 IDENTIFY = "host.identify-timers"
 SERVE = "host.serve"
 PRIME = "host.prime-registry"
-REF_DOCS = "host.ref-docs-timer"
 DOCS_REFRESH = "host.docs-refresh-timer"
 PR_WATCHER = "host.pr-watcher-timer"
 CONTEXT_LIFT = "host.context-lift-timer"
@@ -58,7 +56,6 @@ ORDER = (
     METADATA,
     ACCEPTANCE,
     IDENTIFY,
-    REF_DOCS,
     DOCS_REFRESH,
     PR_WATCHER,
     CONTEXT_LIFT,
@@ -332,11 +329,6 @@ def _observe(env: HostEnvironment, provider_id: str) -> list[str]:
 
         rendered = identify_service.manage_service(unit_dir=env.unit_dir, dry_run=True)
         return _timer_problems(env, rendered, identify_service.TIMER, identify_service.SCREEN_TIMER)
-    if provider_id == REF_DOCS:
-        from verdict import ref_docs_service
-
-        rendered = ref_docs_service.manage_service(unit_dir=env.unit_dir, dry_run=True)
-        return _timer_problems(env, rendered, ref_docs_service.TIMER)
     if provider_id == DOCS_REFRESH:
         from verdict import docs_refresh_service
 
@@ -441,16 +433,6 @@ _ACTIONS: dict[str, dict[str, str]] = {
         "postcondition": "verdict-identify.timer and verdict-identify-screen.timer are active.",
         "undo": "verdict identify uninstall-service",
         "install_command": "verdict identify install-service",
-    },
-    REF_DOCS: {
-        "description": "Install the hourly reference-docs sync timer.",
-        "security_impact": (
-            "Writes two systemd user units; the hourly job reads public GitHub docs via gh "
-            "and writes pages to the local ai-memory project ref-omniroute."
-        ),
-        "postcondition": "verdict-ref-docs.timer is active.",
-        "undo": "verdict memory ref-docs install-service --uninstall",
-        "install_command": "verdict memory ref-docs install-service",
     },
     DOCS_REFRESH: {
         "description": "Install the six-hourly documentation refresh timer.",
@@ -699,7 +681,6 @@ def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[st
         docs_refresh_service,
         identify_service,
         pr_watcher_service,
-        ref_docs_service,
     )
 
     provider_id = action.provider_id or ""
@@ -714,9 +695,6 @@ def run_host_action(action: BootstrapAction, env: HostEnvironment) -> Mapping[st
         if provider_id == IDENTIFY:
             steps = _install_timers(env, identify_service.manage_service)
             return {"status": "applied", "note": "identify timers enabled", **steps}
-        if provider_id == REF_DOCS:
-            steps = _install_timers(env, ref_docs_service.manage_service)
-            return {"status": "applied", "note": f"{ref_docs_service.TIMER} enabled", **steps}
         if provider_id == DOCS_REFRESH:
             steps = _install_timers(env, docs_refresh_service.manage_service)
             note = f"{docs_refresh_service.TIMER} enabled"

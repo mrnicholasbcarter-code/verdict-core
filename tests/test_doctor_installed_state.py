@@ -308,15 +308,6 @@ def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
         },
     )
 
-    synced = {
-        "project": "default/ref-omniroute",
-        "tag": "v3.9.0",
-        "installed_tag": "v3.9.0",
-        "synced_at": NOW.isoformat(),
-        "pages": 12,
-        "ok": True,
-        "problems": [],
-    }
     # Create a fresh arena snapshot so arena_snapshot_row() returns "ok".
     _now_str = NOW.strftime("%Y-%m-%dT%H:%M:%SZ")
     _today_str = NOW.strftime("%Y-%m-%d")
@@ -341,9 +332,7 @@ def test_installed_service_rows_all_ok_when_timers_active_and_cache_fresh(
             }
         )
     )
-    rows = dd.installed_service_rows(
-        now=NOW, timer_state=fake_timer, ref_docs_status=lambda: [synced]
-    )
+    rows = dd.installed_service_rows(now=NOW, timer_state=fake_timer)
 
     assert all(r["status"] == "ok" for r in rows)
 
