@@ -30,6 +30,7 @@ standing invariants are [ADR 0001](docs/adr/0001-verdict-control-plane-invariant
 | A receipt is bound to the SHA-256 of `events.jsonl`. Tampering is detected. | [`tests/test_orch_receipt.py`](tests/test_orch_receipt.py) |
 | Advisory signals may reorder admitted candidates. They never change membership or authorize a route. | [`tests/test_decision_signals_advisory.py`](tests/test_decision_signals_advisory.py) (`TestAdvisoryRanker`) |
 | A route is FREE only from declared or observed facts, never from its name. | [`tests/test_serve_capacity_order.py`](tests/test_serve_capacity_order.py) `::test_route_name_never_makes_a_route_free` |
+| UNKNOWN routes are admitted as free-tier until a probe charge proves otherwise. A route with evidence `discovery_observed_charge` is METERED and is never probed or admitted again (operator D31, ADR-048). | [`tests/test_u1_unknown_free.py`](tests/test_u1_unknown_free.py) `::test_unknown_registry_proof_admitted`, `::test_charged_probe_becomes_metered_excluded` |
 | Fixture data never satisfies live proof. | [`tests/test_routing_demo.py`](tests/test_routing_demo.py) `::test_fixture_catalog_cannot_pass` |
 | Live smoke runs only with `VERDICT_LIVE_SMOKE=1`. | [`tests/test_live_smoke_opt_in.py`](tests/test_live_smoke_opt_in.py) |
 | Removed architecture (Ruflo / swarm / hivemind) stays removed. | [`tests/test_obsolete_architecture_absent.py`](tests/test_obsolete_architecture_absent.py), [`scripts/check_no_obsolete_architecture.py`](scripts/check_no_obsolete_architecture.py) |

@@ -64,3 +64,4 @@ class ProbeResult:
     retry_after_s: float | None = None
     answered_model: str | None = None  # "model" field of the response, when present
     tool: str | None = None  # tool-call check (toolprobe.py), when run
+    observed_cost: float | None = None  # x-omniroute-response-cost header, when present

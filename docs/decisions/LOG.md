@@ -367,3 +367,28 @@ weakened test. Reversible.
 * **Rule going forward:** before any bulk `move-session`, count each session's
   observations by project and skip any session that touches `operator` or `ref-*`.
   The process gap is logged as BOD-348 N50.
+
+## D31: unknown is free, until proven it's not (operator 2026-11-21)
+
+Verdict classifies 2,135 OmniRoute routes as UNKNOWN capacity because they
+have no declared pricing and no explicit free-tier signal.  These routes were
+previously blocked at the agentic gate with `no_agentic_probe`, wasting the
+entire free-model supply they represent.
+
+Operator decision: UNKNOWN capacity is treated as free-tier for admission
+purposes.  UNKNOWN routes are probed by `verdict discovery refresh --free-only`
+alongside FREE routes.  A fresh `tool_ok=True` registry entry with
+`capacity_class="unknown"` admits the route to agentic work on the same terms
+as a FREE route.
+
+If a liveness probe of an UNKNOWN route returns HTTP 200 and the
+`x-omniroute-response-cost` response header carries a non-zero value, that
+single observation is enough to reclassify the route as METERED permanently.
+The route is written to `$VERDICT_HOME/discovery/metered.json` with evidence
+`"discovery_observed_charge"` and is never probed or admitted again.
+
+The classification function (`classify_route_capacity`) is unchanged — a route
+without free evidence still returns `CapacityClass.UNKNOWN`.  The admission
+policy (eligibility ladder, `tool_ok_proof`) is what changes.
+
+Story: U1 (feat/u1-unknown-free).  ADR: ADR-048.

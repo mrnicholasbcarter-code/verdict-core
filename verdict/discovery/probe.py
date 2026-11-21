@@ -361,12 +361,21 @@ def probe_one(route: Route, *, timeout: float = 12.0, max_tokens: int = 256) -> 
         )
 
     if _has_usable_content(first):
+        # U1: read per-request charge reported by the gateway.
+        _cost_raw = _h.get("x-omniroute-response-cost")
+        _observed_cost: float | None = None
+        if _cost_raw is not None:
+            import contextlib
+
+            with contextlib.suppress(ValueError, TypeError):
+                _observed_cost = float(_cost_raw)
         return ProbeResult(
             route=route,
             status=UP,
             latency_ms=latency_ms,
             http_code=200,
             answered_model=answered_model,
+            observed_cost=_observed_cost,
         )
 
     return ProbeResult(

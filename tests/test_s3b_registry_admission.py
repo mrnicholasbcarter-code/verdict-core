@@ -327,15 +327,20 @@ class TestPricedAndUnknownNotPromoted:
         # Metered route is ranked (no agentic gate) but stays PRICED/METERED.
         assert by_id["op/model-a"].capacity_class != CapacityClass.FREE
 
-    def test_unknown_capacity_not_admitted_via_registry(
+    def test_unknown_capacity_admitted_via_registry_u1(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An UNKNOWN route stays UNKNOWN: registry only helps FREE routes.
-        (Rule: unknown stays unknown — a route is FREE only from declared or
-        observed facts, never from a registry that cannot prove capacity class.)"""
+        """U1 (operator D31, 2026-11-21): UNKNOWN routes ARE admitted via registry proof.
+
+        A route is still *classified* UNKNOWN (no declared free fact), but
+        admission policy now treats UNKNOWN on the same terms as FREE when a
+        fresh tool_ok=True registry entry exists.  The route's capacity_class
+        in the verdict stays UNKNOWN (not promoted to FREE).
+        """
         monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
 
-        # Route has no pricing at all → UNKNOWN.  Registry has tool_ok=True.
+        # Route has no pricing at all → UNKNOWN capacity class.
+        # Registry has tool_ok=True with capacity_class="free".
         entry = _entry("unk/model-a", capacity_class="free", tool_ok=True)
         reg = _registry([entry])
         _write_registry(tmp_path, reg)
@@ -349,9 +354,12 @@ class TestPricedAndUnknownNotPromoted:
         verdicts = ladder.evaluate(WORKER_REQ, now=NOW)
         by_id = {v.route_id: v for v in verdicts}
 
+        # Capacity is still UNKNOWN — classification is unchanged.
         assert by_id["unk/model-a"].capacity_class == CapacityClass.UNKNOWN
-        # UNKNOWN routes without health_cache agentic proof are still blocked.
-        assert by_id["unk/model-a"].rank is None
+        # U1: UNKNOWN + fresh registry proof → admitted (rank is not None).
+        assert by_id["unk/model-a"].rank is not None, (
+            "UNKNOWN route with registry tool_ok=True proof must be admitted (U1)"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -452,6 +452,10 @@ class EligibilityLadder:
         # benign: both threads load the same file and the second write wins.
         self._discovery_registry_loaded: bool = False
         self._discovery_registry_cache: Any = None
+        # U1: discovery metered-override cache (routes proven to charge per-request).
+        # Loaded lazily on the first _capacity_class call; same benign-race rule.
+        self._metered_overrides_loaded: bool = False
+        self._metered_overrides: frozenset[str] = frozenset()
         # BOD-299 phase 1: optional real-session evidence, read-only in selection.
         self._session_ledger = session_ledger
         self._session_evidence_error: str | None = None
@@ -646,6 +650,20 @@ class EligibilityLadder:
             cache, route_id, getattr(self, "_current_now", None) or datetime.now(timezone.utc)
         ):
             return CapacityClass.METERED, "", "billing_402_metered"
+        # U1: a route proven to charge per-request during a discovery probe is
+        # permanently METERED and must never be admitted as free-tier again.
+        # Use getattr with defaults because some tests create this object via
+        # __new__ without calling __init__.
+        if not getattr(self, "_metered_overrides_loaded", False):
+            try:
+                from verdict.discovery.metered import load_metered_overrides as _load_metered
+
+                self._metered_overrides = frozenset(_load_metered().keys())
+            except Exception:
+                self._metered_overrides = frozenset()
+            self._metered_overrides_loaded = True
+        if route_id in getattr(self, "_metered_overrides", frozenset()):
+            return CapacityClass.METERED, "", "discovery_observed_charge"
         return _classify_capacity(
             conn,
             row,
@@ -1037,10 +1055,11 @@ class EligibilityLadder:
                 if lookup.entry is None or (
                     proof["source"] == "agentic_probe" and not lookup.entry.agentic_ok
                 ):
-                    # S3b: before rejecting as no_agentic_probe, check the
+                    # S3b/U1: before rejecting as no_agentic_probe, check the
                     # discovery registry for a fresh tool_ok=True proof.
-                    # Only FREE capacity qualifies; UNKNOWN stays unknown.
-                    if capacity == CapacityClass.FREE:
+                    # FREE and UNKNOWN capacity both qualify — UNKNOWN is free
+                    # until a probe charge proves otherwise (operator D31).
+                    if capacity in {CapacityClass.FREE, CapacityClass.UNKNOWN}:
                         from verdict.discovery.registry import load_registry as _load_registry
                         from verdict.discovery.registry import tool_ok_proof as _tool_ok_proof
 

@@ -30,8 +30,9 @@ from verdict.discovery.registry import (
     run_refresh,
 )
 
-# Capacity class strings that may be probed (all others are skipped)
-_PROBEABLE = frozenset({"free", "subscription"})
+# U1: UNKNOWN routes are probed — they are assumed free until a probe charge
+# proves otherwise.  METERED routes are excluded before this filter runs.
+_PROBEABLE = frozenset({"free", "subscription", "unknown"})
 
 
 @dataclass
@@ -191,7 +192,25 @@ def run_refresh_action(
             return base_result
         routes = catalog.routes
         if free_only:
-            routes = [(r, cc, cf) for (r, cc, cf) in routes if cc == "free"]
+            # U1: UNKNOWN is treated as free-tier until proven otherwise.
+            routes = [(r, cc, cf) for (r, cc, cf) in routes if cc in {"free", "unknown"}]
+        # U1: exclude routes already proven to charge per-request.
+        # Metered keys are stored without the ``omniroute/`` gateway prefix so
+        # we strip it here before comparing.
+        try:
+            from verdict.discovery.metered import load_metered_overrides as _load_metered
+
+            _metered_keys = frozenset(_load_metered(env).keys())
+            if _metered_keys:
+
+                def _canonical(key: str) -> str:
+                    return key[len("omniroute/") :] if key.startswith("omniroute/") else key
+
+                routes = [
+                    (r, cc, cf) for (r, cc, cf) in routes if _canonical(r.key) not in _metered_keys
+                ]
+        except Exception:
+            pass
         source = "omniroute"
 
     # Load the previous registry for carry-forward and rotation, without the
