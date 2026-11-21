@@ -29,8 +29,10 @@ The worker route, worker budget, tools and verification command are the same in 
   pads the same way.
 - **Stop:** add whole items until the next one would take the pack past arm B's token count, counted with the
   same tokenizer the worker budget uses. An item is never truncated.
-- **Check:** the padded size must be within 5% of arm B's pack, or below it only because retrieval ran out of
-  items. Otherwise the task is reported as `size_control_invalid` and excluded from the A/B/C comparison.
+- **Check:** padding never goes over arm B's size, because it stops before an item would exceed it. The padded
+  pack is valid when its size is at least 95% of arm B's (95% ≤ C ≤ 100% of B). Below 95% it is valid only if
+  retrieval ran out of items. Any other result is reported as `size_control_invalid`, and the task is excluded
+  from the A/B/C comparison.
 - **Report:** the token count of all three packs, per task.
 
 ## Researchers
@@ -69,6 +71,15 @@ The criteria and the chosen list are committed with the task set before the firs
 ## Stop rule
 
 The stop rule follows the shape of D18. It is written before the run as a file the bench requires (`--stop-rule`).
+
+**File format.** A YAML file with these required keys:
+
+- `options`: a list;
+- `expected_result`: a string;
+- `checkpoints`: a list. Each entry has `after_tasks` (an integer), `continue_if` (a condition over the report's per-arm metrics, for example `B.first_attempt_pass > max(A.first_attempt_pass, C.first_attempt_pass)`) and `else` (a string: the action when the condition fails);
+- `decided_by`: a string.
+
+The bench rejects a file that is missing a key or has a condition it cannot parse, and makes no model call. The rule's hash is the SHA-256 of the file's bytes, and the report embeds it.
 
 - **Options:** adopt the research stage, change it, or drop it.
 - **Expected result:** arm B passes more tasks on the first attempt than both A and C, without more frontier tokens per accepted node than A.

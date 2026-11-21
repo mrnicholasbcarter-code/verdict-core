@@ -11,7 +11,7 @@ The bench SHALL run arm A (today's retrieval-only pack), arm B (free researchers
 
 ### Requirement: Arm C is a deterministic size control
 
-Arm C SHALL extend arm A's pack with the next-ranked items from the same retrieval, in that retrieval's deterministic order, adding whole items until the next would exceed arm B's pack size in worker-budget tokens. A task whose padded pack is not within 5% of arm B's size, unless retrieval ran out of items, SHALL be reported as `size_control_invalid` and excluded from the comparison. The report SHALL list all three pack sizes per task.
+Arm C SHALL extend arm A's pack with the next-ranked items from the same retrieval, in that retrieval's deterministic order, adding whole items until the next would exceed arm B's pack size in worker-budget tokens. Padding SHALL never exceed arm B's size. A padded pack below 95% of arm B's size SHALL be valid only when retrieval ran out of items. Otherwise the task SHALL be reported as `size_control_invalid` and excluded from the comparison. The report SHALL list all three pack sizes per task.
 
 #### Scenario: Retrieval runs out before reaching arm B's size
 
@@ -38,7 +38,7 @@ The synthesis SHALL read each cited primary source and SHALL drop a finding whos
 
 ### Requirement: A stop rule exists before the run
 
-The bench SHALL refuse to run without a stop-rule file, and the report SHALL embed the rule's hash.
+The bench SHALL refuse to run without a stop-rule YAML file that has the keys `options`, `expected_result`, `checkpoints` (each with `after_tasks`, `continue_if` and `else`) and `decided_by`, with every condition parseable. The report SHALL embed the SHA-256 of the file's bytes.
 
 #### Scenario: No stop rule
 
