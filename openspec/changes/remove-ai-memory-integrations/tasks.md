@@ -62,6 +62,9 @@
 
 ## 7. Post-merge live check
 
-- [ ] (post-merge) 7.1 From merged main: `git grep -i ai-memory -- verdict/` returns
+- [x] (post-merge) 7.1 From merged main: `git grep -i ai-memory -- verdict/` returns
   no hits (operator policy files and ADR history excepted).
-- [ ] (post-merge) 7.2 `verdict credentials list` does not list `AI_MEMORY_AUTH_TOKEN`.
+  Done 2026-11-21T21:31Z on df4cb61c: the only hits are the 2026-10-13 decision
+  citations in `verdict/operator_policy/v1/manifest.json` and `rules.json`.
+- [x] (post-merge) 7.2 `verdict credentials list` does not list `AI_MEMORY_AUTH_TOKEN`.
+  Done 2026-11-21T21:31Z from installed-main df4cb61c: 0 matches.
