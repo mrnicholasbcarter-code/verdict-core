@@ -390,3 +390,13 @@ weakened test. Reversible.
   MEM2 (#1254) removes the Hermes per-turn recall hook and AI_MEMORY_AUTH_TOKEN.
 * **Supersedes:** D1 (ai-memory as memory of record).
 * **Record:** [ADR-050](../adr/ADR-050-hindsight-memory-of-record.md).
+
+## D34: ai-memory is fully decommissioned (2026-11-21; MEM2 #1254, accepted)
+
+* **Decision:** The Hermes memory harness (`verdict/harness_hermes_memory.py`), its
+  bundled plugin (`verdict/hermes_plugin/`), the `AI_MEMORY_AUTH_TOKEN` credential, the
+  setup-wizard ai-memory offer, and the recall-eval script are removed. The ai-memory
+  server can be stopped. `verdict harness hermes enable/disable` no longer installs
+  memory hooks. No ai-memory dependency remains in `verdict/`.
+* **Supersedes:** D1 and D2 (ai-memory as mandatory dependency; now fully removed).
+* **Record:** `openspec/changes/remove-ai-memory-integrations/`, issue #1254.

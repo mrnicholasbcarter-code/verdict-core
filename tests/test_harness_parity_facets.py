@@ -240,12 +240,12 @@ class TestHermesParity:
                 f"hermes facet {facet!r} should be supported, got {report.facets[facet]!r}"
             )
 
-    def test_capture_stays_partial_without_backend_round_trip(self, tmp_path: Path) -> None:
-        """post_llm_call fired live, but capture reached only the local outbox."""
+    def test_mutation_capability_is_unsupported_after_memory_removal(self, tmp_path: Path) -> None:
+        """Memory harness removed (MEM2); mutation_capability is unsupported."""
         from verdict.harness_hermes import certify
 
         report = certify(hermes_home=tmp_path, force=True, health_check=_healthy, which=_fake_which)
-        assert report.facets["mutation_capability"] == "partial"
+        assert report.facets["mutation_capability"] == "unsupported"
 
     def test_unwired_lifecycle_facets_unsupported(self, tmp_path: Path) -> None:
         """Hermes hooks this adapter does not wire stay unsupported."""

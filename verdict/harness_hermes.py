@@ -116,8 +116,6 @@ def enable(
             )
 
     paths = resolve_paths(hermes_home=hermes_home)
-    # Fail closed before touching config.yaml if the memory plugin cannot be installed.
-    _preflight_memory_plugin(hermes_home)
     paths.config.parent.mkdir(parents=True, exist_ok=True)
     existed = paths.config.is_file()
     created_backup = False
@@ -141,7 +139,6 @@ def enable(
         data, base_url=resolved_base, token_env=resolved_token_env, model=resolved_model
     )
     _atomic_write_yaml(paths.config, updated)
-    _install_memory_plugin(hermes_home, paths)
     return EnableResult(
         config_path=paths.config,
         backup_path=paths.backup,
@@ -154,25 +151,14 @@ def enable(
 
 
 def disable(*, hermes_home: Path | None = None) -> None:
-    """Uninstall the Verdict memory plugin, then restore the pre-enable config exactly.
-
-    The config is restored even when the plugin cannot be removed (for example a
-    user-owned ``plugins/verdict-memory``); that failure is then raised as the
-    ``hermes_memory_plugin_uninstall_failed`` gap after the restore.
-    """
+    """Restore the pre-enable Hermes config exactly."""
 
     paths = resolve_paths(hermes_home=hermes_home)
     if not paths.absent_marker.exists() and not paths.backup.is_file():
         raise HarnessHermesError(
             f"Verdict Hermes harness is not enabled: no backup at {paths.backup}"
         )
-    uninstall_error = _uninstall_memory_plugin(hermes_home)
     _restore_config(paths)
-    if uninstall_error is not None:
-        raise HarnessHermesError(
-            f"{GAP_MEMORY_PLUGIN_UNINSTALL}: Hermes config restored, but the memory plugin "
-            f"was not removed ({uninstall_error})."
-        ) from uninstall_error
 
 
 def _restore_config(paths: HermesHarnessPaths) -> None:
@@ -187,57 +173,6 @@ def _restore_config(paths: HermesHarnessPaths) -> None:
         return
     shutil.copy2(paths.backup, paths.config)
     paths.backup.unlink()
-
-
-GAP_MEMORY_PLUGIN_INSTALL = "hermes_memory_plugin_install_failed"
-GAP_MEMORY_PLUGIN_UNINSTALL = "hermes_memory_plugin_uninstall_failed"
-
-
-def _preflight_memory_plugin(hermes_home: Path | None) -> None:
-    """Refuse enable() with nothing changed when the plugin install would fail."""
-
-    # Imported here: harness_hermes_memory imports resolve_paths from this module.
-    from verdict import harness_hermes_memory
-
-    try:
-        harness_hermes_memory.check_install(hermes_home=hermes_home)
-    except (harness_hermes_memory.HermesMemoryCollisionError, OSError) as exc:
-        raise HarnessHermesError(
-            f"{GAP_MEMORY_PLUGIN_INSTALL}: memory plugin cannot be installed ({exc}); "
-            "Hermes config left unchanged."
-        ) from exc
-
-
-def _install_memory_plugin(hermes_home: Path | None, paths: HermesHarnessPaths) -> None:
-    """Install the Verdict memory hooks; on failure roll the config back and raise the gap."""
-
-    from verdict import harness_hermes_memory
-
-    try:
-        harness_hermes_memory.install(hermes_home=hermes_home)
-    except (harness_hermes_memory.HermesMemoryCollisionError, OSError) as exc:
-        _restore_config(paths)
-        raise HarnessHermesError(
-            f"{GAP_MEMORY_PLUGIN_INSTALL}: memory plugin was not installed ({exc}); "
-            "Hermes config restored to its pre-enable state."
-        ) from exc
-
-
-def _uninstall_memory_plugin(hermes_home: Path | None) -> Exception | None:
-    """Remove the Verdict memory hooks; return the failure so disable() can still restore."""
-
-    from verdict import harness_hermes_memory
-
-    try:
-        harness_hermes_memory.uninstall(hermes_home=hermes_home)
-    except (harness_hermes_memory.HermesMemoryCollisionError, OSError) as exc:
-        return exc
-    memory_backup = (
-        resolve_paths(hermes_home=hermes_home).config.parent / harness_hermes_memory.BACKUP_NAME
-    )
-    # The harness backup restore supersedes the plugin's own config backup.
-    memory_backup.unlink(missing_ok=True)
-    return None
 
 
 def status(*, hermes_home: Path | None = None) -> StatusReport:
@@ -467,15 +402,13 @@ def certify(
         "verification_result": "unsupported",  # pre_verify exists but not wired
         "session_end": "supported",  # on_session_end fired live
         "sync_async_semantics": "unsupported",  # not measured
-        # post_llm_call fired live but captured only to the local outbox: no backend round trip
-        "mutation_capability": "partial",
+        # post_llm_call fired live; memory capture harness removed in MEM2 (ADR-050)
+        "mutation_capability": "unsupported",
     }
     notes: list[str] = [
         "OpenAI-compatible provider via ~/.hermes/config.yaml → Verdict :8000",
         "Hermes v0.21.3 plugin hooks (on_session_start, pre_llm_call, post_llm_call, "
-        "on_session_end) observed firing live; install with verdict.harness_hermes_memory",
-        "memory capture reaches only the local outbox (no backend round trip yet), and "
-        "recall injection with real content is not yet observed live",
+        "on_session_end) observed firing live",
     ]
     needs_owner = ("live enable with secrets (export token_env; Hermes API key is NEEDS_OWNER)",)
     if not discovered.installed:

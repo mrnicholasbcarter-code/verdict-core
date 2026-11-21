@@ -236,12 +236,6 @@ def _dependencies(
             "independent code review",
             "See open-code-review upstream installation docs (command not verified)",
         ),
-        (
-            "ai-memory (BOD-336)",
-            "ai-memory",
-            "shared agent memory",
-            "Not available yet; BOD-336 integration pending",
-        ),
     ):
         tui.status(name, "found" if shutil.which(binary) else "missing", "Enables: " + capability)
         tui.console.print(Text("Version/outdated: not observed. Install: " + command))

@@ -20,12 +20,13 @@ exist to serve this. New work must say how it advances it.
 
 ## NOW
 
-MEM1 (#1253) in progress: Hindsight is the memory of record (ADR-050), ai-memory ref-docs sync chain removed. MEM2 (#1254) next: remove Hermes per-turn recall hook and AI_MEMORY_AUTH_TOKEN.
+MEM2 (#1254) PR open (#1256): all ai-memory integrations removed. MEM1 (#1253) merged; Hindsight is the memory of record (ADR-050, D33, D34).
 
 ## Decisions
 
 Decisions: Linear BOD-342. Failures: BOD-348. Read both before changing prior
-work. Memory = Hindsight (D33 / ADR-050; supersedes D1).
+work. Memory = Hindsight (D33 / ADR-050; supersedes D1). ai-memory fully
+decommissioned (D34 / MEM2 #1254).
 
 ## Parked
 
