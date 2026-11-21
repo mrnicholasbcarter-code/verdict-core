@@ -20,7 +20,7 @@ exist to serve this. New work must say how it advances it.
 
 ## NOW
 
-MEM2 (#1254) in progress: removing remaining ai-memory integrations (Hermes harness, plugin, AI_MEMORY_AUTH_TOKEN credential, setup-wizard offer). MEM1 (#1253) is merged; Hindsight is the memory of record (ADR-050, D33).
+MEM2 (#1254) PR open (#1256): all ai-memory integrations removed. MEM1 (#1253) merged; Hindsight is the memory of record (ADR-050, D33, D34).
 
 ## Decisions
 
