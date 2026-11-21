@@ -46,6 +46,12 @@ from verdict.paths import verdict_home
 REGISTRY_TTL_S: int = 43200  # 12 hours
 REGISTRY_SCHEMA = "verdict.discovery.registry/v1"
 
+# Skip reasons where carry-forward applies: route was not reached this run.
+# key_missing is excluded — it is fresh negative evidence (probe returned NO_KEY).
+_CARRY_SKIP_REASONS: frozenset[str] = frozenset({"wall_budget_exhausted", "pool_breaker_open"})
+
+_UTC = datetime.timezone.utc
+
 # Agent-size context padding for the tool probe (BOD-299 / freescan D3 evidence)
 AGENT_CONTEXT_TOKENS: int = 18_000
 
@@ -121,6 +127,10 @@ class DiscoveryRegistry:
     written_at: str  # ISO-8601
     ttl_s: int
     entries: list[RegistryEntry] = field(default_factory=list)
+    #: Number of entries carried forward from the previous registry this run.
+    #: Zero when the registry was written without a previous one (first run, or
+    #: after a gap), or when every route was probed.
+    carried: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -128,6 +138,7 @@ class DiscoveryRegistry:
             "written_at": self.written_at,
             "ttl_s": self.ttl_s,
             "entries": [e.to_dict() for e in self.entries],
+            "carried": self.carried,
         }
 
     @classmethod
@@ -137,6 +148,7 @@ class DiscoveryRegistry:
             written_at=str(d["written_at"]),
             ttl_s=int(d.get("ttl_s", REGISTRY_TTL_S)),
             entries=[RegistryEntry.from_dict(e) for e in d.get("entries", [])],
+            carried=int(d.get("carried", 0)),
         )
 
 
@@ -315,6 +327,50 @@ def save_registry(registry: DiscoveryRegistry, env: Mapping[str, str] | None = N
             tmp.unlink(missing_ok=True)
 
 
+def _load_registry_raw(env: Mapping[str, str] | None = None) -> DiscoveryRegistry | None:
+    """Load the registry for carry-forward *without* the registry-level TTL check.
+
+    Returns the parsed registry even if it has passed its TTL.  Individual
+    entry freshness is enforced by :func:`tool_ok_proof`'s per-entry
+    ``checked_at`` comparison — a stale-at-file-level previous registry is still
+    useful for rotation (oldest entries probe first) and carry-forward (entries
+    that have not yet expired at the per-entry level are still valid proofs).
+
+    Returns ``None`` only when the file is missing, unreadable, corrupt, or
+    structurally invalid (not parseable as a :class:`DiscoveryRegistry`).
+    """
+    path = registry_path(env)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, PermissionError, UnicodeDecodeError):
+        return None
+    try:
+        d = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(d, dict) or "written_at" not in d:
+        return None
+    try:
+        return DiscoveryRegistry.from_dict(d)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _checked_at_dt(entry: RegistryEntry) -> datetime.datetime:
+    """Parse ``entry.checked_at`` to a timezone-aware datetime for sorting.
+
+    Unparseable or timezone-naive timestamps fall back to :attr:`datetime.min`
+    (UTC), which sorts before any real timestamp — effectively treating a
+    corrupt entry as never-checked so it gets re-probed soonest.
+    """
+    _min = datetime.datetime.min.replace(tzinfo=_UTC)
+    try:
+        dt = datetime.datetime.fromisoformat(entry.checked_at)
+        return dt if dt.tzinfo is not None else _min
+    except (ValueError, OverflowError):
+        return _min
+
+
 # ---------------------------------------------------------------------------
 # Per-pool breaker (tracks open pools during a refresh run)
 # ---------------------------------------------------------------------------
@@ -357,6 +413,7 @@ def run_refresh(
     wall_budget_s: float = 300.0,
     env: Mapping[str, str] | None = None,
     dry_run: bool = False,
+    previous: DiscoveryRegistry | None = None,
 ) -> DiscoveryRegistry:
     """Probe routes and return a DiscoveryRegistry.
 
@@ -369,11 +426,49 @@ def run_refresh(
 
     ``wall_budget_s`` caps total wall time; routes not reached by the deadline
     appear in the registry as unanswered with ``detail="budget_exhausted"``.
+
+    ``previous`` is the registry from the last run, used for two purposes:
+
+    1. **Rotation** — routes are sorted within each pool by their
+       ``checked_at`` in *previous*: never-checked first, then oldest first.
+       Routes late in the catalog that were previously skipped move to the
+       front of subsequent runs.
+
+    2. **Carry-forward** — when a liveness probe is not attempted this run
+       (``wall_budget_exhausted`` or ``pool_breaker_open``), the entry from
+       *previous* is kept verbatim — including its original ``checked_at`` —
+       so :func:`tool_ok_proof`'s per-entry freshness window (bounded by
+       ``REGISTRY_TTL_S``) continues to tick down correctly.  Measured
+       failures (``tool_ok=False``) are carried too; only ``key_missing``
+       skips are written fresh (the missing key is new evidence).
+
+       Entries in *previous* for routes that are no longer in the catalog or
+       are no longer classified FREE in this run's snapshot are dropped.
     """
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     breaker = _Breaker()
     deadline = time.monotonic() + wall_budget_s
     entries: list[RegistryEntry] = []
+
+    # Build lookup for carry-forward and rotation.
+    previous_by_key: dict[str, RegistryEntry] = (
+        {e.route_key: e for e in previous.entries} if previous is not None else {}
+    )
+
+    # Rotate: sort routes by checked_at from previous within each pool.
+    # Never-checked routes sort before any previously-checked route so they are
+    # probed first; among previously-checked, the oldest checked_at goes first.
+    # Python's sort is stable, so ties (same checked_at or same never-checked)
+    # preserve the original catalog order within that group.
+    if previous_by_key:
+
+        def _sort_key(item: tuple[Route, str, str]) -> tuple[int, datetime.datetime]:
+            prev = previous_by_key.get(item[0].key)
+            if prev is None:
+                return (0, datetime.datetime.min.replace(tzinfo=_UTC))
+            return (1, _checked_at_dt(prev))
+
+        routes = sorted(routes, key=_sort_key)
 
     if dry_run:
         for route, cap_class, cap_fact in routes:
@@ -529,16 +624,38 @@ def run_refresh(
 
     # Routes skipped mid-run: either the pool breaker fired or the wall budget
     # ran out before the liveness probe could be started.
+    # For carry-eligible skip reasons, re-use the previous registry entry
+    # verbatim (including its original checked_at) so that tool_ok_proof's
+    # per-entry freshness window continues to tick down from the original
+    # probe time rather than resetting to now.  Measured failures are carried
+    # too — only key_missing skips are written fresh (new negative evidence).
+    carried_count = 0
     for item, skip_reason in mid_pool_live_skipped:
         route, cap_class, cap_fact = item
-        entries.append(
-            _make_entry(
-                route, cap_class, cap_fact, None, None, now_iso, breaker, skip_reason=skip_reason
+        prev_entry = previous_by_key.get(route.key)
+        if skip_reason in _CARRY_SKIP_REASONS and prev_entry is not None:
+            entries.append(prev_entry)
+            carried_count += 1
+        else:
+            entries.append(
+                _make_entry(
+                    route,
+                    cap_class,
+                    cap_fact,
+                    None,
+                    None,
+                    now_iso,
+                    breaker,
+                    skip_reason=skip_reason,
+                )
             )
-        )
 
     registry = DiscoveryRegistry(
-        schema=REGISTRY_SCHEMA, written_at=now_iso, ttl_s=REGISTRY_TTL_S, entries=entries
+        schema=REGISTRY_SCHEMA,
+        written_at=now_iso,
+        ttl_s=REGISTRY_TTL_S,
+        entries=entries,
+        carried=carried_count,
     )
     save_registry(registry, env)
     return registry

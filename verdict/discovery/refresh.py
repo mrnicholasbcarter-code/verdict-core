@@ -25,6 +25,7 @@ from verdict.discovery.registry import (
     REGISTRY_TTL_S,
     DiscoveryRegistry,
     RegistryEntry,
+    _load_registry_raw,
     load_registry,
     run_refresh,
 )
@@ -180,6 +181,7 @@ def run_refresh_action(
                         "tool_ok": 0,
                         "rate_limited": 0,
                         "not_probed_breaker": 0,
+                        "carried": 0,
                     },
                     "by_provider": {},
                     "entries": [],
@@ -192,8 +194,18 @@ def run_refresh_action(
             routes = [(r, cc, cf) for (r, cc, cf) in routes if cc == "free"]
         source = "omniroute"
 
+    # Load the previous registry for carry-forward and rotation, without the
+    # registry-level TTL gate.  A missing or corrupt previous is silently
+    # treated as "no history" — carry-forward and rotation are best-effort.
+    previous = _load_registry_raw(env) if not dry_run else None
+
     registry = run_refresh(
-        routes, context_tokens=context_tokens, wall_budget_s=wall_budget_s, env=env, dry_run=dry_run
+        routes,
+        context_tokens=context_tokens,
+        wall_budget_s=wall_budget_s,
+        env=env,
+        dry_run=dry_run,
+        previous=previous,
     )
     return _registry_to_summary(registry, dry_run=dry_run, total_input=len(routes), source=source)
 
@@ -254,6 +266,7 @@ def _registry_to_summary(
             "tool_ok": sum(1 for e in entries if e.tool_ok),
             "rate_limited": sum(1 for e in entries if _is_measured_rate_limit(e)),
             "not_probed_breaker": sum(1 for e in entries if _is_not_probed_breaker(e)),
+            "carried": registry.carried,
         },
         "by_provider": by_provider,
         "entries": [e.to_dict() for e in entries],
@@ -266,11 +279,14 @@ def render_refresh_plain(result: dict[str, Any]) -> str:
     dry = " (dry-run)" if result.get("dry_run") else ""
     lines.append(f"verdict discovery refresh{dry}  {result.get('written_at', '')}")
     counts = result.get("counts", {})
+    carried = counts.get("carried", 0)
+    carried_part = f"  carried {carried}" if carried else ""
     lines.append(
         f"  input {counts.get('input', 0)}  "
         f"answered {counts.get('answered', 0)}  "
         f"tool_ok {counts.get('tool_ok', 0)}  "
         f"rate_limited {counts.get('rate_limited', 0)}"
+        f"{carried_part}"
     )
     by_prov = result.get("by_provider", {})
     if by_prov:
