@@ -1420,6 +1420,19 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 print(_json.dumps(refresh_result, indent=2))
             else:
                 print(render_refresh_plain(refresh_result))
+        elif args.discovery_command == "connections":
+            import json as _json
+
+            from verdict.discovery.connections import (
+                render_connections_plain,
+                run_connections_action,
+            )
+
+            connections_result = run_connections_action()
+            if getattr(args, "output_json", False):
+                print(_json.dumps(connections_result, indent=2))
+            else:
+                print(render_connections_plain(connections_result))
         else:
             parser.print_help()
     elif args.command == "openspec":
