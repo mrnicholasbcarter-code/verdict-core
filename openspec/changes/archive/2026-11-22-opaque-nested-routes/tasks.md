@@ -10,4 +10,5 @@
 
 ## 2. Post-merge verification (operator)
 
-- [ ] (post-merge) Install from merged main and confirm `verdict eligibility --json` no longer lists `kilocode/kilo-auto/free`, `kilocode/kilo-auto/small` or `kilocode/openrouter/free` as TASK_ELIGIBLE. Verify by running `verdict eligibility --json` on operator's live setup and test that these route IDs are absent from TASK_ELIGIBLE entries.
+- [x] (post-merge) Install from merged main and confirm `verdict eligibility --json` no longer lists `kilocode/kilo-auto/free`, `kilocode/kilo-auto/small` or `kilocode/openrouter/free` as TASK_ELIGIBLE. Verify by running `verdict eligibility --json` on operator's live setup and test that these route IDs are absent from TASK_ELIGIBLE entries.
+  Done 2026-11-21 on installed-main df4cb61c: all three routes stop at DISCOVERED with reason `admission:opaque_route`; none is TASK_ELIGIBLE. Evidence: docs/proof/dod/opaque-nested-routes.json.

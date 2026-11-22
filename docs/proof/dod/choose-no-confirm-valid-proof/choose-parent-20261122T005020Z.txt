@@ -1,0 +1,1 @@
+{"task_class":"implementation","no_confirm":true,"confirm":"skipped_no_confirm","gateway":"http://127.0.0.1:20128","selected":{"model":"bazaarlink/deepseek/deepseek-v4-flash-0731free:free","capacity_class":"free","capacity_evidence":"import_free_only","pool":"bazaarlink","rank":0}}

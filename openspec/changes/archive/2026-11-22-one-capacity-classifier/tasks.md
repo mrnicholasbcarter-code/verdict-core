@@ -13,4 +13,5 @@
 - [x] Add forbidden-symbol entries in `reachability-forbidden.json`
 - [x] Write failing-first tests in `tests/test_one_capacity_classifier.py`
 - [x] Update `tests/test_free_route_harvest.py` for name-removed behaviour
-- [ ] (post-merge) Confirm `verdict doctor` is green on operator's real setup
+- [x] (post-merge) Confirm `verdict doctor` is green on operator's real setup
+  Done 2026-11-21 on installed-main df4cb61c: `verdict doctor --json` status ok, no issues, both gateway capabilities healthy; fresh run after the 1-hour window. Evidence: docs/proof/dod/one-capacity-classifier.json.

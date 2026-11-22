@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "story": "choose-no-confirm-valid-proof",
+  "kind": "product",
+  "author": "Nick Carter (mrnicholasbcarter-code); code merged in PR 1061",
+  "merged_sha": "204c3f15a182d54de05caee55f4e08ea446f74b4",
+  "pr": 1061,
+  "on_main": {
+    "at": "2026-11-21T22:45:11Z",
+    "sha": "204c3f15a182d54de05caee55f4e08ea446f74b4",
+    "environment": "operator-host",
+    "command": "gh pr checks 1061 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44247684314/job/134610492388",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/choose-no-confirm-valid-proof/pr_checks_1061.txt",
+      "sha256": "44095d9fe51aa5473d3e94d74a314114983ad7d7baab23961b15a191ce81ad90"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "verdict choose --task-class implementation --no-confirm --json on installed main selects a route without sending a model confirmation",
+      "expect": "\"no_confirm\":true,\"confirm\":\"skipped_no_confirm\"",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-21T23:09:58Z",
+        "sha": "df4cb61ce5b3e821f49f5a4e2cb07302ee25df64",
+        "environment": "operator-host",
+        "command": ".venv/bin/python -m verdict choose --task-class implementation --no-confirm --json | jq -c '{task_class, no_confirm, confirm, gateway, selected: (.selected | {model, capacity_class, capacity_evidence, pool, rank})}'",
+        "real_state_marker": "\"gateway\":\"http://127.0.0.1:20128\",\"selected\":{\"model\":\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/choose-no-confirm-valid-proof/choose-first-20261121T230958Z.txt",
+          "sha256": "f5f3b6c1777feda929f44a129fb32a23a411ea64cf4f7137b8dddf767cb44e30"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-22T00:11:05Z",
+        "sha": "df4cb61ce5b3e821f49f5a4e2cb07302ee25df64",
+        "environment": "operator-host",
+        "command": ".venv/bin/python -m verdict choose --task-class implementation --no-confirm --json | jq -c '{task_class, no_confirm, confirm, gateway, selected: (.selected | {model, capacity_class, capacity_evidence, pool, rank})}'",
+        "real_state_marker": "\"gateway\":\"http://127.0.0.1:20128\",\"selected\":{\"model\":\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/choose-no-confirm-valid-proof/choose-fresh-20261122T001105Z.txt",
+          "sha256": "f5f3b6c1777feda929f44a129fb32a23a411ea64cf4f7137b8dddf767cb44e30"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 1,
+  "stays_true_job": "verdict-acceptance.timer runs `verdict choose --task-class implementation` every hour as its choose check",
+  "setup_doctor": {
+    "status": "green",
+    "command": ".venv/bin/python -m verdict doctor --json | jq -c '{status, issues, warnings, gateway: [.capability_bootstrap.capabilities[] | select(.capability_id | startswith(\"gateway.\")) | {capability_id, status, health}]}'",
+    "at": "2026-11-21T23:09:25Z",
+    "raw_output": {
+      "path": "docs/proof/dod/choose-no-confirm-valid-proof/setup-doctor-first-20261121T230925Z.txt",
+      "sha256": "5f2b4f4bf3b39404cd395edc9adf301052549e21de5959752f1e5926d56bcb94"
+    }
+  },
+  "openspec": {
+    "change": "choose-no-confirm-valid-proof"
+  },
+  "parent_confirmation": {
+    "by": "Claude Opus 5.5 subagent (parent confirmation for closeout batch B), not the story author",
+    "at": "2026-11-22T00:50:20Z",
+    "command": ".venv/bin/python -m verdict choose --task-class implementation --no-confirm --json | jq -c '{task_class, no_confirm, confirm, gateway, selected: (.selected | {model, capacity_class, capacity_evidence, pool, rank})}'",
+    "raw_output": {
+      "path": "docs/proof/dod/choose-no-confirm-valid-proof/choose-parent-20261122T005020Z.txt",
+      "sha256": "e203bc35eeb5d5d5f9ab7b94ade5dd53a8a65161a9120733e04d269363326234"
+    }
+  }
+}

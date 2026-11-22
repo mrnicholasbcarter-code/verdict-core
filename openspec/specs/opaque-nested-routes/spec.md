@@ -1,10 +1,9 @@
-# Spec Delta
+# opaque-nested-routes Specification
 
 ## Purpose
-
 The admission gate drops auto-router aliases that appear after a provider prefix, so resolver aliases like `kilocode/kilo-auto/free` are never admitted as concrete candidates.
 
-## MODIFIED Requirements
+## Requirements
 
 ### Requirement: Opaque routes after a provider prefix are excluded at admission
 

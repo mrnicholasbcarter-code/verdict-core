@@ -43,4 +43,5 @@
 
 Verification method: manual test of `verdict choose --task-class implementation --no-confirm --json` on installed main; observes `selected.route_id` and `reached: "SELECTED"` in JSON output. This test verifies the fix works end-to-end.
 
-- [ ] (post-merge) Install from merged main and confirm `verdict choose --task-class implementation --no-confirm --json` selects a route
+- [x] (post-merge) Install from merged main and confirm `verdict choose --task-class implementation --no-confirm --json` selects a route
+  Done 2026-11-21 on installed-main df4cb61c: selects a free route with `confirm: skipped_no_confirm`. Evidence: docs/proof/dod/choose-no-confirm-valid-proof.json.
