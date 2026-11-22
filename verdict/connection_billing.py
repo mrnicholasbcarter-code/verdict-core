@@ -111,7 +111,7 @@ def snapshot_meta() -> dict[str, Any]:
 # Overlay loading (mtime-cached so a fresh VERDICT_HOME in tests is visible)
 # ---------------------------------------------------------------------------
 
-_overlay_cache: tuple[float, dict[tuple[str, str | None], BillingFact]] | None = None
+_overlay_cache: tuple[Path, int, dict[tuple[str, str | None], BillingFact]] | None = None
 
 
 def _overlay_path(env: Mapping[str, str] | None = None) -> Path:
@@ -128,23 +128,14 @@ def _load_overlay(
 
     path = _overlay_path(env)
     try:
-        mtime = path.stat().st_mtime
-    except FileNotFoundError:
-        return {}
-
-    if _overlay_cache is not None and _overlay_cache[0] == mtime:
-        return _overlay_cache[1]
-
-    try:
+        mtime = path.stat().st_mtime_ns
+        if _overlay_cache is not None and _overlay_cache[:2] == (path, mtime):
+            return _overlay_cache[2]
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, ValueError):
         return {}
-
-    # Validate against schema if jsonschema is available.
-    import contextlib
-
-    with contextlib.suppress(Exception):
-        _validate_overlay(raw)
+    if not _validate_overlay(raw):
+        return {}
 
     index: dict[tuple[str, str | None], BillingFact] = {}
     for entry in raw.get("entries", []):
@@ -159,21 +150,27 @@ def _load_overlay(
         key = (provider, auth_type)
         index[key] = BillingFact(billing=billing, overage=overage, source=SOURCE_OVERLAY)
 
-    _overlay_cache = (mtime, index)
+    _overlay_cache = (path, mtime, index)
     return index
 
 
-def _validate_overlay(raw: Any) -> None:
-    """Validate the overlay JSON against the bundled schema.  Raises on failure."""
-    schema_path = Path(__file__).parent / "schemas" / "connection-billing-overlay.v1.json"
-    if not schema_path.exists():
-        return
-    try:
-        import jsonschema
-    except ImportError:
-        return
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    jsonschema.validate(raw, schema)
+def _validate_overlay(raw: Any) -> bool:
+    """Enforce the bundled overlay schema without a runtime jsonschema dependency."""
+    if not isinstance(raw, dict) or set(raw) != {"entries"} or not isinstance(raw["entries"], list):
+        return False
+    required = {"provider", "billing", "overage"}
+    for entry in raw["entries"]:
+        if not isinstance(entry, dict) or not required <= set(entry) <= required | {"authType"}:
+            return False
+        if not isinstance(entry["provider"], str) or not entry["provider"].strip():
+            return False
+        if entry["billing"] not in (BILLING_SUBSCRIPTION, BILLING_METERED, BILLING_KEYLESS):
+            return False
+        if entry["overage"] not in (OVERAGE_HARD_STOP, OVERAGE_METERS_TO_PAID, OVERAGE_UNKNOWN):
+            return False
+        if "authType" in entry and entry["authType"] not in ("oauth", "apikey"):
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from verdict.capacity import CAPACITY_ORDER, billing_capacity_override, classify_route_capacity
+from verdict.capacity import (
+    CAPACITY_ORDER,
+    billing_capacity_override,
+    classify_route_capacity,
+    subscription_window_spent_metered,
+)
 from verdict.identify_rank import RatedModel, rate_model, rating_key
 from verdict.openrouter_free_set import (
     OpenRouterFreeSet,
@@ -647,16 +652,22 @@ class EligibilityLadder:
         and the Anthropic API-key connection are specifically metered.
         """
         cache = getattr(self, "_health_cache", None)
-        if cache is not None and billing_capacity_override(
-            cache, route_id, getattr(self, "_current_now", None) or datetime.now(timezone.utc)
-        ):
+        now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
+        if cache is not None and billing_capacity_override(cache, route_id, now):
             return CapacityClass.METERED, "", "billing_402_metered"
-        return _classify_capacity(
+        capacity, plan, fact = _classify_capacity(
             conn,
             row,
             route_id=route_id,
             openrouter_free_set=getattr(self, "openrouter_free_set", None),
         )
+        if (
+            cache is not None
+            and capacity is CapacityClass.SUBSCRIPTION
+            and subscription_window_spent_metered(cache, route_id, now, fact)
+        ):
+            return CapacityClass.METERED, plan, f"subscription_quota_spent:{fact}"
+        return capacity, plan, fact
 
     def _health_status(self, route_id: str, now: datetime) -> tuple[str, str]:
         cache = getattr(self, "_health_cache", None)
@@ -1996,20 +2007,3 @@ def _marginal_price(row: Mapping[str, Any]) -> tuple[float, bool]:
 
 
 _classify_capacity = classify_route_capacity
-
-
-def capacity_class_of(
-    conn: Mapping[str, Any] | None,
-    row: Mapping[str, Any],
-    *,
-    route_id: str | None = None,
-    openrouter_free_set: OpenRouterFreeSet | None = None,
-) -> tuple[CapacityClass, str]:
-    """Use the same D7 account-evidence policy as the eligibility ladder."""
-    capacity, plan, _ = _classify_capacity(
-        conn,
-        row,
-        route_id=route_id or str(row.get("id") or ""),
-        openrouter_free_set=openrouter_free_set,
-    )
-    return capacity, plan

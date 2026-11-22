@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -30,6 +30,9 @@ from verdict.connection_billing import (
     lookup,
     snapshot_meta,
 )
+
+if TYPE_CHECKING:
+    from verdict.orchestration.health_cache import HealthCache
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -175,6 +178,14 @@ class TestOperatorOverlay:
         # Reset cache
         _cb._overlay_cache = None
 
+    def test_invalid_overlay_cannot_override_billing(self, tmp_path: Path) -> None:
+        overlay = {"entries": [{"provider": "claude", "authType": "oauth", "billing": "keyless"}]}
+        (tmp_path / "connection_billing_overlay.json").write_text(json.dumps(overlay))
+        fact = lookup("claude", "oauth", env={"VERDICT_HOME": str(tmp_path)})
+        assert fact is not None
+        assert fact.source == SOURCE_SNAPSHOT
+        assert fact.billing == BILLING_SUBSCRIPTION
+
     def test_overlay_provider_wide_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -253,12 +264,13 @@ class TestBillingFactCapacity:
         conn = _conn("claude", "oauth")
         cls, fact = capacity_of(conn, _row(), route_id="claude/sonnet", openrouter_free_set=None)
         assert cls is CapacityClass.SUBSCRIPTION
-        assert fact == "billing_snapshot_subscription"
+        # Overage for claude is "hard-stop" in the catalog snapshot.
+        assert fact == "billing_snapshot_subscription:hard-stop"
 
     def test_subscription_overlay_fact(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An overlay subscription entry produces billing_overlay_subscription."""
+        """An overlay subscription entry produces billing_overlay_subscription:{overage}."""
         monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
         import verdict.connection_billing as _cb
 
@@ -285,7 +297,8 @@ class TestBillingFactCapacity:
         conn = _conn("my-sub", "oauth")
         cls, fact_name = capacity_of(conn, _row(), route_id="my-sub/m", openrouter_free_set=None)
         assert cls is CapacityClass.SUBSCRIPTION
-        assert fact_name == "billing_overlay_subscription"
+        # Overlay entry has overage="hard-stop".
+        assert fact_name == "billing_overlay_subscription:hard-stop"
 
         _cb._overlay_cache = None
 
@@ -313,7 +326,8 @@ class TestBillingFactCapacity:
         conn = _conn("agy", "oauth")
         cls, fact = capacity_of(conn, _row(), route_id="agy/model", openrouter_free_set=None)
         assert cls is CapacityClass.SUBSCRIPTION
-        assert fact == "billing_snapshot_subscription"
+        # Overage for antigravity is "hard-stop" in the catalog snapshot.
+        assert fact == "billing_snapshot_subscription:hard-stop"
 
 
 # ---------------------------------------------------------------------------
@@ -415,3 +429,114 @@ class TestOverlaySchema:
         bad = {"entries": [{"provider": "x", "billing": "unknown", "overage": "hard-stop"}]}
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(bad, schema)
+
+
+# ---------------------------------------------------------------------------
+# G. subscription_window_spent_metered (task 2.3 / 4.1)
+# ---------------------------------------------------------------------------
+
+
+class TestSubscriptionWindowSpentMetered:
+    """CP2 task 2.3: overage after a spent window degrades SUBSCRIPTION → METERED."""
+
+    def _make_cache(self, tmp_path: Path, route_id: str, capacity_evidence: str) -> HealthCache:
+        import datetime
+
+        from verdict.orchestration.health_cache import HealthCache, HealthEntry
+
+        cache_path = tmp_path / "health.json"
+        cache = HealthCache(cache_path)
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        entry = HealthEntry(
+            route_id=route_id,
+            category="quota_cooldown",
+            checked_at=now - datetime.timedelta(minutes=5),
+            until=now + datetime.timedelta(hours=1),
+            consecutive_failures=1,
+            chat_ok=False,
+            tool_ok=False,
+            healthy=False,
+            capacity_evidence=capacity_evidence,
+        )
+        cache._routes[route_id] = entry
+        return cache
+
+    def test_meters_to_paid_overage_returns_true(self, tmp_path: Path) -> None:
+        """quota_cooldown + billing_snapshot_subscription:meters-to-paid → True."""
+        import datetime
+
+        from verdict.capacity import subscription_window_spent_metered
+
+        cache = self._make_cache(
+            tmp_path, "devin-desktop/model", "billing_snapshot_subscription:meters-to-paid"
+        )
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        assert subscription_window_spent_metered(cache, "devin-desktop/model", now) is True
+
+    def test_hard_stop_overage_returns_false(self, tmp_path: Path) -> None:
+        """quota_cooldown + billing_snapshot_subscription:hard-stop → False (not METERED)."""
+        import datetime
+
+        from verdict.capacity import subscription_window_spent_metered
+
+        cache = self._make_cache(
+            tmp_path, "claude/sonnet", "billing_snapshot_subscription:hard-stop"
+        )
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        assert subscription_window_spent_metered(cache, "claude/sonnet", now) is False
+
+    def test_unknown_overage_returns_true(self, tmp_path: Path) -> None:
+        """quota_cooldown + billing_snapshot_subscription:unknown → True (may meter)."""
+        import datetime
+
+        from verdict.capacity import subscription_window_spent_metered
+
+        cache = self._make_cache(tmp_path, "cursor/model", "billing_snapshot_subscription:unknown")
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        assert subscription_window_spent_metered(cache, "cursor/model", now) is True
+
+    def test_no_subscription_evidence_returns_false(self, tmp_path: Path) -> None:
+        """quota_cooldown with no subscription evidence → False (not a known subscription)."""
+        import datetime
+
+        from verdict.capacity import subscription_window_spent_metered
+
+        cache = self._make_cache(tmp_path, "openai/gpt-4", "apikey_positive_pricing")
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        assert subscription_window_spent_metered(cache, "openai/gpt-4", now) is False
+
+    def test_expired_cooldown_returns_false(self, tmp_path: Path) -> None:
+        """An expired quota_cooldown → False even with meters-to-paid overage."""
+        import datetime
+
+        from verdict.capacity import subscription_window_spent_metered
+        from verdict.orchestration.health_cache import HealthCache, HealthEntry
+
+        cache_path = tmp_path / "health.json"
+        cache = HealthCache(cache_path)
+        past = datetime.datetime.now(tz=datetime.timezone.utc) - datetime.timedelta(hours=2)
+        entry = HealthEntry(
+            route_id="devin-desktop/m",
+            category="quota_cooldown",
+            checked_at=past - datetime.timedelta(minutes=5),
+            until=past,  # already expired
+            consecutive_failures=1,
+            chat_ok=False,
+            tool_ok=False,
+            healthy=False,
+            capacity_evidence="billing_snapshot_subscription:meters-to-paid",
+        )
+        cache._routes["devin-desktop/m"] = entry
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        assert subscription_window_spent_metered(cache, "devin-desktop/m", now) is False
+
+    def test_missing_route_returns_false(self, tmp_path: Path) -> None:
+        """A route not in the cache → False."""
+        import datetime
+
+        from verdict.capacity import subscription_window_spent_metered
+        from verdict.orchestration.health_cache import HealthCache
+
+        cache = HealthCache(tmp_path / "health.json")
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        assert subscription_window_spent_metered(cache, "nonexistent/route", now) is False

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -45,6 +46,37 @@ def _any_positive_price(row: Mapping[str, Any]) -> bool:
     return isinstance(pricing, Mapping) and any(
         isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in pricing.values()
     )
+
+
+def free_supply_type(evidence: str) -> str:
+    """Count one-time and recurring supply only when the gateway says which."""
+    rule, _, detail = evidence.partition(":")
+    free_type, _, _hard_stop = detail.partition(":")
+    if rule == "gateway_free_tier":
+        if free_type == "one-time-initial":
+            return "one_time_initial"
+        if free_type.startswith("recurring-") or free_type == "keyless":
+            return "recurring"
+    return "unknown"
+
+
+def catalog_price_source(row: Mapping[str, Any]) -> str:
+    """Normalize explicit price provenance; never infer it from the amount."""
+    pricing = row.get("pricing")
+    nested = pricing.get("source") if isinstance(pricing, Mapping) else None
+    raw = row.get("price_source", row.get("pricingSource", row.get("priceSource", nested)))
+    if raw is None:
+        if (
+            not isinstance(pricing, Mapping)
+            or os.getenv("PRICING_SYNC_ENABLED", "").strip().lower() == "true"
+        ):
+            return "unknown"
+        return "legacy_catalog"
+    if isinstance(raw, str):
+        source = raw.strip().lower()
+        if source in {"provider", "user", "synced", "hardcoded", "legacy_catalog"}:
+            return source
+    return "unknown"
 
 
 def classify_route_capacity(
@@ -110,7 +142,10 @@ def classify_route_capacity(
         if fact is not None:
             source_tag = fact.source  # "snapshot" or "overlay"
             if fact.billing == BILLING_SUBSCRIPTION:
-                deciding = f"billing_{source_tag}_subscription"
+                # Include overage in the deciding fact so callers (and the
+                # health cache) can tell hard-stop from meters-to-paid without
+                # a second catalog lookup.  Format: billing_{source}_subscription:{overage}
+                deciding = f"billing_{source_tag}_subscription:{fact.overage}"
                 return CapacityClass.SUBSCRIPTION, plan_label, deciding
             if fact.billing == BILLING_METERED:
                 deciding = f"billing_{source_tag}_metered"
@@ -121,12 +156,37 @@ def classify_route_capacity(
 
     # Rule 3: declared price (rule 0.2 — nonzero is paid, explicit 0/0 is free,
     # absent fails closed).
-    status = classify_free(route_id, _route_price(row), None)
-    if status is FreeStatus.NOT_FREE or _any_positive_price(row):
-        return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
-    # The gateway's own free-tier membership (/api/free-tier/summary perModel),
-    # attached to the row by the caller that read it. A nonzero price wins.
-    if row.get("gateway_free_tier") is True:
+    price_source = catalog_price_source(row)
+    connection_price = price_source in {"provider", "user", "legacy_catalog"}
+    status = classify_free(route_id, _route_price(row) if connection_price else None, None)
+    if connection_price and (status is FreeStatus.NOT_FREE or _any_positive_price(row)):
+        price_fact = (
+            "apikey_positive_pricing"
+            if price_source == "legacy_catalog"
+            else f"{price_source}_positive_pricing"
+        )
+        return CapacityClass.METERED, plan_label, price_fact
+    # A discontinued summary entry is not a free fact. List prices from the
+    # gateway must not override a current free-tier fact.
+    if row.get("gateway_free_tier") is True and row.get("free_type") != "discontinued":
+        free_type = row.get("free_type")
+        if free_type not in (
+            "one-time-initial",
+            "recurring-daily",
+            "recurring-uncapped",
+            "recurring-monthly",
+            "recurring-credit",
+            "keyless",
+        ):
+            free_type = None
+        hard_stop = row.get("hard_stop_guaranteed")
+        if free_type is not None or hard_stop is not None:
+            hard_stop_label = str(hard_stop).lower() if isinstance(hard_stop, bool) else "unknown"
+            return (
+                CapacityClass.FREE,
+                plan_label,
+                f"gateway_free_tier:{free_type or 'unknown'}:{hard_stop_label}",
+            )
         return CapacityClass.FREE, plan_label, "gateway_free_tier"
     if status is FreeStatus.FREE:
         return CapacityClass.FREE, plan_label, "all_zero_pricing"
@@ -135,7 +195,7 @@ def classify_route_capacity(
     # price" is evidence of free). A blank or bool-only pricing dict has no
     # declared facts and falls through to UNKNOWN.
     _pricing = row.get("pricing")
-    if isinstance(_pricing, Mapping):
+    if connection_price and isinstance(_pricing, Mapping):
         _declared = [
             float(v)
             for v in _pricing.values()
@@ -175,40 +235,37 @@ def capacity_of(
     return cls, fact
 
 
-def subscription_window_spent_metered(cache: HealthCache, route_id: str, now: datetime) -> bool:
+def subscription_window_spent_metered(
+    cache: HealthCache, route_id: str, now: datetime, deciding_fact: str | None = None
+) -> bool:
     """Whether a SUBSCRIPTION route's quota window is spent with non-hard-stop overage.
 
     Returns True when the health cache shows a quota-category cooldown still in
-    force AND the route's billing fact has overage ``meters-to-paid`` or
-    ``unknown``.  In that state the route should be treated as METERED until the
-    window resets (design.md CP2 Rules).
+    force AND the route's recorded capacity evidence contains a subscription fact
+    with overage ``meters-to-paid`` or ``unknown``.  In that state the route is
+    treated as METERED until the window resets (design.md CP2 Rules).
 
     A ``hard-stop`` route just becomes unavailable, as today — not METERED.
-    This helper does not change admission; it is advisory input for callers that
-    want to degrade SUBSCRIPTION to METERED during a spent window.
+
+    Overage is read from ``entry.capacity_evidence`` which CP2 records as
+    ``billing_{source}_subscription:{overage}`` (e.g.
+    ``billing_snapshot_subscription:hard-stop``).  Routes without this evidence
+    format are ignored — they are not known subscription connections.
     """
     from verdict.connection_billing import OVERAGE_HARD_STOP
-    from verdict.connection_billing import lookup as billing_lookup
 
     entry = cache.entry(route_id)
     if entry is None or entry.healthy or entry.until <= now:
         return False
     # Must be a quota-related cooldown (not a simple health failure).
-    if entry.category not in {"quota_exhausted", "quota_cooldown", "rate_limited"}:
+    if entry.category not in {"quota_exhausted", "quota_cooldown"}:
         return False
-    # Look up the billing fact to check overage.  Uses provider from the
-    # health cache entry when available.
-    provider = getattr(entry, "provider", None) or ""
-    auth_type = getattr(entry, "auth_type", None)
-    if not provider:
-        return False  # cannot look up without a provider
-    fact = billing_lookup(provider, auth_type)
-    if fact is None:
-        return False  # no billing fact → not a known subscription
-    if fact.billing != "subscription":
-        return False
-    # hard-stop means the window is strictly enforced: no extra billing.
-    return fact.overage != OVERAGE_HARD_STOP
+    # Prefer current attribution over the evidence copied into an older cache entry.
+    ce = deciding_fact if deciding_fact is not None else entry.capacity_evidence or ""
+    rule, _, overage = ce.partition(":")
+    return rule in {"billing_snapshot_subscription", "billing_overlay_subscription"} and (
+        overage != OVERAGE_HARD_STOP and overage in {"meters-to-paid", "unknown"}
+    )
 
 
 def billing_capacity_override(cache: HealthCache, route_id: str, now: datetime) -> bool:

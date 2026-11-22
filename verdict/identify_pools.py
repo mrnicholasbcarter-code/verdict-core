@@ -27,7 +27,7 @@ from datetime import datetime
 from typing import Any
 
 from verdict.admission import is_opaque
-from verdict.capacity import CAPACITY_ORDER, CapacityClass
+from verdict.capacity import CAPACITY_ORDER, CapacityClass, catalog_price_source, free_supply_type
 from verdict.identify_rank import rate_model, rating_key, rating_metric
 from verdict.metadata.mapping import IdentityMap
 from verdict.metadata.store import MetadataSnapshot
@@ -53,6 +53,15 @@ def _capacity(evidence: OmniRouteEvidence, route: str) -> CapacityClass:
 def _by_capacity(classes: list[CapacityClass]) -> dict[str, int]:
     counts = Counter(classes)
     return {capacity.value: counts[capacity] for capacity in CAPACITY_ORDER}
+
+
+def _free_by_type(evidence: OmniRouteEvidence, routes: list[str]) -> dict[str, int]:
+    counts = Counter(
+        free_supply_type(evidence.route_capacity_evidence.get(route, ""))
+        for route in routes
+        if _capacity(evidence, route) is CapacityClass.FREE
+    )
+    return {kind: counts[kind] for kind in ("one_time_initial", "recurring", "unknown")}
 
 
 def _proof_routes(
@@ -126,6 +135,9 @@ def _row(
         "provider": candidate.provider,
         "capacity": capacity.value,
         "capacity_evidence": evidence.route_capacity_evidence.get(route),
+        "price_source": catalog_price_source(evidence.inventory_rows.get(route, {})),
+        "free_type": evidence.inventory_rows.get(route, {}).get("free_type"),
+        "hard_stop_guaranteed": evidence.inventory_rows.get(route, {}).get("hard_stop_guaranteed"),
         "connection_ids": list(candidate.connection_ids),
         "basis": rated.basis,
         "score": rated.score,
@@ -203,6 +215,8 @@ def build_task_pools(
             "fallback_count": len(fallback),
             "eligible_by_capacity": _by_capacity([CapacityClass(r["capacity"]) for r in eligible]),
             "fallback_by_capacity": _by_capacity([CapacityClass(r["capacity"]) for r in fallback]),
+            "eligible_free_by_type": _free_by_type(evidence, [r["route_id"] for r in eligible]),
+            "fallback_free_by_type": _free_by_type(evidence, [r["route_id"] for r in fallback]),
         }
     report.update(
         blocked_by_reason=dict(sorted(blocked.items())),

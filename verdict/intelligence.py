@@ -1151,7 +1151,7 @@ class IntelligenceService:
         cache = HealthCache(default_cache_path())
         connections = _provider_connections_by_name(snapshot.connections)
         catalog = {item.identity_id: item for item in snapshot.catalog}
-        gateway_free = {row.route_id for row in snapshot.free_tier}
+        gateway_free = {row.route_id: row for row in snapshot.free_tier}
         capacity: dict[str, CapacityClass] = {}
         for route_id in route_ids:
             if billing_capacity_override(cache, route_id, now):
@@ -1175,21 +1175,23 @@ class IntelligenceService:
             row: dict[str, Any] = (
                 {}
                 if identity is None or not identity.price_known
-                else {"pricing": {"input": identity.input_cost, "output": identity.output_cost}}
+                else {
+                    "pricing": {"input": identity.input_cost, "output": identity.output_cost},
+                    "price_source": identity.price_source,
+                }
             )
-            if route_id in gateway_free:
-                row["gateway_free_tier"] = True
-            capacity[route_id] = capacity_of(
-                conn, row, route_id=route_id, openrouter_free_set=free_set
-            )[0]
-            # If a subscription window is spent and overage is non-hard-stop
-            # (meters-to-paid or unknown), downgrade to METERED for this call.
-            if capacity[
-                route_id
-            ] is CapacityClass.SUBSCRIPTION and subscription_window_spent_metered(
-                cache, route_id, now
+            if free_row := gateway_free.get(route_id):
+                row.update(
+                    gateway_free_tier=True,
+                    free_type=free_row.free_type,
+                    hard_stop_guaranteed=free_row.hard_stop_guaranteed,
+                )
+            cls, fact = capacity_of(conn, row, route_id=route_id, openrouter_free_set=free_set)
+            if cls is CapacityClass.SUBSCRIPTION and subscription_window_spent_metered(
+                cache, route_id, now, fact
             ):
-                capacity[route_id] = CapacityClass.METERED
+                cls = CapacityClass.METERED
+            capacity[route_id] = cls
         return capacity
 
     def _apply_candidate_pool(

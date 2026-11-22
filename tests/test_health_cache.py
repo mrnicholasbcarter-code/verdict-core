@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from verdict.capacity import capacity_of
 from verdict.orchestration.contracts import CapacityClass
-from verdict.orchestration.eligibility import capacity_class_of
 from verdict.orchestration.health_cache import (
     CATEGORY_AUTH,
     CATEGORY_CATALOG_STALE,
@@ -616,24 +616,17 @@ def test_status_report_lists_workers_and_cold_providers(tmp_path: Path) -> None:
 
 
 def test_capacity_class_matches_the_ladder() -> None:
-    """capacity_class_of agrees with EligibilityLadder._capacity_class on shared shapes.
-
-    The standalone function omits the ``:free`` suffix and connection-signal
-    extensions (documented in its docstring) but must agree on every case it
-    does handle.  We compare against the ladder's 3-tuple output (class,
-    plan_label, rule) by checking only the class, which is what callers use.
-    """
+    """The shared classifier and the ladder agree on connection and price facts."""
     from verdict.orchestration.eligibility import EligibilityLadder
 
     # A minimal ladder that needs no filesystem state for _capacity_class.
     ladder = EligibilityLadder.__new__(EligibilityLadder)
 
-    # Shapes that capacity_class_of handles (no :free suffix / no
-    # importFreeModelsOnly / no providerSpecificData that the ladder adds).
     shared_shapes: list[tuple[dict[str, object] | None, dict[str, object], CapacityClass]] = [
         (None, {}, CapacityClass.UNKNOWN),
-        ({"authType": "oauth", "plan_label": "pro"}, {}, CapacityClass.SUBSCRIPTION),
-        ({"authType": "oauth", "plan_label": "free"}, {}, CapacityClass.FREE),
+        ({"provider": "claude", "authType": "oauth"}, {}, CapacityClass.SUBSCRIPTION),
+        ({"authType": "oauth", "plan_label": "pro"}, {}, CapacityClass.UNKNOWN),
+        ({"authType": "oauth", "plan_label": "free"}, {}, CapacityClass.UNKNOWN),
         (
             {"authType": "apikey", "import_free_only": True, "plan_label": ""},
             {},
@@ -650,7 +643,7 @@ def test_capacity_class_matches_the_ladder() -> None:
         ({"authType": "apikey", "plan_label": ""}, {"pricing": {"p": True}}, CapacityClass.UNKNOWN),
     ]
     for conn, row, expected_class in shared_shapes:
-        via_standalone = capacity_class_of(conn, row)
+        via_standalone = capacity_of(conn, row, route_id="", openrouter_free_set=None)
         # _capacity_class returns (CapacityClass, plan_label, rule); extract class.
         via_ladder_triple = ladder._capacity_class(conn, row)
         assert via_standalone[0] == via_ladder_triple[0], (
@@ -661,10 +654,8 @@ def test_capacity_class_matches_the_ladder() -> None:
             f"expected {expected_class} for conn={conn!r} row={row!r}, got {via_standalone[0]}"
         )
 
-    # Operator rule 2026-11-19: capacity from facts only, never from names.
-    # The :free suffix is no longer a signal in either path; both classify
-    # an oauth/pro connection as SUBSCRIPTION regardless of route name.
-    suffix_conn = {"authType": "oauth", "plan_label": "pro"}
+    # The :free suffix cannot override a declared subscription fact.
+    suffix_conn = {"provider": "claude", "authType": "oauth", "plan_label": "pro"}
     suffix_row: dict[str, object] = {}
     ladder_class, _, rule = ladder._capacity_class(
         suffix_conn, suffix_row, route_id="cc/model:free"
@@ -672,10 +663,10 @@ def test_capacity_class_matches_the_ladder() -> None:
     assert ladder_class == CapacityClass.SUBSCRIPTION, (
         f"ladder must NOT use :free suffix (name-based rule removed), got {rule}"
     )
-    standalone_class, _ = capacity_class_of(suffix_conn, suffix_row)
-    assert standalone_class == CapacityClass.SUBSCRIPTION, (
-        "capacity_class_of must classify oauth/pro as SUBSCRIPTION"
+    standalone_class, _ = capacity_of(
+        suffix_conn, suffix_row, route_id="cc/model:free", openrouter_free_set=None
     )
+    assert standalone_class == CapacityClass.SUBSCRIPTION
 
 
 def test_legacy_cycle_file_is_not_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

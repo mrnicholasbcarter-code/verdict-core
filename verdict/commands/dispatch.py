@@ -1423,16 +1423,16 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         elif args.discovery_command == "connections":
             import json as _json
 
-            from verdict.discovery.connections import (
-                render_connections_plain,
-                run_connections_action,
-            )
+            from verdict.actions.registry import run_action
+            from verdict.discovery.connections import render_connections_plain
 
-            connections_result = run_connections_action()
+            result = run_action("discovery.connections")
             if getattr(args, "output_json", False):
-                print(_json.dumps(connections_result, indent=2))
+                print(_json.dumps(result.data, indent=2))
             else:
-                print(render_connections_plain(connections_result))
+                print(render_connections_plain(result.data))
+            if result.exit_code:
+                raise SystemExit(result.exit_code)
         else:
             parser.print_help()
     elif args.command == "openspec":

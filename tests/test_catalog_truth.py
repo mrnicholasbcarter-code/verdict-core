@@ -653,7 +653,10 @@ def _expected_class_changes() -> dict[str, tuple[CapacityClass, CapacityClass, s
             _fact = billing_lookup(_prov, _auth_type)
             if _fact is not None:
                 if _fact.billing == BILLING_SUBSCRIPTION:
-                    return CapacityClass.SUBSCRIPTION, f"billing_{_fact.source}_subscription"
+                    return (
+                        CapacityClass.SUBSCRIPTION,
+                        f"billing_{_fact.source}_subscription:{_fact.overage}",
+                    )
                 if _fact.billing == BILLING_METERED:
                     return CapacityClass.METERED, f"billing_{_fact.source}_metered"
                 if _fact.billing == BILLING_KEYLESS:

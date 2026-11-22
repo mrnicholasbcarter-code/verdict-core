@@ -46,6 +46,11 @@
           "description": "Count of free routes per classifier-reason string.",
           "additionalProperties": {"type": "integer"}
         },
+        "free_supply_by_type": {
+          "type": ["object", "null"],
+          "required": ["one_time_initial", "recurring", "unknown"],
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
         "probed": {"$ref": "#/definitions/countStage"},
         "answered": {"$ref": "#/definitions/countStage"},
         "tool_ok": {"$ref": "#/definitions/countStage"},
