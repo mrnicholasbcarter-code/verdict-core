@@ -1,0 +1,47 @@
+{
+  "_meta": {
+    "omniroute_version": "3.8.54",
+    "source_file": "open-sse/config/connectionBillingCatalog.ts",
+    "source_sha256": "6612cf4c9611fce02f7ff23109bac3f94b98be579b8198ed5a55a9b85458aae1",
+    "generated": "2026-11-22",
+    "note": "Regenerated from 3.8.54 on 2026-11-22; same 6 entries as 3.8.53."
+  },
+  "entries": [
+    {
+      "provider": "claude",
+      "authType": "oauth",
+      "billing": "subscription",
+      "overage": "hard-stop"
+    },
+    {
+      "provider": "codex",
+      "authType": "oauth",
+      "billing": "subscription",
+      "overage": "hard-stop"
+    },
+    {
+      "provider": "antigravity",
+      "authType": "oauth",
+      "billing": "subscription",
+      "overage": "hard-stop"
+    },
+    {
+      "provider": "cursor",
+      "authType": "oauth",
+      "billing": "subscription",
+      "overage": "unknown"
+    },
+    {
+      "provider": "copilot-web",
+      "authType": "apikey",
+      "billing": "subscription",
+      "overage": "unknown"
+    },
+    {
+      "provider": "devin-desktop",
+      "authType": "oauth",
+      "billing": "subscription",
+      "overage": "meters-to-paid"
+    }
+  ]
+}
