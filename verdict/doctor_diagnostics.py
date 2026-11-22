@@ -446,6 +446,43 @@ def _doctor_advisory_rankings(diag: DoctorDiagnostics) -> None:
         diag.sections.append(("Advisory rankings", "warn", detail))
 
 
+def _doctor_billing_catalog_drift(diag: DoctorDiagnostics) -> None:
+    """Warn when the installed OmniRoute version or TS file hash differs from the snapshot.
+
+    This is advisory — a drift means the billing catalog snapshot may be stale and should
+    be regenerated (``uv run python scripts/regenerate_connection_billing.py``).
+    It is NOT a hard failure: the snapshot still works; only new entries are missing.
+    """
+    try:
+        from verdict.connection_billing import check_drift
+
+        result = check_drift()
+    except Exception as exc:
+        diag.sections.append(("Billing catalog", "warn", f"drift check error: {exc}"))
+        diag.warnings.append(f"Billing catalog drift check failed: {exc}")
+        return
+
+    status = result.get("status", "unavailable")
+    if status == "ok":
+        installed = result.get("installed_version", "?")
+        diag.sections.append(
+            ("Billing catalog", "ok", f"snapshot matches installed OmniRoute {installed}")
+        )
+    elif status == "unavailable":
+        diag.sections.append(
+            ("Billing catalog", "warn", result.get("detail", "OmniRoute not found"))
+        )
+        diag.warnings.append("Billing catalog: OmniRoute package not found — cannot check drift")
+    else:
+        # drift — warning only, not a hard failure
+        detail = result.get("detail", "drift detected")
+        diag.sections.append(("Billing catalog", "warn", detail))
+        diag.warnings.append(
+            f"Billing catalog may be stale: {detail}. "
+            "Run: uv run python scripts/regenerate_connection_billing.py"
+        )
+
+
 _ENV_KEY_REMEDY = (
     "Verdict needs a DB-backed OmniRoute API key. If this key is also set as "
     "OMNIROUTE_API_KEY in the gateway's own environment (for example ~/.omniroute/.env), "
@@ -923,6 +960,7 @@ def _collect_doctor_diagnostics(
     # 1d-ii. Gateway lifecycle state (report only; nothing is started here).
     _doctor_gateway_lifecycle(diag)
     _doctor_advisory_rankings(diag)
+    _doctor_billing_catalog_drift(diag)
     # 1d-iii. Verdict's key is DB-backed, never the gateway's env key.
     if gateway_url:
         _doctor_gateway_key(diag, gateway_url)

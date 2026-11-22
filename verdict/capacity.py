@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from verdict.connection_billing import BILLING_KEYLESS, BILLING_METERED, BILLING_SUBSCRIPTION
+from verdict.connection_billing import lookup as billing_lookup
 from verdict.omniroute_pipeline.free_rule import FreeStatus, classify_free
 from verdict.openrouter_free_set import (
     OpenRouterFreeSet,
@@ -58,18 +60,32 @@ def classify_route_capacity(
     name (operator, 2026-11-19 14:38Z: "no names should never determine if
     something is a free route or not"). Price facts go through rule 0.2
     (``free_rule.classify_free``); OpenRouter membership through the public
-    0/0 set (BOD-418); connection facts through ``connection_signals_free``.
-    A ``:free`` suffix, a provider prefix or a provider-name list decides
-    nothing. Without a signal the route is UNKNOWN, and unknown is never free.
+    0/0 set (BOD-418); connection free facts through ``connection_signals_free``;
+    billing facts through ``connection_billing.lookup``.  A ``:free`` suffix, a
+    provider prefix or a provider-name list decides nothing.  Without a signal
+    the route is UNKNOWN.
 
-    ADR-049 (accepted 2026-11-21) supersedes "unknown is never free": a route
-    is PAID only from declared or observed facts. CP1 implements it; until then
-    this function's behaviour is unchanged.
+    Rule order (design.md CP2):
+      1. OpenRouter catalog membership (BOD-418)
+      2. Connection free facts (``importFreeModelsOnly`` / ``import_free_only``)
+      3. Connection billing facts from snapshot + operator overlay
+      4. Declared price (rule 0.2)
+      5. Gateway free-tier membership
+      6. UNKNOWN
+
+    ADR-049 (accepted 2026-11-21): a route is PAID only from declared or
+    observed facts; absence is not proof.  Billing ``unknown`` and a missing
+    catalog entry are not facts and never produce METERED on their own.
+
+    ``deciding_fact`` names the signal that determined the class.  Billing
+    facts include the source: ``billing_catalog_subscription``,
+    ``billing_overlay_subscription``, ``billing_catalog_metered``,
+    ``billing_overlay_metered``, ``billing_catalog_keyless``, or
+    ``billing_overlay_keyless``.
     """
     if conn is None:
         return CapacityClass.UNKNOWN, "", "no_connection"
     plan_label = sanitized_plan_label(conn.get("plan_label", ""))
-    auth_type = str(conn.get("authType", "")).strip().lower()
 
     # BOD-418: the OpenRouter catalog decides by public 0/0 membership; the
     # id only selects which published catalog to consult.
@@ -80,16 +96,31 @@ def classify_route_capacity(
             return CapacityClass.METERED, plan_label, "openrouter_not_in_public_free_set"
         return CapacityClass.UNKNOWN, plan_label, "openrouter_free_set_unavailable"
 
-    # Declared connection facts (connections snapshot / /api/providers).
+    # Rule 1: connection free facts (import_free_only / importFreeModelsOnly).
     is_free, signal = connection_signals_free(conn)
     if is_free:
         return CapacityClass.FREE, plan_label, signal
 
-    if auth_type == "oauth":
-        return CapacityClass.SUBSCRIPTION, plan_label, "oauth_subscription"
+    # Rule 2: connection billing facts from snapshot + operator overlay.
+    # Billing unknown and a missing entry are not facts; they fall through.
+    provider = str(conn.get("provider", "")).strip().lower()
+    auth_type = str(conn.get("authType", "")).strip().lower() or None
+    if provider:
+        fact = billing_lookup(provider, auth_type)
+        if fact is not None:
+            source_tag = fact.source  # "snapshot" or "overlay"
+            if fact.billing == BILLING_SUBSCRIPTION:
+                deciding = f"billing_{source_tag}_subscription"
+                return CapacityClass.SUBSCRIPTION, plan_label, deciding
+            if fact.billing == BILLING_METERED:
+                deciding = f"billing_{source_tag}_metered"
+                return CapacityClass.METERED, plan_label, deciding
+            if fact.billing == BILLING_KEYLESS:
+                deciding = f"billing_{source_tag}_keyless"
+                return CapacityClass.FREE, plan_label, deciding
 
-    # Rule 0.2 on the declared price: nonzero is paid, explicit 0/0 is free,
-    # absent fails closed.
+    # Rule 3: declared price (rule 0.2 — nonzero is paid, explicit 0/0 is free,
+    # absent fails closed).
     status = classify_free(route_id, _route_price(row), None)
     if status is FreeStatus.NOT_FREE or _any_positive_price(row):
         return CapacityClass.METERED, plan_label, "apikey_positive_pricing"
@@ -124,11 +155,13 @@ def capacity_of(
 ) -> tuple[CapacityClass, str]:
     """Single source of truth for route capacity. Returns (class, deciding_fact).
 
-    ``deciding_fact`` names the signal that determined the class:
-    ``"no_connection"``, ``"plan_label"``, ``"import_free_only"``,
+    ``deciding_fact`` names the signal that determined the class.  Known values:
+    ``"no_connection"``, ``"import_free_only"``, ``"importFreeModelsOnly"``,
+    ``"billing_snapshot_subscription"``, ``"billing_overlay_subscription"``,
+    ``"billing_snapshot_metered"``, ``"billing_overlay_metered"``,
+    ``"billing_snapshot_keyless"``, ``"billing_overlay_keyless"``,
     ``"gateway_free_tier"``, ``"all_zero_pricing"``, ``"openrouter_public_zero"``,
-    ``"oauth_subscription"``, ``"apikey_positive_pricing"``, or
-    ``"no_free_evidence"``.
+    ``"apikey_positive_pricing"``, or ``"no_free_evidence"``.
 
     Use this function everywhere a capacity decision is needed.
     ``classify_route_capacity`` is the full 3-tuple form for callers that also
@@ -140,6 +173,42 @@ def capacity_of(
         conn, row, route_id=route_id, openrouter_free_set=openrouter_free_set
     )
     return cls, fact
+
+
+def subscription_window_spent_metered(cache: HealthCache, route_id: str, now: datetime) -> bool:
+    """Whether a SUBSCRIPTION route's quota window is spent with non-hard-stop overage.
+
+    Returns True when the health cache shows a quota-category cooldown still in
+    force AND the route's billing fact has overage ``meters-to-paid`` or
+    ``unknown``.  In that state the route should be treated as METERED until the
+    window resets (design.md CP2 Rules).
+
+    A ``hard-stop`` route just becomes unavailable, as today — not METERED.
+    This helper does not change admission; it is advisory input for callers that
+    want to degrade SUBSCRIPTION to METERED during a spent window.
+    """
+    from verdict.connection_billing import OVERAGE_HARD_STOP
+    from verdict.connection_billing import lookup as billing_lookup
+
+    entry = cache.entry(route_id)
+    if entry is None or entry.healthy or entry.until <= now:
+        return False
+    # Must be a quota-related cooldown (not a simple health failure).
+    if entry.category not in {"quota_exhausted", "quota_cooldown", "rate_limited"}:
+        return False
+    # Look up the billing fact to check overage.  Uses provider from the
+    # health cache entry when available.
+    provider = getattr(entry, "provider", None) or ""
+    auth_type = getattr(entry, "auth_type", None)
+    if not provider:
+        return False  # cannot look up without a provider
+    fact = billing_lookup(provider, auth_type)
+    if fact is None:
+        return False  # no billing fact → not a known subscription
+    if fact.billing != "subscription":
+        return False
+    # hard-stop means the window is strictly enforced: no extra billing.
+    return fact.overage != OVERAGE_HARD_STOP
 
 
 def billing_capacity_override(cache: HealthCache, route_id: str, now: datetime) -> bool:

@@ -175,37 +175,43 @@ class TestBackendPool:
 
 class TestCapacityClassification:
     def test_free_suffix_does_not_override_oauth(self) -> None:
-        """A `:free` suffix is a name, not a fact: oauth kilocode stays SUBSCRIPTION."""
+        """CP2: A ':free' suffix is not a billing fact.  kilocode:free routes ARE free
+        because they have 0/0 declared pricing (all_zero_pricing), not because of the
+        ':free' name.  The name coincides with the fact but does not cause it."""
         ladder = _make_ladder()
         req = TaskRequirements(required_capabilities=frozenset({"tools"}))
         verdicts = ladder.evaluate(req, now=NOW)
         kilo_free = [v for v in verdicts if ":free" in v.route_id and "kilocode" in v.route_id]
         assert kilo_free
         for v in kilo_free:
-            assert v.capacity_class == CapacityClass.SUBSCRIPTION, (
-                f"{v.route_id} should be SUBSCRIPTION, got {v.capacity_class}"
+            assert v.capacity_class == CapacityClass.FREE, (
+                f"{v.route_id} should be FREE (0/0 pricing), got {v.capacity_class}"
             )
 
-    def test_oauth_with_free_tier_signal_is_free(self) -> None:
-        """agy/antigravity: oauth with tier=free-tier → FREE."""
+    def test_billing_catalog_subscription_decides_agy(self) -> None:
+        """CP2: agy routes are SUBSCRIPTION via the billing catalog (agy aliases
+        antigravity which is subscription/hard-stop in the catalog).  The old
+        providerSpecificData.tier rule is gone; the catalog fact decides."""
         ladder = _make_ladder()
         req = TaskRequirements(required_capabilities=frozenset({"tools"}))
         verdicts = ladder.evaluate(req, now=NOW)
         agy = [v for v in verdicts if v.route_id.startswith("agy/")]
+        assert agy, "expected at least one agy/ route"
         for v in agy:
-            assert v.capacity_class == CapacityClass.FREE, (
-                f"{v.route_id} should be FREE, got {v.capacity_class}"
+            assert v.capacity_class == CapacityClass.SUBSCRIPTION, (
+                f"{v.route_id} should be SUBSCRIPTION (billing catalog), got {v.capacity_class}"
             )
 
-    def test_oauth_without_free_signal_is_subscription(self) -> None:
-        """Regular kilocode (no :free) with oauth → SUBSCRIPTION."""
+    def test_oauth_without_billing_catalog_entry_is_unknown(self) -> None:
+        """CP2: kilocode oauth connection has no billing catalog entry and no price
+        → UNKNOWN (absence is not proof, ADR-049)."""
         ladder = _make_ladder()
         req = TaskRequirements(required_capabilities=frozenset({"tools"}))
         verdicts = ladder.evaluate(req, now=NOW)
         kilo_sub = [v for v in verdicts if v.route_id == "kilocode/claude-sonnet-4-6"]
         for v in kilo_sub:
-            assert v.capacity_class == CapacityClass.SUBSCRIPTION, (
-                f"{v.route_id} should be SUBSCRIPTION, got {v.capacity_class}"
+            assert v.capacity_class == CapacityClass.UNKNOWN, (
+                f"{v.route_id} should be UNKNOWN (no billing facts), got {v.capacity_class}"
             )
 
     def test_apikey_positive_pricing_is_metered(self) -> None:
@@ -263,12 +269,15 @@ class TestCapacityClassification:
         )
         assert verdicts[0].capacity_class == CapacityClass.FREE
 
-    def test_apikey_plan_label_free_is_free(self) -> None:
-        """plan_label containing 'free' is FREE for any auth type, not just oauth."""
+    def test_apikey_plan_label_free_is_not_free(self) -> None:
+        """CP2: plan_label is a name, not a billing fact — the rule was removed.
+        A connection with plan_label='free' but positive pricing is METERED, not FREE.
+        (operator 2026-11-19: 'no names should never determine if something is a free
+        route or not'; design.md CP2 §2.2)"""
         conn = {"authType": "apikey", "plan_label": "free", "import_free_only": False}
         is_free, rule = connection_signals_free(conn)
-        assert is_free
-        assert rule == "plan_label"
+        assert not is_free, "plan_label alone must not trigger connection_signals_free"
+        assert rule == ""
         row = {
             "id": "pay/model",
             "owned_by": "pay",
@@ -281,12 +290,14 @@ class TestCapacityClassification:
             connections=[{**conn, "provider": "pay", "isActive": True, "testStatus": "ok"}],
         )
         capacity, _plan, evidence = ladder._capacity_class(conn, row, route_id="pay/model")
-        assert capacity is CapacityClass.FREE
-        assert evidence == "plan_label"
+        assert capacity is CapacityClass.METERED, (
+            f"positive pricing should give METERED, got {capacity}"
+        )
+        assert evidence == "apikey_positive_pricing"
         verdicts = ladder.evaluate(
             TaskRequirements(required_capabilities=frozenset({"tools"})), now=NOW
         )
-        assert verdicts[0].capacity_class == CapacityClass.FREE
+        assert verdicts[0].capacity_class == CapacityClass.METERED
 
     def test_all_zero_pricing_is_free(self) -> None:
         """All-zero explicit pricing is FREE even for apikey without other signals."""
@@ -314,18 +325,21 @@ class TestCapacityClassification:
         )
         assert verdicts[0].capacity_class == CapacityClass.FREE
 
-    def test_free_tier_in_psd_is_free(self) -> None:
+    def test_free_tier_in_psd_does_not_signal_free(self) -> None:
+        """CP2: providerSpecificData.tier/plan substring rules were removed.
+        A connection with tier='free-tier' in providerSpecificData no longer
+        triggers connection_signals_free (design.md CP2 §2.2)."""
         is_free, rule = connection_signals_free(
             {
                 "providerSpecificData": {"tier": "free-tier", "plan": "Antigravity starter quota"},
                 "authType": "oauth",
             }
         )
-        assert is_free
-        assert "tier" in rule
+        assert not is_free, "providerSpecificData.tier must not trigger connection_signals_free"
+        assert rule == ""
 
     @pytest.mark.parametrize(
-        ("connection", "expected_rule"),
+        ("connection", "removed_rule"),
         [
             (
                 {"providerSpecificData": {"tier": "free user@secret.example.com"}},
@@ -338,13 +352,17 @@ class TestCapacityClassification:
             ({"plan_label": "free user@secret.example.com"}, "plan_label"),
         ],
     )
-    def test_free_signal_evidence_never_contains_source_value(
-        self, connection: dict[str, object], expected_rule: str
+    def test_removed_name_rules_never_fire(
+        self, connection: dict[str, object], removed_rule: str
     ) -> None:
+        """CP2: tier, plan and plan_label substring rules were removed.
+        These connections must not trigger connection_signals_free, regardless
+        of their values (design.md CP2 §2.2)."""
         is_free, rule = connection_signals_free(connection)
-        assert is_free
-        assert rule == expected_rule
-        assert "user@secret.example.com" not in rule
+        assert not is_free, (
+            f"removed rule '{removed_rule}' must not fire; got is_free={is_free}, rule={rule!r}"
+        )
+        assert rule == ""
 
 
 # -----------------------------------------------------------------------
@@ -564,11 +582,108 @@ def _ranking_openrouter_free_set(inventory: list[dict[str, Any]]) -> OpenRouterF
 def _expected_class_changes() -> dict[str, tuple[CapacityClass, CapacityClass, str]]:
     """Every route whose class differs from origin/main, with the new rule."""
     out: dict[str, tuple[CapacityClass, CapacityClass, str]] = {}
-    # The `:free` suffix no longer changes a class (capacity from facts, never
-    # names, operator 2026-11-19): kilocode `:free` stays SUBSCRIPTION and
-    # command-code `:free` stays UNKNOWN, as on the legacy fixture.
     # BOD-418: openrouter/ FREE requires public 0/0 membership; import_free_only
     # alone no longer classifies these routes FREE.
+    #
+    # CP2: Removing the ``oauth_subscription`` catch-all changes every oauth route
+    # whose connection is NOT in the billing catalog from SUBSCRIPTION to a
+    # pricing-based class (FREE/METERED/UNKNOWN).
+    # Routes whose plan_label contained "free" were FREE in origin/main via
+    # legacy_free; those with a billing catalog entry now switch to SUBSCRIPTION.
+    # This block computes all such changes inline from the fixture so the test
+    # validates that the production code agrees.
+    from verdict.connection_billing import BILLING_KEYLESS, BILLING_METERED, BILLING_SUBSCRIPTION
+    from verdict.connection_billing import lookup as billing_lookup
+    from verdict.orchestration.provider_catalog import resolve_provider as _resolve
+
+    _ranking_inv = json.loads((FIXTURES / "ranking_inventory.json").read_text())
+    _ranking_rows = _ranking_inv if isinstance(_ranking_inv, list) else _ranking_inv.get("data", [])
+    _ranking_conns_list = json.loads((FIXTURES / "ranking_connections.json").read_text())
+    _ranking_conns: dict[str, dict[str, Any]] = {
+        str(c.get("provider", "")).lower(): c for c in _ranking_conns_list
+    }
+
+    def _find_conn(_row: dict[str, Any], _rid: str) -> dict[str, Any] | None:
+        """Replicate EligibilityLadder's connection lookup logic."""
+        _raw = str(_row.get("owned_by", "") or "").lower()
+        _provider = _resolve(_raw) if _raw else _rid.split("/", 1)[0].lower()
+        _conn = _ranking_conns.get(_provider)
+        if _conn is None and _raw:
+            _conn = _ranking_conns.get(_raw)
+        return _conn  # type: ignore[return-value]
+
+    def _old_class(_conn: dict[str, Any] | None, _row: dict[str, Any]) -> tuple[CapacityClass, str]:
+        """Origin/main classification (_OriginMainCapacityLadder logic)."""
+        if _conn is None:
+            return CapacityClass.UNKNOWN, "no_connection"
+        _plan = str(_conn.get("plan_label", "") or "").lower()
+        _auth = str(_conn.get("authType", "")).lower()
+        _pricing = _row.get("pricing")
+        _prices: list[float] = []
+        if isinstance(_pricing, Mapping):
+            for _v in _pricing.values():
+                if isinstance(_v, (int, float)):
+                    _prices.append(float(_v))
+        _all_zero = bool(_prices) and all(p == 0 for p in _prices)
+        _positive = any(p > 0 for p in _prices)
+        if _auth == "oauth" and "free" not in _plan:
+            return CapacityClass.SUBSCRIPTION, "oauth_subscription"
+        if _conn.get("import_free_only") or "free" in _plan or _all_zero:
+            return CapacityClass.FREE, "legacy_free"
+        if _auth == "apikey" and _positive:
+            return CapacityClass.METERED, "apikey_positive_pricing"
+        return CapacityClass.UNKNOWN, "unknown"
+
+    def _new_class(
+        _conn: dict[str, Any] | None, _row: dict[str, Any], _rid: str
+    ) -> tuple[CapacityClass, str]:
+        """New CP2 classification (billing catalog + pricing logic)."""
+        if _conn is None:
+            return CapacityClass.UNKNOWN, "no_connection"
+        # connection_signals_free: only import_free_only / importFreeModelsOnly
+        if _conn.get("importFreeModelsOnly") is True or bool(_conn.get("import_free_only")):
+            return CapacityClass.FREE, "import_free_only"
+        _psd = _conn.get("providerSpecificData")
+        if isinstance(_psd, Mapping) and _psd.get("importFreeModelsOnly") is True:
+            return CapacityClass.FREE, "importFreeModelsOnly"
+        # billing catalog
+        _prov = str(_conn.get("provider", "")).strip().lower()
+        _auth_type: str | None = str(_conn.get("authType", "")).strip().lower() or None
+        if _prov:
+            _fact = billing_lookup(_prov, _auth_type)
+            if _fact is not None:
+                if _fact.billing == BILLING_SUBSCRIPTION:
+                    return CapacityClass.SUBSCRIPTION, f"billing_{_fact.source}_subscription"
+                if _fact.billing == BILLING_METERED:
+                    return CapacityClass.METERED, f"billing_{_fact.source}_metered"
+                if _fact.billing == BILLING_KEYLESS:
+                    return CapacityClass.FREE, f"billing_{_fact.source}_keyless"
+        # pricing
+        _pricing = _row.get("pricing")
+        if isinstance(_pricing, Mapping):
+            _prices = [
+                float(v)
+                for v in _pricing.values()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            ]
+            if _prices:
+                if any(p > 0 for p in _prices):
+                    return CapacityClass.METERED, "apikey_positive_pricing"
+                if all(p == 0 for p in _prices):
+                    return CapacityClass.FREE, "all_zero_pricing"
+        if _row.get("gateway_free_tier") is True:
+            return CapacityClass.FREE, "gateway_free_tier"
+        return CapacityClass.UNKNOWN, "no_free_evidence"
+
+    for _row in _ranking_rows:
+        _rid = _row.get("id", "")
+        if _rid.startswith("openrouter/"):
+            continue  # handled by the static BOD-418 list above
+        _conn = _find_conn(_row, _rid)
+        _old_c, _old_rule = _old_class(_conn, _row)
+        _new_c, _new_rule = _new_class(_conn, _row, _rid)
+        if _old_c != _new_c:
+            out[_rid] = (_old_c, _new_c, _new_rule)
     out["openrouter/auto"] = (
         CapacityClass.FREE,
         CapacityClass.METERED,

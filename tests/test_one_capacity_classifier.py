@@ -2,8 +2,9 @@
 
 Each test below documents one invariant from the S1 story:
   - capacity_of() is the public entrypoint, returning (class, deciding_fact).
-  - Each allowed fact (plan_label, gateway_free_tier, all_zero_pricing,
-    provider_wide_free, no_connection) is covered.
+  - Each allowed fact (gateway_free_tier, all_zero_pricing,
+    import_free_only, no_connection) is covered.
+  - plan_label is NOT a billing fact (CP2 §2.2 removed the rule).
   - A name (:free suffix) NEVER decides capacity in free_status or pick_best_live.
   - A no-connection route is never FREE.
   - gateway_free set format always matches route IDs (no double-prefix).
@@ -36,12 +37,13 @@ def test_capacity_of_no_connection_is_unknown() -> None:
     assert fact == "no_connection"
 
 
-def test_capacity_of_plan_label_free_is_free() -> None:
-    """PASSING: plan_label containing 'free' → FREE via plan_label signal."""
+def test_capacity_of_plan_label_free_is_not_free() -> None:
+    """CP2: plan_label is a name, not a billing fact — the rule was removed.
+    A connection with plan_label containing 'free' but no other facts is UNKNOWN."""
     conn = _conn(plan_label="free_tier_plan")
     cls, fact = capacity_of(conn, {}, route_id="kc/some-model", openrouter_free_set=None)
-    assert cls is CapacityClass.FREE
-    assert fact == "plan_label"
+    assert cls is CapacityClass.UNKNOWN
+    assert fact == "no_free_evidence"
 
 
 def test_capacity_of_import_free_only_is_free() -> None:

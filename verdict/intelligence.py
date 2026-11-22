@@ -24,7 +24,12 @@ from verdict.candidate_pool import (
     build_candidate_pool,
 )
 from verdict.capability_gate import TaskRequirements, derive_requirements, gate_capability
-from verdict.capacity import CapacityClass, billing_capacity_override, capacity_of
+from verdict.capacity import (
+    CapacityClass,
+    billing_capacity_override,
+    capacity_of,
+    subscription_window_spent_metered,
+)
 from verdict.chooser import apply_best_of_admitted
 from verdict.classifier import classify
 from verdict.context_pack import ContextPlan
@@ -1177,6 +1182,14 @@ class IntelligenceService:
             capacity[route_id] = capacity_of(
                 conn, row, route_id=route_id, openrouter_free_set=free_set
             )[0]
+            # If a subscription window is spent and overage is non-hard-stop
+            # (meters-to-paid or unknown), downgrade to METERED for this call.
+            if capacity[
+                route_id
+            ] is CapacityClass.SUBSCRIPTION and subscription_window_spent_metered(
+                cache, route_id, now
+            ):
+                capacity[route_id] = CapacityClass.METERED
         return capacity
 
     def _apply_candidate_pool(
