@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "story": "supply-task-pools",
+  "kind": "product",
+  "author": "Nick Carter (mrnicholasbcarter-code); code merged in PR 968/972/1033",
+  "merged_sha": "7d211412de8ca217b86e8c134b3c0311f56dcd02",
+  "pr": 1033,
+  "on_main": {
+    "at": "2026-11-21T22:45:11Z",
+    "sha": "7d211412de8ca217b86e8c134b3c0311f56dcd02",
+    "environment": "operator-host",
+    "command": "gh pr checks 1033 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/43782374916/job/133022240391",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/supply-task-pools/pr_checks_1033.txt",
+      "sha256": "1ed015c9b56696edafb971b78a4fdfa6ef9ba0c06cc130f65da254b2b1366637"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "verdict identify --passive --json reads all seven bounded GETs (the seventh is /v1/auto-combo/auto/candidates) with no model calls, and reports supply.complete with its named unknowns and the implementation pool counts",
+      "expect": "{\"name\":\"candidates\",\"path\":\"/v1/auto-combo/auto/candidates\",\"status\":\"ok\"}",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-21T23:43:17Z",
+        "sha": "df4cb61ce5b3e821f49f5a4e2cb07302ee25df64",
+        "environment": "operator-host",
+        "command": ".venv/bin/python -m verdict identify --passive --json | jq -c '{mode, model_calls, gets: [.sources[] | {name, path, status}], source_errors, supply_complete: .supply.complete, supply_unknowns_count: (.supply.unknowns | length), supply_unknowns_named: [.supply.unknowns[] | select(startswith(\"limits_not_reported:\") | not)], implementation_eligible: (.task_pools.implementation.eligible | length), implementation_eligible_free: ([.task_pools.implementation.eligible[] | select(.capacity == \"free\")] | length)}'",
+        "real_state_marker": "\"mode\":\"passive\",\"model_calls\":0",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/supply-task-pools/identify-first-20261121T234317Z.txt",
+          "sha256": "d624101d7b7cb52ee27441745fcbb7728f69eb412f9470b4f7d23c17f415a230"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-22T00:44:48Z",
+        "sha": "df4cb61ce5b3e821f49f5a4e2cb07302ee25df64",
+        "environment": "operator-host",
+        "command": ".venv/bin/python -m verdict identify --passive --json | jq -c '{mode, model_calls, gets: [.sources[] | {name, path, status}], source_errors, supply_complete: .supply.complete, supply_unknowns_count: (.supply.unknowns | length), supply_unknowns_named: [.supply.unknowns[] | select(startswith(\"limits_not_reported:\") | not)], implementation_eligible: (.task_pools.implementation.eligible | length), implementation_eligible_free: ([.task_pools.implementation.eligible[] | select(.capacity == \"free\")] | length)}'",
+        "real_state_marker": "\"mode\":\"passive\",\"model_calls\":0",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/supply-task-pools/identify-fresh-20261122T004448Z.txt",
+          "sha256": "69cf12331a519e5289ca8731e6d64dc1627c8233726c63befeab589a8d24e975"
+        }
+      }
+    },
+    {
+      "criterion": "After the passive timer ran from merged main, the verdict doctor identify report row shows the implementation pool and supply summary",
+      "expect": "\"label\":\"Identify passive report\",\"state\":\"ok\"",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-21T23:43:43Z",
+        "sha": "df4cb61ce5b3e821f49f5a4e2cb07302ee25df64",
+        "environment": "operator-host",
+        "command": ".venv/bin/python -m verdict doctor --json | jq -c '{status, identify: [.sections[] | select(.label == \"Identify passive report\" or .label == \"Identify timer\") | {\"label\": .label, state, detail: (.detail | gsub(\"/home/[^ ;]*\"; \"<host-path>\"))}]}'",
+        "real_state_marker": "implementation pool eligible",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/supply-task-pools/doctor-identify-first-20261121T234343Z.txt",
+          "sha256": "d312b073b8e2d82801e6993d679c063beeac564e10aaf6f5a6a118ab25f6e24a"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-22T00:44:51Z",
+        "sha": "df4cb61ce5b3e821f49f5a4e2cb07302ee25df64",
+        "environment": "operator-host",
+        "command": ".venv/bin/python -m verdict doctor --json | jq -c '{status, identify: [.sections[] | select(.label == \"Identify passive report\" or .label == \"Identify timer\") | {\"label\": .label, state, detail: (.detail | gsub(\"/home/[^ ;]*\"; \"<host-path>\"))}]}'",
+        "real_state_marker": "implementation pool eligible",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/supply-task-pools/doctor-identify-fresh-20261122T004451Z.txt",
+          "sha256": "d8425755ff8cbd382faf97e4c99fd0542ff289383a5eb24eef6613dcb78a2f6c"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 1,
+  "stays_true_job": "verdict-identify.timer runs `verdict identify --passive --json --save-report` on its schedule, and verdict-acceptance.timer runs `verdict doctor --json` hourly, which reports the identify row",
+  "setup_doctor": {
+    "status": "green",
+    "command": ".venv/bin/python -m verdict doctor --json | jq -c '{status, issues, warnings, gateway: [.capability_bootstrap.capabilities[] | select(.capability_id | startswith(\"gateway.\")) | {capability_id, status, health}]}'",
+    "at": "2026-11-21T23:09:25Z",
+    "raw_output": {
+      "path": "docs/proof/dod/supply-task-pools/setup-doctor-first-20261121T230925Z.txt",
+      "sha256": "5f2b4f4bf3b39404cd395edc9adf301052549e21de5959752f1e5926d56bcb94"
+    }
+  },
+  "openspec": {
+    "change": "supply-task-pools"
+  },
+  "parent_confirmation": {
+    "by": "Claude Opus 5.5 subagent (parent confirmation for closeout batch B), not the story author",
+    "at": "2026-11-22T00:50:37Z",
+    "command": ".venv/bin/python -m verdict identify --passive --json | jq -c '{mode, model_calls, gets: [.sources[] | {name, path, status}], source_errors, supply_complete: .supply.complete, supply_unknowns_count: (.supply.unknowns | length), supply_unknowns_named: [.supply.unknowns[] | select(startswith(\"limits_not_reported:\") | not)], implementation_eligible: (.task_pools.implementation.eligible | length), implementation_eligible_free: ([.task_pools.implementation.eligible[] | select(.capacity == \"free\")] | length)}'",
+    "raw_output": {
+      "path": "docs/proof/dod/supply-task-pools/identify-parent-20261122T005037Z.txt",
+      "sha256": "fdb4691435cc16810de8f226093ce498788c2348eec729dcea7ba01fbd8a1583"
+    }
+  }
+}

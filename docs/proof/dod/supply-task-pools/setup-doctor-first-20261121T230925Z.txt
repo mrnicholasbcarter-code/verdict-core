@@ -1,0 +1,1 @@
+{"status":"ok","issues":[],"warnings":["missing_mcp_config"],"gateway":[{"capability_id":"gateway.inventory","status":"covered","health":"healthy"},{"capability_id":"gateway.execute","status":"covered","health":"healthy"}]}

@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "story": "autodev-live-planner-selection",
+  "kind": "product",
+  "author": "Nick Carter (mrnicholasbcarter-code); code merged in PR 1057",
+  "merged_sha": "5d6b32cd7a9ccd01621ec637600d6d9d399daa7e",
+  "pr": 1057,
+  "on_main": {
+    "at": "2026-11-21T22:45:11Z",
+    "sha": "5d6b32cd7a9ccd01621ec637600d6d9d399daa7e",
+    "environment": "operator-host",
+    "command": "gh pr checks 1057 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44219403337/job/134517233861",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/autodev-live-planner-selection/pr_checks_1057.txt",
+      "sha256": "846e8fe705e82744413bb532d7b7ea03beaad8576bb2fd91bdb8de9022a9ecc1"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "verdict autodev --dry-run --json on the operator setup plans with a planner chosen by the live ladder, and no HTTP 402 occurs",
+      "expect": "{\"http_402_in_stderr\": 0}",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-21T23:32:37Z",
+        "sha": "df4cb61ce5b3e821f49f5a4e2cb07302ee25df64",
+        "environment": "operator-host",
+        "command": "rm -rf /tmp/autodev-dry && git init -q /tmp/autodev-dry && printf 'def add(a, b):\\n    return a + b\\n' > /tmp/autodev-dry/calc.py && git -C /tmp/autodev-dry add calc.py && git -C /tmp/autodev-dry commit -q -m init && .venv/bin/python -m verdict autodev --objective \"Add a one-line docstring to the add function in calc.py\" --repo /tmp/autodev-dry --dry-run --json 2>/tmp/autodev-dry.err | jq -c '{planner_model: .model, units: (.units | length), usage}'; RC=${PIPESTATUS[0]}; printf '{\"http_402_in_stderr\": %s}\\n' \"$(grep -c -E '\\b402\\b' /tmp/autodev-dry.err)\"; exit $RC",
+        "real_state_marker": "\"planner_model\":\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/autodev-live-planner-selection/autodev-dry-first-20261121T233237Z.txt",
+          "sha256": "c3335b844436beb0031babc7c3cb5bd919b9c33295e92ceb8bf7f4801a330be0"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-22T00:37:10Z",
+        "sha": "df4cb61ce5b3e821f49f5a4e2cb07302ee25df64",
+        "environment": "operator-host",
+        "command": "rm -rf /tmp/autodev-dry && git init -q /tmp/autodev-dry && printf 'def add(a, b):\\n    return a + b\\n' > /tmp/autodev-dry/calc.py && git -C /tmp/autodev-dry add calc.py && git -C /tmp/autodev-dry commit -q -m init && .venv/bin/python -m verdict autodev --objective \"Add a one-line docstring to the add function in calc.py\" --repo /tmp/autodev-dry --dry-run --json 2>/tmp/autodev-dry.err | jq -c '{planner_model: .model, units: (.units | length), usage}'; RC=${PIPESTATUS[0]}; printf '{\"http_402_in_stderr\": %s}\\n' \"$(grep -c -E '\\b402\\b' /tmp/autodev-dry.err)\"; exit $RC",
+        "real_state_marker": "\"planner_model\":\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/autodev-live-planner-selection/autodev-dry-fresh-20261122T003710Z.txt",
+          "sha256": "abf76c48e3877a42ffa3aec3f3759467d567a4ca686c4d7014631fcfe450fc06"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 1,
+  "stays_true_job": "NO SCHEDULED JOB re-runs autodev --dry-run (DoD part 4 gap); verdict-acceptance.timer re-runs the shared selection ladder hourly through its eligibility and choose checks",
+  "setup_doctor": {
+    "status": "green",
+    "command": ".venv/bin/python -m verdict doctor --json | jq -c '{status, issues, warnings, gateway: [.capability_bootstrap.capabilities[] | select(.capability_id | startswith(\"gateway.\")) | {capability_id, status, health}]}'",
+    "at": "2026-11-21T23:09:25Z",
+    "raw_output": {
+      "path": "docs/proof/dod/autodev-live-planner-selection/setup-doctor-first-20261121T230925Z.txt",
+      "sha256": "5f2b4f4bf3b39404cd395edc9adf301052549e21de5959752f1e5926d56bcb94"
+    }
+  },
+  "openspec": {
+    "change": "autodev-live-planner-selection"
+  },
+  "parent_confirmation": {
+    "by": "Claude Opus 5.5 subagent (parent confirmation for closeout batch B), not the story author",
+    "at": "2026-11-22T00:51:02Z",
+    "command": "rm -rf /tmp/autodev-dry && git init -q /tmp/autodev-dry && printf 'def add(a, b):\\n    return a + b\\n' > /tmp/autodev-dry/calc.py && git -C /tmp/autodev-dry add calc.py && git -C /tmp/autodev-dry commit -q -m init && .venv/bin/python -m verdict autodev --objective \"Add a one-line docstring to the add function in calc.py\" --repo /tmp/autodev-dry --dry-run --json 2>/tmp/autodev-dry.err | jq -c '{planner_model: .model, units: (.units | length), usage}'; RC=${PIPESTATUS[0]}; printf '{\"http_402_in_stderr\": %s}\\n' \"$(grep -c -E '\\b402\\b' /tmp/autodev-dry.err)\"; exit $RC",
+    "raw_output": {
+      "path": "docs/proof/dod/autodev-live-planner-selection/autodev-dry-parent-20261122T005102Z.txt",
+      "sha256": "86a692e214efb3a7facd6bb7a2cebf80769c4fe1ab48f58fd10fc35ea15d066b"
+    }
+  }
+}

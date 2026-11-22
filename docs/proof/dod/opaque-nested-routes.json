@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "story": "opaque-nested-routes",
+  "kind": "product",
+  "author": "Nick Carter (mrnicholasbcarter-code); code merged in PR 1053",
+  "merged_sha": "ba0944f40a2d70881e48e18676110a187c73145b",
+  "pr": 1053,
+  "on_main": {
+    "at": "2026-11-21T22:45:11Z",
+    "sha": "ba0944f40a2d70881e48e18676110a187c73145b",
+    "environment": "operator-host",
+    "command": "gh pr checks 1053 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44185010316/job/134399076423",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/opaque-nested-routes/pr_checks_1053.txt",
+      "sha256": "3cb4434ed9f6bb6ad07e155e30018b5d4e7cc140fe46a755cf4cadea667c46fe"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "verdict eligibility --json on the live catalogue drops kilocode/kilo-auto/free, kilocode/kilo-auto/small and kilocode/openrouter/free at DISCOVERED as opaque routes; none of them is TASK_ELIGIBLE",
+      "expect": "\"opaque_task_eligible\":[]",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-21T23:09:50Z",
+        "sha": "df4cb61ce5b3e821f49f5a4e2cb07302ee25df64",
+        "environment": "operator-host",
+        "command": ".venv/bin/python -m verdict eligibility --json | jq -c '{evaluated: .evaluated_count, task_eligible: .summary.by_reached_stage.TASK_ELIGIBLE, opaque: [.verdicts[] | select(.route_id == \"kilocode/kilo-auto/free\" or .route_id == \"kilocode/kilo-auto/small\" or .route_id == \"kilocode/openrouter/free\") | {route_id, reached, failed_stage, reason}], opaque_task_eligible: [.verdicts[] | select(.reached == \"TASK_ELIGIBLE\") | .route_id | select(. == \"kilocode/kilo-auto/free\" or . == \"kilocode/kilo-auto/small\" or . == \"kilocode/openrouter/free\")]}'",
+        "real_state_marker": "\"route_id\":\"kilocode/kilo-auto/free\",\"reached\":null,\"failed_stage\":\"DISCOVERED\",\"reason\":\"admission:opaque_route\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/opaque-nested-routes/eligibility-first-20261121T230950Z.txt",
+          "sha256": "88d0f91c4e901a13bcbd3fa7cc2bde2242da3c441e491eb1c9388026683a1cf0"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-22T00:10:58Z",
+        "sha": "df4cb61ce5b3e821f49f5a4e2cb07302ee25df64",
+        "environment": "operator-host",
+        "command": ".venv/bin/python -m verdict eligibility --json | jq -c '{evaluated: .evaluated_count, task_eligible: .summary.by_reached_stage.TASK_ELIGIBLE, opaque: [.verdicts[] | select(.route_id == \"kilocode/kilo-auto/free\" or .route_id == \"kilocode/kilo-auto/small\" or .route_id == \"kilocode/openrouter/free\") | {route_id, reached, failed_stage, reason}], opaque_task_eligible: [.verdicts[] | select(.reached == \"TASK_ELIGIBLE\") | .route_id | select(. == \"kilocode/kilo-auto/free\" or . == \"kilocode/kilo-auto/small\" or . == \"kilocode/openrouter/free\")]}'",
+        "real_state_marker": "\"route_id\":\"kilocode/kilo-auto/free\",\"reached\":null,\"failed_stage\":\"DISCOVERED\",\"reason\":\"admission:opaque_route\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/opaque-nested-routes/eligibility-fresh-20261122T001058Z.txt",
+          "sha256": "7d008f6d06ef4ef19c2fa714c3767c3d3023cf58fe7dbf8ee27d2c6d379d85d9"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 1,
+  "stays_true_job": "verdict-acceptance.timer runs `verdict eligibility --json` against the live gateway every hour as its eligibility check",
+  "setup_doctor": {
+    "status": "green",
+    "command": ".venv/bin/python -m verdict doctor --json | jq -c '{status, issues, warnings, gateway: [.capability_bootstrap.capabilities[] | select(.capability_id | startswith(\"gateway.\")) | {capability_id, status, health}]}'",
+    "at": "2026-11-21T23:09:25Z",
+    "raw_output": {
+      "path": "docs/proof/dod/opaque-nested-routes/setup-doctor-first-20261121T230925Z.txt",
+      "sha256": "5f2b4f4bf3b39404cd395edc9adf301052549e21de5959752f1e5926d56bcb94"
+    }
+  },
+  "openspec": {
+    "change": "opaque-nested-routes"
+  },
+  "parent_confirmation": {
+    "by": "Claude Opus 5.5 subagent (parent confirmation for closeout batch B), not the story author",
+    "at": "2026-11-22T00:50:08Z",
+    "command": ".venv/bin/python -m verdict eligibility --json | jq -c '{evaluated: .evaluated_count, task_eligible: .summary.by_reached_stage.TASK_ELIGIBLE, opaque: [.verdicts[] | select(.route_id == \"kilocode/kilo-auto/free\" or .route_id == \"kilocode/kilo-auto/small\" or .route_id == \"kilocode/openrouter/free\") | {route_id, reached, failed_stage, reason}], opaque_task_eligible: [.verdicts[] | select(.reached == \"TASK_ELIGIBLE\") | .route_id | select(. == \"kilocode/kilo-auto/free\" or . == \"kilocode/kilo-auto/small\" or . == \"kilocode/openrouter/free\")]}'",
+    "raw_output": {
+      "path": "docs/proof/dod/opaque-nested-routes/eligibility-parent-20261122T005008Z.txt",
+      "sha256": "8e4acde5adaf548fb9c3aa9e0841adb6a4998313d0a5506806c0881ff2399e94"
+    }
+  }
+}

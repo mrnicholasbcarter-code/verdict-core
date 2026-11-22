@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "story": "one-capacity-classifier",
+  "kind": "product",
+  "author": "Nick Carter (mrnicholasbcarter-code); code merged in PR 1185",
+  "merged_sha": "78dde9301903719d5614eeb131f008542f65fbb0",
+  "pr": 1185,
+  "on_main": {
+    "at": "2026-11-21T22:45:11Z",
+    "sha": "78dde9301903719d5614eeb131f008542f65fbb0",
+    "environment": "operator-host",
+    "command": "gh pr checks 1185 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44680754789/job/136103297280",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/one-capacity-classifier/pr_checks_1185.txt",
+      "sha256": "66b78b3d4c45595b6bb264d976cb679c5236d01294a4a20202b726c70f39fbca"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "verdict doctor --json on installed main is green (status ok, no issues) with both gateway capabilities covered and healthy",
+      "expect": "\"status\":\"ok\",\"issues\":[]",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-21T23:09:25Z",
+        "sha": "df4cb61ce5b3e821f49f5a4e2cb07302ee25df64",
+        "environment": "operator-host",
+        "command": ".venv/bin/python -m verdict doctor --json | jq -c '{status, issues, warnings, gateway: [.capability_bootstrap.capabilities[] | select(.capability_id | startswith(\"gateway.\")) | {capability_id, status, health}]}'",
+        "real_state_marker": "\"capability_id\":\"gateway.execute\",\"status\":\"covered\",\"health\":\"healthy\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/one-capacity-classifier/doctor-first-20261121T230925Z.txt",
+          "sha256": "5f2b4f4bf3b39404cd395edc9adf301052549e21de5959752f1e5926d56bcb94"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-22T00:10:31Z",
+        "sha": "df4cb61ce5b3e821f49f5a4e2cb07302ee25df64",
+        "environment": "operator-host",
+        "command": ".venv/bin/python -m verdict doctor --json | jq -c '{status, issues, warnings, gateway: [.capability_bootstrap.capabilities[] | select(.capability_id | startswith(\"gateway.\")) | {capability_id, status, health}]}'",
+        "real_state_marker": "\"capability_id\":\"gateway.execute\",\"status\":\"covered\",\"health\":\"healthy\"",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/one-capacity-classifier/doctor-fresh-20261122T001031Z.txt",
+          "sha256": "5f2b4f4bf3b39404cd395edc9adf301052549e21de5959752f1e5926d56bcb94"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 1,
+  "stays_true_job": "verdict-acceptance.timer runs `verdict doctor --json` every hour as its doctor check",
+  "setup_doctor": {
+    "status": "green",
+    "command": ".venv/bin/python -m verdict doctor --json | jq -c '{status, issues, warnings, gateway: [.capability_bootstrap.capabilities[] | select(.capability_id | startswith(\"gateway.\")) | {capability_id, status, health}]}'",
+    "at": "2026-11-21T23:09:25Z",
+    "raw_output": {
+      "path": "docs/proof/dod/one-capacity-classifier/doctor-first-20261121T230925Z.txt",
+      "sha256": "5f2b4f4bf3b39404cd395edc9adf301052549e21de5959752f1e5926d56bcb94"
+    }
+  },
+  "openspec": {
+    "change": "one-capacity-classifier"
+  },
+  "parent_confirmation": {
+    "by": "Claude Opus 5.5 subagent (parent confirmation for closeout batch B), not the story author",
+    "at": "2026-11-22T00:49:55Z",
+    "command": ".venv/bin/python -m verdict doctor --json | jq -c '{status, issues, warnings, gateway: [.capability_bootstrap.capabilities[] | select(.capability_id | startswith(\"gateway.\")) | {capability_id, status, health}]}'",
+    "raw_output": {
+      "path": "docs/proof/dod/one-capacity-classifier/doctor-parent-20261122T004955Z.txt",
+      "sha256": "5f2b4f4bf3b39404cd395edc9adf301052549e21de5959752f1e5926d56bcb94"
+    }
+  }
+}

@@ -87,4 +87,5 @@ Verification: focused tests pass (`uv run python -m pytest -q tests/test_decompo
 
 Verification: operator runs `verdict autodev --objective <small objective> --dry-run --json` on merged main from installed setup; raw output shows planner chosen by live ladder and no HTTP 402. Test: post-merge live proof.
 
-- [ ] (post-merge) Install from merged main and run `verdict autodev --objective <small objective> --dry-run --json` on the operator setup; record the planner the live ladder chose and that no HTTP 402 occurred.
+- [x] (post-merge) Install from merged main and run `verdict autodev --objective <small objective> --dry-run --json` on the operator setup; record the planner the live ladder chose and that no HTTP 402 occurred.
+  Done 2026-11-21 on installed-main df4cb61c: planner chosen by the live ladder, no HTTP 402. Evidence: docs/proof/dod/autodev-live-planner-selection.json.

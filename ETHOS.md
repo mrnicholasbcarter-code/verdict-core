@@ -20,7 +20,7 @@ exist to serve this. New work must say how it advances it.
 
 ## NOW
 
-MEM1 (#1253, PR #1255) and MEM2 (#1254, PR #1256) merged and installed (installed-main df4cb61c, 2026-11-21); post-merge checks pass. Hindsight is the memory of record (ADR-050, D33, D34). Open: DoD evidence (fresh run and parent confirmation), then archive both changes and close the tickets.
+Closeout batch B (selection): five changes have passing DoD evidence and are archived (`one-capacity-classifier`, `opaque-nested-routes`, `choose-no-confirm-valid-proof`, `supply-task-pools`, `autodev-live-planner-selection`). `lease-held-selection` and `autodev-executor-ladder` follow once their fresh runs land; `cheapest-sufficient-first` moves to batch D (needs an orchestrate run) and `capacity-from-facts-not-names` and `preflight-floor-and-pool-spread` to batch F (need the certification rehearsal). CP2 (#1245) is in progress. MEM1/MEM2 (#1253/#1254): merged and installed; DoD evidence still open.
 
 ## Decisions
 

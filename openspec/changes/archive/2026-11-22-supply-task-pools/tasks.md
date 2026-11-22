@@ -23,8 +23,10 @@
 
 ## 2. Live checks
 
-- [ ] (post-merge) 2.1 From merged main, run `verdict identify --passive --json` on the
+- [x] (post-merge) 2.1 From merged main, run `verdict identify --passive --json` on the
   operator host and record that seven GETs ran, `supply.complete` and its named unknowns, and
   the implementation pool counts.
-- [ ] (post-merge) 2.2 After the passive timer has run from merged main, record the raw
+  Done 2026-11-21 on installed-main df4cb61c. Evidence: docs/proof/dod/supply-task-pools.json.
+- [x] (post-merge) 2.2 After the passive timer has run from merged main, record the raw
   `verdict doctor` identify report row showing the pool and supply summary.
+  Done 2026-11-21 on installed-main df4cb61c. Evidence: docs/proof/dod/supply-task-pools.json.

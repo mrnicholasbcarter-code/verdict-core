@@ -1,0 +1,1 @@
+{"task_class":"implementation","no_confirm":true,"confirm":"skipped_no_confirm","gateway":"http://127.0.0.1:20128","selected":{"model":"antigravity/gemini-3.1-flash-lite","capacity_class":"free","capacity_evidence":"plan_label","pool":"google-antigravity","rank":1}}
