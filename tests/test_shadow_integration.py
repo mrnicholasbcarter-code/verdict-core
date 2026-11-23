@@ -1,7 +1,7 @@
 """Integration tests for decision signal contracts SHADOW decision signals."""
 
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -65,6 +65,42 @@ class _ScriptedExecutor:
         return self._outputs.pop(0)
 
 
+@pytest.fixture(autouse=True)
+def _patch_planner_metadata(monkeypatch):
+    """Provide a rated metadata store for all plan_with_failover calls in this module.
+
+    Every test here calls plan_with_failover, which now fails closed on a missing
+    metadata store (ADR-051).  Build a snapshot that rates the route IDs used by the
+    test selectors ("test/model", "first/model", "second/model") as frontier-eligible,
+    with fetched_at = now - 1 h so the scores are fresh at the real wall-clock time.
+    """
+    from tests.test_planner_band import _record, _score
+    from tests.test_planner_band import _snapshot as _pb_snapshot
+
+    fetched_at = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    snap = _pb_snapshot(
+        _record(
+            "p/test_model",
+            ("test/model",),
+            aa_intelligence=_score(90.0, fetched_at),
+            aa_coding=_score(99.0, fetched_at),
+        ),
+        _record(
+            "p/first_model",
+            ("first/model",),
+            aa_intelligence=_score(90.0, fetched_at),
+            aa_coding=_score(99.0, fetched_at),
+        ),
+        _record(
+            "p/second_model",
+            ("second/model",),
+            aa_intelligence=_score(90.0, fetched_at),
+            aa_coding=_score(99.0, fetched_at),
+        ),
+    )
+    monkeypatch.setattr("verdict.metadata.store.load_store", lambda: snap)
+
+
 class _RecordingSelector:
     """Selector that records every call to select() and returns a fixed route."""
 
@@ -93,6 +129,12 @@ class _RecordingSelector:
     def record_failure(self, route_id: str, f: FailureClassification, *, now: datetime) -> None: ...
 
     def record_success(self, route_id: str, *, now: datetime) -> None: ...
+
+    def inventory_route_ids(self) -> list[str]:
+        return [self.route_id]
+
+    def set_planner_band(self, band: object) -> None:
+        pass
 
 
 class _Classifier:
@@ -494,6 +536,12 @@ async def test_failover_emits_decision_signals_once_with_successful_route(
         ) -> None: ...
 
         def record_success(self, route_id: str, *, now: datetime) -> None: ...
+
+        def inventory_route_ids(self) -> list[str]:
+            return list(self.routes)
+
+        def set_planner_band(self, band: object) -> None:
+            pass
 
     class ProviderWithCount:
         call_count = 0
