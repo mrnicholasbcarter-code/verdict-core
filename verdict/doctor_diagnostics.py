@@ -643,6 +643,64 @@ def census_runtime_section() -> tuple[str, str, str]:
     )
 
 
+def _doctor_planner_supply(diag: DoctorDiagnostics) -> None:
+    """ADR-051: warn when no route is in the frontier planner band.
+
+    Reports ok when the frontier band has at least one model, warns when the
+    frontier is empty (naming whether the fallback band is reachable), and
+    falls back to a note when metadata or the gateway is unavailable.
+    """
+    from datetime import datetime, timezone
+
+    from verdict.planner_band import compute_planner_bands, load_planner_band_config
+
+    now = datetime.now(timezone.utc)
+
+    try:
+        from verdict.metadata.store import load_store
+
+        metadata: Any = load_store()
+    except Exception:
+        diag.sections.append(("Planner supply", "note", "not available: metadata unavailable"))
+        return
+
+    try:
+        from verdict.credentials_store import resolve_gateway_binding
+        from verdict.free_tier_admit import normalize_omniroute_origin
+        from verdict.omniroute_evidence import fetch_omniroute_evidence
+
+        base_url, key = resolve_gateway_binding()
+        evidence = fetch_omniroute_evidence(normalize_omniroute_origin(base_url), api_key=key)
+        inventory_route_ids = list(evidence.inventory_route_ids)
+    except Exception as exc:
+        diag.sections.append(("Planner supply", "note", f"not available: {type(exc).__name__}"))
+        return
+
+    try:
+        config = load_planner_band_config()
+        band = compute_planner_bands(inventory_route_ids, metadata, None, config=config, now=now)
+    except Exception as exc:
+        diag.sections.append(("Planner supply", "note", f"band error: {type(exc).__name__}"))
+        return
+
+    frontier = len(band.frontier_model_keys)
+    fallback = len(band.fallback_model_keys)
+
+    if frontier > 0:
+        detail = f"{frontier} model(s) in frontier band; fallback has {fallback}"
+        diag.sections.append(("Planner supply", "ok", detail))
+    elif fallback > 0:
+        detail = f"frontier band empty; {fallback} model(s) in fallback band"
+        diag.sections.append(("Planner supply", "warn", detail))
+        diag.warnings.append(
+            f"Planner frontier band is empty; {fallback} fallback model(s) available"
+        )
+    else:
+        detail = "frontier and fallback bands both empty"
+        diag.sections.append(("Planner supply", "warn", detail))
+        diag.warnings.append("Planner frontier and fallback bands are both empty")
+
+
 def _doctor_acceptance(diag: DoctorDiagnostics) -> None:
     """The newest live acceptance result: red or older than 2 h is an issue."""
     from verdict.acceptance_state import doctor_check
@@ -923,6 +981,7 @@ def _collect_doctor_diagnostics(
     # 1d-ii. Gateway lifecycle state (report only; nothing is started here).
     _doctor_gateway_lifecycle(diag)
     _doctor_advisory_rankings(diag)
+    _doctor_planner_supply(diag)
     # 1d-iii. Verdict's key is DB-backed, never the gateway's env key.
     if gateway_url:
         _doctor_gateway_key(diag, gateway_url)

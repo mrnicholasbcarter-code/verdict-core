@@ -867,6 +867,40 @@ def identify_report(
         identity_map_error=mapping_error,
         tool_proof_error=tool_proof_error,
     )
+    # ADR-051 Decision 9: add rating_coverage and planner_band_families to the report
+    # so population drift and band supply are visible from identify output.
+    try:
+        from verdict.planner_band import (
+            compute_planner_bands,
+            load_planner_band_config,
+            planner_band_families,
+            rating_coverage_summary,
+        )
+
+        _pb_config = load_planner_band_config()
+        _pb_inv = list(evidence.inventory_route_ids)
+        _pb_band = compute_planner_bands(
+            _pb_inv,
+            metadata if isinstance(metadata, MetadataSnapshot) else None,
+            identity_map if isinstance(identity_map, IdentityMap) else None,
+            config=_pb_config,
+            now=datetime.now(timezone.utc),
+        )
+        report["rating_coverage"] = rating_coverage_summary(
+            _pb_inv,
+            _pb_band,
+            metadata if isinstance(metadata, MetadataSnapshot) else None,
+            identity_map if isinstance(identity_map, IdentityMap) else None,
+            now=datetime.now(timezone.utc),
+        )
+        report["planner_band_families"] = planner_band_families(
+            _pb_band,
+            metadata if isinstance(metadata, MetadataSnapshot) else None,
+            identity_map if isinstance(identity_map, IdentityMap) else None,
+        )
+    except Exception:
+        report["rating_coverage"] = None
+        report["planner_band_families"] = None
     return report
 
 
