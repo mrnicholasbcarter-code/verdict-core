@@ -1527,7 +1527,7 @@ class EligibilityLadder:
         chosen: _Assessment | None = None
         chosen_rank: int | None = None
         blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
-        probe_order = self._probe_order(candidates)
+        probe_order = self._probe_order(candidates, getattr(requirements, "arena_role", None))
         # BOD-297: selection confirmation joins the shared coordinator lease;
         # never probe while another producer owns the job.
         # While another producer holds the refresh lease, skip probes and confirmations but still choose routes with fresh proof.
@@ -1743,7 +1743,9 @@ class EligibilityLadder:
         }
         return selected, final_verdicts
 
-    def _probe_order(self, candidates: list[_Assessment]) -> list[_Assessment]:
+    def _probe_order(
+        self, candidates: list[_Assessment], arena_role: str | None = None
+    ) -> list[_Assessment]:
         """Probe order mirrors the main rank key (role-dependent ordering).
 
         For cheapest-sufficient-first roles (workers): slack before rating,
@@ -1753,12 +1755,15 @@ class EligibilityLadder:
         Within an equal ranking, fresh confirmations and provider round-robin
         retain the bounded scheduler.
 
-        When a planner band is active the final sort uses the band ``_sort_key``
-        (is_metered, -score, cls_order, -aa_coding, route_id) so that frontier
-        routes are probed in band-score order regardless of health-cache
-        freshness.  Without this override a healthy lower-scored route (e.g. one
-        probed by the refresh hook) would appear before an unprobed
-        higher-scored route, defeating the ADR-051 preference ordering.
+        When a planner band is active AND arena_role == "planner", the final
+        sort uses the band ``_sort_key`` (is_metered, -score, cls_order,
+        -aa_coding, route_id) so that frontier routes are probed in band-score
+        order regardless of health-cache freshness.  Without this override a
+        healthy lower-scored route (e.g. one probed by the refresh hook) would
+        appear before an unprobed higher-scored route, defeating the ADR-051
+        preference ordering.  The gate on arena_role prevents executor and
+        reviewer selections from being re-ordered by the planner band (ADR-051
+        D7: executors keep cheapest-sufficient order).
         """
         order: list[_Assessment] = []
         by_provider: dict[str, list[_Assessment]] = {}
@@ -1774,10 +1779,12 @@ class EligibilityLadder:
             depth = max((len(q) for q in queues), default=0)
             for i in range(depth):
                 order.extend(q[i] for q in queues if i < len(q))
-        # ADR-051: when a planner band is active, sort by the band's own key so
-        # higher-rated routes are always probed before lower-rated ones,
-        # independent of which routes happen to have fresh health-cache entries.
-        if self._planner_band is not None:
+        # ADR-051: when a planner band is active and arena_role=="planner", sort
+        # by the band's own key so higher-rated routes are always probed before
+        # lower-rated ones, independent of which routes happen to have fresh
+        # health-cache entries.  Gated on arena_role to avoid applying the
+        # planner band sort to executor or reviewer selections (ADR-051 D7).
+        if self._planner_band is not None and arena_role == "planner":
             from verdict.planner_band import _sort_key as _pb_sort_key
 
             _band = self._planner_band
