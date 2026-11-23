@@ -169,9 +169,9 @@ rejected and classified as a failure before verification runs.
 
 ## ADR impact
 
-- Amends [ADR-041](../../docs/adr/ADR-041-generic-harness-contracts.md) default
+- Amends [ADR-041](../../../docs/adr/ADR-041-generic-harness-contracts.md) default
   worker executor (from `prime-headless`, later `direct-gateway`, to `opencode`).
-- Relates to [ADR-036](../../docs/adr/ADR-036-goal-to-receipt-orchestration.md)
+- Relates to [ADR-036](../../../docs/adr/ADR-036-goal-to-receipt-orchestration.md)
   (goal-to-receipt orchestration): worker output becomes richer (edit loop
   instead of answer-only).
 - No impact on admission, ranking, or cost-policy ADRs.
