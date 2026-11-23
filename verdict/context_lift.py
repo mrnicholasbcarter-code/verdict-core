@@ -135,6 +135,7 @@ def ingest_lift_fact(gate: MemoryGate, token: str) -> MemoryRecord:
             )
         )
         raise ContextIntelligenceError("secret_refused", result.reason or "secret write refused")
+    existing = gate.plane.get("patterns", "lift_fact")
     result = gate.write(
         MemoryWriteRequest(
             namespace="patterns",
@@ -144,10 +145,11 @@ def ingest_lift_fact(gate: MemoryGate, token: str) -> MemoryRecord:
             confidence=1.0,
             provenance={"source": "context-lift-plant", "kind": "synthetic"},
             source="context-lift",
+            supersedes=existing.record_id if existing is not None else None,
         )
     )
     if not result.allowed or result.record is None:
-        raise ContextIntelligenceError("secret_refused", result.reason or "ingest refused")
+        raise ContextIntelligenceError("ingest_refused", result.reason or "ingest refused")
     return result.record
 
 
