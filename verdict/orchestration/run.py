@@ -36,7 +36,6 @@ from verdict.availability import opaque_connection_token
 from verdict.context_pack import ContextPlan, estimate_tokens
 from verdict.http_safety import open_no_redirect
 from verdict.orchestration.contracts import (
-    PLANNER_MAX_CAPABILITY_TIER,
     PLANNER_MIN_CONTEXT_TOKENS,
     PLANNER_REQUIRED_CAPABILITIES,
     FailureClassification,
@@ -62,6 +61,7 @@ from verdict.orchestration.worker_context import (
     project_research_pack,
     reuse_research_pack,
 )
+from verdict.planner_band import PlannerBandConfigError, PlannerBandError
 
 if TYPE_CHECKING:
     from verdict.decision_signals.contracts import DecisionSignalProvider
@@ -434,40 +434,46 @@ async def plan_with_failover(
     task_family = fingerprint_task(goal).task_family
 
     # ADR-051: compute planner band from inventory before the selection loop so
-    # every attempt is band-filtered, not just failover attempts.  Uses
-    # evaluate() (non-probing full inventory) when the selector supports it; if
-    # not (e.g. in tests that only implement select()), fall back to no band
-    # filtering and keep the tier cap as a floor.
+    # every attempt is band-filtered, not just failover attempts.
+    # PlannerBandConfigError (invalid config) propagates immediately — hard failure.
+    # OSError/ValueError from the metadata store also fails closed: if we cannot
+    # read ratings, we cannot prove any frontier candidate, so the run is BLOCKED
+    # rather than silently skipping band filtering.  When the store loads but no
+    # route is rated, the band is empty and the run fails closed with PlannerBandError.
+    from verdict.planner_band import _strip_suffix as _pb_strip
+    from verdict.planner_band import compute_planner_bands, load_planner_band_config
+    from verdict.planner_band import select_planner_routes as _pb_select_routes
+
     _non_band_routes: frozenset[str] = frozenset()
-    _band_active = False
     _orch_band: Any = None
+    _pb_meta: Any = None
+    _pb_config = load_planner_band_config()  # raises PlannerBandConfigError on invalid config
     try:
-        from verdict.planner_band import _strip_suffix as _pb_strip
-        from verdict.planner_band import compute_planner_bands, load_planner_band_config
+        from verdict.metadata.store import load_store as _pb_load
 
-        _pb_config = load_planner_band_config()
-        try:
-            from verdict.metadata.store import load_store as _pb_load
-
-            _pb_meta: Any = _pb_load()
-        except Exception:
-            _pb_meta = None
-
-        # Read inventory from _rows directly: calling evaluate() or select() here
-        # would trigger load_verified_outcome_observations as a side-effect and
-        # double-count the subscription usage call that select() makes later.
-        _raw_rows = getattr(selector, "_rows", None)
-        if isinstance(_raw_rows, dict):
-            _pb_routes = [rid for rid in _raw_rows if isinstance(rid, str) and "/" in rid]
-            _orch_band = compute_planner_bands(
-                _pb_routes, _pb_meta, None, config=_pb_config, now=now()
+        _pb_meta = _pb_load()
+    except (OSError, ValueError) as _pb_store_exc:
+        if isinstance(_pb_store_exc, FileNotFoundError):
+            # Store path not found → metadata store not configured; band
+            # filtering is skipped and standard ladder ordering applies.
+            pass
+        else:
+            # Store is configured but unreadable or corrupt → fail closed.
+            raise PlannerBandError(
+                f"no_frontier_or_fallback_planner: metadata store unavailable "
+                f"({type(_pb_store_exc).__name__}: {_pb_store_exc})"
+            ) from _pb_store_exc
+    if _pb_meta is not None:
+        _pb_routes = selector.inventory_route_ids()
+        _orch_band = compute_planner_bands(_pb_routes, _pb_meta, None, config=_pb_config, now=now())
+        _pb_keys = _orch_band.frontier_model_keys | _orch_band.fallback_model_keys
+        if not _pb_keys:
+            raise PlannerBandError(
+                "no_frontier_or_fallback_planner: "
+                "no rated model found in inventory for planner selection"
             )
-            _pb_keys = _orch_band.frontier_model_keys | _orch_band.fallback_model_keys
-            if _pb_keys:
-                _non_band_routes = frozenset(r for r in _pb_routes if _pb_strip(r) not in _pb_keys)
-                _band_active = True
-    except Exception:
-        pass  # graceful degradation: fall back to tier cap
+        _non_band_routes = frozenset(r for r in _pb_routes if _pb_strip(r) not in _pb_keys)
+        selector.set_planner_band(_orch_band)
 
     tried: set[str] = set()
     tried_pools: set[str] = set()
@@ -482,7 +488,6 @@ async def plan_with_failover(
             min_context_tokens=PLANNER_MIN_CONTEXT_TOKENS,
             exclude_routes=frozenset(tried) | _non_band_routes,
             exclude_pools=frozenset(tried_pools),
-            max_capability_tier=PLANNER_MAX_CAPABILITY_TIER if not _band_active else 3,
             task_family=task_family,
             role_ordering="strongest_first",
             arena_role="planner",
@@ -493,20 +498,17 @@ async def plan_with_failover(
             break
         # Build a band record for this planner choice (Decision 7, ADR-051).
         _pb_band_record: dict[str, Any] | None = None
-        if _orch_band is not None and _band_active:
-            _rk = _pb_strip(str(choice.route_id))
-            _in_f = _rk in _orch_band.frontier_model_keys
-            _in_b = _rk in _orch_band.fallback_model_keys
-            _pb_band_record = {
-                "required": "frontier",
-                "used": "frontier" if _in_f else ("fallback" if _in_b else "none"),
-                "rank": _orch_band.model_ranks.get(_rk),
-                "rated_models": _orch_band.rated_models,
-                "cutoff": _orch_band.cutoff_frontier if _in_f else _orch_band.cutoff_fallback,
-                "rating": _orch_band.model_scores.get(_rk),
-                "metric": "aa_intelligence",
-                "fetched_at": _orch_band.fetched_at,
-            }
+        if _orch_band is not None:
+            _sr = _pb_select_routes(
+                [str(choice.route_id)],
+                {str(choice.route_id): choice.capacity_class},
+                _orch_band,
+                _pb_meta,
+                None,
+                top_n=1,
+                now=now(),
+            )
+            _pb_band_record = _sr[0][1].to_dict() if _sr else None
         events.emit(
             "plan_started",
             route_id=choice.route_id,
@@ -1141,6 +1143,15 @@ async def run_golden_path(
                 decision_signal_provider=decision_signal_provider,
                 _precollected_signals=_run_signals_data,
             )
+    except (PlannerBandError, PlannerBandConfigError) as exc:
+        # Band config or empty-band failures from plan_with_failover → clean BLOCKED.
+        _pb_msg = str(exc)
+        events.emit("run_finished", outcome=RunOutcome.BLOCKED.value, reason=_pb_msg[:500])
+        error_graph_pb: dict[str, Any] = {"goal": goal, "nodes": [], "run_id": run_dir.name}
+        if openspec_block:
+            error_graph_pb["openspec"] = openspec_block
+        graph_path.write_text(json.dumps(error_graph_pb))
+        return _blocked_before_plan(run_dir, _pb_msg)
     except OrchestrationError as exc:
         events.emit("run_finished", outcome=RunOutcome.BLOCKED.value, reason=str(exc)[:500])
         error_graph: dict[str, Any] = {"goal": goal, "nodes": [], "run_id": run_dir.name}

@@ -716,12 +716,12 @@ async def test_planner_failover_excludes_failed_pool_and_records_floor(tmp_path,
         events=Events(),
         run_dir=tmp_path / "run",
     )
-    assert requirements[0].max_capability_tier == 2
+    assert requirements[0].max_capability_tier == 3
     # SH-1: an invalid plan excludes the whole backend pool from reselection.
     # It is a planning-quality failure, so nothing is cooled for later runs.
     assert requirements[1].exclude_pools == frozenset({"claude"})
     assert "cc/claude-haiku" in requirements[1].exclude_routes
-    assert [r["max_capability_tier"] for r in rows if r["type"] == "plan_started"] == [2, 2]
+    assert [r["max_capability_tier"] for r in rows if r["type"] == "plan_started"] == [3, 3]
     failed = next(r for r in rows if r.get("state") == "PLANNER_FAILED")
     assert failed["category"] == "plan_invalid"
     assert not [r for r in rows if r["type"] in {"cooldown", "record_failure"}]
@@ -1125,3 +1125,372 @@ def test_invalid_output_file_is_owner_only_and_never_follows_symlinks(tmp_path: 
     link.symlink_to(target)
     assert _persist_invalid_plan_output("x", tmp_path, attempt=2, phase="initial") is None
     assert target.read_text() == "keep"
+
+
+# ---------------------------------------------------------------------------
+# ADR-051 band integration: plan_with_failover fail-closed and band record
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_plan_with_failover_raises_on_nan_frontier_config(tmp_path, monkeypatch) -> None:
+    """Blocking #3 / verify #11: NaN frontier config fails closed with PlannerBandConfigError."""
+    from verdict.orchestration.contracts import CapacityClass, EligibilityStage, RouteVerdict
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+    from verdict.planner_band import PlannerBandConfigError
+
+    monkeypatch.setenv("VERDICT_PLANNER_FRONTIER_TOP", "nan")
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS", "off")
+
+    class Selector:
+        def select(self, req, *, now):
+            return RouteVerdict(
+                "cc/model", "cc", EligibilityStage.SELECTED, None, "ok", CapacityClass.SUBSCRIPTION
+            ), ()
+
+        def record_failure(self, route, failure, *, now):
+            pass
+
+    class Events:
+        def emit(self, kind, **data):
+            pass
+
+    with pytest.raises(PlannerBandConfigError, match="invalid_planner_band_config"):
+        await plan_with_failover(
+            "g",
+            repo=tmp_path,
+            selector=Selector(),  # type: ignore[arg-type]
+            executor=None,  # type: ignore[arg-type]
+            classifier=FailureIntelligence(),
+            events=Events(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_plan_with_failover_empty_band_fails_closed(tmp_path, monkeypatch) -> None:
+    """Blocking #3: when metadata loads but no routes are rated, fail with PlannerBandError."""
+
+    # Import test helpers that share the same time domain
+    from tests.test_planner_band import NOW, _record, _snapshot
+    from verdict.orchestration.contracts import CapacityClass, EligibilityStage, RouteVerdict
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+    from verdict.planner_band import PlannerBandError
+
+    # A snapshot with a record that has aa_coding but NOT aa_intelligence → no rated models
+    snap = _snapshot(_record("p/model", ("cc/model",)))
+    monkeypatch.setattr("verdict.metadata.store.load_store", lambda: snap)
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS", "off")
+
+    class Selector:
+        def inventory_route_ids(self):
+            return ["cc/model"]
+
+        def set_planner_band(self, band):
+            pass
+
+        def select(self, req, *, now):
+            return RouteVerdict(
+                "cc/model", "cc", EligibilityStage.SELECTED, None, "ok", CapacityClass.SUBSCRIPTION
+            ), ()
+
+        def record_failure(self, route, failure, *, now):
+            pass
+
+    class Events:
+        def emit(self, kind, **data):
+            pass
+
+    with pytest.raises(PlannerBandError, match="no_frontier_or_fallback_planner"):
+        await plan_with_failover(
+            "g",
+            repo=tmp_path,
+            selector=Selector(),  # type: ignore[arg-type]
+            executor=None,  # type: ignore[arg-type]
+            classifier=FailureIntelligence(),
+            events=Events(),
+            now=lambda: NOW,
+        )
+
+
+@pytest.mark.asyncio
+async def test_plan_started_event_has_all_band_record_fields(tmp_path, monkeypatch) -> None:
+    """Blocking #6: plan_started planner_band has all 9 PlannerBandResult fields."""
+    from tests.test_planner_band import NOW, _record, _score, _snapshot
+    from verdict.orchestration.contracts import (
+        CapacityClass,
+        EligibilityStage,
+        NodeKind,
+        RouteVerdict,
+        WorkerTerminal,
+        WorkGraph,
+        WorkNode,
+    )
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+
+    # Snapshot with one route that has aa_intelligence → it will be in the frontier band
+    snap = _snapshot(_record("p/model", ("cc/model",), aa_intelligence=_score(90.0)))
+    monkeypatch.setattr("verdict.metadata.store.load_store", lambda: snap)
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS", "off")
+
+    rows = []
+
+    class Selector:
+        def inventory_route_ids(self):
+            return ["cc/model"]
+
+        def set_planner_band(self, band):
+            pass
+
+        def select(self, req, *, now):
+            return RouteVerdict(
+                "cc/model", "cc", EligibilityStage.SELECTED, None, "ok", CapacityClass.SUBSCRIPTION
+            ), ()
+
+        def record_failure(self, route, failure, *, now):
+            pass
+
+    class Events:
+        def emit(self, kind, **data):
+            rows.append({"type": kind, **data})
+
+    async def plan(self, goal, **kwargs):
+        return WorkGraph(
+            goal, (WorkNode("r", "research", kind=NodeKind.RESEARCH),)
+        ), WorkerTerminal(ok=True)
+
+    monkeypatch.setattr(FrontierPlanner, "plan", plan)
+    await plan_with_failover(
+        "g",
+        repo=tmp_path,
+        selector=Selector(),  # type: ignore[arg-type]
+        executor=None,  # type: ignore[arg-type]
+        classifier=FailureIntelligence(),
+        events=Events(),
+        run_dir=tmp_path / "run",
+        now=lambda: NOW,
+    )
+
+    plan_started = next(r for r in rows if r["type"] == "plan_started")
+    band_record = plan_started.get("planner_band")
+    assert band_record is not None, "planner_band should be present in plan_started event"
+    # All 9 keys from PlannerBandResult.to_dict()
+    expected_keys = {
+        "required",
+        "used",
+        "reason",
+        "rank",
+        "rated_models",
+        "cutoff",
+        "rating",
+        "metric",
+        "fetched_at",
+    }
+    assert set(band_record.keys()) == expected_keys, f"wrong keys: {set(band_record.keys())}"
+    assert band_record["used"] in {"frontier", "fallback"}, (
+        f"used={band_record['used']!r} not in frontier/fallback"
+    )
+
+
+@pytest.mark.asyncio
+async def test_plan_with_failover_fails_closed_when_metadata_store_unavailable(
+    tmp_path, monkeypatch
+) -> None:
+    """Item 1: metadata store OSError → PlannerBandError, run BLOCKED (not silently skipped)."""
+    from verdict.orchestration.contracts import CapacityClass, EligibilityStage, RouteVerdict
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+    from verdict.planner_band import PlannerBandError
+
+    def _raise_oserror() -> None:
+        raise OSError("metadata store not found")
+
+    monkeypatch.setattr("verdict.metadata.store.load_store", _raise_oserror)
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS", "off")
+
+    class Selector:
+        def inventory_route_ids(self) -> list[str]:
+            return ["cc/model"]
+
+        def set_planner_band(self, band: object) -> None:
+            pass
+
+        def select(self, req: object, *, now: object) -> object:
+            return RouteVerdict(
+                "cc/model", "cc", EligibilityStage.SELECTED, None, "ok", CapacityClass.SUBSCRIPTION
+            ), ()
+
+        def record_failure(self, route: object, failure: object, *, now: object) -> None:
+            pass
+
+    class Events:
+        def emit(self, kind: str, **data: object) -> None:
+            pass
+
+    with pytest.raises(PlannerBandError, match="no_frontier_or_fallback_planner"):
+        await plan_with_failover(
+            "g",
+            repo=tmp_path,
+            selector=Selector(),  # type: ignore[arg-type]
+            executor=None,  # type: ignore[arg-type]
+            classifier=FailureIntelligence(),
+            events=Events(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_plan_with_failover_blocks_when_band_has_only_metered_routes(
+    tmp_path, monkeypatch
+) -> None:
+    """Item 2: EligibilityLadder METERED filter → plan_with_failover raises OrchestrationError.
+
+    When the only admissible frontier route is METERED, the EligibilityLadder's
+    _assess_all band re-sort filter removes it from candidates and returns None.
+    plan_with_failover must then block (OrchestrationError) rather than dispatching
+    to the METERED route.  The mock simulates what a real fixed ladder returns.
+    """
+    from tests.test_planner_band import NOW, _record, _score, _snapshot
+    from verdict.orchestration.contracts import (
+        CapacityClass,
+        EligibilityStage,
+        OrchestrationError,
+        RouteVerdict,
+    )
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+
+    # One rated route in the frontier band.  It is METERED; the ladder should not select it.
+    snap = _snapshot(
+        _record("p/metered-model", ("cc/metered-model",), aa_intelligence=_score(90.0))
+    )
+    monkeypatch.setattr("verdict.metadata.store.load_store", lambda: snap)
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS", "off")
+
+    plan_started_routes: list[str] = []
+
+    class Selector:
+        """Simulates EligibilityLadder after the METERED exclusion fix.
+
+        select() returns None for the planner role once the band is set,
+        reflecting that all frontier candidates were METERED and filtered.
+        """
+
+        _band_set: bool = False
+
+        def inventory_route_ids(self) -> list[str]:
+            return ["cc/metered-model"]
+
+        def set_planner_band(self, band: object) -> None:
+            self._band_set = True
+
+        def select(self, req: object, *, now: object) -> object:
+            if self._band_set and getattr(req, "arena_role", None) == "planner":
+                # All METERED candidates were filtered: no admissible planner.
+                return None, (
+                    RouteVerdict(
+                        "cc/metered-model",
+                        "cc",
+                        EligibilityStage.AVAILABLE,
+                        EligibilityStage.AVAILABLE,
+                        "metered_excluded_by_planner_band",
+                        CapacityClass.METERED,
+                    ),
+                )
+            # Should not be reached with arena_role="planner" and band set.
+            return RouteVerdict(
+                "cc/metered-model",
+                "cc",
+                EligibilityStage.SELECTED,
+                None,
+                "ok",
+                CapacityClass.METERED,
+            ), ()
+
+        def record_failure(self, route: object, failure: object, *, now: object) -> None:
+            pass
+
+    class Events:
+        def emit(self, kind: str, **data: object) -> None:
+            if kind == "plan_started":
+                plan_started_routes.append(str(data.get("route_id", "")))
+
+    with pytest.raises(OrchestrationError, match="none eligible"):
+        await plan_with_failover(
+            "g",
+            repo=tmp_path,
+            selector=Selector(),  # type: ignore[arg-type]
+            executor=None,  # type: ignore[arg-type]
+            classifier=FailureIntelligence(),
+            events=Events(),
+            now=lambda: NOW,
+        )
+    # The METERED route must never be dispatched.
+    assert plan_started_routes == [], "METERED planner route must not appear in plan_started"
+
+
+def test_eligibility_ladder_band_re_sort_excludes_metered_candidates(tmp_path: Path) -> None:
+    """Item 2 (direct): EligibilityLadder._assess_all filters METERED after band re-sort.
+
+    With arena_role='planner' and a band injected, METERED routes must be absent
+    from candidates even when they appear in the band's frontier.
+    """
+    from datetime import datetime, timezone
+
+    from verdict.orchestration.contracts import CapacityClass, TaskRequirements
+    from verdict.orchestration.eligibility import EligibilityLadder
+    from verdict.planner_band import BandComputation
+
+    now = datetime.now(timezone.utc)
+    # Minimal inventory: one route that will be classified METERED via positive pricing.
+    # Using an OpenRouter route with a paid model so classify_route_capacity → METERED.
+    row = {
+        "route_id": "openrouter/openai/gpt-4o",
+        "model": "openrouter/openai/gpt-4o",
+        "max_output_tokens": 32_000,
+        "capabilities": {"reasoning": True, "coding": True},
+        "pricing": {"input": 5.0, "output": 15.0},  # positive pricing → METERED
+    }
+    conn = {
+        "provider": "openrouter",
+        "authType": "apikey",
+        "isActive": True,
+        "testStatus": "ok",
+        "backoffLevel": 0,
+        "plan_label": "max",
+        "rate_limited_until": None,
+        "import_free_only": False,
+    }
+    ladder = EligibilityLadder(
+        inventory_rows=[row],
+        connections=[conn],
+        probe=lambda rid: type("H", (), {"healthy": True, "category": ""})(),
+        state_path=tmp_path / "elig.json",
+        max_probes_per_select=0,
+        rankings={},
+    )
+    # Inject a band that includes the route.
+    model_key = "openrouter/openai/gpt-4o"
+    band = BandComputation(
+        frontier_model_keys=frozenset({model_key}),
+        fallback_model_keys=frozenset({model_key}),
+        cutoff_frontier=0.0,
+        cutoff_fallback=0.0,
+        rated_models=1,
+        fetched_at="2026-11-23T12:00:00Z",
+        model_scores={model_key: 90.0},
+        model_ranks={model_key: 0},
+    )
+    ladder.set_planner_band(band)
+
+    requirements = TaskRequirements(
+        required_capabilities=frozenset(), arena_role="planner", role_ordering="strongest_first"
+    )
+    _assessments, candidates = ladder._assess_all(requirements, now)
+    # Every METERED candidate must be absent from the candidates list.
+    metered_in_candidates = [a for a in candidates if a.capacity == CapacityClass.METERED]
+    assert metered_in_candidates == [], (
+        f"METERED routes must be excluded from planner candidates; found: "
+        f"{[a.route_id for a in metered_in_candidates]}"
+    )
