@@ -282,6 +282,27 @@ async def run_demo(out: Path) -> int:
     _scoped["VERDICT_DECISION_SIGNALS_MODE"] = "SHADOW"
     _saved = {key: os.environ.get(key) for key in _scoped}
     os.environ.update(_scoped)
+    # CP2 removed the oauth → SUBSCRIPTION rule (design.md CP2 §2.2).
+    # Declare the fixture "demo-sub/oauth" connection as subscription via the
+    # operator overlay so the admission ladder admits it at the right tier.
+    from verdict.paths import verdict_home as _verdict_home
+
+    _vh = _verdict_home()
+    _vh.mkdir(parents=True, exist_ok=True)
+    (_vh / "connection_billing_overlay.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "provider": "demo-sub",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    }
+                ]
+            }
+        )
+    )
     try:
         repo = _make_repo(root)
         rows, conns = fixture_inventory(), fixture_connections()
