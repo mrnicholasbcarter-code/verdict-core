@@ -53,7 +53,7 @@ which is the second amendment to ADR-041's initial default.
 
 ## Decisions
 
-The eight operator decisions (D36 / ADR-053) govern this change. Implementation
+The eight operator decisions (D38 / ADR-053) govern this change. Implementation
 details below are drawn from the research and are not operator decisions.
 
 **Route enforcement (Decision 1):** The OpenCode config written per attempt sets

@@ -420,7 +420,22 @@ weakened test. Reversible.
 * **Record:** [ADR-051](../adr/ADR-051-planner-frontier-from-ratings.md),
   `openspec/changes/frontier-planner-ratings/`. Not implemented yet.
 
-## D36: OpenCode becomes the default worker executor; autodev adds it as the model-tier coding rung (operator, 2026-11-23; ADR-053, accepted)
+## D37: Verdict builds a GitHub issue through to a ready PR (operator, 2026-11-23; ADR-052, accepted)
+
+* **Decision:**
+  * The operator names an issue with `verdict build-issue N`. The issue must be labelled type/story, not be operator-only, have been opened by the operator, have no open dependencies, and have Goal and Acceptance check sections.
+  * Verdict drafts an OpenSpec change as a design PR. Building starts only after the operator approves it.
+  * Verdict pushes through vgate to `verdict/issue-N-<slug>` and opens a draft PR. The PR is marked ready only after a cross-family review and green CI. If the in-run reviewer was from the same family, an extra OpenCodeReview from another family runs first; if none is available, the PR stays a draft.
+  * When CI goes red, a bounded fix loop gets 2 tries.
+  * Verdict uses the existing gh login.
+  * The operator merges.
+  * After the merge, Verdict reinstalls, runs the acceptance check live and drafts the DoD file.
+  * Build order: deliver, then build-issue, then spec drafting, then the CI loop (pr-watch moves to GitHub as part of it), then a trial on #1214.
+  * Verdict builds the pipeline itself, through orchestrate.
+* **Process:** agreed over three rounds of researched options.
+* **Record:** [ADR-052](../adr/ADR-052-github-issue-to-ready-pr.md), `openspec/changes/verdict-deliver/`. Not implemented yet.
+
+## D38: OpenCode becomes the default worker executor; autodev adds it as the model-tier coding rung (operator, 2026-11-23; ADR-053, accepted)
 
 * **Decision:** OpenCode (v2.3.2) becomes the DEFAULT worker executor for `verdict orchestrate`
   as soon as the adapter merges. Workers' model calls go through `verdict serve` (:8000), never
@@ -437,18 +452,3 @@ weakened test. Reversible.
 * **Amends:** ADR-041 default worker executor.
 * **Record:** [ADR-053](../adr/ADR-053-opencode-worker-adapter.md),
   `openspec/changes/opencode-worker-adapter/`. Not implemented yet.
-
-## D37: Verdict builds a GitHub issue through to a ready PR (operator, 2026-11-23; ADR-052, accepted)
-
-* **Decision:**
-  * The operator names an issue with `verdict build-issue N`. The issue must be labelled type/story, not be operator-only, have been opened by the operator, have no open dependencies, and have Goal and Acceptance check sections.
-  * Verdict drafts an OpenSpec change as a design PR. Building starts only after the operator approves it.
-  * Verdict pushes through vgate to `verdict/issue-N-<slug>` and opens a draft PR. The PR is marked ready only after a cross-family review and green CI. If the in-run reviewer was from the same family, an extra OpenCodeReview from another family runs first; if none is available, the PR stays a draft.
-  * When CI goes red, a bounded fix loop gets 2 tries.
-  * Verdict uses the existing gh login.
-  * The operator merges.
-  * After the merge, Verdict reinstalls, runs the acceptance check live and drafts the DoD file.
-  * Build order: deliver, then build-issue, then spec drafting, then the CI loop (pr-watch moves to GitHub as part of it), then a trial on #1214.
-  * Verdict builds the pipeline itself, through orchestrate.
-* **Process:** agreed over three rounds of researched options.
-* **Record:** [ADR-052](../adr/ADR-052-github-issue-to-ready-pr.md), `openspec/changes/verdict-deliver/`. Not implemented yet.
