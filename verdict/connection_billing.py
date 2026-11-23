@@ -136,10 +136,21 @@ def _load_overlay(
     """Load the operator overlay, returning an empty index when absent or invalid."""
     global _overlay_cache
 
+    now_ns = time.monotonic_ns()
+
+    # Hottest path: no custom env and within TTL — skip verdict_home() entirely.
+    # Tests that exercise overlay loading reset _overlay_cache = None explicitly
+    # (see test_connection_billing.py), so env-change visibility is preserved.
+    if (
+        env is None
+        and _overlay_cache is not None
+        and now_ns - _overlay_cache[3] < _OVERLAY_STAT_TTL_NS
+    ):
+        return _overlay_cache[2]
+
     from verdict.paths import verdict_home
 
     cache_key = verdict_home(env).as_posix()
-    now_ns = time.monotonic_ns()
 
     # Fast path: same home path, recently checked — skip stat().
     if (
