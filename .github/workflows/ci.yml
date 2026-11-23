@@ -27,6 +27,7 @@ jobs:
   # per-job rules: required jobs must succeed; skippable jobs may be skipped.
   changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       code: ${{ steps.set.outputs.code }}
     steps:
@@ -534,6 +535,7 @@ jobs:
     #     client-package-smoke) have result "success" or "skipped"; any
     #     "failure" or "cancelled" still fails this gate.
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: always()
     needs: [test, test-shard, coverage, lint, security, type-check, install-smoke, build, typescript-contract-parity, client-package-smoke]
     steps:
