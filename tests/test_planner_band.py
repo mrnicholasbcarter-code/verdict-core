@@ -41,10 +41,19 @@ from verdict.planner_band import (
 # Test constants
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2026, 11, 23, 12, 0, 0, tzinfo=timezone.utc)
-FETCHED_NEW = "2026-11-23T09:00:00Z"  # 3h before NOW → fresh, newest batch
-FETCHED_OLD = "2026-11-22T09:00:00Z"  # 27h before NOW → stale (> 12h)
-FETCHED_MID = "2026-11-23T06:00:00Z"  # 6h before NOW → fresh but older batch
+# NOW follows the real clock (truncated to the hour) because integration tests
+# import these fixtures and run production code that checks freshness against
+# ``datetime.now()``. A fixed date here goes stale 12 h later and fails them.
+NOW = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+
+
+def _iso(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+FETCHED_NEW = _iso(NOW - timedelta(hours=3))  # fresh, newest batch
+FETCHED_OLD = _iso(NOW - timedelta(hours=27))  # stale (> 12h)
+FETCHED_MID = _iso(NOW - timedelta(hours=6))  # fresh but older batch
 DEFAULT_CONFIG = PlannerBandConfig(frontier_top=0.20, fallback_top=0.30)
 
 
