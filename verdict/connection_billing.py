@@ -348,3 +348,51 @@ def check_drift(package_root: Path | None = None) -> dict[str, Any]:
         "installed_version": installed_version,
         "installed_sha256": installed_sha,
     }
+
+
+def check_overlay_conflicts(env: Mapping[str, str] | None = None) -> list[str]:
+    """Return warning strings for overlay entries where an alias and its canonical both appear.
+
+    The canonical entry wins (see ``_load_overlay``), but having both is almost always
+    a configuration mistake worth flagging in the doctor output.
+
+    Returns an empty list when the overlay is absent, invalid, or conflict-free.
+    """
+    path = _overlay_path(env)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not _validate_overlay(raw):
+        return []
+
+    # Scan for entries where both an alias name and the canonical name appear for the same key.
+    seen_canonical: set[tuple[str, str | None]] = set()
+    alias_entries: dict[tuple[str, str | None], str] = {}  # canonical key → alias name used
+
+    for entry in raw.get("entries", []):
+        billing = str(entry.get("billing", BILLING_UNKNOWN))
+        if billing == BILLING_UNKNOWN:
+            continue
+        raw_provider = str(entry["provider"]).lower()
+        canonical = _BILLING_PROVIDER_ALIASES.get(raw_provider, raw_provider)
+        auth_type: str | None = entry.get("authType")
+        if isinstance(auth_type, str):
+            auth_type = auth_type.lower()
+        key = (canonical, auth_type)
+        if raw_provider == canonical:
+            seen_canonical.add(key)
+        else:
+            alias_entries[key] = raw_provider
+
+    warnings: list[str] = []
+    for key, alias_name in alias_entries.items():
+        if key in seen_canonical:
+            canonical_name, auth = key
+            auth_str = f", authType={auth!r}" if auth is not None else ""
+            warnings.append(
+                f"Billing overlay: both alias '{alias_name}' and canonical "
+                f"'{canonical_name}' appear for the same key (provider='{canonical_name}'"
+                f"{auth_str}); canonical wins, alias entry is redundant — remove it."
+            )
+    return warnings

@@ -425,11 +425,10 @@ weakened test. Reversible.
 * **Decision:** a positive declared price in the OmniRoute catalog row is evidence of
   METERED capacity only when the connection uses API-key authentication.  An OAuth or
   account connection with no billing catalog entry stays UNKNOWN rather than being
-  classified METERED from a list price alone.  The rationale: list prices are set by the
-  API-key billing model; OAuth and account connections use a subscription or platform pool
-  whose billing Verdict cannot infer from the per-request price.  Observed facts (a
+  classified METERED from a list price alone.  Observed facts (a
   `billing_402_metered` health-cache entry from a route-scoped 402, or a nonzero charge
-  header) still apply regardless of auth type.
+  header) still apply regardless of auth type.  A declared zero price makes a route FREE
+  on any connection type (operator, 2026-11-23).
 * **Supersedes:** nothing (narrows the scope of D32 fact 1 without contradicting its
   general rule — a route is still PAID only from declared or observed facts).
 * **Record:** [ADR-049](../adr/ADR-049-cost-policy-and-unknown-handling.md) (amended, fact 1),

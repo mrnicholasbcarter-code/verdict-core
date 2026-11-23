@@ -137,7 +137,13 @@ def main() -> None:
     if not args.force_shrink and _OUTPUT_PATH.exists():
         try:
             _prev = json.loads(_OUTPUT_PATH.read_text(encoding="utf-8"))
-            _prev_count = len(_prev.get("entries", []))
+            if not isinstance(_prev, dict) or not isinstance(_prev.get("entries"), list):
+                raise ValueError(
+                    f"Existing snapshot has wrong shape: expected "
+                    f'{{"entries": [...]}}, got {type(_prev).__name__} with keys '
+                    f"{list(_prev.keys()) if isinstance(_prev, dict) else '(not a dict)'}"
+                )
+            _prev_count = len(_prev["entries"])
             if len(entries) < _prev_count:
                 print(
                     f"ERROR: parsed {len(entries)} entries but the existing snapshot has "
@@ -147,7 +153,7 @@ def main() -> None:
                 )
                 sys.exit(1)
         except (ValueError, KeyError):
-            pass  # Existing file is corrupt — let the write proceed and repair it.
+            pass  # Existing file is corrupt or wrong shape — let the write proceed and repair it.
 
     snapshot = {
         "_meta": {

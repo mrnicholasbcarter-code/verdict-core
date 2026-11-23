@@ -446,6 +446,23 @@ def _doctor_advisory_rankings(diag: DoctorDiagnostics) -> None:
         diag.sections.append(("Advisory rankings", "warn", detail))
 
 
+def _doctor_billing_overlay_conflicts(diag: DoctorDiagnostics) -> None:
+    """Warn when the operator overlay has both an alias name and its canonical for the same key.
+
+    The canonical entry wins, but the duplicate is almost always a configuration mistake.
+    """
+    try:
+        from verdict.connection_billing import check_overlay_conflicts
+
+        warnings = check_overlay_conflicts()
+    except Exception as exc:
+        diag.warnings.append(f"Billing overlay conflict check failed: {exc}")
+        return
+
+    for warning in warnings:
+        diag.warnings.append(warning)
+
+
 def _doctor_billing_catalog_drift(diag: DoctorDiagnostics) -> None:
     """Warn when the installed OmniRoute version or TS file hash differs from the snapshot.
 
@@ -961,6 +978,7 @@ def _collect_doctor_diagnostics(
     _doctor_gateway_lifecycle(diag)
     _doctor_advisory_rankings(diag)
     _doctor_billing_catalog_drift(diag)
+    _doctor_billing_overlay_conflicts(diag)
     # 1d-iii. Verdict's key is DB-backed, never the gateway's env key.
     if gateway_url:
         _doctor_gateway_key(diag, gateway_url)

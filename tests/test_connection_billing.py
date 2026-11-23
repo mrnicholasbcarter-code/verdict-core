@@ -27,6 +27,7 @@ from verdict.connection_billing import (
     SOURCE_OVERLAY,
     SOURCE_SNAPSHOT,
     check_drift,
+    check_overlay_conflicts,
     lookup,
     snapshot_meta,
 )
@@ -281,6 +282,55 @@ class TestOperatorOverlay:
         assert fact.billing == BILLING_SUBSCRIPTION
 
         _cb._overlay_cache = None
+
+    def test_overlay_duplicate_alias_canonical_warns(self, tmp_path: Path) -> None:
+        """check_overlay_conflicts reports both alias 'agy' and canonical 'antigravity' for same key.
+
+        The canonical entry wins (tested separately), but the duplicate is a likely
+        configuration mistake and should produce a doctor warning.
+        """
+        overlay = {
+            "entries": [
+                {
+                    "provider": "agy",
+                    "authType": "oauth",
+                    "billing": "keyless",
+                    "overage": "hard-stop",
+                },
+                {
+                    "provider": "antigravity",
+                    "authType": "oauth",
+                    "billing": "subscription",
+                    "overage": "hard-stop",
+                },
+            ]
+        }
+        (tmp_path / "connection_billing_overlay.json").write_text(json.dumps(overlay))
+        env = {"VERDICT_HOME": str(tmp_path)}
+
+        warnings = check_overlay_conflicts(env=env)
+        assert len(warnings) == 1
+        msg = warnings[0].lower()
+        assert "agy" in msg and "antigravity" in msg
+        assert "alias" in msg or "duplicate" in msg or "canonical" in msg
+
+    def test_overlay_no_conflicts_returns_empty(self, tmp_path: Path) -> None:
+        """check_overlay_conflicts returns [] when overlay has no alias/canonical duplicates."""
+        overlay = {
+            "entries": [
+                {
+                    "provider": "antigravity",
+                    "authType": "oauth",
+                    "billing": "subscription",
+                    "overage": "hard-stop",
+                }
+            ]
+        }
+        (tmp_path / "connection_billing_overlay.json").write_text(json.dumps(overlay))
+        env = {"VERDICT_HOME": str(tmp_path)}
+
+        warnings = check_overlay_conflicts(env=env)
+        assert warnings == []
 
     def test_overlay_absent_returns_snapshot(self, tmp_path: Path) -> None:
         """When no overlay file exists, snapshot is used normally."""
