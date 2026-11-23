@@ -1,3 +1,5 @@
+# Spec Delta
+
 ## ADDED Requirements
 
 ### Requirement: Truncated-empty reply detection
@@ -63,3 +65,14 @@ success.
 - **THEN** `rejected_without_output` is set for the transition edge, relaxing the
   idempotency-key requirement for the next attempt (identical to the inband-credit-refusal
   pattern)
+
+### Requirement: Serve check reply budget allows reasoning overhead
+
+The acceptance serve check SHALL request at least 256 output tokens (`max_tokens`
+in the probe body) so that reasoning models have enough remaining budget to produce
+at least one word after spending tokens on internal reasoning overhead.
+
+#### Scenario: Probe body carries sufficient token budget
+
+- **WHEN** the serve check sends its POST to `/v1/chat/completions`
+- **THEN** the request body has `max_tokens` >= 256

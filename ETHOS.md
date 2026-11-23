@@ -20,7 +20,7 @@ exist to serve this. New work must say how it advances it.
 
 ## NOW
 
-Closeout batch B (selection): five changes have evidence files that pass `check_dod.py` and are archived (`one-capacity-classifier`, `opaque-nested-routes`, `choose-no-confirm-valid-proof`, `supply-task-pools`, `autodev-live-planner-selection`). `autodev-live-planner-selection` still has a DoD part-4 gap: no scheduled job re-runs autodev. `lease-held-selection` and `autodev-executor-ladder` follow once their fresh runs land; `cheapest-sufficient-first` moves to batch D (needs an orchestrate run) and `capacity-from-facts-not-names` and `preflight-floor-and-pool-spread` to batch F (need the certification rehearsal). CP2 (#1245) is in progress. MEM1/MEM2 (#1253/#1254): merged and installed; DoD evidence still open. Discovery: `community-roster-qualification` PR open; `verdict identify --community-roster` accounts for all 222 free-coding-models entries and screens the matching routes; installed-main evidence and a coding-task receipt are post-merge.
+Next focus (operator, 2026-11-23): Verdict builds a GitHub issue through to a PR ready for the operator's merge ([ADR-052](docs/adr/ADR-052-github-issue-to-ready-pr.md), D37). Delivery comes first (`openspec/changes/verdict-deliver`), and Verdict builds each pipeline story itself through `verdict orchestrate`. In flight: ADR-051 frontier planner (#1266) and CP2 connection billing facts (#1268). Merged and installed on 2026-11-23: #1259 (community roster), #1260 (context-lift supersede), #1261 and #1267 (relay empty reply, serve budget), #1262 (contested proof rescreen), #1264 (pinned metered executor). Their DoD evidence comes after the freshness window.
 
 ## Decisions
 

@@ -44,6 +44,12 @@ RED_EXIT = 3
 NOTIFY_MODES = ("off", "dry-run", "send")
 ROUTE_TASK = "Write a Python function that returns the sum of two integers."
 _ELIGIBLE_STAGES = {"TASK_ELIGIBLE", "SELECTED"}
+#: Maximum output tokens requested by the serve-check probe.  Must be large
+#: enough that reasoning models have room to produce at least one word after
+#: spending tokens on internal reasoning overhead.  16 was too small: with an
+#: ~18.5k-token context pack, Gemini Flash consumed all 16 on reasoning and
+#: returned finish_reason "length" with empty content.  256 is a safe floor.
+_SERVE_PROBE_MAX_TOKENS = 256
 
 
 class AcceptanceBusyError(RuntimeError):
@@ -759,7 +765,7 @@ def _serve_check(gateway: str, startup_seconds: float, log: IO[str]) -> Check:
         body = {
             "model": "default",
             "messages": [{"role": "user", "content": "Reply with the single word OK."}],
-            "max_tokens": 16,
+            "max_tokens": _SERVE_PROBE_MAX_TOKENS,
         }
         request = urllib.request.Request(
             base + "/v1/chat/completions",
