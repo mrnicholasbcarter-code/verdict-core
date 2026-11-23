@@ -1,3 +1,5 @@
+# Tasks
+
 ## 1. Implementation
 
 - [x] 1.1 Failing tests: restricted key plus valid snapshot gives FREE routes and routes_checked > 0; no snapshot gives 0; stale, tampered or missing snapshot fails with a named error

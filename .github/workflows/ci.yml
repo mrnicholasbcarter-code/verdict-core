@@ -353,6 +353,11 @@ jobs:
         run: python scripts/check_proof_paths.py --base "$BASE_SHA"
       - name: openspec validate --all --strict (pinned 1.13.2)
         run: npx --yes @fission-ai/openspec@1.13.2 validate --all --strict --no-interactive
+      - name: Vendored OpenSpec validator (touched changes)
+        if: steps.base.outputs.sha != ''
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: python scripts/check_openspec_vendor.py --base "$BASE_SHA"
       - name: Touched OpenSpec changes have no open tasks (label wip skips)
         if: steps.base.outputs.sha != ''
         env:
