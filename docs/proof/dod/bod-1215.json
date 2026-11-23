@@ -24,7 +24,7 @@
       "expect_exit_code": 0,
       "first_run": {
         "at": "2026-11-23T19:05:30Z",
-        "sha": "59957ae60d9b1b851e7db598b8dcdd8a4fd46bc4",
+        "sha": "ebc11cc8eab1c9f60bdb8af88f01085763f26f26",
         "environment": "operator-host",
         "command": "BEFORE_E=$(sha256sum ~/.verdict/session-evidence.jsonl 2>/dev/null | awk '{print $1}' || echo MISSING) && BEFORE_P=$(sha256sum ~/.verdict/prove-at-rest/state.json 2>/dev/null | awk '{print $1}' || echo MISSING) && ~/.local/share/verdict/installed-main/.venv/bin/python ~/.local/share/verdict/installed-main/scripts/demo_orchestrate.py --out $(mktemp -d) && AFTER_E=$(sha256sum ~/.verdict/session-evidence.jsonl 2>/dev/null | awk '{print $1}' || echo MISSING) && AFTER_P=$(sha256sum ~/.verdict/prove-at-rest/state.json 2>/dev/null | awk '{print $1}' || echo MISSING) && [ \"$BEFORE_E\" = \"$AFTER_E\" ] && [ \"$BEFORE_P\" = \"$AFTER_P\" ] && echo \"ISOLATION OK: live stores byte-identical\"",
         "real_state_marker": "VERDICT COMPLETE",
@@ -36,7 +36,7 @@
       },
       "fresh_run": {
         "at": "2026-11-23T19:35:40Z",
-        "sha": "59957ae60d9b1b851e7db598b8dcdd8a4fd46bc4",
+        "sha": "ebc11cc8eab1c9f60bdb8af88f01085763f26f26",
         "environment": "operator-host",
         "command": "BEFORE_E=$(sha256sum ~/.verdict/session-evidence.jsonl 2>/dev/null | awk '{print $1}' || echo MISSING) && BEFORE_P=$(sha256sum ~/.verdict/prove-at-rest/state.json 2>/dev/null | awk '{print $1}' || echo MISSING) && ~/.local/share/verdict/installed-main/.venv/bin/python ~/.local/share/verdict/installed-main/scripts/demo_orchestrate.py --out $(mktemp -d) && AFTER_E=$(sha256sum ~/.verdict/session-evidence.jsonl 2>/dev/null | awk '{print $1}' || echo MISSING) && AFTER_P=$(sha256sum ~/.verdict/prove-at-rest/state.json 2>/dev/null | awk '{print $1}' || echo MISSING) && [ \"$BEFORE_E\" = \"$AFTER_E\" ] && [ \"$BEFORE_P\" = \"$AFTER_P\" ] && echo \"ISOLATION OK: live stores byte-identical\"",
         "real_state_marker": "VERDICT COMPLETE",
@@ -49,7 +49,7 @@
     }
   ],
   "freshness_window_hours": 0.5,
-  "stays_true_job": "GitHub Actions ci-ok job (run 45250590926, job 137963855448) on sha 78e5a27d, started 2026-11-23T19:35:52Z, completed 2026-11-23T19:44:27Z: success. 78e5a27d includes L1a changes (59957ae6 is ancestor). Tests test_demo_orchestrate_leaves_session_evidence_and_passport_store_unchanged on every push to main and every PR.",
+  "stays_true_job": "GitHub Actions ci-ok job (run 45250590926, job 137963855448) on sha 78e5a27d, started 2026-11-23T19:35:52Z, completed 2026-11-23T19:44:27Z: success. 78e5a27d includes L1a changes (59957ae6 is ancestor). Tests test_demo_orchestrate_leaves_session_evidence_and_passport_store_unchanged on every push to main and every PR. Acceptance runs (first, fresh, parent confirmation) used installed-main ebc11cc8eab1c9f60bdb8af88f01085763f26f26, which contains merged sha 59957ae60d9b1b851e7db598b8dcdd8a4fd46bc4 as an ancestor.",
   "setup_doctor": {
     "status": "not_applicable",
     "reason": "repo-tooling story; no service installation, no verdict/ code changes in merged commit"
