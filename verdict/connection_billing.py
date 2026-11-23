@@ -162,6 +162,10 @@ def _load_overlay(
             return _overlay_cache[2]
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        # Cache the miss with a sentinel mtime so callers in a tight loop
+        # (e.g. a 7000-route inventory view) don't repeat the stat syscall
+        # for every route within the 100ms TTL window.
+        _overlay_cache = (cache_key, -1, {}, now_ns)
         return {}
     if not _validate_overlay(raw):
         return {}
