@@ -1,3 +1,5 @@
+# Spec Delta
+
 ## ADDED Requirements
 
 ### Requirement: Identify SHALL read connection evidence from a valid connections snapshot
