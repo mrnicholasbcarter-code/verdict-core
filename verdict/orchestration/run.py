@@ -453,20 +453,12 @@ async def plan_with_failover(
         except Exception:
             _pb_meta = None
 
-        _eval_fn = getattr(selector, "evaluate", None)
-        if callable(_eval_fn):
-            _inv_req = TaskRequirements(
-                required_capabilities=PLANNER_REQUIRED_CAPABILITIES,
-                coding=True,
-                reasoning=True,
-                frontier_worthy=True,
-                min_context_tokens=PLANNER_MIN_CONTEXT_TOKENS,
-                task_family=task_family,
-                role_ordering="strongest_first",
-                arena_role="planner",
-            )
-            _pb_verdicts = _eval_fn(_inv_req, now=now())
-            _pb_routes = [str(v.route_id) for v in _pb_verdicts if "/" in str(v.route_id)]
+        # Read inventory from _rows directly: calling evaluate() or select() here
+        # would trigger load_verified_outcome_observations as a side-effect and
+        # double-count the subscription usage call that select() makes later.
+        _raw_rows = getattr(selector, "_rows", None)
+        if isinstance(_raw_rows, dict):
+            _pb_routes = [rid for rid in _raw_rows if isinstance(rid, str) and "/" in rid]
             _orch_band = compute_planner_bands(
                 _pb_routes, _pb_meta, None, config=_pb_config, now=now()
             )
