@@ -1,4 +1,7 @@
 # Tasks
+
+## 1. Implementation
+
 - [x] Add red regression tests before production changes.
 - [x] Add loopback-only snapshot capture and private atomic writes.
 - [x] Validate schema, freshness, payload digest and sanitized evidence.
