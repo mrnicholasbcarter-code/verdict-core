@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import cached_property, lru_cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from verdict.metadata.mapping import IdentityMap, load_identity_map
@@ -78,9 +79,9 @@ class MetadataSnapshot:
 
     schema_version: str
     refreshed_at: str
-    sources: dict[str, SourceStatus]
+    sources: Mapping[str, SourceStatus]
     records: tuple[ModelMetadataRecord, ...]
-    mapping: dict[str, Any] = field(default_factory=dict)
+    mapping: Mapping[str, Any] = field(default_factory=dict)
     drops: tuple[MetadataDrop, ...] = ()
     conflicts: tuple[FieldConflict, ...] = ()
 
@@ -90,6 +91,12 @@ class MetadataSnapshot:
         by_id = [item.id for item in self.records]
         if len(by_id) != len(set(by_id)):
             raise ModelMetadataError("snapshot records must have unique ids")
+        # Wrap mutable dicts in MappingProxyType so the frozen snapshot cannot
+        # be mutated by callers, including those that share the lru_cache copy.
+        # dict() copies the input so a live dict passed by the caller cannot
+        # be mutated through the proxy after construction.
+        object.__setattr__(self, "sources", MappingProxyType(dict(self.sources)))
+        object.__setattr__(self, "mapping", MappingProxyType(dict(self.mapping)))
 
     def record_by_id(self, models_dev_id: str) -> ModelMetadataRecord | None:
         return self._records_by_id.get(models_dev_id)
