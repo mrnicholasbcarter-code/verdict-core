@@ -1182,8 +1182,13 @@ def _capacity_for_row(
     row: Mapping[str, Any],
     connection: Mapping[str, Any] | None,
     openrouter_free_set: OpenRouterFreeSet | None = None,
+    *,
+    _free_set_preloaded: bool = False,
 ) -> tuple[CapacityClass, str]:
-    if openrouter_free_set is None:
+    # When _free_set_preloaded is True the caller already ran load_openrouter_free_set
+    # (possibly returning None) and we must not load it again.  This avoids 7 k
+    # repeated default_cache_path() / Path.resolve() calls in a projection loop.
+    if not _free_set_preloaded:
         openrouter_free_set = load_openrouter_free_set(refresh=False)
     cls, _, evidence = _classify_capacity(
         connection, row, route_id=str(row.get("id") or ""), openrouter_free_set=openrouter_free_set
@@ -1258,6 +1263,7 @@ def _classify_row(
     conn_index: Mapping[str, list[Mapping[str, Any]]],
     cd_index: _CooldownIndex,
     contradictory: set[str],
+    openrouter_free_set: OpenRouterFreeSet | None = None,
 ) -> VerifiedModelRow:
     provider = _resolve_provider_for_row(row, route_id)
     owned = str(row.get("owned_by", "") or "").lower()
@@ -1270,7 +1276,9 @@ def _classify_row(
         c for c in _active_connections_for(provider_names, conn_index) if c.get("isActive") is True
     ]
     connection = active_conns[0] if active_conns else None
-    capacity, capacity_evidence = _capacity_for_row(row, connection)
+    capacity, capacity_evidence = _capacity_for_row(
+        row, connection, openrouter_free_set=openrouter_free_set, _free_set_preloaded=True
+    )
     price, price_known = _marginal_price(row)
 
     restrictions: list[str] = []
@@ -2076,6 +2084,10 @@ def project_verified_models(
     )
     cd_index = _index_cooldowns(all_cooldowns)
 
+    # Load the OpenRouter free set once per projection so the per-row
+    # _capacity_for_row calls do not each rebuild the cache path and stat().
+    openrouter_free_set = load_openrouter_free_set(refresh=False)
+
     projected: list[VerifiedModelRow] = []
     for route_id in rows_by_id:
         projected.append(
@@ -2087,6 +2099,7 @@ def project_verified_models(
                 conn_index=conn_index,
                 cd_index=cd_index,
                 contradictory=contradictory,
+                openrouter_free_set=openrouter_free_set,
             )
         )
 
