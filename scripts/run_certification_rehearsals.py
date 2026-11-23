@@ -16,7 +16,6 @@ from typing import Any
 
 from verdict.orchestration.connections_snapshot import read_connections_snapshot
 from verdict.orchestration.contracts import (
-    PLANNER_MAX_CAPABILITY_TIER,
     PLANNER_MIN_CONTEXT_TOKENS,
     PLANNER_REQUIRED_CAPABILITIES,
     OrchestrationError,
@@ -96,18 +95,17 @@ def _count(value: Any) -> int | None:
 
 
 def _planner_eligible(row: Any) -> bool:
-    """A screen PASS the frontier planner can admit (same floor as plan_with_failover)."""
+    """A screen PASS meeting the planner capability floors (ADR-051: band filters at runtime).
+
+    After ADR-051 the tier cap is removed: the frontier band filters which
+    routes are actually used for planning.  This check verifies only the static
+    capability floors the band cannot substitute for.
+    """
     if not isinstance(row, dict) or row.get("result") != "pass":
         return False
-    tier, context = row.get("capability_tier"), row.get("context_window")
+    context = row.get("context_window")
     tools_ok = "tools" not in PLANNER_REQUIRED_CAPABILITIES or row.get("supports_tools") is True
-    return (
-        _count(tier) is not None
-        and tier <= PLANNER_MAX_CAPABILITY_TIER
-        and tools_ok
-        and _count(context) is not None
-        and context >= PLANNER_MIN_CONTEXT_TOKENS
-    )
+    return tools_ok and _count(context) is not None and context >= PLANNER_MIN_CONTEXT_TOKENS
 
 
 def _planner_eligible_pools(rows: list[Any]) -> int:
@@ -226,10 +224,8 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict[str, Any]:
         str(PREFLIGHT_MAX_PER_PROVIDER),
         "--max-routes",
         str(PREFLIGHT_MAX_ROUTES),
-        "--max-capability-tier",
-        str(PLANNER_MAX_CAPABILITY_TIER),
-        # The rest of the planner floor: a route below it is skipped without
-        # a probe, so no cap slot goes to a route the planner cannot admit.
+        # ADR-051: tier cap removed; band filters which routes plan at runtime.
+        # Planner capability floors still apply (tools, context window).
         "--min-context-tokens",
         str(PLANNER_MIN_CONTEXT_TOKENS),
         *(["--require-tools"] if "tools" in PLANNER_REQUIRED_CAPABILITIES else []),
@@ -278,8 +274,7 @@ def _run_preflight(root: Path, env: dict[str, str]) -> dict[str, Any]:
         _write_failure(root, {"stage": "preflight", "preflight": summary})
         raise RehearsalConfigurationError(
             "Preflight screen produced no planner-eligible FREE routes "
-            f"(tier<={PLANNER_MAX_CAPABILITY_TIER}, tools, "
-            f"{PLANNER_MIN_CONTEXT_TOKENS // 1000}k context): "
+            f"(tools, {PLANNER_MIN_CONTEXT_TOKENS // 1000}k context): "
             f"routes_checked={summary['routes_checked']}, passed={summary['passed']}."
         )
     if summary["planner_eligible_pools"] < PREFLIGHT_MIN_PLANNER_POOLS:

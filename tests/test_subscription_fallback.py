@@ -138,6 +138,13 @@ async def test_planner_subscription_usage_uses_goal_family(tmp_path, monkeypatch
         ), WorkerTerminal(ok=True)
 
     monkeypatch.setattr("verdict.orchestration.planner.FrontierPlanner.plan", plan)
+    # Rate only "b/capable" so plan_with_failover's band computation excludes "a/strong"
+    # via _non_band_routes, leaving "b/capable" as the only eligible planner.  This keeps
+    # the subscription-usage ordering test valid under ADR-051's fail-closed store requirement.
+    monkeypatch.setattr(
+        "verdict.metadata.store.load_store",
+        lambda: _snapshot(_record("b/capable", ids[1], aa_intelligence=_score(90.0))),
+    )
     events = EventLog(tmp_path / "events.jsonl")
     await plan_with_failover(
         goal,

@@ -917,6 +917,14 @@ class ModelSelector(Protocol):
 
     def record_success(self, route_id: str, *, now: datetime) -> None: ...
 
+    def inventory_route_ids(self) -> list[str]:
+        """Route IDs in the inventory (those with a provider prefix)."""
+        ...
+
+    def set_planner_band(self, band: Any) -> None:
+        """Inject a BandComputation so _assess_all re-sorts planner candidates."""
+        ...
+
 
 class FailureClassifier(Protocol):
     def classify(self, terminal: WorkerTerminal, *, now: datetime) -> FailureClassification: ...

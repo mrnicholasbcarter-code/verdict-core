@@ -71,6 +71,12 @@ class _Selector:
 
     def record_success(self, route_id: str, *, now: datetime) -> None: ...
 
+    def inventory_route_ids(self) -> list[str]:
+        return ["cc/x"]
+
+    def set_planner_band(self, band: object) -> None:
+        pass
+
 
 class _Classifier:
     def classify(self, terminal: WorkerTerminal, *, now: datetime) -> FailureClassification:
@@ -384,9 +390,22 @@ def test_every_event_type_has_narration_including_new_stages() -> None:
 
 
 async def test_run_golden_path_emits_understand_before_plan_started_when_planning(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: Any
 ) -> None:
     """When no graph is supplied, planning runs and emits plan_started; understand precedes it."""
+    from datetime import timedelta
+
+    from tests.test_planner_band import _record, _score
+    from tests.test_planner_band import _snapshot as _pb_snapshot
+
+    # run_golden_path calls plan_with_failover without an explicit now, so it uses
+    # datetime.now(timezone.utc). The fetched_at must be fresh relative to that.
+    _fetched_at = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    monkeypatch.setattr(
+        "verdict.metadata.store.load_store",
+        lambda: _pb_snapshot(_record("cc_x", ("cc/x",), aa_intelligence=_score(90.0, _fetched_at))),
+    )
+
     repo = _repo(tmp_path)
     runs = tmp_path / "runs"
 

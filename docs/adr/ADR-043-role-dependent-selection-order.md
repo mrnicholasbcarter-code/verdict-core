@@ -95,6 +95,14 @@ confirm which policy produced the selection.
   paid quota consumption per DAG node.
 - Planner and reviewer nodes continue to use the highest-rated admitted route,
   preserving decomposition quality.
+- ADR-051 (accepted 2026-11-23) narrows the planner candidate pool further: at
+  runtime, `plan_with_failover` restricts planners to routes whose stripped
+  model key falls in the frontier band (top `VERDICT_PLANNER_FRONTIER_TOP`
+  fraction of `aa_intelligence`-rated models, default 20 %). When the frontier
+  band is empty, it falls back to the fallback band (default 30 %); when that
+  too is empty it falls back to `PLANNER_MAX_CAPABILITY_TIER=2`. This band
+  filter runs on top of the `strongest_first` ordering and does not change the
+  admission invariant.
 - `_probe_order` slices `[:4]` from `_rank_key`: for `cheapest_sufficient_first`
   that captures `(capacity, slack, tokens_known, tokens_float)`; for
   `strongest_first` it captures `(capacity, tokens_known, tokens_float,

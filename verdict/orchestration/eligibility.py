@@ -496,10 +496,29 @@ class EligibilityLadder:
         # Arena advisory snapshot: loaded once on first use; None disables arena rankings.
         self._arena_snapshot_arg = arena_snapshot
         self._arena_snapshot_cache: Any = _DEFAULT_ARENA  # sentinel = not yet loaded
+        # ADR-051: injected planner band for band-based candidate ordering (set via
+        # set_planner_band()).  None means no band override (standard _rank_key ordering).
+        self._planner_band: Any = None
 
     @property
     def admitted(self) -> AdmittedSet | None:
         return self._admitted
+
+    def inventory_route_ids(self) -> list[str]:
+        """Return all inventory route IDs that contain '/' (non-pooled routes).
+
+        Used by ADR-051 band computation in plan_with_failover to get the full
+        inventory without triggering a subscription usage call.
+        """
+        return [r for r in self._rows if "/" in r]
+
+    def set_planner_band(self, band: Any) -> None:
+        """Inject a pre-computed planner band for ADR-051 band-based selection ordering.
+
+        When set, _assess_all re-sorts candidates using (is_metered, -score, cls_order,
+        -aa_coding, route_id) instead of the standard _rank_key when arena_role=="planner".
+        """
+        self._planner_band = band
 
     def _rating_evidence(self) -> tuple[MetadataSnapshot | None, IdentityMap | None]:
         """Metadata snapshot and identity map for ratings, loaded once per ladder."""
@@ -1395,6 +1414,27 @@ class EligibilityLadder:
             getattr(requirements, "role_ordering", "cheapest_sufficient_first") == "strongest_first"
         )
         candidates.sort(key=self._rank_key)
+        # ADR-051: when a planner band has been injected via set_planner_band(), re-sort
+        # candidates using band-based ordering (is_metered, -score, cls_order, -aa_coding,
+        # route_id).  Gated on arena_role="planner" to avoid unintentionally band-ordering
+        # reviewer selection (which also uses strongest_first).
+        _arena_role = getattr(requirements, "arena_role", None)
+        if self._planner_band is not None and _arena_role == "planner":
+            from verdict.planner_band import _sort_key as _pb_sort_key
+
+            _band = self._planner_band
+            _pb_meta, _pb_idmap = self._rating_evidence()
+
+            def _band_rank_key(a: _Assessment) -> tuple[int, float, int, float, str]:
+                return _pb_sort_key(a.route_id, a.capacity, _band, _pb_meta, _pb_idmap, now)
+
+            candidates.sort(key=_band_rank_key)
+        # ADR-051 D5: METERED routes excluded from planner selection until CP1.
+        # Applied unconditionally for arena_role="planner" — not only when a band
+        # is set — so a METERED route is never chosen even before the first band
+        # injection (e.g. during plan_with_failover's initial selection).
+        if _arena_role == "planner":
+            candidates = [a for a in candidates if a.capacity != CapacityClass.METERED]
         return assessments, candidates
 
     def evaluate(

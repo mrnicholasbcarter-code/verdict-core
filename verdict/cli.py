@@ -1548,10 +1548,19 @@ def cmd_autodev(
         # No execution-path decision: select planner from live eligibility ladder,
         # or validate explicit --orchestrator-model against admission.
         if orchestrator_model is None:
+            # Load metadata for band selection (ADR-051); best-effort.
+            try:
+                from verdict.metadata.store import load_store as _load_store_dry
+
+                _meta_dry = _load_store_dry()
+            except Exception:
+                _meta_dry = None
             try:
                 # Same selection as the live path: _live_planner_models needs two
                 # families, so top_n must allow at least two.
-                planner_models = _live_planner_models(selector, top_n=3)
+                planner_models, _band_records_dry = _live_planner_models(
+                    selector, top_n=3, metadata=_meta_dry
+                )
             except AutodevError as exc:
                 _report_autodev_failure(str(exc), output_json=output_json)
                 raise SystemExit(1) from exc
@@ -1654,6 +1663,7 @@ def cmd_autodev(
                 planner_models=planner_models,
                 base_url=base_url,
                 api_key=api_key,
+                planner_band_records=locals().get("_band_records_dry") or {},
             )
         )
         try:

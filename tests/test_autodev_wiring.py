@@ -85,6 +85,49 @@ def repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _permissive_planner_band(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch compute_planner_bands so every inventory route is in the frontier band.
+
+    test_autodev_wiring.py tests autodev wiring, not band computation (that lives in
+    test_planner_band.py).  Without live metadata, bands are empty and
+    ``_live_planner_models`` raises.  This fixture makes every inventory route a
+    frontier candidate so the wiring tests can exercise the planner wiring without
+    a real metadata store.
+
+    Scores are assigned in inventory order (first route = 90, second = 89, …).
+    ADR-051 D5 uses score as the primary sort key (highest score first), with cost
+    class as a tiebreaker only for routes that have an identical score.  A route that
+    appears earlier in the inventory receives a higher band score and therefore sorts
+    first; cost class does not reorder routes with different scores.
+    """
+    from verdict.planner_band import BandComputation, _strip_suffix
+
+    def _permissive_compute(
+        inventory_route_ids: Any, metadata: Any, identity_map: Any, *, config: Any, now: Any
+    ) -> BandComputation:
+        seen: dict[str, int] = {}
+        for route_id in inventory_route_ids:
+            stripped = _strip_suffix(str(route_id))
+            if stripped not in seen:
+                seen[stripped] = len(seen)
+        model_scores = {k: 90.0 - i for k, i in seen.items()}
+        all_stripped = frozenset(seen)
+        model_ranks = {k: i for k, i in seen.items()}
+        return BandComputation(
+            frontier_model_keys=all_stripped,
+            fallback_model_keys=frozenset(),
+            cutoff_frontier=0.0,
+            cutoff_fallback=0.0,
+            rated_models=len(all_stripped),
+            fetched_at="2026-11-23T09:00:00Z",
+            model_scores=model_scores,
+            model_ranks=model_ranks,
+        )
+
+    monkeypatch.setattr("verdict.planner_band.compute_planner_bands", _permissive_compute)
+
+
 def _decomposer(
     plan: Any,
     *,
@@ -810,7 +853,7 @@ def test_pinned_bootstrap_fails_closed_before_probe_on_one_planner_family(
         "verdict.probes.openai_probe_transport",
         lambda *a, **kw: pytest.fail("no probe without a planner"),
     )
-    with pytest.raises(AutodevError, match="at least two model families"):
+    with pytest.raises(AutodevError, match="no_frontier_or_fallback_planner"):
         autodev.prepare_live_autodev(
             "fix", repo, model="provider/model:free", base_url="http://gateway/v1", api_key=None
         )
@@ -1239,7 +1282,7 @@ def test_live_planner_models_fails_closed_with_one_family(monkeypatch: pytest.Mo
         autodev._live_planner_models(_Selector(), top_n=3)
 
     message = str(excinfo.value)
-    assert "at least two model families" in message
+    assert "no_frontier_or_fallback_planner" in message
 
 
 def test_prepare_live_autodev_selected_works_with_two_subscription_families(
@@ -2227,10 +2270,13 @@ def test_prepare_live_autodev_selected_plans_on_live_free_families_only(
         "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
     )
 
-    # With D22 lifted, cc/* and cx/* pools are eligible.
-    # top_n=3 (default), so we get first 3 from different families:
-    # FREE_A (free, family 1), cc/claude-haiku-5-5 (SUBSCRIPTION, claude family 2),
-    # cx/gpt-6 (SUBSCRIPTION, codex family 3)
+    # ADR-051 D5: highest band score first; cost class is a tiebreaker only.
+    # The _permissive_planner_band fixture assigns scores by inventory order
+    # (first route = 90, second = 89, …).  After family deduplication the top 3
+    # unique-family routes by score are FREE_A (score=90), cc/claude-haiku-5-5
+    # (score=88, skips kilocode/alpha which shares FREE_A's family), cx/gpt-6
+    # (score=87).  FREE_B (score=84) is ranked lower and does not make top_n=3.
+    # cc/* and cx/* are eligible (D22 lifted); a higher score beats a lower cost tier.
     planners = configs[0].planner_models
     assert planners == (FREE_A, "cc/claude-haiku-5-5", "cx/gpt-6")
     assert configs[0].model == FREE_A
@@ -2514,7 +2560,7 @@ def test_live_planner_models_includes_cc_cx_pools(
         sync_visibility=False,
     )
 
-    planners = autodev._live_planner_models(selector, top_n=3)
+    planners, _ = autodev._live_planner_models(selector, top_n=3)
 
     # Should include cc/claude-haiku-5-5 and/or cx/gpt-6
     assert any(p.startswith("cc/") or p.startswith("cx/") for p in planners), (
@@ -2604,6 +2650,8 @@ def test_prepare_live_autodev_selected_keeps_premium_grok_off_the_ladder(
         {"route_id": "gc/grok-4.7-build-fast", "reason": "premium_reserved"},
         {"route_id": "gc/grok-4.7", "reason": "premium_reserved"},
     )
+    # ADR-051 D5: gc/grok-4.5 has a higher band score than FREE_A (earlier in
+    # inventory after premium routes are removed), so it sorts first.
     assert configs[0].planner_models == ("gc/grok-4.5", FREE_A)
 
 
@@ -2646,6 +2694,8 @@ def test_prepare_live_autodev_selected_reserves_premium_grok_model_on_any_provid
         {"route_id": "omniroute/gc/grok-4.7-build-fast", "reason": "premium_reserved"},
         {"route_id": "gc/grok-4.7", "reason": "premium_reserved"},
     )
+    # ADR-051 D5: gc/grok-4.5 (rank=0 in surviving routes) has a higher band score
+    # than FREE_A (rank=4 in original inventory), so it sorts first.
     assert configs[0].planner_models == ("gc/grok-4.5", FREE_A)
 
 
@@ -2663,7 +2713,11 @@ def test_live_planner_models_reserves_premium_grok_model_on_any_provider() -> No
         def select(self, requirements: Any, *, now: Any) -> Any:
             return None, tuple(verdicts)
 
-    assert autodev._live_planner_models(_Selector(), top_n=3) == ("gc/grok-4.5", FREE_A)
+    # ADR-051 D5: highest band score first; cost class is a tiebreaker only.
+    # gc/grok-4.5 appears before FREE_A in inventory (after premium routes filtered),
+    # so it receives a higher score and sorts first regardless of cost class.
+    planners, _ = autodev._live_planner_models(_Selector(), top_n=3)
+    assert planners == ("gc/grok-4.5", FREE_A)
 
 
 def test_prepare_live_autodev_selected_drops_x_omniroute_cache_hit_header(

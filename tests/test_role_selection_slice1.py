@@ -1017,7 +1017,10 @@ class TestOrderingThroughAdviseOrder:
     def test_legacy_pick_is_the_live_planner_choice(self) -> None:
         rows = [row("ag/gemini-3-pro"), row("kr/gpt-4.1"), row("cc/claude-opus-5-5")]
         conns = [conn("ag"), conn("kr"), conn("cc")]
-        snapshot = _snapshot({"kr/gpt-4.1": {"aa_coding": (60.0, FRESH_FETCH)}})
+        # ADR-051: legacy pick uses _live_planner_models which now filters by
+        # aa_intelligence band.  Give kr a fresh aa_intelligence score so it
+        # enters the frontier band and becomes the top advisory pick.
+        snapshot = _snapshot({"kr/gpt-4.1": {"aa_intelligence": (60.0, FRESH_FETCH)}})
         admitted, result = _build(
             rows,
             conns,
@@ -1026,7 +1029,7 @@ class TestOrderingThroughAdviseOrder:
             identity_map=IdentityMap(omniroute_to_models_dev={}),
         )
         assert sorted(admitted.ids)[0] == "ag/gemini-3-pro"
-        # D6 rating puts the rated kr route first; D22 keeps cc out of legacy.
+        # ADR-051 band puts the aa_intelligence-rated kr route first; cc absent (not scored).
         assert result.legacy_pick == "kr/gpt-4.1"
 
     def test_stale_strength_leaves_the_d6_order(self) -> None:
