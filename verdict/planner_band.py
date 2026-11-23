@@ -103,10 +103,10 @@ def load_planner_band_config() -> PlannerBandConfig:
 def _parse_fraction(value: str, name: str) -> float:
     try:
         return float(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
         raise PlannerBandConfigError(
             f"invalid_planner_band_config: {name}={value!r} is not a number"
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ def compute_planner_bands(
     If ``metadata`` is ``None`` or no routes have a fresh newest-batch
     ``aa_intelligence`` score, both band sets are empty.
     """
-    from verdict.identify_rank import RATING_MAX_AGE, _fresh
+    from verdict.identify_rank import _fresh
 
     if metadata is None:
         return BandComputation(

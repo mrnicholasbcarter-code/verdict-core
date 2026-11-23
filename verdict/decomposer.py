@@ -91,6 +91,10 @@ class DecompositionConfig:
     """Settings for the single orchestrator call.
 
     ``api_key`` is explicit and never read from the environment or logged.
+
+    ``planner_band_records``: optional ADR-051 band metadata keyed by route id.
+    When present, each attempt dict gains a ``planner_band`` key so the band
+    provenance travels with the plan.
     """
 
     model: str | None = None
@@ -104,6 +108,8 @@ class DecompositionConfig:
     temperature: float = 0.0
     max_units: int = 64
     max_response_bytes: int = 1_048_576
+    # ADR-051: band metadata per planner route, recorded in every attempt.
+    planner_band_records: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -171,7 +177,11 @@ class Decomposer:
                         objective, repo_root=repo_root, evidence=evidence, model=model
                     )
                 except DecompositionError as exc:
-                    attempts.append({"model": model, "error": str(exc)})
+                    attempt: dict[str, Any] = {"model": model, "error": str(exc)}
+                    band = self.config.planner_band_records.get(model)
+                    if band:
+                        attempt["planner_band"] = band
+                    attempts.append(attempt)
                     last = exc
                     if isinstance(exc.__cause__, RedirectRefused):
                         raise DecompositionError(
@@ -181,7 +191,11 @@ class Decomposer:
                         break
                     evidence = _replan_evidence(evidence, exc)
                 else:
-                    attempts.append({"model": result.model, "error": ""})
+                    ok_attempt: dict[str, Any] = {"model": result.model, "error": ""}
+                    band = self.config.planner_band_records.get(result.model)
+                    if band:
+                        ok_attempt["planner_band"] = band
+                    attempts.append(ok_attempt)
                     return DecompositionResult(
                         units=result.units,
                         model=result.model,

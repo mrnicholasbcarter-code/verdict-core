@@ -2207,7 +2207,14 @@ def prepare_live_autodev(
             f"autodev planner selection could not read the eligibility ladder: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
-    planners = _live_planner_models(selector, top_n=3)
+    # Load metadata for band selection (ADR-051); best-effort — band still runs with None.
+    try:
+        from verdict.metadata.store import load_store as _load_store
+
+        _meta = _load_store()
+    except Exception:
+        _meta = None
+    planners, _band_records = _live_planner_models(selector, top_n=3, metadata=_meta)
     # Read the route's cost class without probing. METERED pinned routes are an explicit
     # operator choice — allowed, but recorded in the receipt so spend is visible (ADR-049).
     cls, _fact = selector.capacity_fact(model)
@@ -2256,7 +2263,11 @@ def prepare_live_autodev(
     observed = time.time()
     plan = Decomposer(
         DecompositionConfig(
-            model=planners[0], planner_models=planners, base_url=base_url, api_key=api_key
+            model=planners[0],
+            planner_models=planners,
+            base_url=base_url,
+            api_key=api_key,
+            planner_band_records=_band_records,
         )
     ).decompose(objective, repo_root=repo, evidence=collect_ruff_evidence(repo))
     if time.time() - observed > LIVE_PROBE_MAX_AGE_SECONDS:
@@ -2343,17 +2354,33 @@ def _is_premium_reserved(route_id: str) -> bool:
     return canonical_route_id(route_id).split("/", 1)[-1] in _PREMIUM_RESERVED_MODELS
 
 
-def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
-    """Planner routes from the live eligibility ladder, one per model family (BOD-393).
+def _live_planner_models(
+    selector: Any,
+    *,
+    top_n: int,
+    metadata: Any = None,
+    identity_map: Any = None,
+) -> tuple[tuple[str, ...], dict[str, dict[str, Any]]]:
+    """Planner routes from the live eligibility ladder, one per model family (ADR-051).
 
-    Planning is one reasoning call that must return JSON, so it needs a
-    reasoning-capable route but not the agentic tool-use proof an executor
-    needs (``frontier_worthy`` selects the single-call qualification; the
-    capacity filter below still keeps it off paid routes). Only free or
-    prepaid subscription routes qualify, and at least two families are required
-    so one provider's outage cannot end planning.
+    Selects from the frontier band of live ``aa_intelligence`` ratings (top 20 %)
+    with fallback to the top-30 % band.  UNKNOWN-capacity routes are non-metered
+    (ADR-049) and compete alongside FREE and SUBSCRIPTION.  METERED is excluded
+    until CP1.  At least two route families are required so one provider's outage
+    cannot end planning (BOD-393).
+
+    Returns ``(route_ids, band_records)`` where ``band_records`` maps each selected
+    route id to its ``planner_band`` dict for receipt recording (ADR-051 D7).
     """
-    from verdict.orchestration.contracts import CapacityClass, TaskRequirements, route_family
+    from verdict.metadata.mapping import IdentityMap
+    from verdict.metadata.store import MetadataSnapshot
+    from verdict.orchestration.contracts import CapacityClass, TaskRequirements
+    from verdict.planner_band import (
+        PlannerBandError,
+        compute_planner_bands,
+        load_planner_band_config,
+        select_planner_routes,
+    )
 
     requirements = TaskRequirements(
         required_capabilities=frozenset({"reasoning"}),
@@ -2362,38 +2389,66 @@ def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
         frontier_worthy=True,
         role_ordering="strongest_first",
     )
+    now = datetime.datetime.now(datetime.timezone.utc)
     try:
-        _chosen, verdicts = selector.select(
-            requirements, now=datetime.datetime.now(datetime.timezone.utc)
-        )
+        _chosen, verdicts = selector.select(requirements, now=now)
     except Exception as exc:  # live gateway state; fail closed, named
         raise AutodevError(
             f"autodev planner selection could not read the eligibility ladder: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
-    planners: list[str] = []
-    families: set[str] = set()
-    for verdict in sorted(verdicts, key=lambda item: (item.rank is None, item.rank or 0)):
-        route_id = str(verdict.route_id)
-        if (
-            getattr(verdict.reached, "value", None) not in _ELIGIBLE_STAGES
-            or "/" not in route_id
-            or verdict.capacity_class not in (CapacityClass.FREE, CapacityClass.SUBSCRIPTION)
-            or _is_premium_reserved(route_id)
-            or route_family(route_id) in families
-        ):
+
+    # Build the admitted set: ladder-eligible, non-opaque, not premium-reserved.
+    # UNKNOWN counts as non-metered (ADR-049); METERED excluded until CP1.
+    eligible_cap = frozenset(
+        {CapacityClass.FREE, CapacityClass.SUBSCRIPTION, CapacityClass.UNKNOWN}
+    )
+    inventory_route_ids: list[str] = []
+    admitted_route_ids: list[str] = []
+    capacity_classes: dict[str, CapacityClass] = {}
+    for v in verdicts:
+        route_id = str(v.route_id)
+        if "/" not in route_id:
             continue
-        planners.append(route_id)
-        families.add(route_family(route_id))
-        if len(planners) == top_n:
-            break
-    if len(planners) < 2:
+        inventory_route_ids.append(route_id)
+        cap = getattr(v, "capacity_class", CapacityClass.UNKNOWN)
+        capacity_classes[route_id] = cap
+        if (
+            getattr(v.reached, "value", None) in _ELIGIBLE_STAGES
+            and cap in eligible_cap
+            and not _is_premium_reserved(route_id)
+        ):
+            admitted_route_ids.append(route_id)
+
+    # Compute planner bands from the full inventory.
+    snap: MetadataSnapshot | None = metadata if isinstance(metadata, MetadataSnapshot) else None
+    imap: IdentityMap | None = identity_map if isinstance(identity_map, IdentityMap) else None
+    try:
+        config = load_planner_band_config()
+    except Exception as exc:
         raise AutodevError(
-            "autodev planner selection needs eligible free/subscription planner routes from "
-            f"at least two model families; found {planners or 'none'} "
-            "(no paid or frontier fallback)"
+            f"autodev planner band config invalid: {exc}"
+        ) from exc
+    band = compute_planner_bands(inventory_route_ids, snap, imap, config=config, now=now)
+
+    try:
+        selected = select_planner_routes(
+            admitted_route_ids,
+            capacity_classes,
+            band,
+            snap,
+            imap,
+            top_n=top_n,
+            now=now,
         )
-    return tuple(planners)
+    except PlannerBandError as exc:
+        raise AutodevError(
+            f"autodev planner selection failed: {exc}"
+        ) from exc
+
+    route_ids = tuple(r for r, _ in selected)
+    band_records = {r: res.to_dict() for r, res in selected}
+    return route_ids, band_records
 
 
 def prepare_live_autodev_selected(
@@ -2589,10 +2644,23 @@ def prepare_live_autodev_selected(
             f"correctly: {detail}"
         )
 
-    planners = _live_planner_models(selector, top_n=top_n)
+    # Load metadata for band selection (ADR-051); best-effort — band still runs with None.
+    try:
+        from verdict.metadata.store import load_store as _load_store_sel
+
+        _meta_sel = _load_store_sel()
+    except Exception:
+        _meta_sel = None
+    planners, _band_records_sel = _live_planner_models(
+        selector, top_n=top_n, metadata=_meta_sel
+    )
     plan = Decomposer(
         DecompositionConfig(
-            model=planners[0], planner_models=planners, base_url=base_url, api_key=api_key
+            model=planners[0],
+            planner_models=planners,
+            base_url=base_url,
+            api_key=api_key,
+            planner_band_records=_band_records_sel,
         )
     ).decompose(objective, repo_root=repo, evidence=collect_ruff_evidence(repo))
     if time.time() - started > LIVE_PROBE_MAX_AGE_SECONDS:
