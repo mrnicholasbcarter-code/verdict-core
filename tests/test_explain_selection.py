@@ -24,10 +24,20 @@ NOW = datetime(2026, 2, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
 # CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
+# "p" is a generic test provider used in routing/advisory tests; it must be
+# SUBSCRIPTION so the agentic-probe gate does not block it (D36: list price is
+# METERED evidence for API-key connections only, so "p" with oauth + positive
+# price would otherwise fall through to UNKNOWN).
 @pytest.fixture(autouse=True)
 def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
     billing_overlay_subscription(
-        [("anthropic", "oauth"), ("openai", "oauth"), ("google", "oauth"), ("meta", "oauth")]
+        [
+            ("anthropic", "oauth"),
+            ("openai", "oauth"),
+            ("google", "oauth"),
+            ("meta", "oauth"),
+            ("p", "oauth"),
+        ]
     )
 
 

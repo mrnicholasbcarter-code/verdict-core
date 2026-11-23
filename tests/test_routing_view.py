@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from verdict.orchestration.contracts import EligibilityStage, TaskRequirements
 from verdict.orchestration.routing_view import (
     SCHEMA_VERSION,
@@ -16,6 +18,14 @@ from verdict.orchestration.routing_view import (
     routing_view_from_inventory,
 )
 from verdict.subagent_selection import HealthResult
+
+
+# D36: "kr" is a fake test provider with oauth auth and positive prices; without
+# an overlay it falls through to UNKNOWN and blocks routing-view tests.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("kr", "oauth")])
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

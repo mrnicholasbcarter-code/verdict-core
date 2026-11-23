@@ -661,7 +661,7 @@ def _expected_class_changes() -> dict[str, tuple[CapacityClass, CapacityClass, s
                     return CapacityClass.METERED, f"billing_{_fact.source}_metered"
                 if _fact.billing == BILLING_KEYLESS:
                     return CapacityClass.FREE, f"billing_{_fact.source}_keyless"
-        # pricing
+        # pricing — API-key connections only (operator 2026-11-23, D36)
         _pricing = _row.get("pricing")
         if isinstance(_pricing, Mapping):
             _prices = [
@@ -670,7 +670,7 @@ def _expected_class_changes() -> dict[str, tuple[CapacityClass, CapacityClass, s
                 if isinstance(v, (int, float)) and not isinstance(v, bool)
             ]
             if _prices:
-                if any(p > 0 for p in _prices):
+                if any(p > 0 for p in _prices) and _auth_type == "apikey":
                     return CapacityClass.METERED, "apikey_positive_pricing"
                 if all(p == 0 for p in _prices):
                     return CapacityClass.FREE, "all_zero_pricing"

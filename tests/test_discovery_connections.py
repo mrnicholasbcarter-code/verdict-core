@@ -134,10 +134,23 @@ def test_model_list_price_does_not_override_gateway_free_fact():
             capacity_of({"provider": "x"}, row, route_id="x/model", openrouter_free_set=None)[0]
             is CapacityClass.FREE
         )
+    # API-key connection: provider-declared positive price overrides gateway free tier
+    # (operator 2026-11-23: list price is METERED evidence for API-key connections only).
     row = {"pricing": {"input": 3}, "price_source": "provider", "gateway_free_tier": True}
     assert (
-        capacity_of({"provider": "x"}, row, route_id="x/model", openrouter_free_set=None)[0]
+        capacity_of(
+            {"provider": "x", "authType": "apikey"},
+            row,
+            route_id="x/model",
+            openrouter_free_set=None,
+        )[0]
         is CapacityClass.METERED
+    )
+    # Non-apikey connection with provider-declared positive price: list price does NOT
+    # override gateway free tier (the connection falls through to FREE via gateway_free_tier).
+    assert (
+        capacity_of({"provider": "x"}, row, route_id="x/model", openrouter_free_set=None)[0]
+        is CapacityClass.FREE
     )
 
 

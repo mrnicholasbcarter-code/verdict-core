@@ -266,7 +266,11 @@ class TestAC6SecretLeak:
                 "apikey_positive_pricing",
             ),
             ({"plan_label": "free user@secret.example.com"}, "apikey", "apikey_positive_pricing"),
-            ({}, "user@secret.example.com", "apikey_positive_pricing"),
+            # auth_type is an email address (a secret value used as authType); it is
+            # not "apikey", so the list-price Rule 3 does not fire (operator 2026-11-23).
+            # The route falls through to UNKNOWN — the evidence must still not contain
+            # the email, and "no_free_evidence" satisfies that invariant.
+            ({}, "user@secret.example.com", "no_free_evidence"),
         ],
     )
     async def test_no_email_or_token_in_event_or_render(

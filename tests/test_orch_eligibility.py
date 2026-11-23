@@ -68,7 +68,13 @@ def conn(
 # CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
 @pytest.fixture(autouse=True)
 def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
-    billing_overlay_subscription([("kiro", "oauth")])
+    # D36: list price is METERED evidence for API-key connections only.  Fake
+    # oauth providers used in tests would fall through to UNKNOWN (no catalog
+    # entry, non-apikey), triggering the agentic-probe gate.  Declare them as
+    # SUBSCRIPTION so tests that do not care about authType are not blocked.
+    billing_overlay_subscription(
+        [("kiro", "oauth"), ("zz", "oauth"), ("pp", "oauth"), ("p0", "oauth")]
+    )
 
 
 class FakeProbe:

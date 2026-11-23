@@ -37,7 +37,32 @@ def _rows() -> list[dict[str, Any]]:
 def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     rows = _rows()
     probed: list[str] = []
-    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "vh"))
+    vh = tmp_path / "vh"
+    monkeypatch.setenv("VERDICT_HOME", str(vh))
+    # D36: "kiro" and "gemini" are oauth providers with positive prices; without
+    # an overlay they fall through to UNKNOWN after our policy change.  Write the
+    # overlay to the same VERDICT_HOME so billing_lookup finds it.
+    vh.mkdir(parents=True, exist_ok=True)
+    (vh / "connection_billing_overlay.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "provider": "kiro",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    },
+                    {
+                        "provider": "gemini",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    },
+                ]
+            }
+        )
+    )
     monkeypatch.setattr(orch_run, "fetch_inventory", lambda gateway, api_key: list(rows))
     monkeypatch.setattr(
         orch_run,
