@@ -95,10 +95,11 @@ def _permissive_planner_band(monkeypatch: pytest.MonkeyPatch) -> None:
     frontier candidate so the wiring tests can exercise the planner wiring without
     a real metadata store.
 
-    Scores are assigned in inventory order (first route = 90, second = 89, …) so
-    that rank-based assertions from before ADR-051 still hold when cost classes are
-    equal: a higher-ranked route in the selector result gets a higher band score and
-    therefore sorts first.
+    Scores are assigned in inventory order (first route = 90, second = 89, …).
+    ADR-051 D5 uses score as the primary sort key (highest score first), with cost
+    class as a tiebreaker only for routes that have an identical score.  A route that
+    appears earlier in the inventory receives a higher band score and therefore sorts
+    first; cost class does not reorder routes with different scores.
     """
     from verdict.planner_band import BandComputation, _strip_suffix
 
@@ -2269,13 +2270,15 @@ def test_prepare_live_autodev_selected_plans_on_live_free_families_only(
         "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
     )
 
-    # ADR-051: cheapest qualified tier first within the frontier band.  FREE routes
-    # sort before SUBSCRIPTION, so FREE_A and FREE_B fill the first two family slots.
-    # top_n=3: FREE_A (alpha:free family), FREE_B (beta:free family), then the
-    # cheapest SUBSCRIPTION from a new family = cc/claude-haiku-5-5 (claude family).
-    # cc/* and cx/* are still eligible (D22 lifted), just ranked after cheaper FREE.
+    # ADR-051 D5: highest band score first; cost class is a tiebreaker only.
+    # The _permissive_planner_band fixture assigns scores by inventory order
+    # (first route = 90, second = 89, …).  After family deduplication the top 3
+    # unique-family routes by score are FREE_A (score=90), cc/claude-haiku-5-5
+    # (score=88, skips kilocode/alpha which shares FREE_A's family), cx/gpt-6
+    # (score=87).  FREE_B (score=84) is ranked lower and does not make top_n=3.
+    # cc/* and cx/* are eligible (D22 lifted); a higher score beats a lower cost tier.
     planners = configs[0].planner_models
-    assert planners == (FREE_A, FREE_B, "cc/claude-haiku-5-5")
+    assert planners == (FREE_A, "cc/claude-haiku-5-5", "cx/gpt-6")
     assert configs[0].model == FREE_A
     assert any(req.reasoning and "reasoning" in req.required_capabilities for req in requirements)
 
@@ -2647,7 +2650,9 @@ def test_prepare_live_autodev_selected_keeps_premium_grok_off_the_ladder(
         {"route_id": "gc/grok-4.7-build-fast", "reason": "premium_reserved"},
         {"route_id": "gc/grok-4.7", "reason": "premium_reserved"},
     )
-    assert configs[0].planner_models == (FREE_A, "gc/grok-4.5")
+    # ADR-051 D5: gc/grok-4.5 has a higher band score than FREE_A (earlier in
+    # inventory after premium routes are removed), so it sorts first.
+    assert configs[0].planner_models == ("gc/grok-4.5", FREE_A)
 
 
 def test_prepare_live_autodev_selected_reserves_premium_grok_model_on_any_provider(
@@ -2689,7 +2694,9 @@ def test_prepare_live_autodev_selected_reserves_premium_grok_model_on_any_provid
         {"route_id": "omniroute/gc/grok-4.7-build-fast", "reason": "premium_reserved"},
         {"route_id": "gc/grok-4.7", "reason": "premium_reserved"},
     )
-    assert configs[0].planner_models == (FREE_A, "gc/grok-4.5")
+    # ADR-051 D5: gc/grok-4.5 (rank=0 in surviving routes) has a higher band score
+    # than FREE_A (rank=4 in original inventory), so it sorts first.
+    assert configs[0].planner_models == ("gc/grok-4.5", FREE_A)
 
 
 def test_live_planner_models_reserves_premium_grok_model_on_any_provider() -> None:
@@ -2706,9 +2713,11 @@ def test_live_planner_models_reserves_premium_grok_model_on_any_provider() -> No
         def select(self, requirements: Any, *, now: Any) -> Any:
             return None, tuple(verdicts)
 
-    # ADR-051: FREE routes sort before SUBSCRIPTION within the band.
+    # ADR-051 D5: highest band score first; cost class is a tiebreaker only.
+    # gc/grok-4.5 appears before FREE_A in inventory (after premium routes filtered),
+    # so it receives a higher score and sorts first regardless of cost class.
     planners, _ = autodev._live_planner_models(_Selector(), top_n=3)
-    assert planners == (FREE_A, "gc/grok-4.5")
+    assert planners == ("gc/grok-4.5", FREE_A)
 
 
 def test_prepare_live_autodev_selected_drops_x_omniroute_cache_hit_header(
