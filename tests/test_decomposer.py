@@ -246,7 +246,9 @@ def _two_family_snapshot() -> Any:
     )
     from verdict.metadata.store import MetadataSnapshot
 
-    fetched = "2026-11-23T09:00:00Z"
+    from datetime import datetime, timezone
+
+    fetched = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def _score(v: float) -> ProvenancedField:
         return ProvenancedField(
