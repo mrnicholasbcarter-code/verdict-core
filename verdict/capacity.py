@@ -164,7 +164,11 @@ def classify_route_capacity(
     connection_price = price_source in {"provider", "user", "legacy_catalog"}
     is_apikey = auth_type == "apikey"
     status = classify_free(route_id, _route_price(row) if connection_price else None, None)
-    if connection_price and is_apikey and (status is FreeStatus.NOT_FREE or _any_positive_price(row)):
+    if (
+        connection_price
+        and is_apikey
+        and (status is FreeStatus.NOT_FREE or _any_positive_price(row))
+    ):
         price_fact = (
             "apikey_positive_pricing"
             if price_source == "legacy_catalog"

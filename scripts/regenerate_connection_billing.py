@@ -108,6 +108,14 @@ _OUTPUT_PATH = (
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="Print result but do not write.")
+    parser.add_argument(
+        "--force-shrink",
+        action="store_true",
+        help=(
+            "Allow writing a snapshot with fewer entries than the existing one. "
+            "Use only when a provider was genuinely removed from the catalog."
+        ),
+    )
     args = parser.parse_args()
 
     root = _omniroute_root()
@@ -120,6 +128,26 @@ def main() -> None:
     ts_text = ts_bytes.decode("utf-8")
 
     entries = _parse_catalog(ts_text)
+
+    # Guard: refuse to write a snapshot with fewer entries than the existing one.
+    # A shrinking count almost always means the regex stopped matching (format
+    # changed) rather than a genuine catalog reduction.  Fail loudly so the
+    # operator can decide whether to update the regex or accept the change.
+    # Pass --force-shrink to override when a provider was genuinely removed.
+    if not args.force_shrink and _OUTPUT_PATH.exists():
+        try:
+            _prev = json.loads(_OUTPUT_PATH.read_text(encoding="utf-8"))
+            _prev_count = len(_prev.get("entries", []))
+            if len(entries) < _prev_count:
+                print(
+                    f"ERROR: parsed {len(entries)} entries but the existing snapshot has "
+                    f"{_prev_count}. The source format may have changed; check the regex "
+                    f"or pass --force-shrink to override.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        except (ValueError, KeyError):
+            pass  # Existing file is corrupt — let the write proceed and repair it.
 
     snapshot = {
         "_meta": {
