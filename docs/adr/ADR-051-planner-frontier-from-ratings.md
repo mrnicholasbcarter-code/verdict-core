@@ -1,6 +1,6 @@
 # ADR-051: Planners come from the frontier band of live ratings
 
-**Status:** Accepted (operator, 2026-11-23)
+**Status:** Proposed — under research; not yet agreed with the operator (2026-11-23)
 **Date:** 2026-11-23
 **Deciders:** Operator
 **Amends:** the recorded rule that model ratings are advisory tie-breaks that "cannot change membership" — for the planner role only. See [ADR-046](ADR-046-arena-ratings-advisory-source.md).
