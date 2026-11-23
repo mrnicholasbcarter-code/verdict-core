@@ -12,7 +12,6 @@ concurrency:
 
 jobs:
   acceptance:
-    timeout-minutes: 45
     permissions:
       contents: read
     uses: ./.github/workflows/acceptance-gates.yml
