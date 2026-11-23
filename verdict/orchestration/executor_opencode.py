@@ -125,19 +125,30 @@ def _write_attempt_config(
     ``{env:<api_key_env>}`` that opencode expands at runtime.
 
     ``instructions`` reference ``.verdict-context.md`` in the worktree for
-    ambient task context (Task 4.1).
+    ambient task context (Task 4.1).  When an ``AGENTS.md`` file is present in
+    ``cwd`` it is also listed, so the worker sees project coding conventions.
 
     ``headers`` includes ``X-Verdict-Worker: opencode`` so that ``verdict
     serve``'s relay can identify worker calls and apply per-request route
     pinning without requiring ``LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE`` to be
     set globally.
 
-    ``permissions`` restricts file edits to within the worktree (advisory;
-    Verdict's post-attempt owned-files check is the primary enforcer).
-    Schema: ``{action, resource, effect}``; ``--auto`` respects explicit deny
-    rules.  Allow rules precede the catch-all deny so they take priority.
+    ``policies`` deny all ``provider.use`` actions except ``verdict`` so the
+    worker cannot call openrouter, bedrock, or any other provider directly.
+    ``--auto`` mode respects explicit deny policies.
+
+    ``permissions`` deny ``external_directory`` (V2 action name; last-rule-wins
+    semantics in V2). This prevents the worker from opening directories outside
+    the worktree as project roots.  Verdict's post-attempt owned-files check and
+    the diff-containment gate are the primary enforcement layer.
+
+    ``agents.title.model`` is pinned to the same admitted route so the title
+    summariser cannot pick its own model and bypass the route decision.
     """
-    cwd_prefix = str(cwd).rstrip("/")
+    instructions: list[str] = [str(cwd / CONTEXT_FILE_NAME)]
+    agents_md = cwd / "AGENTS.md"
+    if agents_md.is_file():
+        instructions.append(str(agents_md))
     config: dict[str, Any] = {
         "$schema": "https://opencode.ai/config.json",
         "providers": {
@@ -154,17 +165,18 @@ def _write_attempt_config(
                 "models": {route_id: {"name": route_id, "capabilities": {"tools": True}}},
             }
         },
-        # Restrict edits to the node worktree (ADR-053 Decision 4).
-        # Allow rules first (more specific), deny last (catch-all).
-        # Relative paths accessed from cwd are inherently within the worktree;
-        # the deny rules only block absolute paths outside the worktree prefix.
-        "permissions": [
-            {"action": "Write", "resource": f"{cwd_prefix}/**", "effect": "allow"},
-            {"action": "Edit", "resource": f"{cwd_prefix}/**", "effect": "allow"},
-            {"action": "Write", "resource": "/**", "effect": "deny"},
-            {"action": "Edit", "resource": "/**", "effect": "deny"},
+        # Deny all provider.use except verdict (ADR-053 Decision 1).
+        # Prevents the worker from calling openrouter/bedrock/etc. directly.
+        "policies": [
+            {"action": "provider.use", "resource": "*", "effect": "deny"},
+            {"action": "provider.use", "resource": "verdict", "effect": "allow"},
         ],
-        "instructions": [str(cwd / CONTEXT_FILE_NAME)],
+        # V2: last matching rule wins; external_directory deny prevents the
+        # worker from opening directories outside the node worktree as roots.
+        "permissions": [{"action": "external_directory", "resource": "*", "effect": "deny"}],
+        # Pin the title agent to the same admitted route (ADR-053 Decision 1).
+        "agents": {"title": {"model": f"verdict/{route_id}"}},
+        "instructions": instructions,
     }
     config_dir.mkdir(parents=True, exist_ok=True)
     cfg_file = config_dir / "opencode.json"
@@ -186,6 +198,28 @@ def _write_context_file(cwd: Path, prompt: str) -> None:
     (cwd / CONTEXT_FILE_NAME).write_text(content, encoding="utf-8")
 
 
+_CHILD_ENV_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "COLORTERM",
+        "LANG",
+        "TZ",
+        "TMPDIR",
+        "OPENCODE_CONFIG_DIR",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "OPENCODE_CONFIG_PROJECT_DISABLE",
+        "OPENCODE_DISABLE_CLAUDE_CODE",
+    }
+)
+_CHILD_ENV_ALLOWLIST_PREFIXES: tuple[str, ...] = ("LC_",)
+
+
 def _build_child_env(
     *,
     config_dir: Path,
@@ -203,21 +237,31 @@ def _build_child_env(
     - ``XDG_STATE_HOME`` → per-attempt state directory (locks, runtime state).
     - ``OPENCODE_CONFIG_PROJECT_DISABLE=1`` → prevents project-level
       ``opencode.json`` in the cwd from merging with the per-attempt config.
+    - ``OPENCODE_DISABLE_CLAUDE_CODE=1`` → prevents OpenCode v2.3.2 from
+      loading the operator's ``~/.claude`` config and skills.
 
-    Credential hygiene:
-    - ``OMNIROUTE_API_KEY``, ``OPENAI_API_KEY``, ``ANTHROPIC_*`` are stripped.
-      Workers must only call Verdict serve (:8000), never OmniRoute directly.
-    - ``VERDICT_WORKER_API_KEY`` (or the configured ``api_key_env``) is preserved
-      so the ``{env:...}`` reference in the per-attempt config can expand.
+    Credential hygiene (belt-and-braces):
+    The child env is built from an explicit allowlist (``_CHILD_ENV_ALLOWLIST``
+    plus ``LC_*`` prefixed vars), not by stripping individual keys.  This
+    prevents ``*_API_KEY``, ``*_TOKEN``, ``AWS_*`` and any other provider
+    credential from reaching the worker.  ``VERDICT_WORKER_API_KEY`` (or the
+    configured ``api_key_env``) is explicitly allowed so the
+    ``{env:...}`` reference in the per-attempt config can expand at runtime.
     """
-    env = dict(base_env if base_env is not None else os.environ)
+    source = dict(base_env if base_env is not None else os.environ)
+    env: dict[str, str] = {}
+    for key, val in source.items():
+        if (
+            key == api_key_env
+            or key in _CHILD_ENV_ALLOWLIST
+            or any(key.startswith(p) for p in _CHILD_ENV_ALLOWLIST_PREFIXES)
+        ):
+            env[key] = val
     env["OPENCODE_CONFIG_DIR"] = str(config_dir)
     env["XDG_DATA_HOME"] = str(data_dir)
     env["XDG_STATE_HOME"] = str(state_dir)
     env["OPENCODE_CONFIG_PROJECT_DISABLE"] = "1"
-    for key in list(env):
-        if key in ("OMNIROUTE_API_KEY", "OPENAI_API_KEY") or key.startswith("ANTHROPIC_"):
-            del env[key]
+    env["OPENCODE_DISABLE_CLAUDE_CODE"] = "1"
     return env
 
 

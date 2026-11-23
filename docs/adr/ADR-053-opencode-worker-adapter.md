@@ -26,9 +26,10 @@ verification step that follows always fails.
 OpenCode (opencode.ai) is an agentic coding tool that runs a full edit–test–fix
 loop inside a repository before returning. It supports non-interactive dispatch
 (`opencode run --auto --standalone`), per-process configuration via
-`OPENCODE_CONFIG`, and a provider interface that accepts any OpenAI-compatible
-endpoint. These properties make it a natural fit for coding nodes in
-`verdict orchestrate` and for the model-tier coding rung in `verdict autodev`.
+`OPENCODE_CONFIG_DIR` (a directory) or `OPENCODE_CONFIG` (a file path), and a
+provider interface that accepts any OpenAI-compatible endpoint. These properties
+make it a natural fit for coding nodes in `verdict orchestrate` and for the
+model-tier coding rung in `verdict autodev`.
 
 Research findings and decision points were gathered on 2026-11-23 and agreed
 with the operator in two rounds before this ADR was written.
@@ -139,7 +140,8 @@ binary. No ToS restrictions apply. Proceed.
   the enforcement layer. The risk is accepted explicitly by the operator.
 - OpenCode's dependency on the background opencode service is bypassed by
   `--standalone`. State (session DB, config) is isolated per attempt via
-  `OPENCODE_CONFIG` pointing at a temp directory.
+  `OPENCODE_CONFIG_DIR` pointing at a temp directory (the directory form is
+  what OpenCode v2.3.2 reads for per-attempt isolation).
 - PatchExecutor and its diff-path containment check are preserved for mechanical
   autodev units, so the fail-closed behaviour for diff-only work is unchanged.
 - The adapter's capability declaration (`HarnessCapabilities`) is part of the

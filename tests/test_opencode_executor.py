@@ -125,12 +125,16 @@ def test_build_child_env_sets_isolation_vars(tmp_path: Path) -> None:
     assert env["OPENCODE_CONFIG_PROJECT_DISABLE"] == "1"
 
 
-def test_build_child_env_strips_provider_credentials(tmp_path: Path) -> None:
+def test_build_child_env_allowlist_blocks_provider_credentials(tmp_path: Path) -> None:
+    """Allowlist approach: provider credentials must never reach the child."""
     base = {
         "OMNIROUTE_API_KEY": "secret-omni",
         "OPENAI_API_KEY": "sk-secret",
         "ANTHROPIC_API_KEY": "ant-secret",
         "ANTHROPIC_AUTH_TOKEN": "ant-token",
+        "OPENROUTER_API_KEY": "or-secret",
+        "AWS_ACCESS_KEY_ID": "aws-key",
+        "GITHUB_TOKEN": "gh-token",
         "VERDICT_WORKER_API_KEY": "worker-key",
         "HOME": str(tmp_path),
     }
@@ -141,13 +145,32 @@ def test_build_child_env_strips_provider_credentials(tmp_path: Path) -> None:
         api_key_env="VERDICT_WORKER_API_KEY",
         base_env=base,
     )
-    assert "OMNIROUTE_API_KEY" not in env
-    assert "OPENAI_API_KEY" not in env
-    assert "ANTHROPIC_API_KEY" not in env
-    assert "ANTHROPIC_AUTH_TOKEN" not in env
+    blocked = [
+        "OMNIROUTE_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "OPENROUTER_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "GITHUB_TOKEN",
+    ]
+    for key in blocked:
+        assert key not in env, f"{key} must not reach the child process"
     # Worker key is preserved (the config references it via {env:...})
     assert env["VERDICT_WORKER_API_KEY"] == "worker-key"
     assert env["HOME"] == str(tmp_path)
+
+
+def test_build_child_env_sets_disable_claude_code(tmp_path: Path) -> None:
+    """OPENCODE_DISABLE_CLAUDE_CODE must be set so ~/.claude is not loaded."""
+    env = _build_child_env(
+        config_dir=tmp_path / "cfg",
+        data_dir=tmp_path / "data",
+        state_dir=tmp_path / "state",
+        api_key_env="VERDICT_WORKER_API_KEY",
+        base_env={},
+    )
+    assert env.get("OPENCODE_DISABLE_CLAUDE_CODE") == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +226,8 @@ def test_write_attempt_config_has_worker_marker_header(tmp_path: Path) -> None:
     assert headers.get("X-Verdict-Worker") == "opencode"
 
 
-def test_write_attempt_config_has_permissions_deny_outside_cwd(tmp_path: Path) -> None:
+def test_write_attempt_config_has_external_directory_deny(tmp_path: Path) -> None:
+    """V2 permission model: external_directory deny (not V1 Write/Edit rules)."""
     cwd = tmp_path / "work"
     cwd.mkdir()
     _write_attempt_config(
@@ -215,17 +239,35 @@ def test_write_attempt_config_has_permissions_deny_outside_cwd(tmp_path: Path) -
     )
     cfg = json.loads((tmp_path / "cfg" / "opencode.json").read_text())
     permissions = cfg.get("permissions", [])
-    assert permissions, "permissions must be non-empty"
-    effects = {r["effect"] for r in permissions if isinstance(r, dict)}
-    assert "deny" in effects, "at least one deny rule is required"
-    # The deny rules must include an absolute-path pattern
-    deny_resources = {
-        r.get("resource", "")
-        for r in permissions
-        if isinstance(r, dict) and r.get("effect") == "deny"
-    }
-    assert any(res.startswith("/") for res in deny_resources), (
-        "deny rules must cover absolute paths outside the worktree"
+    assert {"action": "external_directory", "resource": "*", "effect": "deny"} in permissions, (
+        "permissions must contain the external_directory deny rule"
+    )
+    # V1 action names must not appear (they match nothing in V2)
+    for rule in permissions:
+        if isinstance(rule, dict):
+            assert rule.get("action") not in ("Write", "Edit"), (
+                "V1 action names Write/Edit must not appear in V2 permissions"
+            )
+
+
+def test_write_attempt_config_has_provider_deny_all_policy(tmp_path: Path) -> None:
+    """Config must deny all provider.use and allow only verdict."""
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    _write_attempt_config(
+        tmp_path / "cfg",
+        route_id=ROUTE,
+        serve_base_url="http://127.0.0.1:8000",
+        api_key_env="VERDICT_WORKER_API_KEY",
+        cwd=cwd,
+    )
+    cfg = json.loads((tmp_path / "cfg" / "opencode.json").read_text())
+    policies = cfg.get("policies", [])
+    assert {"action": "provider.use", "resource": "*", "effect": "deny"} in policies, (
+        "policies must contain a deny-all provider.use rule"
+    )
+    assert {"action": "provider.use", "resource": "verdict", "effect": "allow"} in policies, (
+        "policies must allow verdict provider"
     )
 
 

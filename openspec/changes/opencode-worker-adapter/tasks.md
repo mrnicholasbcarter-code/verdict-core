@@ -27,7 +27,7 @@
       `WorkerTerminal`, and deletes the temp directory on exit. Verify: unit tests
       for the executor, including timeout kill, idle kill, non-zero exit, and
       malformed JSON.
-- [x] 2.3 Per-attempt config isolation: each attempt writes a fresh config to a
+- [ ] 2.3 Per-attempt config isolation: each attempt writes a fresh config to a
       new temp directory. The config sets the provider base URL to
       `http://127.0.0.1:8000/v1`, maps `verdict/<route_id>` to `<route_id>`, sets
       `permissions` to restrict file edits to the node worktree, and denies

@@ -35,7 +35,7 @@ which is the second amendment to ADR-041's initial default.
   executor for `verdict orchestrate`.
 - Build `OpenCodeExecutor` that runs `opencode run --auto --standalone
   --format json --model verdict/<route_id>` with per-attempt isolated config
-  (`OPENCODE_CONFIG` → temp directory).
+  (`OPENCODE_CONFIG_DIR` → temp directory).
 - Route all worker model calls through `verdict serve` (:8000); never direct to
   OmniRoute (:20128). Add per-request route pinning to serve if not present.
 - Declare all nine `HarnessCapability` facets explicitly (ADR-041 requirement).
@@ -79,20 +79,31 @@ declaration:
 | `event_stream` | PARTIAL | `--format json` emits structured JSON; not a full event-stream integration |
 
 **Per-attempt config isolation (design detail):** Each attempt writes a fresh
-OpenCode config to a temp directory, sets `OPENCODE_CONFIG` for that process,
-and deletes the temp directory on exit. This prevents cross-attempt and
+OpenCode config to a temp directory, sets `OPENCODE_CONFIG_DIR` for that
+process, and deletes the temp directory on exit. This prevents cross-attempt and
 cross-worker session DB contamination. The config contains:
 
 - Provider entry: `verdict`, base URL `http://127.0.0.1:8000/v1`, API key from
   the serve bearer token (never written to disk or logs).
 - Model entry: `verdict/<route_id>` mapped to `<route_id>`.
-- Agent config: `permissions` restricting file edits to the node worktree;
-  `external_directory` denied; shell commands not restricted (Decision 4).
-- Instructions: path to `.verdict-context.md` in the worktree (context pack).
+- Policies: deny all `provider.use` actions; allow only `verdict`. Prevents the
+  worker from calling openrouter, bedrock, or any other provider directly.
+- Permissions: `external_directory` deny (V2 action name). Prevents the worker
+  from opening directories outside the worktree as project roots.
+- Agents: `title.model` pinned to `verdict/<route_id>` so the title summariser
+  cannot pick its own model.
+- Instructions: path to `.verdict-context.md` in the worktree (context pack),
+  plus `AGENTS.md` when present.
 
-No secrets appear in the config file or in logs. The API key is passed as an
-environment variable or via the config's credential field; the builder confirms
-the exact mechanism during implementation.
+No secrets appear in the config file or in logs. The API key is passed as
+`{env:VERDICT_WORKER_API_KEY}` so the value is never written to disk.
+
+> **Deviation note (2026-11-23):** The original spec said `OPENCODE_CONFIG` →
+> temp file; the implementation uses `OPENCODE_CONFIG_DIR` → temp directory,
+> which is what OpenCode v2.3.2 reads for per-attempt isolation. `OPENCODE_CONFIG`
+> (a single-file path) also exists in v2.3.2 but was not used because the
+> directory form is what the binary expects when running `--standalone`. This
+> deviation is intentional and correct.
 
 **Open point:** Whether to pass the API key via an env var or via the OpenCode
 config's credential field. Both keep it out of the command line and logs; the

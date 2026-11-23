@@ -50,6 +50,7 @@ from verdict.context_pack import (
 )
 from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionResult
 from verdict.execution_packet import ExecutionPacket, capture_source_binding
+from verdict.orchestration.executor_opencode import PINNED_VERSION as _OC_PINNED_VERSION
 from verdict.orchestration.executor_opencode import (
     SERVE_BASE_URL_DEFAULT as _OC_SERVE_BASE_URL_DEFAULT,
 )
@@ -1180,17 +1181,26 @@ def _classify_repair_first_error(first_error: str) -> str:
 def _executor_lineage(
     run_id: str, decision: Any, executor: _UnitExecutorLike, unit_id: str, attempt: int
 ) -> dict[str, Any]:
-    """BOD-437 attempt key and sent settings for one executor turn."""
-    return {
+    """BOD-437 attempt key and sent settings for one executor turn.
+
+    OpenCodeUnitExecutor records harness identity instead of model temperature /
+    max_tokens: those PatchExecutorConfig defaults are not sent to OpenCode and
+    would be misleading in evidence records.
+    """
+    base: dict[str, Any] = {
         "run_id": run_id,
         "decision_id": decision.decision_digest,
         "node_id": unit_id,
         "attempt_id": str(attempt),
-        "effective_parameters": {
+    }
+    if isinstance(executor, OpenCodeUnitExecutor):
+        base["effective_parameters"] = {"harness": "opencode", "pinned_version": _OC_PINNED_VERSION}
+    else:
+        base["effective_parameters"] = {
             "temperature": executor.config.temperature,
             "max_tokens": executor.config.max_tokens,
-        },
-    }
+        }
+    return base
 
 
 def _record_executor_attempt(
