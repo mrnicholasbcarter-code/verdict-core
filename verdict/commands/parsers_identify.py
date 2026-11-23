@@ -70,6 +70,16 @@ def register(subparsers: Any) -> None:
         help="With --screen: probe at most N routes per backend pool (prefixes "
         "sharing one quota count together); pools are covered breadth-first",
     )
+    parser.add_argument(
+        "--community-roster",
+        action="store_true",
+        help="Report the current free-coding-models roster; scope a screen to matching routes",
+    )
+    parser.add_argument(
+        "--assume-unmetered-connections",
+        action="store_true",
+        help="Affirm unmetered connections for a roster screen; ignore list-price-only exclusions",
+    )
     parser.add_argument("--provider", action="append", default=[], dest="providers")
     parser.add_argument(
         "--capacity", action="extend", type=_capacities, default=[], dest="capacities"

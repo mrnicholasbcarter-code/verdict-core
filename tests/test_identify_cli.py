@@ -257,6 +257,78 @@ def test_native_screen_cli_calls_existing_conversation_with_filters(monkeypatch,
     assert HealthCache(tmp_path / "health.json").entry("q/model").agentic_ok
 
 
+def test_current_community_source_drives_native_screen(monkeypatch, capsys, tmp_path):
+    from dataclasses import replace
+
+    from test_identify_screen import NOW as SCREEN_NOW
+    from test_identify_screen import passing, snapshot
+
+    from verdict import cli, identify
+    from verdict.discovery.sources import community
+    from verdict.omniroute_evidence import LiveCandidate
+    from verdict.orchestration.health_cache import HealthCache
+
+    routes = ("p/strong", "p/weak")
+    evidence = replace(
+        snapshot(),
+        inventory_route_ids=frozenset(routes),
+        live_candidates={
+            route: LiveCandidate(route, "p", ("connection",), True) for route in routes
+        },
+        route_capacities={"p/strong": "metered", "p/weak": "free"},
+        route_capacity_evidence={"p/strong": "apikey_positive_pricing"},
+    )
+    calls = []
+    monkeypatch.setattr(
+        identify, "resolve_gateway_binding", lambda: ("http://127.0.0.1:20128", None)
+    )
+    monkeypatch.setattr(identify, "fetch_omniroute_evidence", lambda *a, **kw: evidence)
+    monkeypatch.setattr(identify, "live_agentic_transport", lambda *a, **kw: passing(calls))
+    monkeypatch.setattr(identify, "load_store", lambda: None)
+    monkeypatch.setattr(identify, "load_identity_map", lambda: None)
+    monkeypatch.setattr(identify, "default_cache_path", lambda: tmp_path / "health.json")
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return SCREEN_NOW
+
+    monkeypatch.setattr(identify, "datetime", Clock)
+    monkeypatch.setattr(
+        community,
+        "fetch_fcm_current",
+        lambda: community.parse_fcm(
+            'export const p = [["strong", "Strong"], ["missing", "Missing"]];'
+        ),
+    )
+    argv = [
+        "verdict",
+        "identify",
+        "--screen",
+        "--community-roster",
+        "--allow-live-probe",
+        "--max-per-provider",
+        "1",
+        "--max-routes",
+        "1",
+        "--json",
+    ]
+    monkeypatch.setattr("sys.argv", argv)
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert not calls
+    assert report["roster_counts"] == {"skipped_spend_policy": 1, "model_not_registered": 1}
+
+    monkeypatch.setattr("sys.argv", [*argv, "--assume-unmetered-connections"])
+    cli.main()
+    report = json.loads(capsys.readouterr().out)
+    assert [row[0] for row in calls] == ["p/strong"] * 3
+    assert report["roster_counts"] == {"pass": 1, "model_not_registered": 1}
+    assert report["routes"][0]["capacity"] == "metered"
+    assert HealthCache(tmp_path / "health.json").entry("p/strong").agentic_ok
+    assert report["dispatch_authorized"] is False
+
+
 @pytest.mark.parametrize("all_excluded", [False, True])
 def test_native_passive_all_excluded_flag(monkeypatch, capsys, all_excluded):
     from verdict import cli, identify

@@ -1226,6 +1226,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             min_context_tokens=args.min_context_tokens,
             require_tools=args.require_tools,
             max_per_pool=args.max_per_pool,
+            community_roster=args.community_roster,
+            assume_unmetered_connections=args.assume_unmetered_connections,
         )
     elif args.command == "census":
         from verdict.census_passports import cmd_census

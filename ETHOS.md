@@ -20,7 +20,7 @@ exist to serve this. New work must say how it advances it.
 
 ## NOW
 
-Closeout batch B (selection): five changes have evidence files that pass `check_dod.py` and are archived (`one-capacity-classifier`, `opaque-nested-routes`, `choose-no-confirm-valid-proof`, `supply-task-pools`, `autodev-live-planner-selection`). `autodev-live-planner-selection` still has a DoD part-4 gap: no scheduled job re-runs autodev. `lease-held-selection` and `autodev-executor-ladder` follow once their fresh runs land; `cheapest-sufficient-first` moves to batch D (needs an orchestrate run) and `capacity-from-facts-not-names` and `preflight-floor-and-pool-spread` to batch F (need the certification rehearsal). CP2 (#1245) is in progress. MEM1/MEM2 (#1253/#1254): merged and installed; DoD evidence still open.
+Closeout batch B (selection): five changes have evidence files that pass `check_dod.py` and are archived (`one-capacity-classifier`, `opaque-nested-routes`, `choose-no-confirm-valid-proof`, `supply-task-pools`, `autodev-live-planner-selection`). `autodev-live-planner-selection` still has a DoD part-4 gap: no scheduled job re-runs autodev. `lease-held-selection` and `autodev-executor-ladder` follow once their fresh runs land; `cheapest-sufficient-first` moves to batch D (needs an orchestrate run) and `capacity-from-facts-not-names` and `preflight-floor-and-pool-spread` to batch F (need the certification rehearsal). CP2 (#1245) is in progress. MEM1/MEM2 (#1253/#1254): merged and installed; DoD evidence still open. Discovery: `community-roster-qualification` PR open; `verdict identify --community-roster` accounts for all 222 free-coding-models entries and screens the matching routes; installed-main evidence and a coding-task receipt are post-merge.
 
 ## Decisions
 

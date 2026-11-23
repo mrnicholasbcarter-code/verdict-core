@@ -7,9 +7,9 @@ See license check below.
 
 **free-coding-models** (vava-nessa/free-coding-models)
   ``sources.js`` — a JavaScript file containing provider/model arrays.
-  Parsed with a narrow, evaluated-free parser that extracts only the
-  structured array literals.  Any shape we cannot parse fails closed
-  (returns no rows, records a warning) rather than evaluating the JS.
+  Parsed as literal model tuples and provider references, without executing
+  JavaScript. Fetches reject an invalid or empty active roster instead of
+  reporting a successful empty catalog.
 
   License: "MIT License with Enhanced Disclaimers" — permits reuse.
 
@@ -19,16 +19,18 @@ See license check below.
 
   License: standard MIT License — permits reuse.
 
-Both sources are pinned to a commit SHA given in ``CommunityConfig``; the
-default pinned SHA is the HEAD SHA at the time this module was written.
+``CommunityConfig`` provides reproducible pins for both sources.
+``fetch_fcm_current`` resolves the current revision of the upstream roster
+before fetching it by immutable commit SHA.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from verdict.discovery.sources._fetcher import Fetcher, default_fetcher
@@ -80,46 +82,103 @@ class CommunityConfig:
 # free-coding-models  ``sources.js`` parser
 # ---------------------------------------------------------------------------
 
-# Narrow pattern: match only the top-level ``export const <name> = [...]``
-# or ``export default { ... <name>: [...] ... }`` array assignments.
-# We never evaluate or execute the JS; we only extract array literals that
-# match the documented schema [model_id, label, tier, swe_score, ctx].
-#
-# The file defines objects like:
-#   export const groq = [
-#     ["llama-3.3-70b-versatile", "Llama 3.3 70B", "A", 49, "128k"],
-#     ...
-#   ];
-
-# Match a named array export (const or let): capture name + array body.
-_NAMED_EXPORT_RE = re.compile(r"""(?:export\s+(?:const|let)\s+(\w+)\s*=\s*)(\[[\s\S]*?\]);""")
-
-# Lightweight array-of-arrays JSON extractor: validates only array-of-array
-# shape (no object nesting, no template literals, no function calls).
-_ARRAY_ENTRY_RE = re.compile(
-    r"""\[\s*"([^"]+)"\s*,\s*"([^"]*?)"\s*(?:,\s*"([^"]*?)"\s*)?(?:,\s*([0-9.]+|null)\s*)?(?:,\s*"([^"]*?)"\s*)?\s*\]"""
+# A narrow grammar: strings, numbers and null in flat model tuples, and
+# provider objects containing scalar metadata and a named models reference.
+# Consume comments as tokens so comment-like text inside strings is preserved.
+_JS_STRING = r"'(?:[^'\\\r\n]|\\[^\r\n])*'|\"(?:[^\"\\\r\n]|\\[^\r\n])*\""
+_JS_COMMENT_OR_STRING = re.compile(rf"(?P<string>{_JS_STRING})|//[^\n]*|/\*[\s\S]*?\*/")
+_JS_IDENT = r"[A-Za-z_$][\w$-]*"
+_JS_KEY = rf"(?:{_JS_STRING}|{_JS_IDENT})"
+_JS_LITERAL = rf"(?:{_JS_STRING}|null|-?\d+(?:\.\d+)?)"
+_EXPORT = re.compile(rf"(?m)^\s*export\s+(?:const|let)\s+({_JS_IDENT})\s*=\s*")
+_TUPLE = re.compile(rf"\[\s*({_JS_LITERAL}(?:\s*,\s*{_JS_LITERAL}){{1,6}}\s*,?)\s*\]")
+_LITERAL = re.compile(_JS_LITERAL)
+_MAP_FIELD = rf"{_JS_KEY}\s*:\s*(?:{_JS_LITERAL}|{_JS_IDENT})"
+_PROVIDER = re.compile(
+    rf"({_JS_KEY})\s*:\s*\{{\s*((?:{_MAP_FIELD}\s*,\s*)*(?:{_MAP_FIELD}\s*)?)\}}"
 )
+_MODELS_FIELD = re.compile(rf"({_JS_KEY})\s*:\s*({_JS_IDENT}|{_JS_LITERAL})")
+_MODEL_ID = re.compile(r"[A-Za-z0-9_@][A-Za-z0-9_.@:/+-]*")
+_DECLARATION_END = re.compile(r"[^\S\n]*(?:;|\n\s*(?=export\b|const\b|\Z)|\Z)")
 
 
-def _parse_fcm_js(text: str) -> list[tuple[str, str]]:
-    """Extract (provider_name, model_id) pairs from ``sources.js``.
+def _fcm_members(
+    text: str, start: int, pattern: re.Pattern[str], end: str
+) -> list[re.Match[str]] | None:
+    """Read comma-separated literals followed by the end of the declaration."""
+    members: list[re.Match[str]] = []
+    i = start
+    ws = re.compile(r"\s*")
+    while True:
+        space = ws.match(text, i)
+        assert space is not None  # whitespace also matches the empty string
+        i = space.end()
+        if text.startswith(end, i):
+            return members if _DECLARATION_END.match(text, i + len(end)) else None
+        match = pattern.match(text, i)
+        if match is None:
+            return None
+        members.append(match)
+        space = ws.match(text, match.end())
+        assert space is not None
+        i = space.end()
+        if text.startswith(end, i):
+            return members if _DECLARATION_END.match(text, i + len(end)) else None
+        if not text.startswith(",", i):
+            return None
+        i += 1
 
-    Returns an empty list if the file cannot be parsed safely.  Never
-    evaluates the JavaScript.
-    """
-    results: list[tuple[str, str]] = []
-    for match in _NAMED_EXPORT_RE.finditer(text):
-        provider_name = match.group(1)
-        array_body = match.group(2)
-        # Validate: array body must only contain simple array-of-arrays entries.
-        # If it contains object braces or function calls, skip it.
-        if "{" in array_body or "(" in array_body or "`" in array_body:
-            continue
-        for entry_match in _ARRAY_ENTRY_RE.finditer(array_body):
-            model_id = entry_match.group(1)
-            if model_id:
-                results.append((provider_name, model_id))
-    return results
+
+def _parse_fcm_js(text: str, *, today: date) -> list[tuple[str, str]]:
+    """Extract active provider/model IDs; never run upstream JavaScript."""
+    text = _JS_COMMENT_OR_STRING.sub(
+        lambda m: m.group("string") or "\n" * m[0].count("\n") or " ", text
+    )
+    arrays: dict[str, list[str]] = {}
+    sources: list[tuple[str, str]] | None = None
+    for export in _EXPORT.finditer(text):
+        name, start = export[1], export.end()
+        if name == "sources":
+            sources = []
+            if not text.startswith("{", start):
+                return []
+            providers = _fcm_members(text, start + 1, _PROVIDER, "}")
+            if providers is None:
+                return []
+            for provider in providers:
+                fields = {m[1].strip("'\""): m[2] for m in _MODELS_FIELD.finditer(provider[2])}
+                if "models" not in fields:
+                    return []
+                sources.append((provider[1].strip("'\""), fields["models"]))
+        elif name != "MODELS" and text.startswith("[", start):
+            tuples = _fcm_members(text, start + 1, _TUPLE, "]")
+            if tuples is None:
+                continue
+            ids: list[str] = []
+            try:
+                for row in tuples:
+                    values = _LITERAL.findall(row[1])
+                    model_id = ast.literal_eval(values[0])
+                    if not isinstance(model_id, str) or not _MODEL_ID.fullmatch(model_id):
+                        raise ValueError("Invalid model identifier")
+                    if (
+                        len(values) == 7
+                        and values[6] != "null"
+                        and today > date.fromisoformat(ast.literal_eval(values[6]))
+                    ):
+                        continue
+                    ids.append(model_id)
+            except (SyntaxError, TypeError, ValueError):
+                continue
+            arrays[name] = ids
+
+    if sources is None:
+        sources = [(name, name) for name in arrays]
+    if any(name not in arrays for _, name in sources):
+        return []
+    return list(
+        dict.fromkeys((provider, model) for provider, name in sources for model in arrays[name])
+    )
 
 
 def parse_fcm(
@@ -134,12 +193,10 @@ def parse_fcm(
     ts = fetched_at or datetime.now(timezone.utc).isoformat()
     source_url = _raw_url(_FCM_REPO, _FCM_FILE, commit)
     rows: list[DiscoveryRow] = []
-    for provider_name, model_id in _parse_fcm_js(text):
-        # Use provider/model_id as the route ID.
-        route_id = f"{provider_name}/{model_id}" if "/" not in model_id else model_id
+    for provider_name, model_id in _parse_fcm_js(text, today=date.fromisoformat(ts[:10])):
         rows.append(
             DiscoveryRow(
-                id=route_id,
+                id=f"{provider_name}/{model_id}",
                 provider=provider_name,
                 source="free_coding_models",
                 source_url=source_url,
@@ -160,12 +217,26 @@ def fetch_fcm(
     timeout: float = 20.0,
     max_bytes: int = 4 * 1024 * 1024,
 ) -> list[DiscoveryRow]:
-    """Fetch and parse ``sources.js`` from free-coding-models."""
-    ts = datetime.now(timezone.utc).isoformat()
+    """Fetch a pinned FCM roster; an empty or invalid roster is a source failure."""
     url = _raw_url(_FCM_REPO, _FCM_FILE, commit)
     raw = fetcher(url, timeout=timeout, max_bytes=max_bytes)
-    text = raw.decode(errors="replace")
-    return parse_fcm(text, fetched_at=ts, commit=commit)
+    rows = parse_fcm(raw.decode("utf-8"), commit=commit)
+    if not rows:
+        raise ValueError("fcm_empty_or_invalid_roster")
+    return rows
+
+
+def fetch_fcm_current(
+    *, fetcher: Fetcher = default_fetcher, timeout: float = 20.0, max_bytes: int = 4 * 1024 * 1024
+) -> list[DiscoveryRow]:
+    """Resolve the latest change to the roster and fetch that immutable source."""
+    url = f"https://api.github.com/repos/{_FCM_REPO}/commits?path={_FCM_FILE}&per_page=1"
+    response = json.loads(fetcher(url, timeout=timeout, max_bytes=65_536))
+    first = response[0] if isinstance(response, list) and response else None
+    commit = first.get("sha") if isinstance(first, dict) else None
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("fcm_invalid_current_commit")
+    return fetch_fcm(fetcher=fetcher, commit=commit, timeout=timeout, max_bytes=max_bytes)
 
 
 # ---------------------------------------------------------------------------
