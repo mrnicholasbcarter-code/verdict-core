@@ -2,7 +2,7 @@
 
 ## Why
 
-Verdict's planner floor is a hardcoded name classifier (`verdict/classifier.py`) plus `PLANNER_MAX_CAPABILITY_TIER = 2`, and `verdict autodev` has no planner floor at all. The classifier went stale (it rates `gpt-6.2-sol` and `gpt-6.2-astra` as unknown) and autodev planned a real task with a small model. On 2026-11-23 the operator decided that planning uses frontier models chosen from live ratings, not a list, and agreed every rule in ADR-051 over four rounds of researched options.
+Verdict's planner floor is a hardcoded name classifier (`verdict/classifier.py`) plus `PLANNER_MAX_CAPABILITY_TIER = 2`, and `verdict autodev` has no planner floor at all. The classifier went stale (it rates `gpt-6.2-sol` and `gpt-6.2-astra` as unknown) and autodev planned a real task with a small model. On 2026-11-23 the operator decided that planning uses frontier models chosen from live ratings, not a list, and agreed every rule in ADR-051 over five rounds of researched options.
 
 ## What Changes
 
@@ -10,6 +10,7 @@ Verdict's planner floor is a hardcoded name classifier (`verdict/classifier.py`)
 - If the frontier band has no admissible route, the fallback band (top 30%) is used and the downgrade is recorded. With neither, planning fails closed with `no_frontier_or_fallback_planner`.
 - Unrated routes, routes rated only in an older fetch, declared tiers and the id classifier no longer qualify a planner.
 - Within a band the strongest admissible non-metered route (FREE, UNKNOWN or SUBSCRIPTION) plans. Equal scores go to the cheaper class first, then the higher `aa_coding`. METERED plans only when no non-metered route in the band is admissible, within the CP1 spend limit; until CP1 lands it stays excluded.
+- Autodev keeps its two-family planner list. The primary comes from the best band; the other-family failover may come from the fallback band (recorded). Fewer than two admissible families across both bands fails closed.
 - `verdict doctor` warns when no admissible route is in the frontier band. `verdict identify` reports rating coverage and the band's family concentration.
 - When this merges, ETHOS "In force" gains: "Planners: strongest admissible model in the frontier band; paid last."
 
@@ -37,5 +38,6 @@ Affected code: autodev planner selection in `verdict/autodev_run.py`, the planne
 - The ranking covers rated models in the route inventory, not every model the feed rates. Only scores from the source's newest fetch are ranked. Suffix variants share one slot. Ties at a cutoff are included.
 - A fallback is recorded in the autodev report and the orchestrate receipt, with the required band, the used band, the reason, the model's rank and the band cutoff.
 - With no admissible route in either band, autodev and orchestrate fail closed with `no_frontier_or_fallback_planner`.
+- Autodev's planner list spans two families. When only one family is admissible in the frontier band, the other-family failover comes from the fallback band and is recorded; with fewer than two families in both bands, autodev fails closed.
 - `verdict doctor` warns when no admissible route is in the frontier band and says whether the fallback band is reachable.
 - Ratings never re-admit a route that failed admission and never authorize a send.

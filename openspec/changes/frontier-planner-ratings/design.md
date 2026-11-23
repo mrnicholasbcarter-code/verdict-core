@@ -35,7 +35,8 @@ Non-goals:
 
    METERED stays excluded until CP1 supplies a spend limit. This replaces ADR-043's capacity-first key for the planner role only.
 7. Record `planner_band` on every selection: `{required: "frontier", used, reason, rank, rated_models, cutoff, rating, metric, fetched_at}`.
-8. The doctor row `planner_supply` warns when no admissible route is in the frontier band and names whether the fallback band is reachable. The identify report adds `rating_coverage` and `planner_band_families`.
+8. Failover lists (autodev's two-family rule, BOD-393): the primary is the strongest admissible route in the best available band; each other-family failover comes from the frontier band if admissible, else from the fallback band; `planner_band` is recorded per planner. Fewer than two admissible families across both bands fails closed, and the reason names the family count.
+9. The doctor row `planner_supply` warns when no admissible route is in the frontier band and names whether the fallback band is reachable. The identify report adds `rating_coverage` and `planner_band_families`.
 
 ## Risks / Trade-offs
 

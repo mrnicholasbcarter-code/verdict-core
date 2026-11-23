@@ -412,7 +412,9 @@ weakened test. Reversible.
   non-metered); equal scores go to the cheaper class, then `aa_coding`; METERED only when
   nothing else in the band is admissible and within the CP1 spend limit. No family guard;
   doctor warns when the frontier band is empty. Verdict's own planner receipts are a later ADR.
-* **Process:** agreed over four rounds of researched options; this is the standing pattern
+  Autodev keeps its two-family planner list; the other-family failover may come from the
+  fallback band (recorded); fewer than two families across both bands fails closed.
+* **Process:** agreed over five rounds of researched options; this is the standing pattern
   for decisions (research, ask each point, record, then accept).
 * **Supersedes:** `PLANNER_MAX_CAPABILITY_TIER` and the id classifier as planner gates.
 * **Record:** [ADR-051](../adr/ADR-051-planner-frontier-from-ratings.md),

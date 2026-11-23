@@ -1,6 +1,6 @@
 # ADR-051: Planners come from the frontier band of live ratings
 
-**Status:** Accepted — every decision agreed with the operator (2026-11-23, four rounds); not yet implemented
+**Status:** Accepted — every decision agreed with the operator (2026-11-23, five rounds); not yet implemented
 **Date:** 2026-11-23
 **Deciders:** Operator
 **Amends:** the recorded rule that model ratings are advisory tie-breaks that "cannot change membership" — for the planner role only. See [ADR-046](ADR-046-arena-ratings-advisory-source.md).
@@ -25,7 +25,7 @@ were rated.
 
 ## Decision
 
-The operator agreed the decisions marked *agreed* on 2026-11-23, over four
+The operator agreed the decisions marked *agreed* on 2026-11-23, over five
 rounds of options. The research behind them is the 2026-11-23 frontier-planner
 research note (AA Intelligence Index v5.0.1, live metadata snapshot).
 Decisions 3, 4 and 7 come from the earlier draft and restate existing
@@ -100,6 +100,14 @@ invariants (narrow-only admission, ratings joined exactly, executors unchanged).
     fallback band is reachable or neither is. `verdict identify` reports
     rating coverage (26% of available routes had a fresh score on 2026-11-23)
     and the band's family concentration. There is no coverage % gate.
+16. **Two-family failover keeps working (agreed, round 5).** Where a planner
+    path keeps a failover list (autodev today: at least two model families, so
+    one provider's outage cannot end planning, BOD-393), the primary planner is
+    the strongest admissible route in the best band available. The
+    other-family failover comes from the frontier band when one is admissible,
+    otherwise from the fallback band, and the receipt records the band of each
+    planner. With fewer than two families admissible across both bands,
+    planning fails closed and the reason names how many families were found.
 
 ## Consequences
 
