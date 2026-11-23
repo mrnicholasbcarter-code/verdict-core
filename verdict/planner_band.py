@@ -106,11 +106,14 @@ def load_planner_band_config() -> PlannerBandConfig:
 
 def _parse_fraction(value: str, name: str) -> float:
     try:
-        return float(value)
+        result = float(value)
     except (ValueError, TypeError) as exc:
         raise PlannerBandConfigError(
             f"invalid_planner_band_config: {name}={value!r} is not a number"
         ) from exc
+    if math.isnan(result):
+        raise PlannerBandConfigError(f"invalid_planner_band_config: {name}={value!r} is NaN")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +214,7 @@ def compute_planner_bands(
     # and get its aa_intelligence score + fetched_at.
     # Group by resolved metadata record ID to handle aliases.
     record_to_model_key: dict[str, str] = {}  # record.id → first model_key seen
+    record_to_alias_keys: dict[str, list[str]] = {}  # record.id → all model_keys
     model_key_to_score: dict[str, float] = {}
     model_key_to_fetched: dict[str, str] = {}
 
@@ -222,14 +226,13 @@ def compute_planner_bands(
         if lu.record is None:
             continue
         record_id = lu.record.id
+        # Track all model_keys for this record, for alias expansion in step 6
+        record_to_alias_keys.setdefault(record_id, []).append(model_key)
         # If this record was already seen under a different model_key, skip
         # (the first model_key alphabetically wins, since we sorted above)
         if record_id in record_to_model_key:
-            # Alias: map this key to the same slot as the first one
-            first_key = record_to_model_key[record_id]
-            if first_key != model_key:
-                # Both model keys should behave identically; skip the duplicate
-                continue
+            # Alias: de-duplicate for band sizing; aliases are expanded in step 6
+            continue
         score, fetched = _score_field(lu.record, _METRIC)
         if score is None or fetched is None:
             continue
@@ -285,8 +288,8 @@ def compute_planner_bands(
     cutoff_fallback = population[fallback_size - 1][0] if fallback_size > 0 else 0.0
 
     # Include all models tied with the cutoff score
-    frontier_keys = frozenset(key for score, key in population if score >= cutoff_frontier)
-    fallback_keys = frozenset(key for score, key in population if score >= cutoff_fallback)
+    frontier_keys_set = {key for score, key in population if score >= cutoff_frontier}
+    fallback_keys_set = {key for score, key in population if score >= cutoff_fallback}
 
     # Build score and rank maps
     scores_map = {key: score for score, key in population}
@@ -296,6 +299,25 @@ def compute_planner_bands(
         if i > 0 and score < population[i - 1][0]:
             rank = i + 1
         ranks_map[key] = rank
+
+    # Step 6: expand bands and score/rank maps to include all aliases of each model
+    # (all inventory routes that resolve to the same metadata record as a band member)
+    for record_id, alias_keys in record_to_alias_keys.items():
+        first_key = record_to_model_key.get(record_id)
+        if first_key is None or first_key not in scores_map:
+            continue  # record not in population (unrated or stale)
+        for alias_key in alias_keys:
+            if alias_key == first_key:
+                continue
+            scores_map[alias_key] = scores_map[first_key]
+            ranks_map[alias_key] = ranks_map[first_key]
+            if first_key in frontier_keys_set:
+                frontier_keys_set.add(alias_key)
+            if first_key in fallback_keys_set:
+                fallback_keys_set.add(alias_key)
+
+    frontier_keys = frozenset(frontier_keys_set)
+    fallback_keys = frozenset(fallback_keys_set)
 
     return BandComputation(
         frontier_model_keys=frontier_keys,
@@ -396,22 +418,22 @@ def _sort_key(
     metadata: MetadataSnapshot | None,
     identity_map: IdentityMap | None,
     now: datetime,
-) -> tuple[int, int, float, int, float, str]:
+) -> tuple[int, float, int, float, str]:
     """Sort key for ordering candidates within a band.
 
-    Smaller sorts better (ascending):
+    Smaller sorts better (ascending), per ADR-051 D5/D14:
     - 0 = non-metered, 1 = metered  (METERED excluded but kept last in key)
-    - rating descending (negated)
-    - cost class order (FREE/UNKNOWN=0, SUBSCRIPTION=1)
-    - aa_coding descending (negated)
-    - route_id lexicographic
+    - rating descending (negated)  ← D5: highest-rated non-metered wins
+    - cost class order (FREE/UNKNOWN=0, SUBSCRIPTION=1)  ← D14: equal score → FREE first
+    - aa_coding descending (negated)  ← D14: then higher aa_coding
+    - route_id lexicographic tiebreak
     """
     is_metered = 0 if capacity_class in _NON_METERED else 1
     model_key = _strip_suffix(route_id)
     score = band.model_scores.get(model_key, 0.0)
     cls_order = _CLASS_ORDER.get(capacity_class, 2)
     aa_coding = _aa_coding_score(route_id, metadata, identity_map, now)
-    return (is_metered, cls_order, -score, 0, -aa_coding, route_id)
+    return (is_metered, -score, cls_order, -aa_coding, route_id)
 
 
 def _band_result(
@@ -489,7 +511,7 @@ def select_planner_routes(
     )
 
     # Sort each group
-    def _key(route_id: str) -> tuple[int, int, float, int, float, str]:
+    def _key(route_id: str) -> tuple[int, float, int, float, str]:
         cap = capacity_classes.get(route_id, CapacityClass.UNKNOWN)
         return _sort_key(route_id, cap, band, metadata, identity_map, clock)
 
@@ -550,9 +572,9 @@ def planner_supply_status(
     - ``message``: human-readable supply summary for doctor sections
     """
     frontier = _filter_to_band(admitted_route_ids, band.frontier_model_keys, capacity_classes)
+    # fallback_model_keys ⊇ frontier_model_keys, so this already includes frontier routes
     fallback = _filter_to_band(admitted_route_ids, band.fallback_model_keys, capacity_classes)
-    # fallback total includes frontier (cumulative)
-    fallback_total = len(fallback) + len(frontier)
+    fallback_total = len(fallback)
     has_frontier = len(frontier) > 0
     has_fallback = fallback_total > 0
     warning = not has_frontier

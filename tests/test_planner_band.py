@@ -138,6 +138,18 @@ class TestLoadPlannerBandConfig:
         config = load_planner_band_config()
         assert config.frontier_top == config.fallback_top
 
+    def test_nan_frontier_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """NaN slips past numeric range checks; must be explicitly rejected (verify #11)."""
+        monkeypatch.setenv("VERDICT_PLANNER_FRONTIER_TOP", "nan")
+        with pytest.raises(PlannerBandConfigError, match="invalid_planner_band_config"):
+            load_planner_band_config()
+
+    def test_nan_fallback_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """NaN in fallback also fails closed."""
+        monkeypatch.setenv("VERDICT_PLANNER_FALLBACK_TOP", "nan")
+        with pytest.raises(PlannerBandConfigError, match="invalid_planner_band_config"):
+            load_planner_band_config()
+
 
 # ---------------------------------------------------------------------------
 # compute_planner_bands: basic frontier/fallback membership
@@ -336,6 +348,34 @@ class TestComputePlannerBands:
         band = compute_planner_bands(["cc/solo"], snap, None, config=DEFAULT_CONFIG, now=NOW)
         assert "cc/solo" in band.frontier_model_keys
 
+    def test_all_aliases_of_band_model_are_band_members(self) -> None:
+        """Blocking #5: second alias of a frontier model must also be in the band keys."""
+        # One metadata record maps to two route IDs (aliases, not suffix variants)
+        record = _record("p/model", ("cc/alpha", "cc/beta"), aa_intelligence=_score(90.0))
+        snap = _snapshot(record)
+        band = compute_planner_bands(
+            ["cc/alpha", "cc/beta"], snap, None, config=DEFAULT_CONFIG, now=NOW
+        )
+        # Both aliases must appear in frontier_model_keys, not just the first one
+        assert "cc/alpha" in band.frontier_model_keys
+        assert "cc/beta" in band.frontier_model_keys  # fails before fix
+
+    def test_second_alias_selectable_with_canonical_rating(self) -> None:
+        """Second alias must be selectable and carry the same rating/rank as the first."""
+        record = _record("p/model", ("cc/alpha", "cc/beta"), aa_intelligence=_score(90.0))
+        snap = _snapshot(record)
+        band = compute_planner_bands(
+            ["cc/alpha", "cc/beta"], snap, None, config=DEFAULT_CONFIG, now=NOW
+        )
+        # Admit only the second alias
+        caps = {"cc/beta": CapacityClass.FREE}
+        selected = select_planner_routes(["cc/beta"], caps, band, snap, None, top_n=1, now=NOW)
+        route_id, result = selected[0]
+        assert route_id == "cc/beta"
+        assert result.rating == pytest.approx(90.0)
+        assert result.rank == 1
+        assert result.rated_models == 1  # one model slot, D8
+
 
 # ---------------------------------------------------------------------------
 # select_planner_routes
@@ -517,6 +557,33 @@ class TestSelectPlannerRoutes:
         route_id, _ = selected[0]
         assert route_id == "cc/unk"  # UNKNOWN is non-metered → eligible
 
+    def test_subscription_beats_free_at_higher_rating(self) -> None:
+        """Blocking #1 / D5: higher-rated SUBSCRIPTION beats lower-rated FREE in same band.
+
+        Uses frontier_top=1.0 so both routes land in the same frontier band.
+        Without that, the lower-rated FREE route falls outside the band entirely
+        and the test degenerates into a band-membership check, not a sort-key check.
+        """
+        records = [
+            _record("p/submod", ("oa/sub",), aa_intelligence=_score(60.0)),
+            _record("p/freemod", ("cc/free",), aa_intelligence=_score(50.0)),
+        ]
+        snap = _snapshot(*records)
+        # Include BOTH routes in the same frontier band via a 100% config
+        wide_config = PlannerBandConfig(frontier_top=1.0, fallback_top=1.0)
+        band = compute_planner_bands(["oa/sub", "cc/free"], snap, None, config=wide_config, now=NOW)
+        assert "oa/sub" in band.frontier_model_keys
+        assert "cc/free" in band.frontier_model_keys
+        caps = {"oa/sub": CapacityClass.SUBSCRIPTION, "cc/free": CapacityClass.FREE}
+        # top_n=1: no two-family constraint
+        selected = select_planner_routes(
+            ["oa/sub", "cc/free"], caps, band, snap, None, top_n=1, now=NOW
+        )
+        route_id, _ = selected[0]
+        # With current buggy sort (cls_order before score): FREE wins (0 < 1 capacity order).
+        # After fix (score before cls_order): SUBSCRIPTION@60 wins (-60.0 < -50.0).
+        assert route_id == "oa/sub"  # fails before the _sort_key fix
+
     def test_free_before_subscription_in_selection(self) -> None:
         # Both routes in frontier; FREE should be preferred over SUBSCRIPTION
         # when scores are equal
@@ -625,6 +692,29 @@ class TestPlannerSupplyStatus:
         assert status["frontier_admissible"] == 1
         assert status["warning"] is False
 
+    def test_fallback_admissible_is_superset_not_double_counted(self) -> None:
+        """Verify #9: fallback_admissible must count each route once (frontier ⊆ fallback)."""
+        from verdict.planner_band import planner_supply_status
+
+        # 5 models: frontier=1 (cc/a), fallback=2 (cc/a + cc/b)
+        records = [
+            _record("p/a", ("cc/a",), aa_intelligence=_score(90.0)),
+            _record("p/b", ("cc/b",), aa_intelligence=_score(80.0)),
+            _record("p/c", ("cc/c",), aa_intelligence=_score(70.0)),
+            _record("p/d", ("cc/d",), aa_intelligence=_score(60.0)),
+            _record("p/e", ("cc/e",), aa_intelligence=_score(50.0)),
+        ]
+        snap = _snapshot(*records)
+        all_routes = ["cc/a", "cc/b", "cc/c", "cc/d", "cc/e"]
+        band = compute_planner_bands(all_routes, snap, None, config=DEFAULT_CONFIG, now=NOW)
+        # ceil(5*0.20)=1 → frontier={cc/a}; ceil(5*0.30)=2 → fallback={cc/a,cc/b}
+        assert band.rated_models == 5
+        caps = {r: CapacityClass.FREE for r in all_routes}
+        status = planner_supply_status(all_routes, caps, band)
+        assert status["frontier_admissible"] == 1
+        # Buggy code gives 1+2=3 (double-counts cc/a); fixed gives 2
+        assert status["fallback_admissible"] == 2  # fails before fix
+
     def test_warn_when_no_frontier(self) -> None:
         from verdict.planner_band import planner_supply_status
 
@@ -676,3 +766,51 @@ class TestRatingCoverageSummary:
         assert summary["coverage_pct"] == pytest.approx(66.7)
         assert "frontier_model_count" in summary
         assert "fallback_model_count" in summary
+
+
+# ---------------------------------------------------------------------------
+# EligibilityLadder integration (ADR-051 D5 band-based sort)
+# ---------------------------------------------------------------------------
+
+
+class TestBandLadderIntegration:
+    """EligibilityLadder.set_planner_band() injects band-based candidate ordering."""
+
+    def test_set_planner_band_prefers_higher_rated_subscription_over_lower_rated_free(
+        self, tmp_path
+    ) -> None:
+        """Blocking #2: band re-sort in _assess_all puts higher-rated SUB before lower-rated FREE.
+
+        Without the band inject, strongest_first puts capacity_order first so FREE (order=0)
+        beats SUBSCRIPTION (order=1).  After inject the sort is (is_metered, -score, cls_order,
+        ...) so SUB@60 wins over FREE@50.
+        """
+
+        from tests.test_orch_eligibility import FakeProbe, conn, row
+        from verdict.orchestration.contracts import TaskRequirements
+        from verdict.orchestration.eligibility import EligibilityLadder
+
+        rows = [row("oa/sub"), row("cc/free")]
+        conns = [
+            conn("oa", auth="oauth"),  # → SUBSCRIPTION
+            conn("cc", free_only=True),  # → FREE (import_free_only)
+        ]
+        ladder = EligibilityLadder(rows, conns, FakeProbe(), tmp_path / "state.json", metadata=None)
+        # Both routes in the same frontier band; oa/sub has the higher score.
+        band = BandComputation(
+            frontier_model_keys=frozenset({"oa/sub", "cc/free"}),
+            fallback_model_keys=frozenset({"oa/sub", "cc/free"}),
+            cutoff_frontier=50.0,
+            cutoff_fallback=50.0,
+            rated_models=2,
+            fetched_at=FETCHED_NEW,
+            model_scores={"oa/sub": 60.0, "cc/free": 50.0},
+            model_ranks={"oa/sub": 1, "cc/free": 2},
+        )
+        ladder.set_planner_band(band)
+        req = TaskRequirements(role_ordering="strongest_first", arena_role="planner")
+        # Before fix: FREE wins (capacity_order=0 < 1 in _rank_key strongest_first).
+        # After fix:  oa/sub wins (band sort: -60.0 < -50.0).
+        choice, _ = ladder.select(req, now=NOW)
+        assert choice is not None
+        assert choice.route_id == "oa/sub"
