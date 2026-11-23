@@ -217,8 +217,14 @@ def test_screen_command_parses_with_the_real_cli() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cold_state_planner_block_says_why_and_admits_nothing(tmp_path: Path) -> None:
+async def test_cold_state_planner_block_says_why_and_admits_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """#1135: cold state ended with 'none eligible' and no next step."""
+    from datetime import datetime, timedelta, timezone
+
+    from tests.test_planner_band import _record, _score
+    from tests.test_planner_band import _snapshot as _pb_snapshot
     from verdict.orchestration.contracts import OrchestrationError
     from verdict.orchestration.run import plan_with_failover
 
@@ -231,9 +237,23 @@ async def test_cold_state_planner_block_says_why_and_admits_nothing(tmp_path: Pa
             seen.append(req)
             return None, (_unproven("free/a"),)
 
+        def inventory_route_ids(self) -> list[str]:
+            return ["free/a"]
+
+        def set_planner_band(self, band: object) -> None:
+            pass
+
     class Events:
         def emit(self, kind: str, **data: Any) -> None:
             pass
+
+    _fetched_at = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    monkeypatch.setattr(
+        "verdict.metadata.store.load_store",
+        lambda: _pb_snapshot(
+            _record("free_a", ("free/a",), aa_intelligence=_score(90.0, _fetched_at))
+        ),
+    )
 
     with pytest.raises(OrchestrationError) as exc:
         await plan_with_failover(

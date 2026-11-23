@@ -50,6 +50,14 @@ from verdict.decision_signals.contracts import (
     DecisionSignalSetV1,
     compute_input_digest,
 )
+from verdict.metadata.records import (
+    SOURCE_OPENROUTER_AA,
+    FieldProvenance,
+    ModelMetadataRecord,
+    ProvenancedField,
+    SoftScores,
+)
+from verdict.metadata.store import MetadataSnapshot, save_store
 from verdict.orchestration.contracts import ReviewResult, TaskRequirements, WorkerTerminal
 from verdict.orchestration.eligibility import EligibilityLadder
 from verdict.orchestration.executors import FaultInjectingExecutor, ScriptedExecutor
@@ -123,6 +131,42 @@ def fixture_health_cache(path: Path, now: datetime) -> HealthCache:
         )
     cache.save()
     return cache
+
+
+def fixture_metadata_store(now: datetime) -> MetadataSnapshot:
+    """Fixture metadata snapshot: rates the admitted planner routes as fresh.
+
+    plan_with_failover requires a live metadata store (ADR-051); this writes
+    fixture scores so the demo runs fully offline without touching the user's
+    real ~/.verdict/model-metadata.json.
+    """
+    fetched_at = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _score(value: float) -> ProvenancedField:
+        return ProvenancedField(
+            value=value,
+            provenance=FieldProvenance(source=SOURCE_OPENROUTER_AA, fetched_at=fetched_at),
+        )
+
+    def _record(route_id: str, score: float) -> ModelMetadataRecord:
+        provider = route_id.split("/", 1)[0]
+        return ModelMetadataRecord(
+            id=route_id.replace("/", "_"),
+            scores=SoftScores(aa_intelligence=_score(score)),
+            omniroute_ids=(route_id,),
+            provider=provider,
+        )
+
+    # Rate the non-METERED, tool-capable routes that may be selected as planners.
+    records = (
+        _record("demo-sub/atlas-coder", 92.0),
+        _record("demo-free/birch-coder", 88.0),
+        _record("demo-free/cedar-coder", 86.0),
+        _record("demo-free2/elm-coder", 84.0),
+    )
+    return MetadataSnapshot(
+        schema_version="1", refreshed_at=fetched_at, sources={}, records=records
+    )
 
 
 def fixture_connections() -> list[dict[str, Any]]:
@@ -297,6 +341,10 @@ async def run_demo(out: Path) -> int:
             admitted=admitted,
             health_cache=fixture_health_cache(root / "state" / "health-cache.json", now),
         )
+        # ADR-051: plan_with_failover requires a metadata store for planner band
+        # selection.  Write fixture scores to the scoped fixture-state dir so the
+        # demo runs fully offline (never reads or writes the user's real store).
+        save_store(fixture_metadata_store(now))
         print(f"goal: {GOAL}")
         print(f"admission: {len(admitted)} of {len(rows)} fixture routes admitted")
         for record in admitted.records:

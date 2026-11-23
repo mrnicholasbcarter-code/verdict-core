@@ -252,23 +252,59 @@ def _ladder_verdicts(
     return list(ladder.evaluate(PLANNER_REQUIREMENTS, now=now))
 
 
-def _legacy_planner_pick(verdicts: Sequence[RouteVerdict]) -> str | None:
-    """The route main's live planner selection would choose (BOD-406/BOD-393).
+def _legacy_planner_pick(
+    verdicts: Sequence[RouteVerdict],
+    metadata: MetadataSnapshot | None,
+    identity_map: IdentityMap | None,
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    """The top ADR-051 frontier-band planner route for this inventory (BOD-406/BOD-393).
 
-    Runs ``_live_planner_models`` itself over the same verdicts. It needs two
-    model families; when it would fail, the legacy path has no planner (None).
+    Uses the same band logic as the live autodev planner (ADR-051) but works
+    without real health probes, so it is safe to call from ``build_ladder``
+    where health is not_probed.  Returns None when band selection fails.
     """
-    from verdict.autodev_run import AutodevError, _live_planner_models
+    from verdict.orchestration.contracts import CapacityClass
+    from verdict.planner_band import (
+        PlannerBandError,
+        compute_planner_bands,
+        load_planner_band_config,
+        select_planner_routes,
+    )
 
-    class _Verdicts:
-        def select(
-            self, requirements: TaskRequirements, *, now: datetime
-        ) -> tuple[None, tuple[RouteVerdict, ...]]:
-            return None, tuple(verdicts)
+    inventory: list[str] = []
+    capacity_classes: dict[str, CapacityClass] = {}
+    for v in verdicts:
+        route_id = str(v.route_id)
+        if "/" not in route_id:
+            continue
+        inventory.append(route_id)
+        capacity_classes[route_id] = getattr(v, "capacity_class", CapacityClass.UNKNOWN)
+    if not inventory:
+        return None
 
     try:
-        return _live_planner_models(_Verdicts(), top_n=3)[0]
-    except AutodevError:
+        config = load_planner_band_config()
+    except Exception:
+        return None
+    clock = now or datetime.now(timezone.utc)
+    band = compute_planner_bands(inventory, metadata, identity_map, config=config, now=clock)
+
+    # Admit non-metered routes (ADR-049: FREE, SUBSCRIPTION, UNKNOWN).
+    _non_metered = frozenset(
+        {CapacityClass.FREE, CapacityClass.SUBSCRIPTION, CapacityClass.UNKNOWN}
+    )
+    admitted = [
+        r for r in inventory if capacity_classes.get(r, CapacityClass.UNKNOWN) in _non_metered
+    ]
+    try:
+        # top_n=1: advisory pick; avoids the two-family constraint (top_n >= 2).
+        selected = select_planner_routes(
+            admitted, capacity_classes, band, metadata, identity_map, top_n=1, now=clock
+        )
+        return selected[0][0] if selected else None
+    except PlannerBandError:
         return None
 
 
@@ -490,7 +526,7 @@ def build_ladder(
     if not ordered:
         return closed("empty_narrowed_set")
 
-    legacy_pick = _legacy_planner_pick(verdicts)
+    legacy_pick = _legacy_planner_pick(verdicts, metadata_snapshot, identity_map, now=now)
     dynamic_pick = ordered[0]
     return LadderResult(
         status=LadderStatus.OK,

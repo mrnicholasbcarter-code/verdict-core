@@ -208,11 +208,15 @@ def test_decomposition_config_model_default_is_none() -> None:
 
 
 def test_live_planner_selection_fails_closed_when_no_eligible_planners() -> None:
-    """When the live ladder has no eligible planners, autodev fails closed with named error."""
+    """When no admissible route is in either planner band, autodev fails with a named error.
+
+    With metadata=None both bands are empty, so a single-family ladder always
+    hits the same named failure path (ADR-051).
+    """
     import verdict.autodev_run as autodev
     from verdict.orchestration.contracts import CapacityClass
 
-    # Only one family eligible
+    # Only one family eligible; metadata=None → empty bands → named PlannerBandError
     verdicts = [_route_verdict("cc/claude-sonnet-5", rank=0, capacity=CapacityClass.SUBSCRIPTION)]
 
     class _Selector:
@@ -223,8 +227,52 @@ def test_live_planner_selection_fails_closed_when_no_eligible_planners() -> None
         autodev._live_planner_models(_Selector(), top_n=3)
 
     message = str(excinfo.value)
-    assert "at least two model families" in message
-    assert "no paid or frontier fallback" in message
+    assert "no_frontier_or_fallback_planner" in message
+
+
+def _two_family_snapshot() -> Any:
+    """Minimal MetadataSnapshot with free/alpha and cc/claude-sonnet-5 tied at 90.0.
+
+    Both routes receive the same aa_intelligence score so they tie for the
+    frontier-band cutoff (ceil(2*0.20)=1 → both included via tie rule).
+    The FREE route sorts ahead of SUBSCRIPTION at equal score so it is
+    ``planners[0]``, preserving the original test assertion.
+    """
+    from verdict.metadata.records import (
+        FieldProvenance,
+        ModelMetadataRecord,
+        ProvenancedField,
+        SoftScores,
+    )
+    from verdict.metadata.store import MetadataSnapshot
+
+    fetched = "2026-11-23T09:00:00Z"
+
+    def _score(v: float) -> ProvenancedField:
+        return ProvenancedField(
+            value=v,
+            provenance=FieldProvenance(source="openrouter.artificial_analysis", fetched_at=fetched),
+        )
+
+    return MetadataSnapshot(
+        schema_version="1",
+        refreshed_at=fetched,
+        sources={},
+        records=(
+            ModelMetadataRecord(
+                id="free/alpha",
+                scores=SoftScores(aa_intelligence=_score(90.0)),
+                omniroute_ids=("free/alpha",),
+                provider="free",
+            ),
+            ModelMetadataRecord(
+                id="cc/claude-sonnet-5",
+                scores=SoftScores(aa_intelligence=_score(90.0)),
+                omniroute_ids=("cc/claude-sonnet-5",),
+                provider="cc",
+            ),
+        ),
+    )
 
 
 def test_live_planner_selection_called_for_dry_run_without_decision(
@@ -252,6 +300,9 @@ def test_live_planner_selection_called_for_dry_run_without_decision(
         "verdict.orchestration.eligibility_report.build_selector",
         lambda gateway, **kwargs: _Selector(),
     )
+    # Provide metadata so both routes tie for the frontier band (ADR-051).
+    _snap = _two_family_snapshot()
+    monkeypatch.setattr("verdict.metadata.store.load_store", lambda *a, **kw: _snap)
     configs: list[Any] = []
 
     def transport(model_id: str, payload: Mapping[str, Any], timeout_seconds: float) -> Any:
