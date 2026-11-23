@@ -634,6 +634,9 @@ def test_cli_dry_run_plans_without_launch_authority(
         def select(self, req: Any, *, now: Any) -> Any:
             return None, (_FakeRouteVerdict("cheap/model", CapacityClass.FREE),)
 
+        def capacity_fact(self, route_id: str) -> Any:
+            return CapacityClass.FREE, ""
+
     monkeypatch.setattr(
         "verdict.orchestration.eligibility_report.build_selector",
         lambda gateway, **kwargs: _FakeSelector(),
@@ -680,6 +683,9 @@ def test_cli_dry_run_explicit_orchestrator_model_paid_refused(
         def select(self, req: Any, *, now: Any) -> Any:
             # mistral/codestral-latest is metered (cost > 0), so inadmissible as planner
             return None, (_FakeRouteVerdict("mistral/codestral-latest", CapacityClass.METERED),)
+
+        def capacity_fact(self, route_id: str) -> Any:
+            return CapacityClass.METERED, "positive_price"
 
     monkeypatch.setattr(
         "verdict.orchestration.eligibility_report.build_selector",
@@ -850,6 +856,12 @@ def _ladder(
                 requirements.append(req)
             return None, tuple(verdicts)
 
+        def capacity_fact(self, route_id: str) -> Any:
+            for v in verdicts:
+                if str(v.route_id) == route_id:
+                    return v.capacity_class, "fixture"
+            return CapacityClass.UNKNOWN, "not_in_verdicts"
+
     def build_selector(gateway: str, **kwargs: Any) -> Any:
         if built is not None:
             built["gateway"] = gateway
@@ -857,6 +869,153 @@ def _ladder(
         return _Selector()
 
     return build_selector
+
+
+# Capacity class expected for each (auth, pricing, plan_label) combo:
+#   METERED  — positive declared price: fact-proven paid; must never be probed.
+#   UNKNOWN  — no cost facts on an apikey connection: allowed under assume_free
+#              (ADR-049); probing is permitted.
+#   SUBSCRIPTION — oauth connection: prepaid quota; probing is permitted.
+#   FREE     — plan_label contains "free" or all-zero pricing: probing is permitted.
+# ``expect_zero_probes`` is True only for METERED combos.
+@pytest.mark.parametrize("mode", ["unpinned", "pinned", "dry-run", "explicit-dry-run"])
+@pytest.mark.parametrize(
+    "auth,pricing,plan_label,expect_zero_probes",
+    [
+        ("apikey", {"input": 1.0, "output": 2.0}, "standard", True),  # METERED
+        ("apikey", {}, "standard", False),  # UNKNOWN (assume_free)
+        ("oauth", {}, "standard", False),  # SUBSCRIPTION
+        ("apikey", {}, "free trial", False),  # FREE (plan_label)
+        ("apikey", {"input": 0.0, "output": 0.0}, "standard", False),  # FREE (all_zero)
+    ],
+)
+def test_autodev_never_probes_fact_metered_routes(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_gateway_network: None,
+    mode: str,
+    auth: str,
+    pricing: dict[str, float],
+    plan_label: str,
+    expect_zero_probes: bool,
+) -> None:
+    """Fact-metered routes (positive declared price) are never probed by autodev.
+
+    UNKNOWN routes (no cost facts) are allowed under ADR-049 ``assume_free``
+    and are not blocked; they may appear in ``attempts``.  FREE and SUBSCRIPTION
+    routes are also not blocked.  The test only enforces the METERED guard.
+    """
+    from tests.test_orch_eligibility import conn, row
+    from verdict import autodev_run as autodev
+    from verdict import cli
+    from verdict.admission import RuntimeEvidence
+    from verdict.subagent_selection import HealthResult
+
+    target = "example/gemini-2.5-pro"
+    monkeypatch.setattr(
+        "verdict.orchestration.run.fetch_inventory", lambda *a, **kw: [row(target, pricing=pricing)]
+    )
+    monkeypatch.setattr(
+        "verdict.orchestration.run.fetch_connections",
+        lambda *a, **kw: [conn("example", auth=auth, plan=plan_label)],
+    )
+    monkeypatch.setattr(
+        "verdict.omniroute_health.load_omniroute_health", lambda *a, **kw: RuntimeEvidence()
+    )
+    attempts: list[str] = []
+
+    def initial_probe(candidate: Any) -> HealthResult:
+        attempts.append(candidate.route_id)
+        return HealthResult(False, "fixture_refusal")
+
+    def direct_probe(model: str, *args: Any) -> Any:
+        attempts.append(model)
+        return {"status_code": 402, "body": {}}
+
+    monkeypatch.setattr(
+        "verdict.subagent_selection.openai_health_probe", lambda *a, **kw: initial_probe
+    )
+    monkeypatch.setattr("verdict.probes.openai_probe_transport", lambda *a, **kw: direct_probe)
+    monkeypatch.setattr(
+        "verdict.actions.verified_models.selection_refresh_hook", lambda *a, **kw: None
+    )
+    if mode == "pinned":
+        with pytest.raises(AutodevError):
+            autodev.prepare_live_autodev("fix", repo, model=target, base_url=GATEWAY, api_key=None)
+    elif mode == "unpinned":
+        with pytest.raises(AutodevError):
+            autodev.prepare_live_autodev_selected("fix", repo, base_url=GATEWAY, api_key=None)
+    else:
+        with pytest.raises(SystemExit) as exc:
+            cli.cmd_autodev(
+                "fix",
+                str(repo),
+                orchestrator_model=target if mode == "explicit-dry-run" else None,
+                executor_model=None,
+                base_url=GATEWAY,
+                dry_run=True,
+                output_json=True,
+            )
+        assert exc.value.code == 1
+    if expect_zero_probes:
+        assert attempts == [], (
+            f"METERED route {target!r} was probed ({attempts!r}); "
+            "fact-metered routes must never be probed"
+        )
+
+
+def test_autodev_pinned_metered_is_allowed_and_probed(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, no_gateway_network: None
+) -> None:
+    """Pinned METERED executor is allowed and probed; capacity class is recorded in headers.
+
+    Policy update: a METERED pinned route is an explicit operator choice — it
+    must NOT be fail-closed.  The probe proceeds, the zero-cost check is bypassed
+    for METERED, and ``x-verdict-route-capacity: metered`` appears in the
+    returned headers so it flows into the receipt.
+
+    The parametrised ``test_autodev_never_probes_fact_metered_routes`` test
+    cannot exercise this path because the single-route inventory makes
+    ``_live_planner_models`` fail (< 2 families) before reaching the probe.
+    Here we fake the selector so two FREE planner families are available.
+    """
+    from verdict import autodev_run as autodev
+
+    metered_model = "example/gemini-2.5-pro"
+
+    # Two free planner families (FREE_A="free/alpha:free" → family "alpha:free",
+    # "agy/gemini-x" → family "gemini") so ``_live_planner_models`` succeeds.
+    # ``capacity_fact`` returns METERED for the pinned model.
+    class _MeterAllowSelector:
+        def select(self, req: Any, *, now: Any) -> Any:
+            return None, (
+                _route_verdict(FREE_A, rank=0, capacity=CapacityClass.FREE),
+                _route_verdict("agy/gemini-x", rank=1, capacity=CapacityClass.FREE),
+            )
+
+        def capacity_fact(self, route_id: str) -> tuple[CapacityClass, str]:
+            if route_id == metered_model:
+                return CapacityClass.METERED, "positive_price"
+            return CapacityClass.FREE, "all_zero_pricing"
+
+    monkeypatch.setattr(
+        "verdict.orchestration.eligibility_report.build_selector",
+        lambda gateway, **kwargs: _MeterAllowSelector(),
+    )
+
+    # Non-zero cost confirms the zero-cost check is bypassed for METERED routes.
+    attempts = _scripted_probe(monkeypatch, costs={metered_model: "0.05"})
+    planner = _decomposer(PLAN)
+    monkeypatch.setattr(autodev, "Decomposer", lambda config: planner)
+
+    _decision, _plan, headers = autodev.prepare_live_autodev(
+        "fix", repo, model=metered_model, base_url=GATEWAY, api_key=None
+    )
+
+    assert metered_model in attempts, f"METERED pinned route {metered_model!r} was not probed"
+    assert headers.get("x-verdict-route-capacity") == "metered", (
+        f"Expected capacity recorded in headers; got: {headers!r}"
+    )
 
 
 def _planner_ladder() -> list[RouteVerdict]:
@@ -1180,6 +1339,33 @@ def test_run_autodev_receipt_records_why_selected_and_rejected(repo: Path, tmp_p
     assert probe_dropped != "[REDACTED]"
     assert probe_dropped == [{"route_id": "free/gamma:free", "reason": "identity"}]
     assert all(value != "[REDACTED]" for item in probe_dropped for value in item.values())
+
+
+def test_run_autodev_records_pinned_capacity_class_in_receipt(repo: Path) -> None:
+    """pinned_capacity_class is stored in the receipt and survives redaction.
+
+    Non-sensitive key/value: 'pinned_route_capacity_class' / 'metered'.
+    Neither matches _SENSITIVE_KEY_PARTS nor the string credential pattern,
+    so it must reach the stored payload unchanged.
+    """
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".db") as f:
+        db = f.name
+        store = ReceiptStore(db)
+        run_autodev(
+            "fix ruff errors",
+            repo,
+            store=store,
+            decomposer=_decomposer([PLAN[0]]),
+            executor=_executor(repo, {"a.py": A_DIFF}),
+            mechanical=False,
+            pinned_capacity_class="metered",
+        )
+        payload = ReceiptStore(db).query_receipts(scope=AUTODEV_SCOPE)[0].payload
+        assert payload.get("pinned_route_capacity_class") == "metered", (
+            f"Expected 'metered' in receipt; got: {payload.get('pinned_route_capacity_class')!r}"
+        )
 
 
 def test_cmd_autodev_without_pin_uses_selected_route(

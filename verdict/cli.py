@@ -1449,6 +1449,7 @@ def cmd_autodev(
 
     prepared_plan = None
     probe_headers = None
+    pinned_capacity_class = ""
     selected_candidates: tuple[dict[str, Any], ...] = ()
     probe_dropped: tuple[dict[str, str], ...] = ()
     # Ladder-selected planner routes for a dry run; empty means orchestrator_model alone.
@@ -1466,6 +1467,7 @@ def cmd_autodev(
                 base_url=base_url or DEFAULT_BASE_URL,
                 api_key=resolve_api_key(),
             )
+            pinned_capacity_class = probe_headers.get("x-verdict-route-capacity", "")
         else:
             # No --executor-model pin: autodev selects its own free executor from
             # the live eligibility ladder and never falls back to a paid route.
@@ -1514,7 +1516,12 @@ def cmd_autodev(
             ],
         }
     else:
-        from verdict.autodev_run import _ELIGIBLE_STAGES, _is_premium_reserved, _live_planner_models
+        from verdict.autodev_run import (
+            _AUTODEV_PROBE_CAPACITY,
+            _ELIGIBLE_STAGES,
+            _is_premium_reserved,
+            _live_planner_models,
+        )
         from verdict.free_tier_admit import normalize_omniroute_origin
         from verdict.orchestration.contracts import CapacityClass
         from verdict.orchestration.eligibility_report import build_selector
@@ -1528,6 +1535,7 @@ def cmd_autodev(
                 scope="",
                 prefer="",
                 required_capabilities=frozenset({"reasoning"}),
+                capacity=_AUTODEV_PROBE_CAPACITY,
                 sync_visibility=False,
             )
         except Exception as exc:  # live gateway state; fail closed, named
@@ -1562,6 +1570,18 @@ def cmd_autodev(
 
             from verdict.orchestration.contracts import TaskRequirements
 
+            # Check capacity before select() — a METERED model is narrowed out of
+            # the admitted set by the capacity filter, so select() would return
+            # "not found"; check here to give a named reason instead.
+            _cap_cls, _cap_fact = selector.capacity_fact(orchestrator_model)
+            if _cap_cls is CapacityClass.METERED:
+                _report_autodev_failure(
+                    f"explicit --orchestrator-model {orchestrator_model!r} is not admissible: "
+                    f"pay-per-token routes are not eligible for planning "
+                    f"(capacity={_cap_cls.value}, fact={_cap_fact!r})",
+                    output_json=output_json,
+                )
+                raise SystemExit(1)
             try:
                 _chosen, verdicts = selector.select(
                     TaskRequirements(
@@ -1676,6 +1696,7 @@ def cmd_autodev(
             plan=prepared_plan,
             probe_dropped=probe_dropped,
             retry_routes=selected_candidates,
+            pinned_capacity_class=pinned_capacity_class,
         )
     except DecompositionError as exc:
         # A decomposition that cannot state its own checks is a reportable
