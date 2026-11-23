@@ -531,25 +531,29 @@ def test_cli_parser_exposes_planner_executor_role() -> None:
     add_parsers(parser.add_subparsers(dest="command"))
     args = parser.parse_args(["orchestrate", "ship", "--planner-executor", "direct-gateway"])
 
-    assert args.executor == "direct-gateway"
+    # OpenCode is the default worker executor (ADR-053 Decision 2).
+    assert args.executor == "opencode"
     assert args.planner_executor == "direct-gateway"
 
 
-def test_default_executor_builds_direct_gateway_not_prime() -> None:
-    """Fails if a no-value or missing --executor silently falls back to Prime."""
+def test_default_executor_builds_opencode_not_prime() -> None:
+    """Fails if a no-value or missing --executor silently falls back to Prime or direct-gateway.
+
+    OpenCode is the default worker executor (ADR-053 Decision 2).
+    """
     import argparse
 
     from verdict.orchestration.cli import _worker_executor, add_parsers
-    from verdict.orchestration.executors import DirectGatewayExecutor
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
 
     parser = argparse.ArgumentParser()
     add_parsers(parser.add_subparsers(dest="command"))
     parsed = parser.parse_args(["orchestrate", "ship", "--gateway", "http://gateway.invalid"])
-    assert isinstance(_worker_executor(parsed), DirectGatewayExecutor)
+    assert isinstance(_worker_executor(parsed), OpenCodeExecutor)
     bare = argparse.Namespace(executor_map="", gateway="http://gateway.invalid")
-    assert isinstance(_worker_executor(bare), DirectGatewayExecutor)
+    assert isinstance(_worker_executor(bare), OpenCodeExecutor)
     empty = argparse.Namespace(executor="", executor_map="", gateway="http://gateway.invalid")
-    assert isinstance(_worker_executor(empty), DirectGatewayExecutor)
+    assert isinstance(_worker_executor(empty), OpenCodeExecutor)
 
 
 @pytest.mark.parametrize("name", ["prime", "prime-headless"])

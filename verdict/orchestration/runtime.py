@@ -361,6 +361,8 @@ BYPRODUCT_EXCLUDES = (
     ".serena/",
     "venv/",
     ".venv/",
+    # OpenCode worker context file written per attempt; not part of deliverables.
+    ".verdict-context.md",
 )
 
 

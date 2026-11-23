@@ -2199,6 +2199,36 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             return _proxy_error(
                 503, f"live admission unavailable: {type(exc).__name__}", surface=surface
             )
+    # --- Task 2.4: Per-request route pinning for worker calls (ADR-053 Decision 1) ---
+    # A worker executor (OpenCode) sends the ``X-Verdict-Worker`` header and
+    # sets the ``model`` field to its assigned route_id.  Verdict narrows the
+    # decision to that one admitted route so the receipt attests the correct
+    # model identity.  ``LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE`` is an
+    # alternative gate for non-worker callers.
+    # If the route was not admitted, the request fails closed: ``decision`` is
+    # set to ``"denied"`` so the existing evidence-recording path handles it.
+    _client_model = payload.get("model")
+    _worker_marker = request.headers.get("x-verdict-worker")
+    if (
+        (getattr(intelligence_instance, "allow_client_model_override", False) or _worker_marker)
+        and isinstance(_client_model, str)
+        and _client_model
+    ):
+        _admitted_ids = {
+            str(r.get("model_id"))
+            for r in decision.candidate_states
+            if isinstance(r, dict) and r.get("admitted") is True
+        }
+        if _client_model in _admitted_ids:
+            decision = replace(decision, model=_client_model, alternatives=[])
+        else:
+            # Fail closed: set decision="denied" so _start_evidence records
+            # the trace and the existing denied block returns 503 with headers.
+            decision = replace(
+                decision,
+                decision="denied",
+                reason=f"route {_client_model!r} was not in the admitted set for this request",
+            )
     attempts = build_attempts(proxy_instance, decision, protocol=protocol, admitted=relay_admitted)
     if not attempts:
         if "free_supply_unknown" in decision.safety_flags:

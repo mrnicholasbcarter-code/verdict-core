@@ -770,6 +770,59 @@ def _doctor_acceptance(diag: DoctorDiagnostics) -> None:
     diag.warnings.extend(warnings)
 
 
+def _doctor_opencode_version(diag: DoctorDiagnostics) -> None:
+    """ADR-053 Decision 5: warn when installed OpenCode version differs from pinned v2.3.2.
+
+    OpenCode is optional as an executor; a missing binary is a note, not an
+    issue.  A version mismatch is a warning: the adapter is pinned to v2.3.2
+    and an upgrade or downgrade needs a re-run of the adapter's live check.
+    """
+    import subprocess
+
+    from verdict.orchestration.executor_opencode import PINNED_VERSION, _opencode_binary
+
+    try:
+        binary = _opencode_binary()
+    except Exception as exc:
+        diag.sections.append(("OpenCode", "note", f"binary resolution error: {exc}"))
+        return
+
+    try:
+        result = subprocess.run(
+            [binary, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        version_line = (result.stdout or result.stderr or "").strip().splitlines()
+        installed = version_line[0].strip() if version_line else ""
+        # OpenCode outputs "2.3.2" or "opencode 2.3.2"; extract the version number.
+        import re
+
+        match = re.search(r"\d+\.\d+\.\d+", installed)
+        installed_version = match.group(0) if match else installed
+    except FileNotFoundError:
+        diag.sections.append(("OpenCode", "note", "not installed (binary not found on PATH)"))
+        return
+    except Exception as exc:
+        diag.sections.append(("OpenCode", "note", f"version check error: {exc}"))
+        return
+
+    if not installed_version:
+        diag.sections.append(("OpenCode", "note", "version unavailable"))
+        return
+
+    if installed_version == PINNED_VERSION:
+        diag.sections.append(("OpenCode", "ok", f"v{installed_version}"))
+    else:
+        msg = (
+            f"installed v{installed_version}, expected v{PINNED_VERSION}; "
+            "re-run the adapter live check after upgrading"
+        )
+        diag.sections.append(("OpenCode", "warn", msg))
+        diag.warnings.append(f"OpenCode version mismatch: {msg}")
+
+
 def _collect_doctor_diagnostics(
     fix: bool,
     *,
@@ -1037,6 +1090,7 @@ def _collect_doctor_diagnostics(
     _doctor_billing_catalog_drift(diag)
     _doctor_billing_overlay_conflicts(diag)
     _doctor_planner_supply(diag)
+    _doctor_opencode_version(diag)
     # 1d-iii. Verdict's key is DB-backed, never the gateway's env key.
     if gateway_url:
         _doctor_gateway_key(diag, gateway_url)

@@ -94,11 +94,37 @@ workers.
 
 ## Licence and terms
 
-> **To be filled in by the first build task (Decision 5).**
->
-> Record the SPDX licence identifier, the terms-of-service URL, any usage
-> restrictions relevant to automated agentic use, and the date checked.
-> Source: OpenCode repository and site (pinned v2.3.2).
+**SPDX licence:** MIT
+
+**Repository licence:** <https://github.com/sst/opencode/blob/v2.3.2/LICENSE>
+(Copyright 2025 OpenCode)
+
+**Canonical repository:** <https://github.com/anomalyco/opencode>
+(`sst/opencode` hosted v2.3.2; the ToS page links to `anomalyco/opencode` as the
+current canonical location.)
+
+**Terms of service:** <https://opencode.ai/legal/terms-of-service>
+(effective 8 November 2026)
+
+**Date checked:** 2026-11-23
+
+**Usage restrictions relevant to automated agentic use:**
+
+The OpenCode ToS covers the hosted opencode.ai service only. The ToS states:
+
+> "our open source software that is not provided to you on a hosted basis is
+> subject to the open source license and terms set forth on the applicable
+> repository … and such license and terms will exclusively govern your use of
+> such open source software."
+
+Running `opencode run --standalone` locally, with model calls routed through
+Verdict serve (:8000) rather than opencode.ai's hosted inference, is covered by
+the MIT licence alone. The hosted-service restrictions (including the prohibition
+on automated data extraction from their service output) do not apply to the
+self-run binary.
+
+**Conclusion:** MIT permits automated agentic use of the self-run, non-hosted
+binary. No ToS restrictions apply. Proceed.
 
 ## Consequences
 

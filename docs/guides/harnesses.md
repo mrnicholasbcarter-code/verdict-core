@@ -21,10 +21,13 @@ Direct provider traffic remains outside this relay boundary.
 makes a tool a *client* of Verdict's relay: the tool keeps running its own
 session and sends its model calls through Verdict. None of them makes the tool
 a worker of `verdict orchestrate`. Orchestration workers run on the built-in
-`direct-gateway` executor by default. The only other worker backend is the
-optional Prime Agent harness, `--executor prime-headless` (alias `prime`); see
+`opencode` executor by default (ADR-053): each coding node runs a full
+edit–test–fix loop via `opencode run --standalone --auto`. Pass
+`--executor direct-gateway` for a one-shot API call, or
+`--executor prime-headless` (alias `prime`) for the Prime Agent harness; see
+[OpenCode as a worker harness](#opencode-as-a-worker-harness) and
 [Prime Agent as a worker harness](#prime-agent-as-a-worker-harness). There is no
-worker executor for Claude Code, Codex, Cursor, Cline or OpenCode.
+worker executor for Claude Code, Codex, Cursor or Cline.
 
 See [coding-agent-gate.md](coding-agent-gate.md) for the relay's fail-closed
 setup, and [controller-routing.md](controller-routing.md) /
@@ -336,6 +339,30 @@ verdict harness opencode disable
 
 Restores the pre-enable backup byte-for-byte.
 
+### OpenCode as a worker harness
+
+OpenCode is the **default** worker executor for `verdict orchestrate` (ADR-053
+Decision 2).  Every coding node runs a full edit–test–fix loop:
+
+```bash
+opencode run --standalone --auto --format json --archived --model verdict/<route>
+```
+
+The harness writes a per-attempt isolated config (`OPENCODE_CONFIG_DIR` → temp
+dir), routes all model calls through Verdict serve (:8000), and never contacts
+OmniRoute directly.  Verdict enforces the owned-files scope and runs
+verification commands after each attempt.
+
+```bash
+verdict orchestrate "goal"                           # OpenCode by default
+verdict orchestrate "goal" --executor direct-gateway # one-shot API call instead
+verdict orchestrate "goal" --executor prime-headless # Prime Agent instead
+```
+
+`verdict doctor` reports the installed OpenCode version and warns when it
+differs from the pinned v2.3.2.  The binary must be on `PATH` or at
+`~/.opencode/bin/opencode`; set `VERDICT_OPENCODE_BIN` to override.
+
 ## Prime Agent
 
 Architect lock: `verdict harness prime discover|enable|disable|status|certify`.
@@ -391,23 +418,23 @@ Restores the pre-enable backup byte-for-byte.
 
 ### Prime Agent as a worker harness
 
-Prime Agent is also the one optional worker harness for `verdict orchestrate`.
-It is off by default: workers run on `direct-gateway`, which sends each worker
-request straight to the gateway and needs no agent installed.
+Prime Agent is an optional worker harness for `verdict orchestrate`, selectable
+with `--executor prime-headless`.
 
 ```bash
 verdict orchestrate "goal" --executor prime-headless          # every worker on Prime
 verdict orchestrate "goal" --executor-map "node-1=prime-headless"   # one node on Prime
 ```
 
-`--executor` accepts `direct-gateway`, `prime-headless` and its alias `prime`.
-With `prime-headless`, each worker is a `prime-agent -p --model <exact route>`
-process. Prime never selects models: Verdict passes the exact admitted route.
-The planner always runs on `direct-gateway` (`--planner-executor` has no other
-choice). A route that is missing from Prime's `~/.prime/agent/models.json` fails
-the `ENTITLED` stage with `not_harness_visible`. Flags and the per-attempt
-`harness` field are in the [CLI reference](../CLI_REFERENCE.md); what `verdict
-setup` and `verdict doctor` do on a host without Prime is in
+`--executor` accepts `opencode` (default), `direct-gateway`, `prime-headless`
+and its alias `prime`. With `prime-headless`, each worker is a
+`prime-agent -p --model <exact route>` process. Prime never selects models:
+Verdict passes the exact admitted route. The planner always runs on
+`direct-gateway` (`--planner-executor` has no other choice). A route that is
+missing from Prime's `~/.prime/agent/models.json` fails the `ENTITLED` stage
+with `not_harness_visible`. Flags and the per-attempt `harness` field are in the
+[CLI reference](../CLI_REFERENCE.md); what `verdict setup` and `verdict doctor`
+do on a host without Prime is in
 [Configuration](../CONFIGURATION.md#worker-executor-and-optional-harnesses).
 
 ### Choosing Prime's models: select and restore
