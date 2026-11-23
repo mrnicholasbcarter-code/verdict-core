@@ -1146,3 +1146,88 @@ def test_prime_absent_reason_with_damaged_config_on_disk(
     (agent / "models.json").write_text('{"providers": {"omniroute": ')
     monkeypatch.setenv("PRIME_AGENT_CODING_AGENT_DIR", str(agent))
     assert acceptance.prime_absent_reason(which=lambda name: "/usr/bin/prime-agent") is None
+
+
+# -- serve check reply budget -------------------------------------------------
+
+
+def test_serve_check_sends_enough_reply_budget_for_reasoning_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The serve probe must allow enough output tokens for a one-word reply.
+
+    With max_tokens=16 and an ~18.5k-token context pack, reasoning models
+    consume all 16 tokens on internal reasoning, leaving nothing for content.
+    The budget must be at least 256 so a healthy reply can always be produced.
+
+    This test captures the body the check sends via the open_no_redirect seam.
+    """
+    import urllib.request as _url_request
+
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+
+    captured_bodies: list[dict[str, Any]] = []
+
+    class _Running:
+        """Fake Popen: process starts and stays alive until terminate()."""
+
+        returncode: int | None = None
+
+        def __init__(self, argv: list[str], **kw: Any) -> None:
+            pass
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    class _FakeResponse:
+        """Minimal HTTPResponse stand-in; works as a context manager."""
+
+        def __init__(self, status: int, body: bytes) -> None:
+            self.status = status
+            self._body = body
+            # headers.get(key) is called to read x-verdict-model
+            self.headers = type("H", (), {"get": lambda self, k: None})()
+
+        def read(self) -> bytes:
+            return self._body
+
+        def __enter__(self) -> _FakeResponse:
+            return self
+
+        def __exit__(self, *_: Any) -> None:
+            pass
+
+    answer = json.dumps(
+        {
+            "id": "chatcmpl-test",
+            "model": "antigravity/gemini-3.5-flash-lite",
+            "choices": [
+                {"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}
+            ],
+        }
+    ).encode()
+
+    def fake_open(req: _url_request.Request, *, timeout: float) -> _FakeResponse:
+        if "/health" in req.full_url:
+            return _FakeResponse(200, b"{}")
+        if "/chat/completions" in req.full_url:
+            captured_bodies.append(json.loads(req.data))
+            return _FakeResponse(200, answer)
+        raise OSError(f"unexpected URL: {req.full_url}")
+
+    monkeypatch.setattr(acceptance.subprocess, "Popen", _Running)
+    monkeypatch.setattr("verdict.acceptance.open_no_redirect", fake_open)
+
+    check = acceptance.serve_check("http://127.0.0.1:20128", startup_seconds=5)
+
+    assert len(captured_bodies) == 1, "serve check must send exactly one completion request"
+    assert captured_bodies[0]["max_tokens"] == 256, (
+        f"serve probe must allow 256 tokens; got {captured_bodies[0].get('max_tokens')}"
+    )
+    assert check.passed is True

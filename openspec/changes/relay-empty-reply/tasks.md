@@ -28,3 +28,7 @@
 ## 5. Live verification
 
 - [ ] (post-merge) 5.1 Install merged main and confirm hourly acceptance `serve` check passes on `antigravity/gemini-3.5-flash-lite`
+
+## 6. Serve check reply budget
+
+- [x] 6.1 `_SERVE_PROBE_MAX_TOKENS = 256` added to `verdict/acceptance.py`; probe body updated to use it; test confirms the body carries 256
