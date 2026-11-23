@@ -296,6 +296,49 @@ def is_inband_billing_refusal(body: Mapping[str, Any] | bytes | str | None) -> b
     return isinstance(content, str) and is_not_free_signal(error_message=content)
 
 
+def is_truncated_empty_reply(body: Mapping[str, Any] | bytes | str | None) -> bool:
+    """True when a chat completion body is a length-truncated reply with no content.
+
+    Gemini and other reasoning-capable models may consume their entire output
+    budget on internal reasoning tokens, producing ``finish_reason: "length"``
+    with an empty or absent content field.  This is not a partial answer; the
+    caller received no usable text at all.
+
+    Returns True only when **every** choice in the ``choices`` array satisfies
+    all of these conditions: ``finish_reason`` is ``"length"``, the assistant
+    message carries no tool calls, and the content field is absent or empty.
+    If any choice has non-empty content, is a valid tool-call response, or is
+    not a Mapping, the body contains usable output and this function returns
+    False.  An absent or empty ``choices`` list also returns False.
+    """
+    parsed: Any = body
+    if isinstance(body, (bytes, str)):
+        if not body or len(body) > _INBAND_REFUSAL_MAX_BYTES:
+            return False
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            return False
+    if not isinstance(parsed, Mapping):
+        return False
+    choices = parsed.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return False
+    for choice in choices:
+        if not isinstance(choice, Mapping):
+            return False
+        if choice.get("finish_reason") != "length":
+            return False
+        message = choice.get("message")
+        if not isinstance(message, Mapping) or message.get("tool_calls"):
+            return False
+        content = message.get("content")
+        # Empty string or None both mean no usable text was produced.
+        if content:
+            return False
+    return True
+
+
 NOT_FREE_OVERRIDE_TTL_SECONDS: float = 21600.0  # 6 hours
 
 
