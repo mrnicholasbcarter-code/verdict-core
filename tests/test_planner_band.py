@@ -777,7 +777,7 @@ class TestBandLadderIntegration:
     """EligibilityLadder.set_planner_band() injects band-based candidate ordering."""
 
     def test_set_planner_band_prefers_higher_rated_subscription_over_lower_rated_free(
-        self, tmp_path
+        self, tmp_path, billing_overlay_subscription
     ) -> None:
         """Blocking #2: band re-sort in _assess_all puts higher-rated SUB before lower-rated FREE.
 
@@ -790,9 +790,12 @@ class TestBandLadderIntegration:
         from verdict.orchestration.contracts import TaskRequirements
         from verdict.orchestration.eligibility import EligibilityLadder
 
+        # CP2 removed the oauth → SUBSCRIPTION rule; declare "oa" via overlay so
+        # the billing lookup sees SUBSCRIPTION rather than UNKNOWN.
+        billing_overlay_subscription([("oa", "oauth")])
         rows = [row("oa/sub"), row("cc/free")]
         conns = [
-            conn("oa", auth="oauth"),  # → SUBSCRIPTION
+            conn("oa", auth="oauth"),  # → SUBSCRIPTION (via billing overlay)
             conn("cc", free_only=True),  # → FREE (import_free_only)
         ]
         ladder = EligibilityLadder(rows, conns, FakeProbe(), tmp_path / "state.json", metadata=None)
