@@ -188,11 +188,16 @@ def test_preflight_counts_never_carry_raw_text(tmp_path, monkeypatch):
     for sensitive in (secret, url):
         assert sensitive not in raw
         assert sensitive not in str(error.value)
+    # ADR-051: _planner_eligible no longer gates on capability_tier (the frontier
+    # band filters at runtime).  The route has result=pass, supports_tools=True,
+    # context_window=200k, so it passes the static floor check and counts as
+    # planner-eligible.  Error still fires because planner_eligible_pools (1) <
+    # PREFLIGHT_MIN_PLANNER_POOLS (2).
     assert json.loads(raw)["preflight"] == {
         "routes_checked": None,
         "passed": 1,
-        "planner_eligible_passed": 0,
-        "planner_eligible_pools": 0,
+        "planner_eligible_passed": 1,
+        "planner_eligible_pools": 1,
         "planner_eligible_pools_required": 2,
         "metadata_error": "unclassified",
         "source_errors": {},
