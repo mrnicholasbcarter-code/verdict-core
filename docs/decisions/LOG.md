@@ -400,3 +400,20 @@ weakened test. Reversible.
   memory hooks. No ai-memory dependency remains in `verdict/`.
 * **Supersedes:** D1 and D2 (ai-memory as mandatory dependency; now fully removed).
 * **Record:** `openspec/changes/remove-ai-memory-integrations/`, issue #1254.
+
+## D35: planners come from the frontier band of live ratings (operator, 2026-11-23; ADR-051, accepted)
+
+* **Decision:** a planner (autodev, orchestrate, certification preflight) must be in the
+  frontier band: the top 20% of rated models in the route inventory by fresh
+  `aa_intelligence`, from the rating source's newest fetch, with `:suffix` variants counted
+  once and ties at the cutoff included. If no admissible route is in it, use the top 30%
+  and record the downgrade; with neither, fail closed (`no_frontier_or_fallback_planner`).
+  Within a band the strongest admissible non-metered route plans (UNKNOWN counts as
+  non-metered); equal scores go to the cheaper class, then `aa_coding`; METERED only when
+  nothing else in the band is admissible and within the CP1 spend limit. No family guard;
+  doctor warns when the frontier band is empty. Verdict's own planner receipts are a later ADR.
+* **Process:** agreed over four rounds of researched options; this is the standing pattern
+  for decisions (research, ask each point, record, then accept).
+* **Supersedes:** `PLANNER_MAX_CAPABILITY_TIER` and the id classifier as planner gates.
+* **Record:** [ADR-051](../adr/ADR-051-planner-frontier-from-ratings.md),
+  `openspec/changes/frontier-planner-ratings/`. Not implemented yet.

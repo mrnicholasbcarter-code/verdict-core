@@ -117,6 +117,7 @@ hardening pass (successor for ADR-023).
 | 048 — Unknown is free until proven otherwise (not on main) | Reserved by PR #1242 (story U1, parked); its approach is superseded by ADR-049 | — | *(reserved)* | — | Do not reuse the number |
 | [049](ADR-049-cost-policy-and-unknown-handling.md) — Cost policy and unknown-cost handling | A route is PAID only from declared or observed facts, never from its name; per-operator cost order; unknown-cost mode `assume_free` / `probe_only` / `exclude` | Accepted (operator, 2026-11-21) | *(new — pending ecosystem re-audit)* | NOT_VERIFIED | Implemented by CP2 (#1245) and CP1 (#1244) |
 | [050](ADR-050-hindsight-memory-of-record.md) — Hindsight is the memory of record | Hindsight replaces ai-memory as the cross-session memory store; ai-memory ref-docs sync chain removed (MEM1); Hermes/harness hooks removed in MEM2 | Accepted (operator, 2026-11-21) | *(new)* | NOT_VERIFIED | Supersedes D1; relates to #1253/#1254 |
+| [051](ADR-051-planner-frontier-from-ratings.md) — Planners come from the frontier band of live ratings | Planner pool = top 20% of rated inventory models by fresh `aa_intelligence` (newest fetch, suffix variants once, ties in); one fallback band (top 30%), then fail closed; strongest non-metered first, paid last; doctor warns on empty frontier band | Accepted (operator, 2026-11-23; not yet implemented) | *(new)* | NOT_VERIFIED | Amends ADR-043 (planner order) and ADR-046 (membership, planner only) |
 
 ## Duplicate / superseded copies (retain for inbound links)
 
