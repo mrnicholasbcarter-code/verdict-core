@@ -690,20 +690,6 @@ class TestAC9EndToEndLargeInventory:
         _conns = _json.loads(ranking_conn_path.read_text())
         if isinstance(_conns, dict):
             _conns = _conns.get("connections", next(iter(_conns.values())))
-        # Untimed warm-up: primes load_store lru_cache and the overlay TTL cache.
-        # In production the routing path is always warm for repeated requests, so
-        # measuring only warm runs matches real use.
-        routing_view_from_inventory(
-            {
-                "required_capabilities": ["tools"],
-                "min_context_tokens": 1000,
-                "coding": True,
-                "reasoning": False,
-                "frontier_worthy": False,
-            },
-            inventory=InventorySource(rows=_inv_rows, connections=_conns),
-            probe=False,
-        )
         # Best of 3 fresh builds: one slow sample on a shared CI runner is
         # scheduler noise, not a slow explorer. The budget itself is unchanged.
         timings: list[float] = []

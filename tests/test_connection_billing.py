@@ -20,6 +20,7 @@ import pytest
 from verdict.capacity import CapacityClass, capacity_of
 from verdict.connection_billing import (
     BILLING_KEYLESS,
+    BILLING_METERED,
     BILLING_SUBSCRIPTION,
     OVERAGE_HARD_STOP,
     OVERAGE_METERS_TO_PAID,
@@ -370,6 +371,51 @@ class TestOperatorOverlay:
         assert oauth_fact is not None and oauth_fact.billing == BILLING_KEYLESS
         assert apikey_fact is not None and apikey_fact.billing == BILLING_SUBSCRIPTION
 
+        _cb._overlay_cache = None
+
+    def test_overlay_cache_respects_home_change_within_ttl(self, tmp_path: Path) -> None:
+        """Switching VERDICT_HOME within the 100ms TTL returns the new home's overlay.
+
+        Root cause of #1295: the keyless fast path skipped verdict_home(env)
+        entirely and returned a stale overlay when env changed within the TTL
+        window. This test asserts that two different homes with different overlay
+        contents each always return their own overlay, never the other's.
+        """
+        import verdict.connection_billing as _cb
+
+        home1 = tmp_path / "home1"
+        home2 = tmp_path / "home2"
+        home1.mkdir()
+        home2.mkdir()
+
+        overlay1 = {
+            "entries": [{"provider": "openai", "billing": "metered", "overage": "meters-to-paid"}]
+        }
+        overlay2 = {
+            "entries": [{"provider": "openai", "billing": "keyless", "overage": "hard-stop"}]
+        }
+        (home1 / "connection_billing_overlay.json").write_text(json.dumps(overlay1))
+        (home2 / "connection_billing_overlay.json").write_text(json.dumps(overlay2))
+
+        # Reset cache; both env-keyed lookups happen in rapid succession (within
+        # the 100ms TTL window) to reproduce the original bug.
+        _cb._overlay_cache = None
+
+        env1 = {"VERDICT_HOME": str(home1)}
+        env2 = {"VERDICT_HOME": str(home2)}
+
+        fact1 = lookup("openai", None, env=env1)
+        fact2 = lookup("openai", None, env=env2)
+
+        assert fact1 is not None, "home1 overlay must be found"
+        assert fact2 is not None, "home2 overlay must be found"
+        assert fact1.billing == BILLING_METERED, f"home1 expected metered, got {fact1.billing}"
+        assert fact2.billing == BILLING_KEYLESS, (
+            f"home2 expected keyless, got {fact2.billing!r} — "
+            "stale cache leak between homes within TTL"
+        )
+
+        # Cleanup
         _cb._overlay_cache = None
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import hmac
 import ipaddress
@@ -74,18 +73,13 @@ class ServerSecurity:
     unix_socket: str | None
 
 
-@functools.lru_cache(maxsize=512)
-def _redact_cached(text: str) -> str:
-    """Pure cached core of redact_text — input must already be a str."""
+def redact_text(value: object) -> str:
+    """Return diagnostic text with credentials and bearer tokens removed."""
+    text = str(value)
     text = re.sub(r"(?i)(https?://)([^/@:]+)(?::[^/@]*)?@", r"\1[redacted]@", text)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(r"\1[redacted]", text)
     return text
-
-
-def redact_text(value: object) -> str:
-    """Return diagnostic text with credentials and bearer tokens removed."""
-    return _redact_cached(str(value))
 
 
 def fingerprint_text(value: object, *, length: int = 32) -> str:

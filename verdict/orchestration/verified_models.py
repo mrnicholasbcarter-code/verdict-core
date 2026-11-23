@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -285,13 +286,31 @@ def _secret_like(value: str) -> bool:
     )
 
 
-def _scrub(value: Any) -> str:
+# Thread-local used by project_verified_models to memoize _scrub within a single
+# projection call.  The cache is a plain dict set before the loop and cleared
+# (set to None) in a finally block so it never outlives the projection.
+_scrub_proj: threading.local = threading.local()
+
+
+def _scrub_uncached(value: Any) -> str:
     """Redact credentials, account emails and control characters at display."""
     text = redact_text(str(value))
     for pattern in (_BEARER_TOKEN_RE, _SK_TOKEN_RE, _SECRET_KEY_RE, _JWT_RE, _EMAIL_RE):
         text = pattern.sub("[redacted]", text)
     text = "".join(ch for ch in text if ch == " " or ch.isprintable())
     return text.strip()
+
+
+def _scrub(value: Any) -> str:
+    """Redact credentials and control characters; memoize within an active projection."""
+    cache: dict[Any, str] | None = getattr(_scrub_proj, "cache", None)
+    if cache is not None:
+        result = cache.get(value)
+        if result is None:
+            result = _scrub_uncached(value)
+            cache[value] = result
+        return result
+    return _scrub_uncached(value)
 
 
 def _withhold_route_id(route_id: str) -> bool:
@@ -2089,20 +2108,29 @@ def project_verified_models(
     # _capacity_for_row calls do not each rebuild the cache path and stat().
     openrouter_free_set = load_openrouter_free_set(refresh=False)
 
-    projected: list[VerifiedModelRow] = []
-    for route_id in rows_by_id:
-        projected.append(
-            _classify_row(
-                route_id,
-                rows_by_id[route_id],
-                now=now,
-                evidence=evidence,
-                conn_index=conn_index,
-                cd_index=cd_index,
-                contradictory=contradictory,
-                openrouter_free_set=openrouter_free_set,
+    # Activate the per-projection scrub cache: _scrub() is called ~21 000 times
+    # on a 7 000-row inventory (3 string fields x 7 000 rows) but the value set
+    # is small (a few hundred distinct route-name fragments).  The cache is a
+    # plain dict tied to this call; the finally block clears it so it never
+    # survives the projection.
+    _scrub_proj.cache = {}
+    try:
+        projected: list[VerifiedModelRow] = []
+        for route_id in rows_by_id:
+            projected.append(
+                _classify_row(
+                    route_id,
+                    rows_by_id[route_id],
+                    now=now,
+                    evidence=evidence,
+                    conn_index=conn_index,
+                    cd_index=cd_index,
+                    contradictory=contradictory,
+                    openrouter_free_set=openrouter_free_set,
+                )
             )
-        )
+    finally:
+        _scrub_proj.cache = None
 
     projected.sort(key=_sort_key)
 
