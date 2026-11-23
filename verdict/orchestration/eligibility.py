@@ -1752,6 +1752,13 @@ class EligibilityLadder:
         ``[:4]`` captures (capacity, tokens_known, tokens_float, rating_rank).
         Within an equal ranking, fresh confirmations and provider round-robin
         retain the bounded scheduler.
+
+        When a planner band is active the final sort uses the band ``_sort_key``
+        (is_metered, -score, cls_order, -aa_coding, route_id) so that frontier
+        routes are probed in band-score order regardless of health-cache
+        freshness.  Without this override a healthy lower-scored route (e.g. one
+        probed by the refresh hook) would appear before an unprobed
+        higher-scored route, defeating the ADR-051 preference ordering.
         """
         order: list[_Assessment] = []
         by_provider: dict[str, list[_Assessment]] = {}
@@ -1767,6 +1774,21 @@ class EligibilityLadder:
             depth = max((len(q) for q in queues), default=0)
             for i in range(depth):
                 order.extend(q[i] for q in queues if i < len(q))
+        # ADR-051: when a planner band is active, sort by the band's own key so
+        # higher-rated routes are always probed before lower-rated ones,
+        # independent of which routes happen to have fresh health-cache entries.
+        if self._planner_band is not None:
+            from verdict.planner_band import _sort_key as _pb_sort_key
+
+            _band = self._planner_band
+            _pb_meta, _pb_idmap = self._rating_evidence()
+            _now_dt = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
+            return sorted(
+                order,
+                key=lambda a: _pb_sort_key(
+                    a.route_id, a.capacity, _band, _pb_meta, _pb_idmap, _now_dt
+                ),
+            )
         return sorted(
             order,
             key=lambda a: (

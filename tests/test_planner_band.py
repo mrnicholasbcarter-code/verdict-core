@@ -14,7 +14,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -817,3 +817,94 @@ class TestBandLadderIntegration:
         choice, _ = ladder.select(req, now=NOW)
         assert choice is not None
         assert choice.route_id == "oa/sub"
+
+    def test_probe_order_uses_band_score_not_health_freshness(
+        self, tmp_path, billing_overlay_subscription
+    ) -> None:
+        """Bug: _probe_order groups healthy routes first, overriding band score order.
+
+        Reproduces the production incident where cc/claude-fable-5-1 (fallback,
+        score 50.0) was selected as planner instead of cc/claude-opus-5-5
+        (frontier, score 59.1) because fable had a fresh health-cache entry
+        (written by selection_refresh_hook) while opus/sonnet were unprobed.
+
+        _probe_order placed fable first (healthy→fresh group) then sorted by
+        _rank_key[:4]; without band metadata, all three SUB routes tie on
+        _rank_key so the stable sort preserved fable at index 0.
+
+        After fix: when self._planner_band is not None, _probe_order sorts by
+        the band _sort_key, so opus (score 59.1) goes before sonnet (54.5) and
+        fable (50.0) regardless of health freshness.
+        """
+        from tests.test_orch_eligibility import FakeProbe, conn, row
+        from verdict.orchestration.contracts import TaskRequirements
+        from verdict.orchestration.eligibility import EligibilityLadder
+        from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+        # All three routes are SUBSCRIPTION via billing overlay.
+        billing_overlay_subscription([("claude", "oauth")])
+        rows = [
+            row("cc/claude-opus-5-5", owned_by="claude"),
+            row("cc/claude-sonnet-5-5", owned_by="claude"),
+            row("cc/claude-fable-5-1", owned_by="claude"),
+        ]
+        conns = [conn("claude", auth="oauth")]
+
+        # Fable is "healthy" in the health cache — simulates selection_refresh_hook
+        # having probed it before the main select() loop runs.  Opus and sonnet
+        # have no cache entry and therefore health="unprobed".
+        cache = HealthCache(tmp_path / "health.json")
+        checked = NOW - timedelta(seconds=60)
+        cache.record(
+            "cc/claude-fable-5-1",
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            checked,
+        )
+        cache.save()
+
+        # Band built manually: opus/sonnet in frontier, fable only in fallback.
+        band = BandComputation(
+            frontier_model_keys=frozenset({"cc/claude-opus-5-5", "cc/claude-sonnet-5-5"}),
+            fallback_model_keys=frozenset(
+                {"cc/claude-opus-5-5", "cc/claude-sonnet-5-5", "cc/claude-fable-5-1"}
+            ),
+            cutoff_frontier=54.5,
+            cutoff_fallback=50.0,
+            rated_models=3,
+            fetched_at=FETCHED_NEW,
+            model_scores={
+                "cc/claude-opus-5-5": 59.1,
+                "cc/claude-sonnet-5-5": 54.5,
+                "cc/claude-fable-5-1": 50.0,
+            },
+            model_ranks={
+                "cc/claude-opus-5-5": 1,
+                "cc/claude-sonnet-5-5": 2,
+                "cc/claude-fable-5-1": 3,
+            },
+        )
+
+        # FakeProbe returns healthy for every route — the bug is purely about
+        # ordering, not about whether any individual probe result fails.
+        ladder = EligibilityLadder(
+            rows, conns, FakeProbe(), tmp_path / "state.json", metadata=None, health_cache=cache
+        )
+        ladder.set_planner_band(band)
+
+        req = TaskRequirements(role_ordering="strongest_first", arena_role="planner")
+        # Before fix: fable is probed first (health="healthy" group wins in
+        #   _probe_order round-robin) → fable selected as planner.
+        # After fix:  opus is probed first (band sort: score 59.1 beats 50.0)
+        #   → opus selected as planner.
+        choice, _ = ladder.select(req, now=NOW)
+        assert choice is not None, "selection must succeed"
+        assert choice.route_id == "cc/claude-opus-5-5", (
+            f"expected frontier route cc/claude-opus-5-5 but got {choice.route_id!r}; "
+            "likely _probe_order is still grouping by health freshness rather than band score"
+        )
