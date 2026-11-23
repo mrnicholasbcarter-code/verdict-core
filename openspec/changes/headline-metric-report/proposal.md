@@ -55,3 +55,15 @@ the M0 baseline can be recorded.
   first-attempt pass rate from fixture receipts.
 - Research-duplication note appears in output, explaining it is not tracked.
 - M0 baseline recorded from the operator's machine (post-merge task).
+
+## Evidence Boundary
+
+- KNOWN: `compute_run_metrics`, `verify_run_receipt`, the receipt schema,
+  `NodeKind` values, the `test-` fixture prefix convention, and OmniRoute quota
+  API shape were read from this repository and are covered by the tests added
+  here.
+- INFERRED: how many real receipts exist on the operator's machine and whether
+  OmniRoute quota tracking is enabled for any connection; both are measured at
+  run time, never assumed.
+- NOT AVAILABLE: a live end-to-end `verdict metrics --daily` run on the
+  operator's machine. This is the M0 baseline recorded as a post-merge task.

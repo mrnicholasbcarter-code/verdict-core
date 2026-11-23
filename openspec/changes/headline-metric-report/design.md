@@ -80,3 +80,59 @@ of the per-run table when any of these flags is set.
 - `test_compute_headline_report_*`: monkeypatches `load_receipts_since`.
 - `test_action_headline_metric`: uses existing `tests/fixtures/metrics/`.
 - No live calls in tests.
+
+## Decisions
+
+**Decision 1: receipt-based paid share as the primary denominator.**
+`paid_model_share` (subscription + metered attempts / total) is always
+computable from local receipts without network access. OmniRoute gateway quota
+(`with_quota`) is a secondary enrichment because most connections return
+`quotaTotal: null`. Both are reported when available; neither is hidden.
+
+**Decision 2: `completion_verdict` determines COMPLETE, not `claimed_outcome`.**
+`extend_run_metrics` trusts `compute_run_metrics` / `completion_verdict` to
+recompute outcome from evidence. A receipt whose `claimed_outcome` says BLOCKED
+but whose nodes are all VALIDATED is treated as COMPLETE. This matches the
+existing invariant and avoids a parallel gate.
+
+**Decision 3: local imports moved to module level in `headline_metric.py`.**
+Keeping `extend_run_metrics` as a local function import would hide it from the
+reachability checker (`git ls-files` + AST scan). Moving to module level keeps
+the production call chain visible without any runtime cost.
+
+## Risks / Trade-offs
+
+- `fetch_live_quota` makes an HTTP call to `localhost:20128`. The 5-second
+  timeout and graceful fallback (`None` on any failure) mean a down gateway
+  does not block the report; it just omits the quota section.
+- The `test-` prefix convention for fixture exclusion is by agreement, not a
+  signed property. Any live run whose `run_id` starts with `test-` is silently
+  excluded. The report says how many were excluded so the operator sees if this
+  fires unexpectedly.
+
+## Security / trust implications
+
+No new credentials, secrets or external writes. `fetch_live_quota` reads from
+`localhost:20128` only (the local OmniRoute gateway); the response is treated as
+untrusted data. No receipt contents are written or transmitted. The action
+returns a plain dict; no credentials appear in the output.
+
+## Routing / context / memory implications
+
+No change to routing, admission, or eligibility logic. `extend_run_metrics`
+reads an already-verified receipt dict and performs no I/O. `load_receipts_since`
+calls the existing `verify_run_receipt` and reads the existing `receipt.json`
+files; it never writes. No context pack or memory store is touched.
+
+## Migration / rollback
+
+Additive. All existing `verdict metrics` behaviour (per-run table, `--json`)
+is unchanged. `--daily`, `--since`, and `--quota` route to the new action only
+when explicitly passed; no existing call site is affected. Rollback is reverting
+this branch: receipts already on disk are unaffected.
+
+## ADR impact
+
+None. The headline metric report is a read-only observability tool. No admission
+gate, proof authority, or routing boundary changes. ADR-036 (goal-to-receipt),
+ADR-049 (cost policy), and ADR-050 (Hindsight memory) are unaffected.

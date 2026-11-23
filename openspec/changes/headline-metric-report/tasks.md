@@ -2,6 +2,8 @@
 
 ## 1. Core metric extension
 
+Verification: `uv run python -m pytest -q tests/test_headline_metric.py` (35 tests pass).
+
 - [x] 1.1 Add `extend_run_metrics` to `verdict/orchestration/receipt.py` with per-role splits,
   frontier tokens, first-attempt pass rate, and research-duplication note.
 - [x] 1.2 `verdict/headline_metric.py` — new module: `load_receipts_since`,
@@ -11,6 +13,8 @@
   ActionSpec registration.
 
 ## 2. CLI extension
+
+Verification: `uv run python -m pytest -q tests/test_headline_metric.py::TestActionHeadlineMetric`; also `uv run verdict metrics --daily` exits 0 on a fresh install with "0 runs processed".
 
 - [x] 2.1 `verdict/orchestration/cli.py` — add `--daily`, `--since DATE`, `--quota` flags
   to `verdict metrics`.
@@ -33,6 +37,8 @@
 - [x] 4.5 Full suite passes (n=4): `uv run python -m pytest -q -n 4`
 
 ## 5. Daily timer (follow-on)
+
+Verify: `verdict setup --apply --allow host.headline-metric-timer` exits 0; `verdict doctor` shows "Headline metric timer: ok"; the timer fires within 24 h and writes `~/.verdict/headline-metric-daily.json`.
 
 - [ ] (post-merge) 5.1 Create `verdict/headline_metric_service.py` — systemd user timer
   that runs `verdict metrics --daily --json > ~/.verdict/headline-metric-daily.json`
