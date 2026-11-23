@@ -1107,6 +1107,49 @@ def _action_metrics(**kwargs: Any) -> ActionResult:
     return ActionResult(data=result, ok=aggregated["runs_processed"] > 0, exit_code=0)
 
 
+def _action_headline_metric(**kwargs: Any) -> ActionResult:
+    """M0 headline metric report: accepted work per % paid quota / per paid dollar.
+
+    Computes the headline metric from verified receipts in *runs_dir*, excluding
+    fixture runs (run_id starting with "test-").  Optionally enriches with live
+    OmniRoute quota data when ``with_quota`` is True.
+
+    kwargs:
+        runs_dir (str): Path to the runs directory.
+        since (str|None): ISO date string (YYYY-MM-DD) to filter runs by start date.
+        with_quota (bool): Query OmniRoute gateway for live quota data.
+        json (bool): Return JSON-formatted output.
+    """
+    from datetime import date
+    from pathlib import Path
+
+    from verdict.headline_metric import compute_headline_report
+
+    runs_dir_str: str = kwargs.get("runs_dir", ".verdict/runs")
+    since_str: str | None = kwargs.get("since")
+    with_quota: bool = bool(kwargs.get("with_quota", False))
+
+    runs_dir = Path(runs_dir_str)
+    if not runs_dir.exists():
+        return ActionResult(
+            data={"error": f"runs directory not found: {runs_dir}"}, ok=False, exit_code=2
+        )
+
+    since: date | None = None
+    if since_str:
+        try:
+            since = date.fromisoformat(since_str)
+        except ValueError:
+            return ActionResult(
+                data={"error": f"invalid --since date: {since_str!r} (use YYYY-MM-DD)"},
+                ok=False,
+                exit_code=2,
+            )
+
+    data = compute_headline_report(runs_dir, since=since, with_quota=with_quota)
+    return ActionResult(data=data, ok=data.get("runs_processed", 0) >= 0, exit_code=0)
+
+
 def _action_compare(**kwargs: Any) -> ActionResult:
     """Compare a DIRECT frontier call against the Verdict route (issue #265).
 
@@ -1959,6 +2002,16 @@ def _register_builtins() -> None:
                 "Metrics",
             ),
             _action_metrics,
+        ),
+        (
+            ActionSpec(
+                "headline.metric",
+                "metrics",
+                "read",
+                "M0 headline metric report: accepted work per % paid quota / per paid dollar",
+                "Metrics",
+            ),
+            _action_headline_metric,
         ),
         (
             ActionSpec(

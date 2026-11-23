@@ -1431,3 +1431,163 @@ def compute_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "run_id": str(receipt.get("run_id") or ""),
         "outcome": outcome,
     }
+
+
+def extend_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Extend compute_run_metrics with per-role splits, frontier tokens, and
+    first-attempt pass rate.  Returns everything compute_run_metrics returns
+    plus the following keys.
+
+    Per-role splits (``_by_role`` and ``_by_cost_and_role``):
+    - ``attempts_by_role``: model attempt counts keyed by NodeKind value.
+    - ``accepted_nodes_by_role``: accepted node counts by role (non-zero only
+      for implement/integrate when the run is COMPLETE).
+    - ``attempts_by_cost_and_role``: nested ``{role: {cost_class: count}}``.
+
+    Frontier tokens (subscription + metered attempts on DAG nodes):
+    - ``frontier_tokens``: ``{input, output, total, per_accepted_task}`` where
+      ``total`` and ``per_accepted_task`` are ``None`` when any frontier attempt
+      lacks token data.  Planner and reviewer individual call tokens are not
+      currently recorded in receipts; ``planner_tokens_note`` documents this.
+
+    First-attempt pass rate (``first_attempt_pass_rate``):
+    - ``by_role``: fraction of nodes where attempt 1 succeeded, keyed by role.
+    - ``by_cost``: fraction of nodes where attempt 1 succeeded, keyed by the
+      cost class of the first attempt.
+
+    Research-duplication share:
+    - ``research_duplication_note``: explains it is not tracked in receipts;
+      see ``verdict/orchestration/research_metrics.py`` for the per-call
+      measurement tool.
+    """
+    base = compute_run_metrics(receipt)
+    outcome = base["outcome"]
+    gated = {NodeKind.IMPLEMENT.value, NodeKind.INTEGRATE.value}
+    is_complete = outcome == RunOutcome.COMPLETE.value
+
+    # Accumulators keyed by role (NodeKind value string).
+    _roles = [k.value for k in NodeKind]
+    attempts_by_role: dict[str, int] = {r: 0 for r in _roles}
+    accepted_nodes_by_role: dict[str, int] = {r: 0 for r in _roles}
+    attempts_by_cost_and_role: dict[str, dict[str, int]] = {
+        r: {"free": 0, "subscription": 0, "metered": 0, "unknown": 0} for r in _roles
+    }
+
+    # Frontier-token accumulation (subscription + metered).
+    frontier_input: int = 0
+    frontier_output: int = 0
+    frontier_tokens_known: bool = True  # becomes False on any missing count
+
+    # First-attempt pass rate.
+    first_pass_by_role: dict[str, list[bool]] = {r: [] for r in _roles}
+    first_pass_by_cost: dict[str, list[bool]] = {
+        "free": [],
+        "subscription": [],
+        "metered": [],
+        "unknown": [],
+    }
+
+    for node in receipt.get("nodes") or []:
+        role = str(node.get("kind") or "")
+        if role not in attempts_by_role:
+            continue
+
+        attempts = node.get("attempts") or []
+
+        if is_complete and role in gated:
+            accepted_nodes_by_role[role] += 1
+
+        # First-attempt pass rate for this node.
+        model_attempts = [
+            a
+            for a in attempts
+            if str(a.get("route_id") or "")
+            and not str(a.get("route_id") or "").startswith("local/")
+            and a.get("route_identity") != "mechanical"
+        ]
+        if model_attempts:
+            first = model_attempts[0]
+            passed = first.get("outcome") == "success"
+            first_pass_by_role[role].append(passed)
+            cost_cls = str(first.get("capacity_class") or "unknown").lower()
+            if cost_cls not in first_pass_by_cost:
+                cost_cls = "unknown"
+            first_pass_by_cost[cost_cls].append(passed)
+
+        for attempt in attempts:
+            route_id = str(attempt.get("route_id") or "")
+            if (
+                not route_id
+                or route_id.startswith("local/")
+                or attempt.get("route_identity") == "mechanical"
+            ):
+                continue
+
+            attempts_by_role[role] += 1
+            capacity = str(attempt.get("capacity_class") or "unknown").lower()
+            if capacity not in ("free", "subscription", "metered"):
+                capacity = "unknown"
+            attempts_by_cost_and_role[role][capacity] += 1
+
+            if capacity in ("subscription", "metered"):
+                usage = attempt.get("usage")
+                if isinstance(usage, Mapping):
+                    tin = usage.get("input_tokens")
+                    tout = usage.get("output_tokens")
+                    if isinstance(tin, int) and isinstance(tout, int):
+                        frontier_input += tin
+                        frontier_output += tout
+                    else:
+                        frontier_tokens_known = False
+                else:
+                    frontier_tokens_known = False
+
+    # Frontier token summary.
+    if frontier_tokens_known:
+        frontier_total: int | None = frontier_input + frontier_output
+        accepted = base["accepted_tasks"]
+        fpt: float | None = frontier_total / accepted if accepted > 0 else None
+    else:
+        frontier_total = None
+        fpt = None
+
+    frontier_tokens: dict[str, Any] = {
+        "input": frontier_input if frontier_tokens_known else None,
+        "output": frontier_output if frontier_tokens_known else None,
+        "total": frontier_total,
+        "per_accepted_task": fpt,
+    }
+
+    # Reviewer token budget (approximate; individual call tokens not in receipt).
+    review = receipt.get("review") or {}
+    reviewer_budget_used = review.get("token_budget_used")
+
+    # First-attempt pass rate fractions.
+    def _rate(lst: list[bool]) -> float | None:
+        return sum(lst) / len(lst) if lst else None
+
+    first_attempt_pass_rate: dict[str, Any] = {
+        "by_role": {r: _rate(first_pass_by_role[r]) for r in _roles},
+        "by_cost": {c: _rate(first_pass_by_cost[c]) for c in first_pass_by_cost},
+    }
+
+    return {
+        **base,
+        "attempts_by_role": attempts_by_role,
+        "accepted_nodes_by_role": accepted_nodes_by_role,
+        "attempts_by_cost_and_role": attempts_by_cost_and_role,
+        "frontier_tokens": frontier_tokens,
+        "planner_attempts_count": len(receipt.get("planner_attempts") or []),
+        "planner_tokens_note": (
+            "Planner call tokens are not recorded in the receipt; "
+            "see planner_attempts_count for call frequency."
+        ),
+        "reviewer_token_budget_used": reviewer_budget_used
+        if isinstance(reviewer_budget_used, int)
+        else None,
+        "first_attempt_pass_rate": first_attempt_pass_rate,
+        "research_duplication_note": (
+            "Repeated-research token share is not tracked in receipts. "
+            "See verdict/orchestration/research_metrics.py for the per-call tool."
+        ),
+    }
