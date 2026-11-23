@@ -477,7 +477,9 @@ def _agents_md_where_things_live(root: Path) -> str:
     if not m:
         return ""
     section = ("## Where things live" + m.group(1)).rstrip()
-    return section[:_AGENTS_MD_WHERE_THINGS_LIVE_MAX_BYTES]
+    return section.encode("utf-8")[:_AGENTS_MD_WHERE_THINGS_LIVE_MAX_BYTES].decode(
+        "utf-8", errors="ignore"
+    )
 
 
 def repo_map(

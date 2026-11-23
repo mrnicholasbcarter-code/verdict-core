@@ -17,6 +17,7 @@ from verdict.orchestration.contracts import (
 )
 from verdict.orchestration.planner import (
     FrontierPlanner,
+    _agents_md_where_things_live,
     build_planning_prompt,
     choose_topology,
     hydrate_node_prompt,
@@ -355,6 +356,31 @@ def test_repo_map_handles_agents_md_without_section(tmp_path: Path) -> None:
     text = repo_map(tmp_path, include=("verdict", "tests"))
     assert "verdict/mod.py" in text
     assert "Where things live" not in text
+
+
+def test_agents_md_where_things_live_byte_cap_with_multibyte_text(tmp_path: Path) -> None:
+    """The 4096-byte cap is enforced on the UTF-8 encoding, not on character count.
+
+    A section filled with 3-byte characters (€, U+20AC) would exceed 4096 bytes
+    if sliced as characters.  The result must be at most 4096 bytes when re-encoded
+    and must decode cleanly (no partial trailing sequences).
+    """
+    # Each '€' is 3 bytes in UTF-8.  1500 of them = 4500 bytes > 4096.
+    wide_row = "| `verdict/cli.py` | " + "€" * 1500 + " |\n"
+    agents_text = (
+        "# AGENTS.md\n\n"
+        "## Where things live\n\n"
+        "| Path | What |\n"
+        "|---|---|\n" + wide_row + "\n## Another section\n\nSome text.\n"
+    )
+    (tmp_path / "AGENTS.md").write_text(agents_text, encoding="utf-8")
+
+    result = _agents_md_where_things_live(tmp_path)
+
+    encoded = result.encode("utf-8")
+    assert len(encoded) <= 4096, f"byte length {len(encoded)} exceeds 4096"
+    # Must decode cleanly — no partial trailing multibyte sequence was kept.
+    encoded.decode("utf-8")
 
 
 # ---------------------------------------------------------------- hydrate_node_prompt
