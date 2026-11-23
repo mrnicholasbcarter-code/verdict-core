@@ -1341,6 +1341,33 @@ def test_run_autodev_receipt_records_why_selected_and_rejected(repo: Path, tmp_p
     assert all(value != "[REDACTED]" for item in probe_dropped for value in item.values())
 
 
+def test_run_autodev_records_pinned_capacity_class_in_receipt(repo: Path) -> None:
+    """pinned_capacity_class is stored in the receipt and survives redaction.
+
+    Non-sensitive key/value: 'pinned_route_capacity_class' / 'metered'.
+    Neither matches _SENSITIVE_KEY_PARTS nor the string credential pattern,
+    so it must reach the stored payload unchanged.
+    """
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".db") as f:
+        db = f.name
+        store = ReceiptStore(db)
+        run_autodev(
+            "fix ruff errors",
+            repo,
+            store=store,
+            decomposer=_decomposer([PLAN[0]]),
+            executor=_executor(repo, {"a.py": A_DIFF}),
+            mechanical=False,
+            pinned_capacity_class="metered",
+        )
+        payload = ReceiptStore(db).query_receipts(scope=AUTODEV_SCOPE)[0].payload
+        assert payload.get("pinned_route_capacity_class") == "metered", (
+            f"Expected 'metered' in receipt; got: {payload.get('pinned_route_capacity_class')!r}"
+        )
+
+
 def test_cmd_autodev_without_pin_uses_selected_route(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

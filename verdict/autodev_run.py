@@ -1967,6 +1967,8 @@ class AutodevReport:
     decomposition_latency_ms: int = 0
     receipt_ids: tuple[str, ...] = ()
     planner_attempts: tuple[dict[str, Any], ...] = ()
+    # Set when the pinned --executor-model route is fact-METERED; empty otherwise.
+    pinned_route_capacity_class: str = ""
 
     @property
     def verified(self) -> tuple[UnitOutcome, ...]:
@@ -2019,6 +2021,11 @@ class AutodevReport:
             "planner_attempts": list(self.planner_attempts),
             "outcomes": [o.to_dict() for o in self.outcomes],
             "receipt_ids": list(self.receipt_ids),
+            **(
+                {"pinned_route_capacity_class": self.pinned_route_capacity_class}
+                if self.pinned_route_capacity_class
+                else {}
+            ),
         }
 
     def summary(self) -> str:
@@ -2038,6 +2045,11 @@ class AutodevReport:
                 f"({self.orchestrator_model}), executor {tokens['executor']['total_tokens']}"
             ),
         ]
+        if self.pinned_route_capacity_class:
+            lines.append(
+                f"  pinned executor capacity: {self.pinned_route_capacity_class} "
+                "(explicit operator choice; spend recorded in receipt)"
+            )
         share = tokens["expensive_share"]
         if share is not None:
             lines.append(f"  expensive share: {share:.1%} of {tokens['total']} measured tokens")
@@ -2236,6 +2248,10 @@ def prepare_live_autodev(
         raise AutodevError(
             "autodev pinned-route probe failed content, identity, or zero-cost check"
         )
+    # Snapshot gateway-observed headers before adding the Verdict-derived capacity
+    # key: ``probe_headers`` in the receipt stays pure (only x-omniroute-* facts);
+    # the returned ``headers`` dict carries the synthetic key for the caller.
+    probe_headers = dict(headers)
     headers["x-verdict-route-capacity"] = cls.value
     observed = time.time()
     plan = Decomposer(
@@ -2263,7 +2279,7 @@ def prepare_live_autodev(
             "certification_state": "ready",
             "certification_freshness": "fresh",
             "probe_observed_at": observed,
-            "probe_headers": headers,
+            "probe_headers": probe_headers,
         }
     ]
     request = {
@@ -2858,6 +2874,7 @@ def run_autodev(
         decomposition_latency_ms=plan.latency_ms,
         planner_attempts=plan.attempts,
         receipt_ids=tuple(receipt_ids),
+        pinned_route_capacity_class=pinned_capacity_class,
     )
 
 
