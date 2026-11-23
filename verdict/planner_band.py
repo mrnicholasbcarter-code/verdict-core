@@ -31,7 +31,7 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -351,9 +351,14 @@ class PlannerBandResult:
     rating: float  # the route's aa_intelligence score
     metric: str  # "aa_intelligence"
     fetched_at: str  # ISO timestamp of the score batch
+    # D39: set when planning proceeds with one family (fewer than two were admissible).
+    single_family_planner: bool = False
+    # Sorted (family, reason) pairs for band families with no admitted route.
+    # Populated only when single_family_planner=True; empty otherwise.
+    unavailable_families: tuple[tuple[str, str], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "required": self.required,
             "used": self.used,
             "reason": self.reason,
@@ -364,6 +369,10 @@ class PlannerBandResult:
             "metric": self.metric,
             "fetched_at": self.fetched_at,
         }
+        if self.single_family_planner:
+            d["single_family_planner"] = True
+            d["unavailable_families"] = {fam: rsn for fam, rsn in self.unavailable_families}
+        return d
 
 
 class PlannerBandError(ValueError):
@@ -483,15 +492,21 @@ def select_planner_routes(
     *,
     top_n: int = 1,
     now: datetime | None = None,
+    exclusion_reasons: Mapping[str, str] | None = None,
 ) -> list[tuple[str, PlannerBandResult]]:
     """Select up to ``top_n`` planner routes from admitted candidates using the band.
 
     Uses the frontier band first, falls back to the fallback band.  Applies the
     two-family rule (at least two route families across all selected routes; each
-    failover uses the best available band for a NEW family).  Raises
-    :class:`PlannerBandError` with ``no_frontier_or_fallback_planner`` when no
-    admissible route is in either band, or when fewer than 2 families are
-    admissible (and ``top_n >= 2``).
+    failover uses the best available band for a NEW family).  When exactly one
+    family is admissible and ``top_n >= 2``, planning proceeds with that family
+    and each result is annotated with ``single_family_planner=True`` and
+    ``unavailable_families`` listing the other band families with their reasons
+    (D39).  Raises :class:`PlannerBandError` with ``no_frontier_or_fallback_planner``
+    when no admissible route is in either band.
+
+    ``exclusion_reasons`` maps route ids (non-admitted inventory routes) to the
+    reason they were excluded; used to populate ``unavailable_families``.
 
     Returns a list of ``(route_id, PlannerBandResult)`` in priority order.
     """
@@ -544,11 +559,31 @@ def select_planner_routes(
             break
 
     if top_n >= 2 and len(selected) < 2:
-        family_count = len(used_families) if selected else 0
-        raise PlannerBandError(
-            f"no_frontier_or_fallback_planner: fewer than 2 admissible families found "
-            f"({family_count} family/families across both bands)"
-        )
+        # D39: proceed with one family instead of failing closed; annotate the result.
+        # (len(selected) >= 1 here because the empty check above already raised.)
+        all_band_keys = band.frontier_model_keys | band.fallback_model_keys
+        all_band_families = {route_family(mk) for mk in all_band_keys}
+        unavailable_family_set = all_band_families - used_families
+
+        family_reasons: dict[str, str] = {}
+        if exclusion_reasons:
+            for excl_route, reason in exclusion_reasons.items():
+                stripped = _strip_suffix(excl_route)
+                if stripped not in all_band_keys:
+                    continue
+                fam = route_family(excl_route)
+                if fam not in unavailable_family_set or fam in family_reasons:
+                    continue
+                family_reasons[fam] = reason or "not_admitted"
+        for fam in unavailable_family_set:
+            if fam not in family_reasons:
+                family_reasons[fam] = "no_admitted_route"
+
+        unavail = tuple(sorted(family_reasons.items()))
+        selected = [
+            (r, replace(res, single_family_planner=True, unavailable_families=unavail))
+            for r, res in selected
+        ]
 
     return selected
 

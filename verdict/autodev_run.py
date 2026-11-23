@@ -2362,8 +2362,11 @@ def _live_planner_models(
     Selects from the frontier band of live ``aa_intelligence`` ratings (top 20 %)
     with fallback to the top-30 % band.  UNKNOWN-capacity routes are non-metered
     (ADR-049) and compete alongside FREE and SUBSCRIPTION.  METERED is excluded
-    until CP1.  At least two route families are required so one provider's outage
-    cannot end planning (BOD-393).
+    until CP1.  When two or more families are admissible, the two-family rule
+    ensures one provider's outage cannot end planning (BOD-393).  When only one
+    family is admissible, planning proceeds with that family and the receipt
+    records ``single_family_planner: true`` with the unavailable families and
+    reasons (ADR-051 D39).
 
     Returns ``(route_ids, band_records)`` where ``band_records`` maps each selected
     route id to its ``planner_band`` dict for receipt recording (ADR-051 D7).
@@ -2402,6 +2405,7 @@ def _live_planner_models(
     inventory_route_ids: list[str] = []
     admitted_route_ids: list[str] = []
     capacity_classes: dict[str, CapacityClass] = {}
+    _verdict_reasons: dict[str, str] = {}
     for v in verdicts:
         route_id = str(v.route_id)
         if "/" not in route_id:
@@ -2415,6 +2419,8 @@ def _live_planner_models(
             and not _is_premium_reserved(route_id)
         ):
             admitted_route_ids.append(route_id)
+        else:
+            _verdict_reasons[route_id] = str(getattr(v, "reason", None) or "not_admitted")
 
     # Compute planner bands from the full inventory.
     snap: MetadataSnapshot | None = metadata if isinstance(metadata, MetadataSnapshot) else None
@@ -2427,7 +2433,14 @@ def _live_planner_models(
 
     try:
         selected = select_planner_routes(
-            admitted_route_ids, capacity_classes, band, snap, imap, top_n=top_n, now=now
+            admitted_route_ids,
+            capacity_classes,
+            band,
+            snap,
+            imap,
+            top_n=top_n,
+            now=now,
+            exclusion_reasons=_verdict_reasons,
         )
     except PlannerBandError as exc:
         raise AutodevError(f"autodev planner selection failed: {exc}") from exc

@@ -604,8 +604,8 @@ class TestSelectPlannerRoutes:
         route_id, _ = selected[0]
         assert route_id == "cc/free"  # FREE before SUBSCRIPTION at same score
 
-    def test_fewer_than_two_families_raises_for_top_n_2(self) -> None:
-        # Only one family (claude) available across both bands
+    def test_fewer_than_two_families_proceeds_single_family(self) -> None:
+        # D39: only one family (claude) available across both bands → proceed with flag
         records = [
             _record("p/a", ("cc/claude-3-opus",), aa_intelligence=_score(95.0)),
             _record("p/b", ("cc/claude-3-sonnet",), aa_intelligence=_score(85.0)),
@@ -615,10 +615,56 @@ class TestSelectPlannerRoutes:
             ["cc/claude-3-opus", "cc/claude-3-sonnet"], snap, None, config=DEFAULT_CONFIG, now=NOW
         )
         caps = _caps_map("cc/claude-3-opus", "cc/claude-3-sonnet")
+        selected = select_planner_routes(
+            ["cc/claude-3-opus", "cc/claude-3-sonnet"], caps, band, snap, None, top_n=2, now=NOW
+        )
+        # Returns 1 result (best of the one family), annotated with the flag
+        assert len(selected) == 1
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        # No other family was in the band, so unavailable_families is empty
+        assert result.unavailable_families == ()
+
+    def test_single_family_records_unavailable_families_with_reasons(self) -> None:
+        # Use the two-family band (10 routes, frontier={claude-3-opus, gpt-4o}).
+        # Admit only claude routes; gpt-4o is in the band but excluded with a reason.
+        band, snap = self._two_family_band()
+        admitted = ["cc/claude-3-opus", "cc/claude-3-sonnet", "cc/claude-3-haiku"]
+        caps = _caps_map(*admitted)
+        exclusion_reasons = {"oa/gpt-4o": "metered_capacity", "oa/gpt-4-turbo": "quota_low"}
+        selected = select_planner_routes(
+            admitted, caps, band, snap, None, top_n=2, now=NOW, exclusion_reasons=exclusion_reasons
+        )
+        assert len(selected) == 1
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        # gpt-4o is the band representative for the gpt family
+        assert result.unavailable_families == (("gpt", "metered_capacity"),)
+        # to_dict includes the new keys when single_family_planner=True
+        d = result.to_dict()
+        assert d["single_family_planner"] is True
+        assert d["unavailable_families"] == {"gpt": "metered_capacity"}
+
+    def test_two_families_no_single_family_flag(self) -> None:
+        # Normal two-family case: single_family_planner must be False
+        band, snap = self._two_family_band()
+        admitted = ["cc/claude-3-opus", "oa/gpt-4o"]
+        caps = _caps_map("cc/claude-3-opus", "oa/gpt-4o")
+        selected = select_planner_routes(admitted, caps, band, snap, None, top_n=2, now=NOW)
+        assert len(selected) == 2
+        for _, result in selected:
+            assert result.single_family_planner is False
+            assert result.unavailable_families == ()
+        d = selected[0][1].to_dict()
+        assert "single_family_planner" not in d
+        assert "unavailable_families" not in d
+
+    def test_zero_admissible_routes_still_fails_closed(self) -> None:
+        # No routes admitted at all → PlannerBandError, even with top_n=3 (D39 does not apply)
+        band, snap = self._two_family_band()
+        caps: dict[str, CapacityClass] = {}
         with pytest.raises(PlannerBandError, match="no_frontier_or_fallback_planner"):
-            select_planner_routes(
-                ["cc/claude-3-opus", "cc/claude-3-sonnet"], caps, band, snap, None, top_n=2, now=NOW
-            )
+            select_planner_routes([], caps, band, snap, None, top_n=3, now=NOW)
 
     def test_band_result_fields_populated(self) -> None:
         records = [_record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0))]
@@ -639,7 +685,10 @@ class TestSelectPlannerRoutes:
         assert result.rating == pytest.approx(95.0)
         assert result.metric == "aa_intelligence"
         assert result.fetched_at == FETCHED_NEW
+        assert result.single_family_planner is False
+        assert result.unavailable_families == ()
         d = result.to_dict()
+        # New fields absent from to_dict when single_family_planner=False
         assert set(d.keys()) == {
             "required",
             "used",
