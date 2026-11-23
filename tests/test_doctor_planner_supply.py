@@ -39,6 +39,7 @@ def _patch_all(monkeypatch: pytest.MonkeyPatch, band: Any, inventory: list[str])
     monkeypatch.setattr(_fta_mod, "normalize_omniroute_origin", lambda x: x)
     evidence_mock = MagicMock()
     evidence_mock.inventory_route_ids = inventory
+    evidence_mock.route_capacities = {}  # all routes → CapacityClass.UNKNOWN (non-metered)
     monkeypatch.setattr(_oe_mod, "fetch_omniroute_evidence", lambda *a, **kw: evidence_mock)
     monkeypatch.setattr(_pb_mod, "compute_planner_bands", lambda *a, **kw: band)
     monkeypatch.setattr(_pb_mod, "load_planner_band_config", lambda: MagicMock())
@@ -134,14 +135,15 @@ def test_planner_supply_note_when_gateway_unavailable(monkeypatch: pytest.Monkey
     assert diag.warnings == []
 
 
-def test_planner_supply_note_when_band_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """compute_planner_bands raises → note row with 'band error', no warnings."""
+def test_planner_supply_warn_when_band_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """compute_planner_bands raises → warn row with 'band error' and a warning appended."""
     inventory = ["cc/claude-sonnet"]
     monkeypatch.setattr(_meta_mod, "load_store", lambda: MagicMock())
     monkeypatch.setattr(_creds_mod, "resolve_gateway_binding", lambda: ("http://gw", "k"))
     monkeypatch.setattr(_fta_mod, "normalize_omniroute_origin", lambda x: x)
     evidence_mock = MagicMock()
     evidence_mock.inventory_route_ids = inventory
+    evidence_mock.route_capacities = {}  # all routes → CapacityClass.UNKNOWN (non-metered)
     monkeypatch.setattr(_oe_mod, "fetch_omniroute_evidence", lambda *a, **kw: evidence_mock)
     monkeypatch.setattr(_pb_mod, "load_planner_band_config", lambda: MagicMock())
 
@@ -153,6 +155,7 @@ def test_planner_supply_note_when_band_raises(monkeypatch: pytest.MonkeyPatch) -
     dd._doctor_planner_supply(diag)
     rows = {name: (state, detail) for name, state, detail in diag.sections}
     state, detail = rows["Planner supply"]
-    assert state == "note"
+    assert state == "warn"
     assert "band error" in detail
-    assert diag.warnings == []
+    assert len(diag.warnings) == 1
+    assert "band error" in diag.warnings[0]

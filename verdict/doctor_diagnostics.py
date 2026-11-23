@@ -677,15 +677,20 @@ def _doctor_planner_supply(diag: DoctorDiagnostics) -> None:
         return
 
     try:
+        from verdict.orchestration.contracts import CapacityClass
         from verdict.planner_band import planner_supply_status
 
         config = load_planner_band_config()
         band = compute_planner_bands(inventory_route_ids, metadata, None, config=config, now=now)
-        # capacity_classes unknown to doctor; pass empty dict → all routes treated as UNKNOWN
-        # (non-metered), so the band keys drive the count.
-        status = planner_supply_status(inventory_route_ids, {}, band)
+        capacity_classes = {
+            r: CapacityClass(evidence.route_capacities.get(r, "unknown"))
+            for r in inventory_route_ids
+        }
+        status = planner_supply_status(inventory_route_ids, capacity_classes, band)
     except Exception as exc:
-        diag.sections.append(("Planner supply", "note", f"band error: {type(exc).__name__}"))
+        _band_err_msg = f"band error: {type(exc).__name__}"
+        diag.sections.append(("Planner supply", "warn", _band_err_msg))
+        diag.warnings.append(_band_err_msg)
         return
 
     if not status["warning"]:
