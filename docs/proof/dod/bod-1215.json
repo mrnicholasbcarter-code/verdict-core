@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "story": "bod-1215",
+  "kind": "repo-tooling",
+  "author": "Nick Carter (mrnicholasbcarter-code); code merged in PR 1238",
+  "merged_sha": "59957ae60d9b1b851e7db598b8dcdd8a4fd46bc4",
+  "pr": 1238,
+  "on_main": {
+    "at": "2026-11-23T19:08:19Z",
+    "sha": "59957ae60d9b1b851e7db598b8dcdd8a4fd46bc4",
+    "environment": "operator-host",
+    "command": "gh pr checks 1238 --required",
+    "real_state_marker": "https://github.com/mrnicholasbcarter-code/verdict-core/actions/runs/44827645266",
+    "exit_code": 0,
+    "raw_output": {
+      "path": "docs/proof/dod/bod-1215/pr_checks_1238.txt",
+      "sha256": "941af138a98979ae9093d0934060a0d30d9320caffc71abc9e8721b0906f7136"
+    }
+  },
+  "acceptance": [
+    {
+      "criterion": "Demo and test runs leave session-evidence.jsonl and the passport store byte-identical",
+      "expect": "ISOLATION OK: live stores byte-identical",
+      "expect_exit_code": 0,
+      "first_run": {
+        "at": "2026-11-23T19:05:30Z",
+        "sha": "ebc11cc8eab1c9f60bdb8af88f01085763f26f26",
+        "environment": "operator-host",
+        "command": "BEFORE_E=$(sha256sum ~/.verdict/session-evidence.jsonl 2>/dev/null | awk '{print $1}' || echo MISSING) && BEFORE_P=$(sha256sum ~/.verdict/prove-at-rest/state.json 2>/dev/null | awk '{print $1}' || echo MISSING) && ~/.local/share/verdict/installed-main/.venv/bin/python ~/.local/share/verdict/installed-main/scripts/demo_orchestrate.py --out $(mktemp -d) && AFTER_E=$(sha256sum ~/.verdict/session-evidence.jsonl 2>/dev/null | awk '{print $1}' || echo MISSING) && AFTER_P=$(sha256sum ~/.verdict/prove-at-rest/state.json 2>/dev/null | awk '{print $1}' || echo MISSING) && [ \"$BEFORE_E\" = \"$AFTER_E\" ] && [ \"$BEFORE_P\" = \"$AFTER_P\" ] && echo \"ISOLATION OK: live stores byte-identical\"",
+        "real_state_marker": "VERDICT COMPLETE",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-1215/l1a-first-20261123T190530Z.txt",
+          "sha256": "d26cce998232f0b8116ea98569d9ce37d4057cb88f8ea0fcf0a00728babc6041"
+        }
+      },
+      "fresh_run": {
+        "at": "2026-11-23T19:35:40Z",
+        "sha": "ebc11cc8eab1c9f60bdb8af88f01085763f26f26",
+        "environment": "operator-host",
+        "command": "BEFORE_E=$(sha256sum ~/.verdict/session-evidence.jsonl 2>/dev/null | awk '{print $1}' || echo MISSING) && BEFORE_P=$(sha256sum ~/.verdict/prove-at-rest/state.json 2>/dev/null | awk '{print $1}' || echo MISSING) && ~/.local/share/verdict/installed-main/.venv/bin/python ~/.local/share/verdict/installed-main/scripts/demo_orchestrate.py --out $(mktemp -d) && AFTER_E=$(sha256sum ~/.verdict/session-evidence.jsonl 2>/dev/null | awk '{print $1}' || echo MISSING) && AFTER_P=$(sha256sum ~/.verdict/prove-at-rest/state.json 2>/dev/null | awk '{print $1}' || echo MISSING) && [ \"$BEFORE_E\" = \"$AFTER_E\" ] && [ \"$BEFORE_P\" = \"$AFTER_P\" ] && echo \"ISOLATION OK: live stores byte-identical\"",
+        "real_state_marker": "VERDICT COMPLETE",
+        "exit_code": 0,
+        "raw_output": {
+          "path": "docs/proof/dod/bod-1215/l1a-fresh-20261123T193534Z.txt",
+          "sha256": "ce93cb7ba46b3a3dc72270a8b0d02777af30bce9bd0c09765f8870f5542c7227"
+        }
+      }
+    }
+  ],
+  "freshness_window_hours": 0.5,
+  "stays_true_job": "GitHub Actions ci-ok job (run 45250590926, job 137963855448) on sha 78e5a27d, started 2026-11-23T19:35:52Z, completed 2026-11-23T19:44:27Z: success. 78e5a27d includes L1a changes (59957ae6 is ancestor). Tests test_demo_orchestrate_leaves_session_evidence_and_passport_store_unchanged on every push to main and every PR. Acceptance runs (first, fresh, parent confirmation) used installed-main ebc11cc8eab1c9f60bdb8af88f01085763f26f26, which contains merged sha 59957ae60d9b1b851e7db598b8dcdd8a4fd46bc4 as an ancestor.",
+  "setup_doctor": {
+    "status": "not_applicable",
+    "reason": "repo-tooling story; no service installation, no verdict/ code changes in merged commit"
+  },
+  "openspec": {
+    "change": "fixture-guard-no-live-writes"
+  },
+  "parent_confirmation": {
+    "by": "Claude Sonnet 4.6 subagent (DoD closeout agent), not the story author",
+    "at": "2026-11-23T19:43:47Z",
+    "command": "BEFORE_E=$(sha256sum ~/.verdict/session-evidence.jsonl 2>/dev/null | awk '{print $1}' || echo MISSING) && BEFORE_P=$(sha256sum ~/.verdict/prove-at-rest/state.json 2>/dev/null | awk '{print $1}' || echo MISSING) && ~/.local/share/verdict/installed-main/.venv/bin/python ~/.local/share/verdict/installed-main/scripts/demo_orchestrate.py --out $(mktemp -d) && AFTER_E=$(sha256sum ~/.verdict/session-evidence.jsonl 2>/dev/null | awk '{print $1}' || echo MISSING) && AFTER_P=$(sha256sum ~/.verdict/prove-at-rest/state.json 2>/dev/null | awk '{print $1}' || echo MISSING) && [ \"$BEFORE_E\" = \"$AFTER_E\" ] && [ \"$BEFORE_P\" = \"$AFTER_P\" ] && echo \"ISOLATION OK: live stores byte-identical\"",
+    "raw_output": {
+      "path": "docs/proof/dod/bod-1215/l1a-confirm-20261123T194345Z.txt",
+      "sha256": "ec3e9e81e112202fc17a46b92423c5e5724db0fb1e345f9c6f59bbcba04b5129"
+    }
+  }
+}
