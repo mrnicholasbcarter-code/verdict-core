@@ -54,22 +54,49 @@ def resolve_verify_argv(argv: Sequence[str]) -> tuple[list[str], str]:
 
 
 def resolve_gate_argv(argv: Sequence[str], worktree: Path) -> list[str]:
-    """Resolve bare ruff/mypy in the worktree, Verdict environment, then PATH.
+    """Resolve bare ruff/mypy to the worktree's own environment.
 
-    Other executable names (including npm) stay unchanged. A declared Python
-    gate with no executable raises FileNotFoundError; callers must fail closed.
+    Resolution order:
+    1. ``<worktree>/.venv/bin/<tool>`` — explicit virtualenv in the worktree.
+    2. ``uv run --frozen <tool>`` — when ``uv.lock`` is present.  ``uv`` must
+       be on PATH; if it is not, the gate cannot run and ``FileNotFoundError``
+       is raised (a named environment failure, never a silent pass).
+    3. ``Path(sys.executable).parent/<tool>`` — Verdict's own interpreter env.
+    4. ``shutil.which(<tool>)`` — OS PATH as a last resort.
+    5. ``FileNotFoundError`` — gate cannot run; callers must fail closed.
+
+    Other executable names (including npm) are returned unchanged.
     """
     resolved = list(argv)
     if not argv or argv[0] not in {"ruff", "mypy"}:
         return resolved
     executable = argv[0]
-    for candidate in (
-        worktree / ".venv" / "bin" / executable,
-        Path(sys.executable).parent / executable,
-    ):
-        if candidate.is_file():
-            resolved[0] = str(candidate)
-            return resolved
+
+    # 1. Explicit worktree venv takes priority over everything.
+    venv_candidate = worktree / ".venv" / "bin" / executable
+    if venv_candidate.is_file():
+        resolved[0] = str(venv_candidate)
+        return resolved
+
+    # 2. uv-managed repo: uv.lock is the authoritative signal.  Running through
+    #    ``uv run`` guarantees the project's locked environment is used, not a
+    #    global tool that may lack the project's type stubs or plugins.
+    if (worktree / "uv.lock").is_file():
+        uv = shutil.which("uv")
+        if uv is None:
+            raise FileNotFoundError(
+                f"gate executable {executable!r}: uv.lock is present but uv is not on PATH"
+                " — environment_error: uv not found"
+            )
+        return [uv, "run", "--frozen", *argv]
+
+    # 3. Fall back to Verdict's own interpreter environment (non-uv-managed repos).
+    verdict_candidate = Path(sys.executable).parent / executable
+    if verdict_candidate.is_file():
+        resolved[0] = str(verdict_candidate)
+        return resolved
+
+    # 4. Last resort: OS PATH.
     on_path = shutil.which(executable)
     if on_path is None:
         raise FileNotFoundError(f"gate executable not found: {executable}")

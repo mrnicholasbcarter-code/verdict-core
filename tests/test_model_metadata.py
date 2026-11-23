@@ -568,6 +568,34 @@ class TestStoreAndSchema:
         assert loaded.schema_version == METADATA_SCHEMA_VERSION
         assert loaded.to_dict() == snapshot.to_dict()
 
+    def test_sources_field_is_read_only(self, tmp_path: Path) -> None:
+        """sources must be read-only: the cache shares one snapshot across callers."""
+        _refresh(tmp_path)
+        path = tmp_path / "model-metadata.json"
+        snapshot = load_store(path)
+        with pytest.raises(TypeError):
+            snapshot.sources["__mutate_test__"] = None  # type: ignore[index]
+
+    def test_mapping_field_is_read_only(self, tmp_path: Path) -> None:
+        """mapping must be read-only: the cache shares one snapshot across callers."""
+        _refresh(tmp_path)
+        path = tmp_path / "model-metadata.json"
+        snapshot = load_store(path)
+        with pytest.raises(TypeError):
+            snapshot.mapping["__mutate_test__"] = None  # type: ignore[index]
+
+    def test_load_store_returns_same_cached_object(self, tmp_path: Path) -> None:
+        """Two calls to load_store on the same unmodified file return the same object.
+
+        This confirms the lru_cache is active and that the read-only test above
+        exercises the shared cached instance, not a fresh copy.
+        """
+        _refresh(tmp_path)
+        path = tmp_path / "model-metadata.json"
+        a = load_store(path)
+        b = load_store(path)
+        assert a is b, "expected cached identity: load_store returned two distinct objects"
+
     def test_receipt_cites_source_per_cap(self, tmp_path: Path) -> None:
         snapshot = _refresh(tmp_path)
         mapping = load_identity_map(FIXTURES / "omniroute_map.json")
