@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from verdict.admission import is_opaque
 from verdict.credentials_store import resolve_gateway_binding, resolve_management_token
+from verdict.discovery.sources._types import DiscoveryRow
 from verdict.free_tier_admit import normalize_omniroute_origin
 from verdict.identify_pools import build_supply, build_task_pools
 from verdict.identify_rank import RatedModel, rank_models
@@ -18,12 +20,13 @@ from verdict.metadata.mapping import IdentityMap, load_identity_map
 from verdict.metadata.records import ModelMetadataError
 from verdict.metadata.store import MetadataSnapshot, load_store
 from verdict.omniroute_evidence import OmniRouteEvidence, fetch_omniroute_evidence
-from verdict.orchestration.credential_pools import canonical_route, pool_of
+from verdict.orchestration.credential_pools import canonical_route, is_non_chat_route, pool_of
 from verdict.orchestration.eligibility import _capability_facts, _capability_tier
 from verdict.orchestration.health_cache import (
     CATEGORY_AUTH,
     CATEGORY_PAYMENT,
     CATEGORY_PERMISSION,
+    STATE_FRESH,
     STATE_NEGATIVE,
     USABLE_SECONDS,
     HealthCache,
@@ -203,6 +206,131 @@ def identify_models(
     }
 
 
+def _roster_routes(
+    roster: Sequence[DiscoveryRow], evidence: OmniRouteEvidence
+) -> list[dict[str, Any]]:
+    """Join source identities to the gateway's exact IDs; never match by leaf."""
+    # These names identify the same upstream service, not a billing class.
+    provider_names = {"cloudflare": "cloudflare-ai", "kilo": "kilocode", "ovhcloud": "ovhfree"}
+    index: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for route in evidence.inventory_route_ids:
+        if "/" not in route or is_opaque(route):
+            continue
+        prefix, _, model = route.partition("/")
+        provider, upstream_model = evidence.route_identities.get(
+            route, (str(evidence.inventory_rows.get(route, {}).get("owned_by") or prefix), model)
+        )
+        for exact in (model, upstream_model):
+            index[(provider, exact)].add(route)
+    # A keyless provider can serve catalog routes without a connection row.
+    inventory_providers = {provider for provider, _ in index}
+    return [
+        {
+            "provider": row.provider,
+            "gateway_provider": provider_names.get(row.provider, row.provider),
+            "provider_in_inventory": provider_names.get(row.provider, row.provider)
+            in inventory_providers,
+            "model_id": row.id,
+            "source": row.source,
+            "commit": row.commit,
+            "fetched_at": row.fetched_at,
+            "routes": sorted(
+                index[provider_names.get(row.provider, row.provider), row.id.partition("/")[2]]
+            ),
+        }
+        for row in roster
+    ]
+
+
+def _roster_report(
+    matches: list[dict[str, Any]],
+    rows: Sequence[dict[str, Any]],
+    evidence: OmniRouteEvidence,
+    *,
+    tool_proof: Mapping[str, HealthEntry] | None = None,
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    now = observed_at or evidence.fetched_at
+    results = {row["route_id"]: row["result"] for row in rows}
+    aliases = {row["route_id"]: row["alias_of"] for row in rows if row["result"] == "skipped_alias"}
+    report = []
+    connected = {conn.provider for conn in evidence.connections} | evidence.usable_providers
+    for item in matches:
+        configured = item["gateway_provider"] in connected or item["provider_in_inventory"]
+        routes = item["routes"]
+        statuses = {}
+        for route in routes:
+            candidate = evidence.live_candidates.get(route)
+            if route in results:
+                reason = results[route]
+            elif "candidates" in evidence.source_errors:
+                reason = "reachability_unverified"
+            elif candidate is None or not candidate.reachable:
+                reason = "not_reachable"
+            elif candidate.provider not in evidence.usable_providers:
+                reason = "no_usable_connection"
+            elif route in evidence.cooled_models:
+                reason = "model_cooling_down"
+            else:
+                reason = "not_screened"
+            statuses[route] = reason
+        # Resolve aliases only in the aggregate. An unprobed alias must never
+        # be presented as having passed its own probe.
+        outcomes = {
+            results.get(aliases[route], status) if route in aliases else status
+            for route, status in statuses.items()
+        }
+        result = next((status for status in ("pass", "skipped_fresh") if status in outcomes), None)
+        if result is None:
+            if not routes and "v1_models" in evidence.source_errors:
+                result = "inventory_unverified"
+            elif not routes and configured:
+                result = "model_not_registered"
+            elif not routes:
+                result = "not_configured"
+            else:
+                result = next(iter(outcomes)) if len(outcomes) == 1 else "mixed_route_results"
+        proofs = {}
+        for route in routes:
+            entry = (tool_proof or {}).get(route)
+            proofs[route] = {
+                "capacity_class": evidence.route_capacities.get(route, "unknown"),
+                "capacity_evidence": evidence.route_capacity_evidence.get(route),
+                "last_observation_at": _timestamp(entry.checked_at) if entry else None,
+                "last_observation": entry.category if entry else None,
+                "fresh_liveness": bool(
+                    entry and entry.healthy and entry.chat_ok and entry.state_at(now) == STATE_FRESH
+                ),
+                "fresh_tool_proof": bool(
+                    entry and entry.healthy and agentic_capability(entry, now)["qualified"]
+                ),
+            }
+        report.append(
+            {
+                **item,
+                "provider_configured": configured,
+                "result": result,
+                "route_results": statuses,
+                "route_evidence": proofs,
+            }
+        )
+    return {
+        "roster": report,
+        "roster_counts": dict(Counter(row["result"] for row in report)),
+        "roster_coverage": {
+            "parsed": len(report),
+            "providers": len({row["provider"] for row in report}),
+            "configured_provider_matches": sum(row["provider_configured"] for row in report),
+            "exact_route_matches": sum(bool(row["routes"]) for row in report),
+            "distinct_gateway_routes": len({route for row in report for route in row["routes"]}),
+            "fresh_tool_proof_models": sum(
+                any(proof["fresh_tool_proof"] for proof in row["route_evidence"].values())
+                for row in report
+            ),
+        },
+    }
+
+
 def screen_models(
     evidence: OmniRouteEvidence,
     *,
@@ -222,6 +350,8 @@ def screen_models(
     min_context_tokens: int | None = None,
     require_tools: bool = False,
     max_per_pool: int | None = None,
+    roster: Sequence[DiscoveryRow] | None = None,
+    assume_unmetered_connections: bool = False,
 ) -> dict[str, Any]:
     """Screen strongest task rating first; capacity class is a filter, not an order.
 
@@ -284,6 +414,25 @@ def screen_models(
             )
         )
     all_ratings = list(rated) + extra_ratings
+    matches = _roster_routes(roster, evidence) if roster is not None else None
+    if matches is not None:
+        matched = {route for item in matches for route in item["routes"]}
+        all_ratings = [
+            rating
+            for rating in all_ratings
+            if rating.route_id in matched
+            and (live := evidence.live_candidates.get(rating.route_id)) is not None
+            and live.reachable
+            and live.provider in evidence.usable_providers
+            and rating.route_id not in evidence.cooled_models
+        ]
+        # Rotate capped runs across missing and oldest evidence before repeating work.
+        oldest = datetime.min.replace(tzinfo=timezone.utc)
+        all_ratings.sort(
+            key=lambda rating: (
+                entry.checked_at if (entry := cache.entry(rating.route_id)) else oldest
+            )
+        )
     prober = Prober(
         cache=cache,
         routes_loader=lambda: (),
@@ -334,6 +483,13 @@ def screen_models(
             "model_calls": 0,
             "model_requests_sent": 0,
             "stopped_reason": stopped_reason,
+            **(
+                _roster_report(
+                    matches, rows, evidence, tool_proof=cache.routes(), observed_at=clock()
+                )
+                if matches is not None
+                else {}
+            ),
         }
     pool_counts: Counter[str] = Counter()
     # Pools this screen saw refuse on account grounds (auth or payment, HTTP or
@@ -368,7 +524,15 @@ def screen_models(
         pool = backend_pool(route_id)
         # A fresh alias proof avoids repeating the same underlying model.
         siblings = [r for r in candidates if evidence.route_identities.get(r) == family]
-        if lookup.state == STATE_NEGATIVE:
+        if matches is not None and any(
+            entry.category == CATEGORY_PAYMENT
+            or entry.http_status == 402
+            or entry.capacity_evidence == "billing_402_metered"
+            for rid, entry in cache.routes().items()
+            if evidence.route_identities.get(rid, (provider, "")) == family or rid == route_id
+        ):
+            row["result"] = "skipped_billing_refusal"
+        elif lookup.state == STATE_NEGATIVE:
             row["result"] = "skipped_negative"
         elif any(
             agentic_capability(cache.entry(r), now)["qualified"] for r in [route_id, *siblings]
@@ -425,8 +589,9 @@ def screen_models(
             else:
                 provider = rating.provider
             capacity = evidence.route_capacities.get(route_id, "unknown")
-            if (providers and provider not in providers) or (
-                capacities and capacity not in capacities
+            if matches is None and (
+                (providers and provider not in providers)
+                or (capacities and capacity not in capacities)
             ):
                 continue
             fallback = canonical_route(route_id).split("/", 1)
@@ -449,6 +614,32 @@ def screen_models(
             if max_per_pool is not None:
                 row["backend_pool"] = backend_pool(route_id)
             rows.append(row)
+            if matches is not None:
+                if providers and provider not in providers:
+                    row["result"] = "skipped_provider_filter"
+                    continue
+                if is_non_chat_route(route_id, inventory_row):
+                    row["result"] = "skipped_requires_modality_probe"
+                    continue
+                if capacities and capacity not in capacities:
+                    row["result"] = "skipped_capacity"
+                    continue
+                fact = evidence.route_capacity_evidence.get(route_id)
+                if fact == "billing_402_metered":
+                    row["result"] = "skipped_billing_refusal"
+                    continue
+                # An operator declaration can override a list-price-only veto,
+                # not known connection-level billing or an explicit capacity filter.
+                if (
+                    capacity == "metered"
+                    and not (assume_unmetered_connections and fact == "apikey_positive_pricing")
+                ) or (
+                    capacity == "unknown"
+                    and not assume_unmetered_connections
+                    and "unknown" not in capacities
+                ):
+                    row["result"] = "skipped_spend_policy"
+                    continue
             if max_capability_tier is not None and (tier is None or tier > max_capability_tier):
                 # Unknown is never sufficient; the route neither probes nor
                 # claims an alias slot or a cap slot.
@@ -491,6 +682,11 @@ def screen_models(
         "model_calls": requests,
         "model_requests_sent": requests,
         "stopped_reason": stopped_reason,
+        **(
+            _roster_report(matches, rows, evidence, tool_proof=cache.routes(), observed_at=clock())
+            if matches is not None
+            else {}
+        ),
     }
 
 
@@ -549,6 +745,8 @@ def identify_report(
     min_context_tokens: int | None = None,
     require_tools: bool = False,
     max_per_pool: int | None = None,
+    community_roster: bool = False,
+    assume_unmetered_connections: bool = False,
 ) -> dict[str, Any]:
     """Read the seven passive OmniRoute sources and local metadata into one report.
 
@@ -573,6 +771,18 @@ def identify_report(
         ):
             if given:
                 raise ValueError(f"{flag} requires --screen")
+    if assume_unmetered_connections and not (community_roster and screen):
+        raise ValueError("--assume-unmetered-connections requires --community-roster and --screen")
+    roster: Sequence[DiscoveryRow] | None = None
+    roster_error = None
+    if community_roster:
+        from verdict.discovery.sources.community import fetch_fcm_current
+
+        try:
+            roster = fetch_fcm_current()
+        except (OSError, ValueError) as exc:
+            roster = ()
+            roster_error = type(exc).__name__
     base_url, key = resolve_gateway_binding()
     evidence = fetch_omniroute_evidence(
         normalize_omniroute_origin(base_url),
@@ -592,6 +802,7 @@ def identify_report(
         identity_map = None
         mapping_error = "identity_map_unavailable"
     tool_proof_error = None
+    tool_proof: Mapping[str, HealthEntry] | None = None
     if screen:
         assert max_per_provider is not None and max_routes is not None
         report = screen_models(
@@ -610,9 +821,10 @@ def identify_report(
             min_context_tokens=min_context_tokens,
             require_tools=require_tools,
             max_per_pool=max_per_pool,
+            roster=roster,
+            assume_unmetered_connections=assume_unmetered_connections,
         )
     else:
-        tool_proof: Mapping[str, HealthEntry] | None
         try:
             tool_proof = HealthCache(default_cache_path()).routes()
         except (HealthCacheError, OSError, ValueError):
@@ -634,6 +846,14 @@ def identify_report(
                 HealthCache(default_cache_path()),
                 now=now,
                 webhook_events=read_events(since=now - timedelta(seconds=USABLE_SECONDS)),
+            )
+    if roster is not None:
+        report["roster_source_error"] = roster_error
+        if not screen:
+            report.update(
+                _roster_report(
+                    _roster_routes(roster, evidence), [], evidence, tool_proof=tool_proof
+                )
             )
     report.update(
         metadata_error=metadata_error,
@@ -659,8 +879,14 @@ def cmd_identify(
     min_context_tokens: int | None = None,
     require_tools: bool = False,
     max_per_pool: int | None = None,
+    community_roster: bool = False,
+    assume_unmetered_connections: bool = False,
 ) -> None:
     try:
+        if assume_unmetered_connections and not (screen and community_roster):
+            raise ValueError(
+                "--assume-unmetered-connections requires --community-roster and --screen"
+            )
         report = (
             identify_report(
                 screen=screen,
@@ -674,8 +900,16 @@ def cmd_identify(
                 min_context_tokens=min_context_tokens,
                 require_tools=require_tools,
                 max_per_pool=max_per_pool,
+                community_roster=community_roster,
+                assume_unmetered_connections=assume_unmetered_connections,
             )
             if screen
+            else identify_report(
+                all_excluded=all_excluded,
+                refresh_health_cache=refresh_health_cache,
+                community_roster=True,
+            )
+            if community_roster
             else identify_report(all_excluded=all_excluded, refresh_health_cache=True)
             if refresh_health_cache
             else identify_report(all_excluded=True)

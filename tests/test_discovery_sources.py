@@ -399,6 +399,25 @@ class TestFCMAdapter:
     export const shouldBeSkipped = { notAnArray: true };
     """
 
+    def test_parse_active_roster_with_current_upstream_syntax(self) -> None:
+        source = """
+        export const nvidiaNim = [
+          ['nvidia/test-model', 'Example (2026)', 'S', '62%', '1M'],
+          ['org/retired', 'Expired', 'A', '-', '32k', null, '2026-01-01'],
+          // ['org/commented', 'Not a route', 'A', '-', '32k'],
+        ]
+        export const retiredProvider = [['another-model', 'Retired']];
+        export const sources = {
+          nvidia: { name: 'NVIDIA', models: nvidiaNim },
+          // retired: { models: retiredProvider },
+        }
+        export const MODELS = [];
+        """
+        rows = parse_fcm(source, fetched_at="2026-11-22T00:00:00Z")
+        assert [(r.provider, r.id, r.free_flag) for r in rows] == [
+            ("nvidia", "nvidia/nvidia/test-model", None)
+        ]
+
     def test_parse_basic(self) -> None:
         rows = parse_fcm(self._FIXTURE_JS)
         assert len(rows) == 3
@@ -447,11 +466,63 @@ class TestFCMAdapter:
         rows = parse_fcm(hostile)
         assert rows == []
 
+    def test_computed_array_is_not_treated_as_a_literal(self) -> None:
+        assert parse_fcm('export const groq = [["model", "Model"]].concat(fn());') == []
+
+    def test_pinned_fetch_rejects_empty_or_invalid_source(self) -> None:
+        url = f"{_GITHUB_RAW}/{_FCM_REPO}/{_FCM_DEFAULT_COMMIT}/{_FCM_FILE}"
+        for raw in (b"", b"export const sources = {groq: {models: missing}};"):
+            with pytest.raises(ValueError, match="fcm_empty_or_invalid_roster"):
+                fetch_fcm(fetcher=make_stub_fetcher({url: raw}))
+
+    def test_frozen_upstream_fixture(self) -> None:
+        fixture = (
+            Path(__file__).parent / "fixtures/discovery/free-coding-models-ffb2d3ec.sources.js"
+        )
+        rows = parse_fcm(fixture.read_text(encoding="utf-8"), fetched_at="2026-11-22T00:00:00Z")
+        assert len(rows) == 5
+        assert {r.id for r in rows} == {
+            "nvidia/z-ai/glm-5.3-flash",
+            "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b",
+            "cerebras/gpt-oss-120b",
+            "cerebras/qwen-3.8-27b",
+            "cheapllm/deepseek-v4.1-flash-1017",
+        }
+        assert all(r.free_flag is None for r in rows)
+
     def test_fetch_via_stub(self) -> None:
         url = f"{_GITHUB_RAW}/{_FCM_REPO}/{_FCM_DEFAULT_COMMIT}/{_FCM_FILE}"
         stub = make_stub_fetcher({url: self._FIXTURE_JS.encode()})
         rows = fetch_fcm(fetcher=stub)
         assert len(rows) == 3
+
+    def test_current_source_resolves_an_immutable_commit(self) -> None:
+        from verdict.discovery.sources.community import fetch_fcm_current
+
+        commit = "f" * 40
+        commits_url = (
+            f"https://api.github.com/repos/{_FCM_REPO}/commits?path={_FCM_FILE}&per_page=1"
+        )
+        source_url = f"{_GITHUB_RAW}/{_FCM_REPO}/{commit}/{_FCM_FILE}"
+        stub = make_stub_fetcher(
+            {
+                commits_url: json.dumps([{"sha": commit}]).encode(),
+                source_url: self._FIXTURE_JS.encode(),
+            }
+        )
+        rows = fetch_fcm_current(fetcher=stub)
+        assert len(rows) == 3
+        assert all(r.commit == commit and r.source_url == source_url for r in rows)
+
+    def test_current_source_fails_closed_when_commit_is_invalid(self) -> None:
+        from verdict.discovery.sources.community import fetch_fcm_current
+
+        commits_url = (
+            f"https://api.github.com/repos/{_FCM_REPO}/commits?path={_FCM_FILE}&per_page=1"
+        )
+        stub = make_stub_fetcher({commits_url: b'[{"sha":"main"}]'})
+        with pytest.raises(ValueError, match="fcm_invalid_current_commit"):
+            fetch_fcm_current(fetcher=stub)
 
     def test_source_field(self) -> None:
         rows = parse_fcm(self._FIXTURE_JS)

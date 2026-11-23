@@ -1910,6 +1910,9 @@ class Prober:
             passed = False
             category = CATEGORY_MODEL_MISMATCH
         latencies = [ex.latency_ms for ex in exchanges if ex.latency_ms is not None]
+        model_scoped = not passed and _detail_is_model_scoped(
+            category, last.http_status, last.detail, route.route_id
+        )
         result = ProbeResult(
             category=category,
             http_status=last.http_status,
@@ -1920,14 +1923,13 @@ class Prober:
             probe_class="agentic",
             agentic_ok=passed,
             pool=route.pool,
-            capacity_evidence=_capacity_evidence(route, category, last.http_status),
-            identity="verified" if passed else "",
-            failure_scope=(
-                "route"
-                if not passed
-                and _detail_is_model_scoped(category, last.http_status, last.detail, route.route_id)
-                else None
+            capacity_evidence=(
+                "billing_402_metered"
+                if model_scoped and category == CATEGORY_PAYMENT
+                else _capacity_evidence(route, category, last.http_status)
             ),
+            identity="verified" if passed else "",
+            failure_scope="route" if model_scoped else None,
         )
         stats.agentic_probed += 1
         stats.agentic_passed += int(passed)
@@ -2526,7 +2528,10 @@ def _detail_is_model_scoped(
     text = re.sub(r"^\[[^\]]*\]\s*", "", detail.strip()).lower()
     if not text or not route_id or any(marker in text for marker in _ACCOUNT_SCOPE_MARKERS):
         return False
-    if http_status not in {403, 429} and category not in {
+    # A billing refusal can name just one model, even with a real HTTP 402.
+    # The gateway wrapper and explicit account-wide markers were excluded above.
+    if http_status not in {402, 403, 429} and category not in {
+        CATEGORY_PAYMENT,
         CATEGORY_PERMISSION,
         CATEGORY_RATE_LIMITED,
     }:

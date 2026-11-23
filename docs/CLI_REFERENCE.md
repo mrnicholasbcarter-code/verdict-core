@@ -678,6 +678,21 @@ slots are unavailable and are not fetched. A failed or malformed source is liste
 writing it; an unreadable cache gives `tool_proof_error: health_cache_unavailable`.
 Schedules and screen bounds: [identify-maintenance.md](guides/identify-maintenance.md).
 
+Use `verdict identify --passive --community-roster --json` to compare the
+current `free-coding-models` revision with the configured gateway. This adds
+bounded public source reads, but no model requests. The `roster` entries keep
+unmatched models visible, including models not registered on a configured
+provider. `route_evidence` separates recorded liveness and tool proof from
+capacity labels.
+
+With `--screen`, `--community-roster` narrows the existing bounded probe to
+matching reachable routes. For connections that cannot incur per-token
+charges, `--assume-unmetered-connections` permits probing a route otherwise
+excluded **only** by the installed classifier's positive catalog price rule.
+The flag does not relabel routes, override an explicit `--capacity` filter,
+or retry recorded billing refusals. A screen result is capability evidence,
+not dispatch authority or proof of a completed coding task.
+
 `--max-capability-tier N` (0 = frontier to 3 = small; `--screen` only) skips,
 without a probe, every route whose capability tier is unknown
 (`skipped_unknown_tier`) or above N (`skipped_capability_tier`). The tier is

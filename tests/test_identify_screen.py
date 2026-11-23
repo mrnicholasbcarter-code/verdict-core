@@ -444,6 +444,81 @@ def test_strongest_rating_screens_before_lower_rated_free(tmp_path):
     assert report["passed"] == 2
 
 
+def test_community_screen_joins_exact_routes_and_skips_billing_aliases(tmp_path):
+    from verdict.discovery.sources.community import parse_fcm
+    from verdict.omniroute_evidence import LiveCandidate
+
+    roster = parse_fcm(
+        'export const p = [["org/good", "Good"], ["bad", "Bad"],'
+        ' ["metered", "Metered"], ["missing", "Missing"]];'
+    )
+    ids = ["p/org/good", "p/bad", "alias/bad", "p/metered", "p/not-in-roster"]
+    evidence = replace(
+        snapshot(),
+        proven_by_traffic={},
+        inventory_route_ids=frozenset(ids),
+        inventory_rows={rid: {"owned_by": "p"} for rid in ids},
+        route_identities={rid: ("p", rid.partition("/")[2]) for rid in ids},
+        live_candidates={rid: LiveCandidate(rid, "p", ("connection",), True) for rid in ids},
+        route_capacities={rid: "metered" if rid == "p/metered" else "unknown" for rid in ids},
+    )
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record(
+        "alias/bad",
+        ProbeResult(chat_ok=False, tool_ok=False, category=CATEGORY_PAYMENT, http_status=402),
+        NOW - timedelta(days=2),
+    )
+    cache.save()
+    calls = []
+    report = identify.screen_models(
+        evidence,
+        metadata=None,
+        cache=cache,
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=10,
+        max_routes=10,
+        capacities=("free", "unknown"),
+        clock=lambda: NOW,
+        roster=roster,
+    )
+    assert {rid for rid, _ in calls} == {"p/org/good"}
+    assert {r["model_id"]: r["result"] for r in report["roster"]} == {
+        "p/bad": "skipped_billing_refusal",
+        "p/metered": "skipped_capacity",
+        "p/missing": "model_not_registered",
+        "p/org/good": "pass",
+    }
+    assert (
+        next(r for r in report["routes"] if r["route_id"] == "p/org/good")["capacity"] == "unknown"
+    )
+
+
+def test_roster_counts_a_keyless_inventory_provider_as_configured():
+    """Catches a keyless provider's unregistered models reported as an unconfigured provider."""
+    from verdict.discovery.sources.community import parse_fcm
+
+    roster = parse_fcm(
+        'export const keyless = [["served", "Served"], ["missing", "Missing"]];'
+        '\nexport const absent = [["other", "Other"]];'
+    )
+    evidence = replace(
+        snapshot(),
+        usable_providers=frozenset(),
+        proven_by_traffic={},
+        inventory_route_ids=frozenset({"keyless/served"}),
+        inventory_rows={"keyless/served": {"owned_by": "keyless"}},
+        route_identities={},
+    )
+    report = identify._roster_report(identify._roster_routes(roster, evidence), [], evidence)
+    assert {r["model_id"]: r["result"] for r in report["roster"]} == {
+        "keyless/served": "not_reachable",
+        "keyless/missing": "model_not_registered",
+        "absent/other": "not_configured",
+    }
+    assert report["roster_coverage"]["configured_provider_matches"] == 2
+
+
 def test_assumed_free_screen_records_capacity_evidence(tmp_path):
     evidence = replace(
         snapshot(),
@@ -868,6 +943,24 @@ def test_route_scoped_403_does_not_skip_its_pool(tmp_path):
     )
     assert probed(calls) == ["bad/one", "bad/two"]
     assert results(report)["bad/two"] == "pass"
+
+
+def test_named_http_402_does_not_skip_its_sibling(tmp_path):
+    calls = []
+    refusal = ProbeExchange(http_status=402, ok=False, detail="model bad/one requires credits")
+    report = screen_inventory(
+        tmp_path,
+        calls,
+        [("bad/one", 1, 200_000, True), ("bad/two", 1, 200_000, True)],
+        transport=_refusing(calls, {"bad/one": refusal}),
+        max_routes=2,
+        max_per_pool=2,
+    )
+    assert probed(calls) == ["bad/one", "bad/two"]
+    assert results(report)["bad/two"] == "pass"
+    entry = HealthCache(tmp_path / "health.json").entry("bad/one")
+    assert entry is not None and entry.failure_scope == "route"
+    assert entry.capacity_evidence == "billing_402_metered"
 
 
 def test_route_scoped_402_does_not_skip_its_pool(tmp_path):
