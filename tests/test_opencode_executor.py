@@ -40,19 +40,14 @@ def make_fake_opencode(tmp_path: Path, body: str) -> str:
     """Write an executable fake opencode Python script; return its path."""
     script = tmp_path / "fake-opencode"
     script.write_text(
-        "#!/usr/bin/env python3\n"
-        "import sys, json, os, time\n"
-        + textwrap.dedent(body)
+        "#!/usr/bin/env python3\nimport sys, json, os, time\n" + textwrap.dedent(body)
     )
     script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return str(script)
 
 
 def run_executor(
-    executor: OpenCodeExecutor,
-    prompt: str,
-    cwd: Path,
-    timeout: float = 10.0,
+    executor: OpenCodeExecutor, prompt: str, cwd: Path, timeout: float = 10.0
 ) -> object:
     return asyncio.run(executor.run(prompt, route_id=ROUTE, cwd=cwd, timeout_seconds=timeout))
 
@@ -321,10 +316,7 @@ def test_opencode_executor_success(tmp_path: Path) -> None:
     payload = ndjson_success("feature implemented")
     fake = make_fake_opencode(
         tmp_path,
-        f"import sys\n"
-        f"sys.stdout.write({payload!r})\n"
-        f"sys.stdout.write('\\n')\n"
-        f"sys.exit(0)\n",
+        f"import sys\nsys.stdout.write({payload!r})\nsys.stdout.write('\\n')\nsys.exit(0)\n",
     )
     cwd = tmp_path / "work"
     cwd.mkdir()
@@ -339,12 +331,7 @@ def test_opencode_executor_success(tmp_path: Path) -> None:
 
 def test_opencode_executor_nonzero_exit_gives_failure(tmp_path: Path) -> None:
     """Non-zero exit → ok=False regardless of stdout content."""
-    fake = make_fake_opencode(
-        tmp_path,
-        "import sys\n"
-        "sys.stdout.write('{}\\n')\n"
-        "sys.exit(1)\n",
-    )
+    fake = make_fake_opencode(tmp_path, "import sys\nsys.stdout.write('{}\\n')\nsys.exit(1)\n")
     cwd = tmp_path / "work"
     cwd.mkdir()
     executor = OpenCodeExecutor(opencode_bin=fake)
@@ -385,8 +372,7 @@ def test_opencode_executor_sets_isolation_env_vars(tmp_path: Path) -> None:
     cwd = tmp_path / "work"
     cwd.mkdir()
     executor = OpenCodeExecutor(
-        opencode_bin=fake,
-        env={"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "")},
+        opencode_bin=fake, env={"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "")}
     )
     run_executor(executor, "env test", cwd)
     child_env = json.loads(capture.read_text())
@@ -612,10 +598,7 @@ def test_opencode_unit_executor_error_on_nonzero_exit(tmp_path: Path) -> None:
     from verdict.patch_executor import PatchExecutorConfig
     from verdict.work_unit import WorkUnit
 
-    fake = make_fake_opencode(
-        tmp_path,
-        "import sys\nsys.exit(1)\n",
-    )
+    fake = make_fake_opencode(tmp_path, "import sys\nsys.exit(1)\n")
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
@@ -634,9 +617,7 @@ def test_opencode_unit_executor_error_on_nonzero_exit(tmp_path: Path) -> None:
     assert attempt.unit_id == "u2"
 
 
-def test_opencode_unit_executor_has_patch_executor_compatible_interface(
-    tmp_path: Path,
-) -> None:
+def test_opencode_unit_executor_has_patch_executor_compatible_interface(tmp_path: Path) -> None:
     """OpenCodeUnitExecutor satisfies the PatchExecutor-like interface."""
     from verdict.autodev_run import OpenCodeUnitExecutor
     from verdict.patch_executor import PatchExecutorConfig

@@ -788,12 +788,7 @@ def _doctor_opencode_version(diag: DoctorDiagnostics) -> None:
         return
 
     try:
-        result = subprocess.run(
-            [binary, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        result = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10)
         version_line = (result.stdout or result.stderr or "").strip().splitlines()
         installed = version_line[0].strip() if version_line else ""
         # OpenCode outputs "2.3.2" or "opencode 2.3.2"; extract the version number.

@@ -53,9 +53,7 @@ from verdict.execution_packet import ExecutionPacket, capture_source_binding
 from verdict.orchestration.executor_opencode import (
     SERVE_BASE_URL_DEFAULT as _OC_SERVE_BASE_URL_DEFAULT,
 )
-from verdict.orchestration.executor_opencode import (
-    OpenCodeExecutor,
-)
+from verdict.orchestration.executor_opencode import OpenCodeExecutor
 from verdict.outcome_records import build_attempt_record, write_attempt_record
 from verdict.patch_executor import (
     DEFAULT_BASE_URL,
@@ -93,8 +91,7 @@ class _UnitExecutorLike(Protocol):
     config: PatchExecutorConfig
     response_headers: dict[str, str]
 
-    def execute_unit(self, unit: WorkUnit) -> PatchAttempt:
-        ...
+    def execute_unit(self, unit: WorkUnit) -> PatchAttempt: ...
 
 
 class OpenCodeUnitExecutor:
@@ -2824,9 +2821,7 @@ def run_autodev(
         if not isinstance(executor, OpenCodeUnitExecutor) and executor.config.base_url.rstrip(
             "/"
         ) != selected_route.gateway.rstrip("/"):
-            raise AutodevError(
-                "autodev: injected executor gateway does not match BOD-104 decision"
-            )
+            raise AutodevError("autodev: injected executor gateway does not match BOD-104 decision")
     if decomposer is not None:
         _assert_exact_model(
             decomposer.config.model, selected_route.model, surface="autodev orchestrator"
@@ -2868,9 +2863,7 @@ def run_autodev(
             executor = OpenCodeUnitExecutor(
                 repo,
                 PatchExecutorConfig(
-                    model=executor_model,
-                    base_url=_OC_SERVE_BASE_URL_DEFAULT,
-                    timeout_seconds=900.0,
+                    model=executor_model, base_url=_OC_SERVE_BASE_URL_DEFAULT, timeout_seconds=900.0
                 ),
                 opencode_executor,
             )

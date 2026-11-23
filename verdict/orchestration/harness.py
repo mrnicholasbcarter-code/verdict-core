@@ -331,15 +331,10 @@ DEFAULT_REGISTRY.register(
     executor_label="prime-headless",
 )
 DEFAULT_REGISTRY.register(
-    DirectGatewayAdapter(),
-    executor_class=DirectGatewayExecutor,
-    executor_label="direct-gateway",
+    DirectGatewayAdapter(), executor_class=DirectGatewayExecutor, executor_label="direct-gateway"
 )
 DEFAULT_REGISTRY.register(
-    OpenCodeAdapter(),
-    default=True,
-    executor_class=OpenCodeExecutor,
-    executor_label="opencode",
+    OpenCodeAdapter(), default=True, executor_class=OpenCodeExecutor, executor_label="opencode"
 )
 # Wrapper labels so run.py's receipt table can be fully delegated to the registry.
 DEFAULT_REGISTRY._executor_labels[FaultInjectingExecutor] = "fault-injecting"

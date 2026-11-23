@@ -40,11 +40,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from verdict.orchestration.contracts import (
-    LOCAL_EXECUTOR_ORIGIN,
-    AttemptUsage,
-    WorkerTerminal,
-)
+from verdict.orchestration.contracts import LOCAL_EXECUTOR_ORIGIN, AttemptUsage, WorkerTerminal
 from verdict.orchestration.executors import idle_output_seconds_from_env
 
 __all__ = ["PINNED_VERSION", "OpenCodeExecutor"]
@@ -121,12 +117,7 @@ def _opencode_binary(env: dict[str, str] | None = None) -> str:
 
 
 def _write_attempt_config(
-    config_dir: Path,
-    *,
-    route_id: str,
-    serve_base_url: str,
-    api_key_env: str,
-    cwd: Path,
+    config_dir: Path, *, route_id: str, serve_base_url: str, api_key_env: str, cwd: Path
 ) -> None:
     """Write a minimal per-attempt opencode.json to ``config_dir`` (Task 2.3).
 
@@ -160,12 +151,7 @@ def _write_attempt_config(
                 # Worker marker — lets serve relay enable route pinning for
                 # this request without a global env override.
                 "headers": {"X-Verdict-Worker": "opencode"},
-                "models": {
-                    route_id: {
-                        "name": route_id,
-                        "capabilities": {"tools": True},
-                    }
-                },
+                "models": {route_id: {"name": route_id, "capabilities": {"tools": True}}},
             }
         },
         # Restrict edits to the node worktree (ADR-053 Decision 4).
@@ -388,26 +374,18 @@ class OpenCodeExecutor:
         return _opencode_binary(self._base_env())
 
     async def run(
-        self,
-        prompt: str,
-        *,
-        route_id: str,
-        cwd: Path,
-        timeout_seconds: float,
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
         """Run one task.  Never raises; always returns a terminal."""
-        terminal = await self._run(prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds)
+        terminal = await self._run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
         if not terminal.harness:
             terminal = replace(terminal, harness="opencode")
         return terminal
 
     async def _run(
-        self,
-        prompt: str,
-        *,
-        route_id: str,
-        cwd: Path,
-        timeout_seconds: float,
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
         started = time.monotonic()
 
@@ -532,9 +510,7 @@ class OpenCodeExecutor:
             attempt_tmp.cleanup()
 
     async def _collect(
-        self,
-        proc: asyncio.subprocess.Process,
-        timeout_seconds: float,
+        self, proc: asyncio.subprocess.Process, timeout_seconds: float
     ) -> tuple[bytes, bytes, str]:
         """Collect both pipes with timeout and idle-output stall kill.
 
