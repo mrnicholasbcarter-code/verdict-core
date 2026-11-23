@@ -13,14 +13,6 @@ from typing import Any
 import pytest
 
 from verdict.admission import RuntimeEvidence, admit
-
-
-# CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
-@pytest.fixture(autouse=True)
-def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
-    billing_overlay_subscription(
-        [("cc", "oauth"), ("kr", "oauth"), ("cx", "oauth"), ("ag", "oauth"), ("gh", "oauth"), ("agy", "oauth")]
-    )
 from verdict.capacity import CapacityClass, classify_route_capacity
 from verdict.decision_signals.advisory import advise_order
 from verdict.metadata.mapping import IdentityMap
@@ -40,6 +32,22 @@ from verdict.role_selection import (
     RoleNotEnabledError,
     build_ladder,
 )
+
+
+# CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription(
+        [
+            ("cc", "oauth"),
+            ("kr", "oauth"),
+            ("cx", "oauth"),
+            ("ag", "oauth"),
+            ("gh", "oauth"),
+            ("agy", "oauth"),
+        ]
+    )
+
 
 # =============================================================================
 # Fixtures
@@ -1093,9 +1101,7 @@ class TestProvenanceFlags:
 
 
 def _run_cli(
-    tmp_path: Path,
-    fixture: dict[str, Any],
-    overlay_providers: list[tuple[str, str]] | None = None,
+    tmp_path: Path, fixture: dict[str, Any], overlay_providers: list[tuple[str, str]] | None = None
 ) -> Any:
     """Run the verdict ladder CLI against a fixture JSON file.
 
@@ -1113,12 +1119,19 @@ def _run_cli(
     if overlay_providers:
         vh.mkdir(parents=True, exist_ok=True)
         (vh / "connection_billing_overlay.json").write_text(
-            json.dumps({
-                "entries": [
-                    {"provider": p, "authType": a, "billing": "subscription", "overage": "hard-stop"}
-                    for (p, a) in overlay_providers
-                ]
-            })
+            json.dumps(
+                {
+                    "entries": [
+                        {
+                            "provider": p,
+                            "authType": a,
+                            "billing": "subscription",
+                            "overage": "hard-stop",
+                        }
+                        for (p, a) in overlay_providers
+                    ]
+                }
+            )
         )
     env = {**os.environ, "VERDICT_HOME": str(vh), "VERDICT_PLAIN": "1"}
     return subprocess.run(

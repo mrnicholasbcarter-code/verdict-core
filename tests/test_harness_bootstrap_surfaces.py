@@ -28,8 +28,6 @@ ORIGINAL_DEPENDENCIES = PrimeReadAdapter.dependencies
 
 @pytest.fixture
 def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    import json as _json
-
     monkeypatch.setenv("HOME", str(tmp_path))
     vh = tmp_path / "verdict"
     monkeypatch.setenv("VERDICT_HOME", str(vh))
@@ -68,9 +66,18 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     store.health_cache.parent.mkdir()
     # CP2 removed oauth → SUBSCRIPTION; write billing overlay so cc/oauth → SUBSCRIPTION.
     (store.health_cache.parent / "connection_billing_overlay.json").write_text(
-        json.dumps({
-            "entries": [{"provider": "cc", "authType": "oauth", "billing": "subscription", "overage": "hard-stop"}]
-        })
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "provider": "cc",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    }
+                ]
+            }
+        )
     )
     store.health_cache.write_text(
         json.dumps(

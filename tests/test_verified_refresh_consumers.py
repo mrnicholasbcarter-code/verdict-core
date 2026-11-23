@@ -538,11 +538,18 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Write billing overlay for cc/oauth → subscription.
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "connection_billing_overlay.json").write_text(
-        _json.dumps({
-            "entries": [
-                {"provider": "cc", "authType": "oauth", "billing": "subscription", "overage": "hard-stop"},
-            ]
-        })
+        _json.dumps(
+            {
+                "entries": [
+                    {
+                        "provider": "cc",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    }
+                ]
+            }
+        )
     )
     return tmp_path
 

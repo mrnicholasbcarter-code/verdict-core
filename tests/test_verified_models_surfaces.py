@@ -64,12 +64,24 @@ def offline_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     billing_home = tmp_path.parent / (tmp_path.name + "_vh")
     billing_home.mkdir(parents=True, exist_ok=True)
     (billing_home / "connection_billing_overlay.json").write_text(
-        json.dumps({
-            "entries": [
-                {"provider": "cc", "authType": "oauth", "billing": "subscription", "overage": "hard-stop"},
-                {"provider": "kr", "authType": "oauth", "billing": "subscription", "overage": "hard-stop"},
-            ]
-        })
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "provider": "cc",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    },
+                    {
+                        "provider": "kr",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    },
+                ]
+            }
+        )
     )
 
     for name in (

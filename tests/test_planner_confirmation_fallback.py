@@ -9,20 +9,19 @@ from pathlib import Path
 
 import pytest
 
-import pytest
-
 from tests.test_orch_eligibility import NOW, FakeProbe, conn, row
+from verdict.admission import RuntimeEvidence, admit
+from verdict.orchestration.contracts import TaskRequirements
+from verdict.orchestration.eligibility import EligibilityLadder
+from verdict.orchestration.health_cache import HealthCache, ProbeResult
+from verdict.subagent_selection import HealthResult
 
 
 # CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
 @pytest.fixture(autouse=True)
 def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
     billing_overlay_subscription([("acold", "oauth"), ("freemodel-dev", "oauth")])
-from verdict.admission import RuntimeEvidence, admit
-from verdict.orchestration.contracts import TaskRequirements
-from verdict.orchestration.eligibility import EligibilityLadder
-from verdict.orchestration.health_cache import HealthCache, ProbeResult
-from verdict.subagent_selection import HealthResult
+
 
 FREE = "fmd/gpt-6-astra"
 SUB = "codex/gpt-5.5"

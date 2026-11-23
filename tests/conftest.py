@@ -3,8 +3,9 @@
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 from starlette.testclient import TestClient
@@ -331,12 +332,7 @@ def billing_overlay_subscription() -> Callable[[list[tuple[str, str]]], None]:
         home.mkdir(parents=True, exist_ok=True)
         path = home / "connection_billing_overlay.json"
         entries = [
-            {
-                "provider": p,
-                "authType": a,
-                "billing": "subscription",
-                "overage": "hard-stop",
-            }
+            {"provider": p, "authType": a, "billing": "subscription", "overage": "hard-stop"}
             for (p, a) in providers
         ]
         path.write_text(json.dumps({"entries": entries}))
