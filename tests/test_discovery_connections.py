@@ -68,11 +68,11 @@ def test_free_summary_preserves_explicit_false_and_discontinued_metadata():
 
 
 def test_cached_free_summary_applies_only_to_matching_fresh_gateway(tmp_path):
-    from datetime import UTC, datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     from verdict.free_tier_admit import annotate_cached_free_tier
 
-    now = datetime(2026, 1, 1, tzinfo=UTC)
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     origin = "http://127.0.0.1:20128"
     path = tmp_path / "admit-last-good.json"
     path.write_text(
@@ -142,7 +142,7 @@ def test_model_list_price_does_not_override_gateway_free_fact():
 
 
 def test_funnel_separates_one_time_from_recurring_supply():
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
 
     from verdict.discovery_funnel import build_funnel
 
@@ -173,7 +173,7 @@ def test_funnel_separates_one_time_from_recurring_supply():
         identify_report=report,
         health_cache=None,
         admission=None,
-        now=datetime(2026, 1, 1, tzinfo=UTC),
+        now=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )["stages"]
     assert stages["free_by_fact"]["count"] == 3
     assert stages["free_supply_by_type"] == {"one_time_initial": 1, "recurring": 1, "unknown": 1}
