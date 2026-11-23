@@ -67,8 +67,7 @@ def gates(base: str, *, wip: bool) -> list[Gate]:
             ("npx", "--yes", OPENSPEC, "validate", "--all", "--strict", "--no-interactive"),
         ),
         Gate(
-            "vendored OpenSpec validator",
-            (py, "scripts/check_openspec_vendor.py", "--base", base),
+            "vendored OpenSpec validator", (py, "scripts/check_openspec_vendor.py", "--base", base)
         ),
         Gate("open OpenSpec tasks", tuple(tasks)),
     ]
