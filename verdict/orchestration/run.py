@@ -432,6 +432,51 @@ async def plan_with_failover(
                 pass
 
     task_family = fingerprint_task(goal).task_family
+
+    # ADR-051: compute planner band from inventory before the selection loop so
+    # every attempt is band-filtered, not just failover attempts.  Uses
+    # evaluate() (non-probing full inventory) when the selector supports it; if
+    # not (e.g. in tests that only implement select()), fall back to no band
+    # filtering and keep the tier cap as a floor.
+    _non_band_routes: frozenset[str] = frozenset()
+    _band_active = False
+    _orch_band: Any = None
+    try:
+        from verdict.planner_band import _strip_suffix as _pb_strip
+        from verdict.planner_band import compute_planner_bands, load_planner_band_config
+
+        _pb_config = load_planner_band_config()
+        try:
+            from verdict.metadata.store import load_store as _pb_load
+
+            _pb_meta: Any = _pb_load()
+        except Exception:
+            _pb_meta = None
+
+        _eval_fn = getattr(selector, "evaluate", None)
+        if callable(_eval_fn):
+            _inv_req = TaskRequirements(
+                required_capabilities=PLANNER_REQUIRED_CAPABILITIES,
+                coding=True,
+                reasoning=True,
+                frontier_worthy=True,
+                min_context_tokens=PLANNER_MIN_CONTEXT_TOKENS,
+                task_family=task_family,
+                role_ordering="strongest_first",
+                arena_role="planner",
+            )
+            _pb_verdicts = _eval_fn(_inv_req, now=now())
+            _pb_routes = [str(v.route_id) for v in _pb_verdicts if "/" in str(v.route_id)]
+            _orch_band = compute_planner_bands(
+                _pb_routes, _pb_meta, None, config=_pb_config, now=now()
+            )
+            _pb_keys = _orch_band.frontier_model_keys | _orch_band.fallback_model_keys
+            if _pb_keys:
+                _non_band_routes = frozenset(r for r in _pb_routes if _pb_strip(r) not in _pb_keys)
+                _band_active = True
+    except Exception:
+        pass  # graceful degradation: fall back to tier cap
+
     tried: set[str] = set()
     tried_pools: set[str] = set()
     last = ""
@@ -443,9 +488,9 @@ async def plan_with_failover(
             reasoning=True,
             frontier_worthy=True,
             min_context_tokens=PLANNER_MIN_CONTEXT_TOKENS,
-            exclude_routes=frozenset(tried),
+            exclude_routes=frozenset(tried) | _non_band_routes,
             exclude_pools=frozenset(tried_pools),
-            max_capability_tier=PLANNER_MAX_CAPABILITY_TIER,
+            max_capability_tier=PLANNER_MAX_CAPABILITY_TIER if not _band_active else 3,
             task_family=task_family,
             role_ordering="strongest_first",
             arena_role="planner",
@@ -454,12 +499,29 @@ async def plan_with_failover(
         if choice is None:
             hint = missing_proof_hint(considered)
             break
+        # Build a band record for this planner choice (Decision 7, ADR-051).
+        _pb_band_record: dict[str, Any] | None = None
+        if _orch_band is not None and _band_active:
+            _rk = _pb_strip(str(choice.route_id))
+            _in_f = _rk in _orch_band.frontier_model_keys
+            _in_b = _rk in _orch_band.fallback_model_keys
+            _pb_band_record = {
+                "required": "frontier",
+                "used": "frontier" if _in_f else ("fallback" if _in_b else "none"),
+                "rank": _orch_band.model_ranks.get(_rk),
+                "rated_models": _orch_band.rated_models,
+                "cutoff": _orch_band.cutoff_frontier if _in_f else _orch_band.cutoff_fallback,
+                "rating": _orch_band.model_scores.get(_rk),
+                "metric": "aa_intelligence",
+                "fetched_at": _orch_band.fetched_at,
+            }
         events.emit(
             "plan_started",
             route_id=choice.route_id,
             provider=choice.provider,
             capacity_class=choice.capacity_class.value,
             max_capability_tier=requirements.max_capability_tier,
+            planner_band=_pb_band_record,
             selection_reason=choice.reason,
             attempt=attempt,
         )

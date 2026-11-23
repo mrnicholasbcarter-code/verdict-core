@@ -419,20 +419,17 @@ def _screen(routes, **extra):
     }
 
 
-def test_preflight_argv_asks_for_planner_tier(tmp_path, monkeypatch):
-    """Catches the preflight screening tiers the planner can never admit."""
+def test_preflight_argv_bounded_route_budget(tmp_path, monkeypatch):
+    """Preflight spend is bounded by --max-routes; tier cap absent after ADR-051."""
     import pytest
-
-    from verdict.orchestration.contracts import PLANNER_MAX_CAPABILITY_TIER
 
     script, seen = _preflight_only(tmp_path, monkeypatch, _screen([ELIGIBLE_PASS]))
     with pytest.raises(ValueError):
         script.run()
     argv = seen["preflight"][0]
-    assert argv[argv.index("--max-capability-tier") + 1] == str(PLANNER_MAX_CAPABILITY_TIER) == "2"
-    # Bounded spend: the cap reaches the screen, and every probed route costs at
-    # most AGENTIC_TURNS requests (caps do not matter for free capacity,
-    # operator 2026-11-05, but the probe set stays bounded).
+    # ADR-051: band filters planners at runtime; preflight no longer passes a tier cap.
+    assert "--max-capability-tier" not in argv
+    # Bounded spend: every probed route costs at most AGENTIC_TURNS requests.
     from verdict.prove_at_rest import AGENTIC_TURNS
 
     assert argv[argv.index("--max-routes") + 1] == str(script.PREFLIGHT_MAX_ROUTES) == "30"
@@ -446,20 +443,19 @@ def _bad(**overrides):
 @pytest.mark.parametrize(
     "rows",
     [
-        [_bad(capability_tier=3), _bad(route_id="cf/gemma", capability_tier=3)],
-        [_bad(capability_tier=None)],
+        # ADR-051: tier cap removed; only tools and context remain as floors.
+        # capability_tier=3 and capability_tier=None now both pass _planner_eligible.
         [_bad(supports_tools=False)],
         [_bad(context_window=32_000)],
         [_bad(context_window=None)],
-        [_bad(result="fail"), _bad(route_id="cf/gemma", capability_tier=3)],
     ],
 )
 def test_preflight_passes_the_planner_rejects_fail_closed(tmp_path, monkeypatch, rows):
-    """Catches #1067's `passed > 0` check being met by routes the planner rejects."""
+    """Catches routes that pass screening but fail planner floors (tools, context)."""
     script, seen = _preflight_only(tmp_path, monkeypatch, _screen(rows))
     with pytest.raises(
         script.RehearsalConfigurationError,
-        match=r"no planner-eligible FREE routes \(tier<=2, tools, 100k context\)",
+        match=r"no planner-eligible FREE routes \(tools, 100k context\)",
     ):
         script.run()
     assert seen["orchestrate"] == []
@@ -467,6 +463,26 @@ def test_preflight_passes_the_planner_rejects_fail_closed(tmp_path, monkeypatch,
     assert data["stage"] == "preflight"
     assert data["preflight"]["planner_eligible_passed"] == 0
     assert data["preflight"]["metadata_error"] == "metadata_unavailable"
+
+
+def test_preflight_insufficient_pools_fails_before_rehearsal(tmp_path, monkeypatch):
+    """One pool of planner-eligible routes fails the two-pool floor (D2, 2026-11-19).
+
+    After ADR-051 the tier cap is gone, so a tier-3 route now passes
+    _planner_eligible.  This test verifies that one eligible pool is still
+    insufficient even when tier is not the gating factor.
+    """
+    rows = [_bad(result="fail"), _bad(route_id="cf/gemma", capability_tier=3)]
+    script, seen = _preflight_only(tmp_path, monkeypatch, _screen(rows))
+    with pytest.raises(
+        script.RehearsalConfigurationError,
+        match=r"1 backend pool\(s\); 2 are required",
+    ):
+        script.run()
+    assert seen["orchestrate"] == []
+    data = json.loads((tmp_path / "certification-failure.json").read_text())
+    assert data["stage"] == "preflight"
+    assert data["preflight"]["planner_eligible_passed"] == 1
 
 
 def _rehearsal_with_run_file(tmp_path, monkeypatch, leak):
