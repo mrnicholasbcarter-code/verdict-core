@@ -434,3 +434,21 @@ weakened test. Reversible.
   * Verdict builds the pipeline itself, through orchestrate.
 * **Process:** agreed over three rounds of researched options.
 * **Record:** [ADR-052](../adr/ADR-052-github-issue-to-ready-pr.md), `openspec/changes/verdict-deliver/`. Not implemented yet.
+
+## D38: OpenCode becomes the default worker executor; autodev adds it as the model-tier coding rung (operator, 2026-11-23; ADR-053, accepted)
+
+* **Decision:** OpenCode (v2.3.2) becomes the DEFAULT worker executor for `verdict orchestrate`
+  as soon as the adapter merges. Workers' model calls go through `verdict serve` (:8000), never
+  direct to OmniRoute; the relay pins the chosen route and records the attempt. OpenCode is added
+  as the coding executor for model-tier units in `verdict autodev`; PatchExecutor is kept for
+  mechanical units. Workers run with per-attempt isolated config (`OPENCODE_CONFIG` pointing at a
+  temp directory, `--standalone`) and may edit only inside their node worktree; shell commands are
+  NOT restricted to an allow-list (operator's explicit choice). Verdict enforces owned files
+  afterwards and runs node verification and repo gates itself. OpenCode is pinned at v2.3.2;
+  `verdict doctor` warns on version mismatch; any upgrade must pass the adapter's live check.
+  Existing bounds apply (900 s timeout, idle-output stall kill, 4-attempt-per-node budget); no
+  new token cap. Build order: adapter first, then #1269 (deliver), then #1276 and #1274.
+* **Process:** agreed over two rounds of researched options.
+* **Amends:** ADR-041 default worker executor.
+* **Record:** [ADR-053](../adr/ADR-053-opencode-worker-adapter.md),
+  `openspec/changes/opencode-worker-adapter/`. Not implemented yet.
