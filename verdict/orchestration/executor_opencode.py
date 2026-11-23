@@ -355,29 +355,42 @@ def _parse_ndjson_output(stdout: str) -> dict[str, Any]:
 
 
 async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
-    """SIGTERM the process group; escalate to SIGKILL after a grace period."""
-    pgid: int | None
+    """SIGTERM the process group; always escalate to SIGKILL after the grace period.
+
+    A direct child that exits within the grace period does not guarantee the
+    process group is empty: a descendant that ignores SIGTERM and redirects its
+    pipes can survive and keep editing the worktree.  Sending SIGKILL to the
+    recorded process group unconditionally after the grace period closes this
+    gap, whether or not the leader is still alive.
+
+    The subprocess is always started with ``start_new_session=True``, which
+    makes it both session leader and process group leader, so its PID equals
+    its initial process group ID.  When the leader has already been reaped
+    ``os.getpgid(proc.pid)`` raises ``ProcessLookupError``, but the process
+    group itself persists as long as any member (e.g. a grandchild) is alive.
+    Using ``proc.pid`` as the fallback pgid keeps the killpg call reachable.
+    """
     try:
-        pgid = os.getpgid(proc.pid)
+        pgid: int = os.getpgid(proc.pid)
     except (ProcessLookupError, OSError):
-        pgid = None
+        # Leader reaped; proc.pid was the pgid at spawn (start_new_session=True).
+        pgid = proc.pid
 
     def _signal(sig: signal.Signals) -> None:
-        try:
-            if pgid is not None:
-                os.killpg(pgid, sig)
-            else:
-                proc.send_signal(sig)
-        except (ProcessLookupError, OSError):
-            pass
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.killpg(pgid, sig)
 
     _signal(signal.SIGTERM)
     try:
         await asyncio.wait_for(proc.wait(), timeout=_TERM_GRACE_SECONDS)
     except asyncio.TimeoutError:
+        pass
+    finally:
+        # Always killpg after the grace period to clean up surviving descendants.
         _signal(signal.SIGKILL)
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(proc.wait(), timeout=_TERM_GRACE_SECONDS)
+        if proc.returncode is None:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=_TERM_GRACE_SECONDS)
 
 
 class OpenCodeExecutor:

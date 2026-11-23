@@ -1452,19 +1452,8 @@ def test_cmd_autodev_without_pin_uses_selected_route(
             base_url=config.base_url,
         )
 
-    def opencode_unit_executor_factory(repo_path: Path, config: Any, opencode_exec: Any) -> Any:
-        # ADR-053: OpenCode is now the default executor; capture its PatchExecutorConfig.
-        configs["executor"] = config
-        return _executor(
-            repo_path,
-            {"a.py": A_DIFF, "b.py": ESCAPING_DIFF},
-            model=config.model,
-            base_url=config.base_url,
-        )
-
     monkeypatch.setattr(autodev, "Decomposer", decomposer_factory)
     monkeypatch.setattr(autodev, "PatchExecutor", executor_factory)
-    monkeypatch.setattr(autodev, "OpenCodeUnitExecutor", opencode_unit_executor_factory)
 
     cli.cmd_autodev(
         "fix ruff errors",
@@ -1495,8 +1484,7 @@ def test_cmd_autodev_without_pin_uses_selected_route(
     assert calls["api_key"] == "fake-key"
     assert configs["executor"].model == selected
     assert configs["decomposer"].model == selected
-    # ADR-053: OpenCode routes through the local verdict serve, not the OmniRoute gateway.
-    assert configs["executor"].base_url == autodev._OC_SERVE_BASE_URL_DEFAULT
+    assert configs["executor"].base_url == GATEWAY
 
 
 def test_prepare_live_autodev_selected_drops_route_whose_probe_raises_http_error(

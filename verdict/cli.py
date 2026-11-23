@@ -1692,14 +1692,6 @@ def cmd_autodev(
             )
         return
 
-    # ADR-053 Decision 2: OpenCode is the default worker executor for
-    # model-tier autodev units.  Build it here so the production caller
-    # passes the executor explicitly rather than relying on the injection
-    # path being triggered only from tests.
-    from verdict.orchestration.executor_opencode import OpenCodeExecutor as _OpenCodeExecutor
-
-    opencode_exec: _OpenCodeExecutor | None = _OpenCodeExecutor()
-
     try:
         report = run_autodev(
             objective,
@@ -1715,7 +1707,6 @@ def cmd_autodev(
             probe_dropped=probe_dropped,
             retry_routes=selected_candidates,
             pinned_capacity_class=pinned_capacity_class,
-            opencode_executor=opencode_exec,
         )
     except DecompositionError as exc:
         # A decomposition that cannot state its own checks is a reportable

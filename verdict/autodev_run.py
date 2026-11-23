@@ -21,7 +21,6 @@ provider omitted usage are counted separately rather than estimated.
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 import errno
 import hashlib
@@ -36,7 +35,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 from verdict.candidate_pool import LIVE_PROBE_MAX_AGE_SECONDS, CandidatePoolError
 from verdict.context_inject import ContextOutputPolicy
@@ -50,11 +49,6 @@ from verdict.context_pack import (
 )
 from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionResult
 from verdict.execution_packet import ExecutionPacket, capture_source_binding
-from verdict.orchestration.executor_opencode import PINNED_VERSION as _OC_PINNED_VERSION
-from verdict.orchestration.executor_opencode import (
-    SERVE_BASE_URL_DEFAULT as _OC_SERVE_BASE_URL_DEFAULT,
-)
-from verdict.orchestration.executor_opencode import OpenCodeExecutor
 from verdict.outcome_records import build_attempt_record, write_attempt_record
 from verdict.patch_executor import (
     DEFAULT_BASE_URL,
@@ -79,94 +73,6 @@ from verdict.work_unit import WorkUnit, normalize_owned_path
 # Compatibility constant for legacy reporting only. Automatic launch paths do
 # not use a default: they require a concrete execution-path authority selected route.
 DEFAULT_EXECUTOR_MODEL = "unresolved/executor"
-
-
-class _UnitExecutorLike(Protocol):
-    """Structural interface shared by PatchExecutor and OpenCodeUnitExecutor.
-
-    Both types carry a PatchExecutorConfig (for model/temperature/max_tokens
-    access in BOD-437 lineage records), a response_headers dict (for
-    x-omniroute-* served-model checks), and an execute_unit method.
-    """
-
-    config: PatchExecutorConfig
-    response_headers: dict[str, str]
-
-    def execute_unit(self, unit: WorkUnit) -> PatchAttempt: ...
-
-
-class OpenCodeUnitExecutor:
-    """Adapts OpenCodeExecutor to the PatchExecutor-compatible interface.
-
-    Model-tier units call execute_unit(), which launches the OpenCode
-    subprocess, waits for it to finish, and returns a PatchAttempt.
-    OpenCode edits the working tree directly; Verdict's post-attempt
-    owned-files check and verification step run after execute_unit returns.
-
-    ``response_headers`` is always empty: OpenCode routes through verdict
-    serve (:8000) rather than OmniRoute (:20128) directly, so no
-    x-omniroute-* headers appear.  ``fatal_identity_mismatch`` returns
-    False for a None served value, so the mismatch check in
-    ``_run_unit_once`` is a no-op for this executor.
-    """
-
-    def __init__(
-        self,
-        repo_root: Path | str,
-        config: PatchExecutorConfig,
-        opencode_executor: OpenCodeExecutor,
-    ) -> None:
-        if not (Path(repo_root).resolve() / ".git").exists():
-            raise AutodevError(f"not a git repository: {repo_root}")
-        self.repo_root = Path(repo_root).resolve()
-        self.config = config
-        self._executor = opencode_executor
-        self.response_headers: dict[str, str] = {}
-
-    def execute_unit(self, unit: WorkUnit) -> PatchAttempt:
-        """Run one unit via OpenCode. Returns applied=True on exit 0.
-
-        Builds a prompt from unit.objective and unit.context, then calls
-        OpenCodeExecutor.run() synchronously via asyncio.run().  OpenCode
-        edits the working tree; this executor returns outcome="applied"
-        on exit 0 and outcome="error" otherwise.
-        """
-        prompt = unit.objective
-        if unit.context:
-            prompt = f"{unit.objective}\n\nContext:\n{unit.context}"
-
-        started = time.monotonic()
-        terminal = asyncio.run(
-            self._executor.run(
-                prompt,
-                route_id=self.config.model,
-                cwd=self.repo_root,
-                timeout_seconds=self.config.timeout_seconds,
-            )
-        )
-        latency_ms = int((time.monotonic() - started) * 1000)
-
-        usage = TokenUsage()
-        if terminal.usage is not None:
-            usage = TokenUsage(
-                prompt_tokens=terminal.usage.input_tokens or 0,
-                completion_tokens=terminal.usage.output_tokens or 0,
-                reported=True,
-            )
-
-        outcome = "applied" if terminal.ok else "error"
-        reason = ""
-        if not terminal.ok:
-            reason = terminal.error or terminal.stop_reason or "exit non-zero"
-
-        return PatchAttempt(
-            unit_id=unit.unit_id,
-            model=self.config.model,
-            outcome=outcome,
-            reason=reason,
-            usage=usage,
-            latency_ms=latency_ms,
-        )
 
 
 def _resolve_default_executor_model() -> str:
@@ -1179,28 +1085,19 @@ def _classify_repair_first_error(first_error: str) -> str:
 
 
 def _executor_lineage(
-    run_id: str, decision: Any, executor: _UnitExecutorLike, unit_id: str, attempt: int
+    run_id: str, decision: Any, executor: PatchExecutor, unit_id: str, attempt: int
 ) -> dict[str, Any]:
-    """BOD-437 attempt key and sent settings for one executor turn.
-
-    OpenCodeUnitExecutor records harness identity instead of model temperature /
-    max_tokens: those PatchExecutorConfig defaults are not sent to OpenCode and
-    would be misleading in evidence records.
-    """
-    base: dict[str, Any] = {
+    """BOD-437 attempt key and sent settings for one executor turn."""
+    return {
         "run_id": run_id,
         "decision_id": decision.decision_digest,
         "node_id": unit_id,
         "attempt_id": str(attempt),
-    }
-    if isinstance(executor, OpenCodeUnitExecutor):
-        base["effective_parameters"] = {"harness": "opencode", "pinned_version": _OC_PINNED_VERSION}
-    else:
-        base["effective_parameters"] = {
+        "effective_parameters": {
             "temperature": executor.config.temperature,
             "max_tokens": executor.config.max_tokens,
-        }
-    return base
+        },
+    }
 
 
 def _record_executor_attempt(
@@ -1210,7 +1107,7 @@ def _record_executor_attempt(
     story_id: str | None,
     run_id: str,
     decision: Any,
-    executor: _UnitExecutorLike,
+    executor: PatchExecutor,
     first_attempt: int,
 ) -> int:
     """Write BOD-353 attempt record(s) for an autodev executor turn.
@@ -2799,7 +2696,7 @@ def run_autodev(
     store: ReceiptStore | None = None,
     decomposer: Decomposer | None = None,
     plan: DecompositionResult | None = None,
-    executor: _UnitExecutorLike | None = None,
+    executor: PatchExecutor | None = None,
     evidence: str = "",
     probe_dropped: Sequence[Mapping[str, str]] = (),
     mechanical: bool = True,
@@ -2807,7 +2704,6 @@ def run_autodev(
     retry_routes: Sequence[Mapping[str, Any]] | None = None,
     retry_executor_factory: Callable[[Mapping[str, Any]], PatchExecutor] | None = None,
     pinned_capacity_class: str = "",
-    opencode_executor: OpenCodeExecutor | None = None,
 ) -> AutodevReport:
     """Decompose ``objective``, execute each unit, verify it, and record it."""
     # execution-path authority is the only strategy/route authority for automatic worker launch.
@@ -2825,12 +2721,7 @@ def run_autodev(
     base_url = selected_route.gateway
     if executor is not None:
         _assert_exact_model(executor.config.model, selected_route.model, surface="autodev executor")
-        # OpenCodeUnitExecutor routes through verdict serve (:8000), not OmniRoute
-        # (:20128) directly.  Skip the gateway-URL check for it; route identity is
-        # enforced by serve's per-request relay pinning (Task 2.4 / ADR-053 D1).
-        if not isinstance(executor, OpenCodeUnitExecutor) and executor.config.base_url.rstrip(
-            "/"
-        ) != selected_route.gateway.rstrip("/"):
+        if executor.config.base_url.rstrip("/") != selected_route.gateway.rstrip("/"):
             raise AutodevError("autodev: injected executor gateway does not match BOD-104 decision")
     if decomposer is not None:
         _assert_exact_model(
@@ -2866,21 +2757,9 @@ def run_autodev(
             )
             raise
 
-    if executor is None:
-        if opencode_executor is not None:
-            # Use OpenCodeUnitExecutor for model-tier units.  PatchExecutor stays
-            # for mechanical units (handled inside _run_unit_once).
-            executor = OpenCodeUnitExecutor(
-                repo,
-                PatchExecutorConfig(
-                    model=executor_model, base_url=_OC_SERVE_BASE_URL_DEFAULT, timeout_seconds=900.0
-                ),
-                opencode_executor,
-            )
-        else:
-            executor = PatchExecutor(
-                repo, PatchExecutorConfig(model=executor_model, base_url=base_url, api_key=api_key)
-            )
+    executor = executor or PatchExecutor(
+        repo, PatchExecutorConfig(model=executor_model, base_url=base_url, api_key=api_key)
+    )
     ledger = store if store is not None else ReceiptStore(repo / ".verdict" / "receipts.db")
 
     # Normalize and validate the retry ladder
@@ -3179,7 +3058,7 @@ def _select_retry_route(unit: WorkUnit, ladder: Sequence[Mapping[str, Any]], obj
 
 
 def _run_unit_once(
-    unit: WorkUnit, repo: Path, executor: _UnitExecutorLike, *, mechanical: bool, runner: Any
+    unit: WorkUnit, repo: Path, executor: PatchExecutor, *, mechanical: bool, runner: Any
 ) -> tuple[UnitOutcome, bool]:
     """Try one tier and return (outcome, executor_failed).
 
@@ -3259,7 +3138,7 @@ def _run_unit_once(
 
 
 def _run_unit(
-    unit: WorkUnit, repo: Path, executor: _UnitExecutorLike, *, mechanical: bool, runner: Any
+    unit: WorkUnit, repo: Path, executor: PatchExecutor, *, mechanical: bool, runner: Any
 ) -> UnitOutcome:
     """Try the cheapest tier that can satisfy ``unit``, then verify mechanically."""
     outcome, _ = _run_unit_once(unit, repo, executor, mechanical=mechanical, runner=runner)
@@ -3450,7 +3329,6 @@ __all__ = [
     "DEFAULT_EXECUTOR_MODEL",
     "AutodevError",
     "AutodevReport",
-    "OpenCodeUnitExecutor",
     "UnitOutcome",
     "apply_shadow_canary",
     "collect_ruff_evidence",

@@ -62,10 +62,14 @@
 
 ## 5. Autodev model-tier rung
 
-- [x] 5.1 Add `OpenCodeExecutor` as the coding executor for model-tier units in
+- [ ] 5.1 Add `OpenCodeExecutor` as the coding executor for model-tier units in
       `verdict autodev` (`verdict/orchestration/autodev_run.py` or equivalent).
       PatchExecutor stays for mechanical units. Verify: an autodev model-tier unit
       uses the OpenCode executor; a mechanical unit still uses PatchExecutor.
+      **Moved to #1301 (OC2) after cross-family review (2026-11-23) found isolation
+      and retry defects: `.verdict-context.md` counted as an out-of-bounds edit,
+      no rollback on direct worktree edits, and retry falls back to PatchExecutor.
+      Autodev wiring removed from this PR; behaviourally identical to main.**
 
 ## 6. Doctor version check
 

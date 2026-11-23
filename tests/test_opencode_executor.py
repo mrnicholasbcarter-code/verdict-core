@@ -12,6 +12,7 @@ import json
 import os
 import stat
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -477,10 +478,10 @@ def test_opencode_executor_config_has_no_plaintext_key(tmp_path: Path) -> None:
         },
     )
     run_executor(executor, "key test", cwd)
-    if capture.exists():
-        config_text = capture.read_text()
-        assert "real-secret-key-xyz" not in config_text
-        assert "{env:VERDICT_WORKER_API_KEY}" in config_text
+    assert capture.exists(), "capture file not written — fake binary failed to run"
+    config_text = capture.read_text()
+    assert "real-secret-key-xyz" not in config_text
+    assert "{env:VERDICT_WORKER_API_KEY}" in config_text
 
 
 def test_opencode_executor_writes_context_file(tmp_path: Path) -> None:
@@ -544,6 +545,58 @@ def test_opencode_executor_timeout_returns_failure(tmp_path: Path) -> None:
     assert terminal.ok is False
 
 
+def test_kill_process_group_cleans_up_sigterm_ignoring_grandchild(tmp_path: Path) -> None:
+    """_kill_process_group must kill the whole process group, not just the leader.
+
+    Regression for the case where the direct child exits within the TERM grace
+    period but a grandchild that ignores SIGTERM (and holds a pipe open) survives.
+    The old code only sent SIGKILL on timeout; the fixed code always sends it.
+    """
+    capture = tmp_path / "grandchild_pid.txt"
+    # Leader: fork a SIGTERM-ignoring grandchild, wait for it to record its PID,
+    # then exit cleanly.  The grandchild holds stdout open and writes nothing —
+    # the idle timeout fires, triggering _kill_process_group.
+    fake = make_fake_opencode(
+        tmp_path,
+        f"import os, signal, pathlib\n"
+        f"pid = os.fork()\n"
+        f"if pid == 0:\n"
+        f"    # grandchild: ignore SIGTERM, write PID, loop forever\n"
+        f"    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"    pathlib.Path({str(capture)!r}).write_text(str(os.getpid()))\n"
+        f"    while True:\n"
+        f"        time.sleep(0.05)\n"
+        f"else:\n"
+        f"    # leader: wait for grandchild to record its PID, then exit\n"
+        f"    for _ in range(50):\n"
+        f"        if pathlib.Path({str(capture)!r}).exists():\n"
+        f"            break\n"
+        f"        time.sleep(0.05)\n"
+        f"    sys.exit(0)\n",
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    # idle_output_seconds=0.1: stalls quickly because leader writes nothing
+    executor = OpenCodeExecutor(opencode_bin=fake, idle_output_seconds=0.1)
+    terminal = run_executor(executor, "grandchild test", cwd, timeout=5.0)
+    assert terminal.ok is False, "expected stall/timeout result"
+    assert capture.exists(), "grandchild never ran — fake binary failed to execute"
+    grandchild_pid = int(capture.read_text().strip())
+    # Give the OS up to 0.5 s to reap the grandchild, then verify it is gone.
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(grandchild_pid, 0)  # probe: raises if gone
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    try:
+        os.kill(grandchild_pid, 0)
+        pytest.fail(f"grandchild PID {grandchild_pid} still alive after executor returned")
+    except ProcessLookupError:
+        pass  # correctly cleaned up
+
+
 def test_opencode_executor_spawn_failure_returns_terminal(tmp_path: Path) -> None:
     """A missing binary returns ok=False without raising."""
     cwd = tmp_path / "work"
@@ -572,16 +625,16 @@ def test_opencode_executor_temp_dirs_cleaned_up(tmp_path: Path) -> None:
     )
     cwd = tmp_path / "work"
     cwd.mkdir()
-    executor = OpenCodeExecutor(opencode_bin=fake, env={"HOME": str(tmp_path), "PATH": ""})
+    executor = OpenCodeExecutor(
+        opencode_bin=fake, env={"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "")}
+    )
     run_executor(executor, "cleanup test", cwd)
-    if capture.exists():
-        dirs = json.loads(capture.read_text())
-        for key, path in dirs.items():
-            parent = Path(path).parent if path else None
-            if parent and "verdict-oc-" in str(parent):
-                assert not Path(path).parent.exists(), (
-                    f"Temp dir {path!r} ({key}) was not cleaned up"
-                )
+    assert capture.exists(), "capture file not written — fake binary failed to run"
+    dirs = json.loads(capture.read_text())
+    for key, path in dirs.items():
+        parent = Path(path).parent if path else None
+        if parent and "verdict-oc-" in str(parent):
+            assert not Path(path).parent.exists(), f"Temp dir {path!r} ({key}) was not cleaned up"
 
 
 # ---------------------------------------------------------------------------
@@ -593,122 +646,3 @@ def test_pinned_version_format() -> None:
     parts = PINNED_VERSION.split(".")
     assert len(parts) == 3
     assert all(p.isdigit() for p in parts)
-
-
-# ---------------------------------------------------------------------------
-# OpenCodeUnitExecutor — Task 5.1 (autodev model-tier rung)
-# ---------------------------------------------------------------------------
-
-
-def test_opencode_unit_executor_applied_on_exit_zero(tmp_path: Path) -> None:
-    """Exit 0 → PatchAttempt.outcome == 'applied', usage populated."""
-    from verdict.autodev_run import OpenCodeUnitExecutor
-    from verdict.patch_executor import PatchExecutorConfig
-    from verdict.work_unit import WorkUnit
-
-    payload = ndjson_success("feature implemented")
-    fake = make_fake_opencode(
-        tmp_path,
-        f"import sys\nsys.stdout.write({payload!r})\nsys.stdout.write('\\n')\nsys.exit(0)\n",
-    )
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-
-    cfg = PatchExecutorConfig(model=ROUTE, timeout_seconds=10.0)
-    oc = OpenCodeExecutor(opencode_bin=fake)
-    unit_exec = OpenCodeUnitExecutor(repo, cfg, oc)
-
-    unit = WorkUnit(
-        unit_id="u1",
-        objective="implement the foo feature",
-        owned_files=("src/foo.py",),
-        verification_command=("true",),
-    )
-    attempt = unit_exec.execute_unit(unit)
-    assert attempt.applied is True
-    assert attempt.unit_id == "u1"
-    assert attempt.model == ROUTE
-    assert attempt.usage.reported is True
-    assert attempt.usage.prompt_tokens == 100
-    assert attempt.usage.completion_tokens == 42
-
-
-def test_opencode_unit_executor_error_on_nonzero_exit(tmp_path: Path) -> None:
-    """Non-zero exit → outcome == 'error', applied is False."""
-    from verdict.autodev_run import OpenCodeUnitExecutor
-    from verdict.patch_executor import PatchExecutorConfig
-    from verdict.work_unit import WorkUnit
-
-    fake = make_fake_opencode(tmp_path, "import sys\nsys.exit(1)\n")
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-
-    cfg = PatchExecutorConfig(model=ROUTE, timeout_seconds=10.0)
-    unit_exec = OpenCodeUnitExecutor(repo, cfg, OpenCodeExecutor(opencode_bin=fake))
-
-    unit = WorkUnit(
-        unit_id="u2",
-        objective="fix the bug",
-        owned_files=("src/foo.py",),
-        verification_command=("true",),
-    )
-    attempt = unit_exec.execute_unit(unit)
-    assert attempt.applied is False
-    assert attempt.unit_id == "u2"
-
-
-def test_opencode_unit_executor_has_patch_executor_compatible_interface(tmp_path: Path) -> None:
-    """OpenCodeUnitExecutor satisfies the PatchExecutor-like interface."""
-    from verdict.autodev_run import OpenCodeUnitExecutor
-    from verdict.patch_executor import PatchExecutorConfig
-
-    fake = make_fake_opencode(tmp_path, "import sys\nsys.exit(0)\n")
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-
-    cfg = PatchExecutorConfig(model=ROUTE)
-    unit_exec = OpenCodeUnitExecutor(repo, cfg, OpenCodeExecutor(opencode_bin=fake))
-
-    assert isinstance(unit_exec.config, PatchExecutorConfig)
-    assert unit_exec.config.model == ROUTE
-    assert isinstance(unit_exec.response_headers, dict)
-    assert len(unit_exec.response_headers) == 0
-    assert callable(unit_exec.execute_unit)
-
-
-def test_opencode_unit_executor_includes_context_in_prompt(tmp_path: Path) -> None:
-    """Unit context is appended to the objective in the prompt."""
-    from verdict.autodev_run import OpenCodeUnitExecutor
-    from verdict.patch_executor import PatchExecutorConfig
-    from verdict.work_unit import WorkUnit
-
-    capture = tmp_path / "argv.json"
-    fake = make_fake_opencode(
-        tmp_path,
-        f"import sys, json\nimport pathlib\n"
-        f"pathlib.Path({str(capture)!r}).write_text(json.dumps(sys.argv[1:]))\n"
-        f"sys.exit(0)\n",
-    )
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-
-    cfg = PatchExecutorConfig(model=ROUTE, timeout_seconds=10.0)
-    unit_exec = OpenCodeUnitExecutor(repo, cfg, OpenCodeExecutor(opencode_bin=fake))
-
-    unit = WorkUnit(
-        unit_id="u3",
-        objective="add docstring",
-        owned_files=("src/foo.py",),
-        verification_command=("true",),
-        context="# relevant code here",
-    )
-    unit_exec.execute_unit(unit)
-    argv = json.loads(capture.read_text())
-    # The last argv is the prompt passed after `--`
-    prompt = argv[-1]
-    assert "add docstring" in prompt
-    assert "relevant code here" in prompt

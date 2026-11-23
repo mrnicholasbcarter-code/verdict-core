@@ -111,7 +111,7 @@ def test_worker_header_denied_for_non_admitted_route(monkeypatch: pytest.MonkeyP
 
     No upstream call must be made; the response body must name the rejected route.
     """
-    _configure(monkeypatch)
+    transport = _configure(monkeypatch)
     with TestClient(api.app) as client:
         response = client.post(
             "/v1/chat/completions",
@@ -122,6 +122,11 @@ def test_worker_header_denied_for_non_admitted_route(monkeypatch: pytest.MonkeyP
             headers={"x-verdict-worker": "opencode"},
         )
     assert response.status_code == 503
+    # No upstream call must be made — a regression that contacts upstream before
+    # rejecting would leave evidence in transport.requests.
+    assert transport.requests == [], (
+        f"upstream was contacted before rejecting: {transport.requests}"
+    )
     # The error message names the rejected route, confirming fail-closed behaviour.
     message = response.json()["error"]["message"]
     assert "foreign-model" in message

@@ -40,6 +40,8 @@ which is the second amendment to ADR-041's initial default.
   OmniRoute (:20128). Add per-request route pinning to serve if not present.
 - Declare all nine `HarnessCapability` facets explicitly (ADR-041 requirement).
 - Add OpenCode as the model-tier coding executor in `verdict autodev`.
+  **Moved to #1301 (OC2) after cross-family review (2026-11-23) found isolation
+  and retry defects. This PR is orchestrate-default only; autodev is on main.**
 - Pin OpenCode at v2.3.2; add a `verdict doctor` version warning.
 
 **Non-Goals:**
