@@ -1,7 +1,9 @@
 """Test environment isolation - remove operator env leaks."""
 
 import hashlib
+import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -299,3 +301,40 @@ def _changed_by_sync_timer(after: tuple[int, int] | None) -> bool:
         if abs(ran_at.timestamp() - written_at) <= 10:
             return True
     return False
+
+
+@pytest.fixture
+def billing_overlay_subscription() -> Callable[[list[tuple[str, str]]], None]:
+    """Return a writer that declares (provider, auth_type) pairs as SUBSCRIPTION.
+
+    CP2 removed the oauth → SUBSCRIPTION rule (design.md CP2 §2.2, 2026-11-19).
+    Tests whose fake oauth providers must classify as SUBSCRIPTION call this
+    fixture to write the operator overlay that the billing lookup reads.
+
+    Example::
+
+        @pytest.fixture(autouse=True)
+        def _my_subscription_overlay(billing_overlay_subscription):
+            billing_overlay_subscription([("cc", "oauth"), ("kr", "oauth")])
+
+    The overlay is written under the HOME that ``_isolate_home`` already
+    isolated, so it never touches the real ``~/.verdict``.  VERDICT_HOME is
+    cleared by ``_isolate_host_state_env`` (autouse), so ``verdict_home()``
+    resolves under HOME.  The ``_overlay_cache`` in ``connection_billing`` is
+    keyed on ``(path, mtime)``; the unique tmp HOME per test guarantees a cache
+    miss, so each test sees only its own overlay.
+    """
+
+    def write(providers: list[tuple[str, str]]) -> None:
+        from verdict.paths import verdict_home
+
+        home = verdict_home()
+        home.mkdir(parents=True, exist_ok=True)
+        path = home / "connection_billing_overlay.json"
+        entries = [
+            {"provider": p, "authType": a, "billing": "subscription", "overage": "hard-stop"}
+            for (p, a) in providers
+        ]
+        path.write_text(json.dumps({"entries": entries}))
+
+    return write

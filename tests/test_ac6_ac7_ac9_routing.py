@@ -252,18 +252,25 @@ class TestAC6SecretLeak:
     @pytest.mark.parametrize(
         ("free_signal", "auth_type", "expected_evidence"),
         [
+            # CP2 removed name-based free signals; providerSpecificData.tier/plan and
+            # plan_label are carried but never used as capacity evidence.  Route has
+            # positive pricing + apikey auth → deciding fact is apikey_positive_pricing.
             (
                 {"providerSpecificData": {"tier": "free user@secret.example.com"}},
                 "apikey",
-                "providerSpecificData.tier",
+                "apikey_positive_pricing",
             ),
             (
                 {"providerSpecificData": {"plan": "free user@secret.example.com"}},
                 "apikey",
-                "providerSpecificData.plan",
+                "apikey_positive_pricing",
             ),
-            ({"plan_label": "free user@secret.example.com"}, "apikey", "plan_label"),
-            ({}, "user@secret.example.com", "apikey_positive_pricing"),
+            ({"plan_label": "free user@secret.example.com"}, "apikey", "apikey_positive_pricing"),
+            # auth_type is an email address (a secret value used as authType); it is
+            # not "apikey", so the list-price Rule 3 does not fire (operator 2026-11-23).
+            # The route falls through to UNKNOWN — the evidence must still not contain
+            # the email, and "no_free_evidence" satisfies that invariant.
+            ({}, "user@secret.example.com", "no_free_evidence"),
         ],
     )
     async def test_no_email_or_token_in_event_or_render(

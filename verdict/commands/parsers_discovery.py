@@ -78,3 +78,18 @@ def register(subparsers: Any) -> None:
             "(no paid or subscription calls)."
         ),
     )
+
+    connections_p = discovery_sub.add_parser(
+        "connections",
+        help=(
+            "List active OmniRoute connections with their billing facts from "
+            "the snapshot + operator overlay. Read-only; no model calls, no probes, "
+            "no writes."
+        ),
+    )
+    connections_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="output_json",
+        help="Emit machine-readable JSON (schema: verdict.discovery.connections/v1)",
+    )

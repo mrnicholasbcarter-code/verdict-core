@@ -6,6 +6,8 @@ import json
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
 from tests.test_orch_eligibility import NOW, REQ, FakeProbe, by_route, conn, make_ladder, row
 from verdict.orchestration.contracts import EligibilityStage
 from verdict.orchestration.eligibility import EligibilityLadder
@@ -13,6 +15,14 @@ from verdict.orchestration.eligibility_report import prime_visibility
 from verdict.subagent_selection import HealthResult, classify_probe_status
 
 PAYMENT = HealthResult(healthy=False, category="payment_required", status_code=402)
+
+
+# D36: fake test providers "alpha", "beta", "kiro" use oauth auth with positive prices;
+# without an overlay they fall through to UNKNOWN and trigger the agentic-probe gate,
+# blocking tests that only test provider-spread and unservable-route logic.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("alpha", "oauth"), ("beta", "oauth"), ("kiro", "oauth")])
 
 
 def _models_json(path: Path, ids: list[str]) -> Path:

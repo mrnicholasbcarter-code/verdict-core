@@ -1343,6 +1343,15 @@ def _doctor_healthy_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         lambda diag, _url: diag.sections.append(("Gateway key", "ok", "DB-backed key test")),
     )
 
+    # The billing catalog drift check requires OmniRoute to be installed on the host.
+    # CI has no OmniRoute, so stub it to report a clean match instead of a warning.
+    monkeypatch.setattr(
+        "verdict.doctor_diagnostics._doctor_billing_catalog_drift",
+        lambda diag: diag.sections.append(
+            ("Billing catalog", "ok", "snapshot matches installed OmniRoute (stubbed for test)")
+        ),
+    )
+
 
 def test_cli_doctor_json_healthy_host_exits_zero_with_ok_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -1389,6 +1398,31 @@ def test_cli_doctor_json_missing_mcp_config_warns_but_exits_zero(
     assert report["status"] == "ok"
     assert report["issues"] == []
     assert "missing_mcp_config" in report["warnings"]
+
+
+def test_cli_doctor_billing_catalog_drift_warns_when_omniroute_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_doctor_billing_catalog_drift emits a warning when OmniRoute is not installed.
+
+    CI has no OmniRoute package; this test proves the warning is emitted on that
+    host, and pins the exact warning string so it stays user-readable.
+    _doctor_healthy_fixture stubs this function out for healthy-host tests;
+    this test exercises it without the stub.
+    """
+    from verdict.doctor_diagnostics import DoctorDiagnostics, _doctor_billing_catalog_drift
+
+    monkeypatch.setattr("verdict.connection_billing._omniroute_package_root", lambda: None)
+
+    diag = DoctorDiagnostics()
+    _doctor_billing_catalog_drift(diag)
+
+    assert any("OmniRoute package not found" in w for w in diag.warnings), (
+        f"Expected billing drift warning; got warnings={diag.warnings}"
+    )
+    billing_sections = [s for s in diag.sections if s[0] == "Billing catalog"]
+    assert billing_sections, "Expected a 'Billing catalog' section"
+    assert billing_sections[0][1] == "warn"
 
 
 def test_cli_doctor_missing_required_credential_exits_one_both_modes(

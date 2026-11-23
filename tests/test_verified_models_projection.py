@@ -62,6 +62,12 @@ def row(
     return r
 
 
+# CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("cc", "oauth")])
+
+
 def conn(
     provider: str,
     *,

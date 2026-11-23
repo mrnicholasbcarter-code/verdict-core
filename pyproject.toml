@@ -12,7 +12,9 @@ artifacts = ["schemas/contracts.v1.json", "schemas/evaluation.v1.json", "schemas
 [tool.hatch.build.targets.wheel.force-include]
 "verdict/data/omniroute_models_dev_map.json" = "verdict/data/omniroute_models_dev_map.json"
 "verdict/data/arena-crosswalk.json" = "verdict/data/arena-crosswalk.json"
+"verdict/data/omniroute_connection_billing.json" = "verdict/data/omniroute_connection_billing.json"
 "verdict/schemas/model-metadata.v1.json" = "verdict/schemas/model-metadata.v1.json"
+"verdict/schemas/connection-billing-overlay.v1.json" = "verdict/schemas/connection-billing-overlay.v1.json"
 # Default benchmark fixtures ship in the wheel so the documented
 # `verdict benchmark [--savings]` commands work without a source checkout.
 "benchmarks/fixtures" = "verdict/data/benchmarks/fixtures"

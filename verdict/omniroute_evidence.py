@@ -763,9 +763,20 @@ def fetch_omniroute_evidence(
             payloads[name] = None
             code = getattr(exc, "code", None)
             kinds[name] = f"http_{code}" if isinstance(code, int) else type(exc).__name__
-    evidence = parse_omniroute_evidence(
-        **payloads, now=datetime.now(timezone.utc), connections_snapshot=snapshot
-    )
+    from verdict.free_tier_admit import annotate_cached_free_tier, normalize_omniroute_origin
+
+    now = datetime.now(timezone.utc)
+    catalog = payloads.get("v1_models")
+    if isinstance(catalog, dict) and isinstance(catalog.get("data"), list):
+        rows = catalog["data"]
+        if all(isinstance(row, dict) for row in rows):
+            payloads["v1_models"] = {
+                **catalog,
+                "data": annotate_cached_free_tier(
+                    rows, origin=normalize_omniroute_origin(base_url), now=now
+                ),
+            }
+    evidence = parse_omniroute_evidence(**payloads, now=now, connections_snapshot=snapshot)
     errors = {
         name: kinds.get(name, "invalid_payload")
         for name in evidence.source_errors

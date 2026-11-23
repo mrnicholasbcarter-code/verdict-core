@@ -35,7 +35,11 @@ def test_invalid_bounds_rejected(option, value):
 
 
 @pytest.mark.parametrize("capacity", [(), ("free", "subscription")])
-def test_capacity_is_canonical_narrowing_before_probe(tmp_path, monkeypatch, capacity):
+def test_capacity_is_canonical_narrowing_before_probe(
+    tmp_path, monkeypatch, capacity, billing_overlay_subscription
+):
+    # CP2 removed oauth → SUBSCRIPTION; declare the fake "sub/oauth" connection.
+    billing_overlay_subscription([("sub", "oauth")])
     rows = [
         {"id": "free/model", "owned_by": "free", "pricing": {"input": 0, "output": 0}},
         {"id": "sub/model", "owned_by": "sub", "pricing": {"input": 1}},

@@ -91,7 +91,12 @@ def test_version_cli_output_unchanged() -> None:
     result = subprocess.run(
         (sys.executable, "-m", "verdict", "--version"), check=True, capture_output=True, text=True
     )
-    assert result.stdout.strip() == f"verdict-core __main__.py {verdict.__version__}"
+    # Python 3.14+ changed %(prog)s in -m mode: "python -m verdict" instead of "__main__.py".
+    v = verdict.__version__
+    assert result.stdout.strip() in {
+        f"verdict-core __main__.py {v}",
+        f"verdict-core python -m verdict {v}",
+    }
 
 
 def test_cli_gate_is_gate_gate() -> None:

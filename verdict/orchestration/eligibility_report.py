@@ -198,6 +198,11 @@ def build_selector(
     now = datetime.now(timezone.utc) if now is None else now
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
+    from verdict.free_tier_admit import annotate_cached_free_tier
+
+    rows = annotate_cached_free_tier(
+        rows, origin=gateway, now=now, path=state_path.parent / "admit-last-good.json"
+    )
     # BOD-418: public OpenRouter 0/0 set. Selector construction is cache-only
     # against the caller-owned state dir (same path prove_at_rest refresh writes).
     # Missing cache => no openrouter/ FREE assertion (fail closed). Never fetch

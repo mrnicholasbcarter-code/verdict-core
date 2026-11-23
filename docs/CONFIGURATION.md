@@ -914,13 +914,25 @@ the health cache is separate from selection, which is unchanged).
 
 ## Capacity classification
 
-Verdict classifies route capacity into `FREE`, `SUBSCRIPTION`, `METERED`, and `UNKNOWN` from facts
-only, never from a name (operator, 2026-11-19). A route is `FREE` when all declared inventory prices
-are zero (at least one numeric price declared), OpenRouter public 0/0 membership, the
-gateway's free-tier membership, or a connection free signal (`importFreeModelsOnly`, a free plan or
-tier). oauth without a free signal is `SUBSCRIPTION`; a positive price or an observed billing 402
-is `METERED`. A `:free` suffix or a provider name decides nothing: with no fact the route is
-`UNKNOWN` (`no_free_evidence`), and unknown is never free.
+Verdict classifies route capacity into `FREE`, `SUBSCRIPTION`, `METERED`, and `UNKNOWN` from facts,
+not route names, plan labels, or authentication type alone. Connection billing facts come from the
+pinned OmniRoute catalogue and an optional operator overlay at
+`$VERDICT_HOME/connection_billing_overlay.json` (default `~/.verdict/`). The overlay is an object with
+an `entries` array. Each entry declares `provider`, optional `authType`, `billing`, and `overage`;
+see the [overlay schema](../verdict/schemas/connection-billing-overlay.v1.json). An operator entry
+takes precedence over the pinned catalogue. Doctor reports catalogue drift without blocking startup.
+
+`verdict discovery connections [--json]` lists actual connections and their capacity, deciding fact,
+billing source and overage without calling models. It uses a validated `VERDICT_CONNECTIONS_SNAPSHOT`
+when set; otherwise it reads `/api/providers` on the loopback gateway. It does not send a management
+credential to a remote gateway. An unavailable inventory is distinct from an empty inventory.
+
+Free-tier evidence retains `freeType` and `hardStopGuaranteed` where reported. Identify and the
+discovery funnel distinguish one-time credits from recurring supply and from unknown free types.
+Discontinued entries do not supply a free-tier fact. Synced or hardcoded list prices do not override
+connection facts. If the gateway uses pricing sync but does not identify the source of its prices,
+set `PRICING_SYNC_ENABLED=true` in Verdict's environment as well to avoid treating unlabelled model
+prices as connection prices. This setting does not enable pricing sync on OmniRoute.
 
 [ADR-049](adr/ADR-049-cost-policy-and-unknown-handling.md) (accepted 2026-11-21) changes how `UNKNOWN` is used:
 a route is paid only from facts, and an unknown-cost mode decides whether `UNKNOWN` routes run.

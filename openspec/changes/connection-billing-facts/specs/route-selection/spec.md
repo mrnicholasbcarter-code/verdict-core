@@ -1,3 +1,5 @@
+# Spec Delta
+
 ## ADDED Requirements
 
 ### Requirement: Subscription and metered capacity come from connection billing facts
@@ -13,6 +15,31 @@ The capacity classifier SHALL decide `SUBSCRIPTION` and `METERED` from a connect
 
 - **WHEN** an API-key connection matches a curated entry with billing `subscription`
 - **THEN** the route is `SUBSCRIPTION` with deciding fact `billing_catalog_subscription`
+
+### Requirement: List price is METERED evidence for API-key connections only
+
+A positive declared price in a catalog row SHALL produce `METERED` only when the connection uses API-key authentication (`authType == "apikey"`). An OAuth or account connection with no billing catalog entry SHALL fall through to `UNKNOWN`; a list price alone SHALL NOT classify it as `METERED`. Observed billing facts (a route-scoped 402 recorded as `billing_402_metered` in the health cache, or a nonzero charge header) SHALL still apply regardless of `authType`.
+*(operator, 2026-11-23; D36; ADR-049 fact 1 amended)*
+
+#### Scenario: OAuth connection with positive list price and no catalog entry
+
+- **WHEN** an OAuth connection has a positive declared price in the catalog row and no entry in the billing snapshot or overlay
+- **THEN** the route is `UNKNOWN` with deciding fact `no_free_evidence`, not `METERED`
+
+#### Scenario: API-key connection with positive list price
+
+- **WHEN** an API-key connection has a positive declared price in the catalog row and no billing catalog entry
+- **THEN** the route is `METERED` with deciding fact `apikey_positive_pricing`
+
+#### Scenario: OAuth route with a route-scoped 402
+
+- **WHEN** an OAuth connection has a `billing_402_metered` entry in the health cache
+- **THEN** the route is treated as `METERED` regardless of `authType`
+
+#### Scenario: OAuth connection in billing catalog as subscription
+
+- **WHEN** an OAuth connection's provider has an entry with billing `subscription` in the catalog
+- **THEN** the route is `SUBSCRIPTION` (the catalog fact wins; the list-price rule is not reached)
 
 ### Requirement: Overage behaviour is recorded per route
 

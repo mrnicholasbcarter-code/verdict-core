@@ -420,6 +420,20 @@ weakened test. Reversible.
 * **Record:** [ADR-051](../adr/ADR-051-planner-frontier-from-ratings.md),
   `openspec/changes/frontier-planner-ratings/`. Not implemented yet.
 
+## D36: list price is METERED evidence for API-key connections only (operator, 2026-11-23)
+
+* **Decision:** a positive declared price in the OmniRoute catalog row is evidence of
+  METERED capacity only when the connection uses API-key authentication.  An OAuth or
+  account connection with no billing catalog entry stays UNKNOWN rather than being
+  classified METERED from a list price alone.  Observed facts (a
+  `billing_402_metered` health-cache entry from a route-scoped 402, or a nonzero charge
+  header) still apply regardless of auth type.  A declared zero price makes a route FREE
+  on any connection type (operator, 2026-11-23).
+* **Supersedes:** nothing (narrows the scope of D32 fact 1 without contradicting its
+  general rule — a route is still PAID only from declared or observed facts).
+* **Record:** [ADR-049](../adr/ADR-049-cost-policy-and-unknown-handling.md) (amended, fact 1),
+  CP2 #1268.
+
 ## D37: Verdict builds a GitHub issue through to a ready PR (operator, 2026-11-23; ADR-052, accepted)
 
 * **Decision:**

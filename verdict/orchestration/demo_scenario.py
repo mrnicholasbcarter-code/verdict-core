@@ -70,7 +70,12 @@ def _inventory_row(
 def _connection(provider: str) -> dict[str, Any]:
     return {
         "provider": provider,
-        "authType": "offline-scenario",
+        # CP2: authType must be "apikey" so the positive-price inventory rows
+        # are classified METERED (Rule 3 applies only to API-key connections,
+        # operator 2026-11-23).  "offline-scenario" is not "apikey", so with
+        # the old type routes fell through to UNKNOWN after the billing catalog
+        # check, triggering the agentic-probe gate and blocking the demo.
+        "authType": "apikey",
         "isActive": True,
         "testStatus": "ok",
         "backoffLevel": 0,

@@ -524,6 +524,11 @@
     "unknown": 0
    },
    "eligible_count": 0,
+   "eligible_free_by_type": {
+    "one_time_initial": 0,
+    "recurring": 0,
+    "unknown": 0
+   },
    "fallback": [],
    "fallback_by_capacity": {
     "free": 0,
@@ -532,6 +537,11 @@
     "unknown": 0
    },
    "fallback_count": 0,
+   "fallback_free_by_type": {
+    "one_time_initial": 0,
+    "recurring": 0,
+    "unknown": 0
+   },
    "metric": "aa_coding",
    "task_family": "code_edit"
   },
@@ -544,6 +554,11 @@
     "unknown": 0
    },
    "eligible_count": 0,
+   "eligible_free_by_type": {
+    "one_time_initial": 0,
+    "recurring": 0,
+    "unknown": 0
+   },
    "fallback": [],
    "fallback_by_capacity": {
     "free": 0,
@@ -552,6 +567,11 @@
     "unknown": 0
    },
    "fallback_count": 0,
+   "fallback_free_by_type": {
+    "one_time_initial": 0,
+    "recurring": 0,
+    "unknown": 0
+   },
    "metric": "aa_coding",
    "task_family": "code_edit"
   },
@@ -565,6 +585,11 @@
     "unknown": 0
    },
    "eligible_count": 0,
+   "eligible_free_by_type": {
+    "one_time_initial": 0,
+    "recurring": 0,
+    "unknown": 0
+   },
    "fallback": [],
    "fallback_by_capacity": {
     "free": 0,
@@ -573,6 +598,11 @@
     "unknown": 0
    },
    "fallback_count": 0,
+   "fallback_free_by_type": {
+    "one_time_initial": 0,
+    "recurring": 0,
+    "unknown": 0
+   },
    "metric": "aa_intelligence",
    "task_family": "research"
   },
@@ -585,6 +615,11 @@
     "unknown": 0
    },
    "eligible_count": 0,
+   "eligible_free_by_type": {
+    "one_time_initial": 0,
+    "recurring": 0,
+    "unknown": 0
+   },
    "fallback": [],
    "fallback_by_capacity": {
     "free": 0,
@@ -593,6 +628,11 @@
     "unknown": 0
    },
    "fallback_count": 0,
+   "fallback_free_by_type": {
+    "one_time_initial": 0,
+    "recurring": 0,
+    "unknown": 0
+   },
    "metric": "aa_coding",
    "task_family": "code_review"
   },
@@ -605,6 +645,11 @@
     "unknown": 0
    },
    "eligible_count": 0,
+   "eligible_free_by_type": {
+    "one_time_initial": 0,
+    "recurring": 0,
+    "unknown": 0
+   },
    "fallback": [],
    "fallback_by_capacity": {
     "free": 0,
@@ -613,6 +658,11 @@
     "unknown": 0
    },
    "fallback_count": 0,
+   "fallback_free_by_type": {
+    "one_time_initial": 0,
+    "recurring": 0,
+    "unknown": 0
+   },
    "metric": "aa_intelligence",
    "task_family": "specification"
   }

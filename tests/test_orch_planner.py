@@ -1129,7 +1129,7 @@ async def test_planner_reselection_follows_cheapest_qualified_capacity(tmp_path,
         ("gl/glm-5", "glm", 2),
         ("ms/mistral-large", "mistral", 2),
     ]
-    connections = [conn("claude"), conn("glm", plan="free"), conn("mistral", plan="free")]
+    connections = [conn("claude"), conn("glm", free_only=True), conn("mistral", free_only=True)]
     # Planner requirements include tools, so FREE routes need fresh agentic
     # proof (BOD-299 AC2); seed the health cache for both free routes.
     from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult

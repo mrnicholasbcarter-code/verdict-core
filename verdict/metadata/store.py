@@ -10,7 +10,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from functools import cached_property
+from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -178,10 +178,19 @@ class MetadataSnapshot:
         )
 
 
-def load_store(path: Path | str | None = None) -> MetadataSnapshot:
-    resolved = Path(path) if path is not None else default_store_path()
+@lru_cache(maxsize=4)
+def _load_store_cached(resolved: Path, mtime_ns: int) -> MetadataSnapshot:
+    """Deserialize a store snapshot; keyed on (path, mtime_ns) so a changed
+    file is reloaded automatically while repeated calls to the same unmodified
+    file skip the ~1.4s deserialization cost."""
     document = json.loads(resolved.read_text(encoding="utf-8"))
     return MetadataSnapshot.from_dict(document)
+
+
+def load_store(path: Path | str | None = None) -> MetadataSnapshot:
+    resolved = Path(path) if path is not None else default_store_path()
+    mtime_ns = resolved.stat().st_mtime_ns  # raises OSError when missing
+    return _load_store_cached(resolved, mtime_ns)
 
 
 def save_store(

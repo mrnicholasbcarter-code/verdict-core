@@ -2,6 +2,8 @@
 
 from datetime import timedelta
 
+import pytest
+
 from tests.test_identify_rank import NOW, _conn, _ladder_row
 from verdict.admit_prove_confirm import passport_confirmation
 from verdict.orchestration.contracts import TaskRequirements
@@ -15,6 +17,13 @@ from verdict.probes import ProbeObservation
 from verdict.prove_at_rest import ProveAtRestStore
 from verdict.relay import admission_proof, dispatch_scope
 from verdict.subagent_selection import HealthResult
+
+
+# D36: "cc" is a fake test provider with oauth auth and positive prices; without
+# an overlay it falls through to UNKNOWN and blocks proof-refresh tests.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("cc", "oauth")])
 
 
 def test_select_confirm_refreshes_stale_proof_and_permit_remains_single_use(tmp_path, monkeypatch):

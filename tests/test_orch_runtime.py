@@ -33,6 +33,15 @@ from verdict.orchestration.contracts import (
 )
 from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
 
+
+# D36: "cc" and "kr" are fake test providers with oauth auth and positive prices; without
+# an overlay they fall through to UNKNOWN and trigger the agentic-probe gate,
+# blocking tests that only test runtime and eligibility logic.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("cc", "oauth"), ("kr", "oauth")])
+
+
 NOW = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
 
 

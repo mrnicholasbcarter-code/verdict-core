@@ -682,6 +682,15 @@ def _action_discovery_funnel(**kwargs: Any) -> ActionResult:
     return ActionResult(data=run_funnel())
 
 
+def _action_discovery_connections(**kwargs: Any) -> ActionResult:
+    """Report the configured gateway's connection billing evidence."""
+    from verdict.discovery.connections import run_connections_action
+
+    data = run_connections_action()
+    ok = data["status"] == "ok"
+    return ActionResult(data=data, ok=ok, exit_code=0 if ok else 1)
+
+
 def _action_discovery_refresh(**kwargs: Any) -> ActionResult:
     """Probe free/subscription routes and write 12-hour proof registry."""
     from verdict.discovery.refresh import run_refresh_action
@@ -1853,6 +1862,16 @@ def _register_builtins() -> None:
                 "Health",
             ),
             _action_discovery_funnel,
+        ),
+        (
+            ActionSpec(
+                "discovery.connections",
+                "health",
+                "read",
+                "Report read-only connection billing evidence",
+                "Health",
+            ),
+            _action_discovery_connections,
         ),
         (
             ActionSpec(

@@ -1,10 +1,18 @@
 """D6: selection, not just receipt ranks, prefers the cheapest qualified tier."""
 
+import pytest
+
 from tests.test_identify_rank import NOW, _conn, _ladder_row, _record, _score, _snapshot
 from verdict.orchestration.contracts import CapacityClass, TaskRequirements
 from verdict.orchestration.eligibility import EligibilityLadder
 from verdict.orchestration.health_cache import HealthCache, ProbeResult
 from verdict.subagent_selection import HealthResult
+
+
+# CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("cc", "oauth")])
 
 
 def test_unrated_screened_free_selected_before_rated_subscription(tmp_path):

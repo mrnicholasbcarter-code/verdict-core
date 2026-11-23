@@ -301,7 +301,9 @@ class TestDeterminism:
             _row("a/model-1", owned_by="a"),
             _row("b/model-2", owned_by="b", pricing={"input": 0, "output": 0}),
         ]
-        conns = [_conn("a"), _conn("b", plan="free", free_only=True)]
+        # D36: "a" must use apikey so its positive price classifies it as METERED
+        # (not UNKNOWN), bypassing the agentic-probe gate for WORKER_REQ calls.
+        conns = [_conn("a", auth="apikey"), _conn("b", plan="free", free_only=True)]
         ladder1, _ = _make(tmp_path / "r1", rows, conns)
         ladder2, _ = _make(tmp_path / "r2", rows, conns)
         s1, _v1 = ladder1.select(WORKER_REQ, now=NOW)

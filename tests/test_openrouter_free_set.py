@@ -22,7 +22,7 @@ from verdict.openrouter_free_set import (
 )
 from verdict.orchestration import run as orch_run
 from verdict.orchestration.contracts import CapacityClass
-from verdict.orchestration.eligibility import EligibilityLadder, capacity_class_of
+from verdict.orchestration.eligibility import EligibilityLadder
 from verdict.orchestration.eligibility_report import build_selector
 from verdict.orchestration.health_cache import HealthCache, ProbeResult
 from verdict.prove_at_rest import (
@@ -331,11 +331,10 @@ def test_capacity_class_openrouter_suffix_alone_is_not_free() -> None:
         "capabilities": {"tool_calling": True},
         "context_length": 128000,
     }
-    # Without a public free set wired, openrouter routes must not become FREE
-    # from suffix / import_free_only alone once BOD-418 is applied.
-    capacity, _plan = capacity_class_of(conn, row)
-    # capacity_class_of historically returned FREE via import_free_only; the
-    # BOD-418 wiring must stop that for openrouter-family routes.
+    from verdict.capacity import capacity_of
+
+    # A suffix or connection flag cannot stand in for the public 0/0 set.
+    capacity, _fact = capacity_of(conn, row, route_id=str(row["id"]), openrouter_free_set=None)
     assert capacity is not CapacityClass.FREE
 
 

@@ -184,6 +184,8 @@ async def test_actual_prompt_keys_insert_then_submit_and_escape_restores() -> No
 def test_home_render_and_snapshot_reload_after_prepaid_refresh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import json
+
     from tests.test_verified_models_projection import at_rest_entry, conn, health_cache, row
     from verdict.actions import verified_models as surfaces
     from verdict.actions.verified_models import StorePaths, VerifiedSnapshotAdapter
@@ -192,6 +194,21 @@ def test_home_render_and_snapshot_reload_after_prepaid_refresh(
     from verdict.tui_completion_snapshot import load_snapshot
 
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    # CP2 removed oauth → SUBSCRIPTION; declare the fake "cc/oauth" connection.
+    (tmp_path / "connection_billing_overlay.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "provider": "cc",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    }
+                ]
+            }
+        )
+    )
     monkeypatch.setattr(surfaces, "active_controller_route", lambda: None)
     paths = StorePaths.defaults(tmp_path)
     paths.health_cache.write_text(
