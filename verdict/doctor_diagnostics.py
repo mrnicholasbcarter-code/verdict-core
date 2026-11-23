@@ -677,28 +677,22 @@ def _doctor_planner_supply(diag: DoctorDiagnostics) -> None:
         return
 
     try:
+        from verdict.planner_band import planner_supply_status
+
         config = load_planner_band_config()
         band = compute_planner_bands(inventory_route_ids, metadata, None, config=config, now=now)
+        # capacity_classes unknown to doctor; pass empty dict → all routes treated as UNKNOWN
+        # (non-metered), so the band keys drive the count.
+        status = planner_supply_status(inventory_route_ids, {}, band)
     except Exception as exc:
         diag.sections.append(("Planner supply", "note", f"band error: {type(exc).__name__}"))
         return
 
-    frontier = len(band.frontier_model_keys)
-    fallback = len(band.fallback_model_keys)
-
-    if frontier > 0:
-        detail = f"{frontier} model(s) in frontier band; fallback has {fallback}"
-        diag.sections.append(("Planner supply", "ok", detail))
-    elif fallback > 0:
-        detail = f"frontier band empty; {fallback} model(s) in fallback band"
-        diag.sections.append(("Planner supply", "warn", detail))
-        diag.warnings.append(
-            f"Planner frontier band is empty; {fallback} fallback model(s) available"
-        )
+    if not status["warning"]:
+        diag.sections.append(("Planner supply", "ok", status["message"]))
     else:
-        detail = "frontier and fallback bands both empty"
-        diag.sections.append(("Planner supply", "warn", detail))
-        diag.warnings.append("Planner frontier and fallback bands are both empty")
+        diag.sections.append(("Planner supply", "warn", status["message"]))
+        diag.warnings.append(status["message"])
 
 
 def _doctor_acceptance(diag: DoctorDiagnostics) -> None:
