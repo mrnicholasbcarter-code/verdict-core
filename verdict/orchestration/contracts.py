@@ -544,6 +544,7 @@ EVENT_TYPES = frozenset(
         "understand",
         "plan_started",
         "plan_ready",
+        "plan_context",  # repo-map digest recorded before the planning call
         "plan_repair_started",  # planner asked the same route to fix an invalid plan
         "plan_repair_terminal",
         "hydrate",

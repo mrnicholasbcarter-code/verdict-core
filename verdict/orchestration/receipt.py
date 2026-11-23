@@ -907,7 +907,8 @@ def build_run_receipt(
         "planner_attempts": [
             {"seq": e.seq, "at": e.at, **dict(e.data)}
             for e in events
-            if e.type in {"plan_started", "plan_repair_started", "plan_repair_terminal"}
+            if e.type
+            in {"plan_started", "plan_repair_started", "plan_repair_terminal", "plan_context"}
         ],
         "decision_signals": _free("decision_signals") or None,  # SHADOW signals (optional)
         "claimed_outcome": str(finished[-1].data.get("outcome", "")) if finished else "",
