@@ -355,8 +355,9 @@ def screen_models(
 ) -> dict[str, Any]:
     """Screen strongest task rating first; capacity class is a filter, not an order.
 
-    ``max_capability_tier`` skips, without probing, every route whose tier
-    (the eligibility ladder's own rule) is unknown or above it, before caps apply.
+    ``max_capability_tier`` skips, without probing, every route whose tier is a
+    known value above the ceiling.  Routes with an unknown tier are not filtered
+    (the screen is the mechanism that proves them).
     ``min_context_tokens`` and ``require_tools`` skip, the same way, every route
     whose context window is unknown or below the minimum, or whose tools support
     is not known to be true. ``max_per_pool`` caps probes per backend pool
@@ -392,16 +393,30 @@ def screen_models(
 
     # All configured, reachable supply is considered: inventory ids that are
     # live candidates but carry no traffic proof yet screen with an unknown
-    # rating, last.
+    # rating, last.  Subscription frontier routes (not in the auto-combo pool)
+    # are included when their provider has a usable connection.
     seen_ids = {row["route_id"] for row in report["available_routes"]}
     extra_ratings: list[RatedModel] = []
     for rid in sorted(evidence.inventory_route_ids):
         if rid in seen_ids:
             continue
-        live = evidence.live_candidates.get(rid)
-        if live is None or not live.reachable:
+        if is_opaque(rid) or is_non_chat_route(rid):
             continue
-        provider = evidence.route_identities.get(rid, (rid.split("/", 1)[0],))[0]
+        live = evidence.live_candidates.get(rid)
+        if live is not None:
+            if not live.reachable:
+                continue
+            # Use the provider field from the live candidate — it comes from
+            # the connection data, the same namespace as usable_providers.
+            provider = live.provider
+        else:
+            # Route is in inventory but not in the auto-combo pool (e.g. a
+            # subscription frontier route).  Include only when its provider
+            # has a usable connection.  Use the route prefix — same namespace
+            # as usable_providers / live_candidates.provider.
+            provider = rid.split("/", 1)[0]
+            if provider not in evidence.usable_providers:
+                continue
         extra_ratings.append(
             RatedModel(
                 route_id=rid,
@@ -647,12 +662,11 @@ def screen_models(
                 ):
                     row["result"] = "skipped_spend_policy"
                     continue
-            if max_capability_tier is not None and (tier is None or tier > max_capability_tier):
-                # Unknown is never sufficient; the route neither probes nor
-                # claims an alias slot or a cap slot.
-                row["result"] = (
-                    "skipped_unknown_tier" if tier is None else "skipped_capability_tier"
-                )
+            if max_capability_tier is not None and tier is not None and tier > max_capability_tier:
+                # Only skip routes whose tier is a known value above the
+                # ceiling.  Routes with an unknown tier are not filtered —
+                # screening is what produces proof of their capability.
+                row["result"] = "skipped_capability_tier"
                 continue
             if (
                 min_context_tokens is not None
