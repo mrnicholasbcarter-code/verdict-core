@@ -1407,10 +1407,8 @@ class EligibilityLadder:
         # candidates using band-based ordering (is_metered, -score, cls_order, -aa_coding,
         # route_id).  Gated on arena_role="planner" to avoid unintentionally band-ordering
         # reviewer selection (which also uses strongest_first).
-        if (
-            self._planner_band is not None
-            and getattr(requirements, "arena_role", None) == "planner"
-        ):
+        _arena_role = getattr(requirements, "arena_role", None)
+        if self._planner_band is not None and _arena_role == "planner":
             from verdict.planner_band import _sort_key as _pb_sort_key
 
             _band = self._planner_band
@@ -1420,10 +1418,11 @@ class EligibilityLadder:
                 return _pb_sort_key(a.route_id, a.capacity, _band, _pb_meta, _pb_idmap, now)
 
             candidates.sort(key=_band_rank_key)
-            # ADR-051 D5: METERED routes excluded from planner selection until CP1.
-            # Rank-last is not enough — if nothing else is admissible a METERED route
-            # would still be chosen.  Filter them out explicitly here so selection
-            # fails closed (BLOCKED) rather than dispatching to a metered model.
+        # ADR-051 D5: METERED routes excluded from planner selection until CP1.
+        # Applied unconditionally for arena_role="planner" — not only when a band
+        # is set — so a METERED route is never chosen even before the first band
+        # injection (e.g. during plan_with_failover's initial selection).
+        if _arena_role == "planner":
             candidates = [a for a in candidates if a.capacity != CapacityClass.METERED]
         return assessments, candidates
 

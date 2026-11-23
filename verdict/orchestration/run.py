@@ -453,16 +453,14 @@ async def plan_with_failover(
 
         _pb_meta = _pb_load()
     except (OSError, ValueError) as _pb_store_exc:
-        if isinstance(_pb_store_exc, FileNotFoundError):
-            # Store path not found → metadata store not configured; band
-            # filtering is skipped and standard ladder ordering applies.
-            pass
-        else:
-            # Store is configured but unreadable or corrupt → fail closed.
-            raise PlannerBandError(
-                f"no_frontier_or_fallback_planner: metadata store unavailable "
-                f"({type(_pb_store_exc).__name__}: {_pb_store_exc})"
-            ) from _pb_store_exc
+        # Any store error — including FileNotFoundError (store not yet written) —
+        # fails closed.  With no ratings we cannot prove any frontier candidate,
+        # so the run is BLOCKED.  Tests that need planning must supply a rated
+        # metadata store via their load_store fixture.
+        raise PlannerBandError(
+            f"no_frontier_or_fallback_planner: metadata store not found "
+            f"({type(_pb_store_exc).__name__}: {_pb_store_exc})"
+        ) from _pb_store_exc
     if _pb_meta is not None:
         _pb_routes = selector.inventory_route_ids()
         _orch_band = compute_planner_bands(_pb_routes, _pb_meta, None, config=_pb_config, now=now())
