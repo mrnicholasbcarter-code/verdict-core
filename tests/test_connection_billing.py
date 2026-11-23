@@ -212,6 +212,76 @@ class TestOperatorOverlay:
 
         _cb._overlay_cache = None
 
+    def test_overlay_alias_provider_resolves_on_lookup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Overlay entry stored under alias name 'agy' is found when looking up 'agy'.
+
+        Without alias canonicalization in _load_overlay(), the overlay stores
+        ("agy", auth_type) but billing_lookup() resolves "agy" → "antigravity"
+        and looks for ("antigravity", auth_type) — a miss.  After the fix both
+        the alias and the canonical name resolve to the same index key.
+        """
+        import verdict.connection_billing as _cb
+
+        _cb._overlay_cache = None
+
+        overlay = {
+            "entries": [
+                {
+                    "provider": "agy",
+                    "authType": "oauth",
+                    "billing": "keyless",
+                    "overage": "hard-stop",
+                }
+            ]
+        }
+        (tmp_path / "connection_billing_overlay.json").write_text(json.dumps(overlay))
+        env = {"VERDICT_HOME": str(tmp_path)}
+
+        fact = lookup("agy", "oauth", env=env)
+        assert fact is not None, "overlay alias entry must be found via billing_lookup"
+        assert fact.billing == BILLING_KEYLESS
+        assert fact.source == SOURCE_OVERLAY
+
+        _cb._overlay_cache = None
+
+    def test_overlay_canonical_beats_alias(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When overlay has both alias and canonical name, canonical entry wins."""
+        import verdict.connection_billing as _cb
+
+        _cb._overlay_cache = None
+
+        overlay = {
+            "entries": [
+                # alias entry first (should lose to canonical below)
+                {
+                    "provider": "agy",
+                    "authType": "oauth",
+                    "billing": "keyless",
+                    "overage": "hard-stop",
+                },
+                # canonical entry second (should win)
+                {
+                    "provider": "antigravity",
+                    "authType": "oauth",
+                    "billing": "subscription",
+                    "overage": "hard-stop",
+                },
+            ]
+        }
+        (tmp_path / "connection_billing_overlay.json").write_text(json.dumps(overlay))
+        env = {"VERDICT_HOME": str(tmp_path)}
+
+        fact = lookup("agy", "oauth", env=env)
+        assert fact is not None
+        # Canonical "antigravity" subscription beats alias "agy" keyless
+        assert fact.billing == BILLING_SUBSCRIPTION
+
+        _cb._overlay_cache = None
+
     def test_overlay_absent_returns_snapshot(self, tmp_path: Path) -> None:
         """When no overlay file exists, snapshot is used normally."""
         env = {"VERDICT_HOME": str(tmp_path)}
@@ -327,6 +397,70 @@ class TestBillingFactCapacity:
         cls, fact = capacity_of(conn, _row(), route_id="agy/model", openrouter_free_set=None)
         assert cls is CapacityClass.SUBSCRIPTION
         # Overage for antigravity is "hard-stop" in the catalog snapshot.
+        assert fact == "billing_snapshot_subscription:hard-stop"
+
+    # --- Policy: list price counts only for API-key connections (operator, 2026-11-23) ---
+
+    def test_oauth_positive_price_no_catalog_entry_is_unknown(self) -> None:
+        """OAuth connection not in catalog + positive list price → UNKNOWN, not METERED.
+
+        Before the policy change, Rule 3 (declared price) would fire here and
+        return METERED with 'apikey_positive_pricing'.  After the fix it falls
+        through because the connection is not API-key typed.
+        """
+        conn = _conn("kilocode", "oauth")
+        row = {**_row(), "pricing": {"input": 0.001, "output": 0.003}}
+        cls, fact = capacity_of(conn, row, route_id="kilocode/model", openrouter_free_set=None)
+        assert cls is CapacityClass.UNKNOWN
+        assert fact == "no_free_evidence"
+
+    def test_apikey_positive_price_is_metered(self) -> None:
+        """API-key connection with positive list price → METERED, label apikey_positive_pricing."""
+        conn = _conn("kilocode", "apikey")
+        row = {**_row(), "pricing": {"input": 0.001, "output": 0.003}}
+        cls, fact = capacity_of(conn, row, route_id="kilocode/model", openrouter_free_set=None)
+        assert cls is CapacityClass.METERED
+        assert fact == "apikey_positive_pricing"
+
+    def test_oauth_route_scoped_billing_402_is_observed_metered(self) -> None:
+        """OAuth route with an observed route-scoped 402 billing refusal → METERED evidence.
+
+        billing_capacity_override() reads the health cache and returns True when a
+        'billing_402_metered' entry is present for the route.  This is an observed
+        fact that applies regardless of authType (the classifier itself returns
+        UNKNOWN for OAuth + no catalog entry, but callers check the override).
+        """
+        import datetime
+
+        from verdict.capacity import billing_capacity_override
+        from verdict.orchestration.health_cache import HealthCache, HealthEntry
+
+        cache_path = Path("/tmp/test-402-cache.json")
+        cache = HealthCache(cache_path)
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        entry = HealthEntry(
+            route_id="kilocode/kc-pro",
+            category="billing_refusal",
+            checked_at=now - datetime.timedelta(minutes=5),
+            until=now + datetime.timedelta(hours=1),
+            consecutive_failures=1,
+            chat_ok=False,
+            tool_ok=False,
+            healthy=False,
+            capacity_evidence="billing_402_metered",
+        )
+        cache._routes["kilocode/kc-pro"] = entry
+        assert billing_capacity_override(cache, "kilocode/kc-pro", now) is True
+        # The capacity classifier itself returns UNKNOWN (no catalog entry, oauth):
+        conn = _conn("kilocode", "oauth")
+        cls, _ = capacity_of(conn, _row(), route_id="kilocode/kc-pro", openrouter_free_set=None)
+        assert cls is CapacityClass.UNKNOWN
+
+    def test_oauth_in_catalog_subscription_stays_subscription(self) -> None:
+        """OAuth route in catalog as subscription stays SUBSCRIPTION after the policy change."""
+        conn = _conn("claude", "oauth")
+        cls, fact = capacity_of(conn, _row(), route_id="claude/model", openrouter_free_set=None)
+        assert cls is CapacityClass.SUBSCRIPTION
         assert fact == "billing_snapshot_subscription:hard-stop"
 
 

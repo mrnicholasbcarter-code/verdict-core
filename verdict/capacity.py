@@ -101,7 +101,7 @@ def classify_route_capacity(
       1. OpenRouter catalog membership (BOD-418)
       2. Connection free facts (``importFreeModelsOnly`` / ``import_free_only``)
       3. Connection billing facts from snapshot + operator overlay
-      4. Declared price (rule 0.2)
+      4. Declared price (rule 0.2) — API-key connections only (operator, 2026-11-23)
       5. Gateway free-tier membership
       6. UNKNOWN
 
@@ -154,12 +154,17 @@ def classify_route_capacity(
                 deciding = f"billing_{source_tag}_keyless"
                 return CapacityClass.FREE, plan_label, deciding
 
-    # Rule 3: declared price (rule 0.2 — nonzero is paid, explicit 0/0 is free,
-    # absent fails closed).
+    # Rule 3: declared price — applies only to API-key connections.
+    # (operator, 2026-11-23): a list price is evidence only when the connection
+    # is API-key typed.  An OAuth or account connection with no billing fact
+    # falls through to UNKNOWN rather than being labelled METERED from a price.
+    # Observed facts (charge header, route-scoped 402) still apply to every
+    # connection type; those come from billing_capacity_override(), not here.
     price_source = catalog_price_source(row)
     connection_price = price_source in {"provider", "user", "legacy_catalog"}
+    is_apikey = auth_type == "apikey"
     status = classify_free(route_id, _route_price(row) if connection_price else None, None)
-    if connection_price and (status is FreeStatus.NOT_FREE or _any_positive_price(row)):
+    if connection_price and is_apikey and (status is FreeStatus.NOT_FREE or _any_positive_price(row)):
         price_fact = (
             "apikey_positive_pricing"
             if price_source == "legacy_catalog"

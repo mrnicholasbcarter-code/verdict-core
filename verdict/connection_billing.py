@@ -172,12 +172,19 @@ def _load_overlay(
         if billing == BILLING_UNKNOWN:
             continue
         overage = str(entry.get("overage", OVERAGE_UNKNOWN))
-        provider = str(entry["provider"]).lower()
+        raw_provider = str(entry["provider"]).lower()
+        # Canonicalise aliases so billing_lookup() (which also resolves aliases)
+        # can find overlay entries regardless of which name the operator uses.
+        # Canonical entry wins over an alias entry for the same key: only
+        # overwrite if the existing entry came from an alias.
+        canonical_provider = _BILLING_PROVIDER_ALIASES.get(raw_provider, raw_provider)
         auth_type: str | None = entry.get("authType")
         if isinstance(auth_type, str):
             auth_type = auth_type.lower()
-        key = (provider, auth_type)
-        index[key] = BillingFact(billing=billing, overage=overage, source=SOURCE_OVERLAY)
+        key = (canonical_provider, auth_type)
+        is_canonical = raw_provider == canonical_provider
+        if key not in index or is_canonical:
+            index[key] = BillingFact(billing=billing, overage=overage, source=SOURCE_OVERLAY)
 
     _overlay_cache = (cache_key, mtime, index, now_ns)
     return index
