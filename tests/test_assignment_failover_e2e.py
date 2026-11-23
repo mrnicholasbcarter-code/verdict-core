@@ -23,6 +23,12 @@ from typing import Any
 import pytest
 
 from tests.test_orch_eligibility import FakeProbe, conn
+
+
+# CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("kiro", "oauth")])
 from tests.test_orch_eligibility import row as inv_row
 from tests.test_orch_runtime import NOW, Events, Executor, node
 from verdict.orchestration.contracts import RunOutcome, WorkerTerminal, WorkGraph, route_family

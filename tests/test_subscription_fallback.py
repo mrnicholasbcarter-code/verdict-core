@@ -1,5 +1,6 @@
 """D8: qualified subscription fallback, bounded within the request budget."""
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -11,6 +12,33 @@ from verdict.orchestration.contracts import TaskRequirements
 from verdict.orchestration.eligibility import EligibilityLadder
 from verdict.orchestration.health_cache import HealthCache
 from verdict.subagent_selection import HealthResult
+
+_SUBSCRIPTION_OVERLAY_ENTRIES = [
+    # Direct EligibilityLadder tests: a, b, c, d with oauth
+    {"provider": "a", "authType": "oauth", "billing": "subscription", "overage": "hard-stop"},
+    {"provider": "b", "authType": "oauth", "billing": "subscription", "overage": "hard-stop"},
+    {"provider": "c", "authType": "oauth", "billing": "subscription", "overage": "hard-stop"},
+    {"provider": "d", "authType": "oauth", "billing": "subscription", "overage": "hard-stop"},
+    # _service() snapshot: quality and newco use oauth
+    {"provider": "quality", "authType": "oauth", "billing": "subscription", "overage": "hard-stop"},
+    {"provider": "newco", "authType": "oauth", "billing": "subscription", "overage": "hard-stop"},
+    # test_no_capable_subscription replaces all connections to apikey; quality/apikey → METERED
+    {"provider": "quality", "authType": "apikey", "billing": "metered", "overage": "hard-stop"},
+    # test_relay_all_free_fail_then_subscription changes newco to apikey; newco/apikey → FREE
+    {"provider": "newco", "authType": "apikey", "billing": "keyless", "overage": "hard-stop"},
+]
+
+
+# CP2 removed oauth → SUBSCRIPTION; declare fake test providers via overlay.
+@pytest.fixture(autouse=True)
+def _subscription_billing_overlay() -> None:  # type: ignore[no-untyped-def]
+    from verdict.paths import verdict_home
+
+    home = verdict_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "connection_billing_overlay.json").write_text(
+        json.dumps({"entries": _SUBSCRIPTION_OVERLAY_ENTRIES})
+    )
 
 
 def _usage(route, total, n=3, family="code_edit"):
@@ -450,6 +478,34 @@ def test_subscription_order_follows_token_median_not_quota_headroom(tmp_path, mo
     """Measured subscription usage orders routes; remaining quota never does."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+    # CP2: autouse fixture wrote overlay to old HOME/.verdict; write to custom VERDICT_HOME.
+    (tmp_path / "verdict-home").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "verdict-home" / "connection_billing_overlay.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "provider": "aaa",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    },
+                    {
+                        "provider": "bbb",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    },
+                    {
+                        "provider": "ccc",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    },
+                ]
+            }
+        )
+    )
     ids = ("aaa/low", "bbb/high", "ccc/sparse")
     observations = (
         _usage_series(ids[0], (800, 1000, 1400))  # median 1000
@@ -726,6 +782,21 @@ def test_relay_allows_subscription_when_free_passport_is_denied(monkeypatch, tmp
     request = live._request(live.STRONG, live.FAST)
     transport = ContextLengthTransport([])
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    # CP2: autouse fixture wrote overlay to old HOME/.verdict; write to custom VERDICT_HOME.
+    (tmp_path / "connection_billing_overlay.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "provider": "quality",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    }
+                ]
+            }
+        )
+    )
     monkeypatch.setenv("LLMGATE_ALLOW_ANONYMOUS", "true")
     monkeypatch.setenv("LLMGATE_LOG_PATH", "")
     monkeypatch.setattr(api, "_build_intelligence", lambda: service)
@@ -989,6 +1060,22 @@ def test_permitted_metered_sorts_after_capable_free_and_subscription(tmp_path, m
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict-home"))
+    # CP2: autouse fixture wrote overlay to old HOME/.verdict; write to custom VERDICT_HOME.
+    (tmp_path / "verdict-home").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "verdict-home" / "connection_billing_overlay.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "provider": "subco",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    }
+                ]
+            }
+        )
+    )
 
     free_id, sub_id, paid_id = "freeco/model", "subco/model", "paidco/model"
     rows = [

@@ -252,17 +252,20 @@ class TestAC6SecretLeak:
     @pytest.mark.parametrize(
         ("free_signal", "auth_type", "expected_evidence"),
         [
+            # CP2 removed name-based free signals; providerSpecificData.tier/plan and
+            # plan_label are carried but never used as capacity evidence.  Route has
+            # positive pricing + apikey auth → deciding fact is apikey_positive_pricing.
             (
                 {"providerSpecificData": {"tier": "free user@secret.example.com"}},
                 "apikey",
-                "providerSpecificData.tier",
+                "apikey_positive_pricing",
             ),
             (
                 {"providerSpecificData": {"plan": "free user@secret.example.com"}},
                 "apikey",
-                "providerSpecificData.plan",
+                "apikey_positive_pricing",
             ),
-            ({"plan_label": "free user@secret.example.com"}, "apikey", "plan_label"),
+            ({"plan_label": "free user@secret.example.com"}, "apikey", "apikey_positive_pricing"),
             ({}, "user@secret.example.com", "apikey_positive_pricing"),
         ],
     )

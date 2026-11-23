@@ -23,7 +23,12 @@ def _run(fixture: Path, tmp_path: Path) -> tuple[int, dict[str, object], str]:
     return proc.returncode, json.loads(out.read_text()), proc.stdout
 
 
-def test_report_selects_within_every_role_floor(tmp_path: Path) -> None:
+def test_report_selects_within_every_role_floor(
+    tmp_path: Path, billing_overlay_subscription: object
+) -> None:
+    # CP2 removed oauth → SUBSCRIPTION; declare the fixture's oauth providers.
+    # The overlay is written to the isolated HOME so the subprocess picks it up.
+    billing_overlay_subscription([("kiro", "oauth"), ("claude", "oauth")])  # type: ignore[call-arg]
     code, report, markdown = _run(FIXTURE, tmp_path)
     assert code == 0, markdown
     roles = {row["role"]: row for row in report["roles"]}  # type: ignore[index]

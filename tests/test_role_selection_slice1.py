@@ -13,6 +13,14 @@ from typing import Any
 import pytest
 
 from verdict.admission import RuntimeEvidence, admit
+
+
+# CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription(
+        [("cc", "oauth"), ("kr", "oauth"), ("cx", "oauth"), ("ag", "oauth"), ("gh", "oauth"), ("agy", "oauth")]
+    )
 from verdict.capacity import CapacityClass, classify_route_capacity
 from verdict.decision_signals.advisory import advise_order
 from verdict.metadata.mapping import IdentityMap
@@ -1084,14 +1092,35 @@ class TestProvenanceFlags:
         assert event["metadata_fixture"] is True
 
 
-def _run_cli(tmp_path: Path, fixture: dict[str, Any]) -> Any:
+def _run_cli(
+    tmp_path: Path,
+    fixture: dict[str, Any],
+    overlay_providers: list[tuple[str, str]] | None = None,
+) -> Any:
+    """Run the verdict ladder CLI against a fixture JSON file.
+
+    ``overlay_providers`` declares (provider, auth_type) pairs as SUBSCRIPTION
+    in the subprocess's VERDICT_HOME overlay so CP2-removed oauth rules do not
+    cause FAIL_CLOSED in the subprocess.
+    """
     import os
     import subprocess
     import sys
 
     path = tmp_path / "inventory.json"
     path.write_text(json.dumps(fixture), encoding="utf-8")
-    env = {**os.environ, "VERDICT_HOME": str(tmp_path / "vh"), "VERDICT_PLAIN": "1"}
+    vh = tmp_path / "vh"
+    if overlay_providers:
+        vh.mkdir(parents=True, exist_ok=True)
+        (vh / "connection_billing_overlay.json").write_text(
+            json.dumps({
+                "entries": [
+                    {"provider": p, "authType": a, "billing": "subscription", "overage": "hard-stop"}
+                    for (p, a) in overlay_providers
+                ]
+            })
+        )
+    env = {**os.environ, "VERDICT_HOME": str(vh), "VERDICT_PLAIN": "1"}
     return subprocess.run(
         [
             sys.executable,
@@ -1117,7 +1146,11 @@ class TestLadderCli:
     exercised end to end."""
 
     def test_fixture_run_without_metadata_store(self, tmp_path: Path) -> None:
-        proc = _run_cli(tmp_path, {"inventory": [row("kr/gpt-4.1")], "connections": [conn("kr")]})
+        proc = _run_cli(
+            tmp_path,
+            {"inventory": [row("kr/gpt-4.1")], "connections": [conn("kr")]},
+            overlay_providers=[("kr", "oauth")],
+        )
         assert proc.returncode == 0, proc.stderr
         out = json.loads(proc.stdout)
         assert out["ladder_result"]["metadata_fixture"] is True

@@ -65,6 +65,12 @@ def conn(
     }
 
 
+# CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("kiro", "oauth")])
+
+
 class FakeProbe:
     def __init__(self, results: Mapping[str, HealthResult] | None = None) -> None:
         self.results = dict(results or {})
@@ -1652,7 +1658,7 @@ def test_planner_respects_capability_floor_before_cheapest_tier(tmp_path, free_t
             {**row("gl/glm-5", owned_by="glm"), "capability_tier": free_tier},
             {**row("cc/claude-sonnet-5", owned_by="claude"), "capability_tier": 1},
         ],
-        [conn("glm", plan="free"), conn("claude")],
+        [conn("glm", free_only=True), conn("claude")],
     )
     choice, _ = ladder.select(
         TaskRequirements(

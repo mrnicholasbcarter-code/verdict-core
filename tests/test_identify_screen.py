@@ -300,7 +300,11 @@ def test_newer_negative_during_conversation_wins_and_original_clock_is_kept(tmp_
     assert HealthCache(path).entry("unrelated/route").tool_ok
 
 
-def test_evidence_preserves_authoritative_alias_identity_and_capacity():
+def test_evidence_preserves_authoritative_alias_identity_and_capacity(billing_overlay_subscription):
+    # CP2 removed oauth → SUBSCRIPTION; write the operator overlay so the
+    # fake "alpha/oauth" connection classifies as subscription.
+    billing_overlay_subscription([("alpha", "oauth")])
+
     from test_identify import payloads
 
     from verdict.omniroute_evidence import parse_omniroute_evidence

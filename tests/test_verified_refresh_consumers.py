@@ -525,10 +525,25 @@ GATEWAY = "http://offline.invalid:20128"
 
 @pytest.fixture
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Keep state under tmp_path and ignore the operator's controller route."""
+    """Keep state under tmp_path and ignore the operator's controller route.
+
+    Also writes the billing overlay so that cc/oauth is classified as SUBSCRIPTION.
+    CP2 removed the oauth → SUBSCRIPTION rule (design.md CP2 §2.2, 2026-11-19).
+    """
+    import json as _json
+
     monkeypatch.delenv("VERDICT_HEALTH_CACHE", raising=False)
     monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
     monkeypatch.setattr(surfaces, "active_controller_route", lambda: None)
+    # Write billing overlay for cc/oauth → subscription.
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "connection_billing_overlay.json").write_text(
+        _json.dumps({
+            "entries": [
+                {"provider": "cc", "authType": "oauth", "billing": "subscription", "overage": "hard-stop"},
+            ]
+        })
+    )
     return tmp_path
 
 
@@ -544,7 +559,7 @@ def _mixed_adapter(tmp_path: Path) -> VerifiedSnapshotAdapter:
             inventory_row("ap/metered", pricing={"input": 1.0, "output": 2.0}),
         ],
         [
-            conn("fr", auth="apikey", plan="free"),
+            conn("fr", auth="apikey", plan="free", import_free_only=True),
             conn("cc"),
             conn("zz", auth="apikey", plan=""),
             conn("ap", auth="apikey", plan="PAYG"),
