@@ -1,4 +1,3 @@
 schema: verdict-change-v1
 # New observability command: computes metrics from existing receipts.
 # No change to routing, admission, or spec-governed behaviour.
-skip_specs: true

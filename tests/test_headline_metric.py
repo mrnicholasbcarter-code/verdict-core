@@ -550,8 +550,63 @@ class TestAggregateExtendedMetrics:
         try:
             result = compute_headline_report(Path("/tmp/fake-runs"))
             assert result["headline_accepted_per_paid_share"] == pytest.approx(2.0)
+            # Note is null when the value is available.
+            assert result["headline_accepted_per_paid_share_note"] is None
         finally:
             hm.load_receipts_since = original
+
+    def test_headline_null_when_no_paid_attempts(self) -> None:
+        """When all attempts are free, headline is null (never a string sentinel)."""
+        import verdict.headline_metric as hm
+        from verdict.headline_metric import compute_headline_report
+
+        receipt = _make_receipt(
+            nodes=[_node("n1", "implement", attempts=[_attempt("free/x", "free", cost_usd=0.0)])]
+        )
+        original = hm.load_receipts_since
+
+        def fake_load(runs_dir: Path, since: Any = None) -> tuple:
+            return [(runs_dir / "fake", receipt)], 0, 0
+
+        hm.load_receipts_since = fake_load  # type: ignore[assignment]
+        try:
+            result = compute_headline_report(Path("/tmp/fake-runs"))
+            # JSON-serialisable null, not a string sentinel.
+            assert result["headline_accepted_per_paid_share"] is None
+            # Companion note explains why.
+            assert isinstance(result["headline_accepted_per_paid_share_note"], str)
+            assert len(result["headline_accepted_per_paid_share_note"]) > 0
+        finally:
+            hm.load_receipts_since = original
+
+    def test_headline_null_on_empty_runs(self) -> None:
+        """With no runs at all, headline is null and note is set."""
+        from verdict.headline_metric import compute_headline_report
+
+        result = compute_headline_report(Path("/tmp/nonexistent-verdict-headline-runs"))
+        assert result["headline_accepted_per_paid_share"] is None
+        assert isinstance(result["headline_accepted_per_paid_share_note"], str)
+
+    def test_no_division_by_zero(self) -> None:
+        """paid_model_share of 0.0 never raises ZeroDivisionError."""
+        from verdict.headline_metric import compute_headline_report
+
+        # Empty runs dir → paid_share = 0.0 → must not raise.
+        result = compute_headline_report(Path("/tmp/nonexistent-verdict-no-div-runs"))
+        assert result["paid_model_share"] == 0.0
+        assert result["headline_accepted_per_paid_share"] is None
+
+    def test_headline_json_serialisable(self) -> None:
+        """The returned dict is fully JSON-serialisable (null, not string sentinels)."""
+        import json as json_mod
+
+        from verdict.headline_metric import compute_headline_report
+
+        result = compute_headline_report(Path("/tmp/nonexistent-verdict-json-runs"))
+        serialised = json_mod.dumps(result)
+        parsed = json_mod.loads(serialised)
+        # headline is JSON null
+        assert parsed["headline_accepted_per_paid_share"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -594,7 +649,8 @@ class TestFormatHeadlineReport:
             "fixture_runs_excluded": 0,
             "live_runs_skipped": 0,
             "since": None,
-            "headline_accepted_per_paid_share": "undefined (no paid model attempts)",
+            "headline_accepted_per_paid_share": None,
+            "headline_accepted_per_paid_share_note": "no paid model attempts in selected period",
         }
         text = format_headline_report(data)
         assert "planner/reviewer individual call tokens" in text

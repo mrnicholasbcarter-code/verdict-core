@@ -1108,16 +1108,14 @@ def _action_metrics(**kwargs: Any) -> ActionResult:
 
 
 def _action_headline_metric(**kwargs: Any) -> ActionResult:
-    """M0 headline metric report: accepted work per % paid quota / per paid dollar.
+    """M0 headline metric report: accepted work per paid model share.
 
     Computes the headline metric from verified receipts in *runs_dir*, excluding
-    fixture runs (run_id starting with "test-").  Optionally enriches with live
-    OmniRoute quota data when ``with_quota`` is True.
+    fixture runs (run_id starting with "test-").
 
     kwargs:
         runs_dir (str): Path to the runs directory.
         since (str|None): ISO date string (YYYY-MM-DD) to filter runs by start date.
-        with_quota (bool): Query OmniRoute gateway for live quota data.
         json (bool): Return JSON-formatted output.
     """
     from datetime import date
@@ -1127,7 +1125,6 @@ def _action_headline_metric(**kwargs: Any) -> ActionResult:
 
     runs_dir_str: str = kwargs.get("runs_dir", ".verdict/runs")
     since_str: str | None = kwargs.get("since")
-    with_quota: bool = bool(kwargs.get("with_quota", False))
 
     runs_dir = Path(runs_dir_str)
     if not runs_dir.exists():
@@ -1146,7 +1143,7 @@ def _action_headline_metric(**kwargs: Any) -> ActionResult:
                 exit_code=2,
             )
 
-    data = compute_headline_report(runs_dir, since=since, with_quota=with_quota)
+    data = compute_headline_report(runs_dir, since=since)
     return ActionResult(data=data, ok=data.get("runs_processed", 0) >= 0, exit_code=0)
 
 

@@ -27,9 +27,15 @@ splits, frontier tokens, first-attempt pass rates, and a daily report command.
 1. The fraction of model attempts on paid routes (from receipts).
 2. The fraction of a provider's subscription window consumed (from OmniRoute).
 
-Both are computed. Source 1 is always available. Source 2 uses
-`check_quota` from the OmniRoute MCP / HTTP API; most connections return
-`quotaTotal: null`, so the note explains this explicitly when unavailable.
+Source 1 (`paid_model_share`) is always available from local receipts.
+
+Source 2 is deferred.  The OmniRoute gateway exposes quota data at
+`/api/resilience/connections` (requires `Authorization: Bearer
+{OMNIROUTE_MANAGEMENT_TOKEN}`), not at a simple `/api/quota` endpoint.  The
+connection records use field names (`remaining`, `limit`) that do not match a
+naive implementation.  The M0 report computes Source 1 only; a follow-up story
+will add Source 2 enrichment once the endpoint shape is confirmed against the
+gateway docs at `http://localhost:20128/docs`.
 
 ## Fixture exclusion
 
@@ -58,9 +64,10 @@ Calls `compute_run_metrics` for the base; adds:
 
 - `load_receipts_since(runs_dir, since)`: loads, verifies, and filters.
 - `aggregate_extended_metrics(receipts)`: aggregates `extend_run_metrics` output.
-- `fetch_live_quota()`: HTTP GET `http://localhost:20128/api/quota`; returns
-  None if unreachable.
-- `compute_headline_report(runs_dir, since, with_quota)`: top-level entry point.
+- `compute_headline_report(runs_dir, since)`: top-level entry point.
+  Returns `headline_accepted_per_paid_share: float | null` and
+  `headline_accepted_per_paid_share_note: str | null`; the note explains
+  why the value is unavailable when the denominator is zero or absent.
 - `format_headline_report(data)`: terminal output.
 
 ### `verdict/actions/registry.py` — `_action_headline_metric`
@@ -69,8 +76,8 @@ Thin wrapper around `compute_headline_report`; registered as `headline.metric`.
 
 ### `verdict/orchestration/cli.py` — `_metrics` extension
 
-`--daily`, `--since DATE`, `--quota` flags route to the headline action instead
-of the per-run table when any of these flags is set.
+`--daily` and `--since DATE` flags route to the headline action instead of the
+per-run table when either flag is set.
 
 ## Test Strategy
 
@@ -83,11 +90,18 @@ of the per-run table when any of these flags is set.
 
 ## Decisions
 
-**Decision 1: receipt-based paid share as the primary denominator.**
+**Decision 1: receipt-based paid share as the M0 denominator.**
 `paid_model_share` (subscription + metered attempts / total) is always
-computable from local receipts without network access. OmniRoute gateway quota
-(`with_quota`) is a secondary enrichment because most connections return
-`quotaTotal: null`. Both are reported when available; neither is hidden.
+computable from local receipts without network access and without a management
+token.  OmniRoute gateway quota enrichment is deferred to a follow-up story
+(see Denominator section above).
+
+**Decision 4: headline value is null, not a sentinel string, when unavailable.**
+`headline_accepted_per_paid_share` is `null` (Python `None`) in the JSON output
+when no paid model attempts exist in the selected period.  A companion key
+`headline_accepted_per_paid_share_note` carries the human-readable reason.
+Using `null` rather than `"undefined ..."` lets callers check for missing data
+with a null guard instead of a string parse.
 
 **Decision 2: `completion_verdict` determines COMPLETE, not `claimed_outcome`.**
 `extend_run_metrics` trusts `compute_run_metrics` / `completion_verdict` to
@@ -102,19 +116,19 @@ the production call chain visible without any runtime cost.
 
 ## Risks / Trade-offs
 
-- `fetch_live_quota` makes an HTTP call to `localhost:20128`. The 5-second
-  timeout and graceful fallback (`None` on any failure) mean a down gateway
-  does not block the report; it just omits the quota section.
 - The `test-` prefix convention for fixture exclusion is by agreement, not a
   signed property. Any live run whose `run_id` starts with `test-` is silently
   excluded. The report says how many were excluded so the operator sees if this
   fires unexpectedly.
+- `paid_model_share` is 0 when all runs are free (no subscription or metered
+  attempts).  The report returns `null` for the headline and says so explicitly;
+  no division by zero occurs.
 
 ## Security / trust implications
 
-No new credentials, secrets or external writes. `fetch_live_quota` reads from
-`localhost:20128` only (the local OmniRoute gateway); the response is treated as
-untrusted data. No receipt contents are written or transmitted. The action
+No new credentials, secrets or external writes. All inputs are local receipt
+files already written by Verdict's own orchestration path; no external network
+calls are made. No receipt contents are written or transmitted. The action
 returns a plain dict; no credentials appear in the output.
 
 ## Routing / context / memory implications

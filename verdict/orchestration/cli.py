@@ -241,11 +241,6 @@ def add_parsers(subparsers: Any) -> None:
         metavar="DATE",
         help="Filter to runs started on or after DATE (YYYY-MM-DD)",
     )
-    met.add_argument(
-        "--quota",
-        action="store_true",
-        help="Enrich report with live OmniRoute quota data (requires gateway)",
-    )
 
     from verdict.orchestration import supervisor
 
@@ -1377,13 +1372,11 @@ def _metrics(args: argparse.Namespace) -> int:
     path_arg = args.path
     daily: bool = getattr(args, "daily", False)
     since: str | None = getattr(args, "since", None)
-    with_quota: bool = getattr(args, "quota", False)
 
-    # --daily (or --since / --quota alone) triggers the headline metric report.
-    if daily or since or with_quota:
+    # --daily or --since triggers the headline metric report.
+    if daily or since:
         result = run_action(
-            "headline.metric",
-            {"runs_dir": runs_dir, "since": since, "with_quota": with_quota, "json": args.json},
+            "headline.metric", {"runs_dir": runs_dir, "since": since, "json": args.json}
         )
         data = result.data
         if data.get("error"):

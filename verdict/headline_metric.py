@@ -5,11 +5,17 @@ the M0 headline metric (BOD-342 D15, issue #1213).
 
 Headline:
   accepted_tasks / paid_model_share  (from receipts, always available)
-  accepted_tasks / quota_pct_used    (from OmniRoute gateway, when available)
 
 Fixture runs (run_id starting with "test-") are excluded from the live
-aggregate; ``fetch_runs_since`` skips them and ``format_headline_report``
+aggregate; ``load_receipts_since`` skips them and ``format_headline_report``
 says so explicitly when any fixture is encountered.
+
+Gateway quota enrichment (accepted_tasks / % quota consumed) is not included
+in M0.  The OmniRoute gateway exposes quota data at
+``/api/resilience/connections`` (management-token gated), not at a simple
+``/api/quota`` endpoint, and the connection records use different field names
+than a naive implementation would assume.  A follow-up story will add this
+enrichment properly once the endpoint shape is confirmed.
 """
 
 from __future__ import annotations
@@ -262,113 +268,41 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
     }
 
 
-def fetch_live_quota() -> list[dict[str, Any]] | None:
-    """Query OmniRoute for per-connection quota data.
-
-    Returns the list of provider quota entries or ``None`` when the gateway
-    is unreachable.  Each entry has at minimum ``provider``, ``quotaUsed``,
-    ``quotaTotal``, and ``percentRemaining`` (which may be ``null``).
-
-    This call is optional — the report degrades gracefully when the gateway
-    is unavailable.
-    """
-    try:
-        import httpx
-
-        resp = httpx.get("http://localhost:20128/api/quota", timeout=5.0)
-        resp.raise_for_status()
-        data = resp.json()
-        return list(data.get("providers") or [])
-    except Exception:
-        pass
-
-    # Fallback: try the MCP omniroute_check_quota path via subprocess env
-    # (not available in test context; just return None).
-    return None
-
-
-def _summarise_quota(quota_providers: list[dict[str, Any]]) -> dict[str, Any]:
-    """Summarise OmniRoute quota data for the report.
-
-    Only providers with ``quotaTotal != null`` contribute to the aggregate.
-    Returns:
-    - ``tracked``: list of connections with real quota data
-    - ``pct_used_total``: sum of (100 - percentRemaining) across tracked connections
-    - ``pct_used_note``: human-readable explanation
-    """
-    tracked = [p for p in quota_providers if p.get("quotaTotal") is not None]
-    if not tracked:
-        return {
-            "tracked": [],
-            "pct_used_total": None,
-            "pct_used_note": (
-                "No subscription connections report quota totals; "
-                "paid-quota denominator unavailable from gateway."
-            ),
-        }
-
-    total_pct_used = sum((100.0 - float(p.get("percentRemaining") or 0.0)) for p in tracked)
-    note = (
-        f"{len(tracked)} connection(s) with quota tracking; "
-        f"total % quota consumed: {total_pct_used:.1f} "
-        f"(sum across connections, not a single-window figure)"
-    )
-    return {"tracked": tracked, "pct_used_total": total_pct_used, "pct_used_note": note}
-
-
-def compute_headline_report(
-    runs_dir: Path, since: date | None = None, with_quota: bool = False
-) -> dict[str, Any]:
+def compute_headline_report(runs_dir: Path, since: date | None = None) -> dict[str, Any]:
     """Main entry point for the M0 headline metric report.
 
-    Loads verified receipts from *runs_dir*, excludes fixture runs, aggregates
-    extended metrics, and optionally enriches with live OmniRoute quota data.
+    Loads verified receipts from *runs_dir*, excludes fixture runs, and
+    aggregates extended metrics.
 
     Returns a dict with:
     - All keys from ``aggregate_extended_metrics``
     - ``fixture_runs_excluded``: count of fixture runs excluded
     - ``live_runs_skipped``: count of live runs with verification problems
     - ``since``: the date filter applied (ISO string or null)
-    - ``quota``: quota summary (when *with_quota* is True)
-    - ``headline_accepted_per_paid_share``: accepted_tasks / paid_model_share
-    - ``headline_accepted_per_quota_pct``: accepted_tasks / pct_used_total (quota-based)
+    - ``headline_accepted_per_paid_share``: float when computable, else null
+    - ``headline_accepted_per_paid_share_note``: null when computable,
+      else a string explaining why the value is unavailable
     """
     receipts, skipped_live, fixture_skipped = load_receipts_since(runs_dir, since=since)
     agg = aggregate_extended_metrics(receipts)
 
-    # Headline metric from receipts (always computable).
+    # Headline metric from receipts (always computable when paid attempts exist).
     paid_share = agg.get("paid_model_share", 0.0)
     if isinstance(paid_share, float) and paid_share > 0:
-        headline_receipt: float | str = agg["accepted_tasks"] / paid_share
+        headline_value: float | None = agg["accepted_tasks"] / paid_share
+        headline_note: str | None = None
     else:
-        headline_receipt = "undefined (no paid model attempts)"
+        headline_value = None
+        headline_note = "no paid model attempts in selected period"
 
-    result: dict[str, Any] = {
+    return {
         **agg,
         "fixture_runs_excluded": fixture_skipped,
         "live_runs_skipped": skipped_live,
         "since": since.isoformat() if since else None,
-        "headline_accepted_per_paid_share": headline_receipt,
+        "headline_accepted_per_paid_share": headline_value,
+        "headline_accepted_per_paid_share_note": headline_note,
     }
-
-    if with_quota:
-        quota_providers = fetch_live_quota()
-        if quota_providers is not None:
-            quota_summary = _summarise_quota(quota_providers)
-        else:
-            quota_summary = {
-                "tracked": [],
-                "pct_used_total": None,
-                "pct_used_note": "OmniRoute gateway unreachable.",
-            }
-        result["quota"] = quota_summary
-        pct_used = quota_summary.get("pct_used_total")
-        if isinstance(pct_used, float) and pct_used > 0:
-            result["headline_accepted_per_quota_pct"] = agg["accepted_tasks"] / pct_used
-        else:
-            result["headline_accepted_per_quota_pct"] = "undefined (quota denominator unavailable)"
-
-    return result
 
 
 def format_headline_report(data: dict[str, Any]) -> str:
@@ -411,6 +345,7 @@ def format_headline_report(data: dict[str, Any]) -> str:
 
     # Paid model share headline (from receipts)
     h = data.get("headline_accepted_per_paid_share")
+    h_note = data.get("headline_accepted_per_paid_share_note")
     paid_share = data.get("paid_model_share", 0.0)
     if isinstance(h, float):
         lines.append(
@@ -418,18 +353,8 @@ def format_headline_report(data: dict[str, Any]) -> str:
             f"  (paid share={paid_share:.1%} of model attempts)"
         )
     else:
-        lines.append(f"Accepted / paid model share:  {h}")
-
-    # Quota headline (if requested)
-    if "quota" in data:
-        qh = data.get("headline_accepted_per_quota_pct")
-        note = (data.get("quota") or {}).get("pct_used_note", "")
-        if isinstance(qh, float):
-            lines.append(f"Accepted / quota % used:      {qh:.2f}")
-        else:
-            lines.append(f"Accepted / quota % used:      {qh}")
-        if note:
-            lines.append(f"  Quota note: {note}")
+        reason = h_note or "unavailable"
+        lines.append(f"Accepted / paid model share:  null  ({reason})")
 
     lines.append("")
 
