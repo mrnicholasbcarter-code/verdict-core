@@ -27,8 +27,15 @@ from verdict.proxy import UpstreamProxy
 
 
 class _WorkerPinningIntelligence(FixedIntelligence):
-    """Intelligence that returns a decision with one admitted route in
-    candidate_states, without asserting the task text."""
+    """Intelligence that returns a decision with two admitted routes.
+
+    The primary model is ``other-primary``; ``selected-model`` is an admitted
+    alternative.  Pinning to ``selected-model`` must override the primary
+    selection.  ``RecordingTransport`` hardcodes ``"model":"selected-model"``
+    in its response body, so ``other-primary`` as the upstream request model
+    would trigger the relay's model-identity check and produce a 503 without
+    pinning — making the positive test genuinely discriminating.
+    """
 
     async def route(
         self,
@@ -39,16 +46,18 @@ class _WorkerPinningIntelligence(FixedIntelligence):
         request_id: str | None = None,
     ) -> RoutingDecision:
         decision = RoutingDecision(
-            model="selected-model",
+            model="other-primary",
             provider="omniroute",
             tier=2,
             reason="worker pinning test fixture",
             request_id="pin-req-1",
             managed_backend_status="healthy",
             quality_outcome="unknown",
-            # Only "selected-model" is admitted; any other model in the request
-            # body must be denied fail-closed.
-            candidate_states=[{"model_id": "selected-model", "admitted": True}],
+            alternatives=["selected-model"],
+            candidate_states=[
+                {"model_id": "other-primary", "admitted": True},
+                {"model_id": "selected-model", "admitted": True},
+            ],
         )
         return with_relay_proofs(decision, context)
 
@@ -74,9 +83,12 @@ def _configure(monkeypatch: pytest.MonkeyPatch) -> RecordingTransport:
 
 
 def test_worker_header_pins_admitted_route(monkeypatch: pytest.MonkeyPatch) -> None:
-    """X-Verdict-Worker header + admitted model in body -> decision uses that model.
+    """X-Verdict-Worker header + admitted alternative -> upstream receives that route.
 
-    The upstream request must carry the pinned route and the response must be 200.
+    The intelligence selects ``other-primary`` but admits ``selected-model`` as an
+    alternative.  The worker pins to ``selected-model``.  The upstream request must
+    carry ``selected-model``, not the originally-selected ``other-primary`` — proving
+    that the pinning branch changed the decision, not merely confirmed it.
     """
     transport = _configure(monkeypatch)
     with TestClient(api.app) as client:
@@ -90,6 +102,7 @@ def test_worker_header_pins_admitted_route(monkeypatch: pytest.MonkeyPatch) -> N
         )
     assert response.status_code == 200
     assert len(transport.requests) == 1
+    # Pinning must override the primary selection; the upstream sees the pinned route.
     assert transport.requests[0]["body"]["model"] == "selected-model"
 
 
