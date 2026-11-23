@@ -20,7 +20,7 @@ An opt-in community roster report SHALL retain unmatched entries and give a reas
 - **AND** only the measured outcome determines liveness and capability
 
 #### Scenario: A route cannot be screened
-- **WHEN** the route is absent, lacks usable connection evidence, has a recorded billing refusal, or is blocked by the operator's spend policy
+- **WHEN** the route is absent, lacks usable connection evidence, has a billing refusal still inside its negative window, or is blocked by the operator's spend policy
 - **THEN** Verdict reports the reason without sending a probe
 
 #### Scenario: One model refuses while another shares the connection

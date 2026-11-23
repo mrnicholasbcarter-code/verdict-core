@@ -18,5 +18,5 @@ Verify: `pytest tests/test_identify_screen.py tests/test_identify_cli.py`.
 ## 3. Verification
 
 - [x] 3.1 Focused and neighbouring tests, ruff, mypy strict, doc links, strict OpenSpec validation and the lint gates.
-- [ ] 3.2 Independent review of the diff.
+- [x] 3.2 Independent review of the diff (OpenCodeReview, Claude Sonnet 5.5 via OmniRoute): one finding, refusal skip had no expiry; fixed.
 - [ ] (post-merge) 4.1 On installed main: record a `--community-roster` passive report, a bounded roster screen, eligibility for a discovered route, and a verified coding-task receipt through it.

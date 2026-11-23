@@ -686,12 +686,14 @@ provider. `route_evidence` separates recorded liveness and tool proof from
 capacity labels.
 
 With `--screen`, `--community-roster` narrows the existing bounded probe to
-matching reachable routes. For connections that cannot incur per-token
-charges, `--assume-unmetered-connections` permits probing a route otherwise
-excluded **only** by the installed classifier's positive catalog price rule.
-The flag does not relabel routes, override an explicit `--capacity` filter,
-or retry recorded billing refusals. A screen result is capability evidence,
-not dispatch authority or proof of a completed coding task.
+matching reachable routes, oldest evidence first, including routes of
+`unknown` capacity. A billing refusal is skipped while it is still negative
+and screened again once that window expires. For connections that cannot
+incur per-token charges, `--assume-unmetered-connections` permits probing a
+route otherwise excluded **only** by the installed classifier's positive
+catalog price rule. The flag does not relabel routes or override an explicit
+`--capacity` filter. A screen result is capability evidence, not dispatch
+authority or proof of a completed coding task.
 
 `--max-capability-tier N` (0 = frontier to 3 = small; `--screen` only) skips,
 without a probe, every route whose capability tier is unknown

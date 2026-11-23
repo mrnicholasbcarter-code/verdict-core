@@ -466,7 +466,7 @@ def test_community_screen_joins_exact_routes_and_skips_billing_aliases(tmp_path)
     cache.record(
         "alias/bad",
         ProbeResult(chat_ok=False, tool_ok=False, category=CATEGORY_PAYMENT, http_status=402),
-        NOW - timedelta(days=2),
+        NOW - timedelta(hours=1),
     )
     cache.save()
     calls = []
@@ -492,6 +492,42 @@ def test_community_screen_joins_exact_routes_and_skips_billing_aliases(tmp_path)
     assert (
         next(r for r in report["routes"] if r["route_id"] == "p/org/good")["capacity"] == "unknown"
     )
+
+
+def test_roster_screen_checks_unknown_capacity_and_expired_refusals_by_default(tmp_path):
+    """Catches unknown-capacity routes, or refusals past their window, never being screened."""
+    from verdict.discovery.sources.community import parse_fcm
+    from verdict.omniroute_evidence import LiveCandidate
+
+    roster = parse_fcm('export const p = [["unknown", "Unknown"], ["was-refused", "Refused"]];')
+    ids = ["p/unknown", "p/was-refused"]
+    evidence = replace(
+        snapshot(),
+        proven_by_traffic={},
+        inventory_route_ids=frozenset(ids),
+        inventory_rows={rid: {"owned_by": "p"} for rid in ids},
+        route_identities={rid: ("p", rid.partition("/")[2]) for rid in ids},
+        live_candidates={rid: LiveCandidate(rid, "p", ("connection",), True) for rid in ids},
+        route_capacities=dict.fromkeys(ids, "unknown"),
+    )
+    cache = HealthCache(tmp_path / "health.json")
+    refusal = ProbeResult(chat_ok=False, tool_ok=False, category=CATEGORY_PAYMENT, http_status=402)
+    cache.record("p/was-refused", refusal, NOW - timedelta(days=3))
+    cache.save()
+    calls = []
+    report = identify.screen_models(
+        evidence,
+        metadata=None,
+        cache=cache,
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=10,
+        max_routes=10,
+        clock=lambda: NOW,
+        roster=roster,
+    )
+    assert {rid for rid, _ in calls} == set(ids)
+    assert report["roster_counts"] == {"pass": 2}
 
 
 def test_roster_counts_a_keyless_inventory_provider_as_configured():

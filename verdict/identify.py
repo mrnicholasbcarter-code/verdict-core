@@ -433,6 +433,22 @@ def screen_models(
                 entry.checked_at if (entry := cache.entry(rating.route_id)) else oldest
             )
         )
+    # Billing refusals still inside their negative window, by route and by
+    # confirmed alias family. An expired refusal is screened again, so a model
+    # whose credit or free tier came back is found on the next run.
+    refused_routes: set[str] = set()
+    refused_families: set[tuple[str, str]] = set()
+    if matches is not None:
+        scanned_at = clock()
+        for rid, entry in cache.routes().items():
+            if entry.state_at(scanned_at) == STATE_NEGATIVE and (
+                entry.category == CATEGORY_PAYMENT
+                or entry.http_status == 402
+                or entry.capacity_evidence == "billing_402_metered"
+            ):
+                refused_routes.add(rid)
+                if rid in evidence.route_identities:
+                    refused_families.add(evidence.route_identities[rid])
     prober = Prober(
         cache=cache,
         routes_loader=lambda: (),
@@ -524,13 +540,7 @@ def screen_models(
         pool = backend_pool(route_id)
         # A fresh alias proof avoids repeating the same underlying model.
         siblings = [r for r in candidates if evidence.route_identities.get(r) == family]
-        if matches is not None and any(
-            entry.category == CATEGORY_PAYMENT
-            or entry.http_status == 402
-            or entry.capacity_evidence == "billing_402_metered"
-            for rid, entry in cache.routes().items()
-            if evidence.route_identities.get(rid, (provider, "")) == family or rid == route_id
-        ):
+        if route_id in refused_routes or family in refused_families:
             row["result"] = "skipped_billing_refusal"
         elif lookup.state == STATE_NEGATIVE:
             row["result"] = "skipped_negative"
@@ -628,15 +638,12 @@ def screen_models(
                 if fact == "billing_402_metered":
                     row["result"] = "skipped_billing_refusal"
                     continue
-                # An operator declaration can override a list-price-only veto,
-                # not known connection-level billing or an explicit capacity filter.
-                if (
-                    capacity == "metered"
-                    and not (assume_unmetered_connections and fact == "apikey_positive_pricing")
-                ) or (
-                    capacity == "unknown"
-                    and not assume_unmetered_connections
-                    and "unknown" not in capacities
+                # Unknown capacity is screened like free (ADR-049 assume_free): the
+                # screen is what produces the tool proof. An operator declaration can
+                # override a list-price-only veto, never connection-level billing facts
+                # or an explicit capacity filter.
+                if capacity == "metered" and not (
+                    assume_unmetered_connections and fact == "apikey_positive_pricing"
                 ):
                     row["result"] = "skipped_spend_policy"
                     continue
