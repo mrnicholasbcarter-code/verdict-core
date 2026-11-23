@@ -544,7 +544,7 @@ def screen_models(
             row["result"] = "skipped_billing_refusal"
         elif lookup.state == STATE_NEGATIVE:
             row["result"] = "skipped_negative"
-        elif any(
+        elif route_id not in requested and any(
             agentic_capability(cache.entry(r), now)["qualified"] for r in [route_id, *siblings]
         ):
             row["result"] = "skipped_fresh"

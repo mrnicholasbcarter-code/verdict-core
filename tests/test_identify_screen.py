@@ -1047,3 +1047,51 @@ def test_account_refusal_payment_honours_failure_scope(failure_scope, expected):
     )
     row: dict[str, object] = {"turns_sent": 1}
     assert identify._account_refusal(row, entry) == expected
+
+
+def test_rescreen_requested_bypasses_skipped_fresh_and_probes(tmp_path: object) -> None:
+    """Bug 1b: a route with a pending rescreen request is probed despite fresh agentic proof.
+
+    An unrequested fresh route in the same run is still skipped_fresh.
+    """
+    cache = HealthCache(tmp_path / "health.json")  # type: ignore[operator]
+    # Both subscription routes have fresh agentic proof (1 hour old — well within 24-h TTL).
+    for route in ("alias/strong", "q/model"):
+        cache.record(
+            route,
+            ProbeResult(
+                category="ok",
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+                identity="verified",
+            ),
+            NOW - timedelta(hours=1),
+        )
+    cache.save()
+    # Only alias/strong has a pending rescreen request.
+    cache.request_rescreen(["alias/strong"], now=NOW)
+
+    calls: list[object] = []
+    report = screen(tmp_path, calls, cache=cache)  # type: ignore[arg-type]
+
+    routes_by_id = {r["route_id"]: r for r in report["routes"]}
+
+    # alias/strong: fresh proof + rescreen request → must be probed, not skipped_fresh.
+    alias_row = routes_by_id["alias/strong"]
+    assert alias_row["result"] not in {"skipped_fresh", "skipped_negative"}, (
+        f"alias/strong has a rescreen request and should be probed; got {alias_row['result']!r}"
+    )
+    assert alias_row["turns_sent"] == 3, "full 3-turn agentic probe must run"
+
+    # q/model: fresh proof, no rescreen request → still skipped_fresh.
+    q_row = routes_by_id.get("q/model")
+    if q_row is not None:
+        assert q_row["result"] == "skipped_fresh", (
+            f"q/model has no rescreen request and should be skipped_fresh; got {q_row['result']!r}"
+        )
+
+    # The hint must be consumed after the probe sends its first turn.
+    reloaded = HealthCache(tmp_path / "health.json")  # type: ignore[operator]
+    assert "alias/strong" not in reloaded.rescreen_requests()

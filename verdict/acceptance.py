@@ -637,6 +637,17 @@ def eligibility_check(
                 seed=seed,
             )
             quality["served_set_source"] = served_set_source
+            _failed_listed = quality.get("failed_all_listed", [])
+            if _failed_listed:
+                try:
+                    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+
+                    HealthCache(default_cache_path()).request_rescreen(
+                        _failed_listed, now=datetime.now(timezone.utc)
+                    )
+                    quality["rescreen_requested"] = sorted(_failed_listed)
+                except Exception as exc:
+                    quality["rescreen_requested_error"] = type(exc).__name__
             check.detail["independent_check"] = quality
             precision, recall = quality["precision"], quality["recall_estimate"]
             failures = []

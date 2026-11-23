@@ -374,4 +374,5 @@ def measure(
         "precision_min": PRECISION_MIN,
         "recall_min": RECALL_MIN,
         "checks": checks,
+        "failed_all_listed": sorted(r.route for r in on_listed if r.outcome == "fail"),
     }

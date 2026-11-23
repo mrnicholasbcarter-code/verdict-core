@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from tests.test_inband_credit_refusal import _Response, refusal_body
 from verdict.orchestration.health_cache import (
     AGENTIC_PROBE_TTL_SECONDS,
     HealthCache,
@@ -24,6 +25,7 @@ from verdict.prove_at_rest import (
     AGENTIC_PROBE_FILE,
     AGENTIC_TOOL_EDIT,
     AGENTIC_TOOL_READ,
+    AGENTIC_TURNS,
     DEFAULT_AGENTIC_INTERVAL_HOURS,
     AdmittedRoute,
     CycleStats,
@@ -31,6 +33,7 @@ from verdict.prove_at_rest import (
     Prober,
     _http_error_exchange,
     agentic_candidates,
+    live_agentic_transport,
     order_cycle,
     routes_from_evidence,
 )
@@ -899,4 +902,67 @@ def test_daemon_auth_buffer_respects_newer_evidence_and_same_time_negative(tmp_p
     assert entry.agentic_ok is (minutes > 0)
     assert entry.category == ("ok" if minutes else "authentication")
     assert entry.checked_at == later
+
+
+def test_reprobe_budget_is_reserved_before_chat_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bug 2: chat phase was spending full max_requests, leaving nothing for the reprobe.
+
+    With the fix, reserved = 1 * AGENTIC_TURNS = 3 turns are protected before
+    the coordinator runs. The coordinator receives a reduced budget (4 turns),
+    probes 2 subscription routes (2 turns each), and leaves 3 turns for the
+    named reprobe.
+
+    Without the fix: coordinator gets all 7 turns, probes 3 subscription routes
+    (6 turns), remaining = 1 < 3 → named reprobe silently skipped.
+    """
+    # Three subscription routes for the chat coordinator to try to probe.
+    sub_routes = [AdmittedRoute(f"p{i}/m", f"p{i}", "subscription") for i in range(3)]
+    # One free reprobe route with fresh agentic proof (would normally be skipped).
+    reprobe_route = _free("pa/reprobe")
+    cache = HealthCache(tmp_path / "health.json")
+    cache.record(
+        "pa/reprobe",
+        ProbeResult(
+            category="ok", chat_ok=True, tool_ok=True, probe_class="agentic", agentic_ok=True
+        ),
+        NOW - timedelta(minutes=5),
+    )
+    cache.save()
+
+    # Record which routes reached the agentic phase.
+    agentic_sent: list[str] = []
+
+    def fake_open(request: object, *, timeout: float) -> _Response:
+        import json as _json
+
+        agentic_sent.append(_json.loads(request.data)["model"])  # type: ignore[attr-defined]
+        return _Response(refusal_body())
+
+    monkeypatch.setattr("verdict.prove_at_rest.open_no_redirect", fake_open)
+
+    # Chat transport: return success so the coordinator marks each route and counts requests.
+    def chat_transport(route_id: str, phase: str, timeout: float) -> ProbeExchange:
+        return ProbeExchange(http_status=200, ok=True, chat_exact=True, tool_called=True)
+
+    prober = Prober(
+        cache,
+        lambda: [reprobe_route, *sub_routes],
+        chat_transport,
+        agentic_transport=live_agentic_transport("http://gw", api_key="k"),
+        clock=lambda: NOW,
+        # 7 = 1 reprobe route x AGENTIC_TURNS(3) reserved + 4 for chat (2 routes x 2 turns each).
+        # Without fix: chat gets all 7 -> 3 subscription routes (6 turns) -> remaining=1 < 3 -> no reprobe.
+        # With fix: chat gets 4 -> 2 subscription routes -> remaining=3 -> reprobe runs.
+        max_requests=1 * AGENTIC_TURNS + 4,
+        reprobe_routes=frozenset({"pa/reprobe"}),
+    )
+    stats = prober.run_once()
+
+    assert "pa/reprobe" in agentic_sent, (
+        f"named reprobe must run when budget is reserved first; "
+        f"sent={agentic_sent!r}, stats.requests={stats.requests}"
+    )
+    assert stats.requests <= 7, f"total must not exceed max_requests; got {stats.requests}"
     assert not prober._auth_fail_buffer
