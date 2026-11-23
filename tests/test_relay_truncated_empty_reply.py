@@ -125,6 +125,91 @@ def test_detector_ignores_missing_or_bad_input() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Multi-choice (n > 1) detector tests
+# ---------------------------------------------------------------------------
+
+
+def test_detector_does_not_match_when_choice_0_truncated_but_choice_1_has_content() -> None:
+    """With n=2, choice 0 truncated-empty + choice 1 with content → NOT a truncated reply.
+
+    The relay must not discard a response body that has at least one usable choice.
+    """
+    body: dict[str, Any] = {
+        "id": "chatcmpl-multi",
+        "object": "chat.completion",
+        "model": "m",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "length",
+                "message": {"role": "assistant", "content": ""},
+            },
+            {
+                "index": 1,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "ok"},
+            },
+        ],
+    }
+    assert not is_truncated_empty_reply(body)
+
+
+def test_detector_matches_when_all_choices_are_truncated_empty() -> None:
+    """With n=2 and both choices truncated-empty the detector DOES match."""
+    body: dict[str, Any] = {
+        "id": "chatcmpl-multi-all",
+        "object": "chat.completion",
+        "model": "m",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "length",
+                "message": {"role": "assistant", "content": ""},
+            },
+            {
+                "index": 1,
+                "finish_reason": "length",
+                "message": {"role": "assistant", "content": None},
+            },
+        ],
+    }
+    assert is_truncated_empty_reply(body)
+
+
+def test_detector_does_not_match_non_mapping_entry_in_choices() -> None:
+    """A non-Mapping entry anywhere in choices makes the body non-truncated.
+
+    The detector cannot confirm an unknown entry is truncated-empty, so it
+    returns False conservatively.
+    """
+    body: dict[str, Any] = {
+        "id": "chatcmpl-bad",
+        "object": "chat.completion",
+        "model": "m",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "length",
+                "message": {"role": "assistant", "content": ""},
+            },
+            "not-a-dict",
+        ],
+    }
+    assert not is_truncated_empty_reply(body)
+
+
+def test_detector_does_not_match_empty_choices_list() -> None:
+    """An empty choices list is not a truncated-empty reply."""
+    body: dict[str, Any] = {
+        "id": "chatcmpl-empty",
+        "object": "chat.completion",
+        "model": "m",
+        "choices": [],
+    }
+    assert not is_truncated_empty_reply(body)
+
+
+# ---------------------------------------------------------------------------
 # Relay integration tests
 # ---------------------------------------------------------------------------
 

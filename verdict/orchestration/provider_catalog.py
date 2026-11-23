@@ -304,10 +304,12 @@ def is_truncated_empty_reply(body: Mapping[str, Any] | bytes | str | None) -> bo
     with an empty or absent content field.  This is not a partial answer; the
     caller received no usable text at all.
 
-    All of these must hold: ``finish_reason`` is ``"length"``, the assistant
+    Returns True only when **every** choice in the ``choices`` array satisfies
+    all of these conditions: ``finish_reason`` is ``"length"``, the assistant
     message carries no tool calls, and the content field is absent or empty.
-    A partial answer (non-empty content, finish_reason "length") is not matched
-    here — partial answers pass through unchanged.
+    If any choice has non-empty content, is a valid tool-call response, or is
+    not a Mapping, the body contains usable output and this function returns
+    False.  An absent or empty ``choices`` list also returns False.
     """
     parsed: Any = body
     if isinstance(body, (bytes, str)):
@@ -320,17 +322,21 @@ def is_truncated_empty_reply(body: Mapping[str, Any] | bytes | str | None) -> bo
     if not isinstance(parsed, Mapping):
         return False
     choices = parsed.get("choices")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
+    if not isinstance(choices, list) or not choices:
         return False
-    choice = choices[0]
-    if choice.get("finish_reason") != "length":
-        return False
-    message = choice.get("message")
-    if not isinstance(message, Mapping) or message.get("tool_calls"):
-        return False
-    content = message.get("content")
-    # Empty string or None both mean no usable text was produced.
-    return not content
+    for choice in choices:
+        if not isinstance(choice, Mapping):
+            return False
+        if choice.get("finish_reason") != "length":
+            return False
+        message = choice.get("message")
+        if not isinstance(message, Mapping) or message.get("tool_calls"):
+            return False
+        content = message.get("content")
+        # Empty string or None both mean no usable text was produced.
+        if content:
+            return False
+    return True
 
 
 NOT_FREE_OVERRIDE_TTL_SECONDS: float = 21600.0  # 6 hours

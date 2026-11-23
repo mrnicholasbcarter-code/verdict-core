@@ -3,9 +3,11 @@
 ### Requirement: Truncated-empty reply detection
 
 Verdict SHALL treat an HTTP 200 buffered chat completion as a truncated-empty reply
-when all of these hold: `finish_reason` is `"length"`, the assistant message carries
-no tool calls, and the content field is absent or empty. One shared detector
-(`is_truncated_empty_reply`) SHALL make this decision.
+when **every** choice in the `choices` array satisfies all of these: `finish_reason`
+is `"length"`, the assistant message carries no tool calls, and the content field is
+absent or empty. If any choice has non-empty content, carries tool calls, or is not a
+valid object, the body contains usable output and SHALL NOT be treated as truncated-empty.
+One shared detector (`is_truncated_empty_reply`) SHALL make this decision.
 
 #### Scenario: Captured production shape
 
