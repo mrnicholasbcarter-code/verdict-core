@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
@@ -111,7 +113,16 @@ def snapshot_meta() -> dict[str, Any]:
 # Overlay loading (mtime-cached so a fresh VERDICT_HOME in tests is visible)
 # ---------------------------------------------------------------------------
 
-_overlay_cache: tuple[Path, int, dict[tuple[str, str | None], BillingFact]] | None = None
+# Re-stat the overlay file at most once per 100 ms within the same process.
+# This eliminates per-call syscall overhead in tight classification loops (e.g.
+# a 7000-row projection) while still picking up operator edits promptly.
+_OVERLAY_STAT_TTL_NS = 100_000_000  # 100 ms in nanoseconds
+
+# Cache tuple: (home_val, vh_val, mtime_ns, index, last_stat_ns)
+# Using raw env strings on the fast path avoids rebuilding the Path on every
+# call — Path construction costs ~3 µs and accounts for most of the per-call
+# overhead in tight loops.
+_overlay_cache: tuple[str, str, int, dict[tuple[str, str | None], BillingFact], int] | None = None
 
 
 def _overlay_path(env: Mapping[str, str] | None = None) -> Path:
@@ -126,11 +137,32 @@ def _load_overlay(
     """Load the operator overlay, returning an empty index when absent or invalid."""
     global _overlay_cache
 
+    source = os.environ if env is None else env
+    home_val = (source.get("HOME") or "").strip()
+    vh_val = (source.get("VERDICT_HOME") or "").strip()
+    now_ns = time.monotonic_ns()
+
+    # Fast path: same VERDICT_HOME / HOME, recently checked — skip stat().
+    if (
+        _overlay_cache is not None
+        and _overlay_cache[0] == home_val
+        and _overlay_cache[1] == vh_val
+        and now_ns - _overlay_cache[4] < _OVERLAY_STAT_TTL_NS
+    ):
+        return _overlay_cache[3]
+
     path = _overlay_path(env)
     try:
         mtime = path.stat().st_mtime_ns
-        if _overlay_cache is not None and _overlay_cache[:2] == (path, mtime):
-            return _overlay_cache[2]
+        if (
+            _overlay_cache is not None
+            and _overlay_cache[0] == home_val
+            and _overlay_cache[1] == vh_val
+            and _overlay_cache[2] == mtime
+        ):
+            # File unchanged — refresh the timestamp and return the cached index.
+            _overlay_cache = (home_val, vh_val, mtime, _overlay_cache[3], now_ns)
+            return _overlay_cache[3]
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
@@ -150,7 +182,7 @@ def _load_overlay(
         key = (provider, auth_type)
         index[key] = BillingFact(billing=billing, overage=overage, source=SOURCE_OVERLAY)
 
-    _overlay_cache = (path, mtime, index)
+    _overlay_cache = (home_val, vh_val, mtime, index, now_ns)
     return index
 
 
