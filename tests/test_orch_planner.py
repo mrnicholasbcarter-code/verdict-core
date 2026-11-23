@@ -302,6 +302,61 @@ def test_repo_map_respects_max_files(tmp_path: Path) -> None:
     assert "1 tracked files" in text
 
 
+def test_repo_map_lists_verdict_before_tests_in_include_order(tmp_path: Path) -> None:
+    """Files are listed in include-tuple order, not alphabetically across all prefixes."""
+    repo = _init_git_repo(tmp_path)
+    text = repo_map(repo, include=("verdict", "tests"))
+    verdict_pos = text.index("verdict/mod.py")
+    tests_pos = text.index("tests/test_mod.py")
+    assert verdict_pos < tests_pos
+
+
+def _init_git_repo_with_agents_md(tmp_path: Path) -> Path:
+    """Like _init_git_repo but adds AGENTS.md with a 'Where things live' section."""
+    _init_git_repo(tmp_path)
+    agents_text = (
+        "# AGENTS.md\n\n"
+        "## Where things live\n\n"
+        "| Path | What |\n"
+        "|---|---|\n"
+        "| `verdict/cli.py` | CLI entry |\n"
+        "| `verdict/commands/` | Subcommands |\n\n"
+        "## Another section\n\nSome text.\n"
+    )
+    (tmp_path / "AGENTS.md").write_text(agents_text, encoding="utf-8")
+    subprocess.run(["git", "add", "AGENTS.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add agents"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def test_repo_map_includes_agents_md_where_things_live_section(tmp_path: Path) -> None:
+    repo = _init_git_repo_with_agents_md(tmp_path)
+    text = repo_map(repo, include=("verdict", "tests"))
+    assert "Where things live" in text
+    assert "verdict/cli.py" in text  # from AGENTS.md table
+    assert "verdict/commands/" in text  # from AGENTS.md table
+    assert "Another section" not in text  # section boundary respected
+
+
+def test_repo_map_handles_missing_agents_md(tmp_path: Path) -> None:
+    """repo_map works without AGENTS.md, returning only the file listing."""
+    repo = _init_git_repo(tmp_path)
+    text = repo_map(repo, include=("verdict", "tests"))
+    assert "verdict/mod.py" in text
+    assert "Where things live" not in text
+
+
+def test_repo_map_handles_agents_md_without_section(tmp_path: Path) -> None:
+    """repo_map works when AGENTS.md exists but lacks 'Where things live'."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("# AGENTS.md\n\nNo section here.\n", encoding="utf-8")
+    subprocess.run(["git", "add", "AGENTS.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add agents"], cwd=tmp_path, check=True)
+    text = repo_map(tmp_path, include=("verdict", "tests"))
+    assert "verdict/mod.py" in text
+    assert "Where things live" not in text
+
+
 # ---------------------------------------------------------------- hydrate_node_prompt
 
 
@@ -402,6 +457,40 @@ async def test_frontier_planner_success_first_try(tmp_path: Path) -> None:
     assert isinstance(graph, WorkGraph)
     assert terminal.ok
     assert len(executor.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_emits_plan_context_with_repo_map_sha256(tmp_path: Path) -> None:
+    """plan() emits plan_context with repo_map_sha256 when events are provided."""
+    repo = _init_git_repo(tmp_path)
+    emitted: list[dict] = []
+
+    class _Events:
+        def emit(self, kind: str, **data: object) -> None:
+            emitted.append({"type": kind, **data})
+
+    executor = _ScriptedExecutor([WorkerTerminal(ok=True, output=_VALID_NODES_JSON)])
+    await FrontierPlanner().plan(
+        "test goal", repo=repo, executor=executor, route_id="cc/test", events=_Events()
+    )
+    plan_ctx = [e for e in emitted if e["type"] == "plan_context"]
+    assert len(plan_ctx) == 1
+    sha = plan_ctx[0]["repo_map_sha256"]
+    # sha256 is a 64-character hex string
+    assert isinstance(sha, str) and len(sha) == 64
+    assert all(c in "0123456789abcdef" for c in sha)
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_no_plan_context_without_events(tmp_path: Path) -> None:
+    """plan() emits no plan_context when events=None (default)."""
+    repo = _init_git_repo(tmp_path)
+    executor = _ScriptedExecutor([WorkerTerminal(ok=True, output=_VALID_NODES_JSON)])
+    # Should not raise; events=None means no emit attempted
+    graph, _ = await FrontierPlanner().plan(
+        "test goal", repo=repo, executor=executor, route_id="cc/test"
+    )
+    assert isinstance(graph, WorkGraph)
 
 
 class _ToolAwareExecutor(_ScriptedExecutor):
