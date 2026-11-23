@@ -17,7 +17,7 @@ exist to serve this. New work must say how it advances it.
 
 - Cheapest qualified tier first, then strongest.
 - Tool proof before dispatch.
-- Planners come from the frontier band of live ratings (ADR-051).
+- Planners: strongest admissible model in the frontier band; paid last.
 
 ## NOW
 
