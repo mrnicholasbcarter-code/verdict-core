@@ -2157,21 +2157,48 @@ def _assert_exact_model(configured: str | None, selected: str, *, surface: str) 
         )
 
 
+#: Capacity classes that autodev may probe.  METERED routes (fact-based paid
+#: capacity) are excluded unconditionally.  UNKNOWN routes are allowed under
+#: this operator's ``assume_free`` policy (ADR-049); CP1 will make this
+#: configurable.  This constant is imported by cli.py.
+_AUTODEV_PROBE_CAPACITY: tuple[str, ...] = ("free", "subscription", "unknown")
+
+
 def prepare_live_autodev(
     objective: str, repo: Path, *, model: str, base_url: str, api_key: str | None
 ) -> tuple[Any, DecompositionResult, dict[str, str]]:
     """Probe an explicitly selected free route, plan, and mint launch authority."""
     from verdict.execution_path import optimize_execution_path
+    from verdict.free_tier_admit import normalize_omniroute_origin
     from verdict.http_safety import open_no_redirect
+    from verdict.orchestration.contracts import CapacityClass
+    from verdict.orchestration.eligibility_report import build_selector
     from verdict.patch_executor import extract_content
     from verdict.probes import openai_probe_transport
     from verdict.subagent_resolver import public_execution_path_request
 
     if "/" not in model:
         raise AutodevError("autodev bootstrap requires an explicit provider/model route")
-    # The pin names the executor only; the planner comes from the live ladder,
-    # chosen before the probe so an empty ladder fails closed without a send.
-    planners = _select_live_planners(base_url)
+    # Build the selector once: it fetches inventory for both planner selection
+    # and the pinned-model capacity check, so we only make one round trip.
+    try:
+        selector = build_selector(
+            normalize_omniroute_origin(base_url),
+            scope="",
+            prefer="",
+            required_capabilities=frozenset({"reasoning"}),
+            capacity=_AUTODEV_PROBE_CAPACITY,
+            sync_visibility=False,
+        )
+    except Exception as exc:
+        raise AutodevError(
+            f"autodev planner selection could not read the eligibility ladder: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    planners = _live_planner_models(selector, top_n=3)
+    # Read the route's cost class without probing. METERED pinned routes are an explicit
+    # operator choice — allowed, but recorded in the receipt so spend is visible (ADR-049).
+    cls, _fact = selector.capacity_fact(model)
     headers: dict[str, str] = {}
 
     def opener(request: Any, *, timeout: float) -> Any:
@@ -2198,14 +2225,18 @@ def prepare_live_autodev(
     )
     served = headers.get("x-omniroute-model")
     cost = headers.get("x-omniroute-response-cost")
+    metered_pinned = cls is CapacityClass.METERED
     if (
         probe.get("status_code") != 200
         or extract_content(probe["body"]).strip() != "OK"
         or not _served_model_matches(model, served)
         or cost is None
-        or float(cost) != 0
+        or (not metered_pinned and float(cost) != 0)
     ):
-        raise AutodevError("autodev free-route probe failed content, identity, or zero-cost check")
+        raise AutodevError(
+            "autodev pinned-route probe failed content, identity, or zero-cost check"
+        )
+    headers["x-verdict-route-capacity"] = cls.value
     observed = time.time()
     plan = Decomposer(
         DecompositionConfig(
@@ -2224,7 +2255,11 @@ def prepare_live_autodev(
             "provider": model.split("/", 1)[0],
             "model": model,
             "eligible": True,
-            "is_free": True,
+            "is_free": not metered_pinned,
+            # Non-free routes require a price dict; METERED rates come from route
+            # metadata, not the probe, so we pass an empty dict here and the
+            # cost ledger records status="unknown" for per-token terms.
+            **({"price": {}} if metered_pinned else {}),
             "certification_state": "ready",
             "certification_freshness": "fresh",
             "probe_observed_at": observed,
@@ -2345,31 +2380,6 @@ def _live_planner_models(selector: Any, *, top_n: int) -> tuple[str, ...]:
     return tuple(planners)
 
 
-def _select_live_planners(base_url: str, *, top_n: int = 3) -> tuple[str, ...]:
-    """Build the live ladder for ``base_url`` and return its planner routes (BOD-406).
-
-    For paths that have no ladder of their own (the pinned ``--executor-model``
-    bootstrap, the CLI dry run). Any gateway failure is a named AutodevError.
-    """
-    from verdict.free_tier_admit import normalize_omniroute_origin
-    from verdict.orchestration.eligibility_report import build_selector
-
-    try:
-        selector = build_selector(
-            normalize_omniroute_origin(base_url),
-            scope="",
-            prefer="",
-            required_capabilities=frozenset({"reasoning"}),
-            sync_visibility=False,
-        )
-    except Exception as exc:  # live gateway state; fail closed, named
-        raise AutodevError(
-            f"autodev planner selection could not read the eligibility ladder: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
-    return _live_planner_models(selector, top_n=top_n)
-
-
 def prepare_live_autodev_selected(
     objective: str, repo: Path, *, base_url: str, api_key: str | None, top_n: int = 3
 ) -> tuple[
@@ -2413,11 +2423,14 @@ def prepare_live_autodev_selected(
         extra["refresh_hook"] = refresh_hook
     # ``prefer=""`` leaves ``prefer_providers`` empty, so no provider family wins
     # by name: capacity class, capability slack, price and quota decide the rank.
+    # ``capacity`` narrows out fact-metered routes before select() probes them
+    # (ADR-049 assume_free: UNKNOWN is allowed; only fact-proven METERED is blocked).
     selector = build_selector(
         gateway,
         scope="",
         prefer="",
         required_capabilities=requirements.required_capabilities,
+        capacity=_AUTODEV_PROBE_CAPACITY,
         sync_visibility=False,
         **extra,
     )
@@ -2622,6 +2635,7 @@ def run_autodev(
     runner: Any = subprocess.run,
     retry_routes: Sequence[Mapping[str, Any]] | None = None,
     retry_executor_factory: Callable[[Mapping[str, Any]], PatchExecutor] | None = None,
+    pinned_capacity_class: str = "",
 ) -> AutodevReport:
     """Decompose ``objective``, execute each unit, verify it, and record it."""
     # execution-path authority is the only strategy/route authority for automatic worker launch.
@@ -2822,6 +2836,8 @@ def run_autodev(
         }
         if retry_executor is not None:
             record_payload["retry_served_headers"] = retry_executor.response_headers
+        if pinned_capacity_class:
+            record_payload["pinned_route_capacity_class"] = pinned_capacity_class
         record = ledger.put_receipt(
             "outcome",
             AUTODEV_SCOPE,

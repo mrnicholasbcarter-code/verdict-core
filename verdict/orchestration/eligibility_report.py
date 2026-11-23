@@ -254,20 +254,30 @@ def build_selector(
             lambda rid: rid in route_ids,
             source="selection:route_ids",
         )
+    # Read the same cache used by selection, including route-scoped billing failures.
+    if state_file is not None and not (os.getenv("VERDICT_HEALTH_CACHE") or "").strip():
+        cache_path = state_path.parent / "health-cache.json"
+    else:
+        cache_path = default_cache_path()
+    cache = health_cache if health_cache is not None else HealthCache(cache_path)
     if capacity:
         if any(c not in {"free", "subscription", "metered", "unknown"} for c in capacity):
             raise ValueError("Invalid capacity filter")
+        # Build a probe-free classifier to check capacity facts without sending
+        # any health probe. The same cache object is shared with the main ladder
+        # so billing_402_metered evidence is visible to both.
         classifier = EligibilityLadder(
             rows,
             connections,
             lambda _: HealthResult(False, "not_probed"),
             state_path,
+            health_cache=cache,
             openrouter_free_set=openrouter_free_set,
         )
         admitted = admitted.narrow(
             AdmissionStage.POLICY,
             "outside_capacity_filter",
-            lambda rid: classifier.capacity_class(rid).value in capacity,
+            lambda rid: classifier.capacity_fact(rid)[0].value in capacity,
             source="orchestrate:capacity",
         )
     receipt_path = state_path.parent / "admission-latest.json"
@@ -287,14 +297,6 @@ def build_selector(
         if no_confirm
         else openai_health_probe(gateway.rstrip("/") + "/v1", api_key=key, timeout_seconds=30)
     )
-    # Read the same health cache the selection refresh hook writes. With an
-    # explicit --state-file (or --inject chaos state) that hook writes beside
-    # the state file (StorePaths.defaults(state_dir)); otherwise both use
-    # default_cache_path(). VERDICT_HEALTH_CACHE still wins everywhere.
-    if state_file is not None and not (os.getenv("VERDICT_HEALTH_CACHE") or "").strip():
-        cache_path = state_path.parent / "health-cache.json"
-    else:
-        cache_path = default_cache_path()
 
     def probe(route_id: str) -> Any:
         return raw_probe(
@@ -364,7 +366,7 @@ def build_selector(
         admitted=admitted,
         admission_receipt=None if no_confirm else receipt_path,
         refresh_hook=refresh_hook,
-        health_cache=health_cache if health_cache is not None else HealthCache(cache_path),
+        health_cache=cache,
         session_ledger=session_ledger if session_ledger is not None else SessionLedger(),
         openrouter_free_set=openrouter_free_set,
         max_probes_per_select=0 if no_confirm else 8,
