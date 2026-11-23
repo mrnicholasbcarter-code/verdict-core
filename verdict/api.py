@@ -87,7 +87,10 @@ from verdict.orchestration.health_cache import (
     HealthCache,
     default_cache_path,
 )
-from verdict.orchestration.provider_catalog import is_inband_billing_refusal
+from verdict.orchestration.provider_catalog import (
+    is_inband_billing_refusal,
+    is_truncated_empty_reply,
+)
 from verdict.orchestration.verified_models import public_model_entry
 from verdict.outcome_log import build_outcome_record, log_outcome, omniroute_anomaly_names
 from verdict.paths import default_decision_log_path
@@ -1685,6 +1688,28 @@ def _inband_refusal_body(surface: str) -> bytes:
     return json.dumps(payload).encode("utf-8")
 
 
+def _truncated_empty_body(surface: str) -> bytes:
+    """The error body Verdict returns when the upstream produced no content.
+
+    ``finish_reason: "length"`` with empty content means the model's output
+    budget was exhausted before any reply text was written.  The request is
+    retried on the next admitted candidate; this body is forwarded only when
+    all candidates are exhausted.
+    """
+    error = {
+        "message": (
+            "upstream answered HTTP 200 with finish_reason 'length' and no content; "
+            "all output tokens were consumed before any reply was written"
+        ),
+        "type": "invalid_request_error",
+        "code": "truncated_empty_reply",
+    }
+    payload: dict[str, Any] = (
+        {"type": "error", "error": error} if surface == "messages" else {"error": error}
+    )
+    return json.dumps(payload).encode("utf-8")
+
+
 def _as_response(result: BufferedUpstreamResponse) -> Response:
     return Response(
         content=result.body, status_code=result.status_code, headers=dict(result.headers)
@@ -2485,7 +2510,23 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 # attempt everywhere below; the provider text is not forwarded.
                 inband_refusal = True
                 result = replace(result, status_code=402, body=_inband_refusal_body(surface))
-            previous_refused = inband_refusal
+            truncated_empty = False
+            if (
+                not inband_refusal
+                and isinstance(result, BufferedUpstreamResponse)
+                and result.status_code == 200
+                and is_truncated_empty_reply(result.body)
+            ):
+                # The provider answered 200 with finish_reason "length" but
+                # produced no content — the output budget was consumed entirely
+                # by reasoning overhead.  Project it as 422 so it is recorded
+                # as a failed attempt and the loop continues to the next
+                # admitted candidate.  422 falls outside the feedback-write
+                # gate (402 or >=500), so no route health negative is written;
+                # this is a prompt-budget event, not a route availability event.
+                truncated_empty = True
+                result = replace(result, status_code=422, body=_truncated_empty_body(surface))
+            previous_refused = inband_refusal or truncated_empty
             last_status = result.status_code
             # Extract bounded body text for failure classification (context-length
             # detection).  Error responses are always BufferedUpstreamResponse, so
@@ -2585,14 +2626,24 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     f"identity mismatch: selected {attempt.model!r}, served {served_model!r}"
                 )
                 break
+            _attempt_failure_class = (
+                "truncated_empty_reply"
+                if truncated_empty
+                else (
+                    None
+                    if result.status_code < 400
+                    else failure_class(result.status_code, body=_error_body)
+                )
+            )
+            _attempt_outcome = (
+                "error" if truncated_empty else ("success" if result.status_code < 400 else "error")
+            )
             attempts_used.append(
                 {
                     "model": attempt.model,
                     "route_key": attempt.route.key,
-                    "outcome": "success" if result.status_code < 400 else "error",
-                    "failure_class": None
-                    if result.status_code < 400
-                    else failure_class(result.status_code, body=_error_body),
+                    "outcome": _attempt_outcome,
+                    "failure_class": _attempt_failure_class,
                     "transition_legal": True if index == 0 else bool(edge and edge.legal),
                     "compatibility_rule_version": result.compatibility_rule_version,
                     "context_pack": injection.to_dict(),
@@ -2602,22 +2653,22 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 attempt=attempt,
                 event_type=(
                     f"{event_prefix}_attempt_completed"
-                    if result.status_code < 400
+                    if _attempt_outcome == "success"
                     else f"{event_prefix}_attempt_failed"
                 ),
                 details={
                     "status_code": result.status_code,
-                    "failure_class": None
-                    if result.status_code < 400
-                    else failure_class(result.status_code, body=_error_body),
+                    "failure_class": _attempt_failure_class,
                     "transition_edge": edge.to_dict() if edge is not None else None,
                     "compatibility_rule_version": result.compatibility_rule_version,
                     "context_pack": injection.to_dict(),
                 },
             )
-            # An in-band refusal produced no output, so another candidate is safe.
+            # An in-band refusal or truncated empty reply produced no output,
+            # so another candidate is safe to try.
             if result.status_code < 400 or not (
                 inband_refusal
+                or truncated_empty
                 or retryable_response_status(
                     result.status_code,
                     compatibility_applied=result.compatibility_rule_version is not None,
