@@ -950,6 +950,8 @@ class Prober:
     _cycle_started: float = field(default=0.0, init=False, repr=False)
     # Request cap of the running phase, for the gateway-auth confirmation.
     _request_cap: int = field(default=0, init=False, repr=False)
+    # Requests reserved for named free reprobe routes before the chat phase runs.
+    _reprobe_reserved: int = field(default=0, init=False, repr=False)
     auth_outage_consecutive: int = 5
     auth_outage_distinct_pools: int = 3
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
@@ -1000,6 +1002,18 @@ class Prober:
         self._cycle_started = started
         self._request_cap = self.max_requests
         routes = list(self.routes_loader())
+        if self.agentic_transport is not None and self.reprobe_routes:
+            snapshot_by_id = {r.route_id: r for r in routes}
+            can_reprobe = [
+                r
+                for route_id in self.reprobe_routes
+                if (r := snapshot_by_id.get(route_id)) is not None
+                and not r.non_chat
+                and r.capacity == "free"
+            ]
+            self._reprobe_reserved = min(len(can_reprobe) * AGENTIC_TURNS, self.max_requests)
+        else:
+            self._reprobe_reserved = 0
         try:
             self._run_chat_phase(routes, started, stats)
         except HealthCacheLockTimeoutError:
@@ -1172,10 +1186,14 @@ class Prober:
             sleep=self.sleep,
             auth_gate=auth_gate,
         )
+        chat_max = max(0, self.max_requests - self._reprobe_reserved)
+        if chat_max <= 0:
+            stats.stopped_reason = stats.stopped_reason or "request_cap"
+            return
         config = replace(
             maintenance_from_env(),
-            max_routes=max(1, min(self.max_requests // 2, HARD_MAX_ROUTES)),
-            max_requests=min(self.max_requests, HARD_MAX_REQUESTS),
+            max_routes=max(1, min(chat_max // 2, HARD_MAX_ROUTES)),
+            max_requests=min(chat_max, HARD_MAX_REQUESTS),
             wall_seconds=min(self.max_wall_seconds, HARD_MAX_WALL_SECONDS_MAINTENANCE),
             request_timeout_seconds=min(
                 self.probe_timeout_seconds, HARD_MAX_REQUEST_TIMEOUT_SECONDS

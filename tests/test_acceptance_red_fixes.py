@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 import verdict.api as api
 from tests import test_serve_failure_feedback as feedback
 from tests.test_inband_credit_refusal import _Response, answer_body, refusal_body
-from verdict import acceptance
+from verdict import acceptance, acceptance_toolcheck
 from verdict.orchestration import selection
 from verdict.orchestration.contracts import EligibilityStage, RouteVerdict, TaskRequirements
 from verdict.orchestration.eligibility import EligibilityLadder
@@ -494,3 +494,110 @@ def test_relay_does_not_retry_a_real_5xx_without_an_idempotency_key(
     with TestClient(api.app) as client:
         response = client.post("/v1/chat/completions", json=feedback._request_body())
     assert len(sent) == 1 and response.status_code == 503
+
+
+# -- D6: acceptance rescreen hints ------------------------------------------------
+
+
+def _acceptance_verdict(route: str, eligible: bool = True) -> dict[str, Any]:
+    return {
+        "route_id": route,
+        "provider": route.split("/")[0],
+        "capacity_class": "free",
+        "reached": "TASK_ELIGIBLE" if eligible else "ENTITLED",
+        "reason": "ranked" if eligible else "no_agentic_probe",
+        "supports_tools": True,
+        "agentic_capability": {"qualified": True},
+    }
+
+
+def test_acceptance_failing_all_listed_produces_rescreen_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bug 1a: a listed route failing both tool-check attempts gets a rescreen hint.
+
+    The HealthCache entry must NOT be written (acceptance is a measurement only).
+    """
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+
+    route = "fakeprov/failing-route"
+
+    def run_cli(args: list[str], timeout: float, env: Any) -> tuple[int, str, str]:
+        return 0, json.dumps({"verdicts": [_acceptance_verdict(route)]}), ""
+
+    def gateway_get(base: str, key: Any, path: str, timeout: float = 60) -> Any:
+        if "synced" in path:
+            return {"fakeprov": [{"id": "failing-route"}]}
+        if path == "/v1/models":
+            return {"data": [{"id": route}]}
+        return {"connections": []}
+
+    def fail_always(path: str, body: dict[str, Any]) -> tuple[int, Any]:
+        return 502, None
+
+    monkeypatch.setattr(acceptance, "gateway_get", gateway_get)
+    monkeypatch.setattr(acceptance_toolcheck, "gateway_post", lambda *a, **k: fail_always)
+
+    check = acceptance.eligibility_check("http://gw", None, seed="s", _run_cli=run_cli)
+
+    quality = check.detail["independent_check"]
+    assert quality.get("rescreen_requested") == [route], (
+        f"route failing both attempts must produce a rescreen hint; got {quality!r}"
+    )
+
+    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+
+    cache = HealthCache(default_cache_path())
+    assert cache.entry(route) is None, "acceptance must NOT write a health entry"
+    assert route in cache.rescreen_requests()
+
+
+def test_acceptance_failing_one_attempt_then_passing_does_not_produce_rescreen_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bug 1a negative: a route that passes on retry must not produce a rescreen hint."""
+    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+
+    route = "fakeprov/flaky-route"
+
+    def run_cli(args: list[str], timeout: float, env: Any) -> tuple[int, str, str]:
+        return 0, json.dumps({"verdicts": [_acceptance_verdict(route)]}), ""
+
+    def gateway_get(base: str, key: Any, path: str, timeout: float = 60) -> Any:
+        if "synced" in path:
+            return {"fakeprov": [{"id": "flaky-route"}]}
+        if path == "/v1/models":
+            return {"data": [{"id": route}]}
+        return {"connections": []}
+
+    _calls: dict[str, int] = {}
+
+    def fail_once(path: str, body: dict[str, Any]) -> tuple[int, Any]:
+        route = body["model"]
+        _calls[route] = _calls.get(route, 0) + 1
+        if _calls[route] == 1:
+            return 502, None
+        # second attempt: answer with a passing tool call
+        turn2 = any(m.get("role") == "tool" for m in body.get("messages", []))
+        name = "write_file" if turn2 else "read_file"
+        call_args = (
+            {"path": "out.txt", "content": "VERDICT ACCEPTANCE PROBE 7"}
+            if turn2
+            else {"path": "notes.txt"}
+        )
+        tool_call = {"id": "c1", "function": {"name": name, "arguments": json.dumps(call_args)}}
+        return 200, {"choices": [{"message": {"content": "", "tool_calls": [tool_call]}}]}
+
+    monkeypatch.setattr(acceptance, "gateway_get", gateway_get)
+    monkeypatch.setattr(acceptance_toolcheck, "gateway_post", lambda *a, **k: fail_once)
+
+    check = acceptance.eligibility_check("http://gw", None, seed="s", _run_cli=run_cli)
+
+    quality = check.detail["independent_check"]
+    assert quality.get("rescreen_requested", []) == [], (
+        "a route that passes on retry must not produce a rescreen hint"
+    )
+
+    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+
+    assert route not in HealthCache(default_cache_path()).rescreen_requests()
