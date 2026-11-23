@@ -385,6 +385,12 @@ def test_plan_with_failover_blocks_on_ownership_refused_without_retry_or_cooldow
             del route_id, failure, now
             self.failures += 1
 
+        def inventory_route_ids(self) -> list[str]:
+            return ["cc/model"]
+
+        def set_planner_band(self, band: object) -> None:
+            pass
+
     class RefusingExecutor:
         async def run(
             self,
@@ -437,8 +443,19 @@ def test_plan_with_failover_blocks_on_ownership_refused_without_retry_or_cooldow
         terminal = WorkerTerminal(ok=False, error="ownership_refused: fixture", status_code=125)
         raise PlanningExecutorError("fixture refused", terminal)
 
+    from datetime import datetime, timedelta, timezone
+
+    from tests.test_planner_band import _record, _score
+    from tests.test_planner_band import _snapshot as _pb_snapshot
     from verdict.orchestration import run as run_module
 
+    _fetched_at = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    monkeypatch.setattr(
+        "verdict.metadata.store.load_store",
+        lambda: _pb_snapshot(
+            _record("cc_model", ("cc/model",), aa_intelligence=_score(90.0, _fetched_at))
+        ),
+    )
     monkeypatch.setattr(run_module.FrontierPlanner, "plan", fake_plan)
     selector = Selector()
     events = Events()

@@ -108,12 +108,25 @@ def test_blocked_fallback_is_not_confirmed(tmp_path: Path, block: str) -> None:
 
 @pytest.mark.asyncio
 async def test_planner_event_records_proven_confirmation(tmp_path: Path, monkeypatch) -> None:
+    from datetime import timedelta
     from types import SimpleNamespace
 
+    from tests.test_planner_band import _record, _score
+    from tests.test_planner_band import _snapshot as _pb_snapshot
     from verdict.orchestration.contracts import WorkerTerminal
     from verdict.orchestration.receipt import EventLog
     from verdict.orchestration.recovery import FailureIntelligence
     from verdict.orchestration.run import plan_with_failover
+
+    # plan_with_failover is called with now=lambda: NOW (timezone.utc, 2026-02-01T12:00:00Z).
+    # Rate only SUB so all cold routes are excluded via _non_band_routes.
+    _fetched_at = (NOW - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    monkeypatch.setattr(
+        "verdict.metadata.store.load_store",
+        lambda: _pb_snapshot(
+            _record("codex_gpt-5-5", (SUB,), aa_intelligence=_score(90.0, _fetched_at))
+        ),
+    )
 
     selector, _, _ = ladder(tmp_path)
     monkeypatch.setattr("verdict.orchestration.planner.repo_map", lambda repo: "offline map")
