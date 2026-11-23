@@ -1553,10 +1553,29 @@ def _pr_watcher_timer_row(
     return {"label": label, "status": "failed", "detail": detail}
 
 
+def _context_lift_last_bench_result(home: Path | None = None) -> dict[str, Any] | None:
+    """Read the most-recent context-lift bench receipt from disk, None on any error."""
+    import json as _json
+
+    from verdict.paths import verdict_home as _verdict_home
+
+    path = (home or _verdict_home()) / "context-lift" / "latest.json"
+    try:
+        return _json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+    except Exception:
+        return None
+
+
 def _context_lift_timer_row(
     timer_state: Callable[[str], dict[str, Any]] | None = None,
+    bench_result: Callable[[], dict[str, Any] | None] | None = None,
 ) -> dict[str, str]:
-    """The daily context-lift bench timer is active and its last run succeeded."""
+    """The daily context-lift bench timer is active and its last run succeeded.
+
+    When the service exited non-zero because all routes were blocked, the row
+    reports a warning (not a failure) and names the block reason so the operator
+    knows why no free routes are available without an install being unhealthy.
+    """
     from verdict import context_lift_service
     from verdict.setup_host import CONTEXT_LIFT, setup_repair
 
@@ -1568,6 +1587,13 @@ def _context_lift_timer_row(
 
     if name == "active" and result in {"success", "unknown"}:
         return {"label": label, "status": "ok", "detail": detail}
+    if name == "failed" and result == "exit-code":
+        # Distinguish a blocked bench (no free routes, expected) from a crash.
+        bench = (bench_result or _context_lift_last_bench_result)()
+        if (bench or {}).get("conclusion") == "blocked":
+            br = str((bench or {}).get("block_reason") or "no eligible routes")
+            detail += f"; blocked: {br}"
+            return {"label": label, "status": "warning", "detail": detail}
     if name == "missing":
         detail += f"; repair: {setup_repair(CONTEXT_LIFT)}"
         return {"label": label, "status": "failed", "detail": detail}

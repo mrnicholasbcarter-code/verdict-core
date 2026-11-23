@@ -304,8 +304,9 @@ def _cmd_bench(args: argparse.Namespace) -> None:
 def _cmd_bench_context_lift(args: argparse.Namespace) -> None:
     """``verdict bench context-lift``: measure context-pack lift on a free model.
 
-    FREE capacity only.  A blocked or missing gateway result exits 0 and writes
-    a blocked receipt so the daily timer never fails over capacity issues.
+    FREE capacity only.  A blocked result (no qualified free identity) exits 2
+    so systemd records a failed unit; ``verdict doctor`` then surfaces it as a
+    warning, not ok.  A dry-run always exits 0.
     """
     import json as _json
     from datetime import datetime, timezone
@@ -345,12 +346,16 @@ def _cmd_bench_context_lift(args: argparse.Namespace) -> None:
     out_file.write_text(payload, encoding="utf-8")
     (out_dir / "latest.json").write_text(payload, encoding="utf-8")
 
+    conclusion = receipt.get("conclusion", "unknown")
     if getattr(args, "json", False):
         print(payload)
     else:
-        conclusion = receipt.get("conclusion", "unknown")
         identity = receipt.get("identity_id", "unknown")
         print(f"context-lift: {conclusion} ({identity}); evidence written to {out_file}")
+    # A blocked result that actually ran (not --dry-run) exits 2: systemd records
+    # a failed unit so doctor can surface the block as a warning rather than ok.
+    if conclusion == "blocked" and execute:
+        sys.exit(2)
 
 
 def _cmd_bench_fusion_plan(args: argparse.Namespace) -> None:
