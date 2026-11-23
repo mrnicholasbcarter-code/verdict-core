@@ -2355,11 +2355,7 @@ def _is_premium_reserved(route_id: str) -> bool:
 
 
 def _live_planner_models(
-    selector: Any,
-    *,
-    top_n: int,
-    metadata: Any = None,
-    identity_map: Any = None,
+    selector: Any, *, top_n: int, metadata: Any = None, identity_map: Any = None
 ) -> tuple[tuple[str, ...], dict[str, dict[str, Any]]]:
     """Planner routes from the live eligibility ladder, one per model family (ADR-051).
 
@@ -2426,25 +2422,15 @@ def _live_planner_models(
     try:
         config = load_planner_band_config()
     except Exception as exc:
-        raise AutodevError(
-            f"autodev planner band config invalid: {exc}"
-        ) from exc
+        raise AutodevError(f"autodev planner band config invalid: {exc}") from exc
     band = compute_planner_bands(inventory_route_ids, snap, imap, config=config, now=now)
 
     try:
         selected = select_planner_routes(
-            admitted_route_ids,
-            capacity_classes,
-            band,
-            snap,
-            imap,
-            top_n=top_n,
-            now=now,
+            admitted_route_ids, capacity_classes, band, snap, imap, top_n=top_n, now=now
         )
     except PlannerBandError as exc:
-        raise AutodevError(
-            f"autodev planner selection failed: {exc}"
-        ) from exc
+        raise AutodevError(f"autodev planner selection failed: {exc}") from exc
 
     route_ids = tuple(r for r, _ in selected)
     band_records = {r: res.to_dict() for r, res in selected}
@@ -2651,9 +2637,7 @@ def prepare_live_autodev_selected(
         _meta_sel = _load_store_sel()
     except Exception:
         _meta_sel = None
-    planners, _band_records_sel = _live_planner_models(
-        selector, top_n=top_n, metadata=_meta_sel
-    )
+    planners, _band_records_sel = _live_planner_models(selector, top_n=top_n, metadata=_meta_sel)
     plan = Decomposer(
         DecompositionConfig(
             model=planners[0],

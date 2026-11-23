@@ -14,15 +14,12 @@ Covers:
 
 from __future__ import annotations
 
-import os
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import datetime, timezone
 
 import pytest
 
 from verdict.metadata.records import (
     SOURCE_OPENROUTER_AA,
-    CapabilityCaps,
     FieldProvenance,
     ModelMetadataRecord,
     ProvenancedField,
@@ -45,9 +42,9 @@ from verdict.planner_band import (
 # ---------------------------------------------------------------------------
 
 NOW = datetime(2026, 11, 23, 12, 0, 0, tzinfo=timezone.utc)
-FETCHED_NEW = "2026-11-23T09:00:00Z"   # 3h before NOW → fresh, newest batch
-FETCHED_OLD = "2026-11-22T09:00:00Z"   # 27h before NOW → stale (> 12h)
-FETCHED_MID = "2026-11-23T06:00:00Z"   # 6h before NOW → fresh but older batch
+FETCHED_NEW = "2026-11-23T09:00:00Z"  # 3h before NOW → fresh, newest batch
+FETCHED_OLD = "2026-11-22T09:00:00Z"  # 27h before NOW → stale (> 12h)
+FETCHED_MID = "2026-11-23T06:00:00Z"  # 6h before NOW → fresh but older batch
 DEFAULT_CONFIG = PlannerBandConfig(frontier_top=0.20, fallback_top=0.30)
 
 
@@ -58,8 +55,7 @@ DEFAULT_CONFIG = PlannerBandConfig(frontier_top=0.20, fallback_top=0.30)
 
 def _score(value: float, fetched_at: str = FETCHED_NEW) -> ProvenancedField:
     return ProvenancedField(
-        value=value,
-        provenance=FieldProvenance(source=SOURCE_OPENROUTER_AA, fetched_at=fetched_at),
+        value=value, provenance=FieldProvenance(source=SOURCE_OPENROUTER_AA, fetched_at=fetched_at)
     )
 
 
@@ -80,10 +76,7 @@ def _record(
 
 def _snapshot(*records: ModelMetadataRecord) -> MetadataSnapshot:
     return MetadataSnapshot(
-        schema_version="1",
-        refreshed_at=FETCHED_NEW,
-        sources={},
-        records=records,
+        schema_version="1", refreshed_at=FETCHED_NEW, sources={}, records=records
     )
 
 
@@ -154,11 +147,7 @@ class TestLoadPlannerBandConfig:
 class TestComputePlannerBands:
     def test_no_metadata_returns_empty_bands(self) -> None:
         band = compute_planner_bands(
-            ["cc/a", "oa/b"],
-            metadata=None,
-            identity_map=None,
-            config=DEFAULT_CONFIG,
-            now=NOW,
+            ["cc/a", "oa/b"], metadata=None, identity_map=None, config=DEFAULT_CONFIG, now=NOW
         )
         assert len(band.frontier_model_keys) == 0
         assert len(band.fallback_model_keys) == 0
@@ -172,9 +161,7 @@ class TestComputePlannerBands:
         ]
         snap = _snapshot(*records)
         inventory = [f"cc/model{i}" for i in range(10)]
-        band = compute_planner_bands(
-            inventory, snap, None, config=DEFAULT_CONFIG, now=NOW
-        )
+        band = compute_planner_bands(inventory, snap, None, config=DEFAULT_CONFIG, now=NOW)
         assert band.rated_models == 10
         assert len(band.frontier_model_keys) == 2
         # top 2 by score: model0 (10.0), model1 (9.0)
@@ -190,9 +177,7 @@ class TestComputePlannerBands:
         ]
         snap = _snapshot(*records)
         inventory = [f"cc/model{i}" for i in range(10)]
-        band = compute_planner_bands(
-            inventory, snap, None, config=DEFAULT_CONFIG, now=NOW
-        )
+        band = compute_planner_bands(inventory, snap, None, config=DEFAULT_CONFIG, now=NOW)
         assert len(band.fallback_model_keys) == 3
         assert "cc/model0" in band.fallback_model_keys
         assert "cc/model2" in band.fallback_model_keys
@@ -221,8 +206,7 @@ class TestComputePlannerBands:
         ]
         snap = _snapshot(*records)
         band = compute_planner_bands(
-            ["cc/a", "cc/b", "cc/c", "cc/d", "cc/e"],
-            snap, None, config=DEFAULT_CONFIG, now=NOW
+            ["cc/a", "cc/b", "cc/c", "cc/d", "cc/e"], snap, None, config=DEFAULT_CONFIG, now=NOW
         )
         # ceil(5 * 0.20) = 1, but score[0] == score[1] = 90.0, so both included
         assert "cc/a" in band.frontier_model_keys
@@ -248,9 +232,7 @@ class TestComputePlannerBands:
 
     def test_unrated_route_in_neither_band(self) -> None:
         # Only two routes rated; unrated is not in population
-        snap = _snapshot(
-            _record("p/rated", ("cc/rated",), aa_intelligence=_score(90.0)),
-        )
+        snap = _snapshot(_record("p/rated", ("cc/rated",), aa_intelligence=_score(90.0)))
         band = compute_planner_bands(
             ["cc/rated", "cc/unrated"], snap, None, config=DEFAULT_CONFIG, now=NOW
         )
@@ -261,11 +243,9 @@ class TestComputePlannerBands:
     def test_stale_rating_excluded(self) -> None:
         # Score fetched_at is > 12h before NOW → stale → neither band
         snap = _snapshot(
-            _record("p/stale", ("cc/stale",), aa_intelligence=_score(99.0, FETCHED_OLD)),
+            _record("p/stale", ("cc/stale",), aa_intelligence=_score(99.0, FETCHED_OLD))
         )
-        band = compute_planner_bands(
-            ["cc/stale"], snap, None, config=DEFAULT_CONFIG, now=NOW
-        )
+        band = compute_planner_bands(["cc/stale"], snap, None, config=DEFAULT_CONFIG, now=NOW)
         assert band.rated_models == 0
         assert len(band.frontier_model_keys) == 0
 
@@ -288,13 +268,14 @@ class TestComputePlannerBands:
 
     def test_suffix_variants_share_one_slot(self) -> None:
         # cc/model:free and cc/model:nitro both strip to cc/model → one slot
-        snap = _snapshot(
-            _record("p/model", ("cc/model",), aa_intelligence=_score(90.0)),
-        )
+        snap = _snapshot(_record("p/model", ("cc/model",), aa_intelligence=_score(90.0)))
         # Inventory has suffix variants but no extra records
         band = compute_planner_bands(
             ["cc/model:free", "cc/model:nitro", "cc/model"],
-            snap, None, config=DEFAULT_CONFIG, now=NOW
+            snap,
+            None,
+            config=DEFAULT_CONFIG,
+            now=NOW,
         )
         # All three map to one slot: cc/model
         assert band.rated_models == 1
@@ -303,18 +284,15 @@ class TestComputePlannerBands:
     def test_suffix_variants_in_admitted_routes_match_band(self) -> None:
         # Admitted routes include suffix variants; they should check as model key
         from verdict.planner_band import _strip_suffix
+
         assert _strip_suffix("cc/model:free") == "cc/model"
         assert _strip_suffix("cc/model:nitro") == "cc/model"
         assert _strip_suffix("cc/model") == "cc/model"
         assert _strip_suffix("oa/gpt-4:turbo") == "oa/gpt-4"
 
     def test_single_route_in_frontier_and_fallback(self) -> None:
-        snap = _snapshot(
-            _record("p/only", ("cc/only",), aa_intelligence=_score(80.0)),
-        )
-        band = compute_planner_bands(
-            ["cc/only"], snap, None, config=DEFAULT_CONFIG, now=NOW
-        )
+        snap = _snapshot(_record("p/only", ("cc/only",), aa_intelligence=_score(80.0)))
+        band = compute_planner_bands(["cc/only"], snap, None, config=DEFAULT_CONFIG, now=NOW)
         assert "cc/only" in band.frontier_model_keys
         assert "cc/only" in band.fallback_model_keys
         assert band.rated_models == 1
@@ -347,8 +325,7 @@ class TestComputePlannerBands:
         ]
         snap = _snapshot(*records)
         band = compute_planner_bands(
-            ["cc/a", "cc/b", "cc/c", "cc/d", "cc/e"],
-            snap, None, config=DEFAULT_CONFIG, now=NOW
+            ["cc/a", "cc/b", "cc/c", "cc/d", "cc/e"], snap, None, config=DEFAULT_CONFIG, now=NOW
         )
         assert band.cutoff_frontier == pytest.approx(90.0)
         assert band.cutoff_fallback == pytest.approx(80.0)
@@ -356,9 +333,7 @@ class TestComputePlannerBands:
     def test_fractional_top_1_always_includes_at_least_one(self) -> None:
         # 1 route → ceil(1 * 0.20) = 1 → route is in both bands
         snap = _snapshot(_record("p/solo", ("cc/solo",), aa_intelligence=_score(50.0)))
-        band = compute_planner_bands(
-            ["cc/solo"], snap, None, config=DEFAULT_CONFIG, now=NOW
-        )
+        band = compute_planner_bands(["cc/solo"], snap, None, config=DEFAULT_CONFIG, now=NOW)
         assert "cc/solo" in band.frontier_model_keys
 
 
@@ -375,8 +350,15 @@ class TestSelectPlannerRoutes:
         returns distinct values for the two-family rule.
         """
         records = [
-            _record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0), aa_coding=_score(80.0)),
-            _record("p/c1", ("cc/claude-3-sonnet",), aa_intelligence=_score(85.0), aa_coding=_score(70.0)),
+            _record(
+                "p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0), aa_coding=_score(80.0)
+            ),
+            _record(
+                "p/c1",
+                ("cc/claude-3-sonnet",),
+                aa_intelligence=_score(85.0),
+                aa_coding=_score(70.0),
+            ),
             _record("p/c2", ("cc/claude-3-haiku",), aa_intelligence=_score(75.0)),
             _record("p/c3", ("cc/claude-3-mini",), aa_intelligence=_score(65.0)),
             _record("p/c4", ("cc/claude-instant",), aa_intelligence=_score(55.0)),
@@ -387,10 +369,14 @@ class TestSelectPlannerRoutes:
             _record("p/g4", ("oa/gpt-3.5",), aa_intelligence=_score(50.0)),
         ]
         snap = _snapshot(*records)
-        cc_routes = ["cc/claude-3-opus", "cc/claude-3-sonnet", "cc/claude-3-haiku",
-                     "cc/claude-3-mini", "cc/claude-instant"]
-        oa_routes = ["oa/gpt-4o", "oa/gpt-4-turbo", "oa/gpt-4",
-                     "oa/gpt-3.5-turbo", "oa/gpt-3.5"]
+        cc_routes = [
+            "cc/claude-3-opus",
+            "cc/claude-3-sonnet",
+            "cc/claude-3-haiku",
+            "cc/claude-3-mini",
+            "cc/claude-instant",
+        ]
+        oa_routes = ["oa/gpt-4o", "oa/gpt-4-turbo", "oa/gpt-4", "oa/gpt-3.5-turbo", "oa/gpt-3.5"]
         inventory = cc_routes + oa_routes
         band = compute_planner_bands(inventory, snap, None, config=DEFAULT_CONFIG, now=NOW)
         return band, snap
@@ -420,23 +406,8 @@ class TestSelectPlannerRoutes:
         assert families == {"cc", "oa"}
 
     def test_failover_uses_fallback_when_only_frontier_one_family(self) -> None:
-        # Only claude in frontier; gpt only in fallback
-        # 4 routes → frontier = ceil(4*0.20)=1 (claude only); fallback = ceil(4*0.30)=2
-        records = [
-            _record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0)),
-            _record("p/c1", ("cc/claude-3-sonnet",), aa_intelligence=_score(85.0)),
-            _record("p/c2", ("cc/claude-3-haiku",), aa_intelligence=_score(75.0)),
-            _record("p/g0", ("oa/gpt-4o",), aa_intelligence=_score(60.0)),
-        ]
-        snap = _snapshot(*records)
-        band = compute_planner_bands(
-            ["cc/claude-3-opus", "cc/claude-3-sonnet", "cc/claude-3-haiku", "oa/gpt-4o"],
-            snap, None, config=DEFAULT_CONFIG, now=NOW
-        )
-        # Frontier: claude-3-opus only (top 1)
-        # Fallback: claude-3-opus + claude-3-sonnet (top 2)
-        # → oa/gpt-4o is in neither band; this test is not demonstrating failover to fallback band
-        # Instead: use 10 routes so gpt-4o is in fallback
+        # Only claude in frontier; gpt only in fallback.
+        # With 10 routes: frontier = ceil(10*0.20)=2; fallback = ceil(10*0.30)=3.
         records2 = [
             _record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0)),
             _record("p/c1", ("cc/claude-3-sonnet",), aa_intelligence=_score(90.0)),
@@ -458,8 +429,16 @@ class TestSelectPlannerRoutes:
         # Frontier (top 2): cc/claude-3-opus (95), cc/claude-3-sonnet (90)
         # Fallback (top 3): cc/claude-3-opus (95), cc/claude-3-sonnet (90), oa/gpt-4o (85)
         all_routes = [
-            "cc/claude-3-opus", "cc/claude-3-sonnet", "cc/claude-3-haiku", "cc/claude-instant", "cc/claude-2",
-            "oa/gpt-4o", "oa/gpt-4-turbo", "oa/gpt-4", "oa/gpt-3.5-turbo", "oa/gpt-3.5"
+            "cc/claude-3-opus",
+            "cc/claude-3-sonnet",
+            "cc/claude-3-haiku",
+            "cc/claude-instant",
+            "cc/claude-2",
+            "oa/gpt-4o",
+            "oa/gpt-4-turbo",
+            "oa/gpt-4",
+            "oa/gpt-3.5-turbo",
+            "oa/gpt-3.5",
         ]
         band2 = compute_planner_bands(all_routes, snap2, None, config=DEFAULT_CONFIG, now=NOW)
         # Admit: one claude (frontier) + gpt-4o (only in fallback)
@@ -499,17 +478,21 @@ class TestSelectPlannerRoutes:
         ]
         snap = _snapshot(*records)
         inventory = [
-            "cc/claude-3-opus", "cc/claude-3-sonnet", "cc/claude-3-haiku",
-            "cc/claude-instant", "cc/claude-2", "cc/claude-v1", "cc/claude-v1-mini",
-            "cc/claude-v1-100k", "cc/claude-v1-instant", "cc/claude-v1-instant-100k",
+            "cc/claude-3-opus",
+            "cc/claude-3-sonnet",
+            "cc/claude-3-haiku",
+            "cc/claude-instant",
+            "cc/claude-2",
+            "cc/claude-v1",
+            "cc/claude-v1-mini",
+            "cc/claude-v1-100k",
+            "cc/claude-v1-instant",
+            "cc/claude-v1-instant-100k",
         ]
         band = compute_planner_bands(inventory, snap, None, config=DEFAULT_CONFIG, now=NOW)
         # frontier = top 2: cc/claude-3-opus (95), cc/claude-3-sonnet (85)
         # cc/claude-3-opus is METERED → selection falls through to cc/claude-3-sonnet (FREE)
-        caps = {
-            "cc/claude-3-opus": CapacityClass.METERED,
-            "cc/claude-3-sonnet": CapacityClass.FREE,
-        }
+        caps = {"cc/claude-3-opus": CapacityClass.METERED, "cc/claude-3-sonnet": CapacityClass.FREE}
         selected = select_planner_routes(
             ["cc/claude-3-opus", "cc/claude-3-sonnet"], caps, band, snap, None, top_n=1, now=NOW
         )
@@ -517,25 +500,17 @@ class TestSelectPlannerRoutes:
         assert route_id == "cc/claude-3-sonnet"  # cc/claude-3-opus (METERED) skipped
 
     def test_metered_only_raises(self) -> None:
-        records = [
-            _record("p/cc0", ("cc/model0",), aa_intelligence=_score(95.0)),
-        ]
+        records = [_record("p/cc0", ("cc/model0",), aa_intelligence=_score(95.0))]
         snap = _snapshot(*records)
-        band = compute_planner_bands(
-            ["cc/model0"], snap, None, config=DEFAULT_CONFIG, now=NOW
-        )
+        band = compute_planner_bands(["cc/model0"], snap, None, config=DEFAULT_CONFIG, now=NOW)
         caps = {"cc/model0": CapacityClass.METERED}
         with pytest.raises(PlannerBandError, match="no_frontier_or_fallback_planner"):
             select_planner_routes(["cc/model0"], caps, band, snap, None, top_n=1, now=NOW)
 
     def test_unknown_capacity_treated_as_non_metered(self) -> None:
-        records = [
-            _record("p/unk", ("cc/unk",), aa_intelligence=_score(90.0)),
-        ]
+        records = [_record("p/unk", ("cc/unk",), aa_intelligence=_score(90.0))]
         snap = _snapshot(*records)
-        band = compute_planner_bands(
-            ["cc/unk"], snap, None, config=DEFAULT_CONFIG, now=NOW
-        )
+        band = compute_planner_bands(["cc/unk"], snap, None, config=DEFAULT_CONFIG, now=NOW)
         caps = {"cc/unk": CapacityClass.UNKNOWN}
         selected = select_planner_routes(["cc/unk"], caps, band, snap, None, top_n=1, now=NOW)
         assert len(selected) == 1
@@ -545,20 +520,8 @@ class TestSelectPlannerRoutes:
     def test_free_before_subscription_in_selection(self) -> None:
         # Both routes in frontier; FREE should be preferred over SUBSCRIPTION
         # when scores are equal
-        records = [
-            _record("p/freemod", ("cc/free",), aa_intelligence=_score(90.0)),
-            _record("p/submod", ("cc/sub",), aa_intelligence=_score(90.0)),
-        ]
-        snap = _snapshot(*records)
-        band = compute_planner_bands(
-            ["cc/free", "cc/sub"], snap, None, config=DEFAULT_CONFIG, now=NOW
-        )
-        caps = {
-            "cc/free": CapacityClass.FREE,
-            "cc/sub": CapacityClass.SUBSCRIPTION,
-        }
-        # They have the same family name stem... let's force different families
-        # by using different provider prefixes
+        # cc/free and cc/sub share a stem; force different families by using
+        # different provider prefixes.
         records2 = [
             _record("p/freemod", ("cc/free",), aa_intelligence=_score(90.0)),
             _record("p/submod", ("oa/sub",), aa_intelligence=_score(90.0)),
@@ -567,10 +530,7 @@ class TestSelectPlannerRoutes:
         band2 = compute_planner_bands(
             ["cc/free", "oa/sub"], snap2, None, config=DEFAULT_CONFIG, now=NOW
         )
-        caps2 = {
-            "cc/free": CapacityClass.FREE,
-            "oa/sub": CapacityClass.SUBSCRIPTION,
-        }
+        caps2 = {"cc/free": CapacityClass.FREE, "oa/sub": CapacityClass.SUBSCRIPTION}
         selected = select_planner_routes(
             ["cc/free", "oa/sub"], caps2, band2, snap2, None, top_n=1, now=NOW
         )
@@ -594,9 +554,7 @@ class TestSelectPlannerRoutes:
             )
 
     def test_band_result_fields_populated(self) -> None:
-        records = [
-            _record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0)),
-        ]
+        records = [_record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0))]
         snap = _snapshot(*records)
         band = compute_planner_bands(
             ["cc/claude-3-opus"], snap, None, config=DEFAULT_CONFIG, now=NOW
@@ -616,15 +574,20 @@ class TestSelectPlannerRoutes:
         assert result.fetched_at == FETCHED_NEW
         d = result.to_dict()
         assert set(d.keys()) == {
-            "required", "used", "reason", "rank", "rated_models",
-            "cutoff", "rating", "metric", "fetched_at"
+            "required",
+            "used",
+            "reason",
+            "rank",
+            "rated_models",
+            "cutoff",
+            "rating",
+            "metric",
+            "fetched_at",
         }
 
     def test_suffix_variant_matched_in_selection(self) -> None:
         # Admitted routes include suffix variants; band uses stripped key
-        snap = _snapshot(
-            _record("p/claude", ("cc/claude-3",), aa_intelligence=_score(95.0)),
-        )
+        snap = _snapshot(_record("p/claude", ("cc/claude-3",), aa_intelligence=_score(95.0)))
         band = compute_planner_bands(
             ["cc/claude-3", "cc/claude-3:free"], snap, None, config=DEFAULT_CONFIG, now=NOW
         )
@@ -655,9 +618,7 @@ class TestPlannerSupplyStatus:
     def test_ok_when_frontier_has_routes(self) -> None:
         from verdict.planner_band import planner_supply_status
 
-        snap = _snapshot(
-            _record("p/a", ("cc/a",), aa_intelligence=_score(95.0)),
-        )
+        snap = _snapshot(_record("p/a", ("cc/a",), aa_intelligence=_score(95.0)))
         band = compute_planner_bands(["cc/a"], snap, None, config=DEFAULT_CONFIG, now=NOW)
         caps = {"cc/a": CapacityClass.FREE}
         status = planner_supply_status(["cc/a"], caps, band)
@@ -704,11 +665,12 @@ class TestRatingCoverageSummary:
         snap = _snapshot(*records)
         band = compute_planner_bands(
             ["cc/a", "cc/b", "cc/c"],  # cc/c unrated
-            snap, None, config=DEFAULT_CONFIG, now=NOW
+            snap,
+            None,
+            config=DEFAULT_CONFIG,
+            now=NOW,
         )
-        summary = rating_coverage_summary(
-            ["cc/a", "cc/b", "cc/c"], band, snap, None, now=NOW
-        )
+        summary = rating_coverage_summary(["cc/a", "cc/b", "cc/c"], band, snap, None, now=NOW)
         assert summary["rated_models"] == 2
         assert summary["inventory_routes"] == 3
         assert summary["coverage_pct"] == pytest.approx(66.7)

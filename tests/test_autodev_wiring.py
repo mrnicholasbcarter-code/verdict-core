@@ -103,12 +103,7 @@ def _permissive_planner_band(monkeypatch: pytest.MonkeyPatch) -> None:
     from verdict.planner_band import BandComputation, _strip_suffix
 
     def _permissive_compute(
-        inventory_route_ids: Any,
-        metadata: Any,
-        identity_map: Any,
-        *,
-        config: Any,
-        now: Any,
+        inventory_route_ids: Any, metadata: Any, identity_map: Any, *, config: Any, now: Any
     ) -> BandComputation:
         seen: dict[str, int] = {}
         for route_id in inventory_route_ids:

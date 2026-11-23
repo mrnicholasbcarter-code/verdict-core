@@ -475,8 +475,7 @@ def test_preflight_insufficient_pools_fails_before_rehearsal(tmp_path, monkeypat
     rows = [_bad(result="fail"), _bad(route_id="cf/gemma", capability_tier=3)]
     script, seen = _preflight_only(tmp_path, monkeypatch, _screen(rows))
     with pytest.raises(
-        script.RehearsalConfigurationError,
-        match=r"1 backend pool\(s\); 2 are required",
+        script.RehearsalConfigurationError, match=r"1 backend pool\(s\); 2 are required"
     ):
         script.run()
     assert seen["orchestrate"] == []

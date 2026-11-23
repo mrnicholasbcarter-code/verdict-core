@@ -74,8 +74,12 @@ def load_planner_band_config() -> PlannerBandConfig:
     raw_frontier = os.environ.get(_ENV_FRONTIER, "")
     raw_fallback = os.environ.get(_ENV_FALLBACK, "")
 
-    frontier = _DEFAULT_FRONTIER if not raw_frontier else _parse_fraction(raw_frontier, _ENV_FRONTIER)
-    fallback = _DEFAULT_FALLBACK if not raw_fallback else _parse_fraction(raw_fallback, _ENV_FALLBACK)
+    frontier = (
+        _DEFAULT_FRONTIER if not raw_frontier else _parse_fraction(raw_frontier, _ENV_FRONTIER)
+    )
+    fallback = (
+        _DEFAULT_FALLBACK if not raw_fallback else _parse_fraction(raw_fallback, _ENV_FALLBACK)
+    )
 
     if frontier <= 0:
         raise PlannerBandConfigError(
@@ -134,7 +138,7 @@ class BandComputation:
     rated_models: int
     fetched_at: str
     model_scores: dict[str, float]  # model_key -> aa_intelligence score
-    model_ranks: dict[str, int]      # model_key -> 1-indexed rank
+    model_ranks: dict[str, int]  # model_key -> 1-indexed rank
 
 
 def _strip_suffix(route_id: str) -> str:
@@ -149,9 +153,7 @@ def _strip_suffix(route_id: str) -> str:
     return route_id
 
 
-def _score_field(
-    record: Any, metric: str
-) -> tuple[float | None, str | None]:
+def _score_field(record: Any, metric: str) -> tuple[float | None, str | None]:
     """Return (score, fetched_at) for ``metric`` on ``record``, or (None, None)."""
     scores = getattr(record, "scores", None)
     field = getattr(scores, metric, None) if scores is not None else None
@@ -318,15 +320,15 @@ PlannerBandLabel = Literal["frontier", "fallback"]
 class PlannerBandResult:
     """Selection metadata to record per planner in the run report and receipt."""
 
-    required: str   # always "frontier"
-    used: str       # "frontier" | "fallback"
+    required: str  # always "frontier"
+    used: str  # "frontier" | "fallback"
     reason: str | None  # None when used == required
-    rank: int           # 1-indexed rank among all rated models
+    rank: int  # 1-indexed rank among all rated models
     rated_models: int
-    cutoff: float       # cutoff score for the used band
-    rating: float       # the route's aa_intelligence score
-    metric: str         # "aa_intelligence"
-    fetched_at: str     # ISO timestamp of the score batch
+    cutoff: float  # cutoff score for the used band
+    rating: float  # the route's aa_intelligence score
+    metric: str  # "aa_intelligence"
+    fetched_at: str  # ISO timestamp of the score batch
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -383,6 +385,7 @@ def _aa_coding_score(
     if score is None or fetched is None:
         return 0.0
     from verdict.identify_rank import _fresh
+
     return score if _fresh(fetched, now) else 0.0
 
 
@@ -412,11 +415,7 @@ def _sort_key(
 
 
 def _band_result(
-    route_id: str,
-    used: str,
-    reason: str | None,
-    band: BandComputation,
-    used_cutoff: float,
+    route_id: str, used: str, reason: str | None, band: BandComputation, used_cutoff: float
 ) -> PlannerBandResult:
     """Build a PlannerBandResult for the selected route."""
     model_key = _strip_suffix(route_id)
@@ -479,7 +478,9 @@ def select_planner_routes(
     clock = now or datetime.now(timezone.utc)
 
     # Candidates in frontier band
-    frontier_candidates = _filter_to_band(admitted_route_ids, band.frontier_model_keys, capacity_classes)
+    frontier_candidates = _filter_to_band(
+        admitted_route_ids, band.frontier_model_keys, capacity_classes
+    )
     # Candidates in fallback band (strict: only those NOT already in frontier)
     fallback_only_candidates = _filter_to_band(
         [r for r in admitted_route_ids if r not in set(frontier_candidates)],
@@ -556,9 +557,7 @@ def planner_supply_status(
     has_fallback = fallback_total > 0
     warning = not has_frontier
     if not warning:
-        msg = (
-            f"ok: {len(frontier)} frontier-band route(s), {band.rated_models} rated models"
-        )
+        msg = f"ok: {len(frontier)} frontier-band route(s), {band.rated_models} rated models"
     elif has_fallback:
         msg = (
             f"warn: no frontier-band planner; fallback band reachable "
@@ -566,8 +565,7 @@ def planner_supply_status(
         )
     else:
         msg = (
-            f"warn: no frontier-band planner; fallback band empty; "
-            f"{band.rated_models} rated models"
+            f"warn: no frontier-band planner; fallback band empty; {band.rated_models} rated models"
         )
     return {
         "frontier_admissible": len(frontier),
@@ -611,9 +609,7 @@ def rating_coverage_summary(
 
 
 def planner_band_families(
-    band: BandComputation,
-    metadata: MetadataSnapshot | None,
-    identity_map: IdentityMap | None,
+    band: BandComputation, metadata: MetadataSnapshot | None, identity_map: IdentityMap | None
 ) -> list[str]:
     """Return the distinct provider families of models in the frontier band.
 

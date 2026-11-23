@@ -238,9 +238,12 @@ def _two_family_snapshot() -> Any:
     The FREE route sorts ahead of SUBSCRIPTION at equal score so it is
     ``planners[0]``, preserving the original test assertion.
     """
-    from datetime import timezone
-
-    from verdict.metadata.records import FieldProvenance, ModelMetadataRecord, ProvenancedField, SoftScores
+    from verdict.metadata.records import (
+        FieldProvenance,
+        ModelMetadataRecord,
+        ProvenancedField,
+        SoftScores,
+    )
     from verdict.metadata.store import MetadataSnapshot
 
     fetched = "2026-11-23T09:00:00Z"
