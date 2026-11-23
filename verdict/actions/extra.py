@@ -1184,7 +1184,7 @@ def _action_metadata_refresh(**kwargs: Any) -> ActionResult:
             "drop_count": len(snapshot.drops),
             "conflict_count": len(snapshot.conflicts),
             "sources": {name: status.to_dict() for name, status in snapshot.sources.items()},
-            "mapping": snapshot.mapping,
+            "mapping": dict(snapshot.mapping),
             "store": resolved_store,
             "arena": arena_status,
         }

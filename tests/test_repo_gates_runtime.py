@@ -260,6 +260,111 @@ def test_resolve_falls_back_to_path_and_leaves_npm_unchanged(
     ]
 
 
+def test_resolve_uses_uv_run_when_uv_lock_present(
+    tmp_path: Path, gate_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """uv.lock in the worktree → uv run --frozen, never the global tool."""
+    (tmp_path / "uv.lock").write_text("# lock\n")
+    monkeypatch.setattr(
+        verification.shutil, "which", lambda exe: "/usr/bin/uv" if exe == "uv" else None
+    )
+    result = verification.resolve_gate_argv(("mypy", "--strict", "verdict"), tmp_path)
+    assert result == ["/usr/bin/uv", "run", "--frozen", "mypy", "--strict", "verdict"]
+
+
+def test_resolve_uses_uv_run_for_ruff_when_uv_lock_present(
+    tmp_path: Path, gate_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """uv.lock in the worktree → uv run --frozen for ruff too."""
+    (tmp_path / "uv.lock").write_text("# lock\n")
+    monkeypatch.setattr(
+        verification.shutil, "which", lambda exe: "/usr/local/bin/uv" if exe == "uv" else None
+    )
+    result = verification.resolve_gate_argv(("ruff", "check", "."), tmp_path)
+    assert result == ["/usr/local/bin/uv", "run", "--frozen", "ruff", "check", "."]
+
+
+def test_resolve_raises_when_uv_lock_present_but_uv_missing(
+    tmp_path: Path, gate_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """uv.lock present but uv not on PATH → named environment failure, not a silent pass."""
+    (tmp_path / "uv.lock").write_text("# lock\n")
+    monkeypatch.setattr(verification.shutil, "which", lambda exe: None)
+    with pytest.raises(FileNotFoundError, match="uv"):
+        verification.resolve_gate_argv(("mypy", "--strict", "verdict"), tmp_path)
+
+
+def test_resolve_uv_lock_takes_precedence_over_verdict_env(
+    tmp_path: Path, gate_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """uv.lock present and Verdict env has mypy → still use uv run, not the Verdict-env binary."""
+    (tmp_path / "uv.lock").write_text("# lock\n")
+    monkeypatch.setattr(
+        verification.shutil, "which", lambda exe: "/usr/bin/uv" if exe == "uv" else None
+    )
+    # gate_bin has mypy (Verdict env), but uv.lock should win
+    result = verification.resolve_gate_argv(("mypy", "--strict", "verdict"), tmp_path)
+    assert result[0] == "/usr/bin/uv"
+    assert "run" in result
+    assert "--frozen" in result
+
+
+def test_resolve_no_uv_lock_still_uses_verdict_env(tmp_path: Path, gate_bin: Path) -> None:
+    """Without uv.lock, Verdict-env fallback still works (non-uv-managed repos)."""
+    # gate_bin has mypy via monkeypatching sys.executable in the fixture
+    result = verification.resolve_gate_argv(("mypy", "--strict", "pkg"), tmp_path)
+    assert result == [str(gate_bin / "mypy"), "--strict", "pkg"]
+
+
+async def test_gate_uses_uv_run_when_worktree_has_uv_lock(repo: Path, gate_bin: Path) -> None:
+    """Integration: when the worktree has uv.lock the executed_command includes uv run --frozen."""
+    runtime, events, _calls = make_runtime(repo, "[tool.mypy]\nfiles=['verdict']\nstrict=true\n")
+    # Plant a fake uv binary in a dir on PATH and wire up sys.executable
+    uv_bin_dir = gate_bin.parent.parent / "uv_bin"
+    uv_bin_dir.mkdir(parents=True, exist_ok=True)
+    fake_uv = uv_bin_dir / "uv"
+    fake_uv.touch()
+    fake_uv.chmod(0o755)
+
+    captured: list[list[str]] = []
+    original_runner = runtime.runner
+
+    async def recording_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        captured.append(list(argv))
+        if argv[0] == "git":
+            return await original_runner(argv, cwd, timeout)
+        return 0, "passed"
+
+    runtime.runner = recording_runner
+
+    # Plant uv.lock in the integration worktree by patching resolve_gate_argv
+    import verdict.orchestration.verification as _vrf
+
+    orig_resolve = _vrf.resolve_gate_argv
+
+    def _resolve_with_uv_lock(argv_in: Sequence[str], worktree: Path) -> list[str]:
+        # Create uv.lock and wire uv to fake_uv for this call
+        (worktree / "uv.lock").write_text("# lock\n")
+        import unittest.mock as _mock
+
+        with _mock.patch.object(
+            _vrf.shutil, "which", lambda exe: str(fake_uv) if exe == "uv" else None
+        ):
+            return orig_resolve(argv_in, worktree)
+
+    import unittest.mock as mock
+
+    with mock.patch("verdict.orchestration.runtime._resolve_gate_argv", _resolve_with_uv_lock):
+        await runtime.run()
+
+    gate_evts = [e for e in events.of("repo_gate") if e.get("name") == "mypy"]
+    assert gate_evts, "no mypy repo_gate event"
+    executed = gate_evts[0].get("executed_command", "")
+    assert str(fake_uv) in executed, f"expected uv binary in executed_command, got: {executed!r}"
+    assert "run" in executed
+    assert "--frozen" in executed
+
+
 async def test_gate_diagnostics_do_not_change_verification_failure_category(
     repo: Path, gate_bin: Path
 ) -> None:
