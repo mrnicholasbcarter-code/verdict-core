@@ -1185,10 +1185,11 @@ def _capacity_for_row(
     *,
     _free_set_preloaded: bool = False,
 ) -> tuple[CapacityClass, str]:
-    # When _free_set_preloaded is True the caller already ran load_openrouter_free_set
-    # (possibly returning None) and we must not load it again.  This avoids 7 k
-    # repeated default_cache_path() / Path.resolve() calls in a projection loop.
-    if not _free_set_preloaded:
+    # Reload only when no value was supplied AND the caller has not already tried
+    # the load (which may have returned None when no on-disk cache exists).
+    # _free_set_preloaded=True lets project_verified_models load the set once and
+    # pass None through 7 000 rows without triggering a re-load on each row.
+    if openrouter_free_set is None and not _free_set_preloaded:
         openrouter_free_set = load_openrouter_free_set(refresh=False)
     cls, _, evidence = _classify_capacity(
         connection, row, route_id=str(row.get("id") or ""), openrouter_free_set=openrouter_free_set
