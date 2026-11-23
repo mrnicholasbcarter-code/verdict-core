@@ -11,10 +11,10 @@ Non-goals: executor cost order and metered spend limits (CP1); replacing the id 
 
 ## Decisions
 
-1. Add `planner_band(route, metadata, now)` returning `frontier`, `fallback` or `None`, using `rate_model(..., task_family="specification")` (metric `aa_intelligence`) and only `basis == "score"` (fresh, joined). `best` is the max fresh score for that metric over the whole snapshot.
-2. Bands read `VERDICT_PLANNER_FRONTIER_BAND` / `VERDICT_PLANNER_FALLBACK_BAND` (defaults 0.90 / 0.80); invalid values fail closed with a named error.
+1. Add `planner_band(route, metadata, now)` returning `frontier`, `fallback` or `None`, using `rate_model(..., task_family="specification")` (metric `aa_intelligence`) and only `basis == "score"` (fresh, joined). Rank distinct rated models (aliases of one metadata record count once) across the whole snapshot; the frontier band is the top `frontier_top` fraction, the fallback band the top `fallback_top` fraction (ties at a cutoff are included).
+2. Bands read `VERDICT_PLANNER_FRONTIER_TOP` / `VERDICT_PLANNER_FALLBACK_TOP` (defaults 0.20 / 0.30, `0 < frontier <= fallback <= 1`); invalid values fail closed with a named error.
 3. Selection narrows the already-admitted planner candidates to the frontier band, else the fallback band; it never adds candidates. Order within a band: capacity (FREE, UNKNOWN, SUBSCRIPTION), then rating desc, then route id.
-4. Record `planner_band` on every selection: `{required: "frontier", used, reason, best_score, threshold, rating, metric, as_of}`.
+4. Record `planner_band` on every selection: `{required: "frontier", used, reason, rank, rated_models, cutoff, rating, metric, as_of}`.
 
 ## Risks / Trade-offs
 
@@ -31,7 +31,7 @@ Planners move from small free models to frontier subscription models; executors 
 
 ## Migration / rollback
 
-Revert the change to restore the tier floor; no state migration. Setting both bands to 0 is rejected rather than treated as "no floor".
+Revert the change to restore the tier floor; no state migration. A zero or inverted band is rejected rather than treated as "no floor".
 
 ## ADR impact
 

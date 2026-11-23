@@ -4,7 +4,7 @@
 
 ### Requirement: Planners come from the frontier band of fresh ratings
 
-Planner selection for autodev, orchestrate and the certification preflight SHALL narrow admitted planner candidates to routes whose fresh, exactly joined planner rating is at least the frontier band times the best fresh rating for that metric in the metadata snapshot. Route names, declared tiers and the id classifier SHALL NOT qualify a planner. Ratings SHALL NOT admit a route that failed admission.
+Planner selection for autodev, orchestrate and the certification preflight SHALL narrow admitted planner candidates to routes whose model ranks in the top 20% of distinct models by fresh, exactly joined planner rating in the metadata snapshot (operator-configurable). Route names, declared tiers and the id classifier SHALL NOT qualify a planner. Ratings SHALL NOT admit a route that failed admission.
 
 #### Scenario: Unrated frontier-named route
 - **WHEN** an admitted route has no fresh rating
@@ -16,7 +16,7 @@ Planner selection for autodev, orchestrate and the certification preflight SHALL
 
 ### Requirement: Planner fallback is one band and recorded
 
-If no admitted route is in the frontier band, planner selection SHALL use the fallback band and SHALL record the required band, used band, reason, best score and threshold in the run report and receipt. With no route in either band, selection SHALL fail closed with `no_frontier_or_fallback_planner`.
+If no admitted route is in the frontier band, planner selection SHALL use the fallback band (top 30%, operator-configurable) and SHALL record the required band, used band, reason, the model's rank and the band cutoff in the run report and receipt. With no route in either band, selection SHALL fail closed with `no_frontier_or_fallback_planner`.
 
 #### Scenario: Frontier supply down
 - **WHEN** the only admitted rated routes are in the fallback band

@@ -27,14 +27,14 @@ were rated.
 
 1. **Planning uses frontier models.** A planner (autodev, orchestrate, and the
    certification preflight that mints planner proof) must come from the
-   *frontier band*: routes whose fresh planner rating is at least
-   `frontier_band x best`, where `best` is the highest fresh rating for the planner
-   metric across the whole metadata snapshot, not only across admitted routes.
-   Default `frontier_band = 0.90`.
+   *frontier band*: the top 20% of distinct rated models by fresh planner rating,
+   ranked across the whole metadata snapshot (not only admitted routes), so the band
+   follows the live leaderboard. On 2026-11-23 that was 10 of 47 rated models
+   (cutoff 53.9 `aa_intelligence`).
 2. **One-band fallback.** If no admissible route is in the frontier band, use the
-   *fallback band* (`fallback_band x best`, default `0.80`), and record the
-   downgrade (required band, used band, reason, best score, threshold) in the run
-   report and receipt. With nothing in either band, fail closed with a named reason.
+   *fallback band*, the top 30% (15 of 47 models, cutoff 44.2, on 2026-11-23), and
+   record the downgrade (required band, used band, reason, model rank, cutoff) in
+   the run report and receipt. With nothing in either band, fail closed with a named reason.
 3. **Ratings, not names.** A route without a fresh, exactly joined rating is in
    neither band. Declared tiers and the id classifier no longer decide planner
    eligibility.
@@ -57,5 +57,6 @@ were rated.
 - Today the frontier band's admissible supply is the Claude subscription (Codex
   frontier routes were `quota_low`), so the fallback band will be used when Claude
   is unavailable.
-- The bands are operator configuration (`VERDICT_PLANNER_FRONTIER_BAND`,
-  `VERDICT_PLANNER_FALLBACK_BAND`), validated to `0 < fallback <= frontier <= 1`.
+- The bands are operator configuration (`VERDICT_PLANNER_FRONTIER_TOP`, default
+  0.20; `VERDICT_PLANNER_FALLBACK_TOP`, default 0.30), validated to
+  `0 < frontier <= fallback <= 1`. Aliases of one model count once in the ranking.
