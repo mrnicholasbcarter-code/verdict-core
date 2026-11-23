@@ -80,7 +80,7 @@
       worker executor and the route-through-serve contract. Update ETHOS.md `In
       force` or `NOW` only if the operator asks. Verify: `check_doc_links.py` and
       `check_reachability.py` are green; no host paths in fixtures or docs.
-- [ ] 7.2 Run the full suite, ruff, mypy --strict, reachability, the lint gates,
+- [x] 7.2 Run the full suite, ruff, mypy --strict, reachability, the lint gates,
       both OpenSpec validators, and get a cross-family (non-Claude) review. Verify:
       all commands green; review from a different model family.
 
