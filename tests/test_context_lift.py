@@ -101,3 +101,29 @@ def test_ingest_then_search_from_new_state(tmp_path: Path) -> None:
         assert any(token in item.content for item in hits)
     finally:
         gate.close()
+
+
+def test_repeated_ingest_supersedes_previous(tmp_path: Path) -> None:
+    """Two ingest_lift_fact calls with different tokens must both succeed.
+
+    The second write supersedes the first: the active record changes to the
+    new token, and the new record's supersedes field points at the old one.
+    This is the regression guard for the daily-timer contradiction failure.
+    """
+    plane = MemoryPlane(tmp_path / "memory.db")
+    gate = MemoryGate(plane)
+    try:
+        token1 = new_lift_token()
+        token2 = new_lift_token()
+        record1 = ingest_lift_fact(gate, token1)
+        record2 = ingest_lift_fact(gate, token2)
+        # Second call must succeed and return the new token
+        assert token2 in record2.content
+        # Active record is now token2
+        active = plane.get("patterns", "lift_fact")
+        assert active is not None
+        assert active.record_id == record2.record_id
+        # New record supersedes the previous one
+        assert record2.supersedes == record1.record_id
+    finally:
+        gate.close()
