@@ -293,7 +293,11 @@ def test_relay_all_free_fail_then_subscription(monkeypatch, tmp_path):
     )
     from verdict.orchestration.health_cache import HealthCache, default_cache_path
 
-    assert HealthCache(default_cache_path()).rescreen_requests() == {live.FAST, live.NEW}
+    assert HealthCache(default_cache_path()).rescreen_requests() == {
+        live.FAST,
+        live.NEW,
+        live.NO_TOOLS,
+    }
     assert all(r["body"]["model"] != live.NO_TOOLS.split("/")[1] for r in transport.requests)
 
 
