@@ -10,11 +10,16 @@ Each attempt:
    is reachable and accepts that credential.  Any failure is one
    ``harness_configuration:`` message, which recovery treats as a block, not a retry.
 1. Writes a per-attempt ``opencode.json`` to a temp directory, pointed at by
-   ``OPENCODE_CONFIG_DIR``.
-2. Writes ``.verdict-context.md`` to the worktree as ambient instructions.
-3. Launches the opencode binary and collects NDJSON stdout.
-4. Maps the result to :class:`~verdict.orchestration.contracts.WorkerTerminal`.
-5. Deletes the temp directory on exit.
+   ``OPENCODE_CONFIG_DIR``, and the task text beside it as the instructions file
+   :data:`TASK_FILE_NAME`, which that config lists.  OpenCode skips a listed file that is
+   missing without a word, so the file is checked to exist, to be a readable file and not to
+   be empty just before launch, and an attempt without it never starts.
+2. Launches the opencode binary, hands it the one short ask :data:`TASK_PROMPT` on stdin (it
+   reads its message from stdin when it is given none) and ``--title`` (so it makes no second,
+   title-agent request), and collects NDJSON stdout.  The task text reaches the model once, as
+   instructions; nothing is written into the worktree.
+3. Maps the result to :class:`~verdict.orchestration.contracts.WorkerTerminal`.
+4. Deletes the temp directory, and with it the instructions file, on every way out.
 
 **Dispatch origin** — OpenCode workers send through Verdict serve (:8000), not the gateway
 (OmniRoute :20128), so this executor reports the serve origin it really calls (the address it
@@ -56,8 +61,17 @@ PINNED_VERSION = "2.3.2"
 OPENCODE_BIN_ENV = "VERDICT_OPENCODE_BIN"
 #: Env var the per-attempt config references for the worker API key.
 WORKER_API_KEY_ENV = "VERDICT_WORKER_API_KEY"
-#: Context file written to the worktree before each attempt (Task 4.1).
-CONTEXT_FILE_NAME = ".verdict-context.md"
+#: The instructions file that carries the task text, written beside ``opencode.json`` in the
+#: per-attempt config directory (never in the worktree) and listed in that config's
+#: ``instructions``.
+TASK_FILE_NAME = "verdict-task.md"
+#: The whole prompt of an attempt, sent on stdin: one short ask that points at the instructions.
+#: It is the same for every task; the task text itself is only in :data:`TASK_FILE_NAME`, so no
+#: text is sent twice and the prompt never nears the 131072-byte limit of one argument.
+TASK_PROMPT = (
+    "Carry out the task described in your instructions (the Verdict task file). "
+    "Make the edits it asks for, run its verification, and stop when verification passes."
+)
 
 _TERM_GRACE_SECONDS = 5.0
 #: Cap on worker output (stdout plus stderr) kept in memory per attempt.  NDJSON is parsed
@@ -89,8 +103,11 @@ _STATUS_PHRASES = (
 #: An HTTP status read from unstructured text: only a 4xx or 5xx number that is marked as one.
 #: Either it follows ``HTTP`` (``HTTP 429``, ``HTTP/1.1 503``, ``HTTP error 500``) or ``status``
 #: (``status 503``, ``status: 504``, ``status code: 401``, ``statusCode=403``, ``"status":429``),
-#: or it is followed by its standard reason phrase (``429 Too Many Requests``).  A bare number is
-#: not a status: ``retrying in 500 ms`` and ``failed after 429 attempts`` carry none.
+#: or it is followed by its standard reason phrase (``429 Too Many Requests``), or by the wording
+#: of the ``requests`` library's ``HTTPError`` (``429 Client Error: Too Many Requests for url:
+#: ...``, ``503 Server Error: Service Unavailable for url: ...``: ``Client`` for a 4xx, ``Server``
+#: for a 5xx, then a colon).  A bare number is not a status: ``retrying in 500 ms`` and
+#: ``failed after 429 attempts`` carry none.
 _STATUS_RE = re.compile(
     r"""(?ix)
     (?: \bhttp(?:/\d(?:\.\d)?)? (?:\s+(?:status|error|code|response))*
@@ -101,6 +118,10 @@ _STATUS_RE = re.compile(
     \b([45]\d\d)\b (?= \s+ (?: """
     + "|".join(r"\s+".join(map(re.escape, phrase.split())) for phrase in _STATUS_PHRASES)
     + r""" ) \b )
+    |
+    \b(4\d\d)\b (?= \s+ Client \s+ Error \s* : )
+    |
+    \b(5\d\d)\b (?= \s+ Server \s+ Error \s* : )
     """
 )
 
@@ -150,7 +171,7 @@ def _parse_status_code(message: str) -> int | None:
     through here.  A number that merely sits in the text (a delay, a count) is not a status.
     """
     match = _STATUS_RE.search(message)
-    return int(match.group(1) or match.group(2)) if match else None
+    return int(next(group for group in match.groups() if group)) if match else None
 
 
 def _status_from_full_text(full: str) -> int | None:
@@ -216,9 +237,11 @@ def _write_attempt_config(
     The API key value is never written to disk — only the env var reference
     ``{env:<api_key_env>}`` that opencode expands at runtime.
 
-    ``instructions`` reference ``.verdict-context.md`` in the worktree for
-    ambient task context (Task 4.1).  When an ``AGENTS.md`` file is present in
-    ``cwd`` it is also listed, so the worker sees project coding conventions.
+    ``instructions`` lists the task file :data:`TASK_FILE_NAME` in ``config_dir`` itself (an
+    absolute path; :func:`_write_task_file` writes it, and :func:`_task_file_problem` checks it
+    is there before launch, since OpenCode skips a listed file that is missing).  When an
+    ``AGENTS.md`` file is present in ``cwd`` it is also listed, so the worker sees project
+    coding conventions.
 
     ``headers`` includes ``X-Verdict-Worker: opencode`` so that ``verdict
     serve``'s relay can identify worker calls and apply per-request route
@@ -237,7 +260,7 @@ def _write_attempt_config(
     ``agents.title.model`` is pinned to the same admitted route so the title
     summariser cannot pick its own model and bypass the route decision.
     """
-    instructions: list[str] = [str(cwd / CONTEXT_FILE_NAME)]
+    instructions: list[str] = [str(config_dir / TASK_FILE_NAME)]
     agents_md = cwd / "AGENTS.md"
     if agents_md.is_file():
         instructions.append(str(agents_md))
@@ -275,127 +298,34 @@ def _write_attempt_config(
     cfg_file.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
-class _TrackingUnknownError(OSError):
-    """Git could not say whether the context file is tracked; callers fail closed."""
+def _write_task_file(config_dir: Path, task: str) -> None:
+    """Write the task text to ``config_dir / TASK_FILE_NAME``, the instructions file.
 
-
-class _PreparationDeadlineError(OSError):
-    """The attempt's time budget ran out while the context file was being prepared."""
-
-
-def _git(cwd: Path, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess[bytes]:
-    """Run git under the process environment, as the runtime's own git calls do.
-
-    ``LC_ALL=C`` only pins the wording of git's messages so a confirmed
-    non-repository can be told apart from a failure.
+    ``config_dir`` lives in the attempt's own private temp directory, never in the worktree, so
+    nothing here follows a path the repository controls and nothing is left behind in it.
     """
-    env = dict(os.environ)
-    env["LC_ALL"] = "C"
-    return subprocess.run(
-        ["git", "-C", str(cwd), *args], capture_output=True, timeout=timeout, check=False, env=env
-    )
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / TASK_FILE_NAME).write_text("# Task\n\n" + task + "\n", encoding="utf-8")
 
 
-def _probe_timeout(deadline: float | None) -> float:
-    """Timeout for one git probe: 30 s, or what is left of the attempt budget if less."""
-    if deadline is None:
-        return 30.0
-    left = deadline - time.monotonic()
-    if left <= 0:
-        raise _PreparationDeadlineError("attempt deadline reached while preparing the context file")
-    return min(30.0, left)
+def _task_file_problem(config_dir: Path) -> str | None:
+    """Why the instructions file cannot be relied on, or None when it is there and readable.
 
-
-def _context_path_is_tracked(cwd: Path, deadline: float | None = None) -> bool:
-    """True when ``cwd`` is a git worktree whose index tracks the context file.
-
-    Returns False only when that is *known*: git itself reports that ``cwd`` is not
-    inside a repository, or git answered and the path is not in the index.  Git
-    decides (not a look for ``.git`` on disk), because ``GIT_DIR``/``GIT_WORK_TREE``
-    make a worktree with no ``.git`` entry.  Anything indeterminate (git missing,
-    timing out, exiting nonzero for another reason, a bare repository, an unreadable
-    index) raises ``OSError``: treating it as "untracked" could let a tracked entry
-    be replaced and then staged into the node deliverable.
-
-    ``deadline`` (an absolute ``time.monotonic()`` value) bounds the probes: each gets at
-    most what is left of it, and ``_PreparationDeadlineError`` is raised once it passes, so
-    a hung repository cannot hold an attempt past its own budget.
+    OpenCode skips a listed instructions file that does not exist and carries on, so a worker
+    would run without its task and its output would look like a failed attempt.  The adapter
+    asks first: the file must be a regular file (a directory is not), must open and must not be
+    empty.  The reason names the file, never the task text.
     """
-
-    def unknown(why: str) -> _TrackingUnknownError:
-        return _TrackingUnknownError(
-            f"cannot determine whether {CONTEXT_FILE_NAME} is tracked: {why}"
-        )
-
+    path = config_dir / TASK_FILE_NAME
     try:
-        probe = _git(cwd, "rev-parse", "--is-inside-work-tree", timeout=_probe_timeout(deadline))
-        if probe.returncode != 0:
-            if b"not a git repository" in probe.stderr:
-                return False  # confirmed: nothing here can be tracked
-            raise unknown(f"git exited {probe.returncode}")
-        if probe.stdout.strip() != b"true":
-            raise unknown("not inside a git work tree")
-        done = _git(
-            cwd,
-            "ls-files",
-            "--cached",
-            "-z",
-            "--",
-            CONTEXT_FILE_NAME,
-            timeout=_probe_timeout(deadline),
-        )
-    except (_TrackingUnknownError, _PreparationDeadlineError):
-        raise
-    except subprocess.TimeoutExpired as exc:
-        if deadline is not None and time.monotonic() >= deadline - 0.05:
-            raise _PreparationDeadlineError(
-                "attempt deadline reached while preparing the context file"
-            ) from exc
-        raise unknown("TimeoutExpired") from exc
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise unknown(type(exc).__name__) from exc
-    if done.returncode != 0:
-        raise unknown(f"git exited {done.returncode}")
-    return bool(done.stdout)
-
-
-def _write_context_file(cwd: Path, prompt: str, deadline: float | None = None) -> None:
-    """Write ``.verdict-context.md`` to the worktree for OpenCode's instructions.
-
-    The file is listed in ``instructions`` in the per-attempt config so opencode
-    loads it as ambient context.  It is excluded from the ownership diff by the
-    ``.verdict-context.md`` entry in ``BYPRODUCT_EXCLUDES`` (runtime.py), which
-    ``_ensure_local_excludes`` appends to ``.git/info/exclude`` before every
-    ``git add -A``.  Since it is excluded, it is never staged and never appears
-    in the changed-files list that the ownership check compares against
-    ``node.owned_files``.
-    """
-    content = "<!-- Verdict worker context — do not commit -->\n# Task\n\n" + prompt + "\n"
-    # The worktree is repository content and so untrusted: a repo can track
-    # ``.verdict-context.md`` as a symlink to a path outside the worktree.
-    # ``Path.write_text`` would follow it and overwrite that target with the
-    # orchestrator's permissions.  Instead write a new regular file (``mkstemp``
-    # uses O_EXCL, so it never follows a link) and ``os.replace`` it over the
-    # entry: rename replaces the symlink itself and never touches its target.
-    target = cwd / CONTEXT_FILE_NAME
-    if deadline is not None and time.monotonic() >= deadline:
-        raise _PreparationDeadlineError("attempt deadline reached while preparing the context file")
-    if _context_path_is_tracked(cwd, deadline):
-        # ``.git/info/exclude`` only hides *untracked* paths.  Replacing a tracked
-        # entry would be staged by ``git add -A`` into the node deliverable (an
-        # ownership failure, or the task prompt committed if the path were owned).
-        raise OSError(
-            f"{CONTEXT_FILE_NAME} is tracked by git in this worktree; refusing to replace it"
-        )
-    fd, tmp_name = tempfile.mkstemp(dir=cwd, prefix=f"{CONTEXT_FILE_NAME}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
-        os.replace(tmp_name, target)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_name)
-        raise
+        if not path.is_file():
+            return f"the task instructions file {TASK_FILE_NAME} is missing"
+        with path.open("rb") as handle:
+            if not handle.read(1):
+                return f"the task instructions file {TASK_FILE_NAME} is empty"
+    except OSError as exc:
+        return f"the task instructions file {TASK_FILE_NAME} cannot be read ({type(exc).__name__})"
+    return None
 
 
 _T = TypeVar("_T")
@@ -431,18 +361,24 @@ async def _to_thread_joined(
         raise
 
 
-async def _prepare_context(cwd: Path, prompt: str, deadline: float | None = None) -> None:
-    """Write the context file off the event loop, without letting a write outlive a cancel.
+async def _send_prompt(proc: asyncio.subprocess.Process, prompt: str) -> None:
+    """Write ``prompt`` to the worker's stdin and close it (OpenCode's message, when given none).
 
-    The git tracking check can take seconds and the loop is shared by every
-    concurrent worker, so the work runs in a thread.  A thread cannot be
-    interrupted: if this coroutine is cancelled it waits for the thread to finish
-    (the write then either completes or fails) before propagating the cancellation,
-    so a caller that has seen the cancellation complete can clean up or reuse the
-    worktree without a late write racing it.  ``deadline`` (absolute monotonic time) bounds
-    the thread itself, so that wait cannot outlast the attempt's budget by much.
+    A worker that has already exited (or closed its stdin) makes the write a broken pipe.  That
+    is not an error of this call: how the worker ended is read from its exit and its output.
+    The ask is a few hundred bytes, far below a pipe's capacity, so the write never blocks.
     """
-    await _to_thread_joined(_write_context_file, cwd, prompt, deadline)
+    stdin = proc.stdin
+    if stdin is None:
+        return
+    try:
+        stdin.write(prompt.encode("utf-8"))
+        await stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        with contextlib.suppress(OSError):
+            stdin.close()
 
 
 def _worker_credential(route_id: str, attempt_id: str) -> str | None:
@@ -847,8 +783,9 @@ def _cleanup_attempt_dir(attempt_tmp: tempfile.TemporaryDirectory[str]) -> None:
 
     This runs in a ``finally`` after the result is known, so an OSError from it (a busy or
     unreadable entry on a failing disk) must not replace that result with an exception.  When
-    the first attempt fails, a forced removal is tried; the directory holds no credential (the
-    key is only ever in the child environment), so a leftover is a disk-space problem, not a leak.
+    the first attempt fails, a forced removal is tried.  The directory holds no credential (the
+    key is only ever in the child environment) but it does hold the task text, in the instructions
+    file, so it is removed on every way out of an attempt and a leftover is worth reporting.
     """
     try:
         attempt_tmp.cleanup()
@@ -1013,7 +950,7 @@ class OpenCodeExecutor:
             )
         # The checks run in a thread (the probe and the request block).  On cancellation the
         # thread is told to stop and is waited for, so no probe process or serve request
-        # outlives the attempt (the same boundary ``_prepare_context`` keeps).
+        # outlives the attempt.
         cancel = threading.Event()
         reason = await _to_thread_joined(
             self._pre_dispatch_reason,
@@ -1029,18 +966,8 @@ class OpenCodeExecutor:
                 route_id, started, f"harness_configuration: {_sanitize(reason, secrets=secrets)}"
             )
 
-        # --- write context file to worktree (Task 4.1) ---
-        try:
-            await _prepare_context(cwd, prompt, started + timeout_seconds)
-        except _PreparationDeadlineError:
-            return self._failure(route_id, started, "timeout")
-        except OSError as exc:
-            return self._failure(
-                route_id, started, f"context_write_failed: {_sanitize(str(exc), secrets=secrets)}"
-            )
-
-        # Preparation (two git probes of up to 30 s each) counts against the attempt budget:
-        # the worker gets only what is left, and nothing is spawned when nothing is.
+        # The pre-dispatch checks count against the attempt budget: the worker gets only what
+        # is left, and nothing is spawned when nothing is.
         if timeout_seconds - (time.monotonic() - started) <= 0:
             return self._failure(route_id, started, "timeout")
 
@@ -1061,6 +988,8 @@ class OpenCodeExecutor:
             data_dir = tmp_path / "data"
             state_dir = tmp_path / "state"
 
+            # The task goes in the instructions file beside the config, once; the worktree is
+            # never written to.  A task that cannot be encoded fails closed like a full disk.
             try:
                 _write_attempt_config(
                     config_dir,
@@ -1069,7 +998,8 @@ class OpenCodeExecutor:
                     api_key_env=self._api_key_env,
                     cwd=cwd,
                 )
-            except OSError as exc:
+                _write_task_file(config_dir, prompt)
+            except (OSError, UnicodeError) as exc:
                 return self._failure(
                     route_id,
                     started,
@@ -1085,8 +1015,16 @@ class OpenCodeExecutor:
                 base_env=self._base_env(),
             )
 
+            # The last thing before launch: OpenCode skips a listed instructions file that is not
+            # there without a word, so a worker would run without its task.
+            problem = _task_file_problem(config_dir)
+            if problem is not None:
+                return self._failure(route_id, started, f"config_write_failed: {problem}")
+
             # ``--model verdict/<route_id>`` selects provider "verdict" and the
-            # exact route registered in the per-attempt config (Task 2.2/2.3).
+            # exact route registered in the per-attempt config (Task 2.2/2.3).  The message
+            # is not an argument: with none, OpenCode reads it from stdin (:func:`_send_prompt`),
+            # and ``--title`` stops it making a second, title-agent request on the route.
             argv = [
                 self._resolve_bin(),
                 "run",
@@ -1099,14 +1037,14 @@ class OpenCodeExecutor:
                 session_id,
                 "--model",
                 f"verdict/{route_id}",
-                "--",
-                prompt,
+                "--title",
+                f"verdict {session_id}",
             ]
 
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
-                    stdin=asyncio.subprocess.DEVNULL,
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(cwd),
@@ -1120,6 +1058,7 @@ class OpenCodeExecutor:
 
             try:
                 try:
+                    await _send_prompt(proc, TASK_PROMPT)
                     stdout_b, stderr_b, cut = await self._collect(
                         proc, max(0.0, timeout_seconds - (time.monotonic() - started))
                     )
