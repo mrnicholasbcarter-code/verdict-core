@@ -97,31 +97,19 @@ def manage_service(
 
 
 def _show(
-    unit: str,
-    run: Callable[[list[str]], subprocess.CompletedProcess[str]],
-    *,
-    timestamp: str | None = None,
+    unit: str, run: Callable[[list[str]], subprocess.CompletedProcess[str]]
 ) -> dict[str, str]:
-    """``systemctl --user show`` for one unit as a dict.
-
-    ``timestamp`` is an optional ``--timestamp=`` format (for example ``us+utc``).
-    Without it systemd prints timestamps in the host's local zone.
-    """
-    command = ["systemctl", "--user", "show"]
-    if timestamp:
-        command.append(f"--timestamp={timestamp}")
-    command += [
-        "-p",
-        "LoadState,ActiveState,SubState,LastTriggerUSec,Result,ExecMainStatus,ExecMainStartTimestamp,ExecMainExitTimestamp,NextElapseUSecRealtime,NextElapseUSecMonotonic",
-        unit,
-    ]
     try:
-        result = run(command)
-        if timestamp and not result.stdout.strip():
-            # systemd older than v246 rejects --timestamp and prints nothing on
-            # stdout.  Ask again in the default format rather than report an
-            # empty unit (an empty reply would read as "healthy" to callers).
-            result = run([c for c in command if not c.startswith("--timestamp=")])
+        result = run(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                "-p",
+                "LoadState,ActiveState,SubState,LastTriggerUSec,Result,ExecMainStatus,ExecMainExitTimestamp,InvocationID,NextElapseUSecRealtime,NextElapseUSecMonotonic",
+                unit,
+            ]
+        )
     except (OSError, subprocess.SubprocessError):
         return {}
     values: dict[str, str] = {}

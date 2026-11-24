@@ -24,8 +24,6 @@ from verdict.prove_at_rest_service import (
 
 SERVICE = "verdict-context-lift.service"
 TIMER = "verdict-context-lift.timer"
-# `systemctl --timestamp=` value: "Day YYYY-MM-DD HH:MM:SS.UUUUUU UTC" on any host zone.
-UTC_TIMESTAMP_FORMAT = "us+utc"
 
 
 def timer_state(unit: str = TIMER) -> dict[str, Any]:
@@ -33,11 +31,7 @@ def timer_state(unit: str = TIMER) -> dict[str, Any]:
     from verdict import metadata_service
 
     values = metadata_service._show(unit, metadata_service._run_show)
-    # Ask for explicit-UTC timestamps (systemd >= 246) so the invocation start can
-    # be compared with the receipt's UTC finish_time on a host in any timezone.
-    service = metadata_service._show(
-        SERVICE, metadata_service._run_show, timestamp=UTC_TIMESTAMP_FORMAT
-    )
+    service = metadata_service._show(SERVICE, metadata_service._run_show)
     if values.get("LoadState") != "loaded":
         return {"state": "missing", "result": "unknown"}
     if values.get("ActiveState") == "failed" or service.get("ActiveState") == "failed":
@@ -50,12 +44,14 @@ def timer_state(unit: str = TIMER) -> dict[str, Any]:
         # ExecMainStatus is the actual exit code from the last service run;
         # "2" means the bench exited intentionally with blocked.
         "exec_main_status": service.get("ExecMainStatus"),
-        # ExecMainStartTimestamp is when the last invocation's main process
-        # started.  A Type=oneshot unit exits while still "activating", so
-        # ActiveEnterTimestamp stays n/a (or left over from an older run) and
-        # cannot identify the invocation.  Doctor compares the receipt's
-        # finish_time with this value.
-        "exec_main_start_timestamp": service.get("ExecMainStartTimestamp") or None,
+        # InvocationID identifies the last runtime cycle of the service.  The
+        # bench records the same value ($INVOCATION_ID) in its receipt, so doctor
+        # can tell the receipt of this failed run from a later manual run.  It
+        # persists after the unit exits and is unset on systemd before v232.
+        "invocation_id": service.get("InvocationID") or None,
+        # The timer's own ActiveState: "state" above is "failed" whenever the
+        # service failed, even if the timer was stopped and will not fire again.
+        "timer_active_state": values.get("ActiveState"),
     }
 
 

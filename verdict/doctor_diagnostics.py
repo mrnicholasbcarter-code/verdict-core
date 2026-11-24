@@ -1574,56 +1574,25 @@ def _context_lift_last_bench_result(home: Path | None = None) -> dict[str, Any] 
     return data
 
 
-def _parse_systemd_utc(raw: object) -> datetime | None:
-    """Parse systemd's ``Day YYYY-MM-DD HH:MM:SS[.ffffff] UTC`` into an aware datetime.
-
-    Only an explicit ``UTC`` suffix is accepted.  A local-zone abbreviation such
-    as ``EST`` or ``CET``, ``n/a`` or anything else returns None: guessing the
-    zone would let a stale receipt through.  The weekday name is skipped because
-    it is locale-dependent.
-    """
-    parts = str(raw or "").split()
-    if len(parts) != 4 or parts[3] != "UTC":
-        return None
-    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return datetime.strptime(f"{parts[1]} {parts[2]}", fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return None
-
-
-def _parse_receipt_time(raw: object) -> datetime | None:
-    """Parse a receipt ``finish_time``; None unless it is a string with a UTC offset.
-
-    A timestamp without an offset is invalid, not "probably UTC": comparing it
-    with the unit's aware start time would raise TypeError, and guessing a zone
-    would let a stale receipt through.
-    """
-    if not isinstance(raw, str) or not raw:
-        return None
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        return None
-    return parsed
-
-
 def _receipt_is_from_invocation(bench: dict[str, Any], state: dict[str, Any]) -> bool:
-    """Return True when the receipt was written no earlier than the invocation started.
+    """Return True when the receipt was written by the unit run that failed.
 
-    This prevents a stale blocked receipt (from a previous run) from downgrading a
-    crash to a warning.  Both ExecMainStatus=2 (blocked exit) and a receipt whose
-    finish_time is not earlier than the unit's ExecMainStartTimestamp are required.
+    The bench records systemd's ``$INVOCATION_ID`` in its receipt and the unit
+    reports the same value as ``InvocationID`` (systemd.exec(5)).  A blocked
+    receipt from an earlier run, or one written later by a manual or ``--dry-run``
+    bench that overwrote ``latest.json``, has no matching ID, so it cannot turn a
+    crash or a usage-error exit into a warning.  A time window could not tell
+    these apart.
 
-    Returns False when either timestamp is absent, unparseable or not in UTC
-    terms (conservative: the row stays a failure).
+    Returns False when either ID is absent, empty or not a string (systemd older
+    than v232 reports none).
     """
-    start = _parse_systemd_utc(state.get("exec_main_start_timestamp"))
-    finish = _parse_receipt_time(bench.get("finish_time"))
-    return start is not None and finish is not None and finish >= start
+    receipt_id = bench.get("invocation_id")
+    unit_id = state.get("invocation_id")
+    if not isinstance(receipt_id, str) or not isinstance(unit_id, str):
+        return False
+    receipt_id, unit_id = receipt_id.strip().lower(), unit_id.strip().lower()
+    return bool(receipt_id) and receipt_id == unit_id
 
 
 def _context_lift_timer_row(
@@ -1638,9 +1607,10 @@ def _context_lift_timer_row(
 
     A warning is only issued when ALL of these hold:
     - The service's ExecMainStatus is "2" (the intentional blocked-exit code).
-    - The receipt's finish_time is not earlier than the service's
-      ExecMainStartTimestamp (the receipt belongs to this invocation, not a
-      previous blocked run).
+    - The receipt was written by that same unit run: its invocation_id equals the
+      service's InvocationID.
+    - The timer itself is active, so the bench will run again.  The service can
+      have failed while the timer was stopped or failed.
     """
     from verdict import context_lift_service
     from verdict.setup_host import CONTEXT_LIFT, setup_repair
@@ -1655,14 +1625,15 @@ def _context_lift_timer_row(
         return {"label": label, "status": "ok", "detail": detail}
     if name == "failed" and result == "exit-code":
         # Distinguish a blocked bench (no free routes, expected) from a crash.
-        # Require ExecMainStatus=2 (intentional exit) AND the receipt is not older
-        # than this invocation's start (guards against a stale blocked receipt).
+        # Require ExecMainStatus=2 (intentional exit), a receipt written by this
+        # very unit run (matching invocation ID), and a timer that is still active.
         bench = (bench_result or _context_lift_last_bench_result)()
         if (
             isinstance(bench, dict)
             and bench.get("conclusion") == "blocked"
             and str(state.get("exec_main_status", "")) == "2"
             and _receipt_is_from_invocation(bench, state)
+            and state.get("timer_active_state") == "active"
         ):
             br = str(bench.get("block_reason") or "no eligible routes")
             detail += f"; blocked: {br}"

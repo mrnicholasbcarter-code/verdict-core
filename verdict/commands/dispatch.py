@@ -343,9 +343,12 @@ def _cmd_bench_context_lift(args: argparse.Namespace) -> None:
     now = datetime.now(timezone.utc)
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     out_file = out_dir / f"{stamp}.json"
-    # finish_time binds the receipt to this invocation so doctor can verify that
-    # a "blocked" conclusion is not from a previous run that pre-dates a later crash.
-    receipt["finish_time"] = now.isoformat()
+    # invocation_id ties the receipt to the systemd unit run that wrote it.  systemd
+    # gives every process of one runtime cycle of a unit the same $INVOCATION_ID and
+    # exposes it as the unit's InvocationID property, so doctor can tell the receipt
+    # of the failed unit run from a later manual or --dry-run receipt (no
+    # INVOCATION_ID, or another unit's) that overwrote latest.json.
+    receipt["invocation_id"] = os.environ.get("INVOCATION_ID") or None
     payload = _json.dumps(receipt, indent=2)
     out_file.write_text(payload, encoding="utf-8")
     (out_dir / "latest.json").write_text(payload, encoding="utf-8")
