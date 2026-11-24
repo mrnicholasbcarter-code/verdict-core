@@ -116,15 +116,19 @@
       worker executor and the route-through-serve contract. Update ETHOS.md `In
       force` or `NOW` only if the operator asks. Verify: `check_doc_links.py` and
       `check_reachability.py` are green; no host paths in fixtures or docs.
-- [x] 7.2 Run the full suite, ruff, mypy --strict, reachability, the lint gates,
+- [ ] 7.2 Run the full suite, ruff, mypy --strict, reachability, the lint gates,
       both OpenSpec validators, and get a cross-family (non-Claude) review. Verify:
-      all commands green; review from a different model family. Evidence: ruff, ruff format,
-      `mypy verdict --strict`, `scripts/check_lint_gates.py` (reachability, definition of done,
-      claims, proof-path trailers, `openspec validate`, the vendored validator) and the focused
-      tests ran green locally on the final head; the full suite is run by CI on the pushed head
-      (not run locally, by the shared-machine rule); the cross-family review (`ocr`,
-      `cx/gpt-6.1-sol`) of the final head is recorded in the PR body.
-
+      all commands green; review from a different model family. **Not ticked:** ruff, ruff
+      format, `mypy verdict --strict`, `scripts/check_lint_gates.py` and the focused tests ran
+      green locally on the code of `acde1f6d`, but the cross-family review (`ocr`,
+      `cx/gpt-6.1-sol`) of that head is complete with one open finding (below), the two fix
+      rounds the story allows are used, and the full suite is run by CI on the pushed head (not
+      run locally, by the shared-machine rule). Open finding (hardening; the behaviour is
+      older than this change): `_interpret` ignores stderr when an NDJSON error message exists,
+      so a worker that reports `{"type":"error","message":"request failed"}` on stdout and
+      `HTTP 429` on stderr gets no status. Fix: read stderr's status as a fallback when the
+      event has none. Tick this task when that is fixed and the review of the final head is
+      clean and CI is green.
 - [ ] (post-merge) 8.1 On installed main, run a `verdict orchestrate` task on a
       coding node using an OpenCode worker: the node edits a file, runs
       verification, and the receipt shows `harness: opencode` with the correct
