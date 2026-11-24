@@ -1,7 +1,8 @@
 # Spec Delta: autodev OpenCode isolated executor
 
 "Byte-identical", for a user repository, means all four of: every file under the working
-tree outside `.git` (path, kind, executable bit, bytes); the output of `git status
+tree outside `.git` (path, kind, executable bit, bytes) and the set of directory paths there,
+empty directories included; the output of `git status
 --porcelain=v1 -z --untracked-files=all`; `HEAD` and the output of `git for-each-ref`; and
 the bytes of `.git/config`, `.git/info/exclude` and every file under `.git/hooks`.
 
@@ -120,9 +121,13 @@ swapping an ancestor directory for a symlink cannot redirect a read.
 - **WHEN** a surviving worker process replaces a directory of the attempt tree by a symlink to a path outside the tree while the tree is being read
 - **THEN** nothing outside the tree is read, and the attempt is `error` with the reason that the attempt tree changed during validation
 
+#### Scenario: A regular file replaced by a FIFO during validation
+- **WHEN** the attempt tree's metadata reports a regular file and the worker's surviving process replaces it with a FIFO before the open
+- **THEN** the executor does not block, and the attempt is `error` with the reason that the attempt tree changed during validation, not `rejected`
+
 #### Scenario: Special files in the attempt tree
 - **WHEN** a worker leaves a FIFO, or a symlink pointing outside the tree, where a regular file was
-- **THEN** it is recorded by its real kind, never opened or followed, and the attempt is `rejected` if the path is in the delta
+- **THEN** it is recorded by the kind its metadata reports, never opened or followed, and the attempt is `rejected` if the path is in the delta
 
 #### Scenario: A valid owned repair is applied
 - **WHEN** a worker changes only an owned file
@@ -171,10 +176,12 @@ the repository root without following symlinks, and SHALL compare, for each path
 current kind, executable bit and bytes with the seed manifest (or absence, when the manifest
 has no entry), both before any write and again immediately before that path's write. If any
 comparison differs the attempt SHALL be `rejected` with the reason and nothing SHALL be written
-for a pre-write difference. The second comparison SHALL also confirm that every held directory
+for a pre-write difference. The checks before the first write SHALL be read-only and SHALL
+create nothing; directories SHALL be created only during the write phase, each recorded for
+rollback as it is created. The second comparison SHALL also confirm that every held directory
 descriptor is still the directory reachable at its name, by device and inode. A refusal found
-before the first write SHALL make the attempt `rejected`. A refusal or failure after the first
-write SHALL roll back every path already written, SHALL make the attempt `error`, and its
+by the read-only checks SHALL make the attempt `rejected`. A refusal or failure after the write
+phase has begun SHALL roll back every path and directory already written or created, SHALL make the attempt `error`, and its
 reason SHALL name the refused path and list any path the rollback could not restore. The
 executor SHALL refuse to run on a host whose descriptor-relative file operations it needs are
 unavailable.
@@ -198,6 +205,10 @@ unavailable.
 #### Scenario: Parent directory renamed away during the transfer
 - **WHEN** a parent directory is renamed and a symlink or another directory is put at its old name after the first comparison and before the write
 - **THEN** the second comparison finds the held descriptor is no longer the directory at that name, nothing is written into the displaced directory, and the attempt is `rejected` if no write had happened and `error` otherwise
+
+#### Scenario: A refusal on a later path leaves no directory behind
+- **WHEN** a transfer has two owned paths, the first in a directory that does not exist yet and the second changed by the user since the seed
+- **THEN** the attempt is `rejected`, nothing is written, and the directory set of the user's tree is unchanged, with no new empty directory
 
 #### Scenario: Late conflict after earlier paths were written
 - **WHEN** a transfer of three owned files has written the first and the user edits the second before its write

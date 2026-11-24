@@ -204,10 +204,13 @@ to the directory descriptor, and descends only by opening the child with
 `O_DIRECTORY | O_NOFOLLOW` relative to its parent descriptor. No path string is ever
 re-resolved. Each regular file is opened relative to its directory descriptor with
 `O_NOFOLLOW | O_NONBLOCK`, checked with `fstat` to be a regular file after it is open, and
-read in bounded chunks up to the per-file limit (Open point 3). A path that is not a regular
-file at open time is recorded with its real kind and never opened again. If an open or a
-descent fails because the path changed kind or became a link during the walk, the attempt is
-`error` ("attempt tree changed during validation").
+read in bounded chunks up to the per-file limit (Open point 3). A path whose metadata
+says it is not a regular file (a FIFO, a device, a symlink) is recorded with that kind and
+never opened. A path whose metadata said regular file but whose open, `fstat` or descent
+then shows otherwise (it became a FIFO or a link between the two calls, so that `O_NONBLOCK`
+let the open succeed and `fstat` found the FIFO) has changed during the walk, and the attempt
+is `error` ("attempt tree changed during validation"). The first case can lead to `rejected`
+through the delta rules; the second never does.
 
 **Read once.** The delta's bytes are read once into memory for each transferred path, from
 an open descriptor, and hashed; that hash must equal the M1 entry. A mismatch is the same
@@ -228,8 +231,13 @@ write. It assumes a POSIX host (`os.open` with `dir_fd`; the executor refuses to
 **Traversal.** Each delta path is resolved component by component from a descriptor opened on
 the repository root, every component opened with `O_DIRECTORY | O_NOFOLLOW` relative to its
 parent descriptor. A component that is a symlink, or is not a directory, is a refusal. A
-missing parent directory is created with `mkdir` relative to its parent descriptor and
-recorded in the journal. No step uses a path string that could be re-resolved.
+component that does not exist is not a refusal: it means the path is absent, as for a new
+file. No step uses a path string that could be re-resolved.
+
+**Two phases.** The checks (traversal, fingerprint, limits) are read-only and create
+nothing, so a refusal found by them leaves no residue. Directories are created only in the
+write phase, one at a time with `mkdir` relative to the parent descriptor, each recorded in
+the journal at the moment it is created, so rollback removes it.
 
 **Fingerprint.** For each delta path the executor compares what the user's tree holds now
 with what M0 recorded for it: kind, executable bit and SHA-256 of the bytes, or absence when
@@ -250,12 +258,13 @@ deleted is `unlink`ed the same way. Before each write it records a journal entry
 whether it existed, its prior bytes, kind and executable bit, the fingerprint it wrote, and
 any directories it created.
 
-**Outcomes.** A refusal found by the checks before the first write is `rejected`, and nothing
-was written. Any refusal or failure after the first write (a write error, a changed file, a
-swapped or displaced parent found by the second check) first rolls back every path already
-written by the restore procedure of D6, and the attempt is then `error`, whose reason names
-the refused path and lists any path the rollback could not restore (because the user changed
-it, under D6's rules). Partial transfer is never reported as `rejected`.
+**Outcomes.** A refusal found by the read-only checks is `rejected`, and nothing was written
+or created. Any refusal or failure once the write phase has begun, meaning after the first
+directory was created or the first file written (a write error, a changed file, a swapped or
+displaced parent found by the second check), first rolls back every path and directory
+already journalled by the restore procedure of D6, and the attempt is then `error`, whose
+reason names the refused path and lists any path the rollback could not restore (because the
+user changed it, under D6's rules). Partial transfer is never reported as `rejected`.
 
 **What this does not guarantee.** POSIX has no compare-and-swap for a file's content. A user
 or tool that writes an owned file in the instant between the last check and the `rename` is
@@ -393,7 +402,9 @@ contains no credential.
 
 Tests and the spec use this definition for "leaves the user's repository as it was":
 
-1. every file under the working tree outside `.git`: path, kind, executable bit, bytes;
+1. every file under the working tree outside `.git`, with its path, kind, executable bit and
+   bytes, and the set of directory paths there, empty directories included (git status does not
+   show them);
 2. the output of `git status --porcelain=v1 -z --untracked-files=all`;
 3. `HEAD` and the output of `git for-each-ref`;
 4. the bytes of `.git/config`, `.git/info/exclude` and every file under `.git/hooks`.

@@ -59,36 +59,41 @@ Conventions for every task:
       the only changed path (the directory is not); a directory swapped for an owned file's
       parent and a file swapped for a directory are rejected by ownership; a FIFO and a symlink
       substituted for a regular file are recorded by kind and never opened (the test would hang
-      on a FIFO without `O_NONBLOCK`); a path that changes kind between the metadata read and the open is `error`; an ancestor
+      on a FIFO without `O_NONBLOCK`); a path that changes kind between the metadata read and the open is `error` (a regular file
+      replaced by a FIFO after the metadata read must not block and must not be `rejected`); an ancestor
       directory swapped for a symlink to a path outside the tree, through a test seam between
       the directory listing and the open, reads nothing outside the tree and is `error`; a file over the per-file limit is a named refusal; a new path in a user-ignored
       directory is a byproduct; the same path existing at seed is not; a worker-written
       `.gitignore` hiding an unowned file is itself out of bounds and does not hide it; a tree
       over the limit is a named refusal.
-- [ ] 2.3 Transfer with a journal (D5). `transfer(delta, user_repo, m0)` resolves every path
-      from a root descriptor with `O_DIRECTORY | O_NOFOLLOW` per component, creates missing
-      parents with `mkdir` by descriptor, compares each path's kind, executable bit and
-      SHA-256 with M0 before any write and again immediately before its own write, writes a
-      temporary file by descriptor and `rename`s it by descriptor, sets the executable bit from
-      M1, records the journal (prior bytes, kind and mode, written fingerprint, created
-      directories), and rolls back through restore on any write failure. It refuses to run
-      where `os.supports_dir_fd` lacks what it needs. Files: `verdict/autodev_opencode.py`,
-      `tests/test_autodev_opencode.py`. Verify:
+- [ ] 2.3 Transfer with a journal (D5). `transfer(delta, user_repo, m0)` runs read-only checks
+      first, creating nothing: it resolves every path from a root descriptor with
+      `O_DIRECTORY | O_NOFOLLOW` per component and compares each path's kind, executable bit
+      and SHA-256 with M0. Then, in the write phase, it creates missing parents with `mkdir` by
+      descriptor, journalling each at creation; repeats the comparison and the device and inode
+      check of the held descriptors immediately before each file's write; writes a temporary file
+      by descriptor and `rename`s it by descriptor; sets the executable bit from M1; records the
+      journal (prior bytes, kind and mode, written fingerprint, created directories); and rolls
+      back through restore on any refusal or failure once the write phase has begun, ending as
+      `error`. It refuses to run where `os.supports_dir_fd` lacks what it needs. Files:
+      `verdict/autodev_opencode.py`, `tests/test_autodev_opencode.py`. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py -k transfer`
-      with tests for: each refusal writes nothing and leaves the user's repository
-      byte-identical (a symlinked parent, a non-regular target, a changed user file, a user file
-      that exists when M0 has no entry, an oversized file, a path that escapes the root); a
-      `chmod`-only change by the user after the seed is a refusal; an intervening user edit
-      injected through a test seam between the preflight check and the first write is
-      `rejected` and not overwritten; the same edit on the second of three files restores the
-      first, leaves the edit and is `error` naming the second path (a multi-file late
-      conflict); a late conflict where the user also changed an earlier written path leaves
-      that path and lists it as not restored; a parent directory swapped for a symlink through
-      the seam is refused and nothing is written through it; a parent directory renamed away
-      with a symlink or another directory put at its old name is refused by the device and
-      inode check and nothing is written into the displaced directory; an injected write
-      failure on the second of three files restores all three; a hash mismatch between the
-      delta read and M1 is `error`.
+      with tests for: each refusal found by the read-only checks writes nothing and leaves the
+      user's repository byte-identical (a symlinked parent, a non-regular target, a changed user
+      file, a user file that exists when M0 has no entry, an oversized file, a path that escapes
+      the root); a `chmod`-only change by the user after the seed is a refusal; an intervening
+      user edit injected through a test seam between the read-only checks and the first write is
+      `rejected` and not overwritten; a refusal on the second of two paths when the first needs a
+      new directory leaves no new directory (the test compares the directory set, empty ones
+      included, because git status does not show them); the same edit on the second of three
+      files restores the first, leaves the edit and is `error` naming the second path (a
+      multi-file late conflict); a late conflict where the user also changed an earlier written
+      path leaves that path and lists it as not restored; a parent directory swapped for a
+      symlink through the seam is refused and nothing is written through it; a parent directory
+      renamed away with a symlink or another directory put at its old name is refused by the
+      device and inode check and nothing is written into the displaced directory; an injected
+      write failure on the second of three files restores all three; a hash mismatch between
+      the delta read and M1 is `error`.
 - [ ] 2.4 Restore (D6). `restore(journal)` undoes the last transfer in reverse order with the
       same descriptor-relative traversal and at-the-moment re-check as task 2.3, checking kind,
       executable bit and SHA-256 against what the transfer wrote; it leaves alone and reports
