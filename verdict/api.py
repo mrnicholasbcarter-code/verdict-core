@@ -29,7 +29,7 @@ except ImportError as exc:
         '`pip install "verdict-core[server]"` (or `verdict-core[all]`)'
     ) from exc
 
-from verdict import __version__
+from verdict import __version__, worker_assignment
 from verdict.actions.verified_models import (
     PublicModelsReadiness,
     PublicModelsUnavailableError,
@@ -1050,6 +1050,50 @@ app = FastAPI(
 )
 
 
+#: Every worker assignment starts with this (the format version and a dot).
+_ASSIGNMENT_PREFIX = f"{worker_assignment.VERSION}."
+#: The only paths that accept an assignment as the bearer, and only by ``POST``: the OpenAI
+#: relay surfaces a worker calls.  Everything else (guidance, route, runs, models, the Anthropic
+#: surface) takes the serve token alone.
+_ASSIGNMENT_RELAY_PATHS = frozenset({"/v1/chat/completions", "/v1/responses"})
+
+
+def _presents_assignment(request: Request) -> bool:
+    """True when the bearer or ``x-api-key`` value carries the assignment prefix.
+
+    Only the prefix is read: this never decodes, verifies or loads a key, so it is safe to run
+    where no assignment may be honoured.
+    """
+    scheme, _, supplied = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer" and supplied.startswith(_ASSIGNMENT_PREFIX):
+        return True
+    return request.headers.get("x-api-key", "").startswith(_ASSIGNMENT_PREFIX)
+
+
+async def _authenticate_assignment(request: Request, supplied: str, call_next: Any) -> Response:
+    """Verify a worker assignment presented as the bearer on a relay POST.
+
+    The key is read from its file on every request (a rotation needs no restart).  A key that
+    cannot be loaded fails closed with 503; any verification failure is the same generic 403 as
+    a wrong bearer, and the log carries the reason code only, never the token.  On success the
+    verified assignment travels in ``request.state``, which no header or body can write.
+    """
+    try:
+        key = worker_assignment.load_assignment_key()
+    except worker_assignment.AssignmentError as exc:
+        logger.warning("worker assignment refused: reason=%s", exc.reason)
+        return _proxy_error(503, "worker assignments are not configured")
+    try:
+        verified = worker_assignment.verify_assignment(
+            supplied, key, now=datetime.now(timezone.utc)
+        )
+    except worker_assignment.AssignmentError as exc:
+        logger.warning("worker assignment refused: reason=%s", exc.reason)
+        return _proxy_error(403, "authentication failed")
+    request.state.worker_assignment = verified
+    return cast(Response, await call_next(request))
+
+
 @app.middleware("http")
 async def caller_authentication(request: Request, call_next: Any) -> Response:
     """Require server-owned bearer auth for every non-health API route.
@@ -1057,6 +1101,8 @@ async def caller_authentication(request: Request, call_next: Any) -> Response:
     The OmniRoute webhook receiver authenticates each delivery by its HMAC
     signature instead, because OmniRoute cannot send Verdict's bearer token.
     ``POST /v1/messages`` also accepts the same server token as ``x-api-key``.
+    A signed worker assignment (``vwa1.`` bearer) is accepted only on the two OpenAI relay
+    POST paths, and never in anonymous mode.
     """
     if request.url.path in {"/health", OMNIROUTE_WEBHOOK_PATH}:
         return cast(Response, await call_next(request))
@@ -1074,6 +1120,11 @@ async def caller_authentication(request: Request, call_next: Any) -> Response:
             return _proxy_error(
                 403, "anonymous mode is loopback-only", surface=_auth_surface(request)
             )
+        if _presents_assignment(request):
+            # Anonymous mode has no serve token to stand behind and grants no assigned lane, so
+            # an assignment is refused outright on every path and method: nothing is verified
+            # and the key file is never read.
+            return _proxy_error(403, "authentication failed", surface=_auth_surface(request))
         return cast(Response, await call_next(request))
     if not token:
         return _proxy_error(
@@ -1095,7 +1146,18 @@ async def caller_authentication(request: Request, call_next: Any) -> Response:
             content=_auth_required_body(request),
             headers={"www-authenticate": "Bearer"},
         )
+    is_assignment = supplied.startswith(_ASSIGNMENT_PREFIX)
+    if is_assignment and not supplied.isascii():
+        # The constant-time compare below raises on non-ASCII text; an assignment is ASCII, so
+        # this is a refusal, never a server error.
+        return _proxy_error(403, "authentication failed", surface=_auth_surface(request))
     if not bearer_matches(supplied, token):
+        if (
+            is_assignment
+            and request.method == "POST"
+            and request.url.path in _ASSIGNMENT_RELAY_PATHS
+        ):
+            return await _authenticate_assignment(request, supplied, call_next)
         return _proxy_error(403, "authentication failed", surface=_auth_surface(request))
     return cast(Response, await call_next(request))
 
