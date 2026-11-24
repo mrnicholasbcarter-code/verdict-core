@@ -251,6 +251,7 @@ def _seed_merged(
         "id": 100,
         "name": "Proof",
         "event": "push",
+        "head_branch": "main",
         "head_sha": "mergedrev",
         "status": "completed",
         "conclusion": "success",
@@ -259,6 +260,7 @@ def _seed_merged(
         "id": 90,
         "name": "Proof",
         "event": "push",
+        "head_branch": "main",
         "head_sha": "parentrev",
         "status": "completed",
         "conclusion": "success",
@@ -438,6 +440,13 @@ def test_merged_run_exits_two_when_an_artifact_cannot_be_fetched(
 
 RUN_BINDING_BREAKS: dict[str, Callable[[FakeGitHub], None]] = {
     "the merged run is another commit's": lambda gh: gh.run_meta["100"].update(head_sha="otherrev"),
+    "the merged run is on a feature branch": lambda gh: gh.run_meta["100"].update(
+        head_branch="feature"
+    ),
+    "the parent run is on a feature branch": lambda gh: gh.run_meta["90"].update(
+        head_branch="feature"
+    ),
+    "the merged run has no branch": lambda gh: gh.run_meta["100"].pop("head_branch"),
     "the merged run is a pull request run": lambda gh: gh.run_meta["100"].update(
         event="pull_request"
     ),
@@ -546,6 +555,30 @@ def test_merged_run_exits_two_when_the_parent_summary_cannot_be_read(
     }
     assert main(merged_args(contract_path)) == 2
     assert "summary" in capsys.readouterr().err
+
+
+def test_merged_run_exits_two_when_no_gate_is_split_across_the_legs(
+    merged: tuple[FakeGitHub, Collected, list[str]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = _contract_payload()
+    next(g for g in payload["gates"] if g["id"] == "unit_full")["shard"] = "leader"
+    path = tmp_path / "nosplit.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    assert main(merged_args(path)) == 2
+    assert "shard: split" in capsys.readouterr().err
+
+
+def test_merged_run_accepts_another_main_branch_name_when_told(
+    merged: tuple[FakeGitHub, Collected, list[str]],
+    contract_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for run in ("100", "90"):
+        merged[0].run_meta[run]["head_branch"] = "trunk"
+    assert main(merged_args(contract_path)) == 1
+    assert main([*merged_args(contract_path), "--main-branch", "trunk"]) == 0
 
 
 def test_merged_run_exits_two_when_the_contract_declares_no_shards(

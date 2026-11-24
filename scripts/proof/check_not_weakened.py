@@ -29,14 +29,17 @@ It exits 1 when any of these holds, and prints every finding:
 * The ``[tool.pytest.ini_options]`` table of ``pyproject.toml`` differs, a
   ``pytest.ini`` appears or changes, or ``.test_durations`` differs.
 
-What a construct's record holds. Its own text; the scope it sits in; the conditions around it
-(``if``, ``else``, ``while``, conditional expressions, the operands before it in ``and`` /
-``or``); and what the names those conditions and the construct read were bound to in the same
-file: function locals and parameter defaults, class attributes read through ``self`` or ``cls``,
-module constants, each followed through the names it reads in turn. So ``if False: skip()``
-becoming ``if True:``, a flag flipping, or ``SKIP = False`` becoming ``SKIP = True`` under an
-unchanged ``skipif(SKIP)`` are findings. A hook is recorded as its whole definition, docstring
-aside, with the constants it reads.
+What a construct's record holds. Its own text; the scope it sits in; the whole function it is in
+(docstring aside: parameters and defaults, decorators, every statement, so that moving, adding or
+changing any assignment, loop or guard in a function that skips is a finding, even where the
+construct itself is untouched); the conditions around it (``if``, ``else``, ``while``,
+conditional expressions, the operands before it in ``and`` / ``or``); and what the class and
+module constants read by the construct, its conditions or that function were bound to, each
+followed through the names it reads in turn. So ``if False: skip()`` becoming ``if True:``, a
+flag flipping, or ``SKIP = False`` becoming ``SKIP = True`` under an unchanged ``skipif(SKIP)``
+are findings. A hook is recorded as its whole definition, docstring aside, with the constants it
+reads. This errs on the side of reporting: an edit inside a test that already skips is reviewed
+by a person, never passed silently.
 
 What it does not see: it reads code, not behaviour. A guard that depends on something outside
 the changed file (a constant imported from another module, an environment variable, a fixture's
@@ -217,17 +220,6 @@ def _simple_bindings(body: list[ast.stmt]) -> dict[str, ast.expr]:
     return found
 
 
-def _parameter_defaults(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, ast.expr]:
-    args = node.args
-    positional = [*args.posonlyargs, *args.args]
-    found = dict(
-        zip(positional[len(positional) - len(args.defaults) :], args.defaults, strict=False)
-    )
-    keyword_only = dict(zip(args.kwonlyargs, args.kw_defaults, strict=True))
-    found.update({a: d for a, d in keyword_only.items() if d is not None})
-    return {a.arg: d for a, d in found.items()}
-
-
 def _without_docstring(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.AST:
     """A copy of a function without its docstring: wording is not behaviour."""
     clone = copy.deepcopy(node)
@@ -251,6 +243,11 @@ class _Collector(ast.NodeVisitor):
         # module-level constants those conditions and the construct itself read.
         self.conditions: list[tuple[str, frozenset[str]]] = []
         self.bindings: list[dict[str, ast.expr]] = []
+        # The outermost function being visited: a construct inside it is recorded with the whole
+        # function, so any edit in that function (an assignment before or after the guard, an
+        # augmented write, a loop iterable, a default, a decorator) changes the record.
+        self.outer: ast.FunctionDef | ast.AsyncFunctionDef | None = None
+        self.outer_text = ""
         self.constants: dict[str, ast.expr] = _simple_bindings(
             tree.body if isinstance(tree, ast.Module) else []
         )
@@ -281,14 +278,14 @@ class _Collector(ast.NodeVisitor):
         return frozenset(found)
 
     def _binding(self, name: str) -> ast.expr | None:
-        """The value a name was last given in the enclosing scopes, innermost first."""
+        """The value a name was given at class or module level, innermost scope first."""
         for scope in reversed(self.bindings):
             if name in scope:
                 return scope[name]
         return self.constants.get(name)
 
     def _dependencies(self, names: set[str]) -> list[str]:
-        """What ``names`` were bound to (module, class and function level), and so on in turn."""
+        """What ``names`` were bound to (class and module level), and so on in turn."""
         seen: dict[str, ast.expr] = {}
         pending = list(names)
         while pending:
@@ -305,6 +302,9 @@ class _Collector(ast.NodeVisitor):
         for _, read in self.conditions:
             names |= read
         suffix = ""
+        if self.outer is not None:
+            names |= self._names(self.outer)
+            suffix += f" [in: {self.outer_text}]"
         if self.conditions:
             suffix += " [under: " + "; ".join(c for c, _ in self.conditions) + "]"
         dependencies = self._dependencies(names)
@@ -387,12 +387,14 @@ class _Collector(ast.NodeVisitor):
             # tests keeps its name.
             self._record("hook definition", ast.unparse(_without_docstring(node)), node)
         self.scope.append(node.name)
-        scope_bindings = _simple_bindings(node.body)
-        if not isinstance(node, ast.ClassDef):
-            scope_bindings = {**_parameter_defaults(node), **scope_bindings}
-        self.bindings.append(scope_bindings)
+        outermost = not isinstance(node, ast.ClassDef) and self.outer is None
+        if outermost:
+            self.outer, self.outer_text = node, ast.unparse(_without_docstring(node))  # type: ignore[arg-type]
+        self.bindings.append(_simple_bindings(node.body) if isinstance(node, ast.ClassDef) else {})
         self.generic_visit(node)
         self.bindings.pop()
+        if outermost:
+            self.outer, self.outer_text = None, ""
         self.scope.pop()
 
     visit_FunctionDef = _visit_definition  # noqa: N815

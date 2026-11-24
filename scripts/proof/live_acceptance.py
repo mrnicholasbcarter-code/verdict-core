@@ -264,13 +264,18 @@ def _run_meta(run_id: str) -> dict[str, Any]:
     return body
 
 
-def _bind_run(checks: Checks, label: str, run_id: str, expected_sha: str) -> None:
+def _bind_run(checks: Checks, label: str, run_id: str, expected_sha: str, main_branch: str) -> None:
     """The run really is the main push run of the revision it is said to be."""
     run = _run_meta(run_id)
     checks.check(
         run.get("head_sha") == expected_sha,
         f"{label} run {run_id} ran on the {label} revision",
         f"head_sha={run.get('head_sha')!r}, expected {expected_sha}",
+    )
+    checks.check(
+        run.get("head_branch") == main_branch,
+        f"{label} run {run_id} ran on the {main_branch} branch",
+        f"head_branch={run.get('head_branch')!r}",
     )
     checks.check(
         run.get("event") == "push",
@@ -310,11 +315,13 @@ def cmd_merged_run(args: argparse.Namespace) -> int:
     contract = _contract(args.contract)
     count = _shard_count(contract)
     sharded = [g for g in contract.gates_for_mode("full") if g.shard is not None]
+    if not any(g.shard == "split" for g in sharded):
+        raise FetchError("the contract has shards but no full-mode gate with shard: split")
     checks = Checks()
     merged_sha = resolve_revision(args.merged_rev, args.root)
     parent_sha = resolve_revision(args.parent_rev, args.root)
-    _bind_run(checks, "merged", args.run, merged_sha)
-    _bind_run(checks, "parent", args.parent_run, parent_sha)
+    _bind_run(checks, "merged", args.run, merged_sha, args.main_branch)
+    _bind_run(checks, "parent", args.parent_run, parent_sha, args.main_branch)
     _check_merged_jobs(checks, args.run, count)
     with tempfile.TemporaryDirectory(prefix="proof-live-") as tmp_name:
         tmp = Path(tmp_name)
@@ -736,6 +743,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     merged.add_argument("--parent-rev", required=True, help="Parent revision of the merge commit")
     merged.add_argument("--merged-rev", required=True, help="The merge commit")
+    merged.add_argument(
+        "--main-branch", default="main", help="Branch the two push runs must have run on"
+    )
     common(merged)
     merged.set_defaults(func=cmd_merged_run)
 
