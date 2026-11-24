@@ -2257,6 +2257,11 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     else f"route {_client_model!r} was not in the admitted set for this request"
                 ),
             )
+        elif decision.decision != "denied":
+            # Accepted: bound the request to exactly the assigned route.  Whatever produced the
+            # decision (the execution-path branch lists alternatives and proofs for several
+            # offers), a worker request never falls back to a route it was not assigned.
+            decision = replace(decision, alternatives=[])
     elif getattr(intelligence_instance, "allow_client_model_override", False) and _has_client_model:
         _admitted_ids = {
             str(r.get("model_id"))

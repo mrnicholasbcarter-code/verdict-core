@@ -166,3 +166,66 @@ def test_worker_header_without_valid_model_fails_closed(
     message = response.json()["error"]["message"]
     assert "worker" in message
     assert "model" in message
+
+
+class _ExecutionPathShapedIntelligence(_WorkerPinningIntelligence):
+    """Execution-path decisions bypass ``_decision_from_admit``: the selected route
+    arrives with alternatives and a proof for every admitted offer."""
+
+    async def route(
+        self,
+        task: str,
+        criticality: str = "medium",
+        context: dict[str, Any] | None = None,
+        *,
+        request_id: str | None = None,
+    ) -> RoutingDecision:
+        decision = RoutingDecision(
+            model="selected-model",
+            provider="omniroute",
+            tier=2,
+            reason="execution-path shaped fixture",
+            request_id="ep-req-1",
+            managed_backend_status="healthy",
+            quality_outcome="unknown",
+            alternatives=["other-primary"],
+            candidate_states=[
+                {"model_id": "selected-model", "admitted": True},
+                {"model_id": "other-primary", "admitted": True},
+            ],
+        )
+        return with_relay_proofs(decision, context)
+
+
+def test_worker_request_never_falls_back_even_if_the_decision_carries_alternatives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A matching model is not enough: the no-fallback contract is enforced at the relay.
+
+    The decision selects the assigned route but also lists an admitted alternative with
+    its own proof.  ``build_attempts`` would include it, so a failed first attempt could
+    dispatch to a route the worker was not assigned.
+    """
+    transport = _configure(monkeypatch)
+    monkeypatch.setattr(api, "_build_intelligence", lambda: _ExecutionPathShapedIntelligence())
+    attempted: list[list[str]] = []
+    real_build_attempts = api.build_attempts
+
+    def recording(*args: Any, **kwargs: Any) -> Any:
+        attempts = real_build_attempts(*args, **kwargs)
+        attempted.append([item.model for item in attempts])
+        return attempts
+
+    monkeypatch.setattr(api, "build_attempts", recording)
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "selected-model",
+                "messages": [{"role": "user", "content": "worker task"}],
+            },
+            headers={"x-verdict-worker": "opencode"},
+        )
+    assert response.status_code == 200, response.text
+    assert attempted == [["selected-model"]], f"fallback attempts were built: {attempted}"
+    assert [r["body"]["model"] for r in transport.requests] == ["selected-model"]

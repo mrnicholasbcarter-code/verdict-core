@@ -121,6 +121,9 @@ and receipt follow the pinned route and there are no fallback routes. A route ou
 admitted set is denied with no proof minted. The relay only verifies that outcome and never
 rewrites a worker's decision. A missing, empty, null or non-string `model` is denied, and no
 denial contacts upstream; a worker request never falls through to automatic selection.
+Whichever path produced an accepted worker decision (the execution-path branch also lists
+alternatives and several proofs), the relay clears its alternatives, so a worker request has
+no fallback attempts.
 
 **Open point:** Whether to pass the API key via an env var or via the OpenCode
 config's credential field. Both keep it out of the command line and logs; the
@@ -145,6 +148,11 @@ output onto `WorkerTerminal`:
 2. `idle_kill` — attempt killed by `VERDICT_WORKER_IDLE_SECONDS` stall.
 3. `exit_nonzero` — non-zero exit code from `opencode run`.
 4. `malformed_json` — `--format json` output cannot be parsed.
+
+Two further bounds protect the orchestrator. Worker output (stdout plus stderr) kept in memory
+is capped at 16 MiB per attempt (`output_limit`; the process group is killed). Context
+preparation, whose git probes can take up to 30 s each, counts against the attempt timeout: the
+worker gets only the remainder, and nothing is spawned when none is left.
 
 **Context pack delivery (design detail):** The context pack and owned-files list
 are written to `.verdict-context.md` in the node worktree before the attempt

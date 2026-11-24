@@ -54,6 +54,13 @@ attest that route identity.
   the provider follows the pinned route; there are no fallback routes; and the
   request is dispatched on that proof
 
+#### Scenario: A worker request never falls back to another route
+
+- **WHEN** a worker request is accepted, whichever path produced the decision (the
+  execution-path decision lists alternatives and proofs for several offers)
+- **THEN** the relay bounds it to exactly the assigned route: it carries no
+  alternatives and no fallback attempt is built
+
 #### Scenario: Worker pin to a route outside the admitted set is denied
 
 - **WHEN** a request carrying the `X-Verdict-Worker` header names a route that is not
@@ -141,6 +148,20 @@ OpenCode worker attempts SHALL be bounded by the existing per-attempt timeout
   still running in its process group
 - **THEN** the executor kills the whole process group before returning, so no
   descendant can edit the worktree while owned-files validation runs
+
+#### Scenario: Output flood kills the attempt
+
+- **WHEN** an OpenCode attempt prints more than the output cap (16 MiB of stdout plus
+  stderr by default) without ending
+- **THEN** the process group is killed and the attempt is classified as an
+  `output_limit` failure; the orchestrator never buffers unbounded worker output
+
+#### Scenario: Context preparation counts against the attempt timeout
+
+- **WHEN** preparing the context file (including its git tracking check) takes part of
+  the attempt timeout
+- **THEN** the worker gets only the remaining budget, and when none remains the
+  attempt ends as a timeout without spawning the worker
 
 #### Scenario: Per-node budget is exhausted
 

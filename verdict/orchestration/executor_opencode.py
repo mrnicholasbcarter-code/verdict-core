@@ -59,6 +59,10 @@ SERVE_BASE_URL_DEFAULT = "http://127.0.0.1:8000"
 CONTEXT_FILE_NAME = ".verdict-context.md"
 
 _TERM_GRACE_SECONDS = 5.0
+#: Cap on worker output (stdout plus stderr) kept in memory per attempt.  NDJSON is parsed
+#: after the run and several attempts run concurrently, so a worker that prints without
+#: end must fail its attempt rather than exhaust the orchestrator.
+MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 _STDERR_TAIL_CHARS = 400
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _STATUS_RE = re.compile(r"\b([45]\d{2})\b")
@@ -539,12 +543,16 @@ class OpenCodeExecutor:
         serve_base_url: str = SERVE_BASE_URL_DEFAULT,
         api_key_env: str = WORKER_API_KEY_ENV,
         idle_output_seconds: float | None = None,
+        max_output_bytes: int | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
         self._opencode_bin = opencode_bin
         self._serve_base_url = serve_base_url
         self._api_key_env = api_key_env
         self._env = dict(env) if env is not None else None
+        self.max_output_bytes: int = (
+            max_output_bytes if max_output_bytes is not None else MAX_OUTPUT_BYTES
+        )
         self.idle_output_seconds: float = (
             idle_output_seconds
             if idle_output_seconds is not None
@@ -585,6 +593,18 @@ class OpenCodeExecutor:
                 model=route_id,
                 harness="opencode",
                 error=f"context_write_failed: {_sanitize(str(exc))}",
+                duration_seconds=time.monotonic() - started,
+            )
+
+        # Preparation (two git probes of up to 30 s each) counts against the attempt budget:
+        # the worker gets only what is left, and nothing is spawned when nothing is.
+        if timeout_seconds - (time.monotonic() - started) <= 0:
+            return WorkerTerminal(
+                executor_kind="live",
+                ok=False,
+                model=route_id,
+                harness="opencode",
+                error="timeout",
                 duration_seconds=time.monotonic() - started,
             )
 
@@ -661,7 +681,9 @@ class OpenCodeExecutor:
                 )
 
             try:
-                stdout_b, stderr_b, cut = await self._collect(proc, timeout_seconds)
+                stdout_b, stderr_b, cut = await self._collect(
+                    proc, max(0.0, timeout_seconds - (time.monotonic() - started))
+                )
                 # Always reap the whole process group before returning, on a normal
                 # exit as well as on stall/timeout: a descendant with redirected
                 # pipes can outlive its leader and keep editing the worktree while
@@ -669,17 +691,21 @@ class OpenCodeExecutor:
                 await _kill_process_group(proc)
                 if cut:
                     stalled = cut == "stalled"
+                    if stalled:
+                        cut_error = f"stalled: no worker output for {self.idle_output_seconds:g}s"
+                    elif cut == "output_limit":
+                        cut_error = (
+                            f"output_limit: worker output exceeded {self.max_output_bytes} bytes"
+                        )
+                    else:
+                        cut_error = "timeout"
                     return WorkerTerminal(
                         executor_kind="live",
                         ok=False,
                         model=route_id,
                         harness="opencode",
                         stop_reason="stalled" if stalled else "",
-                        error=(
-                            f"stalled: no worker output for {self.idle_output_seconds:g}s"
-                            if stalled
-                            else "timeout"
-                        ),
+                        error=cut_error,
                         duration_seconds=time.monotonic() - started,
                     )
             except asyncio.CancelledError:
@@ -705,11 +731,14 @@ class OpenCodeExecutor:
         """Collect both pipes with timeout and idle-output stall kill.
 
         Returns ``(stdout, stderr, cut)``; ``cut`` is ``""`` on normal exit,
-        ``"timeout"`` when the whole attempt runs past ``timeout_seconds``, and
-        ``"stalled"`` when no output byte arrived for ``idle_output_seconds``.
+        ``"timeout"`` when the whole attempt runs past ``timeout_seconds``,
+        ``"stalled"`` when no output byte arrived for ``idle_output_seconds``, and
+        ``"output_limit"`` when stdout plus stderr exceed ``max_output_bytes``.
         """
         buffers: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
         last_output = time.monotonic()
+
+        over_limit = asyncio.Event()
 
         async def pump(name: str, stream: asyncio.StreamReader | None) -> None:
             nonlocal last_output
@@ -718,12 +747,17 @@ class OpenCodeExecutor:
             while chunk := await stream.read(65536):
                 buffers[name] += chunk
                 last_output = time.monotonic()
+                if len(buffers["stdout"]) + len(buffers["stderr"]) > self.max_output_bytes:
+                    over_limit.set()
+                    return
 
         tasks = {
             asyncio.ensure_future(pump("stdout", proc.stdout)),
             asyncio.ensure_future(pump("stderr", proc.stderr)),
             asyncio.ensure_future(proc.wait()),
         }
+        # Wakes the loop as soon as the output cap is hit, instead of at the next timer.
+        limit_waiter = asyncio.ensure_future(over_limit.wait())
         started = time.monotonic()
         cut = ""
         try:
@@ -731,20 +765,29 @@ class OpenCodeExecutor:
                 now = time.monotonic()
                 hard_left = timeout_seconds - (now - started)
                 idle_left = self.idle_output_seconds - (now - last_output)
+                if over_limit.is_set():
+                    cut = "output_limit"
+                    break
                 if hard_left <= 0:
                     cut = "timeout"
                     break
                 if idle_left <= 0:
                     cut = "stalled"
                     break
-                _, pending = await asyncio.wait(tasks, timeout=min(hard_left, idle_left))
-                if not pending:
+                await asyncio.wait(
+                    {*tasks, limit_waiter},
+                    timeout=min(hard_left, idle_left),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if over_limit.is_set():
+                    continue  # re-enter the loop head: reported as "output_limit"
+                if all(task.done() for task in tasks):
                     break
         finally:
-            for task in tasks:
+            for task in (*tasks, limit_waiter):
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks, limit_waiter, return_exceptions=True)
         return bytes(buffers["stdout"]), bytes(buffers["stderr"]), cut
 
     def _interpret(

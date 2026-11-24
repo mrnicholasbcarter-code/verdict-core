@@ -608,6 +608,84 @@ def test_cancelling_run_waits_for_the_context_preparation_thread(
     asyncio.run(scenario())
 
 
+def test_output_over_the_limit_kills_the_worker_instead_of_buffering_it(tmp_path: Path) -> None:
+    """A worker that prints without end must fail the attempt, not exhaust memory.
+
+    The executor keeps worker output in memory for NDJSON parsing, and several
+    attempts run concurrently, so total retained output is capped.  Without the cap
+    this worker would run (and be buffered) until the attempt timeout.
+    """
+    pid_file = tmp_path / "writer_pid.txt"
+    fake = make_fake_opencode(
+        tmp_path,
+        f"import pathlib\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        f"chunk = 'x' * 65536\n"
+        f"while True:\n"
+        f"    sys.stdout.write(chunk)\n"
+        f"    sys.stdout.flush()\n",
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    executor = OpenCodeExecutor(
+        opencode_bin=fake, idle_output_seconds=120.0, max_output_bytes=256 * 1024
+    )
+    started = time.monotonic()
+    terminal = run_executor(executor, "flood", cwd, timeout=60.0)
+    assert time.monotonic() - started < 30.0, "worker was buffered until the timeout"
+    assert terminal.ok is False
+    assert terminal.error.startswith("output_limit"), terminal.error
+    assert pid_file.exists()
+    writer = int(pid_file.read_text())
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not _pid_gone(writer):
+        time.sleep(0.05)
+    assert _pid_gone(writer), "worker process group was not killed on the output limit"
+
+
+def test_context_preparation_time_counts_against_the_attempt_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Slow preparation (two git probes of up to 30 s each) must not extend the budget."""
+    import verdict.orchestration.executor_opencode as module
+
+    async def slow_prepare(cwd: Path, prompt: str) -> None:
+        await asyncio.sleep(1.5)
+
+    monkeypatch.setattr(module, "_prepare_context", slow_prepare)
+    fake = make_fake_opencode(tmp_path, "time.sleep(60)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    executor = OpenCodeExecutor(opencode_bin=fake, idle_output_seconds=120.0)
+    started = time.monotonic()
+    terminal = run_executor(executor, "slow prep", cwd, timeout=2.5)
+    elapsed = time.monotonic() - started
+    assert terminal.ok is False and terminal.error == "timeout", terminal
+    # Budget 2.5 s in total: 1.5 s preparing leaves ~1.0 s for the worker.  Restarting the
+    # full budget after preparation would take about 4 s.
+    assert elapsed < 3.4, f"preparation time was not deducted from the budget ({elapsed:.1f}s)"
+
+
+def test_attempt_times_out_without_spawning_when_preparation_used_the_whole_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import verdict.orchestration.executor_opencode as module
+
+    async def slow_prepare(cwd: Path, prompt: str) -> None:
+        await asyncio.sleep(0.6)
+
+    monkeypatch.setattr(module, "_prepare_context", slow_prepare)
+    ran = tmp_path / "worker-ran.txt"
+    fake = make_fake_opencode(
+        tmp_path, f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\nsys.exit(0)\n"
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "no budget", cwd, timeout=0.3)
+    assert terminal.ok is False and terminal.error == "timeout", terminal
+    assert not ran.exists(), "worker was spawned with no time left"
+
+
 def test_write_context_file_still_replaces_an_untracked_symlink_in_a_git_repo(
     tmp_path: Path,
 ) -> None:
