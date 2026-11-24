@@ -92,3 +92,52 @@ def with_relay_proofs(
         assert proof is not None
         proofs[model] = proof
     return replace(decision, admission_proofs=proofs)
+
+
+# --- signed worker assignments (serve-worker-assignment) -------------------------------------
+
+#: The serve token and signing key used by the assignment tests.  The key is written to a temp
+#: home only; no test touches the operator's ``~/.config/verdict``.
+ASSIGNMENT_SERVE_TOKEN = "serve-token-0123456789"
+ASSIGNMENT_KEY = bytes(range(32))
+
+
+def configure_assignment_auth(monkeypatch: Any, home: Any) -> None:
+    """Token-mode serve with the signing key in ``home``: the setup a real assignment needs.
+
+    Overrides anonymous mode that other relay harnesses set.  ``HOME`` is redirected so the
+    middleware reads the key from the temp directory.
+    """
+    from tests import worker_assignment_helpers as sign
+    from verdict.worker_assignment import assignment_key_path
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("VERDICT_HOME", str(home / ".verdict"))
+    path = assignment_key_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(sign.b64url(ASSIGNMENT_KEY), encoding="utf-8")
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", ASSIGNMENT_SERVE_TOKEN)
+    monkeypatch.delenv("LLMGATE_ALLOW_ANONYMOUS", raising=False)
+
+
+def assignment_token(
+    route_id: str, *, run_id: str = "run-1", node_id: str = "node-1", ttl: int = 600
+) -> str:
+    """A correctly signed assignment for ``route_id``, valid for ``ttl`` seconds from now."""
+    import time
+
+    from tests import worker_assignment_helpers as sign
+
+    now = int(time.time())
+    return sign.assignment(
+        ASSIGNMENT_KEY, route_id=route_id, run_id=run_id, node_id=node_id, exp=now + ttl, iat=now
+    )
+
+
+def assignment_headers(route_id: str, **kwargs: Any) -> dict[str, str]:
+    """The only credential a worker holds: the assignment as its bearer."""
+    return {"authorization": f"Bearer {assignment_token(route_id, **kwargs)}"}
+
+
+def serve_token_headers() -> dict[str, str]:
+    return {"authorization": f"Bearer {ASSIGNMENT_SERVE_TOKEN}"}

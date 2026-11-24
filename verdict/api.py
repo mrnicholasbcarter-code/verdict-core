@@ -77,13 +77,7 @@ from verdict.intelligence import (
     prepared_task_profile,
 )
 from verdict.model_passports import ModelPassport
-from verdict.models import (
-    CONTEXT_WORKER_ASSIGNED_ROUTE,
-    ModelInfo,
-    ProviderConfig,
-    RoutingDecision,
-    WorkerAssignedRoute,
-)
+from verdict.models import CONTEXT_WORKER_ASSIGNMENT, ModelInfo, ProviderConfig, RoutingDecision
 from verdict.omniroute import CATALOG_MAX_RESPONSE_BYTES, OmniRouteHTTPTransport
 from verdict.omniroute_webhook import MAX_BODY_BYTES as MAX_OMNIROUTE_WEBHOOK_BYTES
 from verdict.omniroute_webhook import RECEIVER_PATH as OMNIROUTE_WEBHOOK_PATH
@@ -2180,10 +2174,34 @@ def _gateway_model_not_found(body: str) -> bool:
     return isinstance(error, dict) and error.get("code") in _MODEL_NOT_FOUND_CODES
 
 
+def _verified_assignment(request: Request) -> worker_assignment.VerifiedWorkerAssignment | None:
+    """The assignment the middleware verified for this request, or ``None``.
+
+    Read only from ``request.state``, which no header or body can write, and only when it has
+    the verified type, which only the verifier can build.
+    """
+    value = getattr(getattr(request, "state", None), "worker_assignment", None)
+    return value if isinstance(value, worker_assignment.VerifiedWorkerAssignment) else None
+
+
+def _worker_marked(request: Request) -> bool:
+    """True for a request that presents itself as a worker's: the header or an assignment bearer."""
+    if request.headers.get("x-verdict-worker") is not None:
+        return True
+    scheme, _, supplied = request.headers.get("authorization", "").partition(" ")
+    return scheme.lower() == "bearer" and supplied.startswith(_ASSIGNMENT_PREFIX)
+
+
 async def _relay_completion(request: Request, *, surface: str) -> Response:
     """Route and transparently forward one OpenAI protocol surface."""
     if intelligence_instance is None or proxy_instance is None:
         raise HTTPException(status_code=503, detail="Proxy not initialized")
+    assignment = _verified_assignment(request)
+    if assignment is None and _worker_marked(request):
+        # The bare worker header, or an assignment bearer that was not verified, selects nothing:
+        # no ladder, no proof, no upstream.  The middleware already refuses an unverified
+        # assignment bearer; this is the second line, and the only guard in anonymous mode.
+        return _proxy_error(403, "authentication failed", surface=surface)
 
     max_bytes = int(os.getenv("LLMGATE_MAX_REQUEST_BYTES", str(DEFAULT_MAX_REQUEST_BYTES)))
     content_length = request.headers.get("content-length")
@@ -2211,7 +2229,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         return _proxy_error(400, "request body must be valid JSON", surface=surface)
     if not isinstance(payload, dict):
         return _proxy_error(400, "request body must be a JSON object", surface=surface)
-    if request.headers.get("x-verdict-worker") is not None and "execution_path_request" in payload:
+    if assignment is not None and "execution_path_request" in payload:
         # A worker is pinned to the route it was assigned.  The execution-path flow selects its
         # own offer and would bypass that pin, so a worker request may not carry one: this
         # rejection, before any routing, is the contract (operator decision, 2026-11-24);
@@ -2219,6 +2237,22 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         return _proxy_error(
             400,
             "worker requests must not carry execution_path_request: the assigned route is pinned",
+            surface=surface,
+        )
+    if assignment is not None and payload.get("model") != assignment.route_id:
+        # The assignment names the route; the request's ``model`` must say the same, exactly.
+        # A different, missing or malformed model is refused, never ignored and never rewritten,
+        # before the ladder runs: the request contradicts its own credential.  Only the signed
+        # ids are logged (the token was verified, so they can be trusted), never the token.
+        logger.warning(
+            "worker assignment refused: reason=model_mismatch route_id=%s run_id=%s node_id=%s",
+            assignment.route_id,
+            assignment.run_id,
+            assignment.node_id,
+        )
+        return _proxy_error(
+            400,
+            "the request's model must equal the route in the worker assignment",
             surface=surface,
         )
 
@@ -2245,17 +2279,13 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         authority_context = _authority_context(payload, task=task)
         authority_context["_dispatch_gateway_origin"] = proxy_instance.base_url
         authority_context["_relay_protocol"] = protocol
-        _assigned = payload.get("model")
-        if (
-            request.headers.get("x-verdict-worker") is not None
-            and isinstance(_assigned, str)
-            and _assigned.strip()
-        ):
-            # Typed, server-set input (ADR-053 decision 1): admission selects this route
-            # within its admitted set and mints the route-bound proof for it.  A non-worker
-            # request never carries it, and a client cannot forge it (underscore keys are
-            # dropped from the public payload and JSON cannot build the typed value).
-            authority_context[CONTEXT_WORKER_ASSIGNED_ROUTE] = WorkerAssignedRoute(_assigned)
+        if assignment is not None:
+            # Typed, server-set input (ADR-053 decision 1): the verified assignment.  Admission
+            # selects its route within the admitted set and mints the route-bound proof for it.
+            # A request without an assignment never carries it, and a client cannot forge it
+            # (underscore keys are dropped from the public payload and JSON cannot build the
+            # typed value, which only the verifier constructs).
+            authority_context[CONTEXT_WORKER_ASSIGNMENT] = assignment
         decision = await intelligence_instance.route(
             task,
             criticality=payload.get("criticality", "medium"),
@@ -2288,34 +2318,21 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             return _proxy_error(
                 503, f"live admission unavailable: {type(exc).__name__}", surface=surface
             )
-    # --- Task 2.4: Per-request route pinning for worker calls (ADR-053 Decision 1) ---
-    # A worker executor (OpenCode) sends the ``X-Verdict-Worker`` header and sets the
-    # ``model`` field to its assigned route_id.  The relay passes that route to admission as
-    # a typed input (above); admission selects it within the set it already admitted and
-    # mints its route-bound proof, or denies.  Here the relay only *verifies* that outcome:
-    # it never rewrites a worker's decision, so a route can never be dispatched without the
-    # proof admission minted for it.  Non-worker requests are untouched: their ``model``
-    # field does not select the route (``LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE`` is only
-    # stored on the service, as before; the relay never honoured it).
+    # --- Per-request route pinning for worker calls (ADR-053 Decision 1, as amended) ---
+    # A worker's route is the one in its verified assignment, and its ``model`` was checked equal
+    # to that route above.  The relay passes the assignment to admission as a typed input;
+    # admission selects that route within the set it already admitted and mints its route-bound
+    # proof, or denies.  Here the relay only *verifies* that outcome: it never rewrites a
+    # worker's decision, so a route can never be dispatched without the proof admission minted
+    # for it.  Requests without an assignment are untouched: their ``model`` field does not select
+    # the route (``LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE`` is only stored on the service, as before;
+    # the relay never honoured it).
     # Any denial sets ``decision="denied"`` so the existing evidence-recording path handles it.
-    _client_model = payload.get("model")
-    # Presence of the header marks a worker request, whatever its value.
-    _is_worker = request.headers.get("x-verdict-worker") is not None
-    _has_client_model = isinstance(_client_model, str) and bool(_client_model)
-    if _is_worker and not _has_client_model:
-        # A worker request must name the route it was assigned.  Without a valid
-        # model it must fail closed, never fall through to automatic selection
-        # (which would run a model the worker was not assigned).
-        decision = replace(
-            decision,
-            decision="denied",
-            reason="worker request must name its assigned route in a non-empty string 'model' field",
-        )
-    elif _is_worker:
-        if decision.decision != "denied" and decision.model != _client_model:
-            # Admission did not select the assigned route (an intelligence without worker
-            # pinning).  Dispatching its own pick would run a route the worker was not
-            # assigned, and rewriting the model here would bypass the route-bound proof.
+    if assignment is not None and decision.decision != "denied":
+        if decision.model != assignment.route_id:
+            # Admission did not select the assigned route.  Dispatching its own pick would run a
+            # route the worker was not assigned, and rewriting the model here would bypass the
+            # route-bound proof.
             _admitted_ids = {
                 str(r.get("model_id"))
                 for r in decision.candidate_states
@@ -2325,15 +2342,14 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 decision,
                 decision="denied",
                 reason=(
-                    f"route {_client_model!r} was not selected by admission for this request"
-                    if _client_model in _admitted_ids
-                    else f"route {_client_model!r} was not in the admitted set for this request"
+                    f"route {assignment.route_id!r} was not selected by admission for this request"
+                    if assignment.route_id in _admitted_ids
+                    else f"route {assignment.route_id!r} was not in the admitted set for this request"
                 ),
             )
-        elif decision.decision != "denied":
-            # Accepted: bound the request to exactly the assigned route.  Admission's pin already
-            # lists no alternatives; clearing them here is defence in depth, so a worker request
-            # never falls back to a route it was not assigned.
+        else:
+            # Accepted: bound the request to exactly the assigned route.  No alternatives, so a
+            # worker request never falls back to a route it was not assigned.
             decision = replace(decision, alternatives=[])
     attempts = build_attempts(proxy_instance, decision, protocol=protocol, admitted=relay_admitted)
     if not attempts:

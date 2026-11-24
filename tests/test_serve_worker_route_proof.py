@@ -3,19 +3,31 @@
 ``tests/test_serve_route_pinning.py`` covers the relay's request validation with a
 double that pre-mints proofs.  Here the real ``IntelligenceService`` builds the
 decision, so the proof map is what production produces: **chosen route only**.  A
-worker pinned to an admitted route other than serve's own pick must still dispatch,
+worker assigned an admitted route other than serve's own pick must still dispatch,
 with that route's own proof, and only when the route is in ``receipt.admitted``.
+
+The route comes only from a verified signed assignment (the worker's bearer); the
+``X-Verdict-Worker`` header alone selects nothing.  No test reads the real home: the
+signing key lives in a temp home.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 import verdict.api as api
+from tests.relay_proof_helpers import (
+    ASSIGNMENT_KEY,
+    assignment_headers,
+    assignment_token,
+    configure_assignment_auth,
+    serve_token_headers,
+)
 from tests.test_proxy_free_tier_admit import (
     RecordingTransport,
     _catalog_row,
@@ -31,7 +43,6 @@ from verdict.models import ProviderConfig, RoutingDecision
 FREE = "openrouter/nvidia/nemotron-3-nano-30b-a3b:free"
 SUBSCRIPTION = "subscription/strong-code"
 PROVIDER = {FREE: "openrouter", SUBSCRIPTION: "subscription"}
-WORKER = {"x-verdict-worker": "opencode"}
 
 
 def _service(*, passport_for: tuple[str, ...] = (FREE, SUBSCRIPTION)) -> IntelligenceService:
@@ -78,11 +89,14 @@ def _service(*, passport_for: tuple[str, ...] = (FREE, SUBSCRIPTION)) -> Intelli
 class _Harness:
     """Real service + recording upstream, with the real proof minter observed."""
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, service: IntelligenceService) -> None:
+    def __init__(
+        self, monkeypatch: pytest.MonkeyPatch, service: IntelligenceService, home: Path
+    ) -> None:
         self.transport = RecordingTransport()
         self.decisions: list[RoutingDecision] = []
         self.minted: list[dict[str, Any]] = []
         _configure(monkeypatch, self.transport, service)
+        configure_assignment_auth(monkeypatch, home)  # token mode, key in the temp home
 
         real_route = service.route
 
@@ -101,14 +115,29 @@ class _Harness:
 
         monkeypatch.setattr(intelligence, "_chosen_route_proof", recording)
 
-    def post(self, client: TestClient, *, worker: bool, **body: Any) -> Any:
+    def post(
+        self,
+        client: TestClient,
+        *,
+        worker: bool,
+        assigned: str | None = None,
+        headers: dict[str, str] | None = None,
+        **body: Any,
+    ) -> Any:
+        """``worker``: the bearer is a signed assignment for ``assigned`` (default: ``model``)."""
         payload: dict[str, Any] = {
             "messages": [{"role": "user", "content": "summarize this paragraph"}],
             "max_tokens": 16,
             "criticality": "low",
             **body,
         }
-        return client.post("/v1/chat/completions", json=payload, headers=WORKER if worker else {})
+        if headers is None:
+            headers = (
+                assignment_headers(assigned or str(body["model"]))
+                if worker
+                else serve_token_headers()
+            )
+        return client.post("/v1/chat/completions", json=payload, headers=headers)
 
     def reset(self) -> None:
         self.transport.requests.clear()
@@ -126,10 +155,10 @@ def _default_choice(harness: _Harness, client: TestClient) -> str:
 
 
 def test_worker_pins_admitted_alternative_with_its_own_proof(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Chosen-only proofs: the pinned alternative is dispatched on its own minted proof."""
-    harness = _Harness(monkeypatch, _service())
+    harness = _Harness(monkeypatch, _service(), tmp_path)
     with TestClient(api.app) as client:
         default = _default_choice(harness, client)
         unpinned_admitted = set(harness.decisions[-1].admit_receipt["admitted"])  # type: ignore[index]
@@ -168,9 +197,9 @@ def test_worker_pins_admitted_alternative_with_its_own_proof(
     ids=["unknown-route", "opaque-auto", "opaque-combo"],
 )
 def test_worker_pin_to_route_outside_the_admitted_set_is_denied_without_a_proof(
-    monkeypatch: pytest.MonkeyPatch, assigned: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, assigned: str
 ) -> None:
-    harness = _Harness(monkeypatch, _service())
+    harness = _Harness(monkeypatch, _service(), tmp_path)
     with TestClient(api.app) as client:
         response = harness.post(client, worker=True, model=assigned)
 
@@ -185,10 +214,10 @@ def test_worker_pin_to_route_outside_the_admitted_set_is_denied_without_a_proof(
 
 
 def test_worker_pin_requires_membership_in_this_requests_admitted_set(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """In the catalog is not enough: with no fresh passport the route is not admitted."""
-    harness = _Harness(monkeypatch, _service(passport_for=(FREE,)))
+    harness = _Harness(monkeypatch, _service(passport_for=(FREE,)), tmp_path)
     with TestClient(api.app) as client:
         response = harness.post(client, worker=True, model=SUBSCRIPTION)
 
@@ -199,20 +228,26 @@ def test_worker_pin_requires_membership_in_this_requests_admitted_set(
 
 
 def test_non_worker_request_with_a_model_field_behaves_as_before(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Without the worker header the ``model`` field is ignored for routing, as before.
+    """Without an assignment the ``model`` field is ignored for routing, as before.
 
-    A client also cannot supply the internal pin: underscore keys are dropped from
-    the public payload, and only the relay sets the typed value.
+    A client also cannot supply the internal context key: underscore keys are dropped from
+    the public payload, and only the relay sets the typed value from a verified assignment.
     """
-    harness = _Harness(monkeypatch, _service())
+    harness = _Harness(monkeypatch, _service(), tmp_path)
     with TestClient(api.app) as client:
         default = _default_choice(harness, client)
         other = SUBSCRIPTION if default == FREE else FREE
         harness.reset()
 
-        response = harness.post(client, worker=False, model=other, _worker_assigned_route=other)
+        response = harness.post(
+            client,
+            worker=False,
+            model=other,
+            _worker_assignment={"route_id": other},
+            _worker_assigned_route=other,
+        )
 
     assert response.status_code == 200, response.text
     assert response.headers["x-verdict-model"] == default
@@ -222,14 +257,14 @@ def test_non_worker_request_with_a_model_field_behaves_as_before(
 
 
 def test_client_model_override_flag_does_not_change_relay_routing(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """On main the relay never honours ``allow_client_model_override`` (the flag is only
     stored); admission mints a proof for its own pick only, so rewriting the model after
     admission could only fail closed.  Non-worker routing is unchanged, flag or not."""
     service = _service()
     service.allow_client_model_override = True
-    harness = _Harness(monkeypatch, service)
+    harness = _Harness(monkeypatch, service, tmp_path)
     with TestClient(api.app) as client:
         default = _default_choice(harness, client)
         other = SUBSCRIPTION if default == FREE else FREE
@@ -241,8 +276,43 @@ def test_client_model_override_flag_does_not_change_relay_routing(
     assert [r["body"]["model"] for r in harness.transport.requests] == [default]
 
 
-def test_route_refuses_a_worker_pin_combined_with_an_execution_path_request(
-    monkeypatch: pytest.MonkeyPatch,
+def test_the_serve_token_with_the_worker_header_pins_nothing_on_the_real_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The #1299 hole: serve token + header + a model naming an admitted route.  Now refused."""
+    harness = _Harness(monkeypatch, _service(), tmp_path)
+    with TestClient(api.app) as client:
+        default = _default_choice(harness, client)
+        other = SUBSCRIPTION if default == FREE else FREE
+        harness.reset()
+        response = harness.post(
+            client,
+            worker=False,
+            model=other,
+            headers={**serve_token_headers(), "x-verdict-worker": "opencode"},
+        )
+
+    assert response.status_code == 403, response.text
+    assert harness.decisions == [], "the request reached routing"
+    assert harness.minted == [], "a proof was minted for a header-only request"
+    assert harness.transport.requests == []
+
+
+def test_a_verified_assignment_for_another_route_than_the_model_is_refused_before_routing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = _Harness(monkeypatch, _service(), tmp_path)
+    with TestClient(api.app) as client:
+        response = harness.post(client, worker=True, assigned=FREE, model=SUBSCRIPTION)
+
+    assert response.status_code == 400, response.text
+    assert harness.decisions == []
+    assert harness.minted == []
+    assert harness.transport.requests == []
+
+
+def test_route_refuses_a_worker_assignment_combined_with_an_execution_path_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Defence in depth behind the relay's 400 (the accepted contract, operator decision
     2026-11-24): ``route()`` itself refuses the combination, so no caller can get a worker
@@ -250,12 +320,16 @@ def test_route_refuses_a_worker_pin_combined_with_an_execution_path_request(
     import asyncio
 
     from verdict.execution_path import ExecutionPathError
-    from verdict.models import CONTEXT_WORKER_ASSIGNED_ROUTE, WorkerAssignedRoute
+    from verdict.models import CONTEXT_WORKER_ASSIGNMENT
+    from verdict.worker_assignment import verify_assignment
 
-    harness = _Harness(monkeypatch, _service())
+    harness = _Harness(monkeypatch, _service(), tmp_path)
+    verified = verify_assignment(
+        assignment_token(SUBSCRIPTION), ASSIGNMENT_KEY, now=datetime.now(timezone.utc)
+    )
     context = {
         "execution_path_request": {"schema_version": "anything"},
-        CONTEXT_WORKER_ASSIGNED_ROUTE: WorkerAssignedRoute(SUBSCRIPTION),
+        CONTEXT_WORKER_ASSIGNMENT: verified,
     }
     service = api._build_intelligence()
     with pytest.raises(ExecutionPathError, match="worker"):

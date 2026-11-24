@@ -31,26 +31,11 @@ class AdmissionProof:
     scope: DispatchScope
 
 
-#: Server-internal routing-context key for :class:`WorkerAssignedRoute`.  Underscore keys
-#: are dropped from public payloads (``api._authority_context``), and the value must be a
-#: ``WorkerAssignedRoute`` instance, which JSON cannot construct.
-CONTEXT_WORKER_ASSIGNED_ROUTE = "_worker_assigned_route"
-
-
-@dataclass(frozen=True)
-class WorkerAssignedRoute:
-    """The route a worker executor was assigned, as named in its relay request.
-
-    Set only by the relay, and only when the ``X-Verdict-Worker`` header is present
-    (ADR-053 decision 1).  It asks admission to *select* this route within the set
-    it already admitted; it never admits anything.
-    """
-
-    route_id: str
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.route_id, str) or not self.route_id.strip():
-            raise ValueError("WorkerAssignedRoute.route_id must be a non-empty string")
+#: Server-internal routing-context key for the verified worker assignment
+#: (:class:`verdict.worker_assignment.VerifiedWorkerAssignment`).  Underscore keys are dropped
+#: from public payloads (``api._authority_context``), and the value must be that type, which only
+#: the verifier can build, so JSON cannot supply it.
+CONTEXT_WORKER_ASSIGNMENT = "_worker_assignment"
 
 
 @dataclass(frozen=True)

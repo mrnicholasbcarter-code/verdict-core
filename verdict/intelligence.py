@@ -66,12 +66,11 @@ from verdict.metadata.store import (
 )
 from verdict.model_passports import ModelPassport
 from verdict.models import (
-    CONTEXT_WORKER_ASSIGNED_ROUTE,
+    CONTEXT_WORKER_ASSIGNMENT,
     AdmissionProof,
     ModelInfo,
     ProviderConfig,
     RoutingDecision,
-    WorkerAssignedRoute,
 )
 from verdict.outcome_shadow import (
     attach_outcome_shadow,
@@ -83,6 +82,7 @@ from verdict.planner import StructuredPlanner
 from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
 from verdict.task_profile import TaskProfile, TaskProfileError, profile_task
+from verdict.worker_assignment import VerifiedWorkerAssignment
 from verdict.worthiness import classify_worthiness
 
 _LOG = logging.getLogger(__name__)
@@ -643,7 +643,7 @@ class IntelligenceService:
         if (
             isinstance(context, dict)
             and "execution_path_request" in context
-            and isinstance(context.get(CONTEXT_WORKER_ASSIGNED_ROUTE), WorkerAssignedRoute)
+            and isinstance(context.get(CONTEXT_WORKER_ASSIGNMENT), VerifiedWorkerAssignment)
         ):
             # The execution-path flow below selects its own offer and never reaches
             # ``_decision_from_admit``, where a worker's assigned route is pinned.  Pinned
@@ -2134,8 +2134,8 @@ class IntelligenceService:
         # request's admitted set; nothing is ever admitted here.  Everything downstream (the
         # provider, the context pack, the receipt, and the route-bound proof minted below by
         # the same ``_chosen_route_proof`` call) then follows the pinned route.
-        assigned = contract.get(CONTEXT_WORKER_ASSIGNED_ROUTE)
-        pinned = assigned.route_id if isinstance(assigned, WorkerAssignedRoute) else None
+        assigned = contract.get(CONTEXT_WORKER_ASSIGNMENT)
+        pinned = assigned.route_id if isinstance(assigned, VerifiedWorkerAssignment) else None
         if pinned is not None:
             if pinned not in receipt.admitted:
                 self._persist_routing_receipt_from_admit(
