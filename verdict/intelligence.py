@@ -235,10 +235,28 @@ class IntelligenceRanking:
     profile: str
 
 
+#: The task family of every request on the assigned lane.  A worker is an agent with tools, and
+#: ``agentic`` carries the largest context-plan allowance, so the size gate errs toward failing
+#: closed.  It is a constant: neither the text nor a ``task_family`` field in the body selects it.
+ASSIGNED_TASK_FAMILY = "agentic"
+
+
 def prepared_task_profile(
-    task: str, context: dict[str, Any], *, planner: StructuredPlanner | None = None
+    task: str,
+    context: dict[str, Any],
+    *,
+    planner: StructuredPlanner | None = None,
+    assigned: bool = False,
 ) -> tuple[TaskRequirements, TaskProfile]:
-    """Normalize request floors once for both admission and relay proof scope."""
+    """Normalize request floors once for both admission and relay proof scope.
+
+    ``assigned`` is the mode for a verified worker assignment.  The planner is not consulted (no
+    capability is inferred from the text), the requirements come from request fields only, and
+    the family is :data:`ASSIGNED_TASK_FAMILY`.  ``streaming`` stays in the requirements and so
+    in the digest: a waiver, where one applies, is made on the gate's copy of the profile, never
+    here.  The assigned lane and the relay both call this with the same text and context, so the
+    proof the lane mints scopes the digest the relay recomputes.
+    """
     from verdict.execution_path import ExecutionPathRequest
 
     context = dict(context)
@@ -278,12 +296,15 @@ def prepared_task_profile(
             context["task_family"] = nested["task_family"]
 
     planner_caps: tuple[str, ...] = ()
-    try:
-        planned = (planner or StructuredPlanner()).plan(task, context=context).task_spec
-        planner_caps = tuple(planned.required_capabilities)
-    except Exception:
-        planner_caps = ()
+    if not assigned:
+        try:
+            planned = (planner or StructuredPlanner()).plan(task, context=context).task_spec
+            planner_caps = tuple(planned.required_capabilities)
+        except Exception:
+            planner_caps = ()
     requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
+    if assigned:
+        context = {**context, "task_family": ASSIGNED_TASK_FAMILY}
     return requirements, profile_task(task, context=context, requirements=requirements)
 
 
