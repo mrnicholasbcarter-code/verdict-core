@@ -15,12 +15,23 @@ Why an audit hook and not a before/after fingerprint of ``~/.verdict``: the
 installed services write there every few minutes, so a fingerprint blames tests
 for other processes' writes and only reports after the damage. The hook sees
 only calls made by THIS pytest process, so every hit is a test leak by
-construction, and the write never happens. Limits, stated so nobody over-trusts
-it: it does not see child processes (they inherit the isolated env), writes made
-through a symlink or a ``dir_fd``, or writes from C extensions that bypass the
-audited entry points. It loads from ``tests/conftest.py``, so it does not exist
-in a run that skips that conftest (``--noconftest``); load it there with
-``-p tests.helpers.home_guard``.
+construction, and the write never happens.
+
+Scope (the contract). The guard refuses writes, creates, renames, deletes,
+links and SQLite opens whose arguments NAME a protected root, a path beneath it,
+or (for tree moves, links and symlinks) an ancestor of it, spelled however
+(relative, ``..``, ``//``, ``file:`` URIs). It is lexical: it does not resolve
+symlinks. It does not defend against a test that deliberately builds an alias
+chain, nor against child processes (they inherit the isolated env), fd-relative
+calls (``dir_fd``), links that already existed, or C-level I/O that bypasses the
+audited entry points. For those, run the suite with the real state directories
+masked by empty mounts, or under a throwaway ``HOME`` with
+``tests/helpers/home_snapshot.py``. It loads from ``tests/conftest.py``, so it
+does not exist in a run that skips that conftest (``--noconftest``); load it
+there with ``-p tests.helpers.home_guard``. Under pytest-xdist a worker's
+session-finish status does not reach the controller, so a refused write during
+SESSION TEARDOWN does not fail an ``-n`` run; refused writes during a test, or
+before the first test, still fail through the per-test fixture.
 
 The real roots are resolved ONCE, when this module is imported (conftest import,
 before any fixture monkeypatches the environment).
