@@ -112,6 +112,7 @@ def build_service(
     with_snapshot: bool = True,
     latency: dict[str, float] | None = None,
     providers: dict[str, ProviderConfig] | None = None,
+    allow_offline: bool = False,
 ) -> IntelligenceService:
     """The hermetic service every lane test routes through."""
     latency = latency or {}
@@ -159,6 +160,7 @@ def build_service(
         else Path("/nonexistent/none.json"),
         candidate_top_k=top_k,
         eligibility_gate=gate,
+        allow_offline=allow_offline,
         require_execution_path_authority=require_authority,
         receipt_store=store,
         context_roots=(),

@@ -1768,6 +1768,13 @@ class IntelligenceService:
             decision = self._assigned_denial(
                 LANE_PROTECTED_REASON, flags=[LANE_FLAG, LANE_PROTECTED_FLAG], protected=True
             )
+        elif self.allow_offline:
+            # The legacy path never admits for an offline service (no discovery, no probes), and
+            # the lane sits above that check, so it denies here instead of loading a snapshot.
+            decision = self._assigned_denial(
+                "fail_closed — an offline service has no live admission for the assigned route",
+                flags=[LANE_FLAG, "worker_assignment_admission_unavailable"],
+            )
         else:
             try:
                 offload = self._offload_free_tier(

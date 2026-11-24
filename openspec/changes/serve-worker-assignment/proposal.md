@@ -105,7 +105,8 @@ so docs describe only what runs.
 - **Files (build, not this PR):** new `verdict/worker_assignment.py`; `verdict/api.py` (middleware
   and relay), `verdict/intelligence.py` (lane, shared profile helper), `verdict/models.py`,
   `verdict/free_tier_admit.py` (two receipt fields), `verdict/evidence.py` (two allowlisted
-  fields), `verdict/serve_service.py` (key lifecycle); tests; `docs/CONFIGURATION.md`, ADR-053 and the `opencode-worker-adapter` change text.
+  fields), `verdict/serve_service.py` (key lifecycle); tests (and one expectation in
+  `tests/test_serve_service.py`, which now also lists the missing key file); `docs/CONFIGURATION.md`, ADR-053 and the `opencode-worker-adapter` change text.
 - **Header-only tests that go red and are rewritten:** `tests/test_serve_route_pinning.py`,
   `tests/test_serve_worker_route_proof.py` (both **[#1299]**).
 - **Live behaviour until #1325 lands:** the **[#1299]** executor sends `X-Verdict-Worker` with the
@@ -139,9 +140,9 @@ so docs describe only what runs.
   comes from the compiled pack, which the lane does not build.
 - **KNOWN:** the operator's decisions of 2026-11-24 on #1313 ("do recommended", eight decisions)
   are settled and are designed to, not reopened.
-- **INFERRED:** `request.state` set in the `@app.middleware("http")` function is the same
-  object the route handler reads (Starlette keeps it in `scope["state"]`). Task 2.1's test
-  proves it; the design does not rely on it without that test.
+- **KNOWN (was INFERRED):** `request.state` set in the `@app.middleware("http")` function is the
+  same object the route handler reads (Starlette keeps it in `scope["state"]`). The tests of task
+  2.1 prove it (a recorder in place of the relay handler sees the verified type).
 - **INFERRED:** a route the orchestrator pins is normally admitted by the lane, because the
   orchestrator's permit reads the same passport and health stores. Not verified: a passport that
   expires mid-attempt (the lane re-admits on every request, so a later request is denied and the

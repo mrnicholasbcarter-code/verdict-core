@@ -207,6 +207,37 @@ def test_a_valid_assignment_reaches_the_handler_as_the_verified_type(
     assert serve.transport.requests == []  # the handler here is the recorder, not the relay
 
 
+def test_an_assignment_that_expires_mid_attempt_is_denied_on_its_next_request(
+    serve: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Expiry is checked on every request: a late request of an attempt that was admitted fails."""
+    from datetime import datetime as real_datetime
+    from datetime import timedelta, timezone
+
+    issued = real_datetime.now(timezone.utc)
+    offset = {"seconds": 0}
+
+    class Clock(real_datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> Any:
+            return real_datetime.now(tz) + timedelta(seconds=offset["seconds"])
+
+    monkeypatch.setattr(api, "datetime", Clock)
+    now = int(issued.timestamp())
+    token = sign.assignment(KEY, route_id="omniroute/free-route", exp=now + 120, iat=now)
+    with TestClient(api.app) as client:
+        early = client.post("/v1/chat/completions", json=BODY, headers=_bearer(token))
+        offset["seconds"] = 60  # still inside its lifetime
+        middle = client.post("/v1/chat/completions", json=BODY, headers=_bearer(token))
+        offset["seconds"] = 121  # the attempt outlived its assignment
+        late = client.post("/v1/chat/completions", json=BODY, headers=_bearer(token))
+    assert (early.status_code, middle.status_code) == (200, 200)
+    assert late.status_code == 403
+    assert late.json()["error"]["message"] == GENERIC
+    assert len(serve.reached) == 2  # the late request never reached the handler
+    assert serve.transport.requests == [] and serve.routed == []
+
+
 def test_a_serve_token_request_carries_no_assignment(serve: SimpleNamespace) -> None:
     with TestClient(api.app) as client:
         response = client.post(

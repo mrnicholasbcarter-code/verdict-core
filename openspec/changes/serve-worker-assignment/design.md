@@ -215,7 +215,11 @@ A separate key, never the serve token.
 
 - **Generated** by `verdict setup --apply --allow host.serve` (`serve_service.manage_service`),
   the same action that writes `serve.env`: `secrets.token_bytes(32)`, stored as URL-safe base64
-  text. Idempotent: an existing valid key is kept, never regenerated. A dry run writes nothing.
+  text. Idempotent: an existing valid key is kept, never regenerated. A key that cannot be used
+  (empty, under 32 bytes, undecodable, over 4 KiB) is replaced; a valid key whose mode is not 0600
+  is kept and only its mode is repaired; a key path that is not a regular file is refused, never
+  overwritten. A dry run writes nothing and reports the step (`create`, `keep`, `repair-mode` or
+  `replace`).
 - **Stored** in its own file, `~/.config/verdict/worker-assignment.key`, beside `serve.env`, mode
   0600 in a 0700 directory, written atomically (the existing `_write_private`). **Not** in
   `serve.env` (the unit's `EnvironmentFile` would put it in serve's process environment and
@@ -403,8 +407,9 @@ be denied "proof scope or observation mismatch". So:
 - **Class not computed.** The lane never classifies the request, so it emits no `worthiness_*`
   safety flag; the receipt's `task_class` says it was not computed (reason
   `worker_assignment:text_classification_skipped`). The build traces every consumer of
-  `task_class` (the routing receipt reads it) and picks a value none rejects; no consumer on the
-  lane branches on `ordinary` or `worthy`.
+  `task_class`: the routing receipt uses it as its work unit id, evidence and the decision log copy
+  it, and nothing on the lane branches on `ordinary` or `worthy`. The build uses `unclassified`,
+  with the class reason `worker_assignment:text_classification_skipped`.
 - A route that does not actually stream fails upstream and recovery reroutes it (research option
   S1). Stream evidence (ADR-013 probes, ADR-012 consent) is a later story.
 - **Boundary:** serve's receipts are the receipts this change can write. The run-level
@@ -451,6 +456,46 @@ copied into any serve output (responses serve itself writes, evidence, receipts,
 upstream request's headers; the proxy builds those from its own gateway key). Message content a
 client chooses to send is forwarded verbatim, as every relay request is, and what an upstream echoes
 back is outside this guarantee; no test puts the token in message content and expects redaction.
+
+## Build-time choices (the build made these; the operator may change any)
+
+Each is a detail the merged design left open or did not foresee. None loosens a stated check.
+
+- **Reason code for a bad lifetime.** A correctly signed assignment whose lifetime `exp - iat` is
+  negative or over 1,800 s is refused `malformed`, not a new reason code (the code set stays
+  `malformed`, `bad_signature`, `expired`, `key_unavailable`).
+- **Stricter id and JSON rules.** `route_id`, `run_id` and `node_id` may not hold a control
+  character or a lone surrogate (Unicode categories `Cc` and `Cs`: a surrogate would crash a
+  receipt write later), and a payload with a repeated key is refused. Deeply nested JSON, which on
+  some Python versions raises `RecursionError`, is `malformed`.
+- **Strict base64url.** Padding, other characters, an impossible length and non-canonical trailing
+  bits are refused, for the tag as well as the payload, so a tag has one spelling.
+- **Non-ASCII bearer.** A `vwa1.` bearer with a non-ASCII character is refused 403 by the
+  middleware before the constant-time compare (which raises on non-ASCII text), never a 500.
+- **The worker-mark guard covers the shared relay.** `_relay_completion` also serves `POST
+  /v1/messages`, so a worker header or an assignment bearer without a verified assignment is
+  refused 403 there too.
+- **Named drops the lane adds.** A pinned route absent from the catalog is dropped
+  `route_not_in_inventory`; an opaque route (`auto/*`, `combo/*`) is dropped
+  `opaque_route_disallowed` before the inventory is consulted, whether or not the catalog lists it.
+- **Lane denials that are not ladder drops.** An unusable request profile (for example an unknown
+  `spend_policy`) is a denial (`worker_assignment_profile_error`), not a server error; an offline
+  service (`allow_offline`) has no live admission, so the lane denies
+  (`worker_assignment_admission_unavailable`) instead of loading a snapshot, because the legacy
+  path skips admission for an offline service and the lane sits above that check.
+- **One-route safeguard.** `_assigned_decision` refuses a receipt that holds more than the signed
+  route, or a chosen route other than it (`worker_assignment_route_denied`). The narrowing leaves
+  one route, so no request reaches this state; it is there so a later change to the ladder cannot
+  silently serve another route.
+- **The lane keeps the legacy non-authority flag.** Its decisions carry
+  `legacy_non_authority_selector` like every decision that does not come from an
+  `ExecutionPathDecision`, besides the lane's own flags.
+- **Receipt shape.** `requirement_waivers` and `worker_assignment` are in every
+  `FreeTierAdmitReceipt.to_dict()` (empty and `null` off the lane), and the compact evidence
+  receipt allowlists both.
+- **Setup output.** `manage_service` reports `assignment_key_file` (the path) and
+  `assignment_key_plan`; the setup row's `keep` list is unchanged, so they appear in the
+  `manage_service` result, not in the row.
 
 ## Supersedes
 

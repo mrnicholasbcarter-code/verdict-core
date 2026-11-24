@@ -313,6 +313,26 @@ def test_a_lane_that_cannot_get_live_admission_denies_and_never_reaches_the_lega
     assert decision.admission_proofs == {}
 
 
+def test_an_offline_service_has_no_live_admission_and_the_lane_denies(
+    monkeypatch: pytest.MonkeyPatch,
+    now: datetime,  # noqa: F811
+    store: ReceiptStore,  # noqa: F811
+) -> None:
+    """The legacy path skips admission for an offline service; the lane sits above that check.
+
+    An offline service is promised no live discovery and no probes, so it cannot admit a route:
+    the lane denies instead of running the ladder (which would load a snapshot) or the scanner.
+    """
+    service = build_service(now, store, allow_offline=True)
+    forbid_text_classifiers(monkeypatch, service)
+    monkeypatch.setattr(service, "_offload_free_tier", _boom("the ladder"))
+    decision = route_direct(service, body_for(ROUTES[0]), verified(ROUTES[0]))
+    assert decision.decision == "denied"
+    assert decision.model == NO_ELIGIBLE_TARGET and decision.admission_proofs == {}
+    assert "worker_assigned_lane" in decision.safety_flags
+    assert "offline" in decision.reason
+
+
 def test_an_unusable_spend_policy_is_a_denial_not_a_server_error(
     monkeypatch: pytest.MonkeyPatch,
     now: datetime,  # noqa: F811

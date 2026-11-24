@@ -654,8 +654,8 @@ The `X-Verdict-Worker` header selects nothing; a request that carries it without
 assignment is refused with 403.
 
 - **Key.** The signing key is a separate generated secret of at least 32 bytes. `verdict setup
-  --apply --allow host.serve` generates it when absent, keeps a valid one and writes nothing on a
-  dry run. It lives in `~/.config/verdict/worker-assignment.key` (mode 0600, written atomically),
+  --apply --allow host.serve` generates it when absent or unusable, keeps a valid one (fixing only a
+  mode other than 0600) and writes nothing on a dry run. It lives in `~/.config/verdict/worker-assignment.key` (mode 0600, written atomically),
   next to `serve.env` but not in it, not in the credentials store and not in any process
   environment. Serve and the orchestrator read the file on every use, so a rotation needs no
   restart. `verdict doctor` names a missing, short or wrongly moded key file and never prints its

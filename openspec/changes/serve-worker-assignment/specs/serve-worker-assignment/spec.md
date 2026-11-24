@@ -10,7 +10,7 @@ lists which of that change's scenarios this one supersedes.
 
 A worker assignment SHALL be an opaque bearer string `vwa1.<payload>.<tag>`, where `payload` is the
 unpadded base64url of a JSON object with exactly the fields `route_id`, `run_id`, `node_id` (each a
-non-empty string of at most 128 characters without control characters), `iat` (issued at) and `exp`
+non-empty string of at most 128 characters without control characters or lone surrogates), `iat` (issued at) and `exp`
 (expiry), each of the last two an integer of seconds since the Unix epoch, UTC, from 0 through
 253402300799 (9999-12-31T23:59:59Z, the last second a UTC `datetime` can hold), and `tag` is the
 unpadded base64url of `HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + payload)`, with
@@ -121,8 +121,9 @@ failed; serve SHALL log the reason code only, never the token.
 ### Requirement: The assignment key is a separate generated key that fails closed
 
 The signing key SHALL be a separate secret of at least 32 random bytes, never the serve bearer
-token. `verdict setup --apply --allow host.serve` SHALL generate it when absent, keep an existing
-valid key, and write nothing on a dry run. It SHALL be stored only in
+token. `verdict setup --apply --allow host.serve` SHALL generate it when absent or unusable, keep
+an existing valid key (repairing only a mode other than 0600, never regenerating for it), refuse a
+key path that is not a file, and write nothing on a dry run. It SHALL be stored only in
 `~/.config/verdict/worker-assignment.key` (mode 0600, written atomically), SHALL be read from that
 file on every assignment verification and never cached across requests, and SHALL NOT be placed in
 any process environment, the credentials store, `serve.env` or a worker's configuration. When the
@@ -141,6 +142,12 @@ setup again; assignments signed with the old key SHALL stop verifying at once.
 
 - **WHEN** setup runs as a dry run with no key file
 - **THEN** no file is written
+
+#### Scenario: An unusable key is replaced and a loose mode is only repaired
+
+- **WHEN** setup runs and the key file is empty, shorter than 32 bytes or undecodable
+- **THEN** it is replaced by a fresh key; but a valid key whose mode is not 0600 keeps its bytes
+  and only has its mode set to 0600
 
 #### Scenario: A missing key fails closed
 
@@ -234,6 +241,11 @@ header is present.
 
 - **WHEN** a request carries the worker header and no valid authentication
 - **THEN** it is refused as any unauthenticated request is refused
+
+#### Scenario: A non-ASCII assignment bearer is refused, not an error
+
+- **WHEN** a bearer with the `vwa1.` prefix holds a non-ASCII character
+- **THEN** it is refused 403 with the generic body and no upstream call
 
 #### Scenario: A verified assignment needs no header
 
@@ -337,6 +349,14 @@ offloaded and a pin SHALL NOT lower that floor.
   field or as the argument to `route()`)
 - **THEN** it is denied before any ladder step with `protected` true, the safety flag
   `worker_assignment_protected_denied`, no proof and no upstream call, and no route is selected
+
+#### Scenario: A lane that cannot obtain live admission denies
+
+- **WHEN** a verified assignment is routed by a service with no live admission (an offline
+  service, or none configured), or its request profile cannot be built (for example an unknown
+  `spend_policy`)
+- **THEN** the request is denied with no proof and no upstream call, the legacy path and its
+  scanner are not reached, and no other route is selected
 
 #### Scenario: Production profile still fails closed
 
