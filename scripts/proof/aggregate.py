@@ -76,7 +76,7 @@ class CollectionError(Exception):
     """The independent collection of the reference test set failed."""
 
 
-class _InputError(Exception):
+class InputError(Exception):
     """An input file is missing, unreadable or wrongly typed."""
 
 
@@ -96,7 +96,7 @@ class _Leg:
 
 
 @dataclass
-class _JUnit:
+class JUnitSummary:
     pairs: Counter[tuple[str, str]]
     tests: int
     skipped: int
@@ -155,13 +155,13 @@ def _is_str_list(value: object) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
-def _load_json_object(path: Path, rel: str) -> dict[str, Any]:
+def load_json_object(path: Path, rel: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise _InputError(f"{rel}: not readable JSON ({type(exc).__name__})") from exc
+        raise InputError(f"{rel}: not readable JSON ({type(exc).__name__})") from exc
     if not isinstance(value, dict):
-        raise _InputError(f"{rel}: not a JSON object")
+        raise InputError(f"{rel}: not a JSON object")
     return value
 
 
@@ -236,9 +236,9 @@ def _discover(reports_dir: Path, exclude: Path | None, reasons: list[str]) -> li
             continue
         rel = path.relative_to(reports_dir).as_posix()
         try:
-            report = _load_json_object(path, rel)
+            report = load_json_object(path, rel)
             problems = _shape_problems(report)
-        except _InputError as exc:
+        except InputError as exc:
             reasons.append(str(exc))
             continue
         except Exception as exc:  # a report that breaks a check is a reason naming the file
@@ -351,41 +351,50 @@ def _check_gates(contract: ProofContract, leg: _Leg, count: int, reasons: list[s
 # ---------------------------------------------------------------------------
 
 
-def _read_ids(path: Path, rel: str) -> list[str]:
-    payload = _load_json_object(path, rel)
+def read_ids(path: Path, rel: str) -> list[str]:
+    payload = load_json_object(path, rel)
     ids = payload.get("ids")
     if not _is_str_list(ids):
-        raise _InputError(f"{rel}: 'ids' must be a list of strings")
+        raise InputError(f"{rel}: 'ids' must be a list of strings")
     return list(ids)  # type: ignore[arg-type]
 
 
-def _read_junit(path: Path, rel: str) -> _JUnit:
+def read_junit(path: Path, rel: str) -> JUnitSummary:
     try:
         root = SafeElementTree.parse(path).getroot()
     except (OSError, ValueError, SafeElementTree.ParseError) as exc:
-        raise _InputError(f"{rel}: not readable JUnit XML ({type(exc).__name__})") from exc
+        raise InputError(f"{rel}: not readable JUnit XML ({type(exc).__name__})") from exc
     if root is None:
-        raise _InputError(f"{rel}: not readable JUnit XML (no root element)")
+        raise InputError(f"{rel}: not readable JUnit XML (no root element)")
     pairs: Counter[tuple[str, str]] = Counter()
     skipped = failures = errors = tests = 0
     for case in root.iter("testcase"):
         classname, name = case.get("classname"), case.get("name")
         if classname is None or name is None:
-            raise _InputError(f"{rel}: a testcase has no classname or name")
+            raise InputError(f"{rel}: a testcase has no classname or name")
         pairs[(classname, name)] += 1
         tests += 1
         tags = {child.tag for child in case}
         skipped += "skipped" in tags
         failures += "failure" in tags
         errors += "error" in tags
-    return _JUnit(pairs, tests, skipped, failures, errors)
+    return JUnitSummary(pairs, tests, skipped, failures, errors)
 
 
-def subprocess_collector(root: Path) -> Collector:
-    """The default independent collector: ``ci_shard_union.py --emit-ids`` in a subprocess."""
+def subprocess_collector(root: Path, *, import_from_root: bool = False) -> Collector:
+    """The default independent collector: ``ci_shard_union.py --emit-ids`` in a subprocess.
+
+    With ``import_from_root`` the checkout's own code is put first on ``PYTHONPATH``, so a
+    test module that imports the project collects against the revision it belongs to and
+    not against whatever is installed.
+    """
 
     def collect(args: Sequence[str]) -> list[str]:
         env = {k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"}
+        if import_from_root:
+            env["PYTHONPATH"] = os.pathsep.join(
+                [str(root), *([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])]
+            )
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "ids.json"
             argv = [sys.executable, str(COLLECTOR_PATH), "--emit-ids", str(out), "--", *args]
@@ -405,8 +414,8 @@ def subprocess_collector(root: Path) -> Collector:
                 tail = (done.stderr or done.stdout).strip()[-500:]
                 raise CollectionError(f"collection failed with exit {done.returncode}: {tail}")
             try:
-                return _read_ids(out, "collector output")
-            except _InputError as exc:
+                return read_ids(out, "collector output")
+            except InputError as exc:
                 raise CollectionError(f"collection wrote unusable output: {exc}") from exc
 
     return collect
@@ -521,13 +530,13 @@ def _read_gate_files(
     label = f"leg {leg.index}"
     ids: list[str] | None = None
     try:
-        ids = _read_ids(leg.directory / f"ids-{gate.id}.json", ids_rel)
-    except _InputError as exc:
+        ids = read_ids(leg.directory / f"ids-{gate.id}.json", ids_rel)
+    except InputError as exc:
         reasons.append(str(exc))
-    junit: _JUnit | None = None
+    junit: JUnitSummary | None = None
     try:
-        junit = _read_junit(leg.directory / f"junit-{gate.id}.xml", junit_rel)
-    except _InputError as exc:
+        junit = read_junit(leg.directory / f"junit-{gate.id}.xml", junit_rel)
+    except InputError as exc:
         reasons.append(str(exc))
     if ids is not None:
         selections[(gate.id, leg.index)] = ids
