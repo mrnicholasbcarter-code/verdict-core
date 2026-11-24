@@ -221,7 +221,22 @@ def _write_context_file(cwd: Path, prompt: str) -> None:
     ``node.owned_files``.
     """
     content = "<!-- Verdict worker context — do not commit -->\n# Task\n\n" + prompt + "\n"
-    (cwd / CONTEXT_FILE_NAME).write_text(content, encoding="utf-8")
+    # The worktree is repository content and so untrusted: a repo can track
+    # ``.verdict-context.md`` as a symlink to a path outside the worktree.
+    # ``Path.write_text`` would follow it and overwrite that target with the
+    # orchestrator's permissions.  Instead write a new regular file (``mkstemp``
+    # uses O_EXCL, so it never follows a link) and ``os.replace`` it over the
+    # entry: rename replaces the symlink itself and never touches its target.
+    target = cwd / CONTEXT_FILE_NAME
+    fd, tmp_name = tempfile.mkstemp(dir=cwd, prefix=f"{CONTEXT_FILE_NAME}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(tmp_name, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
 
 
 _CHILD_ENV_ALLOWLIST: frozenset[str] = frozenset(

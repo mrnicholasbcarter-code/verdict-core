@@ -307,6 +307,52 @@ def test_write_context_file_creates_file_with_prompt(tmp_path: Path) -> None:
     assert "Build the feature X." in content
 
 
+@pytest.mark.parametrize("target_exists", [True, False], ids=["existing-target", "dangling-target"])
+def test_write_context_file_does_not_follow_symlink(tmp_path: Path, target_exists: bool) -> None:
+    """A repo can track ``.verdict-context.md`` as a symlink to a path outside the worktree.
+
+    Writing through it would truncate (or create) that outside file with the task
+    prompt, using the orchestrator's permissions.  The write must replace the
+    symlink itself and leave the outside target untouched.
+    """
+    worktree = tmp_path / "work"
+    worktree.mkdir()
+    outside = tmp_path / "outside-target.txt"
+    if target_exists:
+        outside.write_text("ORIGINAL OUTSIDE CONTENT")
+    (worktree / CONTEXT_FILE_NAME).symlink_to(outside)
+
+    _write_context_file(worktree, "Build the feature X.")
+
+    if target_exists:
+        assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT", (
+            "outside target was written through"
+        )
+    else:
+        assert not outside.exists(), "dangling symlink target was created through the link"
+    context = worktree / CONTEXT_FILE_NAME
+    assert not context.is_symlink()
+    assert "Build the feature X." in context.read_text()
+    assert [p.name for p in worktree.iterdir()] == [CONTEXT_FILE_NAME], "temp file left behind"
+
+
+def test_executor_does_not_write_through_context_symlink(tmp_path: Path) -> None:
+    """Executor level: a tracked-symlink context file never modifies its outside target."""
+    outside = tmp_path / "outside-target.txt"
+    outside.write_text("ORIGINAL OUTSIDE CONTENT")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    (cwd / CONTEXT_FILE_NAME).symlink_to(outside)
+    payload = ndjson_success("done")
+    fake = make_fake_opencode(
+        tmp_path, f"sys.stdout.write({payload!r})\nsys.stdout.write('\\n')\nsys.exit(0)\n"
+    )
+    executor = OpenCodeExecutor(opencode_bin=fake)
+    terminal = run_executor(executor, "secret prompt text", cwd)
+    assert terminal.ok is True
+    assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT"
+
+
 # ---------------------------------------------------------------------------
 # _parse_ndjson_output
 # ---------------------------------------------------------------------------
