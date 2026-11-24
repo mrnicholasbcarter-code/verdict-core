@@ -211,6 +211,17 @@ _MUTATED_ARGS: dict[str, tuple[int, ...]] = {
     "sqlite3.connect": (0,),
 }
 
+#: Events that move or delete a whole tree: the SOURCE argument may also be an
+#: ANCESTOR of a protected root (``os.rename(home / ".config", ...)``,
+#: ``shutil.rmtree(home)``), which relocates the protected tree without either
+#: argument being equal to or beneath it. Only these events get the ancestor
+#: check, so an unrelated rename elsewhere under the home stays allowed.
+_TREE_SOURCES: dict[str, tuple[int, ...]] = {
+    "os.rename": (0,),
+    "shutil.move": (0,),
+    "shutil.rmtree": (0,),
+}
+
 _STDLIB_DIRS = tuple(
     {p for p in (sysconfig.get_paths().get("stdlib"), sysconfig.get_paths().get("platstdlib")) if p}
 )
@@ -338,6 +349,14 @@ class HomeWriteGuard:
                 return root
         return None
 
+    def contained_root(self, path: str) -> str | None:
+        """A protected root strictly beneath ``path`` (``path`` is its ancestor)."""
+        prefix = _normalise(path).rstrip("/") + "/"
+        for root in self._roots:
+            if root.startswith(prefix):
+                return root
+        return None
+
     def _write_target(self, event: str, args: tuple[Any, ...]) -> list[str]:
         if event == "open":
             flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
@@ -362,6 +381,10 @@ class HomeWriteGuard:
             for path in self._write_target(event, args):
                 if self.protected_root(path):
                     self._deny(event, path)
+            for index in _TREE_SOURCES.get(event, ()):
+                source = _as_path(args[index]) if index < len(args) else None
+                if source and self.contained_root(source):
+                    self._deny(event, source)
         finally:
             self._busy.on = False
 

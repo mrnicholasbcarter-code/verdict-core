@@ -213,6 +213,14 @@ def _flags(*names: str) -> int:
         ("os.rename", ("{o}/a", "{r}/b", None, None), True),
         ("os.rename", ("{r}/a", "{o}/b", None, None), True),
         ("os.rename", ("{o}/a", "{o}/b", None, None), False),
+        ("os.rename", ("{rp}", "{o}/moved", None, None), True),  # an ANCESTOR of the root
+        ("os.rename", ("{rp}/..", "{o}/moved", None, None), True),
+        ("os.rename", ("{rp}/.bashrc", "{rp}/.bashrc.bak", None, None), False),  # unrelated sibling
+        ("os.rename", ("{o}/a", "{rp}", None, None), False),
+        ("shutil.move", ("{rp}", "{o}/moved"), True),
+        ("shutil.rmtree", ("{rp}", None), True),
+        ("shutil.rmtree", ("{rp}/other-tool", None), False),
+        ("shutil.copytree", ("{rp}", "{o}/copy"), False),  # a copy only reads the source
         ("os.remove", ("{r}/model-metadata.json", None), True),
         ("os.rmdir", ("{r}/dir", None), True),
         ("os.mkdir", ("{r}/dir", 0o777, None), True),
@@ -243,7 +251,7 @@ def test_guard_event_table(event: str, args: tuple[Any, ...], denied: bool, tmp_
     def fill(value: Any) -> Any:
         if not isinstance(value, str):
             return value
-        return value.format(r=root, o=other, rn=root.relative_to(tmp_path))
+        return value.format(r=root, o=other, rn=root.relative_to(tmp_path), rp=root.parent)
 
     filled = tuple(fill(a) for a in args)
     if denied:
@@ -254,6 +262,27 @@ def test_guard_event_table(event: str, args: tuple[Any, ...], denied: bool, tmp_
     else:
         guard.check(event, filled)
         assert guard.violations == []
+
+
+def test_moving_or_deleting_an_ancestor_of_the_protected_root_is_refused(
+    fake_real_home: Path, tmp_path: Path
+) -> None:
+    root = fake_real_home / ".verdict"
+    elsewhere = tmp_path / "moved-home"
+    with GUARD.protect(root):
+        with pytest.raises(PermissionError):
+            os.rename(fake_real_home, elsewhere)
+        with pytest.raises(PermissionError):
+            shutil.move(str(fake_real_home), str(elsewhere))
+        with pytest.raises(PermissionError):
+            shutil.rmtree(fake_real_home)
+        found = GUARD.drain()
+        # An unrelated sibling under the same home is still movable.
+        (fake_real_home / "notes.txt").write_text("n")
+        os.rename(fake_real_home / "notes.txt", fake_real_home / "notes.bak")
+        assert not GUARD.violations
+    assert len(found) == 3 and not elsewhere.exists()
+    assert (root / "model-metadata.json").read_text() == '{"ratings": 1}'
 
 
 def test_double_leading_slash_cannot_reach_a_protected_root(fake_real_home: Path) -> None:
