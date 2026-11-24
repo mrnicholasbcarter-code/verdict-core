@@ -228,6 +228,8 @@ def _flags(*names: str) -> int:
         ("os.truncate", ("{r}/state.json", 0), True),
         ("os.symlink", ("{o}/target", "{r}/link", None), True),
         ("os.symlink", ("{r}/target", "{o}/link", None), True),  # an alias INTO the root
+        ("os.symlink", ("{rp}", "{o}/alias", None), True),  # alias to an ANCESTOR of the root
+        ("os.symlink", ("{o}/target", "{o}/alias", None), False),
         ("os.link", ("{r}/state.json", "{o}/alias", None, None), True),
         ("os.link", ("{o}/a", "{o}/b", None, None), False),
         ("shutil.copyfile", ("{o}/src", "{r}/dst"), True),
@@ -305,6 +307,25 @@ def test_a_link_into_protected_state_is_refused_so_it_cannot_be_written_through(
     assert len(found) == 2
     assert not alias.exists() and not (tmp_path / "symlink.json").is_symlink()
     assert protected_file.read_text() == '{"ratings": 1}'
+
+
+def test_a_symlink_to_an_ancestor_of_the_protected_root_is_refused(
+    fake_real_home: Path, tmp_path: Path
+) -> None:
+    """The alias would let ``alias/.verdict/state.json`` write through to the root."""
+    root = fake_real_home / ".verdict"
+    alias = tmp_path / "alias"
+    with GUARD.protect(root):
+        with pytest.raises(PermissionError):
+            os.symlink(fake_real_home, alias)
+        with pytest.raises(PermissionError):
+            os.symlink("..", fake_real_home / ".verdict" / "up")  # also inside the root
+        assert len(GUARD.drain()) == 2
+        unrelated = tmp_path / "unrelated"
+        unrelated.mkdir()
+        os.symlink(unrelated, fake_real_home / "to-unrelated")  # an unrelated alias is fine
+        assert not GUARD.violations
+    assert not alias.is_symlink()
 
 
 def test_relative_symlink_target_resolves_against_the_link_directory(

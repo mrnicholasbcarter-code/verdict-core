@@ -305,6 +305,18 @@ def _callers(limit: int = 4) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _symlink_ends(args: tuple[Any, ...]) -> tuple[str | None, str | None]:
+    """(link path, resolved target) of an ``os.symlink`` event.
+
+    A relative target resolves against the link's directory, not the cwd.
+    """
+    target = _as_path(args[0]) if args else None
+    link = _as_path(args[1]) if len(args) > 1 else None
+    if target and link and not target.startswith("/"):
+        target = os.path.join(os.path.dirname(_normalise(link)), target)
+    return link, target
+
+
 class HomeWriteGuard:
     """Refuses and records writes under ``roots``.
 
@@ -365,15 +377,7 @@ class HomeWriteGuard:
 
     def _write_target(self, event: str, args: tuple[Any, ...]) -> list[str]:
         if event == "os.symlink":
-            target = _as_path(args[0]) if args else None
-            link = _as_path(args[1]) if len(args) > 1 else None
-            found = [link] if link else []
-            if target:
-                if not target.startswith("/") and link:
-                    # A relative target resolves against the link's directory.
-                    target = os.path.join(os.path.dirname(_normalise(link)), target)
-                found.append(target)
-            return found
+            return [p for p in _symlink_ends(args) if p]
         if event == "open":
             flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
             mode = args[1] if len(args) > 1 and isinstance(args[1], str) else ""
@@ -401,6 +405,11 @@ class HomeWriteGuard:
                 source = _as_path(args[index]) if index < len(args) else None
                 if source and self.contained_root(source):
                     self._deny(event, source)
+            if event == "os.symlink":
+                # A new alias to an ANCESTOR of a root reaches the root through it.
+                target = _symlink_ends(args)[1]
+                if target and self.contained_root(target):
+                    self._deny(event, target)
         finally:
             self._busy.on = False
 
