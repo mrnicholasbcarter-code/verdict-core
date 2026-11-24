@@ -168,6 +168,8 @@ From the acceptance list of #1313 and the operator's decisions, for this story:
 - `tools` is enforced from real metadata; `streaming` is waived and the waiver is recorded in the
   receipt.
 - Production-profile serve (`require_authority`) still fails closed for a worker request.
+- An assigned request that is explicitly protected (`protected: true`, criticality critical) is
+  denied before the ladder: serve never lowers a floor.
 - Non-worker relay traffic is unchanged.
 - The three admission invariants named in `AGENTS.md` (`tests/test_admission.py`) pass
   unchanged; new tests carry the lane's own guarantee (design, "Invariants").

@@ -202,7 +202,8 @@ A separate key, never the serve token.
 ### D5. The assigned lane (decisions 6, 7, 8; the research's recommended approach)
 
 `_route` gains the lane **after** the `require_authority` raise (step 3 above) and before the
-legacy path. Reachable only when the context holds a `VerifiedWorkerAssignment`. In production
+legacy path. Reachable only when the context holds a `VerifiedWorkerAssignment`. Its first act is
+the explicit-protection check below. In production
 profile `require_authority` is true, the raise fires first, and the relay answers 400
 (`ExecutionPathError`): worker requests stay unsupported there and fail closed (decision 7).
 
@@ -264,6 +265,18 @@ Details the table leaves out:
 - **Recorded tier.** The decision records no computed escalation (`escalated` false, no reason,
   `protected` false) and the tier that `evidence._TIER_TO_POLICY_FLOOR` maps to `best_effort` (3),
   so evidence does not claim a floor the lane never computed.
+- **Explicit protection is honoured, never lowered.** Today `criticality: critical` or
+  `protected: true` (the relay turns both into `context["protected"]`, and `route()` also receives
+  `criticality` as an argument) makes the legacy path skip offload entirely (`final_tier == 0` takes
+  the primary model, never an offloaded route). A pin cannot carry that, and the lane bypasses the
+  tier calculation that enforces it, so the lane checks it first: an assigned request that is
+  explicitly protected is denied before the ladder (reason "protected work is never offloaded to an
+  assigned route", safety flag `worker_assignment_protected_denied`, `protected` true on the denied
+  decision), with no proof and no upstream call. This is separate from keyword parity (decision 6,
+  which is about scanning node text): it is the explicit field, which only ever raises protection.
+  Design choice that follows from "serve never lowers a floor"; a worker never sends these fields.
+  Because protected requests never reach the lane's admitted path, an admitted lane decision has
+  `protected` false truthfully.
 - **Safety flags.** `free_tier_active_admit`, `prove_confirm_admit`, `capability_hard_gate` when a
   requirement exists, and `worker_assigned_lane`. Never `cheap_path_context_pack`.
 - **What still reads the text, and why it is not a classifier.** The profile digest hashes the
@@ -486,11 +499,7 @@ pin. After this story these statements are false and the build edits that change
 1. **`iat` and a maximum lifetime.** Add `iat` to the payload and refuse an assignment whose
    `exp - iat` exceeds 1,800 s (twice the 900 s attempt ceiling in `orchestration/runtime.py`), so a mis-signed
    long-lived assignment cannot exist. Not in the spec; if accepted, one field and one check.
-2. **Deny assigned requests that ask for protection.** If the request carries `protected: true` or
-   `criticality: critical` (the relay turns both into `context["protected"]`), the lane denies:
-   protected work is never offloaded and a pin cannot carry that. A worker never sends these; this is
-   for completeness. Not in the spec.
-3. **Rotation flag.** `verdict setup ... --rotate-assignment-key` instead of delete-and-rerun. Not
+2. **Rotation flag.** `verdict setup ... --rotate-assignment-key` instead of delete-and-rerun. Not
    proposed: more surface for no new capability.
 
 ## Open points for the operator

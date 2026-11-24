@@ -221,7 +221,9 @@ gate, the context-plan estimate and the `EligibilityGate`, and SHALL mint the ro
 the same function as for a chosen route. The lane SHALL NOT re-admit any route; its admitted set
 SHALL be a subset of `{pinned route}` intersected with what the unpinned ladder would have left
 after its active and cooling steps. When the lane cannot obtain live admission it SHALL deny and
-SHALL NOT fall through to the legacy path.
+SHALL NOT fall through to the legacy path. Before any ladder step the lane SHALL deny an
+explicitly protected request (`protected: true`, or criticality critical): protected work is never
+offloaded and a pin SHALL NOT lower that floor.
 
 #### Scenario: A pinned route outside the admitted set is denied
 
@@ -257,6 +259,13 @@ SHALL NOT fall through to the legacy path.
 - **WHEN** the pinned route would rank sixth of six under the Top-4 shortlist and passes every
   gate
 - **THEN** it is admitted
+
+#### Scenario: An explicitly protected request is denied before the ladder
+
+- **WHEN** an assigned request carries `protected: true`, or `criticality` critical (as the request
+  field or as the argument to `route()`)
+- **THEN** it is denied before any ladder step with `protected` true, the safety flag
+  `worker_assignment_protected_denied`, no proof and no upstream call, and no route is selected
 
 #### Scenario: Production profile still fails closed
 
