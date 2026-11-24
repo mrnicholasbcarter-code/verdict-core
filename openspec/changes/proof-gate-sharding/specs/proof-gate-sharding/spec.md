@@ -81,7 +81,7 @@ Every leg SHALL run every gate of the full mode with the command and `required` 
 
 #### Scenario: Sharding adds no skip and re-marks nothing
 - **WHEN** the change's diff against `origin/main` is read
-- **THEN** it removes no `skip`, `xfail`, `deselect` or marker line from `tests/` and changes neither `pyproject.toml` nor `.test_durations`
+- **THEN** it removes no `skip`, `xfail`, `deselect` or marker line from `tests/`, adds no skip, expected-failure, deselect or marker line to `tests/` (a `parametrize` mark aside), and changes neither `pyproject.toml` nor `.test_durations`
 
 #### Scenario: Non-required gate keeps its meaning
 - **WHEN** a gate with `required: false` fails or is skipped in every leg
