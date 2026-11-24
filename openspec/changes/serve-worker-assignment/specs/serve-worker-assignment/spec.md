@@ -104,9 +104,10 @@ setup again; assignments signed with the old key SHALL stop verifying at once.
 
 #### Scenario: The key is never in an environment
 
-- **WHEN** serve verifies an assignment and the orchestrator loads the key
-- **THEN** no environment variable of either process holds the key, and `serve.env` and the
-  credentials store do not contain it
+- **WHEN** setup generates the key and serve verifies an assignment
+- **THEN** no environment variable of the serve process holds the key (the loader never reads or
+  writes the environment), and `serve.env`, the credentials store and the setup result do not
+  contain it
 
 #### Scenario: Rotation takes effect on the next request
 
@@ -178,27 +179,34 @@ header is present.
 ### Requirement: A model that differs from the signed route is denied
 
 For a verified assignment the request's `model` SHALL equal the signed `route_id` by exact string
-comparison. A missing, null, empty, non-string or different `model` SHALL be denied through the
-relay's existing denial path (the decision is `denied` and evidence records it), never ignored and
-never rewritten, with no upstream call. After routing the relay SHALL verify that the decision's
-route equals the signed route and SHALL bound the request to exactly that route, with no
-alternatives.
+comparison. A missing, null, empty, non-string or different `model` SHALL be refused with HTTP 400
+before any routing, never ignored and never rewritten, with no ladder, no proof and no upstream
+call; serve SHALL log the refusal with the reason code, the signed route id, the run id and the
+node id, and never the token. After routing the relay SHALL verify that the decision's route equals
+the signed route and SHALL bound the request to exactly that route, with no alternatives; a
+decision for any other route SHALL be denied.
 
-#### Scenario: A different model is denied
+#### Scenario: A different model is refused
 
 - **WHEN** a valid assignment names route A and the request's `model` is route B, including a
   route that is admitted
-- **THEN** the request is denied, evidence records the denial, and upstream is never contacted
+- **THEN** the request is refused 400 before routing, the refusal is logged with the signed route,
+  run and node ids, and upstream is never contacted
 
-#### Scenario: A missing or malformed model is denied
+#### Scenario: A missing or malformed model is refused
 
 - **WHEN** the request's `model` is absent, null, an empty string, a number or a list
-- **THEN** each is denied with no upstream call
+- **THEN** each is refused 400 before routing with no upstream call
 
 #### Scenario: The matching model is served on exactly one route
 
 - **WHEN** the request's `model` equals the signed route and the route passes its gates
 - **THEN** one attempt is built on that route, with no alternatives and no fallback
+
+#### Scenario: A decision for another route is denied
+
+- **WHEN** routing returns a decision whose route is not the signed route
+- **THEN** the decision is denied and no attempt is dispatched
 
 ### Requirement: The assigned lane narrows to the pinned route first and keeps every per-route gate
 
@@ -257,15 +265,19 @@ SHALL NOT fall through to the legacy path.
 - **THEN** the lane is not reached, the request is refused 400 as an execution-path error, and
   nothing is routed
 
-### Requirement: The assigned lane does not second-guess the request from its text
+### Requirement: The assigned lane does not classify the request from its text
 
-On the assigned lane the request text SHALL NOT select, filter or refuse a route: the keyword
-scanner, the worthiness classification and the planner's text-derived capabilities SHALL NOT run.
-The request body SHALL be forwarded verbatim except that `model` is the pinned route and
-Verdict-local fields are stripped as for every relay request: no pack SHALL be built and no message
-added. The lane's decision SHALL NOT carry the `cheap_path_context_pack` flag. Keyword protection
-for an assigned request is parity with the default `direct-gateway` path: none on node text, with
-the floor chosen by the orchestrator before it signs.
+On the assigned lane the keyword scanner, the worthiness classification and the planner's
+text-derived capabilities SHALL NOT run, so no request text SHALL select, filter or refuse a route
+through them. Two things still read the text and are not classifiers: the task-profile digest (a
+hash of the text, which binds the proof to the request, plus the profile's task-family label, a
+keyword label that no lane decision uses), and the context-plan estimate (token size of the text
+against the route's window, a per-route hard gate). The request body SHALL be forwarded verbatim
+except that `model` is the pinned route and Verdict-local fields are stripped as for every relay
+request: no pack SHALL be built and no message added. The lane's decision SHALL NOT carry the
+`cheap_path_context_pack` flag. Keyword protection for an assigned request is parity with the
+default `direct-gateway` path: none on node text, with the floor chosen by the orchestrator before
+it signs.
 
 #### Scenario: Words that trip the scanner do not refuse the worker
 

@@ -59,7 +59,7 @@ mismatch"); it injects the compiled pack into the forwarded body when the decisi
 - The executor signing the assignment and carrying run and node ids (#1325). This change defines
   and verifies the format; it does not add a signing function (see "Hand-offs").
 - The dispatch-origin check (#1326), instructions-file delivery and the status-matcher fix
-  (#1327), the default switch (#1328).
+  (#1327; the matcher, `_STATUS_RE`, is **[#1299]** code), the default switch (#1328).
 - Stream evidence (ADR-013 probes persisted as evidence). Streaming is waived instead (decision 5).
 - A keyword floor on node text in the orchestrator. Parity with the `direct-gateway` path is the
   decision (6).
@@ -103,7 +103,7 @@ server-set value (`request.state`, then a context key that JSON cannot supply), 
 **Replay.** An assignment is a bearer credential valid until `exp` for one route: a worker makes
 many requests per attempt (13 in the smoke), so it cannot be single-use. Expiry is checked on every
 request, so an attempt that outlives its assignment fails closed on its next request. #1325 sets
-`exp` from the attempt's timeout (900 s ceiling **[#1299]**) plus margin.
+`exp` from the attempt's timeout (the 900 s ceiling in `orchestration/cli.py` and `runtime.py`) plus margin.
 
 **Why the bearer, not a second header.** The research (fact 9) requires the worker to hold no
 serve token: with the serve token in its environment the worker could call `/v1/route`,
@@ -146,10 +146,22 @@ combination independently.
 
 Before routing, the relay compares the request's `model` to `assignment.route_id` by exact string
 equality (no trimming, no case folding, no alias resolution). Missing, null, empty, non-string or
-different is **denied** through the relay's existing denial path (the decision is `denied`, evidence
-records it, 503 as for any denied route), never ignored and never rewritten. After routing the relay
-still verifies that the decision's route equals the signed route and clears any alternatives, as
-**[#1299]** does, so an assigned request has exactly one attempt on exactly one route.
+different is **denied**, never ignored and never rewritten: a pre-routing refusal, 400
+`invalid_request_error`, with no ladder, no proof and no upstream call. Serve logs it with the
+reason code `model_mismatch`, the signed route id, run id and node id, and never the token.
+
+Why a pre-routing refusal and not the relay's denied-decision path: that path needs a routed
+decision. `build_attempts` runs on the decision first, `_start_evidence` reads `attempts[0]`, and
+`build_attempts` returns no attempt (503, no evidence) for a route the optional relay admission
+cache (`VERDICT_RELAY_ADMISSION_CACHE`) does not list, which a synthetic `denied` decision would
+hit. So this denial has a log line and no evidence record, and it saves the ladder's work for a
+request that contradicts its own credential. (A refusal after routing, below, still goes through
+the denied-decision path as today.)
+
+After routing the relay verifies that the decision's route equals the signed route and clears any
+alternatives, as **[#1299]** does, so an assigned request has exactly one attempt on exactly one
+route. A decision for any other route is turned into a denied decision exactly as **[#1299]** does
+today.
 
 ### D4. The signing key (decision 1)
 
@@ -253,6 +265,11 @@ Details the table leaves out:
   so evidence does not claim a floor the lane never computed.
 - **Safety flags.** `free_tier_active_admit`, `prove_confirm_admit`, `capability_hard_gate` when a
   requirement exists, and `worker_assigned_lane`. Never `cheap_path_context_pack`.
+- **What still reads the text, and why it is not a classifier.** The profile digest hashes the
+  text (it binds the proof to this exact request) and `profile_task` attaches a task-family label
+  by keyword; no lane decision uses the label. The context-plan estimate uses the text's token size
+  and that label to size a per-route budget (a hard gate that can only remove the route). Neither
+  selects, ranks or refuses a route by what the text means.
 - **Keyword parity (decision 6).** The default `direct-gateway` worker never reaches serve and the
   orchestrator never runs the scanner: its floor is `required_capability_tier(node)`, from the
   node's risk and kind. An assigned request gets the same: no keyword protection on node text. The
@@ -456,7 +473,7 @@ pin. After this story these statements are false and the build edits that change
 ## Proposed additions (beyond the eight decisions; the operator may drop any)
 
 1. **`iat` and a maximum lifetime.** Add `iat` to the payload and refuse an assignment whose
-   `exp - iat` exceeds 1,800 s (twice the 900 s attempt ceiling **[#1299]**), so a mis-signed
+   `exp - iat` exceeds 1,800 s (twice the 900 s attempt ceiling in `orchestration/runtime.py`), so a mis-signed
    long-lived assignment cannot exist. Not in the spec; if accepted, one field and one check.
 2. **Deny assigned requests that ask for protection.** If the request carries `protected: true` or
    `criticality: critical` (the relay turns both into `context["protected"]`), the lane denies:

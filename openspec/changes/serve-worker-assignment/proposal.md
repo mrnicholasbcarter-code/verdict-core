@@ -111,7 +111,7 @@ so docs describe only what runs.
 - **Non-worker traffic is unchanged**: requests without an assignment and without the worker
   header take the same ladder as today.
 - **Out of scope** (own issues): signing in the executor and carrying run and node ids (#1325),
-  the dispatch-origin check (#1326), instructions-file delivery and the `_STATUS_RE` fix (#1327),
+  the dispatch-origin check (#1326), instructions-file delivery and the `_STATUS_RE` fix (#1327; `_STATUS_RE` is **[#1299]**),
   the default switch (#1328), stream evidence (ADR-013 probes, later).
 - No new dependency (standard-library `hmac`, `hashlib`, `secrets`, `base64`).
 
