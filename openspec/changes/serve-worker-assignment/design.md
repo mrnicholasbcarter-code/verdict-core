@@ -81,7 +81,12 @@ tag     = base64url(HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + payload)
 ```
 
 `vwa1` is the format version. `exp` is integer seconds since the Unix epoch, UTC (an integer
-cannot be a naive local time; a boolean, float, negative or non-integer is refused). The domain
+cannot be a naive local time; a boolean, float, negative or non-integer is refused), and it has an
+upper bound: `0 <= exp <= 253402300799`, which is 9999-12-31T23:59:59Z, the last second a UTC
+`datetime` holds. The bound is needed because the verified result carries `expires_at` as a UTC
+time and every receipt writes it in ISO form; a larger integer, such as 253402300800 (a
+`ValueError`, year 10000) or 2^63 and above (an `OverflowError`), carries a valid tag and still
+cannot become that value. The domain
 tag keeps a tag made for this purpose from being valid for any other HMAC use of the key.
 `route_id`, `run_id` and `node_id` are non-empty strings of at most 128 characters with no control
 characters (they are written to logs and receipts). Unknown or missing fields are refused. A
@@ -90,9 +95,14 @@ token over 2 KiB is refused before decoding.
 **Verification** (`verdict/worker_assignment.py`, new; pure, no I/O except loading the key):
 split on `.` into exactly three parts; decode the tag; recompute the HMAC over the received payload
 text; compare with `hmac.compare_digest`; only after the compare succeeds decode and validate the
-payload; then check `exp > now` (strict, UTC, injected clock). Every refusal is one reason code
+payload (shape, field limits and the `exp` range above); convert `exp` to the UTC `expires_at`
+inside a guard that maps `OverflowError`, `ValueError` and `OSError` to `malformed`, so no value
+that is not a timestamp passes the verifier and none raises out of it; then check `exp > now`
+(strict, UTC, injected clock). A correctly signed `exp` of 0 is well-formed and ends `expired`; one
+above the bound ends `malformed`, not `expired`. Every refusal is one reason code
 (`malformed`, `bad_signature`, `expired`, `key_unavailable`) that is logged by serve and never
-echoed to the caller: the caller gets the same generic body as for any wrong bearer.
+echoed to the caller: the caller gets the same generic body as for any wrong bearer, so an
+unrepresentable `exp` is a 403 and never a 500.
 
 **Result type.** A frozen `VerifiedWorkerAssignment` with `route_id`, `run_id`, `node_id`,
 `expires_at` (a UTC time with an explicit offset, `Z`, in every receipt) and `assignment_digest`
@@ -116,7 +126,8 @@ child; that belongs to #1325.
 
 ### D2. Where an assignment is accepted (design choice)
 
-In `caller_authentication` (existing middleware), after the serve-token compare fails:
+In `caller_authentication` (existing middleware), after the serve-token compare fails (the
+anonymous branch has a rule of its own, after the table):
 
 | Request | Result |
 |---|---|
@@ -126,18 +137,39 @@ In `caller_authentication` (existing middleware), after the serve-token compare 
 | same, token fails verification | 403 `authentication failed` (the existing wrong-bearer body) |
 | bearer has the `vwa1.` prefix on any other path or method, including `/v1/messages` | 403 `authentication failed` |
 | an assignment in `x-api-key` on `/v1/messages` | 403 (that header only carries the serve token) |
-| anonymous mode (`LLMGATE_ALLOW_ANONYMOUS` and no token) | the middleware verifies nothing; see the relay rule below |
+| anonymous mode (`LLMGATE_ALLOW_ANONYMOUS` and no token), loopback client, request carries an assignment (bearer or `x-api-key` with the `vwa1.` prefix), any path or method | 403 `authentication failed`; nothing verified, the key never loaded |
+| anonymous mode, loopback client, no assignment | passes as today; a non-loopback client keeps its 403 `anonymous mode is loopback-only` |
 
 The two OpenAI surfaces are the ones the worker uses (**[#1299]** the per-attempt config is an
 OpenAI-compatible provider); the Anthropic surface and the `x-api-key` path are left out to keep
 the accepted surface to what a worker needs.
 
+**The anonymous branch needs its own check.** Today `caller_authentication` returns
+`call_next` for every path as soon as the loopback test passes in anonymous mode, before it reads
+any header, so the table rows above that depend on the serve-token compare never run there. Without
+a rule of its own, a loopback anonymous request with an assignment bearer to
+`GET /v1/guidance/status` or `POST /v1/route` would be passed on. So the middleware gets one
+path-independent check, placed in the anonymous branch after the loopback test and before
+`call_next`: if the `Authorization` bearer value or the `x-api-key` value has the `vwa1.` prefix,
+answer 403 `authentication failed`. That check only looks at the prefix. It never loads the key and
+never verifies: anonymous mode has no serve token to stand behind and grants no assigned lane, so
+refusing the credential outright is the fail-closed answer. A request without an assignment is
+passed on exactly as today.
+
+**Two paths never reach the check.** `/health` and the OmniRoute webhook path return before any
+credential is read, with or without the serve token, so an assignment presented there is ignored:
+it sets nothing on `request.state`, authorises nothing, and neither handler reads it. The spec names
+these two exceptions instead of claiming a rule it cannot keep.
+
 In the relay, a request is **worker-marked** when it carries the `X-Verdict-Worker` header or a
 bearer with the `vwa1.` prefix. A worker-marked request without `request.state.worker_assignment`
 is denied 403 before any routing: no ladder, no proof, no upstream. This covers decision 4 (the
-bare header, with the serve token or with nothing, selects nothing) and the anonymous-mode and
-forged-prefix cases. The header is neither required nor sufficient for a verified assignment; the
-assignment alone assigns.
+bare header, with the serve token or with nothing, selects nothing), the anonymous-mode header
+case (the middleware check above catches an assignment bearer there, so the relay guard is the
+only guard for the header alone) and the forged-prefix case. For an assignment bearer the relay
+guard is a second line behind the middleware, and a test calls it with the middleware out of the
+way. The header is neither required nor sufficient for a verified assignment; the assignment alone
+assigns.
 
 A worker-marked request that carries `execution_path_request` is refused 400 before routing,
 exactly as **[#1299]** does, now keyed on the verified assignment; `_route` refuses the same
@@ -498,7 +530,9 @@ pin. After this story these statements are false and the build edits that change
 
 1. **`iat` and a maximum lifetime.** Add `iat` to the payload and refuse an assignment whose
    `exp - iat` exceeds 1,800 s (twice the 900 s attempt ceiling in `orchestration/runtime.py`), so a mis-signed
-   long-lived assignment cannot exist. Not in the spec; if accepted, one field and one check.
+   long-lived assignment cannot exist. Not in the spec; if accepted, one field and one check. (The
+   fixed bound on `exp` in D1 is a different thing: it only keeps `exp` representable as a
+   timestamp and is part of the format here.)
 2. **Rotation flag.** `verdict setup ... --rotate-assignment-key` instead of delete-and-rerun. Not
    proposed: more surface for no new capability.
 

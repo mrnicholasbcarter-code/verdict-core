@@ -56,7 +56,8 @@ Verdict builds with a free worker is work at no paid cost, and the self-build pi
 
 ## What Changes
 
-- **A signed worker assignment.** A token carrying route id, run id, node id and expiry, signed
+- **A signed worker assignment.** A token carrying route id, run id, node id and expiry (integer
+  seconds, 0 through 253402300799, so it is always a representable UTC time), signed
   with HMAC-SHA256 by a **separate generated key** (not the serve token). The worker presents it
   as its bearer credential. Serve verifies it with a constant-time compare; a bad, expired or
   missing assignment is denied with no upstream call.
@@ -65,8 +66,10 @@ Verdict builds with a free worker is work at no paid cost, and the self-build pi
   orchestrator when it signs, never placed in any process environment. Missing key: serve fails
   closed. Rotation: remove the file and run setup again. `verdict doctor` reports the key.
 - **Assignments are honoured only on the OpenAI relay surfaces** (`POST /v1/chat/completions`,
-  `POST /v1/responses`). Every other path refuses them, so a worker never holds a credential for
-  `/v1/route`, `/v1/runs`, receipts or guidance.
+  `POST /v1/responses`). Every other path refuses them (anonymous mode included: the middleware
+  refuses an assignment-bearing request there on every path, without verifying it), so a worker
+  never holds a credential for `/v1/route`, `/v1/runs`, receipts or guidance. `/health` and the
+  OmniRoute webhook path skip caller authentication and never read a bearer.
 - **The bare header selects nothing.** **[#1299]** `X-Verdict-Worker` plus the serve token no longer
   pins a route; such a request is denied. `WorkerAssignedRoute` and its relay and admission
   handling are replaced by the verified assignment.
@@ -152,11 +155,13 @@ From the acceptance list of #1313 and the operator's decisions, for this story:
 
 - A request is routed on an assigned route only with a valid assignment. A forged, expired,
   field-tampered, wrong-key, truncated or missing-key assignment is denied and **no upstream call
-  is made**; no route is pinned.
+  is made**; no route is pinned. So is a correctly signed assignment whose `exp` is outside the
+  range a UTC timestamp can hold (0 through 253402300799): refused as malformed, never a 500.
 - A request with the serve token and the `X-Verdict-Worker` header but no assignment is denied; no
   route is pinned.
 - An assignment presented anywhere except `POST /v1/chat/completions` and `POST /v1/responses` is
-  refused.
+  refused 403, with the serve token configured and in anonymous mode alike (the only exceptions
+  are `/health` and the OmniRoute webhook path, which never read a bearer).
 - A `model` that differs from the signed route is denied.
 - With a valid assignment and an admitted pinned route: the route is served, the body is forwarded
   verbatim (no pack, no extra message), and the upstream `model` is the pinned route.

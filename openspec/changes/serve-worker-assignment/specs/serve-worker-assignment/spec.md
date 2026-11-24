@@ -11,10 +11,15 @@ lists which of that change's scenarios this one supersedes.
 A worker assignment SHALL be an opaque bearer string `vwa1.<payload>.<tag>`, where `payload` is the
 base64url of a JSON object with exactly the fields `route_id`, `run_id`, `node_id` (each a
 non-empty string of at most 128 characters without control characters) and `exp` (an integer of
-seconds since the Unix epoch, UTC), and `tag` is the base64url of
+seconds since the Unix epoch, UTC, from 0 through 253402300799, which is 9999-12-31T23:59:59Z, the
+last second a UTC `datetime` can hold), and `tag` is the base64url of
 `HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + payload)`. A token over 2 KiB, a token that
-does not split into exactly three parts, a payload that is not that object, and an `exp` that is
-not an integer (including a boolean or a float) SHALL be refused.
+does not split into exactly three parts, a payload that is not that object, an `exp` that is not an
+integer (including a boolean or a float), and an `exp` outside that range SHALL be refused. The
+verifier SHALL turn `exp` into a UTC time with an explicit offset as part of verification, and any
+`OverflowError`, `ValueError` or `OSError` raised by that conversion SHALL be refused as
+`malformed`, never raised to the caller. A correctly signed assignment whose `exp` cannot be
+represented therefore ends as the generic authentication refusal, never as an error response.
 
 #### Scenario: A well-formed, unexpired assignment verifies
 
@@ -27,6 +32,24 @@ not an integer (including a boolean or a float) SHALL be refused.
   base64url, a payload that is not a JSON object, an extra field, a missing field, an empty
   `route_id`, or an `exp` that is a string, a float, a boolean or negative
 - **THEN** verification is refused and the request is denied with no upstream call
+
+#### Scenario: An exp that cannot be a timestamp is refused as malformed
+
+- **WHEN** an assignment carries a correct tag over a payload whose `exp` is 253402300800, 2^63,
+  2^64 or 10^30
+- **THEN** verification is refused with the reason `malformed` (not `expired`, and no
+  `OverflowError`, `ValueError` or `OSError` reaches the caller), and a request that presents it is
+  denied 403 with the generic body, with no upstream call
+
+#### Scenario: The largest representable exp verifies
+
+- **WHEN** an assignment is signed with `exp` 253402300799 and verified with a clock before it
+- **THEN** verification succeeds and its expiry is `9999-12-31T23:59:59Z`
+
+#### Scenario: An exp of zero is well-formed and expired
+
+- **WHEN** an assignment is signed with `exp` 0
+- **THEN** verification is refused with the reason `expired`, not `malformed`
 
 #### Scenario: An oversized token is refused before it is decoded
 
@@ -123,10 +146,18 @@ setup again; assignments signed with the old key SHALL stop verifying at once.
 ### Requirement: An assignment is honoured only on the OpenAI relay surfaces
 
 Serve SHALL accept an assignment, as the `Authorization: Bearer` value, only on
-`POST /v1/chat/completions` and `POST /v1/responses`. On any other path or method, on
-`POST /v1/messages`, and in `x-api-key`, an assignment SHALL be refused with 403. A request whose
-bearer equals the serve token SHALL be authenticated exactly as before. In anonymous mode serve
-SHALL verify no assignment.
+`POST /v1/chat/completions` and `POST /v1/responses`. On every other path or method, on
+`POST /v1/messages`, and in `x-api-key`, an assignment SHALL be refused with 403. The only
+exceptions are `/health` and the OmniRoute webhook path, which skip caller authentication for every
+credential, never read a bearer, and select and authorise nothing. A request whose bearer equals
+the serve token SHALL be authenticated exactly as before; a serve with no token and no anonymous
+mode answers 503 to every request, an assignment-bearing one included, as today.
+
+An assignment-bearing request is one whose `Authorization` bearer value or `x-api-key` value has
+the `vwa1.` prefix. In anonymous mode (`LLMGATE_ALLOW_ANONYMOUS` and no token) serve SHALL verify no
+assignment and SHALL NOT load the key, and SHALL refuse every assignment-bearing request with 403,
+on every path and method, before the anonymous request is passed on. A request without an
+assignment passes in anonymous mode as before, and a non-loopback client keeps its existing 403.
 
 #### Scenario: Off the relay path an assignment is refused
 
@@ -139,11 +170,27 @@ SHALL verify no assignment.
 - **WHEN** a request presents the serve token and no assignment and no worker header
 - **THEN** it is authenticated and routed as before this change
 
-#### Scenario: Anonymous mode grants no assigned lane
+#### Scenario: Anonymous mode refuses an assignment on every path
 
-- **WHEN** serve runs with `LLMGATE_ALLOW_ANONYMOUS` and no token, and a request carries an
-  assignment or the worker header
-- **THEN** it is denied 403 with no upstream call
+- **WHEN** serve runs with `LLMGATE_ALLOW_ANONYMOUS` and no token, and a loopback request carries
+  an assignment bearer (or the prefix in `x-api-key`) to `POST /v1/chat/completions`,
+  `POST /v1/responses`, `GET /v1/guidance/status`, `POST /v1/route`, `GET /v1/runs`,
+  `GET /v1/models` or `POST /v1/messages`
+- **THEN** each is refused 403 with the generic authentication-failed body, nothing is verified,
+  the key file is never read, nothing is routed and no upstream call is made
+
+#### Scenario: Anonymous mode without an assignment is unchanged
+
+- **WHEN** serve runs with `LLMGATE_ALLOW_ANONYMOUS` and no token, and a loopback request carries
+  no assignment
+- **THEN** it passes the middleware as before this change, and a non-loopback client is refused
+  403 `anonymous mode is loopback-only` as before
+
+#### Scenario: Anonymous mode grants no assigned lane through the header
+
+- **WHEN** serve runs with `LLMGATE_ALLOW_ANONYMOUS` and no token, and a relay request carries the
+  worker header and no assignment
+- **THEN** it is denied 403 by the relay guard with no upstream call
 
 ### Requirement: The bare worker header selects nothing
 
