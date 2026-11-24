@@ -155,7 +155,9 @@ Criteria of this change:
   contract; a missing, duplicated or unexpected test; a JUnit record that differs
   from the selected tests (a substituted test with the same count included); and an unreadable or malformed leg file.
 - An unsharded `run.py --mode full` runs the same argv for every gate as today.
-- Nothing the proof checks today is weakened, skipped, deselected or re-marked.
+- Nothing the proof checks today is weakened, skipped or re-marked, and no test is
+  deselected except by the marker and split selections, whose combined effect is
+  that every collected test runs once.
 - The `timing` tests run serially in one leg.
 - **Live, reworded:** over at least 10 pull-request rounds after merge, the
   median time from the first run's creation to the last job's completion, across

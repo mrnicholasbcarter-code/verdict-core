@@ -9,7 +9,7 @@ keep the red output, then make it green and keep that output for the PR body.
 Each test must go red when the check it covers is removed. Run focused tests with
 `-n 2` at most. Do not run the full suite; CI on the exact head is the full suite.
 
-The leg count is "the declared number" everywhere below. Only task 1.7 sets the
+The leg count is "the declared number" everywhere below. Only task 1.8 sets the
 starting value (3, open question 1 in the design). Nothing below requires or
 forbids `proof-targeted` (open question 2).
 
@@ -23,7 +23,8 @@ Verification for the group: `uv run --frozen python -m pytest -q -n 2 tests/test
 - [ ] 1.4 Add `--shard K` to the entry point and the append rule, skip recording, the `shard` report field and the `unit_timing` id in the failure map. One function builds a gate's selection arguments (also used by the aggregate). Files: `scripts/proof/run.py`, `scripts/proof/runner.py`. Verify: the 1.3 tests pass.
 - [ ] 1.5 Failing tests: `ci_shard_union.py --emit-ids` writes the selected ids as JSON, the existing default mode is unchanged (existing tests untouched and green), and the collector ignores `PYTEST_ADDOPTS="-p xdist -n auto"` (a controller collects nothing under xdist); for generated item lists (seeded `random`, no new dependency) and N = 1..5, the `least_duration` groups are pairwise disjoint with the input as their union. Files: `tests/test_ci_shard_union.py`. Verify: the new tests fail before 1.6; `uv run --frozen python -m pytest -q tests/test_ci_shard_union.py` afterwards.
 - [ ] 1.6 Add the `--emit-ids` mode to the collector and make the runner record each sharded pytest gate's selection in `proof-shard-K/ids-<gate>.json` before it runs the gate. Files: `scripts/ci_shard_union.py`, `scripts/proof/runner.py`. Verify: the 1.5 tests pass and a runner test shows the ids file is written next to the report.
-- [ ] 1.7 Declare `shards: 3` in the full mode, add `unit_timing` to the full phases and directly after `unit_full` in the gate list, and add `shard: split` to `unit_full`. Change no existing command or `required` flag. Files: `proof/contract.yaml`. Verify: `uv run --frozen python scripts/proof/acceptance_smoke.py` prints `acceptance_smoke: ok`, `uv run --frozen python -m pytest -q tests/test_proof_pipeline.py` is green, and `git diff -U0 origin/main...HEAD -- proof/contract.yaml | grep '^-[^-]'` prints nothing.
+- [ ] 1.7 Failing test that loads the checked-in contract and asserts: `shards` is the starting value (3); `unit_full` keeps command `["pytest", "tests/", "-q", "--tb=short"]` and `required` true and has `shard: split`; `unit_timing` is the gate directly after `unit_full` with phase `unit_timing`, classify `test`, command `["pytest", "tests/", "-q", "--tb=short", "-m", "timing", "-p", "no:xdist"]`, `shard: leader` and `required` true; `unit_timing` is in the full phases and not in the targeted ones; every other gate's command and `required` flag equal the values on origin/main (listed in the test). Files: `tests/test_proof_pipeline.py`. Verify: the test fails before 1.8.
+- [ ] 1.8 Declare `shards: 3` in the full mode, add `unit_timing` to the full phases and the gate above directly after `unit_full`, and add `shard: split` to `unit_full`. Change no existing command or `required` flag. Files: `proof/contract.yaml`. Verify: the 1.7 test passes, `uv run --frozen python scripts/proof/acceptance_smoke.py` prints `acceptance_smoke: ok`, `uv run --frozen python -m pytest -q tests/test_proof_pipeline.py` is green, and `git diff -U0 origin/main...HEAD -- proof/contract.yaml | grep '^-[^-]'` prints nothing.
 
 ## 2. Aggregate
 

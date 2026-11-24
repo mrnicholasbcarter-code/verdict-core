@@ -53,7 +53,7 @@ The `timing` tests SHALL be excluded from every leg's `unit_full` and SHALL run 
 - **THEN** the aggregate fails
 
 ### Requirement: Sharding does not weaken any gate
-Every leg SHALL run every gate of the full mode with the command and `required` flag the contract declares; only `unit_full` SHALL differ, by the appended split arguments. The proof SHALL NOT skip, deselect or re-mark any test, and SHALL NOT change a marker, an expected-failure or a skip declaration. A failing or skipped gate that is not required SHALL keep its present meaning: listed in the report, without failing the proof.
+Every leg SHALL run every gate of the full mode with the command and `required` flag the contract declares, plus only the arguments that sharding adds: for the split test gate the marker filter, the split arguments and a report file, and for the timing gate a report file. A gate SHALL be skipped only where the contract authorizes it: the timing gate outside leg 1, a gate conditioned on `llm_boundary` when that is not enabled, and the targeted test gate when no targets are given. Across the split gate and the timing gate together, no collected test SHALL be left unrun, run twice, skipped or re-marked, and no marker, expected-failure or skip declaration SHALL change; the marker filter and the split deselect tests only because another gate or leg runs them. A failing or skipped gate that is not required SHALL keep its present meaning: listed in the report, without failing the proof.
 
 #### Scenario: Leg runs the contract's commands
 - **WHEN** a leg report is checked against the contract
