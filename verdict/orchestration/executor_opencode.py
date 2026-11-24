@@ -598,30 +598,39 @@ def _build_child_env(
 def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, Any]:
     """Parse NDJSON output from ``opencode run --format json``.
 
-    OpenCode emits one JSON object per line.  Interesting event types:
+    OpenCode emits one JSON object per line.  The shape is the one OpenCode 2.3.2 really prints
+    (captured in ``tests/fixtures/opencode_stdout``): ``type`` and ``sessionID`` are top-level
+    and everything else about a model step sits under ``part``.  Interesting event types:
 
-    - ``text`` — incremental text delta (not the full assistant output).
-    - ``step_finish`` — end of one model step; carries ``tokens`` for usage
-      and ``reason`` (stop reason).
-    - ``error`` — error message; non-zero exit always takes precedence.
+    - ``text`` — one whole text block in ``part.text`` (not an increment: a reply streamed in
+      many deltas arrives as one event).  A run with tool calls prints one per block, and they
+      are joined in order.
+    - ``step_finish`` — end of one model step; ``part.tokens`` (``input``, ``output``) and
+      ``part.cost`` are that step's own, and ``part.reason`` is its stop reason (``stop`` for
+      the last step, ``tool-calls`` for one that ended in a tool call).
+    - ``error`` — the final failure, ``{"error": {"message", "status", "retryAfterMs", ...}}``;
+      non-zero exit always takes precedence.  OpenCode retries an upstream failure by itself
+      and prints a ``retry`` event for each try before it; those are not errors of the attempt
+      and are not read.
 
-    Every string taken from the stream (error text, assistant text, session id)
-    has ``secrets`` and ``Authorization: Bearer`` values redacted after the JSON
-    is decoded, so JSON escaping cannot hide a secret from the replacement and a
-    secret split across ``text`` deltas is caught once the deltas are joined.
+    Every string taken from the stream (error text, assistant text, session id, stop reason)
+    has ``secrets`` and ``Authorization: Bearer`` values redacted after the JSON is decoded, so
+    JSON escaping cannot hide a secret from the replacement and a secret split across ``text``
+    blocks is caught once the blocks are joined.
 
-    An ``error`` event is ``{"error": {"message", "status", "retryAfterMs", ...}}``: the HTTP
-    status and retry delay are kept so recovery can classify an upstream 429 or 503.
+    The final error's HTTP status and retry delay are kept, so recovery can classify an
+    upstream 429 or 503.
 
     Cost is recorded only when OpenCode reports a real positive figure.  A custom provider
     has no pricing, so OpenCode reports 0 even for a paid route; that is "unknown", not
     "free", so it is ``None`` with a ``cost_note``.  Tokens are still recorded.
 
-    Returns a dict with keys: ``usage``, ``session_id``, ``last_text``,
-    ``error_message``, ``error_status``, ``retry_after_seconds``.
+    Returns a dict with keys: ``usage``, ``session_id``, ``last_text``, ``stop_reason`` (the
+    last step's, or ``None``), ``error_message``, ``error_status``, ``retry_after_seconds``.
     """
     session_id = ""
     text_parts: list[str] = []
+    stop_reason: str | None = None
     error_message = ""
     error_status: int | None = None
     retry_after_seconds: float | None = None
@@ -652,17 +661,24 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
 
         event_type = event.get("type", "")
 
+        part = event.get("part")
+        if not isinstance(part, dict):
+            part = {}
+
         if event_type == "text":
-            part = event.get("text", "")
-            if isinstance(part, str):
-                text_parts.append(part)
+            block = part.get("text", "")
+            if isinstance(block, str):
+                text_parts.append(block)
 
         elif event_type == "step_finish":
-            tokens = event.get("tokens") or {}
+            reason = part.get("reason")
+            if isinstance(reason, str) and reason:
+                stop_reason = reason
+            tokens = part.get("tokens") or {}
             if isinstance(tokens, dict):
                 inp = _as_int(tokens.get("input"))
                 out = _as_int(tokens.get("output"))
-                cost_raw = event.get("cost")
+                cost_raw = part.get("cost")
                 cost_val = (
                     _as_float(cost_raw.get("total"))
                     if isinstance(cost_raw, dict)
@@ -736,6 +752,7 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
         "usage": usage,
         "session_id": _redact(session_id, secrets),
         "last_text": _redact("".join(text_parts), secrets),
+        "stop_reason": _redact(stop_reason, secrets) if stop_reason is not None else None,
         "error_message": error_message,
         "error_status": error_status,
         "retry_after_seconds": retry_after_seconds,
