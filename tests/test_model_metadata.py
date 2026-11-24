@@ -1338,6 +1338,19 @@ class TestSkippedSourceCarryForward:
             if record.scores.aa_intelligence is not None
         }
 
+    @staticmethod
+    def _p1_values(snapshot: MetadataSnapshot) -> dict[tuple[str, str], ProvenancedField]:
+        """Every score the OpenRouter AA mirror wrote, keyed by (record id, field)."""
+        from verdict.metadata.records import SCORE_FIELDS
+
+        values: dict[tuple[str, str], ProvenancedField] = {}
+        for record in snapshot.records:
+            for name in SCORE_FIELDS:
+                field = getattr(record.scores, name)
+                if field is not None and field.provenance.source == SOURCE_OPENROUTER_AA:
+                    values[(record.id, name)] = field
+        return values
+
     def test_refresh_without_include_p1_keeps_fresh_p1_ratings(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -1353,6 +1366,8 @@ class TestSkippedSourceCarryForward:
         seeded = self._seed_with_p1(None)
         before = self._aa_intelligence(seeded)
         assert {"openai/gpt-4o-mini", "google/gemini-2.0-flash"} <= set(before)
+        before_values = self._p1_values(seeded)
+        assert len(before_values) > len(before)
 
         later = NOW + timedelta(hours=1)
         cmd_metadata_refresh(
@@ -1366,18 +1381,25 @@ class TestSkippedSourceCarryForward:
         )
         output = json.loads(capsys.readouterr().out)
         assert output["store"] == str(store_path)
-        status = output["sources"][SOURCE_OPENROUTER_AA]
-        assert status["status"] == "skipped"
-        assert "carried forward" in status["reason"]
 
         refreshed = load_store(store_path)
         after = self._aa_intelligence(refreshed)
         assert after == before
+        assert self._p1_values(refreshed) == before_values
         assert {field.provenance.fetched_at for field in after.values()} == {FETCHED_AT}
         # P0 data moved to the new fetch; only the skipped source kept its own time.
         mini = refreshed.record_by_id("openai/gpt-4o-mini")
         assert mini is not None and mini.caps.tools is not None
         assert mini.caps.tools.provenance.fetched_at != FETCHED_AT
+        # The refresh output says the ratings were carried forward, not dropped.
+        status = output["sources"][SOURCE_OPENROUTER_AA]
+        assert status["status"] == "skipped"
+        assert "pass --include-p1" in status["reason"]
+        records_with_p1 = {record_id for record_id, _ in before_values}
+        assert (
+            f"carried forward {len(before_values)} value(s) on {len(records_with_p1)} record(s)"
+            in status["reason"]
+        )
 
     def test_carried_ratings_past_freshness_window_stay_stale_for_planner_band(
         self, tmp_path: Path
@@ -1415,3 +1437,63 @@ class TestSkippedSourceCarryForward:
         assert stale_band.rated_models == 0
         assert stale_band.frontier_model_keys == frozenset()
         assert stale_band.fallback_model_keys == frozenset()
+
+    def test_repeated_skipped_refreshes_keep_original_time_and_one_note(
+        self, tmp_path: Path
+    ) -> None:
+        store_path = tmp_path / "model-metadata.json"
+        seeded = self._seed_with_p1(store_path)
+
+        snapshot = seeded
+        for hours in (1, 2):
+            later = NOW + timedelta(hours=hours)
+            snapshot = refresh_metadata(
+                transport=file_transport(
+                    models_dev_api=_load("models_dev_api.json"),
+                    models_dev_models=_load("models_dev_models.json"),
+                    litellm=_load("litellm_prices.json"),
+                    fetched_at=later.isoformat().replace("+00:00", "Z"),
+                ),
+                mapping_path=FIXTURES / "omniroute_map.json",
+                store_path=store_path,
+                include_p1=False,
+                now=later,
+                persist=True,
+            )
+
+        # Two skipped refreshes in a row: the values still carry the first fetch time ...
+        assert self._p1_values(snapshot) == self._p1_values(seeded)
+        # ... and the reason names the carry-forward once, not once per refresh.
+        reason = load_store(store_path).sources[SOURCE_OPENROUTER_AA].reason or ""
+        assert reason.count("carried forward") == 1
+        assert reason.count("pass --include-p1") == 1
+
+    def test_source_that_ran_is_not_carried_forward(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "model-metadata.json"
+        seeded = self._seed_with_p1(store_path)
+        assert "openai/gpt-4o-mini" in self._aa_intelligence(seeded)
+
+        payload = _load("openrouter_models_aa.json")
+        assert isinstance(payload, dict)
+        gemini_only = [row for row in payload["data"] if row["id"] == "google/gemini-2.0-flash"]
+        later = NOW + timedelta(hours=1)
+        refreshed = refresh_metadata(
+            transport=file_transport(
+                models_dev_api=_load("models_dev_api.json"),
+                models_dev_models=_load("models_dev_models.json"),
+                litellm=_load("litellm_prices.json"),
+                fetched_at=later.isoformat().replace("+00:00", "Z"),
+            ),
+            mapping_path=FIXTURES / "omniroute_map.json",
+            store_path=store_path,
+            include_p1=True,
+            p1_payloads={SOURCE_OPENROUTER_AA: gemini_only},
+            now=later,
+            persist=True,
+        )
+
+        # The source ran and no longer returns gpt-4o-mini: that is not a skip, so no
+        # carry-forward note and the old value is not resurrected.
+        assert refreshed.sources[SOURCE_OPENROUTER_AA].status == "ok"
+        assert "carried forward" not in (refreshed.sources[SOURCE_OPENROUTER_AA].reason or "")
+        assert set(self._aa_intelligence(refreshed)) == {"google/gemini-2.0-flash"}
