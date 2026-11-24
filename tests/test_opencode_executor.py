@@ -485,6 +485,75 @@ def test_executor_does_not_spawn_when_git_index_is_unreadable(tmp_path: Path) ->
     assert not ran.exists(), "worker was spawned although tracking status was unknown"
 
 
+def test_write_context_file_refuses_tracked_path_with_external_gitdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``GIT_DIR``/``GIT_WORK_TREE`` make a directory a worktree with no ``.git`` entry.
+
+    Looking for ``.git`` on disk would call this "not a repo" and overwrite a
+    tracked context file that a later ``git add -A`` then stages.  Git itself must
+    decide, under the same environment the runtime's git calls use.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    gitdir = tmp_path / "external.git"
+    (work / CONTEXT_FILE_NAME).write_text("tracked content\n")
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_DIR": str(gitdir),
+        "GIT_WORK_TREE": str(work),
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+    for args in (
+        ["init", "-q"],
+        ["add", "-A"],
+        ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "b"],
+    ):
+        subprocess.run(["git", *args], cwd=work, env=env, check=True, capture_output=True)
+    assert not (work / ".git").exists(), "fixture must have no .git entry"
+    monkeypatch.setenv("GIT_DIR", str(gitdir))
+    monkeypatch.setenv("GIT_WORK_TREE", str(work))
+
+    with pytest.raises(OSError, match="tracked"):
+        _write_context_file(work, "task prompt that must not be written")
+    assert (work / CONTEXT_FILE_NAME).read_text() == "tracked content\n"
+
+
+def test_context_file_is_prepared_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The git tracking check can take seconds; it must not block the shared event loop."""
+    import threading
+
+    import verdict.orchestration.executor_opencode as module
+
+    seen: list[bool] = []
+    real = module._write_context_file
+
+    def spy(cwd: Path, prompt: str) -> None:
+        seen.append(threading.current_thread() is threading.main_thread())
+        real(cwd, prompt)
+
+    monkeypatch.setattr(module, "_write_context_file", spy)
+    payload = ndjson_success("done")
+    fake = make_fake_opencode(
+        tmp_path, f"sys.stdout.write({payload!r})\nsys.stdout.write('\\n')\nsys.exit(0)\n"
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(
+        OpenCodeExecutor(opencode_bin=fake), "prompt", cwd
+    )  # loop runs in main thread
+    assert terminal.ok is True
+    assert seen == [False], "context preparation ran on the event-loop thread"
+
+
 def test_write_context_file_still_replaces_an_untracked_symlink_in_a_git_repo(
     tmp_path: Path,
 ) -> None:

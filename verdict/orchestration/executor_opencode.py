@@ -210,34 +210,55 @@ def _write_attempt_config(
     cfg_file.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
+class _TrackingUnknownError(OSError):
+    """Git could not say whether the context file is tracked; callers fail closed."""
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    """Run git under the process environment, as the runtime's own git calls do.
+
+    ``LC_ALL=C`` only pins the wording of git's messages so a confirmed
+    non-repository can be told apart from a failure.
+    """
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], capture_output=True, timeout=30, check=False, env=env
+    )
+
+
 def _context_path_is_tracked(cwd: Path) -> bool:
     """True when ``cwd`` is a git worktree whose index tracks the context file.
 
-    Returns False only when that is *known*: either no ``.git`` exists at or above
-    ``cwd`` (not a git worktree, so nothing can be tracked) or git answered and
-    the path is not in the index.  Anything indeterminate (git missing, timing
-    out, exiting nonzero, an unreadable index) raises ``OSError``: treating it as
-    "untracked" could let a tracked entry be replaced and then staged into the
-    node deliverable.
+    Returns False only when that is *known*: git itself reports that ``cwd`` is not
+    inside a repository, or git answered and the path is not in the index.  Git
+    decides (not a look for ``.git`` on disk), because ``GIT_DIR``/``GIT_WORK_TREE``
+    make a worktree with no ``.git`` entry.  Anything indeterminate (git missing,
+    timing out, exiting nonzero for another reason, a bare repository, an unreadable
+    index) raises ``OSError``: treating it as "untracked" could let a tracked entry
+    be replaced and then staged into the node deliverable.
     """
-    resolved = cwd.resolve()
-    if not any((d / ".git").exists() for d in (resolved, *resolved.parents)):
-        return False
+
+    def unknown(why: str) -> _TrackingUnknownError:
+        return _TrackingUnknownError(
+            f"cannot determine whether {CONTEXT_FILE_NAME} is tracked: {why}"
+        )
+
     try:
-        done = subprocess.run(
-            ["git", "-C", str(cwd), "ls-files", "--cached", "-z", "--", CONTEXT_FILE_NAME],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        probe = _git(cwd, "rev-parse", "--is-inside-work-tree")
+        if probe.returncode != 0:
+            if b"not a git repository" in probe.stderr:
+                return False  # confirmed: nothing here can be tracked
+            raise unknown(f"git exited {probe.returncode}")
+        if probe.stdout.strip() != b"true":
+            raise unknown("not inside a git work tree")
+        done = _git(cwd, "ls-files", "--cached", "-z", "--", CONTEXT_FILE_NAME)
+    except _TrackingUnknownError:
+        raise
     except (OSError, subprocess.SubprocessError) as exc:
-        raise OSError(
-            f"cannot determine whether {CONTEXT_FILE_NAME} is tracked: {type(exc).__name__}"
-        ) from exc
+        raise unknown(type(exc).__name__) from exc
     if done.returncode != 0:
-        raise OSError(
-            f"cannot determine whether {CONTEXT_FILE_NAME} is tracked: git exited {done.returncode}"
-        )
+        raise unknown(f"git exited {done.returncode}")
     return bool(done.stdout)
 
 
@@ -530,7 +551,9 @@ class OpenCodeExecutor:
 
         # --- write context file to worktree (Task 4.1) ---
         try:
-            _write_context_file(cwd, prompt)
+            # Off the event loop: the git tracking check can take seconds and the
+            # loop is shared by every concurrent worker.
+            await asyncio.to_thread(_write_context_file, cwd, prompt)
         except OSError as exc:
             return WorkerTerminal(
                 executor_kind="live",

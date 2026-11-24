@@ -151,8 +151,11 @@ path outside the worktree.
 `.git/info/exclude` hides only untracked paths, so if the index already tracks `.verdict-context.md`
 the attempt fails closed (`context_write_failed`) before the worker starts: replacing a tracked
 entry would be staged by `git add -A` into the node deliverable. The same applies when git cannot
-answer (missing, timeout, nonzero exit, unreadable index); only a directory with no `.git` at or
-above it is treated as certainly untracked.
+answer (missing, timeout, nonzero exit, unreadable index, bare repository); only git's own report
+that the directory is not inside a repository counts as certainly untracked. Git decides under the
+process environment, as the runtime's own git calls do, so `GIT_DIR`/`GIT_WORK_TREE` setups are
+covered. Context preparation runs off the event loop (`asyncio.to_thread`) because the check can
+take seconds and the loop is shared by every concurrent worker.
 
 **Concurrency under `--max-parallel` (design detail):** Each attempt runs in its
 own temp directory for the OpenCode config and its own node worktree. The
