@@ -189,4 +189,16 @@ def load_contract(path: Path) -> ProofContract:
     ids = [gate.id for gate in gates]
     if len(ids) != len(set(ids)):
         raise ContractError("gate ids must be unique")
+    split = [g for g in gates if g.shard == "split"]
+    for gate in gates:
+        if gate.shard is not None and gate.classify != "test":
+            raise ContractError(f"gate {gate.id}: shard requires classify: test")
+        if gate.shard == "leader" and not any(
+            len(gate.command) > len(s.command) and gate.command[: len(s.command)] == s.command
+            for s in split
+        ):
+            raise ContractError(
+                f"gate {gate.id}: a leader gate must extend the command of a split gate, "
+                "because an unsharded run skips it and relies on that gate to run its tests"
+            )
     return ProofContract(schema_version=1, name=name, runner=runner, modes=modes, gates=gates)

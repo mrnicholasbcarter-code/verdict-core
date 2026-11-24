@@ -320,6 +320,12 @@ def cmd_merged_run(args: argparse.Namespace) -> int:
     checks = Checks()
     merged_sha = resolve_revision(args.merged_rev, args.root)
     parent_sha = resolve_revision(args.parent_rev, args.root)
+    first_parent = resolve_revision(f"{merged_sha}^1", args.root)
+    checks.check(
+        first_parent == parent_sha,
+        "the parent revision is the merge commit's first parent",
+        f"{merged_sha}^1 is {first_parent}; the parent given is {parent_sha}",
+    )
     _bind_run(checks, "merged", args.run, merged_sha, args.main_branch)
     _bind_run(checks, "parent", args.parent_run, parent_sha, args.main_branch)
     _check_merged_jobs(checks, args.run, count)

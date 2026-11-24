@@ -1021,3 +1021,35 @@ def test_checked_in_contract_declares_the_sharded_gates_and_changes_nothing_else
     assert contract.modes["targeted"]["phases"] == MAIN_TARGETED_PHASES
     assert "unit_timing" in {g.id for g in contract.gates_for_mode("full")}
     assert "unit_timing" not in {g.id for g in contract.gates_for_mode("targeted")}
+
+
+def test_a_leader_gate_must_be_a_narrower_run_of_a_split_gate(tmp_path: Path) -> None:
+    """``leader`` skips a gate in an unsharded run because unit_full runs its tests there."""
+    from scripts.proof.contract import ContractError
+
+    def build(edit: object) -> Path:
+        payload = _sharded_payload()
+        edit(payload)  # type: ignore[operator]
+        return _write_payload(tmp_path / "contract.yaml", payload)
+
+    load_contract(build(lambda p: None))  # the checked shape is accepted
+    bad = {
+        "an independent required gate": lambda p: _gate_payload(p, "security_semgrep").update(
+            shard="leader"
+        ),
+        "a command that does not extend the split gate's": lambda p: _gate_payload(
+            p, "unit_timing"
+        ).update(command=["pytest", "other/", "-m", "timing"]),
+        "a command shorter than the split gate's": lambda p: _gate_payload(p, "unit_timing").update(
+            command=["pytest", "tests/"]
+        ),
+        "no split gate at all": lambda p: _gate_payload(p, "unit_full").pop("shard"),
+        "a non-test gate marked split": lambda p: _gate_payload(p, "format").update(shard="split"),
+        "a non-test gate marked leader": lambda p: _gate_payload(p, "format").update(
+            shard="leader"
+        ),
+    }
+    for label, edit in bad.items():
+        with pytest.raises(ContractError, match=r"shard|leader|split"):
+            load_contract(build(edit))
+        assert label

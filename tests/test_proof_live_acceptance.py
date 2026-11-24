@@ -277,7 +277,9 @@ def merged(
     _seed_merged(gh)
     collected = Collected(ALL_IDS, TIMING_IDS)
     monkeypatch.setattr(live, "collect_ids", collected)
-    monkeypatch.setattr(live, "resolve_revision", lambda rev, repo: rev)
+    monkeypatch.setattr(
+        live, "resolve_revision", lambda rev, repo: {"mergedrev^1": "parentrev"}.get(rev, rev)
+    )
     # The parent revision lacks one test the merged revision has: added 1, removed 0.
     revisions = {"parentrev": ALL_IDS[:-1], "mergedrev": ALL_IDS}
     monkeypatch.setattr(
@@ -480,6 +482,22 @@ def test_merged_run_checks_that_the_runs_belong_to_the_revisions_and_the_aggrega
     assert re.search(r"FAIL .*(merged run|parent run|proof-full|proof-shard)", out), out
 
 
+def test_merged_run_fails_when_the_parent_is_not_the_merge_commits_first_parent(
+    merged: tuple[FakeGitHub, Collected, list[str]],
+    contract_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Valid runs and consistent counts for some other earlier revision must not certify 7.1."""
+    monkeypatch.setattr(
+        live, "resolve_revision", lambda rev, repo: {"mergedrev^1": "realparent"}.get(rev, rev)
+    )
+    code = main(merged_args(contract_path))
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert re.search(r"FAIL .*first parent", out), out
+
+
 def test_merged_run_exits_two_when_a_runs_metadata_cannot_be_fetched(
     merged: tuple[FakeGitHub, Collected, list[str]],
     contract_path: Path,
@@ -509,7 +527,7 @@ def test_a_short_or_symbolic_revision_is_compared_as_the_full_commit_it_names(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     gh = merged[0]
-    full = {"mergedrev": "a" * 40, "parentrev": "b" * 40}
+    full = {"mergedrev": "a" * 40, "parentrev": "b" * 40, f"{'a' * 40}^1": "b" * 40}
     monkeypatch.setattr(live, "resolve_revision", lambda rev, repo: full[rev])
     seen: list[str] = []
 
@@ -563,7 +581,8 @@ def test_merged_run_exits_two_when_no_gate_is_split_across_the_legs(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     payload = _contract_payload()
-    next(g for g in payload["gates"] if g["id"] == "unit_full")["shard"] = "leader"
+    for gate in payload["gates"]:
+        gate.pop("shard", None)
     path = tmp_path / "nosplit.yaml"
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
     assert main(merged_args(path)) == 2

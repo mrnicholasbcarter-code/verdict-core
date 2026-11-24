@@ -89,7 +89,9 @@ python scripts/proof/run.py --mode full --no-cache --shard 2 --report proof-shar
   The runner launches it without `PYTEST_ADDOPTS` (the gate's `env_clear`), so the
   workflow's `-p xdist -n auto` cannot reach it. In every other leg, and in an
   unsharded run, it is recorded as skipped: an unsharded `unit_full` runs the
-  timing tests itself.
+  timing tests itself. The loader accepts `shard: leader` only on a `classify: test`
+  gate whose command extends a `shard: split` gate's, because an unsharded run skips
+  it and relies on that gate to run its tests.
 - **Local runs are unsharded.** `python scripts/proof/run.py --mode full --no-cache`
   runs `pytest tests/ -q --tb=short` exactly as before, records `shard: null` and
   `unit_timing` as skipped. `--shard` is refused (exit 2, before any gate) in

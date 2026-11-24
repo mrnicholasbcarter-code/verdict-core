@@ -1109,6 +1109,14 @@ LOADER_REJECTS = {
     "a runner the loader does not allow": lambda c: c.update(runner="dagger"),
     "no name": lambda c: c.pop("name"),
     "an empty gate list": lambda c: c.update(gates=[]),
+    "a leader that no split gate covers": lambda c: _gate(c, "unit_full").update(shard="leader"),
+    "an independent gate made a leader": lambda c: (
+        _gate(c, "unit_full").update(shard="split"),
+        _gate(c, "security_bandit").update(shard="leader"),
+    ),
+    "a split gate that is not a test gate": lambda c: _gate(c, "security_bandit").update(
+        shard="split"
+    ),
 }
 
 
@@ -1227,6 +1235,46 @@ CONDITION_EDITS = {
     "a statement beside the skip changes order": (
         "def test_b(items):\n    items.sort()\n    pytest.skip('r')\n",
         "def test_b(items):\n    pytest.skip('r')\n    items.sort()\n",
+    ),
+    "an earlier binding of a name that is bound again later changes": (
+        "SKIP = False\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n\nSKIP = False\n",
+        "SKIP = True\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n\nSKIP = False\n",
+    ),
+    "a list that guards a skipif is mutated before it": (
+        "FLAGS = []\n\n@pytest.mark.skipif(FLAGS, reason='r')\ndef test_b():\n    pass\n",
+        "FLAGS = []\nFLAGS.append(True)\n\n@pytest.mark.skipif(FLAGS, reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "a tuple assignment flips": (
+        "SKIP, LIMIT = False, 10\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+        "SKIP, LIMIT = True, 10\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "a chained assignment flips": (
+        "SKIP = OTHER = False\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+        "SKIP = OTHER = True\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "an augmented module assignment flips": (
+        "SKIP = False\nSKIP |= False\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+        "SKIP = False\nSKIP |= True\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "a module-level loop over a constant gains a member": (
+        "OPTIONAL = []\nfor package in OPTIONAL:\n    pytest.importorskip(package)\n",
+        "OPTIONAL = ['missing_package']\nfor package in OPTIONAL:\n    pytest.importorskip(package)\n",
+    ),
+    "a guarded import at module level changes": (
+        "try:\n    import vcr\nexcept ImportError:\n    pytest.skip('r', allow_module_level=True)\n",
+        "try:\n    import vcr_missing\nexcept ImportError:\n    pytest.skip('r', allow_module_level=True)\n",
+    ),
+    "a class-level guard changes": (
+        "class TestK:\n    if False:\n        pytestmark = pytest.mark.skip\n",
+        "class TestK:\n    if True:\n        pytestmark = pytest.mark.skip\n",
+    ),
+    "an imported guard constant is re-pointed at another module": (
+        "from helpers import SKIP\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+        "from other_helpers import SKIP\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "an imported module that holds the guard is re-pointed": (
+        "import helpers\n\n@pytest.mark.skipif(helpers.SKIP, reason='r')\ndef test_b():\n    pass\n",
+        "import other_helpers as helpers\n\n@pytest.mark.skipif(helpers.SKIP, reason='r')\ndef test_b():\n    pass\n",
     ),
     "a keyword-only default flips": (
         "def test_b(*, flag=False):\n    if flag:\n        pytest.skip('r')\n",
@@ -1406,3 +1454,64 @@ def test_any_edit_inside_a_function_that_skips_is_reported_for_review(
     code, output = check(repo, capsys)
     assert code == 1, output
     assert "tests/test_a.py" in output
+
+
+# --- shard: leader skips a gate in unsharded runs; making an existing gate one is a finding ---
+
+SPLIT_BASE: dict[str, Any] = {
+    **BASE_CONTRACT,
+    "gates": [
+        *[dict(g) for g in BASE_CONTRACT["gates"]],
+        {
+            "id": "unit_narrow",
+            "phase": "unit_full",
+            "classify": "test",
+            "command": ["pytest", "tests/", "-q", "--tb=short", "-m", "narrow"],
+        },
+    ],
+}
+
+
+def _split_base() -> dict[str, Any]:
+    contract: dict[str, Any] = yaml.safe_load(yaml.safe_dump(SPLIT_BASE))
+    _gate(contract, "unit_full")["shard"] = "split"
+    return contract
+
+
+def test_an_existing_gate_made_a_leader_is_a_finding(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    head = _split_base()
+    _gate(head, "unit_narrow")["shard"] = "leader"
+    repo = scenario(
+        tmp_path,
+        {"proof/contract.yaml": _contract_text(head)},
+        base=base_files() | {"proof/contract.yaml": _contract_text(_split_base())},
+    )
+    code, output = check(repo, capsys)
+    assert code == 1, output
+    assert "unit_narrow" in output and "leader" in output
+
+
+def test_a_new_leader_gate_and_an_existing_leader_staying_one_pass(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = _split_base()
+    _gate(base, "unit_narrow")["shard"] = "leader"
+    head = yaml.safe_load(yaml.safe_dump(base))
+    head["gates"].append(
+        {
+            "id": "unit_more",
+            "phase": "unit_full",
+            "classify": "test",
+            "command": ["pytest", "tests/", "-q", "--tb=short", "-m", "more"],
+            "shard": "leader",
+        }
+    )
+    repo = scenario(
+        tmp_path,
+        {"proof/contract.yaml": _contract_text(head)},
+        base=base_files() | {"proof/contract.yaml": _contract_text(base)},
+    )
+    code, output = check(repo, capsys)
+    assert code == 0, output

@@ -29,17 +29,17 @@ It exits 1 when any of these holds, and prints every finding:
 * The ``[tool.pytest.ini_options]`` table of ``pyproject.toml`` differs, a
   ``pytest.ini`` appears or changes, or ``.test_durations`` differs.
 
-What a construct's record holds. Its own text; the scope it sits in; the whole function it is in
-(docstring aside: parameters and defaults, decorators, every statement, so that moving, adding or
-changing any assignment, loop or guard in a function that skips is a finding, even where the
-construct itself is untouched); the conditions around it (``if``, ``else``, ``while``,
-conditional expressions, the operands before it in ``and`` / ``or``); and what the class and
-module constants read by the construct, its conditions or that function were bound to, each
-followed through the names it reads in turn. So ``if False: skip()`` becoming ``if True:``, a
-flag flipping, or ``SKIP = False`` becoming ``SKIP = True`` under an unchanged ``skipif(SKIP)``
-are findings. A hook is recorded as its whole definition, docstring aside, with the constants it
-reads. This errs on the side of reporting: an edit inside a test that already skips is reviewed
-by a person, never passed silently.
+What a construct's record holds. Its own text; the scope it sits in; the whole unit it sits in
+(the outermost statement of the module or class body, or the outermost function, docstring
+aside), so that any edit anywhere in it is a finding, whether it moves a guard, an assignment,
+a loop iterable, an augmented write or a default; and every module and class statement that
+mentions a name that unit reads (read, assigned, unpacked, chained, augmented, mutated, imported),
+followed through the names those statements mention in turn. No data flow is modelled: every
+mention counts, so none can be missed. So ``if False: skip()`` becoming ``if True:``, a flag
+flipping, ``FLAGS.append(True)`` appearing, or ``SKIP = False`` becoming ``SKIP = True`` under an
+unchanged ``skipif(SKIP)`` are findings. A hook is recorded as its whole definition, docstring
+aside, with what it reads. This errs on the side of reporting: an edit inside a test that already
+skips is reviewed by a person, never passed silently.
 
 What it does not see: it reads code, not behaviour. A guard that depends on something outside
 the changed file (a constant imported from another module, an environment variable, a fixture's
@@ -200,26 +200,6 @@ def changed_files(repo: Path, baseline: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _simple_bindings(body: list[ast.stmt]) -> dict[str, ast.expr]:
-    """``name = value`` statements of one scope, not those of the definitions nested in it."""
-    found: dict[str, ast.expr] = {}
-    pending = list(body)
-    while pending:
-        stmt = pending.pop(0)
-        if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            continue
-        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-            target, value = stmt.targets[0], stmt.value
-        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
-            target, value = stmt.target, stmt.value
-        else:
-            target = value = None
-        if isinstance(target, ast.Name) and value is not None:
-            found[target.id] = value
-        pending.extend(c for c in ast.iter_child_nodes(stmt) if isinstance(c, ast.stmt))
-    return found
-
-
 def _without_docstring(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.AST:
     """A copy of a function without its docstring: wording is not behaviour."""
     clone = copy.deepcopy(node)
@@ -233,24 +213,42 @@ def _without_docstring(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.AST:
     return clone
 
 
+def _mention_index(body: list[ast.stmt]) -> dict[str, list[ast.stmt]]:
+    """Every statement of one scope's body (definitions excluded) by each name it mentions.
+
+    A name is mentioned when it is read, assigned, mutated (``FLAGS.append(True)``), unpacked
+    (``SKIP, LIMIT = ...``), chained, augmented or imported. No data flow is modelled: all of them
+    count, so none can be missed.
+    """
+    index: dict[str, list[ast.stmt]] = {}
+    for stmt in body:
+        if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            continue
+        mentioned = {n.id for n in ast.walk(stmt) if isinstance(n, ast.Name)}
+        for part in ast.walk(stmt):
+            if isinstance(part, ast.Import | ast.ImportFrom):
+                mentioned |= {(a.asname or a.name).split(".")[0] for a in part.names}
+        for name in mentioned:
+            index.setdefault(name, []).append(stmt)
+    return index
+
+
 class _Collector(ast.NodeVisitor):
     def __init__(self, tree: ast.AST) -> None:
         self.scope: list[str] = []
         self.found: Counter[Construct] = Counter()
         self.mark_aliases: set[str] = {"mark"}
         self.name_aliases: dict[str, str] = {}
-        # What a skip depends on besides its own text: the conditions around it, and the
-        # module-level constants those conditions and the construct itself read.
-        self.conditions: list[tuple[str, frozenset[str]]] = []
-        self.bindings: list[dict[str, ast.expr]] = []
-        # The outermost function being visited: a construct inside it is recorded with the whole
-        # function, so any edit in that function (an assignment before or after the guard, an
-        # augmented write, a loop iterable, a default, a decorator) changes the record.
-        self.outer: ast.FunctionDef | ast.AsyncFunctionDef | None = None
-        self.outer_text = ""
-        self.constants: dict[str, ast.expr] = _simple_bindings(
-            tree.body if isinstance(tree, ast.Module) else []
-        )
+        # A construct is recorded with the whole statement or function it sits in: the outermost
+        # statement of a module or class body, or the outermost function. So an edit anywhere in
+        # that unit (a guard, an assignment before or after it, a loop iterable, an augmented
+        # write, a decorator, a default) changes the record; none is modelled, none is missed.
+        self.unit: ast.AST | None = None
+        self.unit_text = ""
+        # What the unit reads is followed to every module and class statement that mentions it.
+        self.indices: list[dict[str, list[ast.stmt]]] = [
+            _mention_index(tree.body if isinstance(tree, ast.Module) else [])
+        ]
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module in SKIP_MODULES:
                 for alias in node.names:
@@ -277,78 +275,48 @@ class _Collector(ast.NodeVisitor):
                 found.add(part.attr)
         return frozenset(found)
 
-    def _binding(self, name: str) -> ast.expr | None:
-        """The value a name was given at class or module level, innermost scope first."""
-        for scope in reversed(self.bindings):
-            if name in scope:
-                return scope[name]
-        return self.constants.get(name)
-
     def _dependencies(self, names: set[str]) -> list[str]:
-        """What ``names`` were bound to (class and module level), and so on in turn."""
-        seen: dict[str, ast.expr] = {}
+        """Every module and class statement that mentions ``names``, and those they mention."""
+        statements: dict[int, str] = {}
+        seen: set[str] = set()
         pending = list(names)
         while pending:
             name = pending.pop()
-            value = None if name in seen else self._binding(name)
-            if value is None:
+            if name in seen:
                 continue
-            seen[name] = value
-            pending.extend(self._names(value))
-        return sorted(f"{n} = {ast.unparse(v)}" for n, v in seen.items())
+            seen.add(name)
+            for index in self.indices:
+                for stmt in index.get(name, []):
+                    if id(stmt) not in statements:
+                        statements[id(stmt)] = ast.unparse(stmt)
+                        pending.extend(self._names(stmt))
+        return sorted(statements.values())
 
     def _record(self, kind: str, text: str, node: ast.AST | None = None) -> None:
         names: set[str] = set(self._names(node)) if node is not None else set()
-        for _, read in self.conditions:
-            names |= read
         suffix = ""
-        if self.outer is not None:
-            names |= self._names(self.outer)
-            suffix += f" [in: {self.outer_text}]"
-        if self.conditions:
-            suffix += " [under: " + "; ".join(c for c, _ in self.conditions) + "]"
+        if self.unit is not None:
+            names |= self._names(self.unit)
+            suffix += f" [in: {self.unit_text}]"
         dependencies = self._dependencies(names)
         if dependencies:
             suffix += " [with: " + "; ".join(dependencies) + "]"
         self.found[(tuple(self.scope), kind, text + suffix)] += 1
 
-    def _under(self, label: str, test: ast.expr, body: list[ast.stmt]) -> None:
-        self.conditions.append((f"{label} {ast.unparse(test)}", self._names(test)))
-        for statement in body:
-            self.visit(statement)
-        self.conditions.pop()
+    def _visit_body(self, body: list[ast.stmt]) -> None:
+        """Visit a module or class body, making each top-level statement the unit it records."""
+        for stmt in body:
+            if self.unit is not None or isinstance(stmt, ast.ClassDef):
+                self.visit(stmt)
+                continue
+            self.unit = stmt
+            is_function = isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef)
+            self.unit_text = ast.unparse(_without_docstring(stmt) if is_function else stmt)  # type: ignore[arg-type]
+            self.visit(stmt)
+            self.unit, self.unit_text = None, ""
 
-    def visit_If(self, node: ast.If) -> None:
-        self.visit(node.test)
-        self._under("if", node.test, node.body)
-        self._under("else of", node.test, node.orelse)
-
-    def visit_While(self, node: ast.While) -> None:
-        self.visit(node.test)
-        self._under("while", node.test, node.body)
-        self._under("else of", node.test, node.orelse)
-
-    def visit_BoolOp(self, node: ast.BoolOp) -> None:
-        """``guard and skip()``: an operand runs only if the ones before it let it."""
-        label = "and" if isinstance(node.op, ast.And) else "or"
-        before: list[ast.expr] = []
-        for operand in node.values:
-            if before:
-                text = f" {label} ".join(ast.unparse(b) for b in before)
-                read = frozenset().union(*(self._names(b) for b in before))
-                self.conditions.append((f"{label}-guard {text}", read))
-                self.visit(operand)
-                self.conditions.pop()
-            else:
-                self.visit(operand)
-            before.append(operand)
-
-    def visit_IfExp(self, node: ast.IfExp) -> None:
-        self.visit(node.test)
-        for label, branch in (("if", node.body), ("else of", node.orelse)):
-            self.conditions.append((f"{label} {ast.unparse(node.test)}", self._names(node.test)))
-            self.visit(branch)
-            self.conditions.pop()
+    def visit_Module(self, node: ast.Module) -> None:
+        self._visit_body(node.body)
 
     def _resolved(self, node: ast.expr) -> str | None:
         if isinstance(node, ast.Attribute):
@@ -387,14 +355,15 @@ class _Collector(ast.NodeVisitor):
             # tests keeps its name.
             self._record("hook definition", ast.unparse(_without_docstring(node)), node)
         self.scope.append(node.name)
-        outermost = not isinstance(node, ast.ClassDef) and self.outer is None
-        if outermost:
-            self.outer, self.outer_text = node, ast.unparse(_without_docstring(node))  # type: ignore[arg-type]
-        self.bindings.append(_simple_bindings(node.body) if isinstance(node, ast.ClassDef) else {})
-        self.generic_visit(node)
-        self.bindings.pop()
-        if outermost:
-            self.outer, self.outer_text = None, ""
+        if isinstance(node, ast.ClassDef):
+            # Decorators, bases and keywords belong to the enclosing scope; the body is its own.
+            for part in [*node.decorator_list, *node.bases, *(k.value for k in node.keywords)]:
+                self.visit(part)
+            self.indices.append(_mention_index(node.body))
+            self._visit_body(node.body)
+            self.indices.pop()
+        else:
+            self.generic_visit(node)
         self.scope.pop()
 
     visit_FunctionDef = _visit_definition  # noqa: N815
@@ -633,6 +602,10 @@ def contract_findings(base: Mapping[str, Any], head: Mapping[str, Any]) -> list[
             findings.append(
                 f"{where}: gate {gate_id} execution condition added or changed: "
                 f"when {old.get('when')!r} -> {new.get('when')!r}"
+            )
+        if new.get("shard") == "leader" and old.get("shard") != "leader":
+            findings.append(
+                f"{where}: gate {gate_id} is now shard: leader, so an unsharded run skips it"
             )
         if new.get("targets_placeholder") != old.get("targets_placeholder"):
             findings.append(f"{where}: gate {gate_id} targets_placeholder changed")
