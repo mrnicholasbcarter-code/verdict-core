@@ -1145,8 +1145,11 @@ class OpenCodeExecutor:
         if returncode != 0:
             # The status is read from the whole sanitized text, then the tail is kept: cutting
             # first would lose a status that a long diagnostic pushed out of the last 400 chars.
-            # An NDJSON error's status was already read (structured, else from its full text).
-            stderr_full = "" if error_message else _sanitize_full(stderr, secrets)
+            # Stderr is sanitized in every case.  An NDJSON error's own status (structured, else
+            # from its full text) wins and its message is the recorded error; stderr only
+            # supplies the status when that error carries none, so an ``HTTP 429`` printed
+            # there still reaches recovery.
+            stderr_full = _sanitize_full(stderr, secrets)
             tail = error_message or stderr_full[-_STDERR_TAIL_CHARS:] or f"exit {returncode}"
             status = parsed["error_status"] or _status_from_full_text(stderr_full)
             return WorkerTerminal(

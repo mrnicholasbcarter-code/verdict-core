@@ -1992,6 +1992,72 @@ def test_a_status_in_the_tail_still_beats_an_earlier_stray_number_in_an_ndjson_m
     assert terminal.status_code == 429
 
 
+def test_stderr_status_is_the_fallback_when_the_ndjson_error_has_none(tmp_path: Path) -> None:
+    """The last open review finding of #1299: an NDJSON error with a message but no status
+    used to make stderr unread, so ``HTTP 429`` there left ``status_code=None`` and recovery
+    saw an unclassified failure instead of a reroutable one.  The NDJSON message is still the
+    recorded error."""
+    line = json.dumps({"type": "error", "message": "request failed"})
+    fake = make_fake_opencode(
+        tmp_path,
+        f"sys.stdout.write({line!r} + '\\n')\nsys.stderr.write('HTTP 429 Too Many Requests')\n"
+        "sys.exit(1)\n",
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is False
+    assert terminal.status_code == 429
+    assert terminal.error == "request failed", "the NDJSON message stays the recorded error"
+
+
+def test_a_status_in_a_long_stderr_is_found_when_the_ndjson_error_has_none(tmp_path: Path) -> None:
+    """The stderr fallback reads the whole sanitized text, as it does without an NDJSON error."""
+    line = json.dumps({"type": "error", "message": "request failed"})
+    text = f"fatal: HTTP 503 Service Unavailable.{_LONG_DIAGNOSTIC}"
+    fake = make_fake_opencode(
+        tmp_path, f"sys.stdout.write({line!r} + '\\n')\nsys.stderr.write({text!r})\nsys.exit(1)\n"
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.status_code == 503
+    assert terminal.error == "request failed"
+
+
+def test_a_structured_status_beats_stderr_when_both_exist(tmp_path: Path) -> None:
+    """Stderr is only the fallback: the status the structured error carries is not replaced."""
+    line = _ndjson_error(503, "upstream said no")
+    fake = make_fake_opencode(
+        tmp_path,
+        f"sys.stdout.write({line!r} + '\\n')\nsys.stderr.write('HTTP 429 Too Many Requests')\n"
+        "sys.exit(1)\n",
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.status_code == 503
+    assert terminal.error == "upstream said no"
+
+
+def test_a_secret_in_stderr_is_redacted_before_a_status_is_read_from_it(tmp_path: Path) -> None:
+    """With an NDJSON error present, stderr is still sanitized first: the digits of a secret
+    that happens to look like a status are not a status, and the secret is not recorded."""
+    secret = "sk-test-503-STDERRFALLBACK"
+    line = json.dumps({"type": "error", "message": "request failed"})
+    fake = make_fake_opencode(
+        tmp_path,
+        f"sys.stdout.write({line!r} + '\\n')\nsys.stderr.write('key=' + {secret!r})\nsys.exit(1)\n",
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    executor = OpenCodeExecutor(opencode_bin=fake, credential_provider=lambda *_a: secret)
+    terminal = run_executor(executor, "task", cwd)
+    assert terminal.status_code is None
+    assert terminal.error == "request failed"
+    assert secret not in json.dumps(dataclasses.asdict(terminal), default=str)
+
+
 def test_a_status_from_an_earlier_error_event_does_not_stick_to_a_later_message() -> None:
     """The status belongs to the event whose message is kept: a later error without a status
     of its own must not inherit the first one's."""
