@@ -108,10 +108,15 @@ token.  The paid-quota denominator is not part of this change (see Denominator).
 companion `*_note` key carrying the reason (no paid attempts, unknown cost, no
 recorded spend, no runs). An empty report, a report with only free attempts and
 a report with unknown cost are told apart by that reason, not by guessing from
-the null. The same applies to every `per_run` row. Secondary figures
-(`frontier_tokens`, `first_attempt_pass_rate`) are `null` when there is no data
-(for a pass rate: no eligible first attempt for that role or cost class) and
-carry no note; they are never a string or a zero fill. Callers check for missing data with a null guard instead of a
+the null. The same applies to every `per_run` row, which carries all three
+headline figures. Zero is reported only when it was observed: counts over zero
+runs are 0, but measured figures (`dollars`, `frontier_tokens`,
+`first_attempt_pass_rate`) are `null` when nothing was observed, so an empty
+report has null tokens and null pass rates, while a run whose receipt records
+only free attempts observed 0 frontier tokens and reports 0. Secondary figures
+(`frontier_tokens`, `first_attempt_pass_rate`) carry no note (for a pass rate,
+null means no eligible first attempt for that role or cost class); they are
+never a string or a zero fill. Callers check for missing data with a null guard instead of a
 string parse. `compute_run_metrics` still returns the string `"undefined"` for
 the existing per-run `verdict metrics` table, whose tests pin it; the headline
 report normalises that value to null in `verdict/headline_metric.py` so its JSON

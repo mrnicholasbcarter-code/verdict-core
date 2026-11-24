@@ -72,11 +72,28 @@ empty or no paid model attempts exist in the selected period.
 
 #### Scenario: Per-run rows explain their null figures
 
-- **GIVEN** several runs, one with unknown cost and one with no recorded spend
+- **GIVEN** several runs, one with unknown cost, one with only free attempts
+  and one with paid attempts
 - **WHEN** `verdict metrics --daily --json` is run
-- **THEN** every `per_run` row whose `dollars` or `tasks_per_dollar` is null
-  has a non-empty `dollars_note` or `tasks_per_dollar_note` respectively
+- **THEN** every `per_run` row whose `dollars`, `tasks_per_dollar` or
+  `headline_accepted_per_paid_share` is null has the matching non-empty
+  `dollars_note`, `tasks_per_dollar_note` or
+  `headline_accepted_per_paid_share_note`
 - **AND** a row whose figure is a number has a null note
+
+#### Scenario: Empty report observes nothing, so measured figures are null
+
+- **GIVEN** the runs directory contains no verified receipts
+- **WHEN** `verdict metrics --daily --json` is run
+- **THEN** `frontier_tokens.input`, `.output` and `.total` are null, not 0
+- **AND** every `first_attempt_pass_rate` value is null
+- **AND** counts such as `accepted_tasks` and `total_model_attempts` are 0
+
+#### Scenario: Observed zero is reported as zero
+
+- **GIVEN** a verified receipt that records only free attempts
+- **WHEN** `verdict metrics --daily --json` is run
+- **THEN** `frontier_tokens.total` is 0, not null
 
 #### Scenario: No string stands in for a missing number
 

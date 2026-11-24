@@ -127,6 +127,21 @@ def _tasks_per_dollar(
     return accepted / dollars, None
 
 
+def _headline_per_paid_share(
+    accepted: int, paid_share: float, runs: int
+) -> tuple[float | None, str | None]:
+    """Return ``(value, note)`` for accepted tasks per paid model share.
+
+    A float and no note when computable; otherwise ``None`` and the reason.  An
+    empty report is told apart from a report with only free attempts.
+    """
+    if runs == 0:
+        return None, _NOTE_NO_RUNS
+    if paid_share > 0:
+        return accepted / paid_share, None
+    return None, _NOTE_NO_PAID_ATTEMPTS
+
+
 def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
     """Aggregate extend_run_metrics across a list of verified receipts.
 
@@ -155,8 +170,17 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
             "paid_model_share": 0.0,
             "attempts_by_role": {r.value: 0 for r in NodeKind},
             "accepted_nodes_by_role": {r.value: 0 for r in NodeKind},
-            "frontier_tokens": {"input": 0, "output": 0, "total": 0, "per_accepted_task": None},
-            "first_attempt_pass_rate": {"by_role": {}, "by_cost": {}},
+            # Measured figures are null when nothing was observed; counts stay 0.
+            "frontier_tokens": {
+                "input": None,
+                "output": None,
+                "total": None,
+                "per_accepted_task": None,
+            },
+            "first_attempt_pass_rate": {
+                "by_role": {r.value: None for r in NodeKind},
+                "by_cost": {c: None for c in ("free", "subscription", "metered", "unknown")},
+            },
             "runs_processed": 0,
             "per_run": [],
         }
@@ -227,6 +251,10 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
         run_tpd, run_tpd_note = _tasks_per_dollar(
             m["accepted_tasks"], m["dollars"], m["has_unknown_cost"]
         )
+        run_paid_share = m["subscription_share"] + m["metered_share"]
+        run_headline, run_headline_note = _headline_per_paid_share(
+            m["accepted_tasks"], run_paid_share, 1
+        )
         per_run.append(
             {
                 "run_id": m["run_id"],
@@ -240,6 +268,9 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
                 "free_share": m["free_share"],
                 "subscription_share": m["subscription_share"],
                 "metered_share": m["metered_share"],
+                "paid_model_share": run_paid_share,
+                "headline_accepted_per_paid_share": run_headline,
+                "headline_accepted_per_paid_share_note": run_headline_note,
                 "total_model_attempts": m["total_model_attempts"],
                 "attempts_by_role": m["attempts_by_role"],
                 "frontier_tokens": m["frontier_tokens"],
@@ -332,16 +363,9 @@ def compute_headline_report(runs_dir: Path, since: date | None = None) -> dict[s
     agg = aggregate_extended_metrics(receipts)
 
     # Headline metric from receipts (always computable when paid attempts exist).
-    paid_share = agg.get("paid_model_share", 0.0)
-    headline_value: float | None = None
-    headline_note: str | None
-    if agg["runs_processed"] == 0:
-        headline_note = _NOTE_NO_RUNS
-    elif isinstance(paid_share, float) and paid_share > 0:
-        headline_value = agg["accepted_tasks"] / paid_share
-        headline_note = None
-    else:
-        headline_note = _NOTE_NO_PAID_ATTEMPTS
+    headline_value, headline_note = _headline_per_paid_share(
+        agg["accepted_tasks"], agg["paid_model_share"], agg["runs_processed"]
+    )
 
     return {
         **agg,
@@ -445,8 +469,10 @@ def format_headline_report(data: dict[str, Any]) -> str:
         lines.append(f"Frontier tokens (sub+metered):  {ft['total']:,}")
         if ft.get("per_accepted_task") is not None:
             lines.append(f"  per accepted task:  {ft['per_accepted_task']:.0f}")
+    elif not data.get("runs_processed"):
+        lines.append(f"Frontier tokens: null  ({_NOTE_NO_RUNS})")
     else:
-        lines.append("Frontier tokens: unknown (some attempts lack token data)")
+        lines.append("Frontier tokens: null  (some attempts lack token data)")
 
     # First-attempt pass rate
     fpr = data.get("first_attempt_pass_rate") or {}

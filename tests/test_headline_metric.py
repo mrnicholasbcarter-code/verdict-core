@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 
+from verdict.orchestration.contracts import NodeKind
 from verdict.orchestration.receipt import compute_run_metrics, extend_run_metrics
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "metrics"
@@ -723,7 +724,12 @@ class TestFormatHeadlineReport:
             "unknown_capacity_attempts": 0,
             "attempts_by_role": {},
             "accepted_nodes_by_role": {},
-            "frontier_tokens": {"input": 0, "output": 0, "total": 0, "per_accepted_task": None},
+            "frontier_tokens": {
+                "input": None,
+                "output": None,
+                "total": None,
+                "per_accepted_task": None,
+            },
             "first_attempt_pass_rate": {"by_role": {}, "by_cost": {}},
             "runs_processed": 0,
             "per_run": [],
@@ -1058,5 +1064,106 @@ class TestMissingNumbersAreNull:
         assert result["headline_accepted_per_paid_share"] is None
         assert (
             result["headline_accepted_per_paid_share_note"]
+            == "no paid model attempts in selected period"
+        )
+
+    def test_empty_report_measured_figures_are_null_not_zero(self) -> None:
+        """Nothing observed means null for measured figures; counts stay 0."""
+        from verdict.headline_metric import aggregate_extended_metrics
+
+        agg = aggregate_extended_metrics([])
+        assert agg["frontier_tokens"] == {
+            "input": None,
+            "output": None,
+            "total": None,
+            "per_accepted_task": None,
+        }
+        # Same keys as a populated report, every value null (no data), not {}.
+        assert set(agg["first_attempt_pass_rate"]["by_role"]) == {r.value for r in NodeKind}
+        assert set(agg["first_attempt_pass_rate"]["by_cost"]) == {
+            "free",
+            "subscription",
+            "metered",
+            "unknown",
+        }
+        assert all(v is None for v in agg["first_attempt_pass_rate"]["by_role"].values())
+        assert all(v is None for v in agg["first_attempt_pass_rate"]["by_cost"].values())
+        # Counts over zero runs are genuinely 0.
+        assert agg["accepted_tasks"] == 0
+        assert agg["total_model_attempts"] == 0
+
+    def test_observed_zero_frontier_usage_stays_zero(self) -> None:
+        """A run that recorded only free attempts observed 0 frontier tokens."""
+        from verdict.headline_metric import aggregate_extended_metrics
+
+        receipt = _make_receipt(
+            nodes=[_node("n1", "implement", attempts=[_attempt("free/x", "free", cost_usd=0.0)])]
+        )
+        agg = aggregate_extended_metrics([(Path("/tmp/fake"), receipt)])
+        assert agg["frontier_tokens"]["input"] == 0
+        assert agg["frontier_tokens"]["output"] == 0
+        assert agg["frontier_tokens"]["total"] == 0
+
+    def test_formatter_empty_report_frontier_line_is_null_with_no_runs_reason(self) -> None:
+        from verdict.headline_metric import compute_headline_report, format_headline_report
+
+        text = format_headline_report(
+            compute_headline_report(Path("/tmp/nonexistent-verdict-format-frontier-runs"))
+        )
+        line = next(ln for ln in text.splitlines() if ln.startswith("Frontier tokens"))
+        assert line == "Frontier tokens: null  (no runs in selected period)"
+
+    def test_formatter_unknown_token_report_keeps_token_reason(self, tmp_path: Path) -> None:
+        import verdict.headline_metric as hm
+        from verdict.headline_metric import compute_headline_report, format_headline_report
+
+        receipt = _make_receipt(
+            nodes=[
+                _node(
+                    "n1",
+                    "implement",
+                    attempts=[
+                        _attempt("sub/x", "subscription", input_tokens=None, output_tokens=None)
+                    ],
+                )
+            ]
+        )
+        original = hm.load_receipts_since
+        hm.load_receipts_since = lambda runs_dir, since=None: ([(tmp_path / "r", receipt)], 0, 0)  # type: ignore[assignment]
+        try:
+            text = format_headline_report(compute_headline_report(tmp_path))
+        finally:
+            hm.load_receipts_since = original
+        line = next(ln for ln in text.splitlines() if ln.startswith("Frontier tokens"))
+        assert line == "Frontier tokens: null  (some attempts lack token data)"
+
+    def test_per_run_rows_carry_the_headline_figure(self) -> None:
+        from verdict.headline_metric import aggregate_extended_metrics
+
+        paid = _make_receipt(
+            run_id="run-paid",
+            nodes=[
+                _node("n1", "implement", attempts=[_attempt("sub/x", "subscription", cost_usd=0.5)])
+            ],
+        )
+        free = _make_receipt(
+            run_id="run-free",
+            nodes=[_node("n1", "implement", attempts=[_attempt("free/x", "free", cost_usd=0.0)])],
+        )
+        rows = {
+            row["run_id"]: row
+            for row in aggregate_extended_metrics([(Path("/tmp/p"), paid), (Path("/tmp/f"), free)])[
+                "per_run"
+            ]
+        }
+        assert rows["run-paid"]["paid_model_share"] == pytest.approx(1.0)
+        assert rows["run-paid"]["headline_accepted_per_paid_share"] == pytest.approx(
+            rows["run-paid"]["accepted_tasks"] / 1.0
+        )
+        assert rows["run-paid"]["headline_accepted_per_paid_share_note"] is None
+        assert rows["run-free"]["paid_model_share"] == 0.0
+        assert rows["run-free"]["headline_accepted_per_paid_share"] is None
+        assert (
+            rows["run-free"]["headline_accepted_per_paid_share_note"]
             == "no paid model attempts in selected period"
         )
