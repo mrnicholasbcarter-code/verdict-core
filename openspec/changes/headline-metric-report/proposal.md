@@ -19,7 +19,8 @@ the M0 baseline can be recorded.
   verified receipts (excluding fixture runs) and computes accepted tasks per
   paid model share. It reads local files only and makes no network call.
   `format_headline_report` renders it for the terminal. Any number that cannot
-  be computed is JSON null with a reason, never a string.
+  be computed is JSON null, never a string; the headline figures (`dollars`,
+  `tasks_per_dollar`, `headline_accepted_per_paid_share`) also carry a reason.
 - `verdict/actions/registry.py`: New action `headline.metric` calls
   `compute_headline_report`.
 - `verdict/orchestration/cli.py`: Adds `--daily` and `--since DATE` flags

@@ -1006,3 +1006,57 @@ class TestMissingNumbersAreNull:
         dollars_line = next(line for line in text.splitlines() if line.startswith("Dollars spent"))
         assert "unknown cost" in dollars_line
         assert "no runs" not in dollars_line
+
+    def test_per_run_rows_carry_dollars_note(self) -> None:
+        from verdict.headline_metric import aggregate_extended_metrics
+
+        def one(run_id: str, cap: str, route: str, cost: float | None) -> dict[str, Any]:
+            return _make_receipt(
+                run_id=run_id,
+                nodes=[_node("n1", "implement", attempts=[_attempt(route, cap, cost_usd=cost)])],
+            )
+
+        agg = aggregate_extended_metrics(
+            [
+                (Path("/tmp/u"), one("run-unknown", "subscription", "sub/x", None)),
+                (Path("/tmp/f"), one("run-free", "free", "free/x", 0.0)),
+                (Path("/tmp/p"), one("run-paid", "subscription", "sub/y", 0.5)),
+            ]
+        )
+        rows = {row["run_id"]: row for row in agg["per_run"]}
+        assert rows["run-unknown"]["dollars"] is None
+        assert "unknown cost" in rows["run-unknown"]["dollars_note"]
+        assert rows["run-free"]["dollars"] == 0.0
+        assert rows["run-free"]["dollars_note"] is None
+        assert rows["run-paid"]["dollars"] == pytest.approx(0.5)
+        assert rows["run-paid"]["dollars_note"] is None
+        # Every per_run row that has a null headline figure has a reason for it.
+        for row in rows.values():
+            for key in ("dollars", "tasks_per_dollar"):
+                if row[key] is None:
+                    assert row[f"{key}_note"], f"{row['run_id']}: {key} is null without a reason"
+
+    def test_headline_note_distinguishes_empty_report_from_free_only(self) -> None:
+        import verdict.headline_metric as hm
+        from verdict.headline_metric import compute_headline_report
+
+        empty = compute_headline_report(Path("/tmp/nonexistent-verdict-headline-note-runs"))
+        assert empty["runs_processed"] == 0
+        assert empty["headline_accepted_per_paid_share"] is None
+        assert empty["headline_accepted_per_paid_share_note"] == "no runs in selected period"
+
+        free_only = _make_receipt(
+            nodes=[_node("n1", "implement", attempts=[_attempt("free/x", "free", cost_usd=0.0)])]
+        )
+        original = hm.load_receipts_since
+        hm.load_receipts_since = lambda runs_dir, since=None: ([(Path("/tmp/r"), free_only)], 0, 0)  # type: ignore[assignment]
+        try:
+            result = compute_headline_report(Path("/tmp/unused"))
+        finally:
+            hm.load_receipts_since = original
+        assert result["runs_processed"] == 1
+        assert result["headline_accepted_per_paid_share"] is None
+        assert (
+            result["headline_accepted_per_paid_share_note"]
+            == "no paid model attempts in selected period"
+        )

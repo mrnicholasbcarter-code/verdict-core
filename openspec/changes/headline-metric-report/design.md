@@ -16,8 +16,8 @@ paid-quota denominator itself is not delivered here.
 - Add first-attempt pass rate by role and by cost class.
 - Compute "accepted tasks / paid model share" from receipts (always available).
 - Exclude fixture runs from the live aggregate; say so explicitly.
-- Report every unavailable number as JSON null with a reason, never a string
-  and never a zero fill.
+- Report each headline figure that cannot be computed as JSON null with a
+  reason, never a string and never a zero fill.
 
 **Non-Goals:**
 - The paid-quota denominator (% of a provider's subscription window consumed).
@@ -106,8 +106,12 @@ token.  The paid-quota denominator is not part of this change (see Denominator).
 `headline_accepted_per_paid_share`, `tasks_per_dollar` and `dollars` are `null`
 (Python `None`) in the JSON output when they cannot be computed, with a
 companion `*_note` key carrying the reason (no paid attempts, unknown cost, no
-recorded spend, no runs). An empty report and a report with unknown cost are
-told apart by that reason, not by guessing from the null. Callers check for missing data with a null guard instead of a
+recorded spend, no runs). An empty report, a report with only free attempts and
+a report with unknown cost are told apart by that reason, not by guessing from
+the null. The same applies to every `per_run` row. Secondary figures
+(`frontier_tokens`, `first_attempt_pass_rate`) are `null` when there is no data
+(for a pass rate: no eligible first attempt for that role or cost class) and
+carry no note; they are never a string or a zero fill. Callers check for missing data with a null guard instead of a
 string parse. `compute_run_metrics` still returns the string `"undefined"` for
 the existing per-run `verdict metrics` table, whose tests pin it; the headline
 report normalises that value to null in `verdict/headline_metric.py` so its JSON

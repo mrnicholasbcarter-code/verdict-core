@@ -46,6 +46,8 @@ empty or no paid model attempts exist in the selected period.
 - **GIVEN** the runs directory exists but contains no receipts
 - **WHEN** `verdict metrics --daily` is run
 - **THEN** `headline_accepted_per_paid_share` is null
+- **AND** `headline_accepted_per_paid_share_note` is "no runs in selected
+  period" (not the free-only wording)
 - **AND** `runs_processed` is 0
 - **AND** the command exits 0
 
@@ -67,6 +69,14 @@ empty or no paid model attempts exist in the selected period.
 - **THEN** `dollars` is 0.0
 - **AND** `tasks_per_dollar` is JSON null (no division is attempted)
 - **AND** `tasks_per_dollar_note` is a non-empty string giving the reason
+
+#### Scenario: Per-run rows explain their null figures
+
+- **GIVEN** several runs, one with unknown cost and one with no recorded spend
+- **WHEN** `verdict metrics --daily --json` is run
+- **THEN** every `per_run` row whose `dollars` or `tasks_per_dollar` is null
+  has a non-empty `dollars_note` or `tasks_per_dollar_note` respectively
+- **AND** a row whose figure is a number has a null note
 
 #### Scenario: No string stands in for a missing number
 

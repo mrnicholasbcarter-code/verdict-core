@@ -9,8 +9,12 @@ the receipt-based part of the M0 headline metric (BOD-342 D15, issue #1213):
 It reads local files only.  The paid-quota denominator itself (% of a
 provider's subscription window consumed) is not computed here.
 
-Any number that cannot be computed is ``None`` (JSON null) with a companion
-``*_note`` reason, never a string sentinel and never a zero fill.
+The headline figures (``dollars``, ``tasks_per_dollar`` and
+``headline_accepted_per_paid_share``) are ``None`` (JSON null) with a companion
+``*_note`` reason when they cannot be computed, in the aggregate and in every
+per-run row.  Secondary figures (frontier tokens, first-attempt pass rates) are
+``None`` when there is no data.  No figure is ever a string sentinel or a zero
+fill.
 
 Fixture runs (run_id starting with "test-") are excluded from the live
 aggregate; ``load_receipts_since`` skips them and ``format_headline_report``
@@ -29,6 +33,13 @@ from verdict.orchestration.contracts import NodeKind
 from verdict.orchestration.receipt import extend_run_metrics
 
 _FIXTURE_RUN_ID_PREFIX = "test-"
+
+# Reasons reported next to a null figure.  One definition so the aggregate,
+# the per-run rows, the headline and the formatter cannot drift apart.
+_NOTE_NO_RUNS = "no runs in selected period"
+_NOTE_UNKNOWN_COST = "some model attempts have unknown cost"
+_NOTE_NO_SPEND = "no spend recorded in selected period"
+_NOTE_NO_PAID_ATTEMPTS = "no paid model attempts in selected period"
 
 
 def _is_fixture_run(receipt: Mapping[str, Any]) -> bool:
@@ -110,9 +121,9 @@ def _tasks_per_dollar(
     it here so its JSON only ever carries a number or null.)
     """
     if has_unknown_cost or dollars is None:
-        return None, "some model attempts have unknown cost"
+        return None, _NOTE_UNKNOWN_COST
     if dollars <= 0:
-        return None, "no spend recorded in selected period"
+        return None, _NOTE_NO_SPEND
     return accepted / dollars, None
 
 
@@ -121,17 +132,17 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
 
     Returns aggregated totals and per-run data.  Numbers that cannot be
     computed (unknown cost, missing token counts) are propagated faithfully:
-    ``dollars`` is None when any run has unknown cost, etc.  Every unavailable
-    ratio is ``None`` with a companion ``*_note`` reason, never a string.
+    ``dollars`` is None when any run has unknown cost, etc.  The headline
+    figures carry a ``*_note`` reason when ``None``; see the module docstring.
     """
     if not receipts:
         return {
             "accepted_tasks": 0,
             "dollars": None,
-            "dollars_note": "no runs in selected period",
+            "dollars_note": _NOTE_NO_RUNS,
             "has_unknown_cost": False,
             "tasks_per_dollar": None,
-            "tasks_per_dollar_note": "no runs in selected period",
+            "tasks_per_dollar_note": _NOTE_NO_RUNS,
             "free_share": 0.0,
             "subscription_share": 0.0,
             "metered_share": 0.0,
@@ -222,6 +233,7 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
                 "outcome": m["outcome"],
                 "accepted_tasks": m["accepted_tasks"],
                 "dollars": m["dollars"],
+                "dollars_note": _NOTE_UNKNOWN_COST if m["has_unknown_cost"] else None,
                 "has_unknown_cost": m["has_unknown_cost"],
                 "tasks_per_dollar": run_tpd,
                 "tasks_per_dollar_note": run_tpd_note,
@@ -273,7 +285,7 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
     return {
         "accepted_tasks": total_accepted,
         "dollars": dollars,
-        "dollars_note": "some model attempts have unknown cost" if has_unknown_cost else None,
+        "dollars_note": _NOTE_UNKNOWN_COST if has_unknown_cost else None,
         "has_unknown_cost": has_unknown_cost,
         "tasks_per_dollar": tasks_per_dollar,
         "tasks_per_dollar_note": tasks_per_dollar_note,
@@ -321,12 +333,15 @@ def compute_headline_report(runs_dir: Path, since: date | None = None) -> dict[s
 
     # Headline metric from receipts (always computable when paid attempts exist).
     paid_share = agg.get("paid_model_share", 0.0)
-    if isinstance(paid_share, float) and paid_share > 0:
-        headline_value: float | None = agg["accepted_tasks"] / paid_share
-        headline_note: str | None = None
+    headline_value: float | None = None
+    headline_note: str | None
+    if agg["runs_processed"] == 0:
+        headline_note = _NOTE_NO_RUNS
+    elif isinstance(paid_share, float) and paid_share > 0:
+        headline_value = agg["accepted_tasks"] / paid_share
+        headline_note = None
     else:
-        headline_value = None
-        headline_note = "no paid model attempts in selected period"
+        headline_note = _NOTE_NO_PAID_ATTEMPTS
 
     return {
         **agg,
