@@ -996,3 +996,44 @@ def test_verify_run_receipt_roundtrip_with_hydrate(tmp_path: Path) -> None:
     cp = nodes["a"]["attempts"][0]["context_pack"]
     assert cp["context_bytes"] == 1024
     assert cp["truncated"] is True
+
+
+# ---------------------------------------------------------------- planner events → planner_attempts
+
+_MAP_DIGEST = "ab" * 32  # 64 lowercase hex characters, as the planner records it
+
+
+def test_planner_attempts_keep_plan_context_with_repo_map_digest(tmp_path: Path) -> None:
+    """The receipt's planner_attempts keeps plan_context (and its repo_map_sha256) in order.
+
+    The planner emits plan_started, plan_context, then repair events; the receipt must
+    list exactly those four, by seq, and leave every other event type out.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "graph.json").write_text(json.dumps(_graph().to_dict()))
+    log = EventLog(run_dir / "events.jsonl", clock=_clock)
+    log.emit("run_started", run_id="run-plan", goal="add feature x")
+    log.emit("plan_started", route_id="cc/planner", attempt=1)
+    log.emit("plan_context", repo_map_sha256=_MAP_DIGEST)
+    log.emit("heartbeat")
+    log.emit("plan_repair_started", route_id="cc/planner", attempt=2, budget=2, reason="bad")
+    log.emit("plan_repair_terminal", route_id="cc/planner", attempt=2, budget=2, ok=True)
+    log.emit("controller", action="budget_check", remaining=3)
+    log.emit("run_finished", outcome="BLOCKED", reason="test")
+
+    receipt = build_run_receipt(run_dir)
+
+    attempts = receipt["planner_attempts"]
+    assert [entry["seq"] for entry in attempts] == [2, 3, 5, 6]
+    contexts = [entry for entry in attempts if "repo_map_sha256" in entry]
+    assert len(contexts) == 1
+    assert contexts[0]["seq"] == 3
+    assert contexts[0]["repo_map_sha256"] == _MAP_DIGEST
+    assert len(contexts[0]["repo_map_sha256"]) == 64
+
+    # The projection is digest-bound like the rest of the receipt: it round-trips.
+    write_run_receipt(run_dir)
+    assert verify_run_receipt(run_dir) == []
+    stored = json.loads((run_dir / "receipt.json").read_text())
+    assert stored["planner_attempts"] == attempts
