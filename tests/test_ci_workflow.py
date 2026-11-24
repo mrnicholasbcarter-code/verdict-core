@@ -128,6 +128,16 @@ def check_required_and_skippable(wf: Workflow) -> None:
     assert set(mapped) == CI_OK_NEEDS, f"ci-ok env results changed: {sorted(mapped)}"
 
 
+def check_gate_cannot_be_bypassed(wf: Workflow) -> None:
+    """The gate's exit code must decide ci-ok: no setting may turn a failing script green."""
+    ci_ok = _job(wf, "ci-ok")
+    step = _gate_step(wf)
+    assert "continue-on-error" not in ci_ok, "ci-ok must not set continue-on-error"
+    for key in ("if", "continue-on-error", "shell"):
+        assert key not in step, f"the ci-ok gate step must not set {key!r}"
+    assert ci_ok["steps"] == [step], "ci-ok must run only its 'Evaluate gate' step"
+
+
 def _run_gate(wf: Workflow, results: dict[str, str]) -> int:
     mapped = _result_vars(wf)
     env = {mapped[name]: result for name, result in results.items()}
@@ -238,6 +248,10 @@ def test_ci_ok_treats_the_recorded_jobs_as_required_and_as_skippable() -> None:
     check_required_and_skippable(_workflow())
 
 
+def test_the_gate_step_cannot_be_bypassed() -> None:
+    check_gate_cannot_be_bypassed(_workflow())
+
+
 @pytest.mark.skipif(not _HAS_BASH, reason="bash is needed to run the gate script")
 @pytest.mark.parametrize("result", ["success", "skipped", "failure", "cancelled"])
 @pytest.mark.parametrize("name", sorted(CI_OK_NEEDS))
@@ -324,6 +338,33 @@ def test_moving_a_skippable_job_to_required_fails_the_pin() -> None:
     _set_gate_script(wf, _move_entry(_gate_script(wf), "build", to_required=True))
     with pytest.raises(AssertionError, match="required jobs changed"):
         check_required_and_skippable(wf)
+
+
+@pytest.mark.parametrize(
+    ("where", "key", "value"),
+    [
+        ("step", "continue-on-error", True),
+        ("step", "continue-on-error", "${{ always() }}"),
+        ("step", "if", "false"),
+        ("step", "shell", "bash {0} || true"),
+        ("job", "continue-on-error", True),
+    ],
+)
+def test_a_setting_that_hides_a_gate_failure_fails_the_pin(
+    where: str, key: str, value: Any
+) -> None:
+    wf = _mutated()
+    target = _gate_step(wf) if where == "step" else _job(wf, "ci-ok")
+    target[key] = value
+    with pytest.raises(AssertionError, match=rf"must not set '?{re.escape(key)}'?"):
+        check_gate_cannot_be_bypassed(wf)
+
+
+def test_an_extra_ci_ok_step_fails_the_pin() -> None:
+    wf = _mutated()
+    _job(wf, "ci-ok")["steps"].append({"run": "true"})
+    with pytest.raises(AssertionError, match="only its 'Evaluate gate' step"):
+        check_gate_cannot_be_bypassed(wf)
 
 
 def test_a_result_variable_wired_to_the_wrong_job_fails_the_pin() -> None:
