@@ -146,11 +146,12 @@ def preload_overlay(env: Mapping[str, str] | None = None) -> Iterator[None]:
             for route_id in routes:
                 result = lookup(provider, auth_type)
     """
+    prev = getattr(_batch, "overlay", None)
     _batch.overlay = _load_overlay(env)
     try:
         yield
     finally:
-        _batch.overlay = None
+        _batch.overlay = prev
 
 
 def _overlay_path(env: Mapping[str, str] | None = None) -> Path:

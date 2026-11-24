@@ -418,6 +418,55 @@ class TestOperatorOverlay:
         # Cleanup
         _cb._overlay_cache = None
 
+    def test_nested_preload_overlay_restores_outer_overlay(self, tmp_path: Path) -> None:
+        """Nested preload_overlay must not clobber the outer block's overlay.
+
+        Before the save/restore fix, the inner context manager set _batch.overlay
+        to None on exit, so lookups in the outer block after the inner block
+        returned would fall through to _load_overlay() — potentially picking up a
+        different home's overlay.
+        """
+        import verdict.connection_billing as _cb
+        from verdict.connection_billing import preload_overlay
+
+        home_outer = tmp_path / "outer"
+        home_inner = tmp_path / "inner"
+        home_outer.mkdir()
+        home_inner.mkdir()
+
+        overlay_outer = {
+            "entries": [{"provider": "prov-a", "billing": "subscription", "overage": "hard-stop"}]
+        }
+        overlay_inner = {
+            "entries": [{"provider": "prov-b", "billing": "keyless", "overage": "hard-stop"}]
+        }
+        (home_outer / "connection_billing_overlay.json").write_text(json.dumps(overlay_outer))
+        (home_inner / "connection_billing_overlay.json").write_text(json.dumps(overlay_inner))
+
+        env_outer = {"VERDICT_HOME": str(home_outer)}
+        env_inner = {"VERDICT_HOME": str(home_inner)}
+
+        _cb._overlay_cache = None
+
+        with preload_overlay(env_outer):
+            # outer overlay is active: prov-a should be subscription
+            fact_before = lookup("prov-a", None, env=env_outer)
+
+            with preload_overlay(env_inner):
+                # inner overlay is active: prov-b should be keyless
+                fact_inner = lookup("prov-b", None, env=env_inner)
+
+            # outer overlay must be restored: prov-a still subscription
+            fact_after = lookup("prov-a", None, env=env_outer)
+
+        assert fact_before is not None and fact_before.billing == BILLING_SUBSCRIPTION
+        assert fact_inner is not None and fact_inner.billing == BILLING_KEYLESS
+        assert fact_after is not None and fact_after.billing == BILLING_SUBSCRIPTION, (
+            "outer overlay was clobbered by nested preload_overlay exit"
+        )
+
+        _cb._overlay_cache = None
+
 
 # ---------------------------------------------------------------------------
 # D. Billing facts → CapacityClass in capacity_of()

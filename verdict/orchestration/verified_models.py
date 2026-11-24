@@ -302,14 +302,21 @@ def _scrub_uncached(value: Any) -> str:
 
 
 def _scrub(value: Any) -> str:
-    """Redact credentials and control characters; memoize within an active projection."""
+    """Redact credentials and control characters; memoize within an active projection.
+
+    Unhashable values (e.g. lists) bypass the cache and are scrubbed directly.
+    """
     cache: dict[Any, str] | None = getattr(_scrub_proj, "cache", None)
     if cache is not None:
-        result = cache.get(value)
-        if result is None:
-            result = _scrub_uncached(value)
-            cache[value] = result
-        return result
+        try:
+            result = cache.get(value)
+            if result is None:
+                result = _scrub_uncached(value)
+                cache[value] = result
+            return result
+        except TypeError:
+            # value is unhashable — fall through to uncached path
+            pass
     return _scrub_uncached(value)
 
 
@@ -2110,9 +2117,10 @@ def project_verified_models(
 
     # Activate the per-projection scrub cache: _scrub() is called ~21 000 times
     # on a 7 000-row inventory (3 string fields x 7 000 rows) but the value set
-    # is small (a few hundred distinct route-name fragments).  The cache is a
-    # plain dict tied to this call; the finally block clears it so it never
-    # survives the projection.
+    # is small (a few hundred distinct route-name fragments).  Save and restore
+    # the previous cache value so nested calls each get their own scope (the
+    # outer cache resumes when the inner projection returns).
+    _prev_cache = getattr(_scrub_proj, "cache", None)
     _scrub_proj.cache = {}
     try:
         projected: list[VerifiedModelRow] = []
@@ -2130,7 +2138,7 @@ def project_verified_models(
                 )
             )
     finally:
-        _scrub_proj.cache = None
+        _scrub_proj.cache = _prev_cache
 
     projected.sort(key=_sort_key)
 
