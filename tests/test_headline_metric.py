@@ -446,39 +446,90 @@ class TestFixtureExclusion:
         assert len(receipts) == 0
         assert skipped_live == 0
 
-    def test_load_receipts_since_includes_live_run(self, tmp_path: Path) -> None:
-        """A run with a non-test run_id is included after verification."""
+    def _build_live_run(self, run_dir: Path, run_id: str) -> None:
+        """Copy the complete-run fixture into *run_dir*, patching run_id throughout."""
         import hashlib
         import json as _json
         import shutil
 
-        from verdict.headline_metric import load_receipts_since
-
-        # Build a minimal valid run with a live run_id.
-        # We use the complete-run fixture but change run_id.
-
-        run_dir = tmp_path / "run-live-001"
         shutil.copytree(FIXTURES_DIR / "complete-run", run_dir)
-
-        # Patch run_id in receipt.json to be non-fixture.
         receipt_path = run_dir / "receipt.json"
         receipt = _json.loads(receipt_path.read_text())
-        receipt["run_id"] = "run-live-001"
-        # Rewrite events.jsonl with the new run_id too.
+        receipt["run_id"] = run_id
         events_path = run_dir / "events.jsonl"
         events_text = events_path.read_text()
-        events_text = events_text.replace('"test-complete"', '"run-live-001"')
+        events_text = events_text.replace('"test-complete"', f'"{run_id}"')
         events_path.write_text(events_text)
-        # Update events_digest in receipt.
         digest = "sha256:" + hashlib.sha256(events_path.read_bytes()).hexdigest()
         receipt["events_digest"] = digest
         receipt_path.write_text(_json.dumps(receipt))
 
-        # verify_run_receipt may still flag key mismatches (run_id changed),
-        # so load_receipts_since may skip it — that's acceptable.
-        # The key invariant: no fixture_skipped for a non-test run_id.
-        _receipts, _skipped, fixture_skipped = load_receipts_since(tmp_path)
+    def test_load_receipts_since_includes_live_run(self, tmp_path: Path) -> None:
+        """A verifiable live run is returned with zero skips and zero fixture counts."""
+        from verdict.headline_metric import load_receipts_since
+
+        self._build_live_run(tmp_path / "run-live-001", "run-live-001")
+
+        receipts, skipped_live, fixture_skipped = load_receipts_since(tmp_path)
         assert fixture_skipped == 0
+        assert skipped_live == 0
+        assert len(receipts) == 1
+
+    def test_live_run_contributes_accepted_work(self, tmp_path: Path) -> None:
+        """A live run returned by load_receipts_since contributes accepted_tasks > 0."""
+        from verdict.headline_metric import compute_headline_report
+
+        self._build_live_run(tmp_path / "run-live-002", "run-live-002")
+
+        result = compute_headline_report(tmp_path)
+        assert result["runs_processed"] == 1
+        assert result["live_runs_skipped"] == 0
+        assert result["fixture_runs_excluded"] == 0
+        assert result["accepted_tasks"] > 0
+
+    def test_repair_false_torn_tail_skipped_without_modifying_events(self, tmp_path: Path) -> None:
+        """Torn tail is skipped and events.jsonl is never modified (repair=False)."""
+        from verdict.headline_metric import load_receipts_since
+        from verdict.orchestration.receipt import verify_run_receipt
+
+        run_dir = tmp_path / "run-torn-001"
+        self._build_live_run(run_dir, "run-torn-001")
+
+        # Confirm the run is clean before adding the torn tail.
+        assert verify_run_receipt(run_dir, repair=False) == []
+
+        # Append an incomplete JSON line (torn tail — simulates mid-write crash).
+        events_path = run_dir / "events.jsonl"
+        with events_path.open("ab") as f:
+            f.write(b'\n{"seq":999,"at":"2026-11-18T')  # intentionally incomplete
+
+        events_bytes_before = events_path.read_bytes()
+
+        receipts, skipped_live, fixture_skipped = load_receipts_since(tmp_path)
+
+        # Run must be skipped — digest mismatch from torn tail.
+        assert len(receipts) == 0
+        assert skipped_live == 1
+        assert fixture_skipped == 0
+
+        # events.jsonl must be byte-identical — the read-only report never modifies evidence.
+        assert events_path.read_bytes() == events_bytes_before
+
+    def test_non_object_receipt_is_skipped(self, tmp_path: Path) -> None:
+        """receipt.json containing null, [], or a scalar is skipped, not an AttributeError."""
+        from verdict.headline_metric import load_receipts_since
+
+        for content, label in [("null", "null"), ("[]", "array"), ('"hello"', "string")]:
+            runs_dir = tmp_path / f"runs-bad-{label}"
+            runs_dir.mkdir()
+            run_dir = runs_dir / "run-bad"
+            run_dir.mkdir()
+            (run_dir / "receipt.json").write_text(content)
+
+            receipts, skipped_live, fixture_skipped = load_receipts_since(runs_dir)
+            assert len(receipts) == 0, f"expected no receipts for {content}"
+            assert skipped_live == 1, f"expected skipped_live=1 for {content}"
+            assert fixture_skipped == 0
 
     def test_aggregate_excludes_fixture_note(self, tmp_path: Path) -> None:
         """compute_headline_report reports fixture_runs_excluded correctly."""
@@ -523,6 +574,35 @@ class TestAggregateExtendedMetrics:
         # 1 subscription, 1 free → paid_share = 0.5
         assert agg["paid_model_share"] == pytest.approx(0.5)
         assert agg["subscription_share"] == pytest.approx(0.5)
+
+    def test_weighted_first_pass_rate_across_unequal_runs(self) -> None:
+        """Aggregate weights each eligible node, not each run (finding #2 fix)."""
+        from verdict.headline_metric import aggregate_extended_metrics
+
+        # Run A: 1 eligible node, first attempt succeeded → {success:1, eligible:1}
+        receipt_a = _make_receipt(
+            nodes=[
+                _node("n1", "implement", attempts=[_attempt("free/x", "free", outcome="success")])
+            ]
+        )
+        # Run B: 99 eligible nodes, all first attempts failed → {success:0, eligible:99}
+        receipt_b = _make_receipt(
+            nodes=[
+                _node(
+                    f"n{i}",
+                    "implement",
+                    final_state="TERMINAL_FAILURE",
+                    attempts=[_attempt("free/x", "free", outcome="failure")],
+                )
+                for i in range(99)
+            ]
+        )
+        agg = aggregate_extended_metrics([(Path("/tmp/a"), receipt_a), (Path("/tmp/b"), receipt_b)])
+        rate = agg["first_attempt_pass_rate"]["by_role"].get("implement")
+        assert rate is not None
+        # Correct weighted answer: 1 success / 100 eligible = 0.01
+        # Wrong unweighted-mean answer: (1.0 + 0.0) / 2 = 0.5
+        assert rate == pytest.approx(1 / 100)
 
     def test_headline_accepted_per_paid_share(self) -> None:
         import verdict.headline_metric as hm

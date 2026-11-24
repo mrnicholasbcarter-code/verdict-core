@@ -46,6 +46,9 @@ def load_receipts_since(
     - ``receipts`` is a list of ``(run_dir, receipt_dict)`` for valid, non-fixture runs.
     - ``skipped_live`` is the number of live runs skipped due to verification failures.
     - ``fixture_skipped`` is the number of fixture runs excluded.
+
+    ``repair=False`` is used throughout so this read-only report never modifies
+    evidence on disk (e.g. truncating a torn events.jsonl tail).
     """
     from verdict.orchestration.receipt import verify_run_receipt
 
@@ -61,6 +64,11 @@ def load_receipts_since(
         try:
             raw = json.loads(receipt_path.read_text())
         except (OSError, ValueError):
+            skipped_live += 1
+            continue
+
+        # Reject non-object JSON (null, [], scalars) — these cannot be receipts.
+        if not isinstance(raw, dict):
             skipped_live += 1
             continue
 
@@ -80,7 +88,8 @@ def load_receipts_since(
                 except ValueError:
                     pass  # fall through — include if we can't parse
 
-        problems = verify_run_receipt(run_dir)
+        # repair=False: never modify evidence on disk.
+        problems = verify_run_receipt(run_dir, repair=False)
         if problems:
             skipped_live += 1
             continue
@@ -136,8 +145,13 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
     frontier_in = 0
     frontier_out = 0
     frontier_known = True
-    # First-attempt pass: collect booleans per role and per cost
-    first_pass_role: dict[str, list[bool]] = {r: [] for r in roles}
+    # First-attempt pass: accumulate raw success/eligible counts for weighted aggregate.
+    # Averaging per-run fractions gives wrong results when runs differ in node count
+    # (1 success in 1 run + 99 failures in another → 50% not 1%).
+    fpr_role_success: dict[str, int] = {r: 0 for r in roles}
+    fpr_role_eligible: dict[str, int] = {r: 0 for r in roles}
+    fpr_cost_success: dict[str, int] = {}
+    fpr_cost_eligible: dict[str, int] = {}
     per_run: list[dict[str, Any]] = []
 
     for _run_dir, receipt in receipts:
@@ -165,17 +179,20 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
             frontier_in += int(ft["input"])
             frontier_out += int(ft["output"])
 
-        fpr = m.get("first_attempt_pass_rate") or {}
-        for role, rate in (fpr.get("by_role") or {}).items():
-            if isinstance(rate, float) and role in first_pass_role:
-                # Weight by node count — approximate: append one bool per node
-                # (this is an approximation since we have only the fraction)
-                # We instead accumulate the raw booleans from extend_run_metrics.
-                # Since extend_run_metrics already computed the fraction, we
-                # reconstruct raw counts: this is a best-effort aggregate.
-                pass  # handled below via receipt re-access
-        # For aggregation, record the fraction directly per run; overall rate
-        # will be computed as a weighted mean.
+        # Accumulate raw success/eligible counts from extend_run_metrics.
+        fpc = m.get("first_attempt_pass_counts") or {}
+        for role in roles:
+            rc = (fpc.get("by_role") or {}).get(role) or {}
+            fpr_role_success[role] += int(rc.get("success", 0))
+            fpr_role_eligible[role] += int(rc.get("eligible", 0))
+        for cost, cc in (fpc.get("by_cost") or {}).items():
+            fpr_cost_success[cost] = fpr_cost_success.get(cost, 0) + int(
+                (cc or {}).get("success", 0)
+            )
+            fpr_cost_eligible[cost] = fpr_cost_eligible.get(cost, 0) + int(
+                (cc or {}).get("eligible", 0)
+            )
+
         per_run.append(
             {
                 "run_id": m["run_id"],
@@ -217,27 +234,18 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
         else None
     )
 
-    # Aggregate first-attempt pass rates: unweighted mean across runs with data.
-    def _mean_rate(vals: list[float | None]) -> float | None:
-        valid = [v for v in vals if v is not None]
-        return sum(valid) / len(valid) if valid else None
+    # Aggregate first-attempt pass rates using raw counts (node-weighted, not run-weighted).
+    def _weighted_rate(success: int, eligible: int) -> float | None:
+        return success / eligible if eligible > 0 else None
 
-    agg_fpr_role: dict[str, float | None] = {}
-    agg_fpr_cost: dict[str, float | None] = {}
-    for r in roles:
-        vals = [
-            pr["first_attempt_pass_rate"]["by_role"].get(r)
-            for pr in per_run
-            if pr.get("first_attempt_pass_rate")
-        ]
-        agg_fpr_role[r] = _mean_rate(vals)
-    for c in ("free", "subscription", "metered", "unknown"):
-        vals = [
-            pr["first_attempt_pass_rate"]["by_cost"].get(c)
-            for pr in per_run
-            if pr.get("first_attempt_pass_rate")
-        ]
-        agg_fpr_cost[c] = _mean_rate(vals)
+    agg_fpr_role: dict[str, float | None] = {
+        r: _weighted_rate(fpr_role_success[r], fpr_role_eligible[r]) for r in roles
+    }
+    all_costs = set(fpr_cost_success) | set(fpr_cost_eligible)
+    agg_fpr_cost: dict[str, float | None] = {
+        c: _weighted_rate(fpr_cost_success.get(c, 0), fpr_cost_eligible.get(c, 0))
+        for c in all_costs
+    }
 
     return {
         "accepted_tasks": total_accepted,

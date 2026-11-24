@@ -10,12 +10,24 @@ fraction of model attempts that used paid routes (subscription or metered).
 The command SHALL complete with exit code 0 even when the runs directory is
 empty or no paid model attempts exist in the selected period.
 
-#### Scenario: Normal case — paid attempts exist
+#### Scenario: Normal case — paid attempts and accepted work exist
 
 - **GIVEN** one or more verified receipts in the runs directory, at least one
-  model attempt on a paid route (subscription or metered)
+  model attempt on a paid route (subscription or metered), and at least one
+  accepted task
 - **WHEN** `verdict metrics --daily` is run
-- **THEN** `headline_accepted_per_paid_share` is a positive float
+- **THEN** `headline_accepted_per_paid_share` is a non-negative float
+- **AND** `headline_accepted_per_paid_share_note` is null
+- **AND** the command exits 0
+
+#### Scenario: Paid attempts exist but zero accepted tasks
+
+- **GIVEN** one or more verified receipts in the runs directory, at least one
+  model attempt on a paid route, but zero accepted tasks (all runs BLOCKED or
+  FAIL_CLOSED)
+- **WHEN** `verdict metrics --daily` is run
+- **THEN** `headline_accepted_per_paid_share` is 0.0 (not null — the
+  denominator is non-zero; the numerator is zero)
 - **AND** `headline_accepted_per_paid_share_note` is null
 - **AND** the command exits 0
 

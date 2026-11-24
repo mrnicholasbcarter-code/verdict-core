@@ -141,8 +141,8 @@ files; it never writes. No context pack or memory store is touched.
 ## Migration / rollback
 
 Additive. All existing `verdict metrics` behaviour (per-run table, `--json`)
-is unchanged. `--daily`, `--since`, and `--quota` route to the new action only
-when explicitly passed; no existing call site is affected. Rollback is reverting
+is unchanged. `--daily` and `--since` route to the new action only when
+explicitly passed; no existing call site is affected. Rollback is reverting
 this branch: receipts already on disk are unaffected.
 
 ## ADR impact

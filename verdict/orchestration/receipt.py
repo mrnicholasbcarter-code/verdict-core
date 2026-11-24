@@ -1563,13 +1563,25 @@ def extend_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]:
     review = receipt.get("review") or {}
     reviewer_budget_used = review.get("token_budget_used")
 
-    # First-attempt pass rate fractions.
+    # First-attempt pass rate fractions and raw counts for weighted aggregation.
     def _rate(lst: list[bool]) -> float | None:
         return sum(lst) / len(lst) if lst else None
 
     first_attempt_pass_rate: dict[str, Any] = {
         "by_role": {r: _rate(first_pass_by_role[r]) for r in _roles},
         "by_cost": {c: _rate(first_pass_by_cost[c]) for c in first_pass_by_cost},
+    }
+
+    # Raw success/eligible counts for weighted aggregation across runs.
+    # Averaging fractions gives wrong results when runs differ in node count.
+    first_attempt_pass_counts: dict[str, Any] = {
+        "by_role": {
+            r: {"success": sum(first_pass_by_role[r]), "eligible": len(first_pass_by_role[r])}
+            for r in _roles
+        },
+        "by_cost": {
+            c: {"success": sum(v), "eligible": len(v)} for c, v in first_pass_by_cost.items()
+        },
     }
 
     return {
@@ -1587,6 +1599,7 @@ def extend_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(reviewer_budget_used, int)
         else None,
         "first_attempt_pass_rate": first_attempt_pass_rate,
+        "first_attempt_pass_counts": first_attempt_pass_counts,
         "research_duplication_note": (
             "Repeated-research token share is not tracked in receipts. "
             "See verdict/orchestration/research_metrics.py for the per-call tool."

@@ -21,8 +21,8 @@ the M0 baseline can be recorded.
   renders it for the terminal.
 - `verdict/actions/registry.py`: New action `headline.metric` calls
   `compute_headline_report`.
-- `verdict/orchestration/cli.py`: Adds `--daily`, `--since DATE`, `--quota` flags
-  to `verdict metrics`. When `--daily` (or `--since` / `--quota`) is set, the
+- `verdict/orchestration/cli.py`: Adds `--daily` and `--since DATE` flags
+  to `verdict metrics`. When `--daily` or `--since` is set, the
   headline metric report is shown instead of the per-run table.
 - `tests/test_headline_metric.py`: Unit tests for `extend_run_metrics`,
   `compute_headline_report`, fixture exclusion, and the action.
@@ -33,9 +33,18 @@ the M0 baseline can be recorded.
 
 - `verdict metrics --daily` — M0 headline metric report across all verified runs.
 - `verdict metrics --since YYYY-MM-DD` — filter to runs from a given date.
-- `verdict metrics --quota` — enrich with live OmniRoute quota data.
 - `extend_run_metrics(receipt)` — per-role attempt/accepted splits, frontier
   tokens, first-attempt pass rate.
+
+### Partial Delivery
+
+This PR delivers accepted-tasks / paid-model-share (fraction of model attempts
+on paid routes, computed from local receipts).  It does **not** deliver
+accepted-tasks / % paid quota (the fraction of a provider's subscription window
+consumed), which is what issue #1213 ultimately asks for.  The gateway quota
+endpoint is `/api/resilience/connections` (management-token gated, different
+field names from what a naive implementation assumes).  That denominator is
+tracked in a follow-up story.  `Refs #1213` is used rather than `Closes #1213`.
 
 ## Impact
 
