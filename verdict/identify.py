@@ -355,8 +355,11 @@ def screen_models(
 ) -> dict[str, Any]:
     """Screen strongest task rating first; capacity class is a filter, not an order.
 
-    ``max_capability_tier`` skips, without probing, every route whose tier
-    (the eligibility ladder's own rule) is unknown or above it, before caps apply.
+    ``max_capability_tier`` skips, without probing, every route whose tier is a
+    known value above the ceiling.  Routes with an unknown tier pass only when
+    their stripped model key appears in the ADR-051 fallback planner band per
+    fresh ``aa_intelligence`` ratings; otherwise they receive
+    ``skipped_unknown_tier``.
     ``min_context_tokens`` and ``require_tools`` skip, the same way, every route
     whose context window is unknown or below the minimum, or whose tools support
     is not known to be true. ``max_per_pool`` caps probes per backend pool
@@ -392,16 +395,30 @@ def screen_models(
 
     # All configured, reachable supply is considered: inventory ids that are
     # live candidates but carry no traffic proof yet screen with an unknown
-    # rating, last.
+    # rating, last.  Subscription frontier routes (not in the auto-combo pool)
+    # are included when their provider has a usable connection.
     seen_ids = {row["route_id"] for row in report["available_routes"]}
     extra_ratings: list[RatedModel] = []
     for rid in sorted(evidence.inventory_route_ids):
         if rid in seen_ids:
             continue
-        live = evidence.live_candidates.get(rid)
-        if live is None or not live.reachable:
+        if is_opaque(rid) or is_non_chat_route(rid):
             continue
-        provider = evidence.route_identities.get(rid, (rid.split("/", 1)[0],))[0]
+        live = evidence.live_candidates.get(rid)
+        if live is not None:
+            if not live.reachable:
+                continue
+            # Use the provider field from the live candidate — it comes from
+            # the connection data, the same namespace as usable_providers.
+            provider = live.provider
+        else:
+            # Route is in inventory but not in the auto-combo pool (e.g. a
+            # subscription frontier route).  Include only when its provider
+            # has a usable connection.  Use the route prefix — same namespace
+            # as usable_providers / live_candidates.provider.
+            provider = rid.split("/", 1)[0]
+            if provider not in evidence.usable_providers:
+                continue
         extra_ratings.append(
             RatedModel(
                 route_id=rid,
@@ -414,6 +431,20 @@ def screen_models(
             )
         )
     all_ratings = list(rated) + extra_ratings
+
+    # Planner band for unknown-tier filtering (ADR-051): a no-tier route passes
+    # --max-capability-tier only when its stripped route key appears in the
+    # fallback band per fresh aa_intelligence ratings.  Empty when max_capability_tier
+    # is None (no tier cap set) or when metadata is absent or stale.
+    _tier_band_keys: frozenset[str] = frozenset()
+    if max_capability_tier is not None:
+        from verdict.planner_band import compute_planner_bands as _cpb
+        from verdict.planner_band import load_planner_band_config as _lbc
+
+        _tier_band_keys = _cpb(
+            list(evidence.inventory_route_ids), metadata, identity_map, config=_lbc(), now=clock()
+        ).fallback_model_keys
+
     matches = _roster_routes(roster, evidence) if roster is not None else None
     if matches is not None:
         matched = {route for item in matches for route in item["routes"]}
@@ -647,13 +678,17 @@ def screen_models(
                 ):
                     row["result"] = "skipped_spend_policy"
                     continue
-            if max_capability_tier is not None and (tier is None or tier > max_capability_tier):
-                # Unknown is never sufficient; the route neither probes nor
-                # claims an alias slot or a cap slot.
-                row["result"] = (
-                    "skipped_unknown_tier" if tier is None else "skipped_capability_tier"
-                )
-                continue
+            if max_capability_tier is not None:
+                if tier is None:
+                    # No-tier route: pass only when the model is in the
+                    # planner band (ADR-051 fallback) per fresh ratings.
+                    model_key = route_id.rsplit(":", 1)[0] if ":" in route_id else route_id
+                    if model_key not in _tier_band_keys:
+                        row["result"] = "skipped_unknown_tier"
+                        continue
+                elif tier > max_capability_tier:
+                    row["result"] = "skipped_capability_tier"
+                    continue
             if (
                 min_context_tokens is not None
                 and (context_window is None or context_window < min_context_tokens)
