@@ -45,10 +45,17 @@ attest that route identity.
 - **THEN** the attempt record in the receipt contains the route Verdict chose,
   not any route the worker could have substituted
 
+#### Scenario: Worker request without a valid model fails closed
+
+- **WHEN** a request carrying the `X-Verdict-Worker` header has a missing, empty,
+  null or non-string `model`
+- **THEN** serve denies it without contacting upstream; it never falls through to
+  automatic route selection
+
 ### Requirement: Per-attempt config isolation
 
 Each OpenCode attempt SHALL write a fresh config to a new temp directory, set
-`OPENCODE_CONFIG` for that process only, and delete the temp directory on exit.
+`OPENCODE_CONFIG_DIR` (the temp directory) for that process only, and delete the temp directory on exit.
 No session DB or config state SHALL be shared between attempts or concurrent
 workers.
 
@@ -63,6 +70,14 @@ workers.
 - **WHEN** the executor writes the per-attempt config to the temp directory
 - **THEN** the API key for `verdict serve` does not appear in the config file or
   in any log line
+
+#### Scenario: Worker output is redacted before it is recorded
+
+- **WHEN** the worker subprocess echoes the `verdict serve` key, or an
+  `Authorization: Bearer` value, to stderr or into NDJSON error or text events
+- **THEN** the executor replaces each such value with `[REDACTED]` before it
+  reaches `WorkerTerminal`, events or logs, including a key that straddles the
+  truncation window or is split across text events
 
 ### Requirement: Worktree-scoped edits; owned-files enforcement
 
@@ -96,6 +111,13 @@ OpenCode worker attempts SHALL be bounded by the existing per-attempt timeout
 
 - **WHEN** an OpenCode attempt produces no output for `VERDICT_WORKER_IDLE_SECONDS`
 - **THEN** the attempt is killed and classified as an idle-kill failure
+
+#### Scenario: Descendants are killed when the worker exits normally
+
+- **WHEN** an OpenCode worker exits while a descendant with redirected pipes is
+  still running in its process group
+- **THEN** the executor kills the whole process group before returning, so no
+  descendant can edit the worktree while owned-files validation runs
 
 #### Scenario: Per-node budget is exhausted
 

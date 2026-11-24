@@ -19,7 +19,7 @@
       selectable.
 - [x] 2.2 Write `OpenCodeExecutor` in `verdict/orchestration/executors.py` (or a
       new `verdict/orchestration/harness_opencode_executor.py`). The executor
-      writes a per-attempt config to a temp directory, sets `OPENCODE_CONFIG`,
+      writes a per-attempt config to a temp directory, sets `OPENCODE_CONFIG_DIR`,
       launches `opencode run --auto --standalone --format json
       --model verdict/<route_id> --session <attempt_id> --archived`,
       enforces the 900 s timeout ceiling, kills on idle-output stall

@@ -36,6 +36,7 @@ import signal
 import tempfile
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -62,8 +63,33 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _STATUS_RE = re.compile(r"\b([45]\d{2})\b")
 
 
-def _sanitize(text: str, limit: int = _STDERR_TAIL_CHARS) -> str:
-    clean = _CONTROL_RE.sub("", text).strip()
+#: Marker that replaces a secret in any text taken from the worker subprocess.
+REDACTED = "[REDACTED]"
+_AUTH_BEARER_RE = re.compile(
+    r"""(authorization["']?\s*[:=]\s*["']?bearer\s+)[^\s"',;]+""", re.IGNORECASE
+)
+
+
+def _redact(text: str, secrets: Iterable[str] = ()) -> str:
+    """Replace each secret value and any ``Authorization: Bearer <v>`` value.
+
+    The worker subprocess holds the serve token in its environment, so anything
+    it echoes (stderr, NDJSON ``error`` and ``text`` events) may contain it.
+    Longest secrets are replaced first so a secret that contains another is
+    removed whole.
+    """
+    for secret in sorted({s for s in secrets if s}, key=len, reverse=True):
+        text = text.replace(secret, REDACTED)
+    return _AUTH_BEARER_RE.sub(lambda m: m.group(1) + REDACTED, text)
+
+
+def _sanitize(text: str, limit: int = _STDERR_TAIL_CHARS, secrets: Iterable[str] = ()) -> str:
+    """Strip control characters, redact secrets, then keep the last ``limit`` chars.
+
+    Redaction happens before truncation: truncating first could cut a secret in
+    half and leave a fragment that an exact-match replacement no longer finds.
+    """
+    clean = _redact(_CONTROL_RE.sub("", text), secrets).strip()
     return clean[-limit:]
 
 
@@ -265,7 +291,7 @@ def _build_child_env(
     return env
 
 
-def _parse_ndjson_output(stdout: str) -> dict[str, Any]:
+def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, Any]:
     """Parse NDJSON output from ``opencode run --format json``.
 
     OpenCode emits one JSON object per line.  Interesting event types:
@@ -274,6 +300,11 @@ def _parse_ndjson_output(stdout: str) -> dict[str, Any]:
     - ``step_finish`` — end of one model step; carries ``tokens`` for usage
       and ``reason`` (stop reason).
     - ``error`` — error message; non-zero exit always takes precedence.
+
+    Every string taken from the stream (error text, assistant text, session id)
+    has ``secrets`` and ``Authorization: Bearer`` values redacted after the JSON
+    is decoded, so JSON escaping cannot hide a secret from the replacement and a
+    secret split across ``text`` deltas is caught once the deltas are joined.
 
     Returns a dict with keys: ``usage``, ``session_id``, ``last_text``,
     ``error_message``.
@@ -335,7 +366,7 @@ def _parse_ndjson_output(stdout: str) -> dict[str, Any]:
         elif event_type == "error":
             msg = event.get("message") or event.get("error") or ""
             if isinstance(msg, str) and msg:
-                error_message = _sanitize(msg)
+                error_message = _sanitize(msg, secrets=secrets)
 
     usage: AttemptUsage | None = None
     if has_usage:
@@ -348,8 +379,8 @@ def _parse_ndjson_output(stdout: str) -> dict[str, Any]:
 
     return {
         "usage": usage,
-        "session_id": session_id,
-        "last_text": "".join(text_parts),
+        "session_id": _redact(session_id, secrets),
+        "last_text": _redact("".join(text_parts), secrets),
         "error_message": error_message,
     }
 
@@ -530,8 +561,12 @@ class OpenCodeExecutor:
 
             try:
                 stdout_b, stderr_b, cut = await self._collect(proc, timeout_seconds)
+                # Always reap the whole process group before returning, on a normal
+                # exit as well as on stall/timeout: a descendant with redirected
+                # pipes can outlive its leader and keep editing the worktree while
+                # owned-files validation runs.
+                await _kill_process_group(proc)
                 if cut:
-                    await _kill_process_group(proc)
                     stalled = cut == "stalled"
                     return WorkerTerminal(
                         executor_kind="live",
@@ -626,14 +661,15 @@ class OpenCodeExecutor:
         Exit code is authoritative: 0 → ok=True, non-zero → ok=False.
         NDJSON is parsed for usage (``step_finish`` tokens) and session ID.
         """
-        parsed = _parse_ndjson_output(stdout)
+        secrets = [self._base_env().get(self._api_key_env, "")]
+        parsed = _parse_ndjson_output(stdout, secrets)
         usage = parsed["usage"]
         actual_session_id = parsed["session_id"] or session_id
         text = parsed["last_text"]
         error_message = parsed["error_message"]
 
         if returncode != 0:
-            tail = error_message or _sanitize(stderr) or f"exit {returncode}"
+            tail = error_message or _sanitize(stderr, secrets=secrets) or f"exit {returncode}"
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,

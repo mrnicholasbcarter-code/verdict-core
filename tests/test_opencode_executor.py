@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
+import logging
 import os
 import signal
 import stat
@@ -622,6 +624,165 @@ def test_kill_process_group_cleans_up_sigterm_ignoring_grandchild(tmp_path: Path
         return grandchild_pid
 
     asyncio.run(scenario())
+
+
+def test_executor_kills_descendant_left_behind_by_normal_exit(tmp_path: Path) -> None:
+    """A worker that exits 0 but leaves a detached-pipe descendant must not leave it running.
+
+    Executor-level regression (not just the helper): the leader prints a valid
+    result and exits 0 after its child has redirected stdin/stdout/stderr to
+    /dev/null (so all pipe collection finishes normally) and ignores SIGTERM.
+    ``run()`` must kill that descendant before returning, because owned-files
+    validation starts as soon as it returns and a live descendant could still
+    be editing the worktree.
+    """
+    capture = tmp_path / "descendant_pid.txt"
+    payload = ndjson_success("done")
+    fake = make_fake_opencode(
+        tmp_path,
+        f"import signal\n"
+        f"capture = {str(capture)!r}\n"
+        f"if os.fork() == 0:\n"
+        f"    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"    devnull = os.open(os.devnull, os.O_RDWR)\n"
+        f"    for fd in (0, 1, 2):\n"
+        f"        os.dup2(devnull, fd)\n"
+        f"    with open(capture + '.tmp', 'w') as fh:\n"
+        f"        fh.write(str(os.getpid()))\n"
+        f"    os.replace(capture + '.tmp', capture)\n"
+        f"    while True:\n"
+        f"        time.sleep(0.05)\n"
+        f"while not os.path.exists(capture):\n"
+        f"    time.sleep(0.02)\n"
+        f"sys.stdout.write({payload!r})\n"
+        f"sys.stdout.write('\\n')\n"
+        f"sys.exit(0)\n",
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    # Generous idle limit: host load must not trip the stall kill before the fork.
+    executor = OpenCodeExecutor(opencode_bin=fake, idle_output_seconds=120.0)
+    descendant_pid = 0
+    try:
+        terminal = run_executor(executor, "descendant test", cwd, timeout=120.0)
+        assert terminal.ok is True, f"worker should have succeeded: {terminal}"
+        assert capture.exists(), "descendant never recorded its PID"
+        descendant_pid = int(capture.read_text().strip())
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not _pid_gone(descendant_pid):
+            time.sleep(0.05)
+        assert _pid_gone(descendant_pid), (
+            f"descendant PID {descendant_pid} still running after run() returned"
+        )
+    finally:
+        if descendant_pid:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.kill(descendant_pid, signal.SIGKILL)  # never leak the test process
+
+
+_KEY = "sk-verdict-worker-SECRET-0123456789abcdef"
+_OTHER_BEARER = "other-bearer-token-9999999999"
+
+
+def _worker_env(tmp_path: Path) -> dict[str, str]:
+    return {
+        "VERDICT_WORKER_API_KEY": _KEY,
+        "HOME": str(tmp_path),
+        "PATH": os.environ.get("PATH", ""),
+    }
+
+
+def _leak_surfaces(terminal: object) -> str:
+    """Everything the runtime could persist from a terminal, serialised.
+
+    The runtime writes ``error``, ``output_tail`` and ``session_ref`` into the
+    per-attempt evidence and events, and every other terminal field is plain
+    data, so a JSON dump of the whole terminal is a superset of what can leak.
+    """
+    return json.dumps(dataclasses.asdict(terminal), default=str)  # type: ignore[call-overload]
+
+
+@pytest.mark.parametrize("scenario", ["ndjson_error", "stderr_tail", "text_output"])
+def test_executor_redacts_worker_key_everywhere(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture[str],
+    scenario: str,
+) -> None:
+    """The worker key and any ``Authorization: Bearer`` value never leave the executor.
+
+    A fake worker echoes the key (and an unrelated bearer token) to stderr, into
+    an NDJSON ``error`` event and into NDJSON ``text``.  Whichever of those the
+    executor puts into the terminal, none of it may contain the secret values.
+    """
+    err = {
+        "type": "error",
+        "message": f"401 Unauthorized; sent Authorization: Bearer {_KEY} (key={_KEY})",
+    }
+    txt = {"type": "text", "text": f"echo {_KEY} / Authorization: Bearer {_OTHER_BEARER}"}
+    stderr_text = (
+        f"debug headers: Authorization: Bearer {_KEY}\n"
+        f"retry with Authorization: Bearer {_OTHER_BEARER}\nkey={_KEY}\n"
+    )
+    lines = []
+    if scenario == "ndjson_error":
+        lines = [json.dumps(txt), json.dumps(err)]
+    elif scenario == "text_output":
+        lines = [json.dumps(txt), ndjson_success("done")]
+    exit_code = 0 if scenario == "text_output" else 1
+    fake = make_fake_opencode(
+        tmp_path,
+        f"sys.stderr.write({stderr_text!r})\n"
+        f"for line in {lines!r}:\n"
+        f"    sys.stdout.write(line + '\\n')\n"
+        f"sys.exit({exit_code})\n",
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    executor = OpenCodeExecutor(opencode_bin=fake, env=_worker_env(tmp_path))
+    with caplog.at_level(logging.DEBUG):
+        terminal = run_executor(executor, "redaction test", cwd)
+
+    surfaces = _leak_surfaces(terminal)
+    for secret in (_KEY, _OTHER_BEARER):
+        assert secret not in surfaces, f"{secret!r} leaked into the terminal: {surfaces}"
+        assert secret not in caplog.text, "secret leaked into captured logs"
+    captured = capfd.readouterr()
+    assert _KEY not in captured.out + captured.err
+    # The failure is still diagnosable: a marker stands in for the secret.
+    if exit_code:
+        assert "[REDACTED]" in terminal.error  # type: ignore[attr-defined]
+    else:
+        assert "[REDACTED]" in terminal.output  # type: ignore[attr-defined]
+
+
+def test_executor_redacts_key_before_truncating_stderr_tail(tmp_path: Path) -> None:
+    """A key that straddles the tail-truncation window must not survive as a fragment.
+
+    If the 400-character tail were cut first, only a suffix of the key would be
+    left and an exact-match redaction would miss it.
+    """
+    stderr_text = _KEY + "x" * 380  # the 400-char tail would start inside the key
+    fake = make_fake_opencode(tmp_path, f"sys.stderr.write({stderr_text!r})\nsys.exit(1)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    executor = OpenCodeExecutor(opencode_bin=fake, env=_worker_env(tmp_path))
+    terminal = run_executor(executor, "straddle test", cwd)
+    assert terminal.ok is False
+    for fragment in (_KEY, _KEY[10:], _KEY[-20:]):
+        assert fragment not in terminal.error, f"key fragment {fragment!r} survived truncation"
+
+
+def test_redact_helper_replaces_secrets_and_bearer_values() -> None:
+    from verdict.orchestration.executor_opencode import _redact
+
+    text = (
+        f'x Authorization: Bearer abc.def-123 y "Authorization": "Bearer {_OTHER_BEARER}" k={_KEY}'
+    )
+    out = _redact(text, [_KEY, ""])
+    assert _KEY not in out and "abc.def-123" not in out and _OTHER_BEARER not in out
+    assert out.count("[REDACTED]") == 3
+    assert _redact("plain text, no secrets", [_KEY]) == "plain text, no secrets"
 
 
 def test_opencode_executor_spawn_failure_returns_terminal(tmp_path: Path) -> None:

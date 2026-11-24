@@ -99,12 +99,22 @@ cross-worker session DB contamination. The config contains:
 No secrets appear in the config file or in logs. The API key is passed as
 `{env:VERDICT_WORKER_API_KEY}` so the value is never written to disk.
 
+Subprocess output is untrusted and may echo the key. Before any stderr or NDJSON text
+(error, text, session id) reaches `WorkerTerminal`, events or logs, the executor replaces the
+worker key value and any `Authorization: Bearer` value with `[REDACTED]`, before truncating, so
+a key cannot survive as a fragment.
+
 > **Deviation note (2026-11-23):** The original spec said `OPENCODE_CONFIG` →
 > temp file; the implementation uses `OPENCODE_CONFIG_DIR` → temp directory,
 > which is what OpenCode v2.3.2 reads for per-attempt isolation. `OPENCODE_CONFIG`
 > (a single-file path) also exists in v2.3.2 but was not used because the
 > directory form is what the binary expects when running `--standalone`. This
 > deviation is intentional and correct.
+
+**Worker identity (design detail):** A request carrying the `X-Verdict-Worker` header must name
+its assigned route in a non-empty string `model`. serve pins that route when it is admitted and
+denies the request otherwise, including when `model` is missing, empty, null or not a string;
+it never falls through to automatic selection and never contacts upstream on a denial.
 
 **Open point:** Whether to pass the API key via an env var or via the OpenCode
 config's credential field. Both keep it out of the command line and logs; the

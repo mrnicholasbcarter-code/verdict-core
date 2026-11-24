@@ -2208,12 +2208,21 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     # If the route was not admitted, the request fails closed: ``decision`` is
     # set to ``"denied"`` so the existing evidence-recording path handles it.
     _client_model = payload.get("model")
-    _worker_marker = request.headers.get("x-verdict-worker")
-    if (
-        (getattr(intelligence_instance, "allow_client_model_override", False) or _worker_marker)
-        and isinstance(_client_model, str)
-        and _client_model
-    ):
+    # Presence of the header marks a worker request, whatever its value.
+    _is_worker = request.headers.get("x-verdict-worker") is not None
+    _has_client_model = isinstance(_client_model, str) and bool(_client_model)
+    if _is_worker and not _has_client_model:
+        # A worker request must name the route it was assigned.  Without a valid
+        # model it must fail closed, never fall through to automatic selection
+        # (which would run a model the worker was not assigned).
+        decision = replace(
+            decision,
+            decision="denied",
+            reason="worker request must name its assigned route in a non-empty string 'model' field",
+        )
+    elif (
+        getattr(intelligence_instance, "allow_client_model_override", False) or _is_worker
+    ) and _has_client_model:
         _admitted_ids = {
             str(r.get("model_id"))
             for r in decision.candidate_states

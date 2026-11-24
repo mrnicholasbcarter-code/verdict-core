@@ -33,7 +33,7 @@ run on the cheapest qualified route Verdict can admit.
   (`--auto --standalone --format json`), passing the Verdict-chosen route via
   `--model verdict/<route_id>` and routing all model calls through
   `verdict serve` (:8000). Each attempt writes a per-attempt OpenCode config
-  into a temp directory (`OPENCODE_CONFIG`), isolating session DB and global
+  into a temp directory (`OPENCODE_CONFIG_DIR`), isolating session DB and global
   state between attempts and concurrent workers.
 - The adapter declares all nine `HarnessCapability` facets explicitly, as
   required by ADR-041.
@@ -79,7 +79,8 @@ run on the cheapest qualified route Verdict can admit.
 - **KNOWN:** `opencode run --auto --standalone --format json --model
   provider/model#variant --session <id> --archived` is a supported
   non-interactive invocation (opencode v2.3.2 `--help`, verified by the
-  controller). `OPENCODE_CONFIG` overrides the config path per process.
+  controller). `OPENCODE_CONFIG_DIR` points a process at a config directory; this adapter
+  uses that form (see design.md, deviation note).
   `--standalone` runs a private server per invocation, isolating the session DB.
 - **KNOWN:** `verdict serve` (:8000) today does not pin a specific route for each
   individual worker request. Building per-request pinning is scoped to this

@@ -131,3 +131,35 @@ def test_worker_header_denied_for_non_admitted_route(monkeypatch: pytest.MonkeyP
     message = response.json()["error"]["message"]
     assert "foreign-model" in message
     assert "not in the admitted set" in message
+
+
+_OMIT = object()
+
+
+@pytest.mark.parametrize(
+    "model", [_OMIT, "", None, 123], ids=["omitted", "empty", "null", "non-string"]
+)
+def test_worker_header_without_valid_model_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, model: object
+) -> None:
+    """X-Verdict-Worker + missing/empty/null/non-string model -> 503, no upstream call.
+
+    A marked worker request must pin a valid admitted model or fail.  It must
+    never fall through to the automatically selected route (``other-primary``
+    here), which would run a model the worker was not assigned.
+    """
+    transport = _configure(monkeypatch)
+    body: dict[str, Any] = {"messages": [{"role": "user", "content": "worker task"}]}
+    if model is not _OMIT:
+        body["model"] = model
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions", json=body, headers={"x-verdict-worker": "opencode"}
+        )
+    assert response.status_code == 503, response.text
+    assert transport.requests == [], (
+        f"upstream was contacted for a worker request without a valid model: {transport.requests}"
+    )
+    message = response.json()["error"]["message"]
+    assert "worker" in message
+    assert "model" in message
