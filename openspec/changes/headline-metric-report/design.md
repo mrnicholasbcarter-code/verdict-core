@@ -65,13 +65,22 @@ Calls `compute_run_metrics` for the base; adds:
   frequency; individual token counts not recorded in receipt).
 - `reviewer_token_budget_used`: from `receipt["review"]["token_budget_used"]`.
 - `first_attempt_pass_rate`: `{by_role: {role: float|None}, by_cost: {cost: float|None}}`.
+  A node's first model attempt counts as a pass only when that attempt's
+  `outcome` is `success` and the node's `final_state` is `VALIDATED` (Decision 5).
 - Notes for planner tokens and research duplication.
 
 ### `verdict/headline_metric.py`
 
-- `load_receipts_since(runs_dir, since)`: loads, verifies, and filters.
+- `load_receipts_since(runs_dir, since)`: loads, verifies, and filters. A
+  `runs_dir` that is not a directory returns an empty result. For each run it
+  reads `receipt.json` and `events.jsonl` once with `O_NOFOLLOW`
+  (`_read_bytes_nofollow`), applies the fixture and date filters to the parsed
+  receipt, then calls `verify_run_receipt_from_bytes` on those same bytes; the
+  dict it returns is the one parsed from the verified bytes.
 - `aggregate_extended_metrics(receipts)`: aggregates `extend_run_metrics` output.
-- `compute_headline_report(runs_dir, since)`: top-level entry point.
+- `compute_headline_report(runs_dir, since)`: top-level entry point. Also
+  returns `runs_dir` (the directory read) and `runs_dir_found` (whether it is a
+  directory), so an empty report for a missing directory says why.
   Returns `headline_accepted_per_paid_share: float | null` and
   `headline_accepted_per_paid_share_note: str | null`; the note explains
   why the value is unavailable when the denominator is zero or absent.
@@ -80,11 +89,21 @@ Calls `compute_run_metrics` for the base; adds:
 ### `verdict/actions/registry.py` — `_action_headline_metric`
 
 Thin wrapper around `compute_headline_report`; registered as `headline.metric`.
+A missing `runs_dir` is an empty report, not an error. The only error it still
+returns is an invalid `--since` date (exit 2).
 
 ### `verdict/orchestration/cli.py` — `_metrics` extension
 
 `--daily` and `--since DATE` flags route to the headline action instead of the
-per-run table when either flag is set.
+per-run table when either flag is set. The positional `path` is resolved with
+`_resolve_run`, as the per-run branch does: an existing directory is read as
+given, anything else is a run id under `--runs-dir`, and the result is passed to
+the action as `runs_dir`. It wins over `--runs-dir`. A path that resolves to no
+directory prints `metrics path is not a directory: <resolved>` to stderr and
+exits 2 before any report is computed. This is deliberately different from the
+no-runs-directory case: a path the operator typed that does not exist is a
+mistake to reject, while the default `.verdict/runs` not existing yet is a
+fresh install.
 
 ## Test Strategy
 
@@ -93,6 +112,12 @@ per-run table when either flag is set.
 - `test_aggregate_extended_metrics_empty`: empty input.
 - `test_compute_headline_report_*`: monkeypatches `load_receipts_since`.
 - `test_action_headline_metric`: uses existing `tests/fixtures/metrics/`.
+- #1315: first-attempt pass is tested through the real `DagRuntime` (fake
+  executor, real `EventLog`, `build_run_receipt`, `extend_run_metrics`), for a
+  worker that returns ok then fails validation and for one whose validation
+  never finishes. `verdict metrics` is tested through the real argparse
+  definitions with two distinct runs directories. The same-bytes test changes
+  `receipt.json` on disk between the first read and any later read.
 - No live calls in tests.
 
 ## Decisions
@@ -122,6 +147,30 @@ the existing per-run `verdict metrics` table, whose tests pin it; the headline
 report normalises that value to null in `verdict/headline_metric.py` so its JSON
 only ever carries a number or null, in the aggregate and in every `per_run` row.
 
+**Decision 5 (#1315): a first attempt is a pass only when its work was validated.**
+The attempt row's `outcome` comes from the worker's `terminal` event (`ok`),
+which the runtime emits before blocked-output and validation checks. That alone
+does not make the worker's exit a pass: when `_validate` (or the blocked-output
+check) rejects the attempt, the runtime emits a `failure` event with the same
+attempt number and the receipt sets that row to `failure`. What the row cannot
+say is that validation never finished (for example the node driver crashed
+after the terminal): the row stays `success` and the node ends `BLOCKED` or
+`TERMINAL_SUCCESS`. `extend_run_metrics` therefore requires both
+`outcome == "success"` and the node's `final_state == "VALIDATED"`. It is done
+there and not in the receipt builder because adding a per-attempt field to
+the receipt would stop every committed receipt from verifying. The
+rule changes no other figure: `accepted_tasks` already required a COMPLETE run.
+
+**Decision 6 (#1315): a missing runs directory is an empty report.**
+The runs directory not existing is the normal state of a fresh install, and the
+acceptance criteria always promised an empty report there. The action returns it
+with exit 0, `runs_dir_found: false` and the usual null headline with the reason
+"no runs in selected period". A mistyped `--runs-dir` therefore also gives an
+empty report, which is why the report names the directory it read. A mistyped
+positional path is different and is rejected (see the `_metrics` section). The
+per-run `verdict metrics` table (no `--daily`/`--since`) keeps its own
+"runs directory not found" error; it is not part of this change.
+
 **Decision 2: `completion_verdict` determines COMPLETE, not `claimed_outcome`.**
 `extend_run_metrics` trusts `compute_run_metrics` / `completion_verdict` to
 recompute outcome from evidence. A receipt whose `claimed_outcome` says BLOCKED
@@ -139,6 +188,10 @@ the production call chain visible without any runtime cost.
   signed property. Any live run whose `run_id` starts with `test-` is silently
   excluded. The report says how many were excluded so the operator sees if this
   fires unexpectedly.
+- A mistyped `--runs-dir` gives an empty report with exit 0, not an error
+  (Decision 6). The report says "Runs directory not found: <dir>" and carries
+  `runs_dir_found: false`; scripts that need to tell the two apart read that
+  field.
 - `paid_model_share` is 0 when all runs are free (no subscription or metered
   attempts).  The report returns `null` for the headline and says so explicitly;
   no division by zero occurs.
@@ -154,15 +207,19 @@ returns a plain dict; no credentials appear in the output.
 
 No change to routing, admission, or eligibility logic. `extend_run_metrics`
 reads an already-verified receipt dict and performs no I/O. `load_receipts_since`
-calls the existing `verify_run_receipt` and reads the existing `receipt.json`
-files; it never writes. No context pack or memory store is touched.
+reads the existing `receipt.json` and `events.jsonl` files once and calls the
+existing `verify_run_receipt_from_bytes` on those bytes; it never writes (the
+verifier's rebuild also reads `graph.json` and `review.json`, as the runs API
+does). No context pack or memory store is touched.
 
 ## Migration / rollback
 
 Additive. All existing `verdict metrics` behaviour (per-run table, `--json`)
 is unchanged. `--daily` and `--since` route to the new action only when
 explicitly passed; no existing call site is affected. Rollback is reverting
-this branch: receipts already on disk are unaffected.
+this branch: receipts already on disk are unaffected. The #1315 corrections
+change only the headline report: a first-attempt pass rate can be lower than the
+merged version reported, and a positional path is now honoured.
 
 ## ADR impact
 

@@ -223,11 +223,15 @@ def add_parsers(subparsers: Any) -> None:
     rec.add_argument("--json", action="store_true")
 
     met = subparsers.add_parser("metrics", help="Compute efficiency metrics from verified receipts")
-    met.add_argument("path", nargs="?", help="Run directory or runs directory root")
+    met.add_argument(
+        "path",
+        nargs="?",
+        help="Run directory, runs directory root or run id (wins over --runs-dir)",
+    )
     met.add_argument(
         "--runs-dir",
         default=str(DEFAULT_RUNS),
-        help="Runs directory root (used when path is a run id)",
+        help="Runs directory root (used when no path is given, or path is a run id)",
     )
     met.add_argument("--json", action="store_true", help="Print JSON output")
     met.add_argument(
@@ -1375,8 +1379,19 @@ def _metrics(args: argparse.Namespace) -> int:
 
     # --daily or --since triggers the headline metric report.
     if daily or since:
+        # The positional path wins over --runs-dir, as on the per-run branch
+        # below: an existing directory is read as given, anything else is a run
+        # id under --runs-dir.  A path that is neither is an error, never a
+        # silent report on some other directory.
+        report_dir = runs_dir
+        if path_arg:
+            resolved = _resolve_run(path_arg, runs_dir)
+            if not resolved.is_dir():
+                print(f"metrics path is not a directory: {resolved}", file=sys.stderr)
+                return 2
+            report_dir = str(resolved)
         result = run_action(
-            "headline.metric", {"runs_dir": runs_dir, "since": since, "json": args.json}
+            "headline.metric", {"runs_dir": report_dir, "since": since, "json": args.json}
         )
         data = result.data
         if data.get("error"):

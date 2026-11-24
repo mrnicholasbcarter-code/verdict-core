@@ -1452,9 +1452,10 @@ def extend_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]:
       currently recorded in receipts; ``planner_tokens_note`` documents this.
 
     First-attempt pass rate (``first_attempt_pass_rate``):
-    - ``by_role``: fraction of nodes where attempt 1 succeeded, keyed by role.
-    - ``by_cost``: fraction of nodes where attempt 1 succeeded, keyed by the
-      cost class of the first attempt.
+    - ``by_role``: fraction of nodes where attempt 1 succeeded and the node
+      was validated, keyed by role.
+    - ``by_cost``: the same fraction, keyed by the cost class of the first
+      attempt.  A worker's ok exit alone is never a pass (issue #1315).
 
     Research-duplication share:
     - ``research_duplication_note``: explains it is not tracked in receipts;
@@ -1508,7 +1509,16 @@ def extend_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]:
         ]
         if model_attempts:
             first = model_attempts[0]
-            passed = first.get("outcome") == "success"
+            # A worker that returned ok is not yet accepted work: the node must
+            # also have been validated.  A rejected attempt already reads
+            # "failure" (the runtime emits a failure event after _validate), but
+            # one whose validation never finished (for example the node driver
+            # crashed after the worker's terminal) keeps "success" on a node
+            # that is not VALIDATED.
+            passed = (
+                first.get("outcome") == "success"
+                and node.get("final_state") == NodeState.VALIDATED.value
+            )
             first_pass_by_role[role].append(passed)
             cost_cls = str(first.get("capacity_class") or "unknown").lower()
             if cost_cls not in first_pass_by_cost:
