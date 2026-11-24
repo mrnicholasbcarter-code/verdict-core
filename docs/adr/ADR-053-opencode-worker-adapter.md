@@ -3,7 +3,7 @@
 **Status:** Accepted — every decision agreed with the operator (2026-11-23, two rounds); Decision 2 amended 2026-11-24 (OpenCode is opt-in; the default is deferred until a live smoke passes after #1313)
 **Date:** 2026-11-23
 **Deciders:** Operator
-**Amends:** [ADR-041](ADR-041-generic-harness-contracts.md) — adds an opt-in worker executor for `verdict orchestrate`; the default worker executor is unchanged for now (Decision 2, amended 2026-11-24)
+**Amends:** nothing yet. [ADR-041](ADR-041-generic-harness-contracts.md)'s default worker executor (`direct-gateway`) is unchanged until the default is switched (Decision 2, amended 2026-11-24); this ADR adds an opt-in `opencode` worker executor
 **Relates to:**
 [ADR-036](ADR-036-goal-to-receipt-orchestration.md) (goal-to-receipt orchestration),
 [ADR-041](ADR-041-generic-harness-contracts.md) (generic harness contracts),
@@ -47,7 +47,8 @@ the agreed architecture; the implementation detail is in the OpenSpec change.
 ## Decision
 
 The eight decisions below were agreed with the operator on 2026-11-23 in two
-rounds and are recorded exactly as agreed.
+rounds and are recorded as agreed, except Decision 2, which the operator amended on
+2026-11-24 (see the amendment under it).
 
 **1. Route through Verdict serve, not direct OmniRoute.**
 Workers' model calls go through `verdict serve` (:8000), never straight to

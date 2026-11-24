@@ -264,9 +264,9 @@ rejected and classified as a failure before verification runs.
 
 ## ADR impact
 
-- Adds an opt-in worker executor under
-  [ADR-041](../../../docs/adr/ADR-041-generic-harness-contracts.md); its default worker
-  executor (`direct-gateway`) is unchanged for now. ADR-053 Decision 2 is amended
+- Amends nothing yet: [ADR-041](../../../docs/adr/ADR-041-generic-harness-contracts.md)'s
+  default worker executor (`direct-gateway`) is unchanged until the default is switched.
+  This change adds an opt-in `opencode` worker executor, and ADR-053 Decision 2 is amended
   (2026-11-24): the move of the default to `opencode` waits for #1313 and a passing live
   smoke.
 - Relates to [ADR-036](../../../docs/adr/ADR-036-goal-to-receipt-orchestration.md)

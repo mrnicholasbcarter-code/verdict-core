@@ -471,7 +471,7 @@ weakened test. Reversible.
   gate without streaming and tools metadata on the relay path). The adapter merges opt-in; the
   serve fix goes into #1313 with the signed per-attempt assignment; OpenCode becomes the default
   only after a live smoke passes with it.
-* **Amends:** nothing yet; ADR-041's default worker executor (`direct-gateway`) is unchanged until
+* **Amends:** nothing yet: ADR-041's default worker executor (`direct-gateway`) is unchanged until
   the default is switched.
 * **Record:** [ADR-053](../adr/ADR-053-opencode-worker-adapter.md),
   `openspec/changes/opencode-worker-adapter/`. Adapter in #1299 (opt-in); serve fix in #1313.
