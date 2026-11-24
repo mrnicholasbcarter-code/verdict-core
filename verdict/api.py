@@ -1067,13 +1067,14 @@ def _presents_assignment(request: Request) -> bool:
 async def _authenticate_assignment(request: Request, supplied: str, call_next: Any) -> Response:
     """Verify a worker assignment presented as the bearer on a relay POST.
 
-    The key is read from its file on every request (a rotation needs no restart).  A key that
-    cannot be loaded fails closed with 503; any verification failure is the same generic 403 as
-    a wrong bearer, and the log carries the reason code only, never the token.  On success the
-    verified assignment travels in ``request.state``, which no header or body can write.
+    The key is read from its file on every request (a rotation needs no restart), in a worker
+    thread so a slow home filesystem never stalls the event loop.  A key that cannot be loaded
+    fails closed with 503; any verification failure is the same generic 403 as a wrong bearer,
+    and the log carries the reason code only, never the token.  On success the verified
+    assignment travels in ``request.state``, which no header or body can write.
     """
     try:
-        key = worker_assignment.load_assignment_key()
+        key = await asyncio.to_thread(worker_assignment.load_assignment_key)
     except worker_assignment.AssignmentError as exc:
         logger.warning("worker assignment refused: reason=%s", exc.reason)
         return _proxy_error(503, "worker assignments are not configured")

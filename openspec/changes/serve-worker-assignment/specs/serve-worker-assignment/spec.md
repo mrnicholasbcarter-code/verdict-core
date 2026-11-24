@@ -136,8 +136,9 @@ token. `verdict setup --apply --allow host.serve` SHALL generate it when absent 
 an existing valid key (repairing only a mode other than 0600, never regenerating for it), refuse a
 key path that is not a file, and write nothing on a dry run. It SHALL be stored only in
 `~/.config/verdict/worker-assignment.key` (mode 0600, written atomically), SHALL be read from that
-file on every assignment verification and never cached across requests, and SHALL NOT be placed in
-any process environment, the credentials store, `serve.env` or a worker's configuration. When the
+file on every assignment verification and never cached across requests (the read SHALL NOT run on
+the serve event loop, so a slow home filesystem stalls only the request that waits on it), and
+SHALL NOT be placed in any process environment, the credentials store, `serve.env` or a worker's configuration. When the
 file is missing, unreadable or invalid, serve SHALL answer 503 to an assignment request and admit
 nothing; requests that do not present an assignment SHALL be unaffected. `verdict doctor` SHALL
 report a missing, short or wrongly-moded key file. Rotation SHALL be removing the file and running
@@ -154,6 +155,14 @@ setup again; assignments signed with the old key SHALL stop verifying at once.
 - **WHEN** setup runs as a dry run with no key file
 - **THEN** no file is written
 
+#### Scenario: A key-only change is reported and restarts nothing
+
+- **WHEN** setup creates, replaces or repairs the mode of the key file while the unit and the env
+  file are unchanged
+- **THEN** its result reports `changed` true, `service_changed` false and no `try-restart` or
+  `daemon-reload` (serve reads the key on each request), and the host step still restarts serve
+  when it is unhealthy exactly as before
+
 #### Scenario: An unusable key is replaced and a loose mode is only repaired
 
 - **WHEN** setup runs and the key file is empty, shorter than 32 bytes or undecodable
@@ -163,7 +172,7 @@ setup again; assignments signed with the old key SHALL stop verifying at once.
 #### Scenario: A missing key fails closed
 
 - **WHEN** an assignment request arrives and the key file is missing, empty, shorter than 32 bytes
-  or not decodable
+  or not decodable, or the read itself raises
 - **THEN** serve answers 503 and no upstream call is made, while a request with the serve token and
   no assignment is served as before
 

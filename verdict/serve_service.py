@@ -276,7 +276,8 @@ def manage_service(
         plan = plan_units(directory, {SERVICE: ""}, uninstall=True)
         env_step = "remove" if env_file.exists() else "absent"
         key_step = "remove" if key_file.exists() else "absent"
-        changed = plan[SERVICE] == "remove" or env_step == "remove" or key_step == "remove"
+        service_changed = plan[SERVICE] == "remove" or env_step == "remove"
+        changed = service_changed or key_step == "remove"
         commands = [["systemctl", "--user", "disable", "--now", SERVICE]] if changed else []
         rollback = env_rollback = None
         if not dry_run:
@@ -299,6 +300,7 @@ def manage_service(
             "assignment_key_file": str(key_file),
             "assignment_key_plan": key_step,
             "changed": changed,
+            "service_changed": service_changed,
             "dry_run": dry_run,
             "uninstall": True,
             "commands": commands,
@@ -330,9 +332,13 @@ def manage_service(
             else "replace"
         )
     key_step = _assignment_key_step(key_file, user_home)  # validates before any write
-    changed = plan[SERVICE] != "keep" or env_step != "keep"
+    # Two questions, kept apart: did the unit or env file change (serve must be restarted and
+    # systemd reloaded), and did anything change at all (the signing key included, which serve
+    # re-reads per request and so never needs a restart).
+    service_changed = plan[SERVICE] != "keep" or env_step != "keep"
+    changed = service_changed or key_step != "keep"
     commands = [["systemctl", "--user", "enable", "--now", SERVICE]]
-    if changed:
+    if service_changed:
         commands.append(["systemctl", "--user", "try-restart", SERVICE])
     store_token = token is not None and not stored.get(TOKEN_ENV, "").strip()
     rollback = env_rollback = None
@@ -351,7 +357,7 @@ def manage_service(
             os.chmod(key_file, 0o600)  # the same key: only its mode was wrong
         if store_token:
             store.set(TOKEN_ENV, token)
-        if changed:
+        if service_changed:
             run(["systemctl", "--user", "daemon-reload"])
         for args in commands:
             run(args)
@@ -367,6 +373,7 @@ def manage_service(
         "token_source": token_source,
         "token_stored": bool(store_token and not dry_run),
         "changed": changed,
+        "service_changed": service_changed,
         "dry_run": dry_run,
         "uninstall": False,
         "commands": commands,

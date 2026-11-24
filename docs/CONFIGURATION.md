@@ -660,8 +660,9 @@ assignment is refused with 403.
   --apply --allow host.serve` generates it when absent or unusable, keeps a valid one (fixing only a
   mode other than 0600) and writes nothing on a dry run. It lives in `~/.config/verdict/worker-assignment.key` (mode 0600, written atomically),
   next to `serve.env` but not in it, not in the credentials store and not in any process
-  environment. Serve and the orchestrator read the file on every use, so a rotation needs no
-  restart. `verdict doctor` names a missing, short or wrongly moded key file and never prints its
+  environment. Serve and the orchestrator read the file on every use (serve in a worker thread,
+  never on its event loop), so a rotation needs no restart: setup reports a new, replaced or
+  mode-repaired key as `changed` and restarts serve only when the unit or env file changed. `verdict doctor` names a missing, short or wrongly moded key file and never prints its
   value.
 - **Rotation.** Remove the file and run `verdict setup --apply --allow host.serve` again. An
   assignment signed with the old key stops verifying at once, so rotate when no run is active.

@@ -223,14 +223,18 @@ A separate key, never the serve token.
   (empty, under 32 bytes, undecodable, over 4 KiB) is replaced; a valid key whose mode is not 0600
   is kept and only its mode is repaired; a key path that is not a regular file is refused, never
   overwritten. A dry run writes nothing and reports the step (`create`, `keep`, `repair-mode` or
-  `replace`).
+  `replace`). Any step other than `keep` makes the result's `changed` true, so the operator sees a
+  new, replaced or mode-repaired key; the result's `service_changed` (the unit or env file
+  changed) alone decides `daemon-reload`, `try-restart` and the host step's restart of an
+  unhealthy serve, so a key-only change restarts nothing, as before.
 - **Stored** in its own file, `~/.config/verdict/worker-assignment.key`, beside `serve.env`, mode
   0600 in a 0700 directory, written atomically (the existing `_write_private`). **Not** in
   `serve.env` (the unit's `EnvironmentFile` would put it in serve's process environment and
   `/proc/<pid>/environ`), **not** in the credentials store (`load_into_env` injects values into
   `os.environ`), and no code path sets it in any process environment.
 - **Read** by serve on each assignment verification (assignment requests only; the serve-token
-  path never touches it), and by the orchestrator when it signs (#1325), through the same loader.
+  path never touches it), through `asyncio.to_thread` so the file read never blocks the event loop
+  (a failure, of any kind the loader raises, still ends in the 503 below), and by the orchestrator when it signs (#1325), through the same loader.
   A loader result is never cached across requests, so a rotation takes effect on the next request
   with no restart. The loader decodes the text and requires at least 32 bytes; anything else is
   `key_unavailable`.
@@ -501,8 +505,10 @@ Each is a detail the merged design left open or did not foresee. None loosens a 
 - **Receipt shape.** `requirement_waivers` and `worker_assignment` are in every
   `FreeTierAdmitReceipt.to_dict()` (empty and `null` off the lane), and the compact evidence
   receipt allowlists both.
-- **Setup output.** `manage_service` reports `assignment_key_file` (the path) and
-  `assignment_key_plan`; the setup row's `keep` list is unchanged, so they appear in the
+- **Setup output.** `manage_service` reports `assignment_key_file` (the path),
+  `assignment_key_plan`, `changed` (anything, the key included) and `service_changed` (the unit or
+  env file only; the host step restarts an unhealthy serve on this one); the setup row's `keep`
+  list is unchanged, so they appear in the
   `manage_service` result, not in the row.
 
 ## Supersedes

@@ -9,6 +9,7 @@ the real home is never read: ``HOME`` points at a temp directory.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -186,6 +187,47 @@ def test_a_missing_empty_or_short_key_fails_closed_with_503_for_an_assignment_on
     assert serve.reached[0]["assignment"] is None
     assert serve.routed == []
     assert serve.transport.requests == []
+
+
+@pytest.mark.parametrize("path", RELAY_PATHS)
+def test_the_key_file_is_read_off_the_event_loop_on_every_assignment_request(
+    serve: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """A slow home filesystem must stall only the request that waits on it, not the loop."""
+    real_loader = wa.load_assignment_key
+    calls: list[bool] = []
+
+    def spy(home: Path | None = None) -> bytes:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            calls.append(False)  # a worker thread: no loop runs here
+        else:
+            calls.append(True)  # the caller is the event loop itself
+        return real_loader(home)
+
+    monkeypatch.setattr(wa, "load_assignment_key", spy)
+    with TestClient(api.app) as client:
+        for _ in range(2):
+            response = client.post(path, json=BODY, headers=_bearer(_valid()))
+            assert response.status_code == 200
+    # One read per request (a rotation needs no restart), none of them on the event loop.
+    assert calls == [False, False]
+
+
+@pytest.mark.parametrize("path", RELAY_PATHS)
+def test_a_key_loader_that_raises_off_the_loop_still_denies_with_no_upstream_call(
+    serve: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    def broken(home: Path | None = None) -> bytes:
+        raise wa.AssignmentError(wa.REASON_KEY_UNAVAILABLE)
+
+    monkeypatch.setattr(wa, "load_assignment_key", broken)
+    with TestClient(api.app) as client:
+        response = client.post(path, json=BODY, headers=_bearer(_valid()))
+    assert response.status_code == 503
+    assert response.json()["error"]["message"] == "worker assignments are not configured"
+    _assert_nothing_happened(serve)
 
 
 @pytest.mark.parametrize(

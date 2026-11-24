@@ -93,6 +93,90 @@ def test_setup_run_twice_keeps_the_same_bytes(home: Path) -> None:
     assert second_result["changed"] is False
 
 
+def _restart_commands(run: Systemctl) -> list[list[str]]:
+    return [call for call in run.calls if call[2] in {"try-restart", "daemon-reload"}]
+
+
+def test_a_key_created_by_itself_is_reported_as_changed_without_restarting_serve(
+    home: Path,
+) -> None:
+    first = _manage(home)
+    assert first["changed"] is True  # the unit, the env file and the key were all new
+    _key_file(home).unlink()
+    run = Systemctl()
+    result = _manage(home, run)
+    assert result["assignment_key_plan"] == "create"
+    assert result["plan"] == {serve_service.SERVICE: "keep"}
+    assert result["env_file_plan"] == "keep"
+    assert result["changed"] is True  # a new signing key is a change the operator should see
+    assert result["service_changed"] is False  # but serve reads the key per request: no restart
+    assert _restart_commands(run) == []
+    assert run.calls == [["systemctl", "--user", "enable", "--now", serve_service.SERVICE]]
+    assert len(wa.load_assignment_key(home)) >= 32
+
+
+def test_a_replaced_key_is_reported_as_changed_without_restarting_serve(home: Path) -> None:
+    _manage(home)
+    path = _key_file(home)
+    bad = sign.b64url(b"too short")
+    path.write_text(bad, encoding="utf-8")
+    run = Systemctl()
+    result = _manage(home, run)
+    assert result["assignment_key_plan"] == "replace"
+    assert result["changed"] is True
+    assert result["service_changed"] is False
+    assert _restart_commands(run) == []
+    assert path.read_text(encoding="utf-8").strip() != bad
+
+
+def test_a_repaired_key_mode_is_reported_as_changed_without_restarting_serve(home: Path) -> None:
+    _manage(home)
+    path = _key_file(home)
+    good = path.read_bytes()
+    os.chmod(path, 0o644)
+    run = Systemctl()
+    result = _manage(home, run)
+    assert result["assignment_key_plan"] == "repair-mode"
+    assert result["changed"] is True
+    assert result["service_changed"] is False
+    assert _restart_commands(run) == []
+    assert path.read_bytes() == good and _mode(path) == 0o600
+
+
+def test_a_dry_run_reports_a_pending_key_change_and_still_writes_nothing(home: Path) -> None:
+    _manage(home)
+    _key_file(home).unlink()
+    run = Systemctl()
+    result = _manage(home, run, dry_run=True)
+    assert result["assignment_key_plan"] == "create"
+    assert result["changed"] is True
+    assert result["service_changed"] is False
+    assert not _key_file(home).exists()
+    assert run.calls == []
+
+
+def test_a_unit_or_env_change_still_restarts_serve_and_reports_service_changed(home: Path) -> None:
+    _manage(home)
+    unit = home / ".config" / "systemd" / "user" / serve_service.SERVICE
+    unit.write_text("[Service]\nExecStart=/old\n", encoding="utf-8")
+    run = Systemctl()
+    result = _manage(home, run)
+    assert result["plan"] == {serve_service.SERVICE: "replace"}
+    assert result["assignment_key_plan"] == "keep"
+    assert result["changed"] is True
+    assert result["service_changed"] is True
+    assert ["systemctl", "--user", "try-restart", serve_service.SERVICE] in run.calls
+
+
+def test_nothing_to_change_reports_neither_changed_nor_service_changed(home: Path) -> None:
+    _manage(home)
+    run = Systemctl()
+    result = _manage(home, run)
+    assert result["assignment_key_plan"] == "keep"
+    assert result["changed"] is False
+    assert result["service_changed"] is False
+
+
 def test_each_fresh_home_gets_its_own_random_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
