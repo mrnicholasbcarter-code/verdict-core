@@ -250,7 +250,6 @@ Verdict is not a proxy or a model catalog. It sits in front of one and decides w
 | A model's health is unknown. Does it still get the call? | Often yes, through fallback, retry or provider routing; guardrails are optional | No. Unknown is never counted as healthy |
 | Where is the reason a candidate was dropped? | In that tool's logs, usage logs or traces, not in a gate receipt | A named reason on every drop |
 | Can a score put an excluded model back? | Routing configuration, the marketplace or policy can | No |
-| Is there an offline check that needs no API key? | No | `verdict quickstart --dry-run` |
 
 The full comparison, row by row for each tool, and what Verdict does not claim, is in [How Verdict differs](docs/guides/comparison.md).
 
