@@ -1,9 +1,10 @@
 """Route-pinning tests for the OpenCode worker adapter (ADR-053 Decision 1, Task 2.4).
 
-These tests cover the per-request route pinning path added for OpenCode workers:
-when ``X-Verdict-Worker`` is present, the ``model`` field in the request body is
-treated as the route the worker was assigned, and Verdict either narrows the
-decision to that exact route (if admitted) or fails closed with 503 (if not).
+These tests cover the relay's side of per-request route pinning for OpenCode workers:
+when ``X-Verdict-Worker`` is present, the ``model`` field is the route the worker was
+assigned.  The relay hands it to admission as a typed input; admission selects it within
+its admitted set and mints its proof, or denies.  The relay verifies that outcome and
+fails closed with 503 otherwise (invalid ``model``, route not admitted, or not selected).
 
 No live calls are made.  The upstream is a RecordingTransport fixture.
 """
@@ -82,13 +83,16 @@ def _configure(monkeypatch: pytest.MonkeyPatch) -> RecordingTransport:
 # ---------------------------------------------------------------------------
 
 
-def test_worker_header_pins_admitted_route(monkeypatch: pytest.MonkeyPatch) -> None:
-    """X-Verdict-Worker header + admitted alternative -> upstream receives that route.
+def test_relay_never_rewrites_a_worker_decision_to_an_unselected_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The relay only verifies admission's outcome for a worker; it never rewrites it.
 
-    The intelligence selects ``other-primary`` but admits ``selected-model`` as an
-    alternative.  The worker pins to ``selected-model``.  The upstream request must
-    carry ``selected-model``, not the originally-selected ``other-primary`` — proving
-    that the pinning branch changed the decision, not merely confirmed it.
+    This double ignores the worker's assigned route and selects ``other-primary``.  The
+    assigned ``selected-model`` is admitted, but it was not selected (and so carries no
+    proof from admission), so dispatching ``other-primary`` or swapping the model here
+    would be wrong.  The request fails closed with no upstream contact.  The positive
+    path, with production-shaped proofs, is in ``tests/test_serve_worker_route_proof.py``.
     """
     transport = _configure(monkeypatch)
     with TestClient(api.app) as client:
@@ -100,10 +104,9 @@ def test_worker_header_pins_admitted_route(monkeypatch: pytest.MonkeyPatch) -> N
             },
             headers={"x-verdict-worker": "opencode"},
         )
-    assert response.status_code == 200
-    assert len(transport.requests) == 1
-    # Pinning must override the primary selection; the upstream sees the pinned route.
-    assert transport.requests[0]["body"]["model"] == "selected-model"
+    assert response.status_code == 503, response.text
+    assert transport.requests == []
+    assert "not selected by admission" in response.json()["error"]["message"]
 
 
 def test_worker_header_denied_for_non_admitted_route(monkeypatch: pytest.MonkeyPatch) -> None:

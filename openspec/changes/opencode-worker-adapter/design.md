@@ -112,9 +112,15 @@ a key cannot survive as a fragment.
 > deviation is intentional and correct.
 
 **Worker identity (design detail):** A request carrying the `X-Verdict-Worker` header must name
-its assigned route in a non-empty string `model`. serve pins that route when it is admitted and
-denies the request otherwise, including when `model` is missing, empty, null or not a string;
-it never falls through to automatic selection and never contacts upstream on a denial.
+its assigned route in a non-empty string `model`. The relay hands that route to admission as a
+typed input (`WorkerAssignedRoute`, set only by the relay and only when the header is present;
+client JSON cannot supply it). `_decision_from_admit` selects it within the admitted set, only
+when that exact route id is in `receipt.admitted` for this request, and mints its route-bound
+proof with the same `_chosen_route_proof` call as for a chosen route; the provider, context pack
+and receipt follow the pinned route and there are no fallback routes. A route outside the
+admitted set is denied with no proof minted. The relay only verifies that outcome and never
+rewrites a worker's decision. A missing, empty, null or non-string `model` is denied, and no
+denial contacts upstream; a worker request never falls through to automatic selection.
 
 **Open point:** Whether to pass the API key via an env var or via the OpenCode
 config's credential field. Both keep it out of the command line and logs; the

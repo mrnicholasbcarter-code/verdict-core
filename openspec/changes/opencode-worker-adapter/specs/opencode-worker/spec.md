@@ -45,6 +45,29 @@ attest that route identity.
 - **THEN** the attempt record in the receipt contains the route Verdict chose,
   not any route the worker could have substituted
 
+#### Scenario: Worker is pinned to an admitted route other than serve's own pick
+
+- **WHEN** a request carrying the `X-Verdict-Worker` header names, in `model`, a route
+  that is in this request's admitted set but is not the route serve would choose
+- **THEN** admission selects that route within the admitted set and mints its
+  route-bound admission proof with the same minting function as for a chosen route;
+  the provider follows the pinned route; there are no fallback routes; and the
+  request is dispatched on that proof
+
+#### Scenario: Worker pin to a route outside the admitted set is denied
+
+- **WHEN** a request carrying the `X-Verdict-Worker` header names a route that is not
+  in this request's admitted set (unknown, opaque such as `auto/*` or `combo/*`, or
+  admitted in the catalog but without a fresh passport)
+- **THEN** it is denied with 503, no proof is minted for any route, and upstream is
+  never contacted; the admitted set is never widened
+
+#### Scenario: Non-worker requests cannot pin a route
+
+- **WHEN** a request without the `X-Verdict-Worker` header names a `model`, including
+  a forged internal pin field in its JSON
+- **THEN** routing is unchanged: the `model` field does not select the route
+
 #### Scenario: Worker request without a valid model fails closed
 
 - **WHEN** a request carrying the `X-Verdict-Worker` header has a missing, empty,

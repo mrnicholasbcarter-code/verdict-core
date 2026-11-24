@@ -77,7 +77,13 @@ from verdict.intelligence import (
     prepared_task_profile,
 )
 from verdict.model_passports import ModelPassport
-from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
+from verdict.models import (
+    CONTEXT_WORKER_ASSIGNED_ROUTE,
+    ModelInfo,
+    ProviderConfig,
+    RoutingDecision,
+    WorkerAssignedRoute,
+)
 from verdict.omniroute import CATALOG_MAX_RESPONSE_BYTES, OmniRouteHTTPTransport
 from verdict.omniroute_webhook import MAX_BODY_BYTES as MAX_OMNIROUTE_WEBHOOK_BYTES
 from verdict.omniroute_webhook import RECEIVER_PATH as OMNIROUTE_WEBHOOK_PATH
@@ -2167,6 +2173,17 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         authority_context = _authority_context(payload, task=task)
         authority_context["_dispatch_gateway_origin"] = proxy_instance.base_url
         authority_context["_relay_protocol"] = protocol
+        _assigned = payload.get("model")
+        if (
+            request.headers.get("x-verdict-worker") is not None
+            and isinstance(_assigned, str)
+            and _assigned.strip()
+        ):
+            # Typed, server-set input (ADR-053 decision 1): admission selects this route
+            # within its admitted set and mints the route-bound proof for it.  A non-worker
+            # request never carries it, and a client cannot forge it (underscore keys are
+            # dropped from the public payload and JSON cannot build the typed value).
+            authority_context[CONTEXT_WORKER_ASSIGNED_ROUTE] = WorkerAssignedRoute(_assigned)
         decision = await intelligence_instance.route(
             task,
             criticality=payload.get("criticality", "medium"),
@@ -2200,13 +2217,14 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 503, f"live admission unavailable: {type(exc).__name__}", surface=surface
             )
     # --- Task 2.4: Per-request route pinning for worker calls (ADR-053 Decision 1) ---
-    # A worker executor (OpenCode) sends the ``X-Verdict-Worker`` header and
-    # sets the ``model`` field to its assigned route_id.  Verdict narrows the
-    # decision to that one admitted route so the receipt attests the correct
-    # model identity.  ``LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE`` is an
-    # alternative gate for non-worker callers.
-    # If the route was not admitted, the request fails closed: ``decision`` is
-    # set to ``"denied"`` so the existing evidence-recording path handles it.
+    # A worker executor (OpenCode) sends the ``X-Verdict-Worker`` header and sets the
+    # ``model`` field to its assigned route_id.  The relay passes that route to admission as
+    # a typed input (above); admission selects it within the set it already admitted and
+    # mints its route-bound proof, or denies.  Here the relay only *verifies* that outcome:
+    # it never rewrites a worker's decision, so a route can never be dispatched without the
+    # proof admission minted for it.  ``LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE`` remains the
+    # separate, unchanged gate for non-worker callers.
+    # Any denial sets ``decision="denied"`` so the existing evidence-recording path handles it.
     _client_model = payload.get("model")
     # Presence of the header marks a worker request, whatever its value.
     _is_worker = request.headers.get("x-verdict-worker") is not None
@@ -2220,9 +2238,26 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             decision="denied",
             reason="worker request must name its assigned route in a non-empty string 'model' field",
         )
-    elif (
-        getattr(intelligence_instance, "allow_client_model_override", False) or _is_worker
-    ) and _has_client_model:
+    elif _is_worker:
+        if decision.decision != "denied" and decision.model != _client_model:
+            # Admission did not select the assigned route (an intelligence without worker
+            # pinning).  Dispatching its own pick would run a route the worker was not
+            # assigned, and rewriting the model here would bypass the route-bound proof.
+            _admitted_ids = {
+                str(r.get("model_id"))
+                for r in decision.candidate_states
+                if isinstance(r, dict) and r.get("admitted") is True
+            }
+            decision = replace(
+                decision,
+                decision="denied",
+                reason=(
+                    f"route {_client_model!r} was not selected by admission for this request"
+                    if _client_model in _admitted_ids
+                    else f"route {_client_model!r} was not in the admitted set for this request"
+                ),
+            )
+    elif getattr(intelligence_instance, "allow_client_model_override", False) and _has_client_model:
         _admitted_ids = {
             str(r.get("model_id"))
             for r in decision.candidate_states
