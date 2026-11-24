@@ -95,15 +95,16 @@ payload; then check `exp > now` (strict, UTC, injected clock). Every refusal is 
 echoed to the caller: the caller gets the same generic body as for any wrong bearer.
 
 **Result type.** A frozen `VerifiedWorkerAssignment` with `route_id`, `run_id`, `node_id`,
-`expires_at` (a UTC time with an explicit offset, `Z`, in every receipt) and `assignment_digest` (SHA-256 of the payload text, never of the token). It is
-constructible only by the verifier (a module-private construction token), travels only as a
+`expires_at` (a UTC time with an explicit offset, `Z`, in every receipt) and `assignment_digest`
+(SHA-256 of the payload text, never of the token). It is constructible only by the verifier (a module-private construction token), travels only as a
 server-set value (`request.state`, then a context key that JSON cannot supply), and replaces
 `WorkerAssignedRoute` **[#1299]**.
 
 **Replay.** An assignment is a bearer credential valid until `exp` for one route: a worker makes
 many requests per attempt (13 in the smoke), so it cannot be single-use. Expiry is checked on every
 request, so an attempt that outlives its assignment fails closed on its next request. #1325 sets
-`exp` from the attempt's timeout (the 900 s ceiling in `orchestration/cli.py` and `runtime.py`) plus margin.
+`exp` from the attempt's timeout (the 900 s ceiling in `orchestration/cli.py` and `runtime.py`)
+plus margin.
 
 **Why the bearer, not a second header.** The research (fact 9) requires the worker to hold no
 serve token: with the serve token in its environment the worker could call `/v1/route`,
@@ -184,8 +185,8 @@ A separate key, never the serve token.
   nothing; non-worker traffic is unaffected. `verdict doctor` reports the key file missing, shorter
   than 32 bytes or with a mode other than 0600: the serve row already comes from
   `serve_service.install_problems` through `setup_host`, which names `serve.env` problems and never
-  a value, and the key file's problems join that list. Doctor and `install_problems` only read: they never generate, repair or rewrite the key
-  file (only setup writes it).
+  a value, and the key file's problems join that list. Doctor and `install_problems` only read:
+  they never generate, repair or rewrite the key file (only setup writes it).
 - **Rotation**: remove the file and run `verdict setup --apply --allow host.serve`; serve uses the
   new key on its next assignment request. Assignments signed with the old key stop verifying at
   once, so an in-flight attempt fails closed and recovery reroutes it: rotate when no run is
@@ -202,8 +203,8 @@ A separate key, never the serve token.
 
 `_route` gains the lane **after** the `require_authority` raise (step 3 above) and before the
 legacy path. Reachable only when the context holds a `VerifiedWorkerAssignment`. In production
-profile `require_authority` is true, the raise fires first, and the relay answers 400 (`ExecutionPathError`):
-worker requests stay unsupported there and fail closed (decision 7).
+profile `require_authority` is true, the raise fires first, and the relay answers 400
+(`ExecutionPathError`): worker requests stay unsupported there and fail closed (decision 7).
 
 The lane calls `_offload_free_tier` with the assignment as a parameter (one ladder, not a second
 one) and, whenever that call cannot produce a decision (no live admission configured, `None`
