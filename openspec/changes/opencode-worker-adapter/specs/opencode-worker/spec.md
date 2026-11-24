@@ -63,9 +63,12 @@ attest that route identity.
 
 #### Scenario: Worker is pinned to an admitted route other than serve's own pick
 
-- **WHEN** a request carrying the `X-Verdict-Worker` header names, in `model`, a route
-  that is in this request's admitted set but is not the route serve would choose
-- **THEN** admission selects that route within the admitted set and mints its
+Superseded by the change `serve-worker-assignment` (2026-11-24): the `X-Verdict-Worker` header
+no longer selects a route; the pin comes from a verified signed assignment.
+
+- **WHEN** a request carrying a verified worker assignment names, in `model`, the signed route,
+  and that route is in this request's admitted set but is not the route serve would choose
+- **THEN** the assigned lane admits that route on every per-route gate and mints its
   route-bound admission proof with the same minting function as for a chosen route;
   the provider follows the pinned route; there are no fallback routes; and the
   request is dispatched on that proof
@@ -76,7 +79,7 @@ Operator decision (2026-11-24): pinned execution-path support for workers is not
 execution-path flow selects its own offer, so a worker cannot be pinned through it; the
 contract is rejection, not a pinned decision.
 
-- **WHEN** a request with the `X-Verdict-Worker` header carries `execution_path_request`
+- **WHEN** a request with a verified worker assignment carries `execution_path_request`
   (present, whatever its value, on `/v1/chat/completions` or `/v1/responses`)
 - **THEN** it is refused with 400 before any routing: nothing is routed, no proof is minted
   and upstream is never contacted; `IntelligenceService.route` independently refuses a
@@ -84,32 +87,36 @@ contract is rejection, not a pinned decision.
 
 #### Scenario: A worker request never falls back to another route
 
-- **WHEN** a worker request is accepted (its decision comes from admission pinning the
-  assigned route)
+- **WHEN** a worker request is accepted (its decision comes from the assigned lane admitting
+  the signed route)
 - **THEN** the relay bounds it to exactly the assigned route: it carries no
   alternatives and no fallback attempt is built, even if a decision were to list some
   (defence in depth)
 
 #### Scenario: Worker pin to a route outside the admitted set is denied
 
-- **WHEN** a request carrying the `X-Verdict-Worker` header names a route that is not
+- **WHEN** a request carrying a verified worker assignment signs a route that is not
   in this request's admitted set (unknown, opaque such as `auto/*` or `combo/*`, or
   admitted in the catalog but without a fresh passport)
-- **THEN** it is denied with 503, no proof is minted for any route, and upstream is
-  never contacted; the admitted set is never widened
+- **THEN** it is denied with 503 naming the check that dropped the route, no proof is minted
+  for any route, and upstream is never contacted; the admitted set is never widened
 
 #### Scenario: Non-worker requests cannot pin a route
 
-- **WHEN** a request without the `X-Verdict-Worker` header names a `model`, including
-  a forged internal pin field in its JSON
+- **WHEN** a request without a verified worker assignment names a `model`, including
+  a forged internal pin field in its JSON (the `X-Verdict-Worker` header alone is refused 403:
+  superseded by `serve-worker-assignment`)
 - **THEN** routing is unchanged: the `model` field does not select the route
 
 #### Scenario: Worker request without a valid model fails closed
 
-- **WHEN** a request carrying the `X-Verdict-Worker` header has a missing, empty,
-  null or non-string `model`
-- **THEN** serve denies it without contacting upstream; it never falls through to
-  automatic route selection
+Superseded by `serve-worker-assignment` (2026-11-24): the `model` of a verified assignment must
+equal the signed route exactly.
+
+- **WHEN** a request carrying a verified worker assignment has a `model` that is missing, null,
+  empty, not a string, or different from the signed route
+- **THEN** serve refuses it with 400 before any routing and without contacting upstream; it
+  never falls through to automatic route selection
 
 ### Requirement: Per-attempt config isolation
 
@@ -218,9 +225,12 @@ when the installed OpenCode version differs from v2.3.2.
 
 ### Requirement: Worker credential resolved by Verdict; one pre-dispatch check
 
-An OpenCode worker SHALL authenticate to `verdict serve` with the serve bearer token that
-Verdict resolves itself (environment, credential store, `serve.env`), never the OmniRoute gateway
-key and never an undocumented operator variable.  It SHALL reach the child only under the
+An OpenCode worker SHALL authenticate to `verdict serve` with a credential that Verdict
+resolves itself, never the OmniRoute gateway key and never an undocumented operator variable.
+Until the executor story #1325 this is the serve bearer token (environment, credential store,
+`serve.env`); `serve-worker-assignment` (2026-11-24) makes the signed per-attempt assignment the
+worker's only credential on serve's side, so the opt-in executor is refused by serve until #1325
+signs one.  It SHALL reach the child only under the
 configured key variable name and SHALL be redacted from everything recorded.  Before an attempt
 writes or launches anything, the executor SHALL check that the credential resolves, that the
 `opencode` binary runs and that serve is reachable and accepts the credential; a failure SHALL be
