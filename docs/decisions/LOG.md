@@ -466,3 +466,16 @@ weakened test. Reversible.
 * **Amends:** ADR-041 default worker executor.
 * **Record:** [ADR-053](../adr/ADR-053-opencode-worker-adapter.md),
   `openspec/changes/opencode-worker-adapter/`. Not implemented yet.
+
+## D39: Single-family planner proceeds instead of failing closed (operator, 2026-11-23; ADR-051 amendment)
+
+* **Decision:** When fewer than two model families are admissible across both
+  planner bands, planning proceeds with the one admissible family instead of
+  failing closed.  The receipt records `single_family_planner: true` and the
+  families that were unavailable, with their reasons.  As soon as a second
+  family is admissible, the two-family planner list is used again.  With no
+  admissible family at all, planning still fails closed with
+  `no_frontier_or_fallback_planner`.
+* **Process:** direct operator instruction, 2026-11-23.
+* **Amends:** ADR-051 D16 (two-family failover).
+* **Record:** ADR-051 D16 amended in-place; `openspec/changes/frontier-planner-ratings/`.

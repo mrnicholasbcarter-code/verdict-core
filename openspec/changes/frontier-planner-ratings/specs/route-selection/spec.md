@@ -40,7 +40,7 @@ If no admitted route is in the frontier band, planner selection SHALL use the fa
 
 ### Requirement: Planner failover spans two families
 
-Where a planner path keeps a failover list, the primary planner SHALL be the strongest admissible route in the best available band. A failover from another model family SHALL come from the frontier band when one is admissible, otherwise from the fallback band, and the band of each planner SHALL be recorded. With fewer than two model families admissible across both bands, autodev planner selection SHALL fail closed with a reason that names the number of families found.
+Where a planner path keeps a failover list, the primary planner SHALL be the strongest admissible route in the best available band. A failover from another model family SHALL come from the frontier band when one is admissible, otherwise from the fallback band, and the band of each planner SHALL be recorded. When fewer than two model families are admissible across both bands, planning SHALL proceed with the one admissible family, and the receipt SHALL record `single_family_planner: true` and the unavailable families with their reasons (D39). With no admissible family at all, planning SHALL fail closed with `no_frontier_or_fallback_planner`.
 
 #### Scenario: One family in the frontier band
 - **WHEN** only Anthropic routes are admissible in the frontier band and an OpenAI route is admissible in the fallback band
@@ -48,7 +48,7 @@ Where a planner path keeps a failover list, the primary planner SHALL be the str
 
 #### Scenario: One family overall
 - **WHEN** only one model family is admissible across both bands
-- **THEN** autodev planner selection fails closed and names one family found
+- **THEN** planning proceeds with that family, the receipt records `single_family_planner: true` and the unavailable families with their reasons
 
 ### Requirement: Doctor reports planner supply
 
