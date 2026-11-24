@@ -7,6 +7,7 @@ reverse) fails here, before CI.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from scripts.proof.contract import load_contract
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "proof.yml"
 CONTRACT = ROOT / "proof" / "contract.yaml"
+README = ROOT / "proof" / "README.md"
 
 # The steps of the single `proof-full` job on origin/main (34c10464), up to the one that
 # runs the proof. Every leg repeats them, so a leg runs the dependency set, the tools and
@@ -215,3 +217,57 @@ def test_no_workflow_or_script_writes_branch_protection() -> None:
         if any(n in text for n in needles):
             offenders.append(path.relative_to(ROOT).as_posix())
     assert offenders == []
+
+
+# ---------------------------------------------------------------------------
+# proof/README.md: the legs, the aggregate and the operator's commands
+# ---------------------------------------------------------------------------
+
+
+def _readme() -> str:
+    return README.read_text(encoding="utf-8")
+
+
+def test_the_readme_gives_the_operator_the_apply_read_back_and_rollback_commands() -> None:
+    text = _readme()
+    assert "`proof-full`" in text
+    assert "gh api -X PATCH" in text
+    assert "branches/main/protection/required_status_checks" in text
+    assert '{"context": "ci-ok", "app_id": 15368}' in text
+    assert '{"context": "osv-security / osv-scan", "app_id": 15368}' in text
+    assert '{"context": "proof-full", "app_id": 15368}' in text
+    assert "--jq" in text
+    block = text[text.index("### Rollback") :].split("```")[1]
+    assert '"ci-ok"' in block and '"osv-security / osv-scan"' in block
+    assert '"proof-full"' not in block
+
+
+def test_the_readme_says_the_operator_applies_them_after_the_aggregate_is_green_on_main() -> None:
+    text = " ".join(_readme().split())
+    assert "operator" in text
+    assert re.search(r"(?i)green on main", text)
+    assert re.search(r"(?i)no (task|automation|workflow|script)[^.]*appl", text)
+
+
+def test_the_readme_documents_the_legs_the_timing_gate_the_aggregate_and_local_runs() -> None:
+    text = " ".join(_readme().split())
+    for needle in (
+        "--shard",
+        "unit_timing",
+        "shard_aggregate",
+        "`shards`",
+        "Re-run all jobs",
+        "modes.full.shards",
+        "ids-",
+        "JUnit",
+        "env_clear",
+        "-p no:xdist",
+    ):
+        assert needle in text, needle
+    assert re.search(r"(?i)local runs? (are|is) unsharded", text)
+    for check in ("A0", "A1", "A2", "A3", "A4", "A5", "A6"):
+        assert check in text, check
+
+
+def test_the_readme_still_documents_the_unsharded_local_entry_point() -> None:
+    assert "python scripts/proof/run.py --mode full --no-cache" in _readme()

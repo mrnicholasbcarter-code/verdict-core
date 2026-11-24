@@ -50,8 +50,8 @@ Verification for the group: `uv run --frozen python -m pytest -q tests/test_proo
 
 Verification for the group: `uv run --frozen python scripts/check_doc_links.py` exits 0 and `uv run --frozen python -m pytest -q tests/test_proof_workflow.py` is green.
 
-- [ ] 4.1 Failing test: `proof/README.md` names the check `proof-full`, holds the apply, read-back and rollback commands of the design, and says they are applied by the operator after the aggregate has been green on main. Files: `tests/test_proof_workflow.py`. Verify: the test fails before 4.2.
-- [ ] 4.2 Document in `proof/README.md`: legs and `--shard`, the `unit_timing` gate, what the aggregate checks (A0-A6), the merged report's `shards` key and `shard_aggregate` failures, that local runs are unsharded, "Re-run all jobs" when a leg is missing, and the operator commands. Files: `proof/README.md`. Verify: the 4.1 test passes and `uv run --frozen python scripts/check_doc_links.py` exits 0.
+- [x] 4.1 Failing test: `proof/README.md` names the check `proof-full`, holds the apply, read-back and rollback commands of the design, and says they are applied by the operator after the aggregate has been green on main. Files: `tests/test_proof_workflow.py`. Verify: the test fails before 4.2.
+- [x] 4.2 Document in `proof/README.md`: legs and `--shard`, the `unit_timing` gate, what the aggregate checks (A0-A6), the merged report's `shards` key and `shard_aggregate` failures, that local runs are unsharded, "Re-run all jobs" when a leg is missing, and the operator commands. Files: `proof/README.md`. Verify: the 4.1 test passes and `uv run --frozen python scripts/check_doc_links.py` exits 0.
 
 ## 5. Checkers (built and tested before the push; the gates and the live acceptance only run them)
 
