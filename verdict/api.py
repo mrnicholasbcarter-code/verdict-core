@@ -2441,8 +2441,13 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     relay_profile_digest: str | None
     relay_task_family: str | None = None
     try:
+        # The lane and the relay compute one profile with one helper, in the same mode: the
+        # proof the lane minted scopes the digest recomputed here.
         relay_profile = prepared_task_profile(
-            task, authority_context, planner=getattr(intelligence_instance, "planner", None)
+            task,
+            authority_context,
+            planner=getattr(intelligence_instance, "planner", None),
+            assigned=assignment is not None,
         )[1]
         relay_profile_digest = relay_profile.digest
         relay_task_family = relay_profile.task_family

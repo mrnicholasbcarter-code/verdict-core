@@ -13,8 +13,9 @@ from verdict.admit_prove_confirm import gate_admit_prove_confirm
 from verdict.free_tier_admit import FreeTierAdmitReceipt
 from verdict.intelligence import prepared_task_profile
 from verdict.model_passports import ModelPassport
-from verdict.models import RoutingDecision
+from verdict.models import CONTEXT_WORKER_ASSIGNMENT, RoutingDecision
 from verdict.relay import admission_proof, dispatch_scope
+from verdict.worker_assignment import VerifiedWorkerAssignment
 
 
 def with_relay_proofs(
@@ -64,8 +65,12 @@ def with_relay_proofs(
         "admitted": list(confirmed.admitted),
         "passport": [row.to_dict() for row in confirmed.passport],
     }
-    # Same profile the relay recomputes for the request it sends.
-    digest = prepared_task_profile(api._task_text(context or {}), context or {})[1].digest
+    # Same profile the relay recomputes for the request it sends: in assigned mode exactly when
+    # the relay holds a verified assignment (the context carries it as a server-set value).
+    assigned = isinstance((context or {}).get(CONTEXT_WORKER_ASSIGNMENT), VerifiedWorkerAssignment)
+    digest = prepared_task_profile(api._task_text(context or {}), context or {}, assigned=assigned)[
+        1
+    ].digest
     proofs = {}
     for model in models:
         scope = dispatch_scope(

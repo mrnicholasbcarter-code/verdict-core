@@ -28,6 +28,7 @@ from tests.relay_proof_helpers import (
     configure_assignment_auth,
     serve_token_headers,
 )
+from tests.test_assigned_lane import metadata_for
 from tests.test_proxy_free_tier_admit import (
     RecordingTransport,
     _catalog_row,
@@ -77,6 +78,8 @@ def _service(*, passport_for: tuple[str, ...] = (FREE, SUBSCRIPTION)) -> Intelli
         log_full_task=False,
         discovery_ttl=60,
         admit_snapshot=snapshot,
+        # The assigned lane reads real metadata and denies without it (fail closed).
+        metadata_snapshot=metadata_for((FREE, SUBSCRIPTION)),
         execute_offload=False,
         passports=passports,
         confirm_transport=_ok_confirm_transport(),
@@ -186,18 +189,24 @@ def test_worker_pins_admitted_alternative_with_its_own_proof(
         [],
         [f"bod104_route_id:{pinned}"],
     )
-    # Admission is unchanged: the pin selects within the admitted set, never widens it.
-    assert set(decision.admit_receipt["admitted"]) == unpinned_admitted  # type: ignore[index]
+    # The lane narrows to the pinned route right after the active and cooling steps: its admitted
+    # set is that one route, and the route was in the unpinned ladder's set (nothing re-admitted).
+    assert decision.admit_receipt["admitted"] == [pinned]  # type: ignore[index]
+    assert pinned in unpinned_admitted
     assert decision.admit_receipt["chosen"] == pinned  # type: ignore[index]
 
 
 @pytest.mark.parametrize(
-    "assigned",
-    ["openrouter/not/in-the-catalog:free", "auto/best", "combo/anything"],
+    ("assigned", "reason"),
+    [
+        ("openrouter/not/in-the-catalog:free", "route_not_in_inventory"),
+        ("auto/best", "opaque_route_disallowed"),
+        ("combo/anything", "opaque_route_disallowed"),
+    ],
     ids=["unknown-route", "opaque-auto", "opaque-combo"],
 )
 def test_worker_pin_to_route_outside_the_admitted_set_is_denied_without_a_proof(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, assigned: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, assigned: str, reason: str
 ) -> None:
     harness = _Harness(monkeypatch, _service(), tmp_path)
     with TestClient(api.app) as client:
@@ -209,8 +218,10 @@ def test_worker_pin_to_route_outside_the_admitted_set_is_denied_without_a_proof(
     decision = harness.decisions[-1]
     assert decision.decision == "denied"
     assert decision.admission_proofs == {}
+    # The reason is the one the check that dropped the route gave, and no other route was chosen.
     message = response.json()["error"]["message"]
-    assert assigned in message and "not in the admitted set" in message
+    assert assigned in message and reason in message
+    assert decision.model == "no_eligible_target" and decision.alternatives == []
 
 
 def test_worker_pin_requires_membership_in_this_requests_admitted_set(
