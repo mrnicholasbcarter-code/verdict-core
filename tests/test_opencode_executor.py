@@ -2633,15 +2633,6 @@ def test_a_missing_or_unusable_instructions_file_fails_the_attempt_before_launch
     assert list(work.iterdir()) == []
 
 
-def test_a_worker_that_never_reads_its_stdin_is_not_an_error(tmp_path: Path) -> None:
-    """Most scripts here exit without reading stdin: writing the ask must not fail the attempt."""
-    fake = make_fake_opencode(tmp_path, "sys.exit(0)\n")
-    work = tmp_path / "work"
-    work.mkdir()
-    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", work)
-    assert terminal.ok is True  # type: ignore[attr-defined]
-
-
 def test_the_ask_is_sent_even_when_the_worker_has_already_gone() -> None:
     """A process that exited before the ask was written is a broken pipe, not a crash."""
 
@@ -2733,12 +2724,23 @@ def test_nothing_is_launched_when_the_pre_dispatch_checks_used_the_whole_budget(
         time.sleep(0.6)
 
     monkeypatch.setattr(executor_module, "_check_serve", late_but_fine)
+    launches: list[tuple[object, ...]] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def spy(*args: object, **kwargs: object) -> object:
+        launches.append(args)
+        return await real_exec(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
     fake, marker = _spawn_recorder(tmp_path)
     cwd = tmp_path / "work"
     cwd.mkdir()
     terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "no budget", cwd, timeout=0.3)
     assert terminal.ok is False and terminal.error == "timeout", terminal  # type: ignore[attr-defined]
-    assert not marker.exists(), "worker was spawned with no time left"
+    # A process started and killed at once may not get as far as writing its marker, so the
+    # launch itself is what is counted.
+    assert launches == [], "a worker was launched with no time left"
+    assert not marker.exists()
 
 
 def test_the_worktree_context_file_and_its_git_probe_code_are_gone() -> None:
