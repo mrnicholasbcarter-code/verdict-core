@@ -340,8 +340,12 @@ def _cmd_bench_context_lift(args: argparse.Namespace) -> None:
     home = verdict_home()
     out_dir = home / "context-lift"
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    now = datetime.now(timezone.utc)
+    stamp = now.strftime("%Y%m%dT%H%M%SZ")
     out_file = out_dir / f"{stamp}.json"
+    # finish_time binds the receipt to this invocation so doctor can verify that
+    # a "blocked" conclusion is not from a previous run that pre-dates a later crash.
+    receipt["finish_time"] = now.isoformat()
     payload = _json.dumps(receipt, indent=2)
     out_file.write_text(payload, encoding="utf-8")
     (out_dir / "latest.json").write_text(payload, encoding="utf-8")

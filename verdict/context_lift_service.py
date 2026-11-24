@@ -38,7 +38,17 @@ def timer_state(unit: str = TIMER) -> dict[str, Any]:
         state = "failed"
     else:
         state = "active" if values.get("ActiveState") == "active" else "inactive"
-    return {"state": state, "result": service.get("Result") or "unknown"}
+    return {
+        "state": state,
+        "result": service.get("Result") or "unknown",
+        # ExecMainStatus is the actual exit code from the last service run;
+        # "2" means the bench exited intentionally with blocked.
+        "exec_main_status": service.get("ExecMainStatus"),
+        # ActiveEnterTimestamp is when the service last started (systemd format,
+        # e.g. "Thu 2026-01-01 12:00:00 UTC"); used to verify the receipt is
+        # from the same invocation.
+        "active_enter_timestamp": service.get("ActiveEnterTimestamp") or None,
+    }
 
 
 def manage_service(

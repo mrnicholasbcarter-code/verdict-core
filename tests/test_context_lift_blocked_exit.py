@@ -30,6 +30,12 @@ _BLOCKED_RECEIPT: dict[str, Any] = {
     "omissions": None,
 }
 
+# Timestamps used in timer-row tests that require invocation binding.
+# The helper accepts ISO format (the systemd "day-of-week date time UTC" path
+# falls through to fromisoformat on a T-separated string with no space).
+_SERVICE_START_TS = "2026-01-01T12:00:00+00:00"  # ActiveEnterTimestamp
+_RECEIPT_AFTER_TS = "2026-01-01T12:00:30+00:00"  # finish_time 30 s after start
+
 _LIFT_RECEIPT: dict[str, Any] = {
     "schema_version": "1",
     "identity_id": "free/model",
@@ -142,6 +148,21 @@ class TestBenchResultReader:
         result = _context_lift_last_bench_result(home=tmp_path)
         assert result is None
 
+    @pytest.mark.parametrize("content", ["[1, 2, 3]", '"blocked"', "42"])
+    def test_returns_none_for_non_dict_json(self, tmp_path: Path, content: str) -> None:
+        """_context_lift_last_bench_result returns None for valid JSON that is not an object.
+
+        A list, string or number is never a valid receipt; .get() on the result
+        would raise AttributeError and silently downgrade a crash to a warning.
+        """
+        from verdict.doctor_diagnostics import _context_lift_last_bench_result
+
+        bench_dir = tmp_path / "context-lift"
+        bench_dir.mkdir()
+        (bench_dir / "latest.json").write_text(content, encoding="utf-8")
+        result = _context_lift_last_bench_result(home=tmp_path)
+        assert result is None
+
 
 class TestDoctorTimerRow:
     def test_active_success_is_ok(self) -> None:
@@ -163,12 +184,25 @@ class TestDoctorTimerRow:
         assert row["status"] == "ok"
 
     def test_failed_blocked_is_warning(self) -> None:
-        """Service failed with exit-code and bench shows blocked -> warning, not failed."""
+        """Service failed with exit-code and bench shows blocked -> warning, not failed.
+
+        Requires ExecMainStatus=2 (intentional blocked exit) AND the receipt's
+        finish_time to post-date the service's ActiveEnterTimestamp.
+        """
         from verdict.doctor_diagnostics import _context_lift_timer_row
 
         row = _context_lift_timer_row(
-            timer_state=lambda u: {"state": "failed", "result": "exit-code"},
-            bench_result=lambda: {"conclusion": "blocked", "block_reason": "no_qualified_identity"},
+            timer_state=lambda u: {
+                "state": "failed",
+                "result": "exit-code",
+                "exec_main_status": "2",
+                "active_enter_timestamp": _SERVICE_START_TS,
+            },
+            bench_result=lambda: {
+                "conclusion": "blocked",
+                "block_reason": "no_qualified_identity",
+                "finish_time": _RECEIPT_AFTER_TS,
+            },
         )
         assert row["status"] == "warning"
         assert "blocked" in row["detail"]
@@ -217,8 +251,17 @@ class TestDoctorTimerRow:
         from verdict.doctor_diagnostics import _context_lift_timer_row
 
         row = _context_lift_timer_row(
-            timer_state=lambda u: {"state": "failed", "result": "exit-code"},
-            bench_result=lambda: {"conclusion": "blocked", "block_reason": "no_free_identity"},
+            timer_state=lambda u: {
+                "state": "failed",
+                "result": "exit-code",
+                "exec_main_status": "2",
+                "active_enter_timestamp": _SERVICE_START_TS,
+            },
+            bench_result=lambda: {
+                "conclusion": "blocked",
+                "block_reason": "no_free_identity",
+                "finish_time": _RECEIPT_AFTER_TS,
+            },
         )
         assert "no_free_identity" in row["detail"]
 
@@ -227,8 +270,44 @@ class TestDoctorTimerRow:
         from verdict.doctor_diagnostics import _context_lift_timer_row
 
         row = _context_lift_timer_row(
-            timer_state=lambda u: {"state": "failed", "result": "exit-code"},
-            bench_result=lambda: {"conclusion": "blocked", "block_reason": None},
+            timer_state=lambda u: {
+                "state": "failed",
+                "result": "exit-code",
+                "exec_main_status": "2",
+                "active_enter_timestamp": _SERVICE_START_TS,
+            },
+            bench_result=lambda: {
+                "conclusion": "blocked",
+                "block_reason": None,
+                "finish_time": _RECEIPT_AFTER_TS,
+            },
         )
         assert row["status"] == "warning"
         assert "blocked" in row["detail"]
+
+    def test_blocked_then_crash_stays_failed(self) -> None:
+        """A crash (exit != 2) must not be downgraded to warning by a stale blocked receipt.
+
+        Regression test for the finding: a stale receipt with conclusion=blocked
+        could previously mask a real crash.  The check now requires ExecMainStatus=2
+        (the intentional blocked-exit code); anything else stays failed.
+        """
+        from verdict.doctor_diagnostics import _context_lift_timer_row
+
+        # exec_main_status=1 simulates an unexpected crash (not the intentional exit 2).
+        # The bench receipt still says blocked (a previous successful blocked run)
+        # but that receipt should NOT downgrade this crash to a warning.
+        row = _context_lift_timer_row(
+            timer_state=lambda u: {
+                "state": "failed",
+                "result": "exit-code",
+                "exec_main_status": "1",
+                "active_enter_timestamp": _SERVICE_START_TS,
+            },
+            bench_result=lambda: {
+                "conclusion": "blocked",
+                "block_reason": "no_qualified_identity",
+                "finish_time": _RECEIPT_AFTER_TS,
+            },
+        )
+        assert row["status"] == "failed"

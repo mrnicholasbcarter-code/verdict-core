@@ -1554,16 +1554,57 @@ def _pr_watcher_timer_row(
 
 
 def _context_lift_last_bench_result(home: Path | None = None) -> dict[str, Any] | None:
-    """Read the most-recent context-lift bench receipt from disk, None on any error."""
+    """Read the most-recent context-lift bench receipt from disk, None on any error.
+
+    Returns None when the file is missing, unreadable, or its contents are not a
+    JSON object — a list, string or number is never a valid receipt and must not
+    reach the timer-row check (which calls .get() on the result).
+    """
     import json as _json
 
     from verdict.paths import verdict_home as _verdict_home
 
     path = (home or _verdict_home()) / "context-lift" / "latest.json"
     try:
-        return _json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+        data = _json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _receipt_is_from_invocation(bench: dict[str, Any], state: dict[str, Any]) -> bool:
+    """Return True when the receipt's finish_time is after the service's last start.
+
+    This prevents a stale blocked receipt (from a previous run) from downgrading a
+    crash to a warning.  Both ExecMainStatus=2 (blocked exit) and a receipt whose
+    finish_time post-dates the service's ActiveEnterTimestamp are required.
+
+    Returns False when either timestamp is absent or unparseable (conservative).
+    """
+    from datetime import datetime, timezone
+
+    finish_raw = bench.get("finish_time")
+    start_raw = state.get("active_enter_timestamp")
+    if not finish_raw or not start_raw or start_raw == "n/a":
+        return False
+    try:
+        finish = datetime.fromisoformat(str(finish_raw).replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return False
+    try:
+        # Systemd format: "Thu 2026-01-01 12:00:00 UTC"
+        start = datetime.strptime(str(start_raw).split(" ", 1)[1], "%Y-%m-%d %H:%M:%S UTC").replace(
+            tzinfo=timezone.utc
+        )
+    except (ValueError, IndexError, AttributeError):
+        try:
+            # ISO format (used in tests)
+            start = datetime.fromisoformat(str(start_raw).replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return False
+    return finish >= start
 
 
 def _context_lift_timer_row(
@@ -1575,6 +1616,11 @@ def _context_lift_timer_row(
     When the service exited non-zero because all routes were blocked, the row
     reports a warning (not a failure) and names the block reason so the operator
     knows why no free routes are available without an install being unhealthy.
+
+    A warning is only issued when ALL of these hold:
+    - The service's ExecMainStatus is "2" (the intentional blocked-exit code).
+    - The receipt's finish_time post-dates the service's ActiveEnterTimestamp
+      (the receipt belongs to this invocation, not a previous blocked run).
     """
     from verdict import context_lift_service
     from verdict.setup_host import CONTEXT_LIFT, setup_repair
@@ -1589,9 +1635,16 @@ def _context_lift_timer_row(
         return {"label": label, "status": "ok", "detail": detail}
     if name == "failed" and result == "exit-code":
         # Distinguish a blocked bench (no free routes, expected) from a crash.
+        # Require ExecMainStatus=2 (intentional exit) AND the receipt post-dates
+        # the service's last start (guards against stale blocked receipt).
         bench = (bench_result or _context_lift_last_bench_result)()
-        if (bench or {}).get("conclusion") == "blocked":
-            br = str((bench or {}).get("block_reason") or "no eligible routes")
+        if (
+            isinstance(bench, dict)
+            and bench.get("conclusion") == "blocked"
+            and str(state.get("exec_main_status", "")) == "2"
+            and _receipt_is_from_invocation(bench, state)
+        ):
+            br = str(bench.get("block_reason") or "no eligible routes")
             detail += f"; blocked: {br}"
             return {"label": label, "status": "warning", "detail": detail}
     if name == "missing":

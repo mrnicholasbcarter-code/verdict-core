@@ -22,18 +22,33 @@ A dry-run SHALL always exit 0 regardless of conclusion.
 
 ### Requirement: Doctor SHALL surface a blocked bench as a warning
 When `verdict doctor` checks the context-lift timer and the timer service last
-exited with `result=exit-code` and the most recent bench receipt has
-`"conclusion": "blocked"`, the doctor row SHALL have status `warning` and
-SHALL include the `block_reason` from the receipt in the detail text.
+exited with `result=exit-code`, the doctor row SHALL have status `warning`
+(not `failure`) only when ALL of the following hold:
 
-A timer that last exited with any other failure (crash, timeout) with no
-blocked receipt SHALL have status `failure`.  An active or inactive timer
-(no non-zero exit recorded) SHALL be treated as before.
+1. The service's `ExecMainStatus` is `"2"` — the intentional blocked-exit code.
+2. The most recent bench receipt has `"conclusion": "blocked"`.
+3. The receipt's `finish_time` is not earlier than the service's
+   `ActiveEnterTimestamp` — the receipt belongs to this invocation, not a
+   previous blocked run.
+
+When any condition is absent or unmet the row SHALL have status `failure`.
+A `warning` row SHALL include the `block_reason` from the receipt in the
+detail text.
 
 #### Scenario: Blocked bench produces warning row
-- **WHEN** timer state is `failed` with result `exit-code` and the bench receipt shows `conclusion=blocked`
-- **THEN** the doctor row status is `warning` and the detail includes the block_reason
+- **WHEN** timer state is `failed` with result `exit-code`, `ExecMainStatus=2`,
+  and the bench receipt shows `conclusion=blocked` with a `finish_time` that
+  post-dates the service's `ActiveEnterTimestamp`
+- **THEN** the doctor row status is `warning` and the detail includes the
+  block_reason
 
 #### Scenario: Crashed timer produces failure row
-- **WHEN** timer state is `failed` with result `exit-code` but no blocked receipt exists
+- **WHEN** timer state is `failed` with result `exit-code` but no blocked
+  receipt exists
 - **THEN** the doctor row status is `failure`
+
+#### Scenario: Stale blocked receipt does not mask a crash
+- **WHEN** timer state is `failed` with result `exit-code` and
+  `ExecMainStatus=1` (crash), and a bench receipt with `conclusion=blocked`
+  exists from a previous run
+- **THEN** the doctor row status is `failure` (the stale receipt is ignored)
