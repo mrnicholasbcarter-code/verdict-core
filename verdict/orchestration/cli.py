@@ -230,6 +230,17 @@ def add_parsers(subparsers: Any) -> None:
         help="Runs directory root (used when path is a run id)",
     )
     met.add_argument("--json", action="store_true", help="Print JSON output")
+    met.add_argument(
+        "--daily",
+        action="store_true",
+        help="Show M0 headline metric report (accepted/paid share) across all runs",
+    )
+    met.add_argument(
+        "--since",
+        default=None,
+        metavar="DATE",
+        help="Filter to runs started on or after DATE (YYYY-MM-DD)",
+    )
 
     from verdict.orchestration import supervisor
 
@@ -1359,6 +1370,25 @@ def _metrics(args: argparse.Namespace) -> int:
     # Determine runs_dir and run_dir
     runs_dir = args.runs_dir
     path_arg = args.path
+    daily: bool = getattr(args, "daily", False)
+    since: str | None = getattr(args, "since", None)
+
+    # --daily or --since triggers the headline metric report.
+    if daily or since:
+        result = run_action(
+            "headline.metric", {"runs_dir": runs_dir, "since": since, "json": args.json}
+        )
+        data = result.data
+        if data.get("error"):
+            print(data["error"], file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(data, indent=2, default=str))
+        else:
+            from verdict.headline_metric import format_headline_report
+
+            print(format_headline_report(data))
+        return 0
 
     if path_arg:
         # Path could be a run directory or a run id

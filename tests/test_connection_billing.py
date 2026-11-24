@@ -20,6 +20,7 @@ import pytest
 from verdict.capacity import CapacityClass, capacity_of
 from verdict.connection_billing import (
     BILLING_KEYLESS,
+    BILLING_METERED,
     BILLING_SUBSCRIPTION,
     OVERAGE_HARD_STOP,
     OVERAGE_METERS_TO_PAID,
@@ -369,6 +370,126 @@ class TestOperatorOverlay:
 
         assert oauth_fact is not None and oauth_fact.billing == BILLING_KEYLESS
         assert apikey_fact is not None and apikey_fact.billing == BILLING_SUBSCRIPTION
+
+        _cb._overlay_cache = None
+
+    def test_overlay_cache_respects_home_change_within_ttl(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Switching VERDICT_HOME within the 100ms TTL must return the new home's overlay.
+
+        Root cause of the reverted keyless fast path: when env=None and the TTL
+        had not expired, _load_overlay returned the cached overlay without
+        recomputing verdict_home(), so a stale home1 overlay was served for home2.
+
+        This test uses env=None lookups (via VERDICT_HOME) so it exercises the
+        exact code path the fast path would short-circuit. The clock is frozen
+        so both lookups are guaranteed to land within the TTL window on slow
+        CI runners — without freezing, an expiry between calls would let even
+        the broken code produce the correct answer.
+        """
+        import time
+
+        import verdict.connection_billing as _cb
+
+        home1 = tmp_path / "home1"
+        home2 = tmp_path / "home2"
+        home1.mkdir()
+        home2.mkdir()
+
+        overlay1 = {
+            "entries": [{"provider": "openai", "billing": "metered", "overage": "meters-to-paid"}]
+        }
+        overlay2 = {
+            "entries": [{"provider": "openai", "billing": "keyless", "overage": "hard-stop"}]
+        }
+        (home1 / "connection_billing_overlay.json").write_text(json.dumps(overlay1))
+        (home2 / "connection_billing_overlay.json").write_text(json.dumps(overlay2))
+
+        # Freeze the clock so both lookups are always within the 100ms TTL window,
+        # making the test deterministic on slow CI runners.
+        frozen_ns = time.monotonic_ns()
+        monkeypatch.setattr(time, "monotonic_ns", lambda: frozen_ns)
+
+        # Reset cache so the first lookup starts fresh.
+        _cb._overlay_cache = None
+
+        # Use VERDICT_HOME and env=None so lookups go through the default path
+        # (the path the keyless fast-path bug affected).
+        monkeypatch.setenv("VERDICT_HOME", str(home1))
+        fact1 = lookup("openai", None)  # loads home1 overlay
+
+        monkeypatch.setenv("VERDICT_HOME", str(home2))
+        fact2 = lookup("openai", None)  # must load home2, not return stale home1
+
+        assert fact1 is not None, "home1 overlay must be found"
+        assert fact2 is not None, "home2 overlay must be found"
+        assert fact1.billing == BILLING_METERED, f"home1 expected metered, got {fact1.billing}"
+        assert fact2.billing == BILLING_KEYLESS, (
+            f"home2 expected keyless, got {fact2.billing!r} — "
+            "stale cache leak between homes within TTL"
+        )
+
+        # Cleanup
+        _cb._overlay_cache = None
+
+    def test_nested_preload_overlay_restores_outer_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nested preload_overlay must not clobber the outer block's overlay.
+
+        Without save/restore, the inner context sets _batch.overlay = None on
+        exit.  Lookups in the outer block then fall through to _load_overlay()
+        which reads the CURRENT VERDICT_HOME — which is still pointing to the
+        inner home when the outer lookup runs — so prov-a is not found.
+        The test is designed so this failure is observable: VERDICT_HOME is NOT
+        restored between the inner exit and the final lookup.
+        """
+        import verdict.connection_billing as _cb
+        from verdict.connection_billing import preload_overlay
+
+        home_outer = tmp_path / "outer"
+        home_inner = tmp_path / "inner"
+        home_outer.mkdir()
+        home_inner.mkdir()
+
+        # prov-a lives only in the outer overlay; prov-b only in the inner.
+        overlay_outer = {
+            "entries": [{"provider": "prov-a", "billing": "subscription", "overage": "hard-stop"}]
+        }
+        overlay_inner = {
+            "entries": [{"provider": "prov-b", "billing": "keyless", "overage": "hard-stop"}]
+        }
+        (home_outer / "connection_billing_overlay.json").write_text(json.dumps(overlay_outer))
+        (home_inner / "connection_billing_overlay.json").write_text(json.dumps(overlay_inner))
+
+        _cb._overlay_cache = None
+
+        # Point VERDICT_HOME at the outer home; preload_overlay() (no env arg)
+        # reads it from the environment.
+        monkeypatch.setenv("VERDICT_HOME", str(home_outer))
+
+        with preload_overlay():  # loads outer overlay into _batch.overlay
+            fact_before = lookup("prov-a", None)  # no env — uses _batch.overlay
+
+            # Switch to inner home and enter nested context.
+            monkeypatch.setenv("VERDICT_HOME", str(home_inner))
+            with preload_overlay():  # loads inner overlay
+                fact_inner = lookup("prov-b", None)  # no env — uses inner _batch.overlay
+
+            # VERDICT_HOME is STILL home_inner here (intentionally not restored).
+            # With save/restore: _batch.overlay is the outer overlay → prov-a found.
+            # Without save/restore: _batch.overlay = None → _load_overlay reads
+            #   home_inner (current VERDICT_HOME) → no prov-a → returns None.
+            fact_after = lookup("prov-a", None)  # no env — must use restored outer overlay
+
+        assert fact_before is not None and fact_before.billing == BILLING_SUBSCRIPTION
+        assert fact_inner is not None and fact_inner.billing == BILLING_KEYLESS
+        assert fact_after is not None and fact_after.billing == BILLING_SUBSCRIPTION, (
+            "outer overlay was clobbered by nested preload_overlay exit — "
+            "fact_after should be SUBSCRIPTION from outer overlay but is "
+            f"{fact_after!r}"
+        )
 
         _cb._overlay_cache = None
 
