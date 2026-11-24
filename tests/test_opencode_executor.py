@@ -2061,6 +2061,48 @@ def test_a_later_error_with_its_own_retry_delay_uses_it() -> None:
     assert _parse_ndjson_output(first + "\n" + second)["retry_after_seconds"] == 7.0
 
 
+def test_a_later_error_event_without_a_message_replaces_all_three_not_only_two() -> None:
+    """The final error event decides message, status and retry delay together.  A later event
+    that carries a status and a delay but no message must not leave the first event's message
+    attached to them."""
+    first = _ndjson_error(429, "rate limited", retry_after_ms=3_600_000)
+    second = json.dumps({"type": "error", "error": {"status": 503, "retryAfterMs": 9000}})
+    parsed = _parse_ndjson_output(first + "\n" + second)
+    assert parsed["error_message"] == ""
+    assert parsed["error_status"] == 503
+    assert parsed["retry_after_seconds"] == 9.0
+    delay_only = json.dumps({"type": "error", "error": {"retryAfterMs": 9000}})
+    parsed = _parse_ndjson_output(first + "\n" + delay_only)
+    assert (parsed["error_message"], parsed["error_status"]) == ("", None)
+    assert parsed["retry_after_seconds"] == 9.0
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"type": "error"},
+        {"type": "error", "error": {}},
+        {"type": "error", "error": {"message": ""}},
+        {"type": "error", "error": "   "},
+    ],
+    ids=["bare", "empty-object", "empty-message", "blank-string"],
+)
+def test_an_error_event_with_nothing_to_say_is_ignored(event: dict[str, object]) -> None:
+    first = _ndjson_error(429, "rate limited", retry_after_ms=3_600_000)
+    parsed = _parse_ndjson_output(first + "\n" + json.dumps(event))
+    assert parsed["error_message"] == "rate limited"
+    assert parsed["error_status"] == 429
+    assert parsed["retry_after_seconds"] == 3600.0
+
+
+@pytest.mark.parametrize("message", ["", 123, None, ["x"]], ids=["empty", "int", "null", "list"])
+def test_a_status_without_a_usable_message_is_kept_on_its_own(message: object) -> None:
+    line = json.dumps({"type": "error", "error": {"message": message, "status": 502}})
+    parsed = _parse_ndjson_output(line)
+    assert parsed["error_message"] == ""
+    assert parsed["error_status"] == 502
+
+
 @pytest.mark.parametrize(
     "token",
     ["tok\nen", "tok\r\nen", "tok\x00en", "tok\x7fen", "tok\u20acen"],

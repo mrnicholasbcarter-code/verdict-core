@@ -655,29 +655,26 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
             if isinstance(detail, dict):
                 msg = detail.get("message") or msg
                 structured_status = _as_int(detail.get("status"))
-                error_status = structured_status
                 retry_ms = _as_float(detail.get("retryAfterMs"))
                 if retry_ms is not None and retry_ms > 0:
                     event_retry = retry_ms / 1000.0
-                    retry_after_seconds = event_retry
             elif not msg and isinstance(detail, str):
                 msg = detail
-            if isinstance(msg, str) and msg:
-                # The retry delay, like the status, belongs to the event whose message is kept:
-                # an earlier 429's hour-long delay must not stay attached to a later 503.
-                retry_after_seconds = event_retry
-                full_message = _sanitize_full(msg, secrets)
+            full_message = _sanitize_full(msg, secrets) if isinstance(msg, str) else ""
+            if full_message or structured_status is not None or event_retry is not None:
+                # The final error event that says anything decides message, status and retry
+                # delay together, so recovery never sees a status or a cooldown that belongs to
+                # a different event than the text.  An event with nothing to say (no usable
+                # message, status or delay) changes nothing.  The recorded text is only the
+                # tail, and a long provider diagnostic after "HTTP 429" would otherwise cut the
+                # status away before recovery could classify it.
                 error_message = full_message[-_STDERR_TAIL_CHARS:]
-                # The status belongs to the event whose message is kept: its structured status,
-                # else one read from its whole text.  The recorded text is only the tail, and a
-                # long provider diagnostic after "HTTP 429" would otherwise cut the status away
-                # before recovery could classify it.  An earlier event's status never carries
-                # over to this message.
                 error_status = (
                     structured_status
                     if structured_status is not None
                     else _status_from_full_text(full_message)
                 )
+                retry_after_seconds = event_retry
 
     usage: AttemptUsage | None = None
     if has_usage:
