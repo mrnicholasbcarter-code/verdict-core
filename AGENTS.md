@@ -186,7 +186,12 @@ archived change, only when `scripts/check_dod.py <file>` passes; CI runs
   `VERDICT_LIVE_SMOKE=1`; probes need consent and a budget
   ([ADR-012](docs/adr/ADR-012-consented-budgeted-probes.md)).
 - Isolate state. Point `VERDICT_HOME` (or `HOME`) at a temp directory in tests
-  and scripts; never write to the real `~/.verdict`.
+  and scripts; never write to the real `~/.verdict`. `tests/conftest.py` gives
+  every test its own temp `HOME` and clears every state-path env var;
+  `tests/helpers/home_guard.py` refuses, and fails the test on, any write to the
+  real state roots; `tests/test_home_isolation.py` pins both. To list which tests
+  write into a throwaway home, run pytest with `-p tests.helpers.home_snapshot
+  --home-leak-root=<dir>` (see that module's docstring).
 - No secrets in code, fixtures, logs or docs. No `/home/...` host paths in
   `tests/fixtures/`, `docs/assets/` or `docs/proof/` (vgate host-path guard).
 - No silent installs. Do not add dependencies or install tools without saying
