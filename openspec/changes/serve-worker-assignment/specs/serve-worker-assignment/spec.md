@@ -9,17 +9,22 @@ lists which of that change's scenarios this one supersedes.
 ### Requirement: A signed assignment carries the route, the run, the node and an expiry
 
 A worker assignment SHALL be an opaque bearer string `vwa1.<payload>.<tag>`, where `payload` is the
-base64url of a JSON object with exactly the fields `route_id`, `run_id`, `node_id` (each a
-non-empty string of at most 128 characters without control characters) and `exp` (an integer of
-seconds since the Unix epoch, UTC, from 0 through 253402300799, which is 9999-12-31T23:59:59Z, the
-last second a UTC `datetime` can hold), and `tag` is the base64url of
-`HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + payload)`. A token over 2 KiB, a token that
-does not split into exactly three parts, a payload that is not that object, an `exp` that is not an
-integer (including a boolean or a float), and an `exp` outside that range SHALL be refused. The
-verifier SHALL turn `exp` into a UTC time with an explicit offset as part of verification, and any
-`OverflowError`, `ValueError` or `OSError` raised by that conversion SHALL be refused as
-`malformed`, never raised to the caller. A correctly signed assignment whose `exp` cannot be
-represented therefore ends as the generic authentication refusal, never as an error response.
+unpadded base64url of a JSON object with exactly the fields `route_id`, `run_id`, `node_id` (each a
+non-empty string of at most 128 characters without control characters), `iat` (issued at) and `exp`
+(expiry), each of the last two an integer of seconds since the Unix epoch, UTC, from 0 through
+253402300799 (9999-12-31T23:59:59Z, the last second a UTC `datetime` can hold), and `tag` is the
+unpadded base64url of `HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + payload)`, with
+`payload` taken as the received text. Base64url here is the URL-safe alphabet without `=` padding,
+decoded strictly: any other character, an impossible length or non-canonical trailing bits SHALL be
+refused. The lifetime `exp - iat` SHALL be from 0 through 1,800 seconds (twice the 900 s attempt
+ceiling); a longer or negative lifetime SHALL be refused, so a long-lived assignment cannot exist.
+A token over 2 KiB, a token that does not split into exactly three parts, a payload that is not
+that object, an `exp` or `iat` that is not an integer (including a boolean or a float), and an
+`exp` or `iat` outside that range SHALL be refused. The verifier SHALL check the ranges before it
+does arithmetic on them, SHALL turn `exp` into a UTC time with an explicit offset as part of
+verification, and any `OverflowError`, `ValueError` or `OSError` raised by that conversion SHALL be
+refused as `malformed`, never raised to the caller. A correctly signed assignment whose `exp` cannot
+be represented therefore ends as the generic authentication refusal, never as an error response.
 
 #### Scenario: A well-formed, unexpired assignment verifies
 
@@ -28,9 +33,10 @@ represented therefore ends as the generic authentication refusal, never as an er
 
 #### Scenario: Malformed assignments are refused
 
-- **WHEN** the token has two parts, four parts, a tag of the wrong length, a payload that is not
-  base64url, a payload that is not a JSON object, an extra field, a missing field, an empty
-  `route_id`, or an `exp` that is a string, a float, a boolean or negative
+- **WHEN** the token has two parts, four parts, a tag of the wrong length or with non-canonical
+  trailing bits, a payload that is not base64url, a payload that is not a JSON object, a payload
+  with a repeated key, an extra field, a missing field (`iat` included), an empty `route_id`, or an
+  `exp` or `iat` that is a string, a float, a boolean or negative
 - **THEN** verification is refused and the request is denied with no upstream call
 
 #### Scenario: An exp that cannot be a timestamp is refused as malformed
@@ -43,13 +49,31 @@ represented therefore ends as the generic authentication refusal, never as an er
 
 #### Scenario: The largest representable exp verifies
 
-- **WHEN** an assignment is signed with `exp` 253402300799 and verified with a clock before it
+- **WHEN** an assignment is signed with `exp` 253402300799 and an `iat` within 1,800 s of it, and
+  verified with a clock before it
 - **THEN** verification succeeds and its expiry is `9999-12-31T23:59:59Z`
 
 #### Scenario: An exp of zero is well-formed and expired
 
-- **WHEN** an assignment is signed with `exp` 0
+- **WHEN** an assignment is signed with `exp` 0 and `iat` 0
 - **THEN** verification is refused with the reason `expired`, not `malformed`
+
+#### Scenario: A lifetime over 1,800 seconds is refused
+
+- **WHEN** an assignment is signed with a correct tag, `exp - iat` of 1801 (or more), whether or not
+  `exp` is still in the future
+- **THEN** verification is refused with the reason `malformed`, and a request that presents it is
+  denied 403 with the generic body, with no upstream call
+
+#### Scenario: A lifetime of 1,800 seconds or less is accepted
+
+- **WHEN** an assignment is signed with `exp - iat` of 0, 900 or 1800 and an unexpired `exp`
+- **THEN** verification succeeds
+
+#### Scenario: A negative lifetime is refused
+
+- **WHEN** an assignment is signed with `iat` after `exp`, or with a negative `iat`
+- **THEN** verification is refused with the reason `malformed`
 
 #### Scenario: An oversized token is refused before it is decoded
 
@@ -72,8 +96,8 @@ failed; serve SHALL log the reason code only, never the token.
 
 #### Scenario: Each signed field is covered by the tag
 
-- **WHEN** the payload of a valid assignment is changed in `route_id`, `run_id`, `node_id` or `exp`
-  and the tag is kept
+- **WHEN** the payload of a valid assignment is changed in `route_id`, `run_id`, `node_id`, `iat`
+  or `exp` and the tag is kept
 - **THEN** each change is denied 403 with no upstream call
 
 #### Scenario: An expired assignment is denied

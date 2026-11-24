@@ -76,17 +76,29 @@ mismatch"); it injects the compiled pack into the forwarded body when the decisi
 
 ```
 vwa1.<payload>.<tag>
-payload = base64url(JSON {"exp": <int>, "node_id": <str>, "route_id": <str>, "run_id": <str>})
+payload = base64url(JSON {"exp": <int>, "iat": <int>, "node_id": <str>, "route_id": <str>, "run_id": <str>})
 tag     = base64url(HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + payload))
 ```
 
-`vwa1` is the format version. `exp` is integer seconds since the Unix epoch, UTC (an integer
-cannot be a naive local time; a boolean, float, negative or non-integer is refused), and it has an
-upper bound: `0 <= exp <= 253402300799`, which is 9999-12-31T23:59:59Z, the last second a UTC
-`datetime` holds. The bound is needed because the verified result carries `expires_at` as a UTC
-time and every receipt writes it in ISO form; a larger integer, such as 253402300800 (a
-`ValueError`, year 10000) or 2^63 and above (an `OverflowError`), carries a valid tag and still
-cannot become that value. The domain
+Base64url is the URL-safe alphabet **without `=` padding** (`vwa1.e30.e30` is a well-formed shape,
+not a valid assignment), decoded strictly: another character, an impossible length or non-canonical
+trailing bits is refused. `payload` in the MAC is the received text, not a re-encoding.
+
+`vwa1` is the format version. `exp` (expiry) and `iat` (issued at) are integer seconds since the
+Unix epoch, UTC (an integer cannot be a naive local time; a boolean, float, negative or
+non-integer is refused), and each has an upper bound: `0 <= exp <= 253402300799` (and the same for `iat`), which is
+9999-12-31T23:59:59Z, the last second a UTC `datetime` holds. The bound is needed because the
+verified result carries `expires_at` as a UTC time and every receipt writes it in ISO form; a larger
+integer, such as 253402300800 (a `ValueError`, year 10000) or 2^63 and above (an `OverflowError`),
+carries a valid tag and still cannot become that value.
+
+**Lifetime cap** (accepted by the operator, 2026-11-24, after this design merged): `0 <= exp - iat
+<= 1800`, twice the 900 s attempt ceiling in `orchestration/runtime.py`, so a mis-signed long-lived
+assignment cannot exist. A longer or negative lifetime is `malformed` (no new reason code), and the
+cap is checked before expiry: a long lifetime in the past is `malformed`, not `expired`. The
+ranges of `exp` and `iat` are checked before the subtraction. Nothing compares `iat` with the clock
+(a signer whose clock runs a little ahead of serve's must not be refused, and the cap already
+bounds the credential), and `iat` is not carried into the verified result or the receipts. The domain
 tag keeps a tag made for this purpose from being valid for any other HMAC use of the key.
 `route_id`, `run_id` and `node_id` are non-empty strings of at most 128 characters with no control
 characters (they are written to logs and receipts). Unknown or missing fields are refused. A
@@ -95,7 +107,8 @@ token over 2 KiB is refused before decoding.
 **Verification** (`verdict/worker_assignment.py`, new; pure, no I/O except loading the key):
 split on `.` into exactly three parts; decode the tag; recompute the HMAC over the received payload
 text; compare with `hmac.compare_digest`; only after the compare succeeds decode and validate the
-payload (shape, field limits and the `exp` range above); convert `exp` to the UTC `expires_at`
+payload (shape, no repeated key, field limits, the ranges of `exp` and `iat` and the lifetime cap
+above); convert `exp` to the UTC `expires_at`
 inside a guard that maps `OverflowError`, `ValueError` and `OSError` to `malformed`, so no value
 that is not a timestamp passes the verifier and none raises out of it; then check `exp > now`
 (strict, UTC, injected clock). A correctly signed `exp` of 0 is well-formed and ends `expired`; one
@@ -554,13 +567,11 @@ pin. After this story these statements are false and the build edits that change
 
 ## Proposed additions (beyond the eight decisions; the operator may drop any)
 
-1. **`iat` and a maximum lifetime.** Add `iat` to the payload and refuse an assignment whose
-   `exp - iat` exceeds 1,800 s (twice the 900 s attempt ceiling in `orchestration/runtime.py`), so a mis-signed
-   long-lived assignment cannot exist. Not in the spec; if accepted, one field and one check. (The
-   fixed bound on `exp` in D1 is a different thing: it only keeps `exp` representable as a
-   timestamp and is part of the format here.)
-2. **Rotation flag.** `verdict setup ... --rotate-assignment-key` instead of delete-and-rerun. Not
+1. **Rotation flag.** `verdict setup ... --rotate-assignment-key` instead of delete-and-rerun. Not
    proposed: more surface for no new capability.
+
+(The earlier first addition, `iat` and a 1,800 s lifetime cap, was accepted by the operator on
+2026-11-24 after this design merged and is now part of D1.)
 
 ## Open points for the operator
 

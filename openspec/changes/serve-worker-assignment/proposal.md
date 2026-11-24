@@ -56,8 +56,9 @@ Verdict builds with a free worker is work at no paid cost, and the self-build pi
 
 ## What Changes
 
-- **A signed worker assignment.** A token carrying route id, run id, node id and expiry (integer
-  seconds, 0 through 253402300799, so it is always a representable UTC time), signed
+- **A signed worker assignment.** A token carrying route id, run id, node id, issued-at and expiry
+  (integer seconds, each 0 through 253402300799, so it is always a representable UTC time, and a
+  lifetime `exp - iat` of at most 1,800 s: added by the operator on 2026-11-24), signed
   with HMAC-SHA256 by a **separate generated key** (not the serve token). The worker presents it
   as its bearer credential. Serve verifies it with a constant-time compare; a bad, expired or
   missing assignment is denied with no upstream call.
@@ -157,7 +158,8 @@ From the acceptance list of #1313 and the operator's decisions, for this story:
 - A request is routed on an assigned route only with a valid assignment. A forged, expired,
   field-tampered, wrong-key, truncated or missing-key assignment is denied and **no upstream call
   is made**; no route is pinned. So is a correctly signed assignment whose `exp` is outside the
-  range a UTC timestamp can hold (0 through 253402300799): refused as malformed, never a 500.
+  range a UTC timestamp can hold (0 through 253402300799), or whose lifetime exceeds 1,800 s:
+  refused as malformed, never a 500.
 - A request with the serve token and the `X-Verdict-Worker` header but no assignment is denied; no
   route is pinned.
 - An assignment presented anywhere except `POST /v1/chat/completions` and `POST /v1/responses` is
