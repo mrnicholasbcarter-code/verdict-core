@@ -284,6 +284,26 @@ def test_a_link_into_protected_state_is_refused_so_it_cannot_be_written_through(
     assert protected_file.read_text() == '{"ratings": 1}'
 
 
+def test_relative_symlink_target_resolves_against_the_link_directory(
+    fake_real_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = fake_real_home / ".verdict"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # NOT the link's directory
+    with GUARD.protect(root):
+        # '.verdict' next to the link is the protected root, whatever the cwd is.
+        with pytest.raises(PermissionError):
+            os.symlink(".verdict", fake_real_home / "alias")
+        GUARD.drain()
+        assert not (fake_real_home / "alias").is_symlink()
+        # The inverse: cwd inside the root, but the link (and so its target) is elsewhere.
+        monkeypatch.chdir(root)
+        os.symlink("model-metadata.json-not-protected", elsewhere / "fine")
+        assert not GUARD.violations
+        assert (elsewhere / "fine").is_symlink()
+
+
 def test_in_memory_sqlite_uri_named_under_a_protected_root_is_allowed(fake_real_home: Path) -> None:
     root = fake_real_home / ".verdict"
     with GUARD.protect(root):

@@ -200,7 +200,7 @@ _MUTATED_ARGS: dict[str, tuple[int, ...]] = {
     # A link INTO protected state is refused too: writing through the alias
     # (a hard link shares the inode; a symlink resolves to it) would name a
     # path outside the roots.
-    "os.symlink": (0, 1),
+    "os.symlink": (0, 1),  # resolved specially in ``_write_target``
     "os.link": (0, 1),
     "os.chmod": (0,),
     "os.chown": (0,),
@@ -362,6 +362,16 @@ class HomeWriteGuard:
         return None
 
     def _write_target(self, event: str, args: tuple[Any, ...]) -> list[str]:
+        if event == "os.symlink":
+            target = _as_path(args[0]) if args else None
+            link = _as_path(args[1]) if len(args) > 1 else None
+            found = [link] if link else []
+            if target:
+                if not target.startswith("/") and link:
+                    # A relative target resolves against the link's directory.
+                    target = os.path.join(os.path.dirname(_normalise(link)), target)
+                found.append(target)
+            return found
         if event == "open":
             flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
             mode = args[1] if len(args) > 1 and isinstance(args[1], str) else ""
