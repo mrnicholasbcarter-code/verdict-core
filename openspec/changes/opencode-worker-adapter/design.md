@@ -145,6 +145,9 @@ are written to `.verdict-context.md` in the node worktree before the attempt
 starts, and the OpenCode instructions list references that file. The context
 pack is Verdict's standard format; the builder confirms the exact injection
 mechanism.
+The file is written without following symlinks (a fresh regular file atomically replaces
+whatever entry exists), because a repository can track `.verdict-context.md` as a symlink to a
+path outside the worktree.
 
 **Concurrency under `--max-parallel` (design detail):** Each attempt runs in its
 own temp directory for the OpenCode config and its own node worktree. The
