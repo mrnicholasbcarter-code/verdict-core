@@ -37,6 +37,14 @@ In a sharded full proof, every test that `pytest tests/` collects SHALL run exac
 - **WHEN** the full proof runs without a leg index
 - **THEN** `unit_full` runs the same arguments as the contract's command, with no marker filter and no split, and `unit_timing` is recorded as skipped because `unit_full` runs the `timing` tests
 
+#### Scenario: Unsharded run whose covering gate does not run
+- **WHEN** the full proof runs without a leg index and no `shard: split` gate whose command the `unit_timing` command extends runs in that run: the mode does not select it, its `when` condition is not met, or it is optional while `unit_timing` is required
+- **THEN** `unit_timing` is not skipped: it runs its own command, so the `timing` tests still run
+
+#### Scenario: A sharded gate takes a targets placeholder
+- **WHEN** the contract loader reads a `shard: split` or `shard: leader` gate with a `targets_placeholder`
+- **THEN** it refuses the contract, because the runner would skip that gate for want of `--targets` where no leg's accounting looks
+
 #### Scenario: Leg index outside the declared count
 - **WHEN** a leg index is below 1 or above the declared leg count, or the contract declares no leg count
 - **THEN** the runner exits with a usage error and runs no gate

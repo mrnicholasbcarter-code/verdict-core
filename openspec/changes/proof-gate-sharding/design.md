@@ -121,6 +121,14 @@ byte.
 | unsharded (local, agents) | `pytest tests/ -q --tb=short` | recorded `skip`, "unit_full runs the timing tests" |
 | leg K of N | `pytest tests/ -q --tb=short -m "not timing" --splits N --group K --splitting-algorithm least_duration --junitxml=proof-shard-K/junit-unit_full.xml` | K = 1: `... -m timing -p no:xdist --junitxml=proof-shard-1/junit-unit_timing.xml`; K > 1: recorded `skip` |
 
+- An unsharded run skips `unit_timing` only while a `shard: split` gate whose
+  command `unit_timing` extends really runs in that run: selected by the mode,
+  its `when` condition met, not skipped for want of `--targets`, and required if
+  `unit_timing` is. When no such gate runs, `unit_timing` runs its own command, so
+  the `timing` tests never go unrun. `plan_gates` decides this for the runner, the
+  aggregate and `live_acceptance.py unsharded`; the checked-in contract plans
+  exactly as before. A sharded gate may not take `targets_placeholder`, because
+  that rule would skip it where no leg's accounting looks.
 - `-m "not timing"` is the only marker deselection the change introduces. The
   12 tests it removes from `unit_full` are exactly the ones `unit_timing` runs.
   `--splits/--group` also deselects, in each leg, what another leg runs. The
