@@ -1176,8 +1176,8 @@ def test_serve_credential_reaches_only_the_child_env_under_the_configured_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Resolved by Verdict's own code (here via serve's documented LLMGATE_AUTH_TOKEN) and
-    handed to the worker only as VERDICT_WORKER_API_KEY: not in argv, the config file, the
-    context file, or any other variable."""
+    handed to the worker only as VERDICT_WORKER_API_KEY: not in argv, stdin, the config
+    directory's files (the config and the task instructions file), or any other variable."""
     _isolated_home(monkeypatch, tmp_path)
     monkeypatch.setenv("LLMGATE_AUTH_TOKEN", _SERVE_TOKEN)
     monkeypatch.setattr(executor_module, "_worker_credential", _REAL_WORKER_CREDENTIAL)
@@ -1187,10 +1187,8 @@ def test_serve_credential_reaches_only_the_child_env_under_the_configured_name(
         f"import pathlib\n"
         f"cfg = pathlib.Path(os.environ['OPENCODE_CONFIG_DIR'])\n"
         f"files = {{p.name: p.read_text() for p in cfg.iterdir() if p.is_file()}}\n"
-        f"ctx = pathlib.Path(os.getcwd()) / '.verdict-context.md'\n"
         f"pathlib.Path({str(capture)!r}).write_text(json.dumps({{\n"
-        f"    'env': dict(os.environ), 'argv': sys.argv, 'config': files,\n"
-        f"    'context': ctx.read_text() if ctx.exists() else '',\n"
+        f"    'env': dict(os.environ), 'argv': sys.argv, 'config': files, 'stdin': sys.stdin.read(),\n"
         f"}}))\n"
         f"sys.exit(0)\n",
     )
@@ -1201,7 +1199,8 @@ def test_serve_credential_reaches_only_the_child_env_under_the_configured_name(
     data = json.loads(capture.read_text())
     holders = [name for name, value in data["env"].items() if _SERVE_TOKEN in value]
     assert holders == ["VERDICT_WORKER_API_KEY"], holders
-    for surface in ("argv", "config", "context"):
+    assert TASK_FILE_NAME in data["config"], "the instructions file was not among the files"
+    for surface in ("argv", "config", "stdin"):
         assert _SERVE_TOKEN not in json.dumps(data[surface]), f"credential leaked into {surface}"
     assert "{env:VERDICT_WORKER_API_KEY}" in json.dumps(data["config"])
 
