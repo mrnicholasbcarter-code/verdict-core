@@ -216,7 +216,8 @@ def _flags(*names: str) -> int:
         ("os.rename", ("{rp}", "{o}/moved", None, None), True),  # an ANCESTOR of the root
         ("os.rename", ("{rp}/..", "{o}/moved", None, None), True),
         ("os.rename", ("{rp}/.bashrc", "{rp}/.bashrc.bak", None, None), False),  # unrelated sibling
-        ("os.rename", ("{o}/a", "{rp}", None, None), False),
+        ("os.rename", ("{o}/tree", "{rp}", None, None), True),  # populates the root's parent
+        ("shutil.move", ("{o}/tree", "{rp}"), True),
         ("shutil.move", ("{rp}", "{o}/moved"), True),
         ("shutil.rmtree", ("{rp}", None), True),
         ("shutil.rmtree", ("{rp}/other-tool", None), False),
@@ -265,6 +266,28 @@ def test_guard_event_table(event: str, args: tuple[Any, ...], denied: bool, tmp_
     else:
         guard.check(event, filled)
         assert guard.violations == []
+
+
+def test_renaming_a_prepared_tree_onto_an_ancestor_of_the_root_is_refused(tmp_path: Path) -> None:
+    """``os.rename(tree, ~/.config)`` would create the protected ``~/.config/verdict``."""
+    home = tmp_path / "home2"
+    home.mkdir()
+    tree = tmp_path / "tree"
+    (tree / "verdict").mkdir(parents=True)
+    (tree / "verdict" / "state.json").write_text("{}")
+    root = home / ".config" / "verdict"
+    with GUARD.protect(root):
+        with pytest.raises(PermissionError):
+            os.rename(tree, home / ".config")
+        with pytest.raises(PermissionError):
+            shutil.move(str(tree), str(home / ".config"))
+        assert len(GUARD.drain()) == 2
+        # An unrelated rename under the same home is still allowed.
+        (home / "notes.txt").write_text("n")
+        os.rename(home / "notes.txt", home / "notes.bak")
+        assert not GUARD.violations
+    assert not (home / ".config").exists()
+    assert (tree / "verdict" / "state.json").read_text() == "{}"
 
 
 def test_a_link_into_protected_state_is_refused_so_it_cannot_be_written_through(
