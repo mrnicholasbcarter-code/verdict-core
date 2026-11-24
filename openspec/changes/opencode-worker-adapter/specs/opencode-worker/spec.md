@@ -263,6 +263,64 @@ refused, not replaced by the default.
 - **WHEN** `--serve-url http://127.0.0.1:9123` is passed
 - **THEN** the per-attempt provider base URL is `http://127.0.0.1:9123/v1`
 
+### Requirement: The dispatch-origin check binds the executor to the worker serve address
+
+The OpenCode executor SHALL report, as its dispatch origin, the `verdict serve` origin its
+workers really call (the address resolved as in "Serve address comes from configuration"), and
+SHALL NOT declare that it sends nothing. The run's dispatch authority SHALL carry the worker
+serve origin, which `verdict orchestrate` resolves from the same flag and variable, and the
+runtime SHALL refuse the send, before any permit is minted and before a worker is launched, when
+the reported serve origin differs from it (both normalised) or when the authority carries none.
+A reported serve origin SHALL be checked against the worker serve origin only, never against the
+gateway origin. An origin reported by any other executor SHALL be checked against the gateway
+origin only, as before, and SHALL NOT be accepted for naming the serve address. Executors that
+send nothing SHALL be unchanged. The check SHALL hold when the executor is wrapped for a node map
+or for fault injection.
+
+#### Scenario: The reported origin is the one the worker calls
+
+- **WHEN** the executor is built with `--serve-url http://127.0.0.1:9123`
+- **THEN** it reports `http://127.0.0.1:9123`, and the per-attempt provider base URL is
+  `http://127.0.0.1:9123/v1`
+
+#### Scenario: The bound serve address is sent
+
+- **WHEN** the dispatch authority binds `http://127.0.0.1:8000` and the executor reports it, in
+  any spelling that normalises to it
+- **THEN** the permit is minted and the worker is launched
+
+#### Scenario: Another serve address is refused before dispatch
+
+- **WHEN** the executor reports `http://127.0.0.1:8000` and the authority binds
+  `http://127.0.0.1:9999`
+- **THEN** the node is BLOCKED with `dispatch_denied: executor origin mismatch`, no permit is
+  minted and no worker is launched, even when the authority's gateway origin is
+  `http://127.0.0.1:8000`
+
+#### Scenario: No serve address bound is refused
+
+- **WHEN** the authority carries no worker serve origin (the configured address is not an
+  http(s) origin)
+- **THEN** the node is BLOCKED with `dispatch_denied: executor origin mismatch: no worker serve
+  origin is bound`, with no permit and no launch
+
+#### Scenario: Another executor cannot claim the serve address
+
+- **WHEN** an executor other than the OpenCode one reports a plain URL equal to the worker serve
+  origin and the authority's gateway origin is another
+- **THEN** the node is BLOCKED with `dispatch_denied: executor origin mismatch`
+
+#### Scenario: Executors that send nothing are unchanged
+
+- **WHEN** an executor declares the local origin, whatever worker serve origin the authority
+  carries or none
+- **THEN** the permit is minted and the executor runs as before
+
+#### Scenario: Wrapped executors are checked the same
+
+- **WHEN** the OpenCode executor runs inside a node map or the fault-injecting wrapper
+- **THEN** a matching serve origin is sent and a different one, or none, is refused before dispatch
+
 ### Requirement: Upstream status and cost are recorded honestly
 
 A failed attempt SHALL keep the HTTP status and retry delay OpenCode reports in a structured

@@ -62,8 +62,8 @@ from verdict.orchestration.contracts import (
     WorkNode,
     check_transition,
     dispatch_blocker,
+    dispatch_origin_problem,
     executor_gateway_origin,
-    gateway_origin_matches,
     release_executor_origin_pin,
     require_launchable,
     route_family,
@@ -221,6 +221,10 @@ class DispatchAuthority:
     """Where DagRuntime gets route proofs for BOD-433 dispatch permits.
 
     ``gateway_origin`` is the gateway the run's workers are sent through.
+    ``worker_serve_origin`` is the ``verdict serve`` origin of the workers that send through
+    serve instead (the OpenCode executor); an executor that reports a
+    :class:`~verdict.orchestration.contracts.WorkerServeOrigin` is checked against it and
+    never against ``gateway_origin``, and None binds none, so such an executor is refused.
     ``confirm(route_ids, now)`` returns a read-only passport confirmation in the
     shape ``relay.admission_proof`` consumes.
 
@@ -232,6 +236,7 @@ class DispatchAuthority:
     gateway_origin: str
     confirm: Callable[[Sequence[str], datetime], dict[str, Any]]
     record_gateway_origin: bool = True
+    worker_serve_origin: str | None = None
 
 
 #: Recorded in place of the gateway origin when the run asks for redaction.
@@ -1769,14 +1774,19 @@ class DagRuntime:
                 )
                 # Until the send starts, a denial must free what the check pinned.
                 origin_pinned = True
-                if self.dispatch_authority is not None and (
-                    origin is None
-                    or not gateway_origin_matches(origin, self.dispatch_authority.gateway_origin)
-                ):
-                    # An unknown gateway, or another one than the permit binds:
+                origin_problem = (
+                    None
+                    if self.dispatch_authority is None
+                    else dispatch_origin_problem(
+                        origin,
+                        gateway_origin=self.dispatch_authority.gateway_origin,
+                        worker_serve_origin=self.dispatch_authority.worker_serve_origin,
+                    )
+                )
+                if origin_problem is not None:
+                    # An unknown origin, or another one than the run binds:
                     # no route change fixes it.
-                    detail = "unknown" if origin is None else "mismatch"
-                    reason = f"dispatch_denied: executor origin {detail}"
+                    reason = f"dispatch_denied: {origin_problem}"
                     terminal = WorkerTerminal(ok=False, error=reason)
                     self._record_failure(
                         run,

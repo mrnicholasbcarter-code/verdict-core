@@ -95,6 +95,35 @@
       `test_cancelling_run_during_the_version_probe_makes_no_serve_request`,
       `test_cancelling_run_between_the_binary_and_serve_checks_skips_the_serve_check`,
       `test_cancelling_run_waits_for_a_serve_check_that_is_already_in_flight`).
+- [x] 2.13 Dispatch-origin check on for the OpenCode executor (#1326, story 3 of #1313): the
+      executor reports the serve origin it really calls instead of declaring
+      `LOCAL_EXECUTOR_ORIGIN`, `DispatchAuthority.worker_serve_origin` carries the address
+      `verdict orchestrate` resolves, and the runtime refuses a mismatch, or no bound address,
+      before the permit and the launch; other executors are not loosened. The stopgap
+      declaration and its `DISPATCH_ORIGIN_CONFLICT` note are removed from
+      `executor_opencode.py`. Verify (tests):
+      `tests/test_opencode_executor.py`
+      (`test_the_executor_reports_its_real_serve_origin_not_the_local_declaration`,
+      `test_the_reported_origin_is_the_one_the_worker_calls`,
+      `test_the_local_origin_declaration_and_its_stopgap_note_are_gone`) and
+      `tests/test_dagruntime_dispatch_permits.py`
+      (`test_opencode_on_the_bound_worker_serve_origin_is_sent`,
+      `test_opencode_origin_is_compared_normalised`,
+      `test_opencode_on_another_serve_than_the_authority_binds_is_refused`,
+      `test_opencode_with_no_worker_serve_origin_bound_is_refused`,
+      `test_a_serve_origin_is_never_checked_against_the_gateway_origin`,
+      `test_another_executor_cannot_claim_the_worker_serve_origin`,
+      `test_another_executor_on_the_gateway_origin_is_unchanged_by_a_serve_origin`,
+      `test_an_executor_that_sends_nothing_is_allowed_whatever_serve_origin_is_bound`,
+      `test_the_serve_origin_check_holds_through_the_executor_wrappers`,
+      `test_dispatch_origin_problem_table`,
+      `test_orchestrate_authority_carries_the_worker_serve_origin`,
+      `test_the_authority_and_the_opencode_executor_built_from_the_same_arguments_agree`).
+      **Evidence (2026-11-24):** the tests were written first and 31 of them failed on the
+      unchanged code; with the change all 238 tests of `tests/test_opencode_executor.py`,
+      `tests/test_dagruntime_dispatch_permits.py` and `tests/test_dispatch_permits.py` pass. The live
+      path through serve is tasks 2.8 and 8.1; serve's own proof that it forwards to the permit's
+      gateway and the signed assignment stay with #1313.
 - [ ] (post-merge) 2.8 Live smoke of the worker on an admitted route, run with
       `--executor opencode` (OpenCode is opt-in) and **expected to fail until #1313 lands**
       (serve refuses the worker's requests until it honours the worker's assignment before its

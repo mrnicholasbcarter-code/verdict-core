@@ -75,6 +75,17 @@ reachability. Until issue #1313 (OC1b) the route is pinned by the worker header:
 name another admitted route, never a non-admitted one. #1313 replaces the credential with a signed
 per-attempt assignment.*
 
+*Implementation note (2026-11-24, #1326): the dispatch-origin stopgap is gone. The executor no longer
+declares `LOCAL_EXECUTOR_ORIGIN` (which matched any bound origin) while its workers send through
+serve. It reports the serve origin it really calls (resolved as its serve address is, `--serve-url`,
+`VERDICT_SERVE_URL`, then the unit's address), the dispatch authority carries the worker serve origin
+(`DispatchAuthority.worker_serve_origin`, filled by `verdict orchestrate` from the same inputs), and
+the runtime refuses a mismatch, or no bound address, before the permit and the launch. Only a reported
+`WorkerServeOrigin` is compared with that address, and it is never compared with the gateway origin;
+every other executor is checked against the gateway origin exactly as before. Serve's proof that it
+forwards to the permit's gateway and the signed assignment remain #1313. The decision above is
+unchanged.*
+
 **2. OpenCode becomes the default orchestrate worker executor, after a live smoke passes; until then it is opt-in.**
 `opencode` is registered and selected with `verdict orchestrate --executor opencode`.
 `direct-gateway` stays the DEFAULT worker executor until a live smoke passes after #1313 (one
