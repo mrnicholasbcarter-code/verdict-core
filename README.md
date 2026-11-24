@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/readme-banner.svg" alt="Verdict. A goal and a git repository go in; the run is planned, models are admitted on live evidence, work runs and recovers within a limit, a separate route reviews it, and a receipt you can verify comes out." width="100%">
+<img src="docs/assets/readme-banner.svg" alt="Verdict banner: the stages of a run, from goal to receipt." width="100%">
 
 # Verdict
 
@@ -243,16 +243,16 @@ The first command exits 0. The second exits 1, names the digest mismatch first, 
 
 ## How Verdict differs
 
-Verdict is not a proxy or a model catalog. It sits in front of one and decides what may run.
+Verdict is not a proxy or a model catalog. It sits in front of one and decides what may run. The table summarises the comparison guide's rows for LiteLLM, OpenRouter and Portkey.
 
-| Question | A typical gateway | Verdict |
+| Question | LiteLLM, OpenRouter, Portkey | Verdict |
 |---|---|---|
-| A model's health is unknown. Does it still get the call? | Often yes, through fallback or retry | No. Unknown is never counted as healthy |
-| Why was a model not used? | Usually not recorded | Every refusal has a named reason in the receipt |
-| Who checked the result? | The caller | A reviewer on a route that did not write the code |
-| What is left after the run? | Logs | A receipt bound to the event log by a SHA-256 digest |
+| A model's health is unknown. Does it still get the call? | Often yes, through fallback, retry or provider routing; guardrails are optional | No. Unknown is never counted as healthy |
+| Where is the reason a candidate was dropped? | In that tool's logs, usage logs or traces, not in a gate receipt | A named reason on every drop |
+| Can a score put an excluded model back? | Routing configuration, the marketplace or policy can | No |
+| Is there an offline check that needs no API key? | No | `verdict quickstart --dry-run` |
 
-The full comparison with LiteLLM, OpenRouter and Portkey, and what Verdict does not claim, is in [How Verdict differs](docs/guides/comparison.md).
+The full comparison, row by row for each tool, and what Verdict does not claim, is in [How Verdict differs](docs/guides/comparison.md).
 
 ## Use it from your tools
 
