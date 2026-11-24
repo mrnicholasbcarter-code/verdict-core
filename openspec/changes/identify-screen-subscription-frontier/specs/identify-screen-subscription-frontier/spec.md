@@ -2,15 +2,23 @@
 
 ## ADDED Requirements
 
-### Requirement: The tier filter SHALL pass routes with unknown capability tier
-When `--max-capability-tier N` is set, the screen SHALL skip only routes whose
-capability tier is a known value greater than N.  Routes whose capability tier
-is unknown (classifier returns None) SHALL NOT be filtered; they pass to the
-probe stage.
+### Requirement: The tier filter SHALL use the planner band for unknown-tier routes
+When `--max-capability-tier N` is set, the screen SHALL skip routes whose
+capability tier is a known value greater than N with result `skipped_capability_tier`.
+Routes whose capability tier is unknown (classifier returns None) SHALL be
+filtered with result `skipped_unknown_tier` UNLESS their stripped model key
+appears in the ADR-051 fallback planner band per fresh `aa_intelligence` ratings.
+A no-tier route whose model is in the fallback band SHALL proceed to the probe stage.
 
-#### Scenario: Unknown-tier route passes max_capability_tier filter
+#### Scenario: Unknown-tier route in planner band passes the tier filter
 - **WHEN** `--max-capability-tier 1` is set and a route has an unknown tier
+- **AND** the route's stripped model key is in the ADR-051 fallback band (fresh `aa_intelligence` ratings)
 - **THEN** the route is not given result `skipped_unknown_tier`; it proceeds to the probe stage
+
+#### Scenario: Unknown-tier route with stale or missing ratings is filtered
+- **WHEN** `--max-capability-tier 1` is set and a route has an unknown tier
+- **AND** the route has no fresh `aa_intelligence` rating (stale or absent)
+- **THEN** the route is given result `skipped_unknown_tier` and is not probed
 
 #### Scenario: Known-excessive-tier route is still filtered
 - **WHEN** `--max-capability-tier 2` is set and a route has known tier 3

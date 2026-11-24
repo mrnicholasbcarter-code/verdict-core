@@ -9,6 +9,7 @@ import pytest
 
 from verdict import identify
 from verdict.metadata.records import (
+    SOURCE_OPENROUTER_AA,
     FieldProvenance,
     ModelMetadataRecord,
     ProvenancedField,
@@ -622,18 +623,17 @@ def test_tier_cap_never_probes_insufficient_or_unknown_tier(tmp_path):
     assert {r[0] for r in calls} == {"p/claude-sonnet-4.5"}
     by_id = {r["route_id"]: r for r in report["routes"]}
     assert by_id["p/gemma-4-26b-a4b-it"]["result"] == "skipped_capability_tier"
-    # Unknown-tier routes are no longer filtered by max_capability_tier (fix for
-    # #1284): q/zzqx-blob passes the tier filter but hits the route cap because
-    # claude-sonnet-4.5 already consumed the max_routes=1 slot.
-    assert by_id["q/zzqx-blob"]["result"] == "skipped_cap"
+    # Unknown-tier routes with no band membership get skipped_unknown_tier (fix
+    # for #1284 narrowed by ADR-051): metadata=None → empty band → q/zzqx-blob
+    # is filtered before consuming a cap slot.
+    assert by_id["q/zzqx-blob"]["result"] == "skipped_unknown_tier"
     assert by_id["p/claude-sonnet-4.5"]["capability_tier"] == 1
     assert by_id["p/claude-sonnet-4.5"]["supports_tools"] is True
     assert by_id["p/claude-sonnet-4.5"]["context_window"] == 200_000
     # Only the probed route consumed the cap; tier-filtered routes did not.
     assert report["routes_checked"] == report["passed"] == 1
-    # stopped_reason is route_cap because q/zzqx-blob reached the cap check
-    # (it was not silently filtered before reaching decide()).
-    assert report["stopped_reason"] == "route_cap"
+    # stopped_reason is complete: the skipped routes were filtered, not capped.
+    assert report["stopped_reason"] == "complete"
 
 
 def test_without_tier_cap_screen_order_and_membership_are_unchanged(tmp_path):
@@ -874,16 +874,9 @@ def test_new_options_only_remove_routes_from_the_probed_set(tmp_path):
         tmp_path / "floor", calls, GOLDEN_INVENTORY, max_routes=99, max_per_pool=1, **PLANNER_FLOOR
     )
     assert [r["route_id"] for r in report["routes"]] == [r["route_id"] for r in plain["routes"]]
-    # zz/unknown-tier is now probed: unknown-tier routes are no longer filtered
-    # by max_capability_tier (fix for #1284).  It passes all floors and has a
-    # unique pool, so it reaches and passes the probe.
-    assert probed(calls) == [
-        "agy/alpha",
-        "cerebras/zeta",
-        "kc/gamma:free",
-        "nvidia/epsilon",
-        "zz/unknown-tier",
-    ]
+    # zz/unknown-tier has no band membership (metadata=None → empty band) so it
+    # receives skipped_unknown_tier and is never probed (ADR-051 narrowing).
+    assert probed(calls) == ["agy/alpha", "cerebras/zeta", "kc/gamma:free", "nvidia/epsilon"]
     assert set(probed(calls)) < set(probed(plain_calls))
     assert results(report) == {
         "agy/alpha": "pass",
@@ -896,7 +889,7 @@ def test_new_options_only_remove_routes_from_the_probed_set(tmp_path):
         "kc/gamma:free": "pass",
         "nvidia/epsilon": "pass",
         "openrouter/delta:free": "skipped_pool_cap",
-        "zz/unknown-tier": "pass",
+        "zz/unknown-tier": "skipped_unknown_tier",
     }
 
 
@@ -1120,21 +1113,105 @@ def test_rescreen_requested_bypasses_skipped_fresh_and_probes(tmp_path: object) 
 # ---------------------------------------------------------------------------
 
 
-def test_max_capability_tier_does_not_skip_unknown_tier_routes(tmp_path: Path) -> None:
-    """Routes with unknown tier pass the max_capability_tier filter (issue #1284).
+def _band_evidence(route_id: str) -> OmniRouteEvidence:
+    """Evidence where route_id is in inventory_route_ids but not proven_by_traffic.
 
-    The classifier returns None for all standard fixture route ids ('p/*', 'q/*').
-    Before the fix, every route received skipped_unknown_tier when
-    --max-capability-tier was set.  The filter now only blocks routes whose tier
-    is a known value above the ceiling.
+    The route has no capability_tier in its inventory row (tier is None).
     """
-    calls: list[object] = []
-    report = screen(tmp_path, calls, max_capability_tier=1)  # type: ignore[arg-type]
-    skips = [r for r in report["routes"] if r["result"] == "skipped_unknown_tier"]
-    assert skips == [], (
-        "Routes with unknown tier must not be skipped by max_capability_tier; "
-        f"got: {[s['route_id'] for s in skips]}"
+    prefix = route_id.split("/", 1)[0]
+    return OmniRouteEvidence(
+        fetched_at=NOW,
+        connections=(),
+        usable_providers=frozenset({prefix}),
+        proven_by_traffic={},
+        cooled_models=frozenset(),
+        source_errors=(),
+        route_capacities={route_id: "subscription"},
+        inventory_route_ids=frozenset({route_id}),
+        inventory_rows={
+            route_id: {
+                "id": route_id,
+                "context_length": 200_000,
+                "capabilities": {"tool_calling": True},
+                # no capability_tier → tier is None
+            }
+        },
     )
+
+
+def _intelligence_snapshot(route_id: str, *, stale: bool = False) -> MetadataSnapshot:
+    """MetadataSnapshot with a fresh (or stale) aa_intelligence score for route_id."""
+    hours_before = 24 if stale else 3
+    fetched_at = (NOW - timedelta(hours=hours_before)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    prov = ProvenancedField(
+        value=0.95, provenance=FieldProvenance(source=SOURCE_OPENROUTER_AA, fetched_at=fetched_at)
+    )
+    record = ModelMetadataRecord(
+        id=route_id, omniroute_ids=(route_id,), scores=SoftScores(aa_intelligence=prov)
+    )
+    return MetadataSnapshot(
+        schema_version="1", refreshed_at=fetched_at, sources={}, records=(record,)
+    )
+
+
+def test_unknown_tier_in_band_passes_tier_filter(tmp_path: Path) -> None:
+    """A no-tier route in the planner band passes the max_capability_tier filter.
+
+    Issue #1284 narrowed: unknown-tier routes pass only when their stripped
+    model key is in the ADR-051 fallback band per fresh aa_intelligence ratings.
+    With a fresh score, the route is in the band and must reach the probe stage.
+    The route id uses a prefix unknown to the classifier so tier stays None.
+    """
+    rid = "zz/frontier-test-model"
+    calls: list[object] = []
+    report = identify.screen_models(
+        _band_evidence(rid),
+        metadata=_intelligence_snapshot(rid),
+        cache=HealthCache(tmp_path / "health.json"),
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=2,
+        max_routes=2,
+        clock=lambda: NOW,
+        capacities=("subscription",),
+        max_capability_tier=1,
+    )
+    rows = {r["route_id"]: r for r in report["routes"]}
+    assert rid in rows
+    assert rows[rid]["result"] != "skipped_unknown_tier", (
+        "Route in planner band must not be filtered by max_capability_tier"
+    )
+    assert calls != [], "Route in band must be probed"
+
+
+def test_unknown_tier_with_stale_ratings_is_filtered(tmp_path: Path) -> None:
+    """A no-tier route with stale aa_intelligence ratings gets skipped_unknown_tier.
+
+    The planner band is computed only from fresh ratings (within 12 hours of now).
+    A route whose only rating is older than 12 hours falls out of the band and is
+    filtered with skipped_unknown_tier; it must not be probed.
+    The route id uses a prefix unknown to the classifier so tier stays None.
+    """
+    rid = "zz/frontier-test-model"
+    calls: list[object] = []
+    report = identify.screen_models(
+        _band_evidence(rid),
+        metadata=_intelligence_snapshot(rid, stale=True),
+        cache=HealthCache(tmp_path / "health.json"),
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=2,
+        max_routes=2,
+        clock=lambda: NOW,
+        capacities=("subscription",),
+        max_capability_tier=1,
+    )
+    rows = {r["route_id"]: r for r in report["routes"]}
+    assert rid in rows
+    assert rows[rid]["result"] == "skipped_unknown_tier", (
+        "Route with stale ratings must be filtered (not in band)"
+    )
+    assert calls == [], "Stale-rated route must not be probed"
 
 
 def test_screen_uses_live_candidate_provider_for_provider_filter(tmp_path: Path) -> None:
