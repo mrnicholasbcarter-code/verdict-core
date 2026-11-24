@@ -1168,6 +1168,46 @@ CONDITION_EDITS = {
         "FLAG = False\nSKIP = FLAG\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
         "FLAG = True\nSKIP = FLAG\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
     ),
+    "an and guard flips": (
+        "def test_b():\n    False and pytest.skip('r')\n",
+        "def test_b():\n    True and pytest.skip('r')\n",
+    ),
+    "an or guard flips": (
+        "def test_b():\n    True or pytest.skip('r')\n",
+        "def test_b():\n    False or pytest.skip('r')\n",
+    ),
+    "a later operand of a longer and guard flips": (
+        "def test_b(a):\n    a and True and pytest.skip('r')\n",
+        "def test_b(a):\n    a and False and pytest.skip('r')\n",
+    ),
+    "a local flag flips": (
+        "def test_b():\n    skip_test = False\n    if skip_test:\n        pytest.skip('r')\n",
+        "def test_b():\n    skip_test = True\n    if skip_test:\n        pytest.skip('r')\n",
+    ),
+    "a parameter default flips": (
+        "def test_b(flag=False):\n    if flag:\n        pytest.skip('r')\n",
+        "def test_b(flag=True):\n    if flag:\n        pytest.skip('r')\n",
+    ),
+    "a local that shadows a module constant flips": (
+        "SKIP = False\n\ndef test_b():\n    SKIP = False\n    if SKIP:\n        pytest.skip('r')\n",
+        "SKIP = False\n\ndef test_b():\n    SKIP = True\n    if SKIP:\n        pytest.skip('r')\n",
+    ),
+    "a method local that shadows a class attribute flips": (
+        "class TestK:\n    SKIP = False\n\n    def test_b(self):\n        SKIP = False\n        if SKIP:\n            pytest.skip('r')\n",
+        "class TestK:\n    SKIP = False\n\n    def test_b(self):\n        SKIP = True\n        if SKIP:\n            pytest.skip('r')\n",
+    ),
+    "a keyword-only default flips": (
+        "def test_b(*, flag=False):\n    if flag:\n        pytest.skip('r')\n",
+        "def test_b(*, flag=True):\n    if flag:\n        pytest.skip('r')\n",
+    ),
+    "a class attribute flips": (
+        "class TestK:\n    SKIP = False\n\n    def test_b(self):\n        if self.SKIP:\n            pytest.skip('r')\n",
+        "class TestK:\n    SKIP = True\n\n    def test_b(self):\n        if self.SKIP:\n            pytest.skip('r')\n",
+    ),
+    "a local read through another local flips": (
+        "def test_b():\n    base = False\n    skip_test = base\n    if skip_test:\n        pytest.skip('r')\n",
+        "def test_b():\n    base = True\n    skip_test = base\n    if skip_test:\n        pytest.skip('r')\n",
+    ),
     "a while guard changes": (
         "def test_b():\n    while False:\n        pytest.skip('r')\n",
         "def test_b():\n    while True:\n        pytest.skip('r')\n",
@@ -1240,3 +1280,60 @@ def test_a_marker_or_selection_option_applied_at_run_time_fails(
     repo = scenario(tmp_path, {"tests/test_a.py": CLEAN_TEST + "\n\n" + RUNTIME_MARKERS[name]})
     code, output = check(repo, capsys)
     assert code == 1, output
+
+
+HOOK_CONSTANT_EDITS = {
+    "a constant a hook returns": (
+        "IGNORE = False\n\ndef pytest_ignore_collect(collection_path):\n    return IGNORE\n",
+        "IGNORE = True\n\ndef pytest_ignore_collect(collection_path):\n    return IGNORE\n",
+    ),
+    "a constant a hook uses to drop items": (
+        "DROP = []\n\ndef pytest_collection_modifyitems(items):\n    items[:] = [i for i in items if i not in DROP]\n",
+        "DROP = ['x']\n\ndef pytest_collection_modifyitems(items):\n    items[:] = [i for i in items if i not in DROP]\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(HOOK_CONSTANT_EDITS))
+def test_changing_a_constant_a_collection_hook_reads_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    before, after = HOOK_CONSTANT_EDITS[name]
+    repo = scenario(
+        tmp_path, {"tests/conftest.py": after}, base=base_files() | {"tests/conftest.py": before}
+    )
+    code, output = check(repo, capsys)
+    assert code == 1, output
+
+
+UNRELATED_EDITS = {
+    "an unrelated local": (
+        "def test_b():\n    limit = 1\n    flag = False\n    if flag:\n        pytest.skip('r')\n    assert limit\n",
+        "def test_b():\n    limit = 2\n    flag = False\n    if flag:\n        pytest.skip('r')\n    assert limit\n",
+    ),
+    "an unrelated default": (
+        "def test_b(limit=1, flag=False):\n    if flag:\n        pytest.skip('r')\n    assert limit\n",
+        "def test_b(limit=2, flag=False):\n    if flag:\n        pytest.skip('r')\n    assert limit\n",
+    ),
+    "an unrelated class attribute": (
+        "class TestK:\n    LIMIT = 1\n    SKIP = False\n\n    def test_b(self):\n        if self.SKIP:\n            pytest.skip('r')\n        assert self.LIMIT\n",
+        "class TestK:\n    LIMIT = 2\n    SKIP = False\n\n    def test_b(self):\n        if self.SKIP:\n            pytest.skip('r')\n        assert self.LIMIT\n",
+    ),
+    "a constant no hook reads": (
+        "LIMIT = 1\n\ndef pytest_ignore_collect(collection_path):\n    return False\n",
+        "LIMIT = 2\n\ndef pytest_ignore_collect(collection_path):\n    return False\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(UNRELATED_EDITS))
+def test_changing_a_value_nothing_skips_on_still_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    before, after = UNRELATED_EDITS[name]
+    repo = scenario(
+        tmp_path,
+        {"tests/test_a.py": CLEAN_TEST + "\n\n" + after},
+        base=base_files() | {"tests/test_a.py": CLEAN_TEST + "\n\n" + before},
+    )
+    assert check(repo, capsys)[0] == 0

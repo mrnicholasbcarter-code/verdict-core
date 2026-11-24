@@ -29,6 +29,20 @@ It exits 1 when any of these holds, and prints every finding:
 * The ``[tool.pytest.ini_options]`` table of ``pyproject.toml`` differs, a
   ``pytest.ini`` appears or changes, or ``.test_durations`` differs.
 
+What a construct's record holds. Its own text; the scope it sits in; the conditions around it
+(``if``, ``else``, ``while``, conditional expressions, the operands before it in ``and`` /
+``or``); and what the names those conditions and the construct read were bound to in the same
+file: function locals and parameter defaults, class attributes read through ``self`` or ``cls``,
+module constants, each followed through the names it reads in turn. So ``if False: skip()``
+becoming ``if True:``, a flag flipping, or ``SKIP = False`` becoming ``SKIP = True`` under an
+unchanged ``skipif(SKIP)`` are findings. A hook is recorded as its whole definition, docstring
+aside, with the constants it reads.
+
+What it does not see: it reads code, not behaviour. A guard that depends on something outside
+the changed file (a constant imported from another module, an environment variable, a fixture's
+value, a plugin, data a test reads) can change without changing any text this reads. Review
+such edits by hand. Code that builds a skip dynamically (``getattr``, ``exec``) is out of reach.
+
 Exit codes: 0 nothing weakened, 1 a weakening, 2 a git, usage or parse failure
 (never a pass: a file that cannot be read or parsed is a failure to check).
 """
@@ -183,6 +197,37 @@ def changed_files(repo: Path, baseline: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _simple_bindings(body: list[ast.stmt]) -> dict[str, ast.expr]:
+    """``name = value`` statements of one scope, not those of the definitions nested in it."""
+    found: dict[str, ast.expr] = {}
+    pending = list(body)
+    while pending:
+        stmt = pending.pop(0)
+        if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            continue
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            target, value = stmt.target, stmt.value
+        else:
+            target = value = None
+        if isinstance(target, ast.Name) and value is not None:
+            found[target.id] = value
+        pending.extend(c for c in ast.iter_child_nodes(stmt) if isinstance(c, ast.stmt))
+    return found
+
+
+def _parameter_defaults(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, ast.expr]:
+    args = node.args
+    positional = [*args.posonlyargs, *args.args]
+    found = dict(
+        zip(positional[len(positional) - len(args.defaults) :], args.defaults, strict=False)
+    )
+    keyword_only = dict(zip(args.kwonlyargs, args.kw_defaults, strict=True))
+    found.update({a: d for a, d in keyword_only.items() if d is not None})
+    return {a.arg: d for a, d in found.items()}
+
+
 def _without_docstring(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.AST:
     """A copy of a function without its docstring: wording is not behaviour."""
     clone = copy.deepcopy(node)
@@ -205,16 +250,10 @@ class _Collector(ast.NodeVisitor):
         # What a skip depends on besides its own text: the conditions around it, and the
         # module-level constants those conditions and the construct itself read.
         self.conditions: list[tuple[str, frozenset[str]]] = []
-        self.constants: dict[str, ast.expr] = {}
-        for stmt in tree.body if isinstance(tree, ast.Module) else []:
-            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-                target, value = stmt.targets[0], stmt.value
-            elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
-                target, value = stmt.target, stmt.value
-            else:
-                continue
-            if isinstance(target, ast.Name):
-                self.constants[target.id] = value
+        self.bindings: list[dict[str, ast.expr]] = []
+        self.constants: dict[str, ast.expr] = _simple_bindings(
+            tree.body if isinstance(tree, ast.Module) else []
+        )
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module in SKIP_MODULES:
                 for alias in node.names:
@@ -228,19 +267,38 @@ class _Collector(ast.NodeVisitor):
 
     @staticmethod
     def _names(node: ast.AST) -> frozenset[str]:
-        return frozenset(n.id for n in ast.walk(node) if isinstance(n, ast.Name))
+        """Names a piece of code reads, and the attributes it reads from ``self`` or ``cls``."""
+        found: set[str] = set()
+        for part in ast.walk(node):
+            if isinstance(part, ast.Name):
+                found.add(part.id)
+            elif (
+                isinstance(part, ast.Attribute)
+                and isinstance(part.value, ast.Name)
+                and part.value.id in {"self", "cls"}
+            ):
+                found.add(part.attr)
+        return frozenset(found)
+
+    def _binding(self, name: str) -> ast.expr | None:
+        """The value a name was last given in the enclosing scopes, innermost first."""
+        for scope in reversed(self.bindings):
+            if name in scope:
+                return scope[name]
+        return self.constants.get(name)
 
     def _dependencies(self, names: set[str]) -> list[str]:
-        """Module-level constants read by ``names``, followed through the constants they read."""
-        seen: set[str] = set()
-        pending = [n for n in names if n in self.constants]
+        """What ``names`` were bound to (module, class and function level), and so on in turn."""
+        seen: dict[str, ast.expr] = {}
+        pending = list(names)
         while pending:
             name = pending.pop()
-            if name in seen:
+            value = None if name in seen else self._binding(name)
+            if value is None:
                 continue
-            seen.add(name)
-            pending.extend(n for n in self._names(self.constants[name]) if n in self.constants)
-        return sorted(f"{n} = {ast.unparse(self.constants[n])}" for n in seen)
+            seen[name] = value
+            pending.extend(self._names(value))
+        return sorted(f"{n} = {ast.unparse(v)}" for n, v in seen.items())
 
     def _record(self, kind: str, text: str, node: ast.AST | None = None) -> None:
         names: set[str] = set(self._names(node)) if node is not None else set()
@@ -269,6 +327,21 @@ class _Collector(ast.NodeVisitor):
         self.visit(node.test)
         self._under("while", node.test, node.body)
         self._under("else of", node.test, node.orelse)
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> None:
+        """``guard and skip()``: an operand runs only if the ones before it let it."""
+        label = "and" if isinstance(node.op, ast.And) else "or"
+        before: list[ast.expr] = []
+        for operand in node.values:
+            if before:
+                text = f" {label} ".join(ast.unparse(b) for b in before)
+                read = frozenset().union(*(self._names(b) for b in before))
+                self.conditions.append((f"{label}-guard {text}", read))
+                self.visit(operand)
+                self.conditions.pop()
+            else:
+                self.visit(operand)
+            before.append(operand)
 
     def visit_IfExp(self, node: ast.IfExp) -> None:
         self.visit(node.test)
@@ -312,9 +385,14 @@ class _Collector(ast.NodeVisitor):
         if not isinstance(node, ast.ClassDef) and node.name in HOOK_NAMES:
             # The whole definition, not its name: a hook that is edited to drop or ignore
             # tests keeps its name.
-            self._record("hook definition", ast.unparse(_without_docstring(node)))
+            self._record("hook definition", ast.unparse(_without_docstring(node)), node)
         self.scope.append(node.name)
+        scope_bindings = _simple_bindings(node.body)
+        if not isinstance(node, ast.ClassDef):
+            scope_bindings = {**_parameter_defaults(node), **scope_bindings}
+        self.bindings.append(scope_bindings)
         self.generic_visit(node)
+        self.bindings.pop()
         self.scope.pop()
 
     visit_FunctionDef = _visit_definition  # noqa: N815
