@@ -7,8 +7,11 @@ only a note.  The binary is a fake script; the real one is never run.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import signal
 import stat
+import time
 from pathlib import Path
 
 import pytest
@@ -92,3 +95,54 @@ def test_failed_version_command_is_not_reported_ok(
     assert level == "note", (level, message)
     assert "exit" in message and "3" in message
     assert not diag.warnings
+
+
+def test_timed_out_wrapper_leaves_no_descendant_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``VERDICT_OPENCODE_BIN`` may be a wrapper; a timed-out check must clean up after it.
+
+    The wrapper backgrounds a sleeper that inherits the pipes and then waits.  Doctor must
+    return promptly and must not leave that descendant running (``subprocess.run`` kills
+    only the direct child).  The check runs in its own process group, killed on timeout.
+    """
+    pid_file = tmp_path / "descendant.pid"
+    script = tmp_path / "wrapper-opencode"
+    script.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {pid_file}\nwait\n")
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(executor_module, "_opencode_binary", lambda *a, **k: str(script))
+    monkeypatch.setattr(dd, "_OPENCODE_VERSION_TIMEOUT_SECONDS", 1.0)
+    descendant = 0
+    try:
+        started = time.monotonic()
+        diag = dd.DoctorDiagnostics()
+        dd._doctor_opencode_version(diag)
+        elapsed = time.monotonic() - started
+        assert elapsed < 10.0, f"doctor was not bounded by its timeout ({elapsed:.1f}s)"
+        _name, level, message = _section(diag)
+        assert level == "note" and "version check error" in message, (level, message)
+        assert pid_file.exists(), "wrapper never started its descendant"
+        descendant = int(pid_file.read_text().strip())
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not _gone(descendant):
+            time.sleep(0.05)
+        assert _gone(descendant), f"descendant {descendant} outlived the timed-out check"
+    finally:
+        if not descendant and pid_file.exists():
+            descendant = int(pid_file.read_text().strip() or 0)
+        if descendant:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.kill(descendant, signal.SIGKILL)  # never leak the test process
+
+
+def _gone(pid: int) -> bool:
+    """True when ``pid`` no longer exists or is only a zombie awaiting reaping."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[-1].split()[0]
+    except OSError:
+        return False
+    return state == "Z"

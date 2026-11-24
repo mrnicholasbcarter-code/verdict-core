@@ -770,6 +770,40 @@ def _doctor_acceptance(diag: DoctorDiagnostics) -> None:
     diag.warnings.extend(warnings)
 
 
+_OPENCODE_VERSION_TIMEOUT_SECONDS = 10.0
+
+
+def _run_bounded(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` in its own process group; on timeout kill the whole group.
+
+    ``VERDICT_OPENCODE_BIN`` may be a wrapper that spawns descendants, and
+    ``subprocess.run`` kills only the direct child on timeout, leaving them running.  The
+    group is killed instead, and draining the pipes afterwards is itself bounded.
+    """
+    import contextlib
+    import os
+    import signal
+    import subprocess
+
+    proc = subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.communicate(timeout=5)  # a descendant that left the group may still hold a pipe
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                with contextlib.suppress(OSError):
+                    stream.close()
+        proc.wait()
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+
 def _doctor_opencode_version(diag: DoctorDiagnostics) -> None:
     """ADR-053 Decision 5: warn when installed OpenCode version differs from pinned v2.3.2.
 
@@ -777,7 +811,6 @@ def _doctor_opencode_version(diag: DoctorDiagnostics) -> None:
     issue.  A version mismatch is a warning: the adapter is pinned to v2.3.2
     and an upgrade or downgrade needs a re-run of the adapter's live check.
     """
-    import subprocess
 
     from verdict.orchestration.executor_opencode import PINNED_VERSION, _opencode_binary
 
@@ -788,7 +821,7 @@ def _doctor_opencode_version(diag: DoctorDiagnostics) -> None:
         return
 
     try:
-        result = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10)
+        result = _run_bounded([binary, "--version"], _OPENCODE_VERSION_TIMEOUT_SECONDS)
         if result.returncode != 0:
             # A wrapper can print the pinned version and still fail (for example before
             # reporting an initialisation error): that is a failed check, never "ok".

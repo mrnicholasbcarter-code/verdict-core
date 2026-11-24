@@ -1117,7 +1117,6 @@ def test_executor_kills_descendant_left_behind_by_normal_exit(tmp_path: Path) ->
     cwd.mkdir()
     # Generous idle limit: host load must not trip the stall kill before the fork.
     executor = OpenCodeExecutor(opencode_bin=fake, idle_output_seconds=120.0)
-    descendant_pid = 0
     try:
         terminal = run_executor(executor, "descendant test", cwd, timeout=120.0)
         assert terminal.ok is True, f"worker should have succeeded: {terminal}"
@@ -1130,9 +1129,12 @@ def test_executor_kills_descendant_left_behind_by_normal_exit(tmp_path: Path) ->
             f"descendant PID {descendant_pid} still running after run() returned"
         )
     finally:
-        if descendant_pid:
+        # Recover the PID from the capture file whatever failed above (a failed or raised
+        # run() must not leave the SIGTERM-ignoring descendant running indefinitely).
+        recorded = capture.read_text().strip() if capture.exists() else ""
+        if recorded.isdigit():
             with contextlib.suppress(ProcessLookupError, OSError):
-                os.kill(descendant_pid, signal.SIGKILL)  # never leak the test process
+                os.kill(int(recorded), signal.SIGKILL)  # never leak the test process
 
 
 _KEY = "sk-verdict-worker-SECRET-0123456789abcdef"
