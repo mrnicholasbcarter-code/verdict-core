@@ -1007,17 +1007,24 @@ def test_opencode_executor_timeout_returns_failure(tmp_path: Path) -> None:
 
 
 def _pid_gone(pid: int) -> bool:
-    """True when ``pid`` no longer exists or is only a zombie awaiting reaping."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    try:
-        stat_text = Path(f"/proc/{pid}/stat").read_text()
-    except OSError:
-        return False
-    # State is the first field after the parenthesised command name.
-    return stat_text.rsplit(")", 1)[-1].split()[0] == "Z"
+    """True when ``pid`` no longer exists, or is only a zombie or dead entry awaiting reaping.
+
+    Reaping can race the probe: ``kill`` may succeed and the ``/proc`` read then fail (ENOENT,
+    or ESRCH from an already-open entry).  Such a failure is retried; the next ``kill`` then
+    reports the process as gone.
+    """
+    for _ in range(5):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        try:
+            stat_text = Path(f"/proc/{pid}/stat").read_text()
+        except OSError:
+            continue  # raced with reaping: probe again
+        # State is the first field after the parenthesised command name.
+        return stat_text.rsplit(")", 1)[-1].split()[0] in {"Z", "X"}
+    return False
 
 
 def test_kill_process_group_cleans_up_sigterm_ignoring_grandchild(tmp_path: Path) -> None:

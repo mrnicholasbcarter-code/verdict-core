@@ -186,13 +186,62 @@ def test_undecodable_output_still_cleans_up_the_wrapper_group(
 
 
 def _gone(pid: int) -> bool:
-    """True when ``pid`` no longer exists or is only a zombie awaiting reaping."""
+    """True when ``pid`` no longer exists, or is only a zombie or dead entry awaiting reaping.
+
+    Reaping can race the probe at any point: ``kill`` may succeed and the ``/proc`` read then
+    fail (ENOENT, or ESRCH from an already-open entry).  Such a failure is retried; the next
+    ``kill`` then reports the process as gone.
+    """
+    for _ in range(5):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[-1].split()[0]
+        except OSError:
+            continue  # raced with reaping: probe again
+        return state in {"Z", "X"}
+    return False
+
+
+@pytest.mark.parametrize(
+    "error",
+    [FileNotFoundError(2, "No such file or directory"), ProcessLookupError(3, "No such process")],
+    ids=["enoent", "esrch"],
+)
+def test_liveness_helper_treats_a_pid_reaped_mid_probe_as_gone(
+    monkeypatch: pytest.MonkeyPatch, error: OSError
+) -> None:
+    """A zombie can be reaped between ``kill(pid, 0)`` and the ``/proc`` read; that is gone.
+
+    Treating the read error as "alive" made the cleanup tests flaky (the first check saw the
+    zombie, the next saw it reaped mid-probe, with ESRCH from reading the open entry).  Here
+    the first ``kill`` succeeds, the read then fails, and the second ``kill`` reports ESRCH.
+    """
+    probes = iter([None, ProcessLookupError(3, "No such process")])
+
+    def kill(pid: int, sig: int) -> None:
+        outcome = next(probes)
+        if outcome is not None:
+            raise outcome
+
+    def vanished(self: Path, *args: object, **kwargs: object) -> str:
+        raise error
+
+    monkeypatch.setattr(os, "kill", kill)
+    monkeypatch.setattr(Path, "read_text", vanished)
+    assert _gone(999_999_999) is True
+
+
+def test_liveness_helper_does_not_call_a_live_process_gone(tmp_path: Path) -> None:
+    """The helper must still see a running process as alive (guards against an always-True stub)."""
+    import subprocess
+
+    proc = subprocess.Popen(["sleep", "30"])
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    try:
-        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[-1].split()[0]
-    except OSError:
-        return False
-    return state == "Z"
+        assert _gone(proc.pid) is False
+    finally:
+        proc.kill()
+        proc.wait()
+    assert _gone(proc.pid) is True
