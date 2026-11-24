@@ -262,6 +262,8 @@ Claude Code, Codex, Cursor, Cline and OpenCode can be pointed at that relay as t
 
 ## Install
 
+[![version 1.0.0](https://img.shields.io/badge/version-1.0.0-blue.svg)](pyproject.toml)
+
 Version 1.0.0 is available on PyPI. <!-- claim:C-025 --> The release is not yet certified: the attested certification rehearsal has not passed (see #1168 and #1169).
 
 ```bash
