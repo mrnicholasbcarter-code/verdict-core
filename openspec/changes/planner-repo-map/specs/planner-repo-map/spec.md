@@ -40,16 +40,45 @@ Alphabetical-only ordering across all prefixes SHALL NOT be used.
 - **THEN** all `verdict/` file entries appear before any `tests/` file entries
   in the listing
 
-### Requirement: Receipt records repo-map digest per planning attempt
+### Requirement: The AGENTS.md section is size-bounded and trusted as repository content
 
-For each planning attempt, the receipt's `planner_attempts` section SHALL
-include a `plan_context` entry carrying `repo_map_sha256`: the SHA-256 hex
-digest of the repo map text the planner received.
+The AGENTS.md "Where things live" text SHALL be capped at 4 096 bytes of UTF-8,
+cut on a character boundary, before it is added to the planner prompt. The cap
+bounds size only: it is not injection protection. The remaining text is
+forwarded to the planning model verbatim. `AGENTS.md` is read from
+`<repo>/AGENTS.md` with a plain file read that follows symlinks, and the code
+does not refuse a symlink or check that its target is inside the repository.
+The repository passed to `orchestrate` is therefore trusted as the operator's
+own; a hostile or symlinked `AGENTS.md` is neither detected nor refused.
+
+#### Scenario: Section larger than the cap
+- **GIVEN** a "Where things live" section of multi-byte text larger than
+  4 096 bytes
+- **WHEN** the repo map is built
+- **THEN** the section is cut to at most 4 096 bytes, ends on a whole
+  character, and is not dropped
+
+### Requirement: Receipt records the repo-map digest for each planning call
+
+Each `FrontierPlanner.plan()` call SHALL emit one `plan_context` event, before
+its first model call, carrying `repo_map_sha256`: the SHA-256 hex digest of the
+repo map text placed in that call's prompt. The receipt's `planner_attempts`
+section SHALL include that entry, in `seq` order with the other planner events.
+A validation-repair call made inside the same `plan()` call re-sends the same
+prompt (the planning prompt plus the validation error), so it carries the same
+repo map, and SHALL NOT emit a second `plan_context`.
 
 #### Scenario: Completed orchestrate run
 - **WHEN** planning succeeds
 - **THEN** `receipt.json` contains a `plan_context` entry in
-  `planner_attempts` with a 64-character hex `repo_map_sha256`
+  `planner_attempts` with a 64-character hex `repo_map_sha256` that equals the
+  SHA-256 of the repo map in the prompt the planner received
+
+#### Scenario: Validation repair
+- **GIVEN** the first planner answer fails validation
+- **WHEN** the repair call runs
+- **THEN** the repair prompt contains the same repo map as the first call
+- **AND** that `plan()` call has recorded exactly one `plan_context`
 
 ## UNCHANGED Invariants
 

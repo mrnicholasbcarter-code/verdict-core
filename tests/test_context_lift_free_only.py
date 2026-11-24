@@ -234,16 +234,28 @@ def test_planted_token_never_in_evidence_file(tmp_path: Path) -> None:
         uninstall=False,
     )
 
+    result = _blocked_result(planted_token)
+    # The token really is in the result the command receives, so a leak is possible.
+    assert planted_token in json.dumps(result)
+
     with (
-        patch("verdict.context_lift.run_context_lift", return_value=_blocked_result(planted_token)),
+        patch("verdict.context_lift.run_context_lift", return_value=result),
         patch("verdict.paths.verdict_home", return_value=home_dir),
-        pytest.raises(SystemExit),  # blocked result exits 2 (#1279)
+        pytest.raises(SystemExit) as exc_info,
     ):
         _dispatch._cmd_bench_context_lift(args)
 
+    # Blocked result exits 2 (#1279).  Any other exit is an early exit before the
+    # evidence is written, which would make the leak check below vacuous.
+    assert exc_info.value.code == 2
+
     out_dir = home_dir / "context-lift"
-    written_files = [*out_dir.glob("*.json"), out_dir / "latest.json"]
-    for f in (f for f in written_files if f.exists()):
+    latest = out_dir / "latest.json"
+    assert latest.exists(), "the blocked receipt must be written before the exit"
+    assert json.loads(latest.read_text())["conclusion"] == "blocked"
+    written_files = sorted(out_dir.glob("*.json"))
+    assert latest in written_files and len(written_files) >= 2, written_files
+    for f in written_files:
         content = f.read_text()
         assert planted_token not in content, (
             f"Planted token leaked into {f.name}. working_state must not be written to disk."
@@ -267,14 +279,21 @@ def test_planted_token_never_on_stdout(tmp_path: Path, capsys: pytest.CaptureFix
         uninstall=False,
     )
 
+    result = _blocked_result(planted_token)
+    # The token really is in the result the command receives, so a leak is possible.
+    assert planted_token in json.dumps(result)
+
     with (
-        patch("verdict.context_lift.run_context_lift", return_value=_blocked_result(planted_token)),
+        patch("verdict.context_lift.run_context_lift", return_value=result),
         patch("verdict.paths.verdict_home", return_value=home_dir),
-        pytest.raises(SystemExit),  # blocked result exits 2 (#1279)
+        pytest.raises(SystemExit) as exc_info,
     ):
         _dispatch._cmd_bench_context_lift(args)
 
+    # Blocked result exits 2 (#1279), and only after the receipt was printed.
+    assert exc_info.value.code == 2
     captured = capsys.readouterr()
+    assert json.loads(captured.out)["conclusion"] == "blocked", captured.out
     assert planted_token not in captured.out, (
         "Planted token must not appear on stdout (CodeQL py/clear-text-storage)"
     )
