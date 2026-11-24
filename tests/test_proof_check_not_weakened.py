@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 import yaml
 
-from scripts.proof.check_not_weakened import main
+from scripts.proof.check_not_weakened import GIT_LOCAL_ENV, main
 
 CLEAN_TEST = "import pytest\n\n\ndef test_a():\n    assert True\n"
 PYPROJECT = (
@@ -67,6 +67,27 @@ BASE_CONTRACT: dict[str, Any] = {
 }
 
 
+def clean_git_env() -> dict[str, str]:
+    """The environment for a throwaway repository.
+
+    A git hook (the push gate runs these tests from one) exports GIT_DIR and friends. Left in
+    place they override ``cwd=`` and ``git -C``, so ``git init`` and ``git commit`` would act
+    on the real repository. Every GIT_* variable is removed, then the ones wanted are set.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        }
+    )
+    return env
+
+
 def _contract_text(contract: dict[str, Any]) -> str:
     return yaml.safe_dump(contract, sort_keys=False)
 
@@ -87,15 +108,7 @@ class Repo:
     def __init__(self, path: Path) -> None:
         self.path = path
         path.mkdir(parents=True)
-        self.env = {
-            **os.environ,
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_SYSTEM": os.devnull,
-            "GIT_AUTHOR_NAME": "t",
-            "GIT_AUTHOR_EMAIL": "t@example.invalid",
-            "GIT_COMMITTER_NAME": "t",
-            "GIT_COMMITTER_EMAIL": "t@example.invalid",
-        }
+        self.env = clean_git_env()
         self.git("init", "-q", "-b", "main")
 
     def git(self, *args: str) -> str:
@@ -757,3 +770,50 @@ def test_every_finding_is_printed_not_only_the_first(
     assert code == 1
     for needle in ("tests/test_a.py", "tests/test_b.py", ".test_durations", "pyproject.toml"):
         assert needle in output
+
+
+# --- a git hook's environment must not redirect anything ---
+
+
+def _point_git_at(monkeypatch: pytest.MonkeyPatch, decoy: Repo) -> None:
+    monkeypatch.setenv("GIT_DIR", str(decoy.path / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(decoy.path))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(decoy.path / ".git" / "index"))
+
+
+def test_the_test_repository_helper_is_not_redirected_by_a_hooks_git_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decoy = Repo(tmp_path / "decoy")
+    decoy_head = decoy.commit({"decoy.txt": "keep\n"}, "decoy")
+    _point_git_at(monkeypatch, decoy)
+    repo = scenario(tmp_path / "toy", {"tests/test_a.py": _module(CONSTRUCTS["skip decorator"])})
+    assert (repo.path / ".git").is_dir()
+    assert decoy.git("rev-parse", "HEAD") == decoy_head
+    assert decoy.git("status", "--porcelain") == ""
+    assert decoy.git("log", "--format=%s") == "decoy"
+
+
+def test_the_checker_reads_the_repository_it_is_given_not_the_one_a_hook_runs_in(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decoy = Repo(tmp_path / "decoy")
+    decoy_head = decoy.commit({"decoy.txt": "keep\n"}, "decoy")
+    repo = scenario(tmp_path / "toy", {"tests/test_a.py": _module(CONSTRUCTS["skip decorator"])})
+    _point_git_at(monkeypatch, decoy)
+    code, output = check(repo, capsys)
+    assert code == 1, output
+    assert "tests/test_a.py" in output
+    assert decoy.git("rev-parse", "HEAD") == decoy_head
+    assert decoy.git("status", "--porcelain") == ""
+
+
+def test_the_checkers_list_of_git_variables_covers_what_git_reports() -> None:
+    done = subprocess.run(
+        ["git", "rev-parse", "--local-env-vars"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=clean_git_env(),
+    )
+    assert set(done.stdout.split()) <= GIT_LOCAL_ENV

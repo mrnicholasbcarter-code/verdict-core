@@ -36,6 +36,33 @@ def iso(seconds: float) -> str:
     return (T0 + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def clean_git_env() -> dict[str, str]:
+    """The environment for a throwaway repository.
+
+    A git hook (the push gate runs these tests from one) exports GIT_DIR and friends. Left in
+    place they override ``cwd=`` and ``git -C``, so ``git init`` and ``git commit`` would act
+    on the real repository. Every GIT_* variable is removed, then the ones wanted are set.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        }
+    )
+    return env
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, env=clean_git_env(), capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
 # ---------------------------------------------------------------------------
 # A contract and a fake GitHub
 # ---------------------------------------------------------------------------
@@ -1142,15 +1169,7 @@ def test_the_added_count_counts_each_parametrized_case_not_each_test_function(
     monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
     repo = tmp_path / "repo"
     repo.mkdir()
-    env = {
-        **os.environ,
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_SYSTEM": os.devnull,
-        "GIT_AUTHOR_NAME": "t",
-        "GIT_AUTHOR_EMAIL": "t@example.invalid",
-        "GIT_COMMITTER_NAME": "t",
-        "GIT_COMMITTER_EMAIL": "t@example.invalid",
-    }
+    env = clean_git_env()
 
     def git(*args: str) -> str:
         return subprocess.run(
@@ -1208,26 +1227,12 @@ def test_the_temporary_checkout_is_removed_when_collection_fails(
     monkeypatch.setattr(live, "checkout_revision", spy)
     repo = tmp_path / "repo"
     repo.mkdir()
-    env = {
-        **os.environ,
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_SYSTEM": os.devnull,
-        "GIT_AUTHOR_NAME": "t",
-        "GIT_AUTHOR_EMAIL": "t@x.invalid",
-        "GIT_COMMITTER_NAME": "t",
-        "GIT_COMMITTER_EMAIL": "t@x.invalid",
-    }
-    for args in (["init", "-q", "-b", "main"],):
-        subprocess.run(["git", *args], cwd=repo, env=env, check=True, capture_output=True)
+    _git(repo, "init", "-q", "-b", "main")
     (repo / "tests").mkdir()
     (repo / "tests" / "test_broken.py").write_text("def test_x(:\n")
-    subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-q", "-m", "x"], cwd=repo, env=env, check=True, capture_output=True
-    )
-    rev = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, env=env, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "x")
+    rev = _git(repo, "rev-parse", "HEAD")
     with pytest.raises(FetchError):
         live.collect_at_revision(rev, repo)
     assert created, "the checkout was never made"
@@ -1237,9 +1242,28 @@ def test_the_temporary_checkout_is_removed_when_collection_fails(
 def test_the_checkout_of_an_unknown_revision_is_a_fetch_failure(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    _git(repo, "init", "-q", "-b", "main")
     with pytest.raises(FetchError):
         live.collect_at_revision("0" * 40, repo)
+
+
+def test_the_checkout_reads_the_repository_it_is_given_not_the_one_a_hook_runs_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decoy = tmp_path / "decoy"
+    real = tmp_path / "real"
+    for path, text in ((decoy, "DECOY\n"), (real, "REAL\n")):
+        path.mkdir()
+        _git(path, "init", "-q", "-b", "main")
+        (path / "marker.txt").write_text(text)
+        _git(path, "add", "-A")
+        _git(path, "commit", "-q", "-m", "x")
+    rev = _git(real, "rev-parse", "HEAD")
+    monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(decoy))
+    with live.checkout_revision(rev, real) as checkout:
+        assert (checkout / "marker.txt").read_text() == "REAL\n"
+    assert _git(decoy, "status", "--porcelain") == ""
 
 
 def test_the_module_lists_its_subcommands(capsys: pytest.CaptureFixture[str]) -> None:

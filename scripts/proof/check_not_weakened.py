@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import subprocess
 import sys
 from collections import Counter
@@ -44,8 +45,12 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-import tomllib
 import yaml
+
+try:
+    import tomllib
+except ImportError:  # Python 3.10
+    import tomli as tomllib
 
 EXIT_OK, EXIT_WEAKENED, EXIT_ERROR = 0, 1, 2
 
@@ -77,6 +82,34 @@ SKIP_MODULES = frozenset({"pytest", "unittest", "unittest.case"})
 Construct = tuple[tuple[str, ...], str, str]
 
 
+# Variables git sets for a hook (``git rev-parse --local-env-vars``). Inherited by a
+# subprocess they override ``git -C`` and ``cwd=``, so the checker removes them: it must
+# read the repository it was given, never the one a hook happens to run in.
+GIT_LOCAL_ENV = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_DIR",
+        "GIT_GRAFT_FILE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_WORK_TREE",
+    }
+)
+
+
+def git_environment() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k not in GIT_LOCAL_ENV}
+
+
 class CheckError(Exception):
     """git, usage or parse failure: the change could not be checked."""
 
@@ -88,7 +121,9 @@ class CheckError(Exception):
 
 def _git(repo: Path, *args: str) -> bytes:
     try:
-        done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=False)
+        done = subprocess.run(
+            ["git", "-C", str(repo), *args], capture_output=True, check=False, env=git_environment()
+        )
     except OSError as exc:
         raise CheckError(f"git could not run: {exc}") from exc
     if done.returncode != 0:
@@ -103,6 +138,7 @@ def _exists(repo: Path, rev: str, path: str) -> bool:
             ["git", "-C", str(repo), "cat-file", "-e", f"{rev}:{path}"],
             capture_output=True,
             check=False,
+            env=git_environment(),
         )
     except OSError as exc:
         raise CheckError(f"git could not run: {exc}") from exc

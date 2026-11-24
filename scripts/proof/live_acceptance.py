@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import re
 import shutil
 import statistics
@@ -51,6 +52,26 @@ from scripts.proof.runner import plan_gates, selection_collect_args  # noqa: E40
 
 RESEARCH_MEDIAN_SECONDS = 531
 START_DELAY_RULE_SECONDS = 60
+# Variables git sets for a hook; they would override ``git -C`` (see check_not_weakened.py).
+GIT_LOCAL_ENV = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_DIR",
+        "GIT_GRAFT_FILE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_WORK_TREE",
+    }
+)
 GH_TIMEOUT_SECONDS = 180
 GIT_TIMEOUT_SECONDS = 300
 OUTCOME_KEYS = frozenset({"passed", "failed", "skipped", "xfailed", "xpassed", "error", "errors"})
@@ -119,6 +140,7 @@ def checkout_revision(rev: str, repo: Path) -> Iterator[Path]:
                 capture_output=True,
                 check=False,
                 timeout=GIT_TIMEOUT_SECONDS,
+                env={k: v for k, v in os.environ.items() if k not in GIT_LOCAL_ENV},
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise FetchError(f"git archive {rev} could not run: {exc}") from exc
