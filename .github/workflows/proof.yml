@@ -54,9 +54,17 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  proof-full:
+  # The full proof runs as one leg per number in modes.full.shards (proof/contract.yaml);
+  # tests/test_proof_workflow.py keeps the matrix equal to 1..shards. No leg waits for
+  # proof-targeted, which stays as an early signal. A leg is today's single job with
+  # --shard added, so it runs every gate in the same environment.
+  proof-shard:
     runs-on: ubuntu-latest
-    needs: [proof-targeted]
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -81,8 +89,10 @@ jobs:
           uv tool dir --bin >> "$GITHUB_PATH"
       - name: Install build tooling
         run: uv pip install build
-      - name: Canonical full proof (no-cache final mode)
+      - name: Canonical full proof leg (no-cache final mode)
         env:
+          # The runner launches the unit_timing gate without this variable, so the
+          # serial timing tests never see the xdist options (proof/contract.yaml env_clear).
           PYTEST_ADDOPTS: "-p xdist -n auto"
         run: |
           uv run python scripts/proof/run.py \
@@ -90,6 +100,59 @@ jobs:
             --no-cache \
             --otel \
             --targets tests/test_proof_pipeline.py \
+            --shard ${{ matrix.shard }} \
+            --report proof-shard-${{ matrix.shard }}/proof-report-full.json \
+            --json
+      - name: Upload leg report, test ids and JUnit files
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proof-shard-${{ matrix.shard }}
+          path: proof-shard-${{ matrix.shard }}/
+          # A re-run leg uploads again; without this the upload fails on the old name.
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  # The aggregate. It keeps the check name `proof-full` that reports on every pull
+  # request head today, so making it required later (operator step, proof/README.md)
+  # leaves no window in which a required check never reports. `if: always()` because
+  # a skipped required check counts as passing: it must run, and fail, when a leg
+  # failed or was cancelled. It does not trust `needs` alone: scripts/proof/aggregate.py
+  # checks every leg itself.
+  proof-full:
+    runs-on: ubuntu-latest
+    needs: [proof-shard]
+    if: always()
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      - name: Install dependencies
+        run: uv sync --extra dev --extra server --extra dashboard
+      - name: Download leg files
+        # None, one or all legs may have uploaded; the aggregate names what is missing.
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          pattern: proof-shard-*
+          # A directory of its own, so that the aggregate never scans the checkout and
+          # never meets its own output (proof-report-full.json) among the legs.
+          path: proof-legs
+      - name: Aggregate the legs (fails closed)
+        run: |
+          uv run python scripts/proof/aggregate.py \
+            --reports proof-legs \
+            --leg-result "${{ needs.proof-shard.result }}" \
+            --expected-sha "$GITHUB_SHA" \
             --report proof-report-full.json \
             --json
       - name: Upload full proof report
