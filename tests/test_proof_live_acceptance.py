@@ -1058,11 +1058,41 @@ def test_rounds_needs_a_positive_round_count(
 
 def _unsharded_report(**overrides: Any) -> dict[str, Any]:
     gates = [
-        {"id": "format", "status": "pass", "command": ["echo", "f"], "required": True},
-        {"id": "unit_targeted", "status": "skip", "command": UNIT_FULL, "required": True},
-        {"id": "unit_full", "status": "pass", "command": list(UNIT_FULL), "required": True},
-        {"id": "unit_timing", "status": "skip", "command": list(UNIT_TIMING), "required": True},
-        {"id": "promptfoo", "status": "skip", "command": ["echo", "p"], "required": False},
+        {
+            "id": "format",
+            "status": "pass",
+            "exit_code": 0,
+            "command": ["echo", "f"],
+            "required": True,
+        },
+        {
+            "id": "unit_targeted",
+            "status": "skip",
+            "exit_code": 0,
+            "command": UNIT_FULL,
+            "required": True,
+        },
+        {
+            "id": "unit_full",
+            "status": "pass",
+            "exit_code": 0,
+            "command": list(UNIT_FULL),
+            "required": True,
+        },
+        {
+            "id": "unit_timing",
+            "status": "skip",
+            "exit_code": 0,
+            "command": list(UNIT_TIMING),
+            "required": True,
+        },
+        {
+            "id": "promptfoo",
+            "status": "skip",
+            "exit_code": 0,
+            "command": ["echo", "p"],
+            "required": False,
+        },
     ]
     report: dict[str, Any] = {
         "ok": True,
@@ -1115,6 +1145,16 @@ UNSHARDED_BREAKS: dict[str, Callable[[dict[str, Any]], None]] = {
     ),
     "unit_full did not pass": lambda r: _gate(r, "unit_full").update(status="fail"),
     "unit_full missing": lambda r: r["gates"].remove(_gate(r, "unit_full")),
+    "a passed gate with a nonzero exit code": lambda r: _gate(r, "format").update(exit_code=1),
+    "a passed unit_full with a nonzero exit code": lambda r: _gate(r, "unit_full").update(
+        exit_code=2
+    ),
+    "a contract-skipped gate with a nonzero exit code": lambda r: _gate(r, "unit_timing").update(
+        exit_code=127
+    ),
+    "a gate with no exit code": lambda r: _gate(r, "format").pop("exit_code"),
+    "an exit code that is not an integer": lambda r: _gate(r, "unit_full").update(exit_code="0"),
+    "an exit code that is a boolean": lambda r: _gate(r, "unit_full").update(exit_code=False),
     "report not ok": lambda r: r.update(ok=False),
     "report is not full mode": lambda r: r.update(mode="targeted"),
     "report is not no-cache": lambda r: r.update(cache_mode="cache"),

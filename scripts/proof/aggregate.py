@@ -48,6 +48,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from defusedxml import ElementTree as SafeElementTree  # noqa: E402
+from defusedxml.common import DefusedXmlException  # noqa: E402
 
 from scripts.ci_shard_union import check_union  # noqa: E402
 from scripts.proof.contract import (  # noqa: E402
@@ -372,7 +373,9 @@ def read_ids(path: Path, rel: str) -> list[str]:
 def read_junit(path: Path, rel: str) -> JUnitSummary:
     try:
         root = SafeElementTree.parse(path).getroot()
-    except (OSError, ValueError, SafeElementTree.ParseError) as exc:
+    # DefusedXmlException is a ValueError in defusedxml 0.7.1; named so that a future version that
+    # stops being one still turns a hostile file into a reason that names it.
+    except (OSError, ValueError, DefusedXmlException, SafeElementTree.ParseError) as exc:
         raise InputError(f"{rel}: not readable JUnit XML ({type(exc).__name__})") from exc
     if root is None:
         raise InputError(f"{rel}: not readable JUnit XML (no root element)")
@@ -584,8 +587,6 @@ def _read_gate_files(
 # ---------------------------------------------------------------------------
 # The merged report
 # ---------------------------------------------------------------------------
-
-_SEVERITY = {"fail": 3, "blocked": 2, "pass": 1, "skip": 0}
 
 
 def _merge_status(statuses: list[str]) -> str:

@@ -234,7 +234,35 @@ class _Collector(ast.NodeVisitor):
     visit_AsyncFunctionDef = _visit_definition  # noqa: N815
     visit_ClassDef = _visit_definition  # noqa: N815
 
+    @staticmethod
+    def _is_protected(node: ast.expr) -> bool:
+        """An exclusion or marker list that tests share: ``collect_ignore``, ``pytestmark``."""
+        return (isinstance(node, ast.Name) and node.id in ASSIGN_NAMES) or (
+            isinstance(node, ast.Attribute) and node.attr in ASSIGN_NAMES
+        )
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        # Recorded where it stands, with its scope, so that re-pointing an import (whatever
+        # alias it takes, in whichever function) is a change even when its call sites are not.
+        if node.module in SKIP_MODULES and any(
+            alias.name in SKIP_NAMES or alias.name == "*" for alias in node.names
+        ):
+            self._record("import", ast.unparse(node))
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        if any(self._is_protected(part) for t in node.targets for part in ast.walk(t)):
+            self._record("deletion", ast.unparse(node))
+        self.generic_visit(node)
+
     def visit_Call(self, node: ast.Call) -> None:
+        if isinstance(node.func, ast.Attribute) and self._is_protected(node.func.value):
+            # collect_ignore.append(...), pytestmark.extend(...): changed in place.
+            self._record("call", ast.unparse(node))
+            for arg in node.args:
+                self.visit(arg)
+            for keyword in node.keywords:
+                self.visit(keyword.value)
+            return
         if self._names_a_construct(node.func):
             self._record("call", ast.unparse(node) + self._alias_note(node.func))
             for arg in node.args:

@@ -620,6 +620,13 @@ def cmd_unsharded(args: argparse.Namespace) -> int:
                 f"{item.gate.id} status is {want_status}",
                 f"status={gate.get('status')!r}",
             )
+        if gate.get("status") == "pass" or item.skip_reason is not None:
+            code = gate.get("exit_code")
+            checks.check(
+                type(code) is int and code == 0,
+                f"{item.gate.id} exit code is 0",
+                f"exit_code={code!r}",
+            )
     checks.note("shard: null" if report.get("shard") is None else f"shard: {report.get('shard')!r}")
     timing = recorded.get("unit_timing")
     checks.note(f"unit_timing: {timing.get('status') if timing else 'missing'}")

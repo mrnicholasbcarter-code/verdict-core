@@ -195,6 +195,11 @@ CONSTRUCTS: dict[str, str] = {
     "bare reference to an imported skip": "from pytest import skip\n\nstop = skip\n\ndef test_a():\n    stop('x')\n",
     "raise of an imported SkipTest": "from unittest import SkipTest\n\ndef test_a():\n    raise SkipTest\n",
     "star import then a bare reference": "from pytest import *\n\ndef test_a():\n    f = xfail\n    f('x')\n",
+    "collect_ignore append": "collect_ignore.append('x.py')\n\ndef test_a():\n    assert True\n",
+    "collect_ignore_glob extend": "collect_ignore_glob.extend(['*.py'])\n\ndef test_a():\n    assert True\n",
+    "pytestmark insert": "pytestmark.insert(0, 1)\n\ndef test_a():\n    assert True\n",
+    "deleting an exclusion": "del collect_ignore[0]\n\ndef test_a():\n    assert True\n",
+    "an import of a skip function": "from pytest import skip\n\ndef test_a():\n    assert True\n",
     "skipTest call": "def test_a(self):\n    self.skipTest('x')\n",
     "SkipTest raise": "import unittest\n\ndef test_a():\n    raise unittest.SkipTest('x')\n",
     "param with a skip mark": "@pytest.mark.parametrize('v', [pytest.param(1, marks=pytest.mark.skip)])\ndef test_a(v):\n    assert v\n",
@@ -947,3 +952,73 @@ def test_an_unexpected_exception_is_a_failure_to_check_never_exit_one(
     code, output = check(repo, capsys)
     assert code == 2, output
     assert "kaboom" in output
+
+
+# --- exclusions changed in place, and aliases reused in different scopes ---
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        "collect_ignore.append('test_a.py')",
+        "collect_ignore.extend(['test_a.py'])",
+        "collect_ignore_glob.insert(0, '*.py')",
+        "collect_ignore[:] = ['test_a.py']",
+    ],
+)
+def test_changing_an_existing_exclusion_list_in_place_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], edit: str
+) -> None:
+    before = "collect_ignore = []\ncollect_ignore_glob = []\n"
+    repo = scenario(
+        tmp_path,
+        {"tests/conftest.py": before + edit + "\n"},
+        base=base_files() | {"tests/conftest.py": before},
+    )
+    code, output = check(repo, capsys)
+    assert code == 1, output
+    assert "tests/conftest.py" in output
+
+
+TWO_SCOPES = (
+    "def test_a():\n    from pytest import {a} as s\n    s('r')\n\n"
+    "def test_b():\n    from pytest import {b} as s\n    s('r')\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        (("skip", "xfail"), ("xfail", "xfail")),
+        (("skip", "xfail"), ("skip", "skip")),
+        (("skip", "skip"), ("skip", "importorskip")),
+    ],
+    ids=["first function re-pointed", "second function re-pointed", "last function re-pointed"],
+)
+def test_the_same_alias_in_two_functions_is_told_apart_by_scope(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    before: tuple[str, str],
+    after: tuple[str, str],
+) -> None:
+    repo = scenario(
+        tmp_path,
+        {"tests/test_a.py": CLEAN_TEST + "\n\n" + TWO_SCOPES.format(a=after[0], b=after[1])},
+        base=base_files()
+        | {"tests/test_a.py": CLEAN_TEST + "\n\n" + TWO_SCOPES.format(a=before[0], b=before[1])},
+    )
+    code, output = check(repo, capsys)
+    assert code == 1, output
+    assert "test_a" in output or "test_b" in output
+
+
+def test_unrelated_imports_and_unchanged_aliases_still_pass(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = CLEAN_TEST + "\n\n" + TWO_SCOPES.format(a="skip", b="xfail")
+    repo = scenario(
+        tmp_path,
+        {"tests/test_a.py": text + "\nimport os\nfrom pytest import fixture, approx\n"},
+        base=base_files() | {"tests/test_a.py": text},
+    )
+    assert check(repo, capsys)[0] == 0
