@@ -1960,9 +1960,7 @@ def test_a_structured_status_still_wins_over_a_number_in_the_text() -> None:
     assert _parse_ndjson_output(line)["error_status"] == 429
 
 
-def test_a_status_in_the_tail_still_beats_an_earlier_stray_number_in_stderr(
-    tmp_path: Path,
-) -> None:
+def test_a_status_in_the_tail_still_beats_an_earlier_stray_number_in_stderr(tmp_path: Path) -> None:
     """Reading the whole text must not change an answer the tail already gave.
 
     The last 400 characters were always searched, and a status there wins; only when the tail
