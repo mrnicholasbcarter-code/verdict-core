@@ -362,7 +362,7 @@ async def _to_thread_joined(
 
 
 async def _send_prompt(proc: asyncio.subprocess.Process, prompt: str) -> None:
-    """Write ``prompt`` to the worker's stdin and close it: OpenCode's message when it is given none.
+    """Write ``prompt`` to the worker's stdin and close it (OpenCode's message, when given none).
 
     A worker that has already exited (or closed its stdin) makes the write a broken pipe.  That
     is not an error of this call: how the worker ended is read from its exit and its output.
