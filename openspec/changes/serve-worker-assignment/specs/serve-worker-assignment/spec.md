@@ -17,7 +17,10 @@ unpadded base64url of `HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + paylo
 `payload` taken as the received text. Base64url here is the URL-safe alphabet without `=` padding,
 decoded strictly: any other character, an impossible length or non-canonical trailing bits SHALL be
 refused. The lifetime `exp - iat` SHALL be from 0 through 1,800 seconds (twice the 900 s attempt
-ceiling); a longer or negative lifetime SHALL be refused, so a long-lived assignment cannot exist.
+ceiling); a longer or negative lifetime SHALL be refused. `iat` SHALL NOT be more than 60 seconds
+ahead of the verifier's clock, so the usable window of any accepted assignment is at most 1,860
+seconds from now whatever its dates say (without this a token dated years ahead with a one-second
+lifetime would be usable for years); a later `iat` SHALL be refused as `malformed`.
 A token over 2 KiB, a token that does not split into exactly three parts, a payload that is not
 that object, an `exp` or `iat` that is not an integer (including a boolean or a float), and an
 `exp` or `iat` outside that range SHALL be refused. The verifier SHALL check the ranges before it
@@ -50,8 +53,16 @@ be represented therefore ends as the generic authentication refusal, never as an
 #### Scenario: The largest representable exp verifies
 
 - **WHEN** an assignment is signed with `exp` 253402300799 and an `iat` within 1,800 s of it, and
-  verified with a clock before it
+  verified with a clock inside that lifetime (for example 9999-12-31T23:50:00Z)
 - **THEN** verification succeeds and its expiry is `9999-12-31T23:59:59Z`
+
+#### Scenario: A token dated ahead of the clock is refused
+
+- **WHEN** an assignment is signed with a correct tag, a lifetime of one second and an `iat` more
+  than 60 seconds ahead of the verifier's clock (including `iat` 253402300798, `exp` 253402300799)
+- **THEN** verification is refused with the reason `malformed`, and a request that presents it is
+  denied 403 with the generic body, with no upstream call; an `iat` up to 60 seconds ahead is
+  accepted
 
 #### Scenario: An exp of zero is well-formed and expired
 
@@ -177,7 +188,7 @@ setup again; assignments signed with the old key SHALL stop verifying at once.
 ### Requirement: An assignment is honoured only on the OpenAI relay surfaces
 
 Serve SHALL accept an assignment, as the `Authorization: Bearer` value, only on
-`POST /v1/chat/completions` and `POST /v1/responses`. On every other path or method, on
+`POST /v1/chat/completions` and `POST /v1/responses`. On every other authenticated path or method, on
 `POST /v1/messages`, and in `x-api-key`, an assignment SHALL be refused with 403. The only
 exceptions are `/health` and the OmniRoute webhook path, which skip caller authentication for every
 credential, never read a bearer, and select and authorise nothing. A request whose bearer equals
@@ -242,10 +253,11 @@ header is present.
 - **WHEN** a request carries the worker header and no valid authentication
 - **THEN** it is refused as any unauthenticated request is refused
 
-#### Scenario: A non-ASCII assignment bearer is refused, not an error
+#### Scenario: A non-ASCII assignment credential is refused, not an error
 
-- **WHEN** a bearer with the `vwa1.` prefix holds a non-ASCII character
-- **THEN** it is refused 403 with the generic body and no upstream call
+- **WHEN** a bearer or an `x-api-key` value with the `vwa1.` prefix holds a non-ASCII character,
+  alone or beside another credential
+- **THEN** it is refused 403 with the generic body and no upstream call, never a server error
 
 #### Scenario: A verified assignment needs no header
 

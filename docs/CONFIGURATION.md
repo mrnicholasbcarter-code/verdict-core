@@ -635,12 +635,15 @@ the orchestrator, sent as `Authorization: Bearer vwa1.<payload>.<tag>`:
 
 - `payload` is unpadded base64url of a JSON object with `route_id`, `run_id`, `node_id`, `iat`
   (issued at) and `exp` (expiry; integer seconds since the Unix epoch, UTC). The lifetime
-  `exp - iat` is at most 1,800 seconds.
+  `exp - iat` is at most 1,800 seconds, and `iat` may be at most 60 seconds ahead of serve's clock,
+  so an accepted assignment is usable for at most 1,860 seconds from now.
 - `tag` is unpadded base64url of `HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + payload)`.
 
 `verdict serve` verifies it in constant time and honours it only on `POST /v1/chat/completions`
-and `POST /v1/responses`. On every other path, on `POST /v1/messages` and in `x-api-key` it is
-refused with 403, and in anonymous mode it is refused on every path without reading the key. The
+and `POST /v1/responses`. On every other authenticated path, on `POST /v1/messages` and in
+`x-api-key` it is refused with 403, and in anonymous mode it is refused on every path without
+reading the key. (`/health` and the OmniRoute webhook path never read a bearer, so an assignment
+there is ignored.) The
 request's `model` must equal the signed route (a different, missing or malformed `model` is refused
 with 400 before routing). The assignment pins the request to that one route on an assigned lane
 that still runs every per-route gate: an inactive, cooled, opaque, unmapped, unhealthy or

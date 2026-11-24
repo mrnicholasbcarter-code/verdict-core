@@ -9,7 +9,8 @@ An assignment is one opaque bearer string::
 ``route_id``, ``run_id`` and ``node_id`` are non-empty strings of at most 128 characters without
 control characters.  ``exp`` (expiry) and ``iat`` (issued at) are integer seconds since the Unix
 epoch, UTC, from 0 through 253402300799 (9999-12-31T23:59:59Z, the last second a UTC ``datetime``
-holds), and the lifetime ``exp - iat`` is from 0 through 1,800 seconds.  Base64url is the
+holds), the lifetime ``exp - iat`` is from 0 through 1,800 seconds, and ``iat`` is at most 60
+seconds ahead of the verifier's clock.  Base64url is the
 unpadded URL-safe alphabet and is decoded strictly (no padding, no other characters, canonical
 bits only).
 
@@ -48,6 +49,12 @@ MAX_ID_CHARS = 128
 MAX_EPOCH_SECONDS = 253402300799
 #: ``exp - iat`` may be at most this (twice the 900 s attempt ceiling in the orchestrator).
 MAX_LIFETIME_SECONDS = 1800
+#: An ``iat`` further ahead of the clock than this is refused.  The lifetime cap alone bounds only
+#: the declared lifetime: a token dated years ahead with a one-second lifetime would be usable from
+#: now until then.  With this bound the usable window of any accepted token is at most
+#: ``MAX_LIFETIME_SECONDS + MAX_CLOCK_SKEW_SECONDS`` from now.  It also lets a signer whose clock
+#: runs a little ahead of the verifier's be accepted.
+MAX_CLOCK_SKEW_SECONDS = 60
 #: HMAC-SHA256 output size, and the size of the decoded tag.
 _TAG_BYTES = 32
 
@@ -171,8 +178,8 @@ def verify_assignment(token: Any, key: bytes, *, now: datetime) -> VerifiedWorke
 
     Order: key size, token size and shape (before any decoding of the payload), the tag with
     ``hmac.compare_digest`` over the received payload text, and only then the payload (shape,
-    field limits, the ranges of ``exp`` and ``iat``, the lifetime), the conversion of ``exp`` to
-    a UTC time and the expiry (strictly after ``now``).  ``now`` must carry a UTC offset.
+    field limits, the ranges of ``exp`` and ``iat``, the lifetime), ``iat`` against the clock, the
+    conversion of ``exp`` to a UTC time and the expiry (strictly after ``now``).  ``now`` must carry a UTC offset.
     """
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be a datetime with a timezone offset")
@@ -194,6 +201,8 @@ def verify_assignment(token: Any, key: bytes, *, now: datetime) -> VerifiedWorke
     if not hmac.compare_digest(received_tag, expected_tag.digest()):
         raise AssignmentError(REASON_BAD_SIGNATURE)
     fields = _payload_fields(payload_text)
+    if fields["iat"] > now.timestamp() + MAX_CLOCK_SKEW_SECONDS:
+        raise AssignmentError(REASON_MALFORMED)  # dated ahead: its usable window is not bounded
     try:
         expires_at = _utc_from_epoch(fields["exp"])
     except (OverflowError, ValueError, OSError) as exc:

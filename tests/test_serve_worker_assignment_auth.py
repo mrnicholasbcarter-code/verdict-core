@@ -146,6 +146,9 @@ def _denial_tokens() -> dict[str, str]:
         ),
         "exp-2-63": sign.assignment(KEY, route_id="omniroute/free-route", exp=2**63, iat=2**63 - 9),
         "lifetime-1801": _valid(exp=soon, iat=soon - 1801),
+        "dated-years-ahead": sign.assignment(
+            KEY, route_id="omniroute/free-route", exp=253402300799, iat=253402300798
+        ),
     }
 
 
@@ -288,6 +291,37 @@ def test_a_valid_assignment_is_refused_off_the_relay_surfaces(
 ) -> None:
     with TestClient(api.app) as client:
         response = client.request(method, path, json=body, headers=_bearer(_valid()))
+    assert response.status_code == 403
+    assert response.json()["error"]["message"] == GENERIC
+    _assert_nothing_happened(serve)
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param({"x-api-key": "vwa1.\u00e9.\u00e9"}, id="x-api-key-alone"),
+        pytest.param(
+            {"x-api-key": "vwa1.\u00e9.\u00e9", "authorization": f"Bearer {SERVE_TOKEN}"},
+            id="x-api-key-with-the-serve-bearer",
+        ),
+        pytest.param(
+            {"x-api-key": "plain-ascii", "authorization": "Bearer vwa1.\u00e9.\u00e9"},
+            id="bearer-with-an-ascii-x-api-key",
+        ),
+        pytest.param(
+            {"x-api-key": "vwa1.\u00e9.\u00e9", "authorization": "Bearer vwa1.\u00e9.\u00e9"},
+            id="both-non-ascii",
+        ),
+    ],
+)
+def test_a_non_ascii_assignment_credential_in_either_header_is_a_403_never_a_500(
+    serve: SimpleNamespace, headers: dict[str, str]
+) -> None:
+    """The constant-time compare raises on non-ASCII text, so the prefix is checked first."""
+    raw = {k: (v if v.isascii() else v.encode("utf-8")) for k, v in headers.items()}
+    body = {"model": "m", "max_tokens": 1, "messages": []}
+    with TestClient(api.app) as client:
+        response = client.post("/v1/messages", json=body, headers=raw)
     assert response.status_code == 403
     assert response.json()["error"]["message"] == GENERIC
     _assert_nothing_happened(serve)

@@ -96,9 +96,13 @@ carries a valid tag and still cannot become that value.
 <= 1800`, twice the 900 s attempt ceiling in `orchestration/runtime.py`, so a mis-signed long-lived
 assignment cannot exist. A longer or negative lifetime is `malformed` (no new reason code), and the
 cap is checked before expiry: a long lifetime in the past is `malformed`, not `expired`. The
-ranges of `exp` and `iat` are checked before the subtraction. Nothing compares `iat` with the clock
-(a signer whose clock runs a little ahead of serve's must not be refused, and the cap already
-bounds the credential), and `iat` is not carried into the verified result or the receipts. The domain
+ranges of `exp` and `iat` are checked before the subtraction. **`iat` is also compared with the
+clock** (added after review): an `iat` more than 60 s ahead of serve's clock is `malformed`
+(`MAX_CLOCK_SKEW_SECONDS`). Without it the cap bounds only the declared lifetime: a token with
+`iat = 253402300798` and `exp = 253402300799` has a one-second lifetime and is usable from now until
+year 9999. With it, `exp <= iat + 1800 <= now + 1860`, so the usable window of any accepted
+assignment is at most 1,860 s whatever its dates say, and a signer whose clock runs a little ahead
+of serve's is still accepted. `iat` is not carried into the verified result or the receipts. The domain
 tag keeps a tag made for this purpose from being valid for any other HMAC use of the key.
 `route_id`, `run_id` and `node_id` are non-empty strings of at most 128 characters with no control
 characters (they are written to logs and receipts). Unknown or missing fields are refused. A
@@ -464,14 +468,18 @@ Each is a detail the merged design left open or did not foresee. None loosens a 
 - **Reason code for a bad lifetime.** A correctly signed assignment whose lifetime `exp - iat` is
   negative or over 1,800 s is refused `malformed`, not a new reason code (the code set stays
   `malformed`, `bad_signature`, `expired`, `key_unavailable`).
+- **`iat` against the clock.** The lifetime cap is made true of the usable window by refusing an
+  `iat` more than 60 s ahead of serve's clock (`malformed`). This goes beyond the operator's
+  accepted addition (a lifetime cap) and only tightens it; the 60 s allowance is a constant.
 - **Stricter id and JSON rules.** `route_id`, `run_id` and `node_id` may not hold a control
   character or a lone surrogate (Unicode categories `Cc` and `Cs`: a surrogate would crash a
   receipt write later), and a payload with a repeated key is refused. Deeply nested JSON, which on
   some Python versions raises `RecursionError`, is `malformed`.
 - **Strict base64url.** Padding, other characters, an impossible length and non-canonical trailing
   bits are refused, for the tag as well as the payload, so a tag has one spelling.
-- **Non-ASCII bearer.** A `vwa1.` bearer with a non-ASCII character is refused 403 by the
-  middleware before the constant-time compare (which raises on non-ASCII text), never a 500.
+- **Non-ASCII credentials.** A `vwa1.` value with a non-ASCII character, in the bearer or in
+  `x-api-key` (alone or beside another credential), is refused 403 by the middleware before any
+  constant-time compare (which raises on non-ASCII text), never a 500.
 - **The worker-mark guard covers the shared relay.** `_relay_completion` also serves `POST
   /v1/messages`, so a worker header or an assignment bearer without a verified assignment is
   refused 403 there too.

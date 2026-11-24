@@ -1128,6 +1128,13 @@ async def caller_authentication(request: Request, call_next: Any) -> Response:
     scheme, _, supplied = authorization.partition(" ")
     api_key = request.headers.get("x-api-key", "") if request.url.path == "/v1/messages" else ""
     bearer_present = scheme.lower() == "bearer" and bool(supplied)
+    if any(
+        value.startswith(_ASSIGNMENT_PREFIX) and not value.isascii()
+        for value in (api_key, supplied if bearer_present else "")
+    ):
+        # The constant-time compares below raise on non-ASCII text.  An assignment is ASCII, so a
+        # non-ASCII one in either header is a refusal, never a server error.
+        return _proxy_error(403, "authentication failed", surface=_auth_surface(request))
     if api_key and bearer_present and not bearer_matches(api_key, supplied):
         return _proxy_error(403, "authentication failed", surface="messages")
     if api_key:
@@ -1141,10 +1148,6 @@ async def caller_authentication(request: Request, call_next: Any) -> Response:
             headers={"www-authenticate": "Bearer"},
         )
     is_assignment = supplied.startswith(_ASSIGNMENT_PREFIX)
-    if is_assignment and not supplied.isascii():
-        # The constant-time compare below raises on non-ASCII text; an assignment is ASCII, so
-        # this is a refusal, never a server error.
-        return _proxy_error(403, "authentication failed", surface=_auth_surface(request))
     if not bearer_matches(supplied, token):
         if (
             is_assignment

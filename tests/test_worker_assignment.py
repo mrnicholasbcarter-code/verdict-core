@@ -292,7 +292,8 @@ def test_the_bound_on_exp_holds_without_the_conversion_guard(
 
 def test_the_largest_representable_exp_verifies_and_is_the_last_utc_second() -> None:
     token = sign.assignment(KEY, exp=sign.MAX_EXP, iat=sign.MAX_EXP - 900)
-    verified = _verify(token, now=NOW)
+    # A clock inside its lifetime: a token dated years ahead is refused (see the skew tests).
+    verified = _verify(token, now=datetime(9999, 12, 31, 23, 50, 0, tzinfo=timezone.utc))
     assert verified.expires_at == datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
     assert verified.expires_at.utcoffset() == timedelta(0)
 
@@ -312,9 +313,10 @@ def test_a_negative_issued_at_is_malformed_even_when_the_lifetime_is_short() -> 
 def test_the_lifetime_exp_minus_iat_is_capped_at_1800_seconds(
     lifetime: int, accepted: bool
 ) -> None:
-    token = sign.assignment(KEY, exp=FUTURE, iat=FUTURE - lifetime)
+    exp = NOW_S + 10  # iat is then at most 10 s ahead of the clock, inside the skew allowance
+    token = sign.assignment(KEY, exp=exp, iat=exp - lifetime)
     if accepted:
-        assert _verify(token).expires_at == datetime.fromtimestamp(FUTURE, tz=timezone.utc)
+        assert _verify(token).expires_at == datetime.fromtimestamp(exp, tz=timezone.utc)
     else:
         # A signed, unexpired, too-long (or negative) lifetime is refused as malformed, so a
         # mis-signed long-lived assignment cannot exist.
@@ -326,10 +328,43 @@ def test_a_long_lifetime_is_refused_before_expiry_is_considered() -> None:
     assert _refusal(sign.assignment(KEY, exp=NOW_S - 10, iat=NOW_S - 10 - 3600)) == "malformed"
 
 
-def test_the_issued_at_is_not_required_to_be_in_the_past() -> None:
-    # Nothing in the spec checks iat against the clock (clock skew between signer and serve);
-    # only the lifetime rule applies.
-    assert _verify(sign.assignment(KEY, exp=FUTURE + 600, iat=FUTURE)).route_id
+def test_an_issued_at_slightly_ahead_of_the_clock_is_tolerated() -> None:
+    # A signer whose clock runs a little ahead of serve's must not be refused.
+    assert _verify(sign.assignment(KEY, exp=NOW_S + 630, iat=NOW_S + 30)).route_id
+
+
+@pytest.mark.parametrize(
+    ("ahead", "accepted"), [(0, True), (60, True), (61, False), (900, False), (10**9, False)]
+)
+def test_an_issued_at_ahead_of_the_clock_by_more_than_the_skew_is_refused(
+    ahead: int, accepted: bool
+) -> None:
+    # The lifetime cap alone bounds the declared lifetime; without a clock-relative bound a token
+    # dated far ahead with a one-second lifetime would be usable for years.  With it, the usable
+    # window is at most 1,800 s plus the skew, whatever the dates say.
+    token = sign.assignment(KEY, exp=NOW_S + ahead + 1, iat=NOW_S + ahead)
+    if accepted:
+        assert _verify(token).route_id
+    else:
+        assert _refusal(token) == "malformed"
+
+
+def test_a_one_second_token_dated_in_year_9999_is_refused_not_usable_for_years() -> None:
+    token = sign.assignment(KEY, exp=sign.MAX_EXP, iat=sign.MAX_EXP - 1)
+    assert _refusal(token) == "malformed"
+
+
+def test_the_usable_window_of_any_accepted_token_is_bounded_by_lifetime_plus_skew() -> None:
+    accepted = []
+    for ahead in range(0, 120, 7):
+        for lifetime in (0, 1, 900, 1800):
+            token = sign.assignment(KEY, exp=NOW_S + ahead + lifetime, iat=NOW_S + ahead)
+            try:
+                accepted.append(_verify(token).expires_at)
+            except wa.AssignmentError:
+                continue
+    assert accepted
+    assert max(accepted) - NOW <= timedelta(seconds=1800 + wa.MAX_CLOCK_SKEW_SECONDS)
 
 
 @pytest.mark.parametrize("failure", [OverflowError, ValueError, OSError])
