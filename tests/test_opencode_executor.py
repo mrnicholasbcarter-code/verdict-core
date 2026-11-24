@@ -34,6 +34,8 @@ from verdict.orchestration.executor_opencode import (
     _kill_process_group,
     _opencode_binary,
     _parse_ndjson_output,
+    _parse_status_code,
+    _status_from_full_text,
     _write_attempt_config,
     _write_context_file,
 )
@@ -1723,6 +1725,184 @@ def test_pre_dispatch_checks_are_bounded_by_the_attempt_deadline(
     assert list(cwd.iterdir()) == []
 
 
+def _slow_version_script(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A binary whose ``--version`` records its pid and then waits for a release file.
+
+    Returns (script, pid file, release file).  The wait is a shell loop, so the probe's process
+    group holds more than one process.
+    """
+    pid_file = tmp_path / "probe.pid"
+    release_file = tmp_path / "probe.release"
+    script = tmp_path / "opencode-blocked-version"
+    script.write_text(
+        "#!/bin/sh\n"
+        f"echo $$ > '{pid_file}'\n"
+        f"while [ ! -f '{release_file}' ]; do sleep 0.05; done\n"
+        "exit 0\n"
+    )
+    script.chmod(0o755)
+    return script, pid_file, release_file
+
+
+def _cancel_run_during_a_blocked_version_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[bool, float, list[str]]:
+    """Cancel ``run()`` while the real ``--version`` probe is blocked.
+
+    Returns (probe process gone when the cancellation completed, seconds the cancellation took,
+    the requests the fake serve saw during the second after the probe was released).  Releasing
+    the probe afterwards stands for a slow probe that finishes late: a leaked thread would then
+    go on to the authenticated serve request.
+    """
+    monkeypatch.setattr(executor_module, "_check_binary", _REAL_CHECK_BINARY)
+    monkeypatch.setattr(executor_module, "_check_serve", _REAL_CHECK_SERVE)
+    script, pid_file, release_file = _slow_version_script(tmp_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    serve = _FakeServe(accepts=_SERVE_TOKEN)
+    executor = OpenCodeExecutor(
+        opencode_bin=str(script),
+        serve_base_url=serve.origin,
+        credential_provider=lambda route, attempt: _SERVE_TOKEN,
+    )
+
+    async def scenario() -> tuple[bool, float]:
+        task = asyncio.ensure_future(
+            executor.run("task", route_id=ROUTE, cwd=cwd, timeout_seconds=60.0)
+        )
+        for _ in range(500):  # up to 5 s for the probe to start
+            if pid_file.exists() and pid_file.read_text().strip():
+                break
+            await asyncio.sleep(0.01)
+        assert pid_file.exists(), "the version probe never started"
+        cancelled_at = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=20.0)
+        took = time.monotonic() - cancelled_at
+        gone = _pid_gone(int(pid_file.read_text()))
+        release_file.write_text("go")  # a probe that is still alive would now succeed
+        await asyncio.sleep(1.0)  # time for a leaked thread to make its request
+        return gone, took
+
+    try:
+        gone, took = asyncio.run(scenario())
+        return gone, took, list(serve.requests)
+    finally:
+        serve.close()
+        recorded = pid_file.read_text().strip() if pid_file.exists() else ""
+        if recorded.isdigit():  # never leave the probe running, whatever failed above
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.killpg(int(recorded), signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.kill(int(recorded), signal.SIGKILL)
+
+
+@requires_procfs
+def test_cancelling_run_kills_the_version_probe_and_waits_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of 384b5c82: cancelling the pre-dispatch await did not stop its thread, so the
+    ``--version`` probe stayed alive after ``run()`` had finished cancelling.  The probe must be
+    gone, reaped, by the time the cancellation completes, and promptly."""
+    gone, took, _requests = _cancel_run_during_a_blocked_version_probe(tmp_path, monkeypatch)
+    assert gone, "the version probe was still alive when the cancellation completed"
+    assert took < 10.0, f"the cancellation waited {took:.1f}s for a probe it could have killed"
+
+
+@requires_procfs
+def test_cancelling_run_during_the_version_probe_makes_no_serve_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The thread of a cancelled attempt must not go on to the authenticated serve request."""
+    _gone, _took, requests = _cancel_run_during_a_blocked_version_probe(tmp_path, monkeypatch)
+    assert requests == [], f"a cancelled attempt still called serve: {requests}"
+
+
+def test_cancelling_run_between_the_binary_and_serve_checks_skips_the_serve_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A binary check that cannot be interrupted (it returns normally after the cancel) is still
+    followed by no serve request: the thread looks at the cancellation before it starts one."""
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    serve_calls: list[str] = []
+
+    def blocked_binary_check(*args: object, **kwargs: object) -> None:
+        started.set()
+        assert release.wait(timeout=30), "test never released the blocked binary check"
+
+    def recording_serve_check(origin: str, token: str, timeout: float) -> None:
+        serve_calls.append(origin)
+
+    monkeypatch.setattr(executor_module, "_check_binary", blocked_binary_check)
+    monkeypatch.setattr(executor_module, "_check_serve", recording_serve_check)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    executor = OpenCodeExecutor(opencode_bin=make_fake_opencode(tmp_path, "sys.exit(0)\n"))
+
+    async def scenario() -> None:
+        task = asyncio.ensure_future(
+            executor.run("task", route_id=ROUTE, cwd=cwd, timeout_seconds=30.0)
+        )
+        for _ in range(500):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set(), "the binary check never started"
+        task.cancel()
+        await asyncio.sleep(0.2)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=20.0)
+        await asyncio.sleep(0.3)  # time for a leaked thread to reach the serve check
+
+    asyncio.run(scenario())
+    assert serve_calls == [], "a serve request was made after the attempt was cancelled"
+    assert list(cwd.iterdir()) == [], "the worktree was written to after the cancellation"
+
+
+def test_cancelling_run_waits_for_a_serve_check_that_is_already_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request that has started cannot be recalled; the cancellation completes only after it
+    has returned, so nothing of the attempt is left running behind it."""
+    import threading
+
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def blocked_serve_check(origin: str, token: str, timeout: float) -> None:
+        started.set()
+        assert release.wait(timeout=30), "test never released the blocked serve check"
+        finished.set()
+
+    monkeypatch.setattr(executor_module, "_check_serve", blocked_serve_check)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    executor = OpenCodeExecutor(opencode_bin=make_fake_opencode(tmp_path, "sys.exit(0)\n"))
+
+    async def scenario() -> None:
+        task = asyncio.ensure_future(
+            executor.run("task", route_id=ROUTE, cwd=cwd, timeout_seconds=30.0)
+        )
+        for _ in range(500):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set(), "the serve check never started"
+        task.cancel()
+        await asyncio.sleep(0.3)
+        assert not task.done(), "run() finished cancelling while its serve check was running"
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=20.0)
+        assert finished.is_set(), "the cancellation completed before the serve check returned"
+
+    asyncio.run(scenario())
+    assert list(cwd.iterdir()) == [], "the worktree was written to after the cancellation"
+
+
 def test_a_failing_credential_lookup_is_a_configuration_failure_not_an_exception(
     tmp_path: Path,
 ) -> None:
@@ -1958,6 +2138,109 @@ def test_a_structured_status_still_wins_over_a_number_in_the_text() -> None:
         {"type": "error", "error": {"status": 429, "message": f"retry in 503 ms{_LONG_DIAGNOSTIC}"}}
     )
     assert _parse_ndjson_output(line)["error_status"] == 429
+
+
+# Text that carries a 4xx or 5xx number and no HTTP status: a delay, a count, a size, a line.
+_INCIDENTAL_NUMBERS = [
+    "retrying in 500 ms",
+    "failed after 429 attempts",
+    "gave up after 503 retries",
+    "backoff 504 seconds",
+    "downloaded 404 files",
+    "line 502 of config.json is invalid",
+    "wrote 400 bytes then lost the connection",
+    "Retry-After: 429",
+    "exit code 401",
+    "retry 3 of 5, waiting 500 and then 429",
+    "request id 5001234 failed",
+]
+
+# Real statuses, written the ways a provider, a proxy or a CLI prints them.
+_MARKED_STATUSES = [
+    ("HTTP 429", 429),
+    ("http 429", 429),
+    ("HTTP/1.1 503 Service Unavailable", 503),
+    ("HTTP/2 502", 502),
+    ("HTTP error 500", 500),
+    ("HTTP status 504", 504),
+    ("status 503", 503),
+    ("status: 504", 504),
+    ("Status Code 408", 408),
+    ("status code: 401", 401),
+    ("status_code=403", 403),
+    ("statusCode: 429", 429),
+    ('{"status":429,"message":"slow down"}', 429),
+    ("429 Too Many Requests", 429),
+    ("upstream answered 503 Service Unavailable twice", 503),
+    ("(401 Unauthorized)", 401),
+    ("502 bad gateway", 502),
+]
+
+
+@pytest.mark.parametrize("text", _INCIDENTAL_NUMBERS)
+def test_a_number_without_an_http_or_status_marker_is_not_a_status(text: str) -> None:
+    """Review of 384b5c82: ``retrying in 500 ms`` became status 500 and ``failed after 429
+    attempts`` became a rate limit that recovery reroutes with a provider cooldown."""
+    assert _parse_status_code(text) is None
+    assert _status_from_full_text(text) is None
+    assert _status_from_full_text(f"{text}.{_LONG_DIAGNOSTIC} {text}") is None
+
+
+@pytest.mark.parametrize(("text", "status"), _MARKED_STATUSES)
+def test_a_marked_http_status_in_unstructured_text_is_still_found(text: str, status: int) -> None:
+    assert _parse_status_code(f"request failed: {text}") == status
+    assert _parse_status_code(text) == status
+
+
+@pytest.mark.parametrize(("text", "status"), _MARKED_STATUSES)
+def test_a_marked_status_at_the_end_of_a_long_text_is_still_found(text: str, status: int) -> None:
+    long_text = f"retrying in 500 ms.{_LONG_DIAGNOSTIC} fatal: {text}"
+    assert len(long_text) > 400
+    assert _status_from_full_text(long_text) == status
+
+
+def test_a_marked_status_pushed_out_of_the_tail_is_still_found_past_an_incidental_number() -> None:
+    text = f"fatal: HTTP 503 Service Unavailable.{_LONG_DIAGNOSTIC} failed after 429 attempts"
+    assert _status_from_full_text(text) == 503
+
+
+@pytest.mark.parametrize("where", ["stderr", "ndjson-message", "ndjson-error-string"])
+def test_an_incidental_number_in_a_failed_attempt_gives_no_status(
+    tmp_path: Path, where: str
+) -> None:
+    """End to end: the terminal of a failed attempt carries ``status_code=None`` when the only
+    4xx or 5xx number in its error text is a delay or a count, so recovery does not reroute it
+    as a rate limit or an outage."""
+    text = f"retrying in 500 ms after failed after 429 attempts.{_LONG_DIAGNOSTIC}"
+    if where == "stderr":
+        body = f"sys.stderr.write({text!r})\nsys.exit(1)\n"
+    else:
+        event = (
+            {"type": "error", "message": text}
+            if where == "ndjson-message"
+            else {"type": "error", "error": text}
+        )
+        body = f"sys.stdout.write({json.dumps(event)!r} + '\\n')\nsys.exit(1)\n"
+    fake = make_fake_opencode(tmp_path, body)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is False
+    assert terminal.status_code is None
+
+
+def test_an_incidental_number_in_the_ndjson_message_does_not_hide_a_marked_stderr_status(
+    tmp_path: Path,
+) -> None:
+    line = json.dumps({"type": "error", "message": "retrying in 500 ms, failed after 429 attempts"})
+    fake = make_fake_opencode(
+        tmp_path,
+        f"sys.stdout.write({line!r} + '\\n')\nsys.stderr.write('status code: 503')\nsys.exit(1)\n",
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.status_code == 503
 
 
 def test_a_status_in_the_tail_still_beats_an_earlier_stray_number_in_stderr(tmp_path: Path) -> None:

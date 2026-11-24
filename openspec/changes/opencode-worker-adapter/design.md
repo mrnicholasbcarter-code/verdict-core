@@ -164,6 +164,17 @@ pricing, which is not "free". `cost_usd` is recorded only for a real positive fi
 every step; otherwise it is `null` with a `cost_note` (also written to the attempt evidence).
 Tokens are always recorded. A structured `error` event keeps its HTTP `status` and
 `retryAfterMs`, so recovery sees an upstream 429 or 503 as the reroutable failure it is.
+When the text has no structured status (stderr, or a message with no `status` field), a status
+is read only from a number marked as one (`HTTP 429`, `status code: 401`, `429 Too Many
+Requests`); a retry delay or an attempt count in the text is not a status, because a wrong 429
+would send the route into a provider cooldown.
+
+**Cancellation (design detail):** the pre-dispatch checks block (the `--version` probe and one
+HTTP request), so they run in a thread. Cancelling the await cannot stop a thread, so on a cancel
+the executor sets an event, the probe is killed and reaped within a poll interval, no further
+check starts, and the cancellation completes only after the thread has returned (the same
+boundary the context-file write keeps). A serve request that has already started is waited for
+(it is bounded by 5 s and is read-only).
 
 **Open point:** Whether to pass the API key via an env var or via the OpenCode
 config's credential field. Both keep it out of the command line and logs; the

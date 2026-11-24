@@ -76,6 +76,25 @@
       `test_a_status_in_a_long_stderr_is_found_when_the_ndjson_error_has_none`,
       `test_a_structured_status_beats_stderr_when_both_exist`,
       `test_a_secret_in_stderr_is_redacted_before_a_status_is_read_from_it`).
+- [x] 2.11 An HTTP status is read from unstructured text (stderr, an error message with no
+      `status` field) only when it carries an HTTP or status marker or its standard reason
+      phrase; a delay or a count (`retrying in 500 ms`, `failed after 429 attempts`) is not a
+      status, and a marked status is still found at the end of a long text. Explicit structured
+      statuses are unchanged (review of 384b5c82). Verify: `tests/test_opencode_executor.py`
+      (`test_a_number_without_an_http_or_status_marker_is_not_a_status`,
+      `test_a_marked_http_status_in_unstructured_text_is_still_found`,
+      `test_a_marked_status_at_the_end_of_a_long_text_is_still_found`,
+      `test_a_marked_status_pushed_out_of_the_tail_is_still_found_past_an_incidental_number`,
+      `test_an_incidental_number_in_a_failed_attempt_gives_no_status`,
+      `test_an_incidental_number_in_the_ndjson_message_does_not_hide_a_marked_stderr_status`).
+- [x] 2.12 The pre-dispatch checks are safe under cancellation: the version probe is killed and
+      reaped, no serve request starts after the cancel, and the cancellation completes only
+      after the checks' thread has finished (review of 384b5c82). Verify:
+      `tests/test_opencode_executor.py`
+      (`test_cancelling_run_kills_the_version_probe_and_waits_for_it`,
+      `test_cancelling_run_during_the_version_probe_makes_no_serve_request`,
+      `test_cancelling_run_between_the_binary_and_serve_checks_skips_the_serve_check`,
+      `test_cancelling_run_waits_for_a_serve_check_that_is_already_in_flight`).
 - [ ] (post-merge) 2.8 Live smoke of the worker on an admitted route, run with
       `--executor opencode` (OpenCode is opt-in) and **expected to fail until #1313 lands**
       (serve refuses the worker's requests until it honours the worker's assignment before its

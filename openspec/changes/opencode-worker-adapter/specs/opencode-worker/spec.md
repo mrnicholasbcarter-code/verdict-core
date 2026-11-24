@@ -224,7 +224,10 @@ key and never an undocumented operator variable.  It SHALL reach the child only 
 configured key variable name and SHALL be redacted from everything recorded.  Before an attempt
 writes or launches anything, the executor SHALL check that the credential resolves, that the
 `opencode` binary runs and that serve is reachable and accepts the credential; a failure SHALL be
-one `harness_configuration:` message that recovery treats as a block.
+one `harness_configuration:` message that recovery treats as a block.  The checks SHALL be safe
+under cancellation: when the attempt is cancelled, the version probe's process group SHALL be
+killed and reaped, no serve request SHALL be started afterwards, and the cancellation SHALL
+complete only after the thread that ran the checks has finished.
 
 #### Scenario: Credential reaches only the child environment
 
@@ -243,6 +246,12 @@ one `harness_configuration:` message that recovery treats as a block.
 - **WHEN** the binary does not run, serve is unreachable, or serve answers 401 or 403
 - **THEN** the attempt ends the same way, with a reason that never contains the credential
 
+#### Scenario: Cancelled during the version probe
+
+- **WHEN** the attempt is cancelled while `opencode --version` is still running
+- **THEN** the probe's process group is gone when the cancellation completes, and serve receives
+  no request from that attempt, even if the probe would have finished later
+
 ### Requirement: Serve address comes from configuration
 
 Workers SHALL call the serve address given by `--serve-url`, else `VERDICT_SERVE_URL`, else the
@@ -260,7 +269,11 @@ A failed attempt SHALL keep the HTTP status and retry delay OpenCode reports in 
 `error` event.  When that event carries a message but no status, the HTTP status printed on
 stderr (sanitized, secrets redacted, read before any truncation) SHALL be used as the status,
 while the event's message stays the recorded error; a status the event does carry SHALL NOT be
-replaced by one from stderr.  `cost_usd` SHALL be recorded only for a real positive figure; a reported 0, a
+replaced by one from stderr.  A status read from unstructured text (stderr, or an error message
+with no `status` field) SHALL need an HTTP or status marker (`HTTP 429`, `HTTP/1.1 503`,
+`status 503`, `status code: 401`) or its standard reason phrase (`429 Too Many Requests`): a bare
+4xx or 5xx number, such as a retry delay or an attempt count, SHALL NOT be a status.  `cost_usd`
+SHALL be recorded only for a real positive figure; a reported 0, a
 missing figure, or any unpriced step SHALL give `null` with a reason, and tokens SHALL still be
 recorded.
 
@@ -274,6 +287,19 @@ recorded.
 - **WHEN** OpenCode exits 1 after an error event with the message `request failed` and no
   status, and prints `HTTP 429 Too Many Requests` on stderr
 - **THEN** the terminal carries status 429 and the error `request failed`
+
+#### Scenario: An incidental number is not a status
+
+- **WHEN** OpenCode exits 1 and its only error text is `retrying in 500 ms` or
+  `failed after 429 attempts`
+- **THEN** the terminal carries no status, so recovery does not reroute it as a rate limit or an
+  outage
+
+#### Scenario: A marked status is found anywhere in the text
+
+- **WHEN** OpenCode exits 1 and its error text ends with `HTTP 503 Service Unavailable` or
+  `status code: 401`, after a long diagnostic that holds an incidental number
+- **THEN** the terminal carries status 503 or 401
 
 #### Scenario: Zero cost is not recorded
 

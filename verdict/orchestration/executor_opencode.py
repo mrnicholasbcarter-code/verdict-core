@@ -39,6 +39,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -46,7 +47,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from verdict.orchestration.contracts import LOCAL_EXECUTOR_ORIGIN, AttemptUsage, WorkerTerminal
 from verdict.orchestration.executors import idle_output_seconds_from_env
@@ -69,7 +70,43 @@ _TERM_GRACE_SECONDS = 5.0
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 _STDERR_TAIL_CHARS = 400
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
-_STATUS_RE = re.compile(r"\b([45]\d{2})\b")
+#: Reason phrases that may follow a bare ``429`` as in ``429 Too Many Requests``.  A fixed list
+#: (not ``http.HTTPStatus``, whose wording differs between Python versions).
+_STATUS_PHRASES = (
+    "Bad Request",
+    "Unauthorized",
+    "Payment Required",
+    "Forbidden",
+    "Not Found",
+    "Method Not Allowed",
+    "Request Timeout",
+    "Conflict",
+    "Payload Too Large",
+    "Unprocessable Entity",
+    "Too Many Requests",
+    "Internal Server Error",
+    "Not Implemented",
+    "Bad Gateway",
+    "Service Unavailable",
+    "Gateway Timeout",
+)
+#: An HTTP status read from unstructured text: only a 4xx or 5xx number that is marked as one.
+#: Either it follows ``HTTP`` (``HTTP 429``, ``HTTP/1.1 503``, ``HTTP error 500``) or ``status``
+#: (``status 503``, ``status: 504``, ``status code: 401``, ``statusCode=403``, ``"status":429``),
+#: or it is followed by its standard reason phrase (``429 Too Many Requests``).  A bare number is
+#: not a status: ``retrying in 500 ms`` and ``failed after 429 attempts`` carry none.
+_STATUS_RE = re.compile(
+    r"""(?ix)
+    (?: \bhttp(?:/\d(?:\.\d)?)? (?:\s+(?:status|error|code|response))*
+      | \bstatus(?:[\s_-]?code)? )
+    ["']? (?: \s*[:=]\s* | \s+ ) ["']?
+    ([45]\d\d)\b
+    |
+    \b([45]\d\d)\b (?= \s+ (?: """
+    + "|".join(r"\s+".join(map(re.escape, phrase.split())) for phrase in _STATUS_PHRASES)
+    + r""" ) \b )
+    """
+)
 
 
 #: Marker that replaces a secret in any text taken from the worker subprocess.
@@ -111,8 +148,13 @@ def _sanitize(text: str, limit: int = _STDERR_TAIL_CHARS, secrets: Iterable[str]
 
 
 def _parse_status_code(message: str) -> int | None:
+    """The HTTP status that ``message`` states with an HTTP or status marker, or None.
+
+    Only for unstructured text: an explicit ``status`` field of a structured error never comes
+    through here.  A number that merely sits in the text (a delay, a count) is not a status.
+    """
     match = _STATUS_RE.search(message)
-    return int(match.group(1)) if match else None
+    return int(match.group(1) or match.group(2)) if match else None
 
 
 def _status_from_full_text(full: str) -> int | None:
@@ -360,6 +402,39 @@ def _write_context_file(cwd: Path, prompt: str, deadline: float | None = None) -
         raise
 
 
+_T = TypeVar("_T")
+
+
+async def _to_thread_joined(
+    func: Callable[..., _T], *args: Any, on_cancel: Callable[[], None] | None = None
+) -> _T:
+    """Run ``func(*args)`` in a thread; a cancellation waits for the thread before it propagates.
+
+    A thread cannot be interrupted, and cancelling the await alone leaves it running.  So if
+    this coroutine is cancelled, ``on_cancel`` runs first (it asks the thread to stop early, for
+    example by setting an event the thread polls), then the thread is waited for however many
+    more times the cancellation repeats.  Whatever the thread does, it has finished by the time
+    the caller sees ``CancelledError``: a caller that has seen the cancellation complete can
+    clean up or reuse what the thread touched without a late write, process or request racing it.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(func, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        if on_cancel is not None:
+            on_cancel()
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue  # cancelled again: still wait for the thread
+            except Exception:
+                break  # the thread's work failed; the cancellation still wins
+        if task.done() and not task.cancelled():
+            task.exception()  # mark retrieved: the cancellation is what propagates
+        raise
+
+
 async def _prepare_context(cwd: Path, prompt: str, deadline: float | None = None) -> None:
     """Write the context file off the event loop, without letting a write outlive a cancel.
 
@@ -371,20 +446,7 @@ async def _prepare_context(cwd: Path, prompt: str, deadline: float | None = None
     worktree without a late write racing it.  ``deadline`` (absolute monotonic time) bounds
     the thread itself, so that wait cannot outlast the attempt's budget by much.
     """
-    task = asyncio.ensure_future(asyncio.to_thread(_write_context_file, cwd, prompt, deadline))
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                continue  # cancelled again: still wait for the thread
-            except Exception:
-                break  # the preparation failed; the cancellation still wins
-        if task.done() and not task.cancelled():
-            task.exception()  # mark retrieved: the cancellation is what propagates
-        raise
+    await _to_thread_joined(_write_context_file, cwd, prompt, deadline)
 
 
 def _worker_credential(route_id: str, attempt_id: str) -> str | None:
@@ -407,6 +469,11 @@ _CREDENTIAL_HELP = "run 'verdict setup --apply --allow host.serve' to create it"
 
 #: Returned by the pre-dispatch checks when the attempt's own budget ran out first.
 _BUDGET_EXHAUSTED = "budget exhausted"
+#: Returned by the pre-dispatch checks when the attempt was cancelled while they ran.  The
+#: caller is being cancelled, so nobody reads it; it only ends the checks without a request.
+_CANCELLED = "cancelled"
+#: How often the version probe looks at the cancellation event while it waits for the process.
+_PROBE_POLL_SECONDS = 0.05
 
 
 def _probe_env(base_env: dict[str, str]) -> dict[str, str]:
@@ -419,13 +486,48 @@ def _probe_env(base_env: dict[str, str]) -> dict[str, str]:
     }
 
 
+class _ProbeCancelledError(Exception):
+    """The attempt was cancelled while the version probe was running."""
+
+
+def _wait_for_probe(
+    proc: subprocess.Popen[bytes], timeout: float, cancel: threading.Event | None
+) -> None:
+    """Wait for ``proc`` to exit, for at most ``timeout`` seconds, watching ``cancel``.
+
+    Raises :class:`subprocess.TimeoutExpired` when the time is up and
+    :class:`_ProbeCancelledError` when ``cancel`` is set first.  The process is left to the
+    caller to kill.
+    """
+    if cancel is None:
+        proc.wait(timeout=timeout)
+        return
+    end = time.monotonic() + timeout
+    while True:
+        if cancel.is_set():
+            raise _ProbeCancelledError
+        left = end - time.monotonic()
+        if left <= 0:
+            raise subprocess.TimeoutExpired(proc.args, timeout)
+        try:
+            proc.wait(timeout=min(_PROBE_POLL_SECONDS, left))
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def _check_binary(
-    binary: str, timeout: float = 15.0, env: dict[str, str] | None = None
+    binary: str,
+    timeout: float = 15.0,
+    env: dict[str, str] | None = None,
+    cancel: threading.Event | None = None,
 ) -> str | None:
     """None when ``binary --version`` runs; else a short, non-secret reason.
 
     The probe runs in its own process group with a credential-free environment, and the whole
-    group is killed on every exit (a helper that keeps the pipes open must not hold it).
+    group is killed on every exit (a helper that keeps the pipes open must not hold it).  When
+    ``cancel`` is set the wait ends within :data:`_PROBE_POLL_SECONDS`, the group is killed and
+    reaped, and :data:`_CANCELLED` is returned.
     """
     resolved = shutil.which(binary) if os.sep not in binary else binary
     if not resolved or not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
@@ -443,7 +545,9 @@ def _check_binary(
     except OSError as exc:
         return f"opencode binary is not runnable ({type(exc).__name__})"
     try:
-        proc.wait(timeout=timeout)
+        _wait_for_probe(proc, timeout, cancel)
+    except _ProbeCancelledError:
+        return _CANCELLED
     except subprocess.TimeoutExpired:
         return (
             _BUDGET_EXHAUSTED if timeout < 15.0 else "opencode binary is not runnable (timed out)"
@@ -842,20 +946,30 @@ class OpenCodeExecutor:
             duration_seconds=time.monotonic() - started,
         )
 
-    def _pre_dispatch_reason(self, credential: str, deadline: float) -> str | None:
+    def _pre_dispatch_reason(
+        self, credential: str, deadline: float, cancel: threading.Event | None = None
+    ) -> str | None:
         """Why this attempt cannot be launched (binary, then serve), or None.  Blocking.
 
         Both checks share the attempt's absolute ``deadline`` (``time.monotonic()``): each gets
-        at most what is left, and running out is :data:`_BUDGET_EXHAUSTED`, not a block.
+        at most what is left, and running out is :data:`_BUDGET_EXHAUSTED`, not a block.  Once
+        ``cancel`` is set the probe is killed, no further check starts (so no authenticated
+        serve request is made for an attempt that has ended) and :data:`_CANCELLED` is returned.
         """
+        if cancel is not None and cancel.is_set():
+            return _CANCELLED
         if not self._binary_checked:
             left = deadline - time.monotonic()
             if left <= 0:
                 return _BUDGET_EXHAUSTED
-            reason = _check_binary(self._resolve_bin(), min(15.0, left), self._base_env())
+            reason = _check_binary(
+                self._resolve_bin(), min(15.0, left), self._base_env(), cancel=cancel
+            )
             if reason is not None:
                 return reason
             self._binary_checked = True
+        if cancel is not None and cancel.is_set():
+            return _CANCELLED
         left = deadline - time.monotonic()
         if left <= 0:
             return _BUDGET_EXHAUSTED
@@ -900,8 +1014,16 @@ class OpenCodeExecutor:
                 "harness_configuration: the verdict serve credential contains a control "
                 f"character; {_CREDENTIAL_HELP}",
             )
-        reason = await asyncio.to_thread(
-            self._pre_dispatch_reason, credential, started + timeout_seconds
+        # The checks run in a thread (the probe and the request block).  On cancellation the
+        # thread is told to stop and is waited for, so no probe process or serve request
+        # outlives the attempt (the same boundary ``_prepare_context`` keeps).
+        cancel = threading.Event()
+        reason = await _to_thread_joined(
+            self._pre_dispatch_reason,
+            credential,
+            started + timeout_seconds,
+            cancel,
+            on_cancel=cancel.set,
         )
         if reason == _BUDGET_EXHAUSTED:
             return self._failure(route_id, started, "timeout")
