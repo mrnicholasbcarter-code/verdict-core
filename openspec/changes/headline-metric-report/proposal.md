@@ -16,9 +16,10 @@ the M0 baseline can be recorded.
   first-attempt pass rate. Research-duplication share is not in receipts; the
   function documents this explicitly.
 - `verdict/headline_metric.py`: New module. `compute_headline_report` aggregates
-  verified receipts (excluding fixture runs), optionally enriches with live
-  OmniRoute quota data, and computes the headline metric. `format_headline_report`
-  renders it for the terminal.
+  verified receipts (excluding fixture runs) and computes accepted tasks per
+  paid model share. It reads local files only and makes no network call.
+  `format_headline_report` renders it for the terminal. Any number that cannot
+  be computed is JSON null with a reason, never a string.
 - `verdict/actions/registry.py`: New action `headline.metric` calls
   `compute_headline_report`.
 - `verdict/orchestration/cli.py`: Adds `--daily` and `--since DATE` flags
@@ -68,11 +69,10 @@ tracked in a follow-up story.  `Refs #1213` is used rather than `Closes #1213`.
 ## Evidence Boundary
 
 - KNOWN: `compute_run_metrics`, `verify_run_receipt`, the receipt schema,
-  `NodeKind` values, the `test-` fixture prefix convention, and OmniRoute quota
-  API shape were read from this repository and are covered by the tests added
-  here.
-- INFERRED: how many real receipts exist on the operator's machine and whether
-  OmniRoute quota tracking is enabled for any connection; both are measured at
-  run time, never assumed.
+  `NodeKind` values and the `test-` fixture prefix convention were read from
+  this repository and are covered by the tests added here.
+- INFERRED: how many real receipts exist on the operator's machine; this is
+  measured at run time, never assumed.
 - NOT AVAILABLE: a live end-to-end `verdict metrics --daily` run on the
-  operator's machine. This is the M0 baseline recorded as a post-merge task.
+  operator's machine (the M0 baseline, a post-merge task), and the gateway's
+  quota response shape. No code in this change depends on the gateway.

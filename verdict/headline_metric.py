@@ -1,21 +1,20 @@
-"""Headline metric report: accepted work per % paid quota / per paid dollar.
+"""Headline metric report: accepted work per paid model share / per paid dollar.
 
 This module aggregates verified receipts from VERDICT_RUNS_DIR and computes
-the M0 headline metric (BOD-342 D15, issue #1213).
+the receipt-based part of the M0 headline metric (BOD-342 D15, issue #1213):
 
-Headline:
-  accepted_tasks / paid_model_share  (from receipts, always available)
+  accepted_tasks / paid_model_share   (a proxy for the paid-quota denominator)
+  accepted_tasks / dollars            (when every attempt has a recorded cost)
+
+It reads local files only.  The paid-quota denominator itself (% of a
+provider's subscription window consumed) is not computed here.
+
+Any number that cannot be computed is ``None`` (JSON null) with a companion
+``*_note`` reason, never a string sentinel and never a zero fill.
 
 Fixture runs (run_id starting with "test-") are excluded from the live
 aggregate; ``load_receipts_since`` skips them and ``format_headline_report``
 says so explicitly when any fixture is encountered.
-
-Gateway quota enrichment (accepted_tasks / % quota consumed) is not included
-in M0.  The OmniRoute gateway exposes quota data at
-``/api/resilience/connections`` (management-token gated), not at a simple
-``/api/quota`` endpoint, and the connection records use different field names
-than a naive implementation would assume.  A follow-up story will add this
-enrichment properly once the endpoint shape is confirmed.
 """
 
 from __future__ import annotations
@@ -99,19 +98,39 @@ def load_receipts_since(
     return receipts, skipped_live, fixture_skipped
 
 
+def _tasks_per_dollar(
+    accepted: int, dollars: float | None, has_unknown_cost: bool
+) -> tuple[float | None, str | None]:
+    """Return ``(value, note)`` for accepted tasks per dollar.
+
+    A float and no note when it is computable; otherwise ``None`` and the reason.
+    A missing number is never a string sentinel and never a division by zero.
+    (``compute_run_metrics`` still returns the string ``"undefined"`` for the
+    existing per-run ``verdict metrics`` table; the headline report normalises
+    it here so its JSON only ever carries a number or null.)
+    """
+    if has_unknown_cost or dollars is None:
+        return None, "some model attempts have unknown cost"
+    if dollars <= 0:
+        return None, "no spend recorded in selected period"
+    return accepted / dollars, None
+
+
 def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
     """Aggregate extend_run_metrics across a list of verified receipts.
 
     Returns aggregated totals and per-run data.  Numbers that cannot be
     computed (unknown cost, missing token counts) are propagated faithfully:
-    ``dollars`` is None when any run has unknown cost, etc.
+    ``dollars`` is None when any run has unknown cost, etc.  Every unavailable
+    ratio is ``None`` with a companion ``*_note`` reason, never a string.
     """
     if not receipts:
         return {
             "accepted_tasks": 0,
             "dollars": None,
             "has_unknown_cost": False,
-            "tasks_per_dollar": "undefined",
+            "tasks_per_dollar": None,
+            "tasks_per_dollar_note": "no runs in selected period",
             "free_share": 0.0,
             "subscription_share": 0.0,
             "metered_share": 0.0,
@@ -193,6 +212,9 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
                 (cc or {}).get("eligible", 0)
             )
 
+        run_tpd, run_tpd_note = _tasks_per_dollar(
+            m["accepted_tasks"], m["dollars"], m["has_unknown_cost"]
+        )
         per_run.append(
             {
                 "run_id": m["run_id"],
@@ -200,7 +222,8 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
                 "accepted_tasks": m["accepted_tasks"],
                 "dollars": m["dollars"],
                 "has_unknown_cost": m["has_unknown_cost"],
-                "tasks_per_dollar": m["tasks_per_dollar"],
+                "tasks_per_dollar": run_tpd,
+                "tasks_per_dollar_note": run_tpd_note,
                 "free_share": m["free_share"],
                 "subscription_share": m["subscription_share"],
                 "metered_share": m["metered_share"],
@@ -213,10 +236,9 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
 
     dollars: float | None = None if has_unknown_cost else total_cost
 
-    if dollars is not None and dollars > 0:
-        tasks_per_dollar: float | str = total_accepted / dollars
-    else:
-        tasks_per_dollar = "undefined"
+    tasks_per_dollar, tasks_per_dollar_note = _tasks_per_dollar(
+        total_accepted, dollars, has_unknown_cost
+    )
 
     if total_attempts > 0:
         free_share = free_attempts / total_attempts
@@ -252,6 +274,7 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
         "dollars": dollars,
         "has_unknown_cost": has_unknown_cost,
         "tasks_per_dollar": tasks_per_dollar,
+        "tasks_per_dollar_note": tasks_per_dollar_note,
         "free_share": free_share,
         "subscription_share": sub_share,
         "metered_share": metered_share,
@@ -340,14 +363,14 @@ def format_headline_report(data: dict[str, Any]) -> str:
     dollars = data.get("dollars")
     if dollars is not None:
         lines.append(f"Dollars spent:    ${dollars:.4f}")
-        tpd = data.get("tasks_per_dollar")
-        if tpd != "undefined" and isinstance(tpd, float):
-            lines.append(f"Accepted/dollar:  {tpd:.2f}")
-        else:
-            lines.append("Accepted/dollar:  undefined")
     else:
-        lines.append("Dollars spent:    unknown (some attempts have unknown cost)")
-        lines.append("Accepted/dollar:  undefined")
+        lines.append("Dollars spent:    null  (some model attempts have unknown cost)")
+    tpd = data.get("tasks_per_dollar")
+    if isinstance(tpd, float):
+        lines.append(f"Accepted/dollar:  {tpd:.2f}")
+    else:
+        tpd_reason = data.get("tasks_per_dollar_note") or "unavailable"
+        lines.append(f"Accepted/dollar:  null  ({tpd_reason})")
 
     lines.append("")
 

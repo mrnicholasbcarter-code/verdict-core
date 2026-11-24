@@ -709,7 +709,8 @@ class TestFormatHeadlineReport:
             "accepted_tasks": 0,
             "dollars": None,
             "has_unknown_cost": False,
-            "tasks_per_dollar": "undefined",
+            "tasks_per_dollar": None,
+            "tasks_per_dollar_note": "no runs in selected period",
             "free_share": 0.0,
             "subscription_share": 0.0,
             "metered_share": 0.0,
@@ -767,3 +768,163 @@ class TestActionHeadlineMetric:
         )
         assert not result.ok
         assert "invalid" in result.data.get("error", "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Missing numbers are JSON null with a reason, never a string sentinel
+# ---------------------------------------------------------------------------
+
+_SENTINEL_PREFIXES = ("undefined", "n/a", "unknown", "none", "null")
+
+
+def _string_sentinels(value: Any, path: str = "$") -> list[str]:
+    """Return paths of string values that stand in for a missing number.
+
+    Only strings that *start with* a sentinel word count; legitimate prose in a
+    ``*_note`` field is allowed because it explains a ``null`` and is checked
+    separately.
+    """
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).endswith("_note"):
+                continue
+            found.extend(_string_sentinels(item, f"{path}.{key}"))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            found.extend(_string_sentinels(item, f"{path}[{index}]"))
+    elif isinstance(value, str) and value.strip().lower().startswith(_SENTINEL_PREFIXES):
+        found.append(f"{path}={value!r}")
+    return found
+
+
+class TestMissingNumbersAreNull:
+    def test_empty_input_tasks_per_dollar_is_null_with_reason(self) -> None:
+        from verdict.headline_metric import aggregate_extended_metrics
+
+        agg = aggregate_extended_metrics([])
+        assert agg["tasks_per_dollar"] is None
+        assert isinstance(agg["tasks_per_dollar_note"], str)
+        assert agg["tasks_per_dollar_note"]
+
+    def test_unknown_cost_tasks_per_dollar_is_null_with_reason(self) -> None:
+        from verdict.headline_metric import aggregate_extended_metrics
+
+        receipt = _make_receipt(
+            nodes=[
+                _node(
+                    "n1", "implement", attempts=[_attempt("sub/x", "subscription", cost_usd=None)]
+                )
+            ]
+        )
+        agg = aggregate_extended_metrics([(Path("/tmp/fake"), receipt)])
+        assert agg["has_unknown_cost"] is True
+        assert agg["dollars"] is None
+        assert agg["tasks_per_dollar"] is None
+        assert "unknown cost" in agg["tasks_per_dollar_note"]
+
+    def test_zero_recorded_spend_tasks_per_dollar_is_null_not_a_division(self) -> None:
+        from verdict.headline_metric import aggregate_extended_metrics
+
+        receipt = _make_receipt(
+            nodes=[_node("n1", "implement", attempts=[_attempt("free/x", "free", cost_usd=0.0)])]
+        )
+        agg = aggregate_extended_metrics([(Path("/tmp/fake"), receipt)])
+        assert agg["accepted_tasks"] > 0
+        assert agg["dollars"] == 0.0
+        assert agg["tasks_per_dollar"] is None
+        assert "no spend" in agg["tasks_per_dollar_note"]
+
+    def test_known_spend_tasks_per_dollar_is_float_and_note_is_null(self) -> None:
+        from verdict.headline_metric import aggregate_extended_metrics
+
+        receipt = _make_receipt(
+            nodes=[
+                _node("n1", "implement", attempts=[_attempt("sub/x", "subscription", cost_usd=0.5)])
+            ]
+        )
+        agg = aggregate_extended_metrics([(Path("/tmp/fake"), receipt)])
+        assert agg["tasks_per_dollar"] == pytest.approx(agg["accepted_tasks"] / 0.5)
+        assert agg["tasks_per_dollar_note"] is None
+
+    def test_per_run_tasks_per_dollar_is_null_not_a_string(self) -> None:
+        from verdict.headline_metric import aggregate_extended_metrics
+
+        free_run = _make_receipt(
+            run_id="run-free",
+            nodes=[_node("n1", "implement", attempts=[_attempt("free/x", "free", cost_usd=0.0)])],
+        )
+        paid_run = _make_receipt(
+            run_id="run-paid",
+            nodes=[
+                _node("n1", "implement", attempts=[_attempt("sub/x", "subscription", cost_usd=0.5)])
+            ],
+        )
+        agg = aggregate_extended_metrics(
+            [(Path("/tmp/free"), free_run), (Path("/tmp/paid"), paid_run)]
+        )
+        by_id = {row["run_id"]: row for row in agg["per_run"]}
+        assert by_id["run-free"]["tasks_per_dollar"] is None
+        assert by_id["run-free"]["tasks_per_dollar_note"]
+        assert isinstance(by_id["run-paid"]["tasks_per_dollar"], float)
+        assert by_id["run-paid"]["tasks_per_dollar_note"] is None
+
+    def test_no_string_sentinel_anywhere_in_report_json(self, tmp_path: Path) -> None:
+        """Empty, free-only and unknown-cost reports carry no string sentinel."""
+        import json as json_mod
+
+        import verdict.headline_metric as hm
+        from verdict.headline_metric import compute_headline_report
+
+        cases = {
+            "empty": [],
+            "free_only": [
+                _make_receipt(
+                    run_id="run-free",
+                    nodes=[
+                        _node(
+                            "n1", "implement", attempts=[_attempt("free/x", "free", cost_usd=0.0)]
+                        )
+                    ],
+                )
+            ],
+            "unknown_cost": [
+                _make_receipt(
+                    run_id="run-unknown",
+                    nodes=[
+                        _node(
+                            "n1",
+                            "implement",
+                            attempts=[_attempt("sub/x", "subscription", cost_usd=None)],
+                        )
+                    ],
+                )
+            ],
+        }
+        original = hm.load_receipts_since
+        try:
+            for label, receipts in cases.items():
+                hm.load_receipts_since = (  # type: ignore[assignment]
+                    lambda runs_dir, since=None, _r=receipts: (
+                        [(tmp_path / f"r{i}", r) for i, r in enumerate(_r)],
+                        0,
+                        0,
+                    )
+                )
+                result = compute_headline_report(tmp_path)
+                parsed = json_mod.loads(json_mod.dumps(result))
+                assert _string_sentinels(parsed) == [], f"{label}: sentinel string in report"
+                assert parsed["tasks_per_dollar"] is None or isinstance(
+                    parsed["tasks_per_dollar"], float
+                )
+        finally:
+            hm.load_receipts_since = original
+
+    def test_formatter_renders_null_with_reason_not_undefined(self) -> None:
+        from verdict.headline_metric import compute_headline_report, format_headline_report
+
+        text = format_headline_report(
+            compute_headline_report(Path("/tmp/nonexistent-verdict-format-null-runs"))
+        )
+        assert "undefined" not in text
+        assert "Accepted/dollar:  null  (" in text

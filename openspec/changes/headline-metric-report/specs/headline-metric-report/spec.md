@@ -55,7 +55,24 @@ empty or no paid model attempts exist in the selected period.
 - **WHEN** `verdict metrics --daily --json` is run
 - **THEN** the `dollars` field is null, not 0
 - **AND** `has_unknown_cost` is true
-- **AND** `tasks_per_dollar` is null, not 0
+- **AND** `tasks_per_dollar` is JSON null, not 0 and not a string
+- **AND** `tasks_per_dollar_note` is a non-empty string giving the reason
+
+#### Scenario: No recorded spend — tasks per dollar is not a division by zero
+
+- **GIVEN** verified receipts where every attempt has a recorded cost and the
+  recorded cost sums to 0.0
+- **WHEN** `verdict metrics --daily --json` is run
+- **THEN** `dollars` is 0.0
+- **AND** `tasks_per_dollar` is JSON null (no division is attempted)
+- **AND** `tasks_per_dollar_note` is a non-empty string giving the reason
+
+#### Scenario: No string stands in for a missing number
+
+- **GIVEN** any report, including an empty one
+- **WHEN** `verdict metrics --daily --json` is run
+- **THEN** no numeric field, including each `per_run` row, holds a string such
+  as `"undefined"`, `"n/a"` or `"unknown"`; it holds a number or JSON null
 
 ### Requirement: Fixture runs are excluded from the live aggregate
 
@@ -87,6 +104,7 @@ be included (conservative: include rather than silently drop).
 The `--json` flag SHALL cause the command to print a single JSON object to
 stdout.  The object SHALL include at minimum: `headline_accepted_per_paid_share`
 (float or null), `headline_accepted_per_paid_share_note` (string or null),
+`tasks_per_dollar` (float or null), `tasks_per_dollar_note` (string or null),
 `paid_model_share` (float), `accepted_tasks` (int), `runs_processed` (int),
 `fixture_runs_excluded` (int), and `since` (ISO date string or null).
 
