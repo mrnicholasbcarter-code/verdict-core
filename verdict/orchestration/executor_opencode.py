@@ -299,6 +299,32 @@ def _write_context_file(cwd: Path, prompt: str) -> None:
         raise
 
 
+async def _prepare_context(cwd: Path, prompt: str) -> None:
+    """Write the context file off the event loop, without letting a write outlive a cancel.
+
+    The git tracking check can take seconds and the loop is shared by every
+    concurrent worker, so the work runs in a thread.  A thread cannot be
+    interrupted: if this coroutine is cancelled it waits for the thread to finish
+    (the write then either completes or fails) before propagating the cancellation,
+    so a caller that has seen the cancellation complete can clean up or reuse the
+    worktree without a late write racing it.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(_write_context_file, cwd, prompt))
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue  # cancelled again: still wait for the thread
+            except Exception:
+                break  # the preparation failed; the cancellation still wins
+        if task.done() and not task.cancelled():
+            task.exception()  # mark retrieved: the cancellation is what propagates
+        raise
+
+
 _CHILD_ENV_ALLOWLIST: frozenset[str] = frozenset(
     {
         "PATH",
@@ -551,9 +577,7 @@ class OpenCodeExecutor:
 
         # --- write context file to worktree (Task 4.1) ---
         try:
-            # Off the event loop: the git tracking check can take seconds and the
-            # loop is shared by every concurrent worker.
-            await asyncio.to_thread(_write_context_file, cwd, prompt)
+            await _prepare_context(cwd, prompt)
         except OSError as exc:
             return WorkerTerminal(
                 executor_kind="live",

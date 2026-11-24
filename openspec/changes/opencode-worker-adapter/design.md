@@ -156,6 +156,8 @@ that the directory is not inside a repository counts as certainly untracked. Git
 process environment, as the runtime's own git calls do, so `GIT_DIR`/`GIT_WORK_TREE` setups are
 covered. Context preparation runs off the event loop (`asyncio.to_thread`) because the check can
 take seconds and the loop is shared by every concurrent worker.
+A cancelled attempt waits for that thread to finish before the cancellation propagates, so no
+write to the worktree can outlive a cancellation that the caller has already seen complete.
 
 **Concurrency under `--max-parallel` (design detail):** Each attempt runs in its
 own temp directory for the OpenCode config and its own node worktree. The

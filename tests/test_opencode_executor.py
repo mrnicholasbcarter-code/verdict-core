@@ -554,6 +554,60 @@ def test_context_file_is_prepared_off_the_event_loop(
     assert seen == [False], "context preparation ran on the event-loop thread"
 
 
+def test_cancelling_run_waits_for_the_context_preparation_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation must not return while a preparation thread can still write.
+
+    The git probe runs in a worker thread that cannot be interrupted.  If ``run()``
+    propagated ``CancelledError`` immediately, the caller could clean up or reuse the
+    worktree while that thread later replaced ``.verdict-context.md`` (and a retry's
+    newer context could be overwritten).  Block the probe, cancel ``run()``, and
+    require that cancellation completes only after the write has finished.
+    """
+    import threading
+
+    import verdict.orchestration.executor_opencode as module
+
+    payload = ndjson_success("done")
+    fake = make_fake_opencode(
+        tmp_path, f"sys.stdout.write({payload!r})\nsys.stdout.write('\\n')\nsys.exit(0)\n"
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    started, release = threading.Event(), threading.Event()
+    real_git = module._git
+
+    def blocking_git(path: Path, *args: str) -> object:
+        started.set()
+        assert release.wait(timeout=30), "test never released the blocked git probe"
+        return real_git(path, *args)
+
+    monkeypatch.setattr(module, "_git", blocking_git)
+    executor = OpenCodeExecutor(opencode_bin=fake)
+
+    async def scenario() -> None:
+        task = asyncio.ensure_future(
+            executor.run("prompt", route_id=ROUTE, cwd=cwd, timeout_seconds=30.0)
+        )
+        for _ in range(500):  # up to 5 s for the thread to enter the probe
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set(), "preparation thread never reached the git probe"
+        task.cancel()
+        await asyncio.sleep(0.3)
+        assert not task.done(), "run() finished cancelling while the preparation thread still ran"
+        assert not (cwd / CONTEXT_FILE_NAME).exists()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The write completed before cancellation did: nothing can write afterwards.
+        assert (cwd / CONTEXT_FILE_NAME).exists()
+
+    asyncio.run(scenario())
+
+
 def test_write_context_file_still_replaces_an_untracked_symlink_in_a_git_repo(
     tmp_path: Path,
 ) -> None:
