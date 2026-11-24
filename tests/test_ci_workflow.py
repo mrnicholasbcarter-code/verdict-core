@@ -128,13 +128,29 @@ def check_required_and_skippable(wf: Workflow) -> None:
     assert set(mapped) == CI_OK_NEEDS, f"ci-ok env results changed: {sorted(mapped)}"
 
 
+def _assert_default_shell(wf: Workflow, job_id: str, step: dict[str, Any]) -> None:
+    """A step runs under GitHub's default ``bash -e`` unless a shell is set at some level."""
+    levels = {
+        "the step": step.get("shell"),
+        f"{job_id} defaults": ((_job(wf, job_id).get("defaults") or {}).get("run") or {}).get(
+            "shell"
+        ),
+        "the workflow defaults": ((wf.get("defaults") or {}).get("run") or {}).get("shell"),
+    }
+    set_at = [where for where, shell in levels.items() if shell is not None]
+    assert not set_at, (
+        f"{job_id} must run its step under the default shell, but it is set in {set_at}"
+    )
+
+
 def check_gate_cannot_be_bypassed(wf: Workflow) -> None:
     """The gate's exit code must decide ci-ok: no setting may turn a failing script green."""
     ci_ok = _job(wf, "ci-ok")
     step = _gate_step(wf)
     assert "continue-on-error" not in ci_ok, "ci-ok must not set continue-on-error"
-    for key in ("if", "continue-on-error", "shell"):
+    for key in ("if", "continue-on-error"):
         assert key not in step, f"the ci-ok gate step must not set {key!r}"
+    _assert_default_shell(wf, "ci-ok", step)
     assert ci_ok["steps"] == [step], "ci-ok must run only its 'Evaluate gate' step"
 
 
@@ -185,7 +201,12 @@ def check_union_wiring(wf: Workflow) -> None:
     assert job_id == UNION_JOB, f"the shard union check runs in {job_id!r}, expected {UNION_JOB!r}"
     assert "if" not in union, "the shard union check must not be conditional"
     assert not union.get("continue-on-error"), "the shard union check must not be allowed to fail"
+    _assert_default_shell(wf, UNION_JOB, union)
+    assert "continue-on-error" not in _job(wf, UNION_JOB), f"{UNION_JOB} must not continue on error"
     command = str(union["run"])
+    assert re.fullmatch(
+        rf'python {re.escape(UNION_SCRIPT)}( --[a-z-]+ ("[^"]*"|\w+))*\s*', command
+    ), f"the union step must be only the script and its flags, not {command!r}"
     splits = _flag(command, r"--splits\s+(\d+)")
     marker = _flag(command, r'--marker\s+"([^"]*)"')
     assert splits is not None and marker is not None, f"union command lacks flags: {command!r}"
@@ -221,6 +242,26 @@ def check_union_wiring(wf: Workflow) -> None:
         d.get("pattern") == SHARD_ARTIFACT_PATTERN and d.get("merge-multiple") is True
         for d in downloads
     ), f"{UNION_JOB} must download the artifacts of every shard ({SHARD_ARTIFACT_PATTERN})"
+
+
+def check_union_failure_fails_the_step(wf: Workflow, stub_dir: Path) -> None:
+    """Run the union step's command with a ``python`` that exits 0 or 1: the step must follow."""
+    [(_, union)] = _union_steps(wf)
+    stub = stub_dir / "python"
+    for code in (0, 1):
+        stub.write_text(f"#!/bin/sh\nexit {code}\n", encoding="utf-8")
+        stub.chmod(0o755)
+        done = subprocess.run(
+            [_BASH or "bash", "-e", "-c", str(union["run"])],
+            env={"PATH": f"{stub_dir}:/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert (done.returncode == 0) == (code == 0), (
+            f"the union step exits {done.returncode} when the script exits {code}"
+        )
 
 
 def check_build_needs_only_changes(wf: Workflow) -> None:
@@ -261,6 +302,11 @@ def test_gate_script_outcome_for_each_job_and_result(name: str, result: str) -> 
 
 def test_shard_union_check_runs_in_its_job_on_every_shard() -> None:
     check_union_wiring(_workflow())
+
+
+@pytest.mark.skipif(not _HAS_BASH, reason="bash is needed to run the union step")
+def test_a_failing_shard_union_check_fails_its_step(tmp_path: Path) -> None:
+    check_union_failure_fails_the_step(_workflow(), tmp_path)
 
 
 def test_build_needs_only_changes_keeps_its_condition_and_ci_ok_waits_for_it() -> None:
@@ -346,7 +392,6 @@ def test_moving_a_skippable_job_to_required_fails_the_pin() -> None:
         ("step", "continue-on-error", True),
         ("step", "continue-on-error", "${{ always() }}"),
         ("step", "if", "false"),
-        ("step", "shell", "bash {0} || true"),
         ("job", "continue-on-error", True),
     ],
 )
@@ -364,6 +409,20 @@ def test_an_extra_ci_ok_step_fails_the_pin() -> None:
     wf = _mutated()
     _job(wf, "ci-ok")["steps"].append({"run": "true"})
     with pytest.raises(AssertionError, match="only its 'Evaluate gate' step"):
+        check_gate_cannot_be_bypassed(wf)
+
+
+@pytest.mark.parametrize("level", ["step", "job", "workflow"])
+def test_a_shell_override_that_hides_a_gate_failure_fails_the_pin(level: str) -> None:
+    wf = _mutated()
+    shell = "bash -c true {0}"
+    if level == "step":
+        _gate_step(wf)["shell"] = shell
+    elif level == "job":
+        _job(wf, "ci-ok")["defaults"] = {"run": {"shell": shell}}
+    else:
+        wf["defaults"] = {"run": {"shell": shell}}
+    with pytest.raises(AssertionError, match="must run its step under the default shell"):
         check_gate_cannot_be_bypassed(wf)
 
 
@@ -422,6 +481,48 @@ def test_making_the_union_step_conditional_or_optional_fails_the_pin(key: str) -
     union[key] = "false" if key == "if" else True
     with pytest.raises(AssertionError, match="must not be"):
         check_union_wiring(wf)
+
+
+@pytest.mark.parametrize(
+    "suffix", [" || true", " ; true", " && true", " | cat", "\ntrue", " --splits 4 || exit 0"]
+)
+def test_a_union_command_that_can_hide_its_failure_fails_the_pin(suffix: str) -> None:
+    wf = _mutated()
+    [union] = [s for s in _job(wf, UNION_JOB)["steps"] if UNION_SCRIPT in str(s.get("run", ""))]
+    union["run"] = union["run"].rstrip() + suffix
+    with pytest.raises(AssertionError, match="only the script and its flags"):
+        check_union_wiring(wf)
+
+
+@pytest.mark.parametrize("where", ["step", "job", "workflow"])
+def test_a_shell_override_on_the_union_step_fails_the_pin(where: str) -> None:
+    wf = _mutated()
+    [union] = [s for s in _job(wf, UNION_JOB)["steps"] if UNION_SCRIPT in str(s.get("run", ""))]
+    if where == "step":
+        union["shell"] = "bash {0} || true"
+    elif where == "job":
+        _job(wf, UNION_JOB)["defaults"] = {"run": {"shell": "bash {0} || true"}}
+    else:
+        wf["defaults"] = {"run": {"shell": "bash {0} || true"}}
+    with pytest.raises(AssertionError, match="must run its step under the default shell"):
+        check_union_wiring(wf)
+
+
+def test_a_union_job_that_continues_on_error_fails_the_pin() -> None:
+    wf = _mutated()
+    _job(wf, UNION_JOB)["continue-on-error"] = True
+    with pytest.raises(AssertionError, match="must not continue on error"):
+        check_union_wiring(wf)
+
+
+@pytest.mark.skipif(not _HAS_BASH, reason="bash is needed to run the union step")
+def test_a_union_step_that_swallows_the_exit_code_fails_the_outcome_pin(tmp_path: Path) -> None:
+    wf = _mutated()
+    [union] = [s for s in _job(wf, UNION_JOB)["steps"] if UNION_SCRIPT in str(s.get("run", ""))]
+    check_union_failure_fails_the_step(wf, tmp_path)
+    union["run"] += " || true"
+    with pytest.raises(AssertionError, match="the union step exits 0 when the script exits 1"):
+        check_union_failure_fails_the_step(wf, tmp_path)
 
 
 def test_union_splits_that_differ_from_the_shard_count_fails_the_pin() -> None:
