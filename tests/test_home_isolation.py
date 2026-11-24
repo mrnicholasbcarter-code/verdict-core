@@ -226,7 +226,9 @@ def _flags(*names: str) -> int:
         ("os.mkdir", ("{r}/dir", 0o777, None), True),
         ("os.truncate", ("{r}/state.json", 0), True),
         ("os.symlink", ("{o}/target", "{r}/link", None), True),
-        ("os.symlink", ("{r}/target", "{o}/link", None), False),
+        ("os.symlink", ("{r}/target", "{o}/link", None), True),  # an alias INTO the root
+        ("os.link", ("{r}/state.json", "{o}/alias", None, None), True),
+        ("os.link", ("{o}/a", "{o}/b", None, None), False),
         ("shutil.copyfile", ("{o}/src", "{r}/dst"), True),
         ("shutil.copyfile", ("{r}/src", "{o}/dst"), False),
         ("shutil.move", ("{r}/src", "{o}/dst"), True),
@@ -236,6 +238,7 @@ def _flags(*names: str) -> int:
         ("sqlite3.connect", ("file:{r}/receipts.db",), True),
         ("sqlite3.connect", ("file://{r}/receipts.db?mode=rwc",), True),
         ("sqlite3.connect", ("file:{r}/receipts.db?mode=ro",), False),
+        ("sqlite3.connect", ("file:{r}/scratch?mode=memory&cache=shared",), False),
         ("sqlite3.connect", ("file:{o}/receipts.db",), False),
         ("sqlite3.connect", ("file:{o}/x?cache=shared",), False),
         ("sqlite3.connect", ("file::memory:?cache=shared",), False),
@@ -262,6 +265,33 @@ def test_guard_event_table(event: str, args: tuple[Any, ...], denied: bool, tmp_
     else:
         guard.check(event, filled)
         assert guard.violations == []
+
+
+def test_a_link_into_protected_state_is_refused_so_it_cannot_be_written_through(
+    fake_real_home: Path, tmp_path: Path
+) -> None:
+    root = fake_real_home / ".verdict"
+    protected_file = root / "model-metadata.json"
+    alias = tmp_path / "alias.json"
+    with GUARD.protect(root):
+        with pytest.raises(PermissionError):
+            os.link(protected_file, alias)
+        with pytest.raises(PermissionError):
+            os.symlink(protected_file, tmp_path / "symlink.json")
+        found = GUARD.drain()
+    assert len(found) == 2
+    assert not alias.exists() and not (tmp_path / "symlink.json").is_symlink()
+    assert protected_file.read_text() == '{"ratings": 1}'
+
+
+def test_in_memory_sqlite_uri_named_under_a_protected_root_is_allowed(fake_real_home: Path) -> None:
+    root = fake_real_home / ".verdict"
+    with GUARD.protect(root):
+        connection = sqlite3.connect(f"file:{root}/scratch?mode=memory", uri=True)
+        connection.execute("create table t (x)")
+        connection.close()
+        assert not GUARD.violations
+    assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
 
 
 def test_moving_or_deleting_an_ancestor_of_the_protected_root_is_refused(

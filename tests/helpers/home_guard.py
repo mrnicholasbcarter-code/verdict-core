@@ -197,8 +197,11 @@ _MUTATED_ARGS: dict[str, tuple[int, ...]] = {
     "os.rmdir": (0,),
     "os.mkdir": (0,),
     "os.truncate": (0,),
-    "os.symlink": (1,),
-    "os.link": (1,),
+    # A link INTO protected state is refused too: writing through the alias
+    # (a hard link shares the inode; a symlink resolves to it) would name a
+    # path outside the roots.
+    "os.symlink": (0, 1),
+    "os.link": (0, 1),
     "os.chmod": (0,),
     "os.chown": (0,),
     "os.utime": (0,),
@@ -254,16 +257,17 @@ def _sqlite_file_targets(value: str) -> list[str]:
 
     The audit event carries the raw string, and the caller may have passed
     ``uri=True``, so a ``file:`` string is also decoded (``file:/p?mode=rwc``,
-    ``file:///p``, percent escapes). ``mode=ro`` URIs cannot write, so only
+    ``file:///p``, percent escapes). ``mode=ro`` and ``mode=memory`` URIs touch no file, so only
     their decoded target is skipped. The raw string is always checked too:
     without ``uri=True`` it is just a (writable) path.
     """
     targets = [value]
     if value.startswith("file:"):
         split = urllib.parse.urlsplit(value)
-        if "ro" in urllib.parse.parse_qs(split.query).get("mode", []):
-            # Read-only as a URI, but without ``uri=True`` this is a writable
-            # literal filename: the decoded target is skipped, the raw one kept.
+        if {"ro", "memory"} & set(urllib.parse.parse_qs(split.query).get("mode", [])):
+            # Read-only or in-memory as a URI, but without ``uri=True`` this is
+            # a writable literal filename: the decoded target is skipped, the
+            # raw one kept.
             return targets
         if split.netloc in ("", "localhost"):
             decoded = urllib.parse.unquote(split.path)
