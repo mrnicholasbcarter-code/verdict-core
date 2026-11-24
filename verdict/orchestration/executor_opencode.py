@@ -33,6 +33,7 @@ import os
 import re
 import shutil
 import signal
+import subprocess
 import tempfile
 import time
 import uuid
@@ -209,6 +210,24 @@ def _write_attempt_config(
     cfg_file.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
+def _context_path_is_tracked(cwd: Path) -> bool:
+    """True when ``cwd`` is a git worktree whose index tracks the context file.
+
+    A directory that is not a git worktree (or where git cannot run) tracks
+    nothing, so this returns False there.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(cwd), "ls-files", "--cached", "-z", "--", CONTEXT_FILE_NAME],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(done.stdout)
+
+
 def _write_context_file(cwd: Path, prompt: str) -> None:
     """Write ``.verdict-context.md`` to the worktree for OpenCode's instructions.
 
@@ -228,6 +247,13 @@ def _write_context_file(cwd: Path, prompt: str) -> None:
     # uses O_EXCL, so it never follows a link) and ``os.replace`` it over the
     # entry: rename replaces the symlink itself and never touches its target.
     target = cwd / CONTEXT_FILE_NAME
+    if _context_path_is_tracked(cwd):
+        # ``.git/info/exclude`` only hides *untracked* paths.  Replacing a tracked
+        # entry would be staged by ``git add -A`` into the node deliverable (an
+        # ownership failure, or the task prompt committed if the path were owned).
+        raise OSError(
+            f"{CONTEXT_FILE_NAME} is tracked by git in this worktree; refusing to replace it"
+        )
     fd, tmp_name = tempfile.mkstemp(dir=cwd, prefix=f"{CONTEXT_FILE_NAME}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

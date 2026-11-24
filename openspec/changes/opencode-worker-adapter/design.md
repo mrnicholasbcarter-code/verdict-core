@@ -148,6 +148,9 @@ mechanism.
 The file is written without following symlinks (a fresh regular file atomically replaces
 whatever entry exists), because a repository can track `.verdict-context.md` as a symlink to a
 path outside the worktree.
+`.git/info/exclude` hides only untracked paths, so if the index already tracks `.verdict-context.md`
+the attempt fails closed (`context_write_failed`) before the worker starts: replacing a tracked
+entry would be staged by `git add -A` into the node deliverable.
 
 **Concurrency under `--max-parallel` (design detail):** Each attempt runs in its
 own temp directory for the OpenCode config and its own node worktree. The

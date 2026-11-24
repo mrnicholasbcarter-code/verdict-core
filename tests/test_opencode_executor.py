@@ -15,6 +15,7 @@ import logging
 import os
 import signal
 import stat
+import subprocess
 import sys
 import textwrap
 import time
@@ -351,6 +352,100 @@ def test_executor_does_not_write_through_context_symlink(tmp_path: Path) -> None
     terminal = run_executor(executor, "secret prompt text", cwd)
     assert terminal.ok is True
     assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT"
+
+
+def _git(repo: Path, *args: str) -> str:
+    """Run git in ``repo`` with no user/global config; return stdout."""
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(repo.parent),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+    done = subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", *args],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout
+
+
+def _repo_tracking_context(tmp_path: Path, *, symlink: bool) -> tuple[Path, Path]:
+    """A real git repo whose committed tree tracks ``.verdict-context.md``."""
+    outside = tmp_path / "outside-target.txt"
+    outside.write_text("ORIGINAL OUTSIDE CONTENT")
+    repo = tmp_path / "work"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    if symlink:
+        (repo / CONTEXT_FILE_NAME).symlink_to(outside)
+    else:
+        (repo / CONTEXT_FILE_NAME).write_text("tracked content\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    return repo, outside
+
+
+@pytest.mark.parametrize("symlink", [True, False], ids=["tracked-symlink", "tracked-file"])
+def test_write_context_file_refuses_a_tracked_path(tmp_path: Path, symlink: bool) -> None:
+    """A tracked ``.verdict-context.md`` must never be replaced.
+
+    ``.git/info/exclude`` only hides untracked paths, so replacing a tracked entry
+    would show up as a change that ``git add -A`` stages into the node deliverable
+    (an ownership failure, or the task prompt committed if the path were owned).
+    Refuse instead, and leave the index, working tree and outside target untouched.
+    """
+    repo, outside = _repo_tracking_context(tmp_path, symlink=symlink)
+    before = _git(repo, "status", "--porcelain")
+
+    with pytest.raises(OSError, match="tracked"):
+        _write_context_file(repo, "task prompt that must not be written")
+
+    assert _git(repo, "status", "--porcelain") == before == ""
+    _git(repo, "add", "-A")
+    assert _git(repo, "diff", "--cached", "--stat") == "", "staged diff changed"
+    assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT"
+    assert [p.name for p in repo.iterdir() if p.name != ".git"] == [CONTEXT_FILE_NAME]
+
+
+def test_executor_fails_closed_without_spawning_when_context_path_is_tracked(
+    tmp_path: Path,
+) -> None:
+    """Executor level: a tracked context path ends the attempt before the worker starts."""
+    repo, outside = _repo_tracking_context(tmp_path, symlink=True)
+    ran = tmp_path / "worker-ran.txt"
+    fake = make_fake_opencode(
+        tmp_path, f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\nsys.exit(0)\n"
+    )
+    executor = OpenCodeExecutor(opencode_bin=fake)
+    terminal = run_executor(executor, "secret prompt text", repo)
+    assert terminal.ok is False
+    assert terminal.error.startswith("context_write_failed")
+    assert not ran.exists(), "worker was spawned despite the refused context write"
+    assert _git(repo, "status", "--porcelain") == ""
+    assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT"
+
+
+def test_write_context_file_still_replaces_an_untracked_symlink_in_a_git_repo(
+    tmp_path: Path,
+) -> None:
+    """Untracked (so excluded) entries keep working: the symlink is replaced, not followed."""
+    outside = tmp_path / "outside-target.txt"
+    outside.write_text("ORIGINAL OUTSIDE CONTENT")
+    repo = tmp_path / "work"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / CONTEXT_FILE_NAME).symlink_to(outside)  # untracked
+    _write_context_file(repo, "Build the feature X.")
+    assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT"
+    assert not (repo / CONTEXT_FILE_NAME).is_symlink()
 
 
 # ---------------------------------------------------------------------------
