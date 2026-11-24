@@ -304,19 +304,19 @@ def _scrub_uncached(value: Any) -> str:
 def _scrub(value: Any) -> str:
     """Redact credentials and control characters; memoize within an active projection.
 
-    Unhashable values (e.g. lists) bypass the cache and are scrubbed directly.
+    Only ``str`` values are memoized.  Non-str values (e.g. ``int``, ``bool``,
+    ``float``, ``list``) bypass the cache so equal-but-differently-typed
+    values (1, True, 1.0 are equal dict keys but have distinct ``str()``
+    representations) are always rendered correctly, and unhashable values
+    never raise ``TypeError``.
     """
-    cache: dict[Any, str] | None = getattr(_scrub_proj, "cache", None)
-    if cache is not None:
-        try:
-            result = cache.get(value)
-            if result is None:
-                result = _scrub_uncached(value)
-                cache[value] = result
-            return result
-        except TypeError:
-            # value is unhashable — fall through to uncached path
-            pass
+    cache: dict[str, str] | None = getattr(_scrub_proj, "cache", None)
+    if cache is not None and isinstance(value, str):
+        result = cache.get(value)
+        if result is None:
+            result = _scrub_uncached(value)
+            cache[value] = result
+        return result
     return _scrub_uncached(value)
 
 

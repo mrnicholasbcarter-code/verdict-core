@@ -418,13 +418,17 @@ class TestOperatorOverlay:
         # Cleanup
         _cb._overlay_cache = None
 
-    def test_nested_preload_overlay_restores_outer_overlay(self, tmp_path: Path) -> None:
+    def test_nested_preload_overlay_restores_outer_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Nested preload_overlay must not clobber the outer block's overlay.
 
-        Before the save/restore fix, the inner context manager set _batch.overlay
-        to None on exit, so lookups in the outer block after the inner block
-        returned would fall through to _load_overlay() — potentially picking up a
-        different home's overlay.
+        Without save/restore, the inner context sets _batch.overlay = None on
+        exit.  Lookups in the outer block then fall through to _load_overlay()
+        which reads the CURRENT VERDICT_HOME — which is still pointing to the
+        inner home when the outer lookup runs — so prov-a is not found.
+        The test is designed so this failure is observable: VERDICT_HOME is NOT
+        restored between the inner exit and the final lookup.
         """
         import verdict.connection_billing as _cb
         from verdict.connection_billing import preload_overlay
@@ -434,6 +438,7 @@ class TestOperatorOverlay:
         home_outer.mkdir()
         home_inner.mkdir()
 
+        # prov-a lives only in the outer overlay; prov-b only in the inner.
         overlay_outer = {
             "entries": [{"provider": "prov-a", "billing": "subscription", "overage": "hard-stop"}]
         }
@@ -443,26 +448,32 @@ class TestOperatorOverlay:
         (home_outer / "connection_billing_overlay.json").write_text(json.dumps(overlay_outer))
         (home_inner / "connection_billing_overlay.json").write_text(json.dumps(overlay_inner))
 
-        env_outer = {"VERDICT_HOME": str(home_outer)}
-        env_inner = {"VERDICT_HOME": str(home_inner)}
-
         _cb._overlay_cache = None
 
-        with preload_overlay(env_outer):
-            # outer overlay is active: prov-a should be subscription
-            fact_before = lookup("prov-a", None, env=env_outer)
+        # Point VERDICT_HOME at the outer home; preload_overlay() (no env arg)
+        # reads it from the environment.
+        monkeypatch.setenv("VERDICT_HOME", str(home_outer))
 
-            with preload_overlay(env_inner):
-                # inner overlay is active: prov-b should be keyless
-                fact_inner = lookup("prov-b", None, env=env_inner)
+        with preload_overlay():  # loads outer overlay into _batch.overlay
+            fact_before = lookup("prov-a", None)  # no env — uses _batch.overlay
 
-            # outer overlay must be restored: prov-a still subscription
-            fact_after = lookup("prov-a", None, env=env_outer)
+            # Switch to inner home and enter nested context.
+            monkeypatch.setenv("VERDICT_HOME", str(home_inner))
+            with preload_overlay():  # loads inner overlay
+                fact_inner = lookup("prov-b", None)  # no env — uses inner _batch.overlay
+
+            # VERDICT_HOME is STILL home_inner here (intentionally not restored).
+            # With save/restore: _batch.overlay is the outer overlay → prov-a found.
+            # Without save/restore: _batch.overlay = None → _load_overlay reads
+            #   home_inner (current VERDICT_HOME) → no prov-a → returns None.
+            fact_after = lookup("prov-a", None)  # no env — must use restored outer overlay
 
         assert fact_before is not None and fact_before.billing == BILLING_SUBSCRIPTION
         assert fact_inner is not None and fact_inner.billing == BILLING_KEYLESS
         assert fact_after is not None and fact_after.billing == BILLING_SUBSCRIPTION, (
-            "outer overlay was clobbered by nested preload_overlay exit"
+            "outer overlay was clobbered by nested preload_overlay exit — "
+            "fact_after should be SUBSCRIPTION from outer overlay but is "
+            f"{fact_after!r}"
         )
 
         _cb._overlay_cache = None
