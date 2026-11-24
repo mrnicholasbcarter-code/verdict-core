@@ -262,6 +262,11 @@ rejected and classified as a failure before verification runs.
   default, so a run without `--executor` is unchanged. A run that opts in with
   `--executor opencode` before #1313 lands has its worker refused by serve and fails its
   nodes; that is why the default was not switched.
+- **Known gap: the status matcher misses the `requests` forms.** An HTTP status in
+  unstructured text needs an HTTP or status marker or its reason phrase right after the number,
+  so `429 Client Error: Too Many Requests for url: ...` and
+  `503 Server Error: Service Unavailable for url: ...` get no status and are not rerouted;
+  accepted by the operator on 2026-11-24 and moved to #1313.
 
 ## Migration / rollback
 

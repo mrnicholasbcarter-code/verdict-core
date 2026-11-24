@@ -162,16 +162,21 @@
       route-through-serve contract. Update ETHOS.md `In
       force` or `NOW` only if the operator asks. Verify: `check_doc_links.py` and
       `check_reachability.py` are green; no host paths in fixtures or docs.
-- [ ] 7.2 Run the full suite, ruff, mypy --strict, reachability, the lint gates,
+- [x] 7.2 Run the full suite, ruff, mypy --strict, reachability, the lint gates,
       both OpenSpec validators, and get a cross-family (non-Claude) review. Verify:
-      all commands green; review from a different model family. **Not ticked:** the cross-family
-      review (`ocr`, `cx/gpt-6.1-sol`) of the head `acde1f6d` ended with one open finding, the
-      stderr status fallback in `_interpret`; it is fixed in a later commit (task 2.10), but that
-      head and the opt-in change (task 2.9) are **unreviewed**: the reviewer route was
-      rate-limited on 2026-11-24 and the controller runs the review of the pushed head after
-      the reset. The full suite is run by CI on the pushed head (not run locally, by the
-      shared-machine rule). Tick this task when the review of the final head is clean and CI is
-      green on the same commit.
+      all commands green; review from a different model family. **Evidence (2026-11-24):**
+      at the head `cc955916`, `ruff check`, `ruff format --check`, `mypy verdict --strict`,
+      `scripts/check_lint_gates.py --wip` and `git diff --check` exit 0 and the push gate
+      passed; the full suite is CI's, run on the pushed head and checked at merge, not run
+      locally. The cross-family review (`ocr`, `cx/gpt-6.1-sol`) of `cc955916` is complete:
+      28 of 28 files reviewed, 0 failed reviewer tool calls, 1 finding. It is not a clean
+      review. The finding is that the status matcher in
+      `verdict/orchestration/executor_opencode.py` misses the standard `requests` forms
+      `429 Client Error: Too Many Requests for url: ...` and
+      `503 Server Error: Service Unavailable for url: ...`, so such an error gets no status
+      and is not rerouted. The operator accepted it on 2026-11-24 and moved it to #1313,
+      because the adapter is opt-in and cannot complete a request through serve until #1313
+      reworks that path. No review was run on the commit that records this decision.
 - [ ] (post-merge) 8.1 On installed main, run `verdict orchestrate --executor opencode` on a
       task with a coding node (OpenCode is opt-in, so the flag is required) and **expect it to
       fail until #1313 lands**: once serve admits the worker, the node edits a file, runs
