@@ -46,10 +46,12 @@ can no longer be merged or ignored.
   get timeouts. The check name `proof-full` is kept so that it already reports on
   every PR head.
 - **Docs.** `proof/README.md` describes the shards, the aggregate and the exact
-  branch-protection commands for the operator.
+  branch-protection commands that the operator applies.
 - **Not changed:** no gate command, no `required` flag, no test file other than
-  additions, no marker, no `pyproject.toml`, no `.test_durations`. Branch
-  protection is not touched by any task (operator step, see design).
+  additions, no marker, no `pyproject.toml`, no `.test_durations`. The
+  `proof-targeted` job is kept as it is (the operator's decision of 2026-11-24);
+  only the wait on it goes. Branch protection is not touched by any task
+  (operator step, see design).
 
 ## Capabilities
 
@@ -74,8 +76,10 @@ None. No existing capability spec covers the proof pipeline.
 - `proof/README.md`.
 - CI concurrency: the proof workflow starts N legs (starting value 3) instead of
   one full job, so N more jobs run at the start of a round. Peak was
-  already 18-20 jobs per PR head. Whether legs queue is open question 1 in the
-  design.
+  already 18-20 jobs per PR head. Whether legs queue is measured in the live
+  rounds. The operator decided (2026-11-24) to start at 3 and to reduce the count
+  if the median leg starts more than 60 s after the run was created (design,
+  "Decided by the operator").
 - After merge, the operator applies one `gh api` command to make `proof-full` a
   required check. No task applies it.
 

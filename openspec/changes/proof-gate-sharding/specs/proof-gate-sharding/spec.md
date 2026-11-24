@@ -130,11 +130,15 @@ The aggregate job SHALL be named `proof-full` and SHALL run whatever the legs' r
 - **THEN** the merged entry for that gate is `fail`, with the maximum duration over the legs
 
 ### Requirement: Legs start without waiting and are time-bounded
-The legs SHALL NOT wait for any other job of the proof workflow, and each leg and the aggregate SHALL have a timeout shorter than the platform default, so that a hung leg cannot hold a required check.
+The legs SHALL NOT wait for any other job of the proof workflow, and each leg and the aggregate SHALL have a timeout shorter than the platform default, so that a hung leg cannot hold a required check. The `proof-targeted` job SHALL stay in the workflow, and no job SHALL wait on it.
 
 #### Scenario: Legs have no dependency
 - **WHEN** the proof workflow is read
 - **THEN** the leg job declares no `needs`, and its matrix lists exactly the leg indices 1 to the declared count
+
+#### Scenario: The targeted proof job is kept and nothing waits on it
+- **WHEN** the proof workflow is read
+- **THEN** the `proof-targeted` job is still defined, and no job lists it in `needs`
 
 #### Scenario: Timeouts
 - **WHEN** the proof workflow is read

@@ -50,7 +50,8 @@ Non-goals (design-level boundaries):
 - Refreshing `.test_durations`, changing CI's `test-shard`, or teaching
   `pr_watcher` to rerun a single leg.
 - Applying branch protection. The operator does it (Migration / rollback).
-- Deciding open questions 1 and 2 below.
+- Retiring `proof-targeted`. The operator decided to keep it (Decided by the
+  operator, 2).
 
 ## Decisions
 
@@ -67,7 +68,7 @@ modes:
   full:
     phases: [format, lint, type, schema, unit_targeted, unit_full, unit_timing,
              security, secrets, structural, build, acceptance, adversarial]
-    shards: 3            # open question 1: the starting value
+    shards: 3            # decided by the operator, 1: start at 3
 gates:
   - id: unit_full
     phase: unit_full
@@ -143,7 +144,7 @@ byte.
 
 ```yaml
 jobs:
-  proof-targeted: ...        # left as is unless open question 2 is answered "retire"
+  proof-targeted: ...        # kept as is (decided by the operator, 2); nothing waits on it
   proof-shard:               # new matrix, no `needs`
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -220,10 +221,10 @@ Legs are `proof-shard (1)`, `(2)`, ...; they are not required.
 
 ### D8. Drop the wait on `proof-targeted`
 
-`proof-shard` has no `needs`. This change does not otherwise edit
-`proof-targeted`, and does not decide whether it stays: that is open question 2.
-If the operator answers "retire" before the build starts, the build deletes the
-job in the same edit of `proof.yml`.
+`proof-shard` has no `needs`. The operator decided (2026-11-24) to keep
+`proof-targeted`: it stays a job of `proof.yml`, unedited, as an early signal
+that runs off the critical path, and no job waits on it. This change does not
+retire it (Decided by the operator, 2).
 
 ## Differences from the research
 
@@ -312,15 +313,18 @@ Every new test is written first and shown red on unchanged code, then green.
   Matrix equals `1..shards`; `proof-shard` has no `needs` and a `timeout-minutes`;
   `proof-full` has `needs: [proof-shard]`, `if: always()` and a timeout; leg
   upload uses `overwrite: true`; the leg's setup steps match the recorded list.
-  It asserts nothing about `proof-targeted`.
+  It also asserts that `proof-targeted` is still a job of the workflow and that
+  no job lists it in `needs` (the operator's decision 2), and nothing else about
+  it.
 
 ## Risks / Trade-offs
 
 - **[Legs queue behind CI jobs]** The proof starts N + 2 jobs (legs, `proof-targeted`,
   `proof-matrix-freshness`) instead of 2-3, against a peak of 18-20 per PR head
   and an unverified cap (Free 20, Pro 40). Legs could delay CI's own shards and
-  keep the round where it is. -> Open question 1; measured by the live
-  acceptance (per-job start delay).
+  keep the round where it is. -> Decided by the operator, 1: start at 3 and
+  reduce it if the median leg starts more than 60 s after the run was created;
+  measured by the live acceptance (per-job start delay).
 - **[Leg imbalance]** `.test_durations` (2026-11-20) covers 12,850 of 13,606 ids.
   -> `least_duration` balances by name and duration; the live evidence reports
   the leg spread. A refresh is not part of this change.
@@ -415,26 +419,34 @@ No ADR. This is repository tooling inside the existing proof contract (BOD-89).
 The required-check decision is recorded in the operator's 2026-11-24 comment on
 #1307; it changes merge policy only when the operator applies the command.
 
-## Open questions
+## Decided by the operator (2026-11-24)
 
-Both are for the operator. Neither changes the spec or the task breakdown: the
-spec and tasks say "the declared number of legs", and no task requires or
-forbids `proof-targeted`.
+The operator decided both questions that the first draft of this design raised, in
+the newest operator-decisions comment on #1307. Neither changes a design decision
+or an estimate above. Two things follow in the checks and tasks, and nothing else:
 
-1. **Shard count if legs queue.** Suggested default (the research's
-   recommendation): **N = 3 to start**, then choose by queueing evidence; every N
-   from 2 to 4 left the round CI-bound in the research's estimate. This design's aggregate does its own collection, so
-   N = 2 leaves about 15 s of margin (Estimates, INFERRED) and N = 3 is the safer start.
-   Changing N is two numbers (`modes.full.shards`, the matrix list), checked by
-   `tests/test_proof_workflow.py` and by the aggregate. Evidence to decide on:
-   per-leg start delay in the live rounds (the plan tier and cap are NOT
-   AVAILABLE). This design's own proposal, not from the research: reduce N if the
-   median leg starts more than 60 s after the run was created.
-2. **Keep or retire `proof-targeted`.** The research names no default: it
-   recommends only dropping the dependency and lists keep-or-retire as an
-   operator decision (its decision 5). This design's proposal, for the operator
-   to confirm or reverse: **keep it** with the wait dropped, as a 43-46 s early
-   signal that is off the critical path. Retiring it frees one job slot at the
-   start of a round and removes a check that every leg already repeats (the
-   targeted gates are a subset of full mode); that is a one-job deletion, in this
-   change if the operator answers before the build starts, else in a later one.
+- Decision 2 states the kept `proof-targeted` job as one assertion: it is still a
+  job of `proof.yml` and no job lists it in `needs`. It appears in the spec delta
+  (Legs start without waiting), in task 3.1 and in the Test strategy; task 3.2
+  now says to leave `proof-targeted` as it is.
+- Decision 1 adds no task. It only fixes what task 6.3 records: each leg's start
+  delay and its median.
+
+1. **Shard count: start at 3, reduce it on queueing evidence.** `modes.full.shards`
+   is 3 and the matrix lists 1, 2, 3 (task 1.8). The operator's rule is to
+   **reduce it if the median leg starts more than 60 s after the run was created**,
+   measured in the live rounds (task 6.3). The start delay of a leg is its job's
+   `started_at` minus the creation time of its run. N = 3 is the safer start
+   because this design's aggregate does its own collection, which leaves N = 2
+   about 15 s of margin under CI's 416 s (Estimates, INFERRED). Changing N is two
+   numbers (`modes.full.shards`, the matrix list), checked by
+   `tests/test_proof_workflow.py` and by the aggregate. A reduction follows the
+   measurement and is its own small change, not a task here.
+   - Evidence that would change this decision: a median leg start delay above
+     60 s in the live rounds. The plan tier and the concurrent-job cap are NOT
+     AVAILABLE, so the measured delay decides, not an assumption about the cap.
+2. **`proof-targeted` is kept, with the wait on it dropped.** It remains an early
+   signal (43-46 s) off the critical path and is not retired in this change (D8).
+   For any later change that considers retiring it: that would free one job slot
+   at the start of a round and remove a check that every leg already repeats (the
+   targeted gates are a subset of full mode).
