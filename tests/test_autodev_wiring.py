@@ -839,16 +839,39 @@ def test_pinned_bootstrap_plans_on_live_ladder_planners(
     assert configs[0].planner_models == (FREE_A, "agy/gemini-x")
 
 
-def test_pinned_bootstrap_fails_closed_before_probe_on_one_planner_family(
+def test_pinned_bootstrap_single_family_proceeds_with_d39(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """BOD-406: without two planner families the pinned path sends nothing."""
+    """D39: a single planner family proceeds instead of failing closed; band record is annotated."""
     import verdict.autodev_run as autodev
 
     monkeypatch.setattr(
         "verdict.orchestration.eligibility_report.build_selector",
         _ladder([_route_verdict(FREE_A, rank=0)]),
     )
+    _scripted_probe(monkeypatch)
+    configs: list[Any] = []
+
+    def decomposer_factory(config: Any) -> Any:
+        configs.append(config)
+        return _decomposer(PLAN)
+
+    monkeypatch.setattr(autodev, "Decomposer", decomposer_factory)
+    autodev.prepare_live_autodev(
+        "fix", repo, model="provider/model:free", base_url="http://gateway/v1", api_key=None
+    )
+    # D39: single-family planner proceeds; band record is annotated
+    assert configs[0].planner_models == (FREE_A,)
+    assert configs[0].planner_band_records[FREE_A]["single_family_planner"] is True
+
+
+def test_pinned_bootstrap_no_probe_when_ladder_empty(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With an empty ladder (zero planner families), the pinned path fails before probing (BOD-406)."""
+    import verdict.autodev_run as autodev
+
+    monkeypatch.setattr("verdict.orchestration.eligibility_report.build_selector", _ladder([]))
     monkeypatch.setattr(
         "verdict.probes.openai_probe_transport",
         lambda *a, **kw: pytest.fail("no probe without a planner"),
@@ -1019,7 +1042,8 @@ def test_autodev_pinned_metered_is_allowed_and_probed(
 
     The parametrised ``test_autodev_never_probes_fact_metered_routes`` test
     cannot exercise this path because the single-route inventory makes
-    ``_live_planner_models`` fail (< 2 families) before reaching the probe.
+    ``_live_planner_models`` required two families before D39; with D39 a single
+    family now proceeds.  Two FREE planner families here bypass the D39 path.
     Here we fake the selector so two FREE planner families are available.
     """
     from verdict import autodev_run as autodev
@@ -1251,11 +1275,13 @@ def test_prepare_live_autodev_selected_fails_closed_without_free_route(
     assert "anthropic/" not in message
 
 
-def test_live_planner_models_fails_closed_with_one_family(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_live_planner_models fails closed when fewer than two planner families are eligible."""
+def test_live_planner_models_single_family_proceeds_with_d39(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D39: _live_planner_models proceeds with one family; band record notes single_family_planner and unavailable."""
     import verdict.autodev_run as autodev
 
-    # Only one planner family (claude) is eligible
+    # Only one planner family (claude) is eligible; dead:free is unhealthy.
     verdicts = [
         _route_verdict("cc/claude-sonnet-5", rank=0, capacity=CapacityClass.SUBSCRIPTION),
         _route_verdict(
@@ -1271,18 +1297,13 @@ def test_live_planner_models_fails_closed_with_one_family(monkeypatch: pytest.Mo
         def select(self, req, *, now):
             return None, tuple(verdicts)
 
-    def mock_build_selector(gateway, **kwargs):
-        return _Selector()
+    route_ids, band_records = autodev._live_planner_models(_Selector(), top_n=3)
 
-    monkeypatch.setattr(
-        "verdict.orchestration.eligibility_report.build_selector", mock_build_selector
-    )
-
-    with pytest.raises(AutodevError) as excinfo:
-        autodev._live_planner_models(_Selector(), top_n=3)
-
-    message = str(excinfo.value)
-    assert "no_frontier_or_fallback_planner" in message
+    assert route_ids == ("cc/claude-sonnet-5",)
+    assert band_records["cc/claude-sonnet-5"]["single_family_planner"] is True
+    # The fix in planner_band.py uses the full route id (free/dead:free) rather than the
+    # stripped key (free/dead) when looking up families, so the reason is preserved correctly.
+    assert band_records["cc/claude-sonnet-5"]["unavailable_families"] == {"dead:free": "unhealthy"}
 
 
 def test_prepare_live_autodev_selected_works_with_two_subscription_families(
@@ -2283,24 +2304,35 @@ def test_prepare_live_autodev_selected_plans_on_live_free_families_only(
     assert any(req.reasoning and "reasoning" in req.required_capabilities for req in requirements)
 
 
-def test_prepare_live_autodev_selected_needs_two_planner_families(
+def test_prepare_live_autodev_selected_single_family_proceeds_with_d39(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """D39: when both planner candidates share one family, planning proceeds with single_family_planner=True."""
     import verdict.autodev_run as autodev
 
+    # Both FREE_A and kilocode/alpha:free have family "alpha:free" (route_family strips the
+    # provider prefix and matches no known family name) — only one family, so D39 applies.
     verdicts = [_route_verdict(FREE_A, rank=0), _route_verdict("kilocode/alpha:free", rank=1)]
     monkeypatch.setattr(
         "verdict.orchestration.eligibility_report.build_selector", _ladder(verdicts)
     )
     _scripted_probe(monkeypatch)
-    monkeypatch.setattr(autodev, "Decomposer", lambda config: pytest.fail("must not plan"))
+    configs: list[Any] = []
 
-    with pytest.raises(AutodevError) as excinfo:
-        autodev.prepare_live_autodev_selected(
-            "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
-        )
-    assert "planner" in str(excinfo.value)
-    assert "cc/" not in str(excinfo.value)
+    def decomposer_factory(config: Any) -> Any:
+        configs.append(config)
+        return _decomposer(PLAN)
+
+    monkeypatch.setattr(autodev, "Decomposer", decomposer_factory)
+
+    autodev.prepare_live_autodev_selected(
+        "fix ruff errors", repo, base_url=GATEWAY, api_key="fake-key"
+    )
+    # D39: single-family planner proceeds; band record is annotated
+    assert configs[0].planner_models == (FREE_A,)
+    assert configs[0].planner_band_records[FREE_A]["single_family_planner"] is True
+    # No "unavailable" families because kilocode/alpha:free shares the same family as FREE_A
+    assert configs[0].planner_band_records[FREE_A]["unavailable_families"] == {}
 
 
 # BOD-396: the executor of every model call is a route an execution-path decision

@@ -562,7 +562,14 @@ def select_planner_routes(
         # D39: proceed with one family instead of failing closed; annotate the result.
         # (len(selected) >= 1 here because the empty check above already raised.)
         all_band_keys = band.frontier_model_keys | band.fallback_model_keys
-        all_band_families = {route_family(mk) for mk in all_band_keys}
+        # Build all_band_families using FULL route ids (same as how the main loop
+        # builds used_families via route_family(route_id)), so the two sets are
+        # comparable even when routes carry a :free or :nitro suffix.
+        all_band_families: set[str] = {route_family(r) for r, _, _, _ in all_candidates_in_order}
+        if exclusion_reasons:
+            for excl_route in exclusion_reasons:
+                if _strip_suffix(excl_route) in all_band_keys:
+                    all_band_families.add(route_family(excl_route))
         unavailable_family_set = all_band_families - used_families
 
         family_reasons: dict[str, str] = {}
