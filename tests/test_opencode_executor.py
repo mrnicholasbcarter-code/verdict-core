@@ -26,8 +26,9 @@ import pytest
 
 import verdict.orchestration.executor_opencode as executor_module
 from verdict.orchestration.executor_opencode import (
-    CONTEXT_FILE_NAME,
     PINNED_VERSION,
+    TASK_FILE_NAME,
+    TASK_PROMPT,
     OpenCodeExecutor,
     _attempt_session_id,
     _build_child_env,
@@ -37,7 +38,6 @@ from verdict.orchestration.executor_opencode import (
     _parse_status_code,
     _status_from_full_text,
     _write_attempt_config,
-    _write_context_file,
 )
 
 ROUTE = "cc/claude-sonnet-5"
@@ -314,79 +314,49 @@ def test_write_attempt_config_has_provider_deny_all_policy(tmp_path: Path) -> No
     )
 
 
-def test_write_attempt_config_has_instructions_reference(tmp_path: Path) -> None:
+def test_write_attempt_config_lists_the_task_file_in_the_config_directory(tmp_path: Path) -> None:
+    """The task is an instructions file beside ``opencode.json``, never a path in the worktree."""
     cwd = tmp_path / "work"
     cwd.mkdir()
+    config_dir = tmp_path / "cfg"
     _write_attempt_config(
-        tmp_path / "cfg",
+        config_dir,
         route_id=ROUTE,
         serve_base_url="http://127.0.0.1:8000",
         api_key_env="VERDICT_WORKER_API_KEY",
         cwd=cwd,
     )
-    cfg = json.loads((tmp_path / "cfg" / "opencode.json").read_text())
-    instructions = cfg.get("instructions", [])
-    expected_path = str(cwd / CONTEXT_FILE_NAME)
-    assert any(expected_path in inst for inst in instructions), (
-        f"instructions must reference {expected_path}"
-    )
+    cfg = json.loads((config_dir / "opencode.json").read_text())
+    assert cfg["instructions"] == [str(config_dir / TASK_FILE_NAME)]
+    assert not any(str(cwd) in entry for entry in cfg["instructions"])
 
 
-# ---------------------------------------------------------------------------
-# _write_context_file
-# ---------------------------------------------------------------------------
-
-
-def test_write_context_file_creates_file_with_prompt(tmp_path: Path) -> None:
-    _write_context_file(tmp_path, "Build the feature X.")
-    content = (tmp_path / CONTEXT_FILE_NAME).read_text()
-    assert "Build the feature X." in content
-
-
-@pytest.mark.parametrize("target_exists", [True, False], ids=["existing-target", "dangling-target"])
-def test_write_context_file_does_not_follow_symlink(tmp_path: Path, target_exists: bool) -> None:
-    """A repo can track ``.verdict-context.md`` as a symlink to a path outside the worktree.
-
-    Writing through it would truncate (or create) that outside file with the task
-    prompt, using the orchestrator's permissions.  The write must replace the
-    symlink itself and leave the outside target untouched.
-    """
-    worktree = tmp_path / "work"
-    worktree.mkdir()
-    outside = tmp_path / "outside-target.txt"
-    if target_exists:
-        outside.write_text("ORIGINAL OUTSIDE CONTENT")
-    (worktree / CONTEXT_FILE_NAME).symlink_to(outside)
-
-    _write_context_file(worktree, "Build the feature X.")
-
-    if target_exists:
-        assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT", (
-            "outside target was written through"
-        )
-    else:
-        assert not outside.exists(), "dangling symlink target was created through the link"
-    context = worktree / CONTEXT_FILE_NAME
-    assert not context.is_symlink()
-    assert "Build the feature X." in context.read_text()
-    assert [p.name for p in worktree.iterdir()] == [CONTEXT_FILE_NAME], "temp file left behind"
-
-
-def test_executor_does_not_write_through_context_symlink(tmp_path: Path) -> None:
-    """Executor level: a tracked-symlink context file never modifies its outside target."""
-    outside = tmp_path / "outside-target.txt"
-    outside.write_text("ORIGINAL OUTSIDE CONTENT")
+def test_write_attempt_config_keeps_the_worktrees_agents_md_in_the_instructions(
+    tmp_path: Path,
+) -> None:
     cwd = tmp_path / "work"
     cwd.mkdir()
-    (cwd / CONTEXT_FILE_NAME).symlink_to(outside)
-    payload = ndjson_success("done")
-    fake = make_fake_opencode(
-        tmp_path, f"sys.stdout.write({payload!r})\nsys.stdout.write('\\n')\nsys.exit(0)\n"
+    (cwd / "AGENTS.md").write_text("conventions\n")
+    config_dir = tmp_path / "cfg"
+    _write_attempt_config(
+        config_dir,
+        route_id=ROUTE,
+        serve_base_url="http://127.0.0.1:8000",
+        api_key_env="VERDICT_WORKER_API_KEY",
+        cwd=cwd,
     )
-    executor = OpenCodeExecutor(opencode_bin=fake)
-    terminal = run_executor(executor, "secret prompt text", cwd)
-    assert terminal.ok is True
-    assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT"
+    cfg = json.loads((config_dir / "opencode.json").read_text())
+    assert cfg["instructions"] == [str(config_dir / TASK_FILE_NAME), str(cwd / "AGENTS.md")]
+
+
+def test_the_task_file_name_and_the_ask_are_what_the_tests_expect() -> None:
+    assert TASK_FILE_NAME == TASK_FILE
+    assert 0 < len(TASK_PROMPT) <= 600
+
+
+# ---------------------------------------------------------------------------
+# The worktree is never written to
+# ---------------------------------------------------------------------------
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -410,237 +380,6 @@ def _git(repo: Path, *args: str) -> str:
         check=True,
     )
     return done.stdout
-
-
-def _repo_tracking_context(tmp_path: Path, *, symlink: bool) -> tuple[Path, Path]:
-    """A real git repo whose committed tree tracks ``.verdict-context.md``."""
-    outside = tmp_path / "outside-target.txt"
-    outside.write_text("ORIGINAL OUTSIDE CONTENT")
-    repo = tmp_path / "work"
-    repo.mkdir()
-    _git(repo, "init", "-q")
-    if symlink:
-        (repo / CONTEXT_FILE_NAME).symlink_to(outside)
-    else:
-        (repo / CONTEXT_FILE_NAME).write_text("tracked content\n")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "base")
-    return repo, outside
-
-
-@pytest.mark.parametrize("symlink", [True, False], ids=["tracked-symlink", "tracked-file"])
-def test_write_context_file_refuses_a_tracked_path(tmp_path: Path, symlink: bool) -> None:
-    """A tracked ``.verdict-context.md`` must never be replaced.
-
-    ``.git/info/exclude`` only hides untracked paths, so replacing a tracked entry
-    would show up as a change that ``git add -A`` stages into the node deliverable
-    (an ownership failure, or the task prompt committed if the path were owned).
-    Refuse instead, and leave the index, working tree and outside target untouched.
-    """
-    repo, outside = _repo_tracking_context(tmp_path, symlink=symlink)
-    before = _git(repo, "status", "--porcelain")
-
-    with pytest.raises(OSError, match="tracked"):
-        _write_context_file(repo, "task prompt that must not be written")
-
-    assert _git(repo, "status", "--porcelain") == before == ""
-    _git(repo, "add", "-A")
-    assert _git(repo, "diff", "--cached", "--stat") == "", "staged diff changed"
-    assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT"
-    assert [p.name for p in repo.iterdir() if p.name != ".git"] == [CONTEXT_FILE_NAME]
-
-
-def test_executor_fails_closed_without_spawning_when_context_path_is_tracked(
-    tmp_path: Path,
-) -> None:
-    """Executor level: a tracked context path ends the attempt before the worker starts."""
-    repo, outside = _repo_tracking_context(tmp_path, symlink=True)
-    ran = tmp_path / "worker-ran.txt"
-    fake = make_fake_opencode(
-        tmp_path, f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\nsys.exit(0)\n"
-    )
-    executor = OpenCodeExecutor(opencode_bin=fake)
-    terminal = run_executor(executor, "secret prompt text", repo)
-    assert terminal.ok is False
-    assert terminal.error.startswith("context_write_failed")
-    assert not ran.exists(), "worker was spawned despite the refused context write"
-    assert _git(repo, "status", "--porcelain") == ""
-    assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT"
-
-
-@pytest.mark.parametrize(
-    "failure",
-    [subprocess.TimeoutExpired(cmd="git", timeout=30), FileNotFoundError("git")],
-    ids=["git-timeout", "git-missing"],
-)
-def test_write_context_file_fails_closed_when_git_cannot_answer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception
-) -> None:
-    """If tracking status cannot be determined, do not write: it may be tracked.
-
-    A git timeout or missing executable must not read as "untracked" (that would
-    let a tracked entry be replaced and then staged into the deliverable).
-    """
-    repo, _outside = _repo_tracking_context(tmp_path, symlink=False)
-    real_run = subprocess.run
-
-    def flaky_run(cmd: list[str], *args: object, **kwargs: object) -> object:
-        if "ls-files" in cmd:
-            raise failure
-        return real_run(cmd, *args, **kwargs)  # type: ignore[call-overload]
-
-    monkeypatch.setattr("verdict.orchestration.executor_opencode.subprocess.run", flaky_run)
-    with pytest.raises(OSError, match="cannot determine"):
-        _write_context_file(repo, "task prompt that must not be written")
-    assert (repo / CONTEXT_FILE_NAME).read_text() == "tracked content\n"
-    assert sorted(p.name for p in repo.iterdir()) == sorted([".git", CONTEXT_FILE_NAME])
-
-
-def test_write_context_file_fails_closed_when_git_index_is_unreadable(tmp_path: Path) -> None:
-    """A failing ``git ls-files`` (nonzero exit) is indeterminate, not "untracked"."""
-    repo, _outside = _repo_tracking_context(tmp_path, symlink=False)
-    (repo / ".git" / "index").write_bytes(b"not a git index")
-    with pytest.raises(OSError, match="cannot determine"):
-        _write_context_file(repo, "task prompt that must not be written")
-    assert (repo / CONTEXT_FILE_NAME).read_text() == "tracked content\n"
-    assert sorted(p.name for p in repo.iterdir()) == sorted([".git", CONTEXT_FILE_NAME])
-
-
-def test_executor_does_not_spawn_when_git_index_is_unreadable(tmp_path: Path) -> None:
-    """Executor level: an indeterminate tracking check ends the attempt before spawn."""
-    repo, _outside = _repo_tracking_context(tmp_path, symlink=False)
-    (repo / ".git" / "index").write_bytes(b"not a git index")
-    ran = tmp_path / "worker-ran.txt"
-    fake = make_fake_opencode(
-        tmp_path, f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\nsys.exit(0)\n"
-    )
-    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "prompt", repo)
-    assert terminal.ok is False
-    assert terminal.error.startswith("context_write_failed")
-    assert not ran.exists(), "worker was spawned although tracking status was unknown"
-
-
-def test_write_context_file_refuses_tracked_path_with_external_gitdir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``GIT_DIR``/``GIT_WORK_TREE`` make a directory a worktree with no ``.git`` entry.
-
-    Looking for ``.git`` on disk would call this "not a repo" and overwrite a
-    tracked context file that a later ``git add -A`` then stages.  Git itself must
-    decide, under the same environment the runtime's git calls use.
-    """
-    work = tmp_path / "work"
-    work.mkdir()
-    gitdir = tmp_path / "external.git"
-    (work / CONTEXT_FILE_NAME).write_text("tracked content\n")
-    env = {
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": str(tmp_path),
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_SYSTEM": os.devnull,
-        "GIT_DIR": str(gitdir),
-        "GIT_WORK_TREE": str(work),
-        "GIT_AUTHOR_NAME": "t",
-        "GIT_AUTHOR_EMAIL": "t@example.invalid",
-        "GIT_COMMITTER_NAME": "t",
-        "GIT_COMMITTER_EMAIL": "t@example.invalid",
-    }
-    for args in (
-        ["init", "-q"],
-        ["add", "-A"],
-        ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "b"],
-    ):
-        subprocess.run(["git", *args], cwd=work, env=env, check=True, capture_output=True)
-    assert not (work / ".git").exists(), "fixture must have no .git entry"
-    monkeypatch.setenv("GIT_DIR", str(gitdir))
-    monkeypatch.setenv("GIT_WORK_TREE", str(work))
-
-    with pytest.raises(OSError, match="tracked"):
-        _write_context_file(work, "task prompt that must not be written")
-    assert (work / CONTEXT_FILE_NAME).read_text() == "tracked content\n"
-
-
-def test_context_file_is_prepared_off_the_event_loop(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The git tracking check can take seconds; it must not block the shared event loop."""
-    import threading
-
-    import verdict.orchestration.executor_opencode as module
-
-    seen: list[bool] = []
-    real = module._write_context_file
-
-    def spy(cwd: Path, prompt: str, *args: object) -> None:
-        seen.append(threading.current_thread() is threading.main_thread())
-        real(cwd, prompt, *args)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(module, "_write_context_file", spy)
-    payload = ndjson_success("done")
-    fake = make_fake_opencode(
-        tmp_path, f"sys.stdout.write({payload!r})\nsys.stdout.write('\\n')\nsys.exit(0)\n"
-    )
-    cwd = tmp_path / "work"
-    cwd.mkdir()
-    terminal = run_executor(
-        OpenCodeExecutor(opencode_bin=fake), "prompt", cwd
-    )  # loop runs in main thread
-    assert terminal.ok is True
-    assert seen == [False], "context preparation ran on the event-loop thread"
-
-
-def test_cancelling_run_waits_for_the_context_preparation_thread(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Cancellation must not return while a preparation thread can still write.
-
-    The git probe runs in a worker thread that cannot be interrupted.  If ``run()``
-    propagated ``CancelledError`` immediately, the caller could clean up or reuse the
-    worktree while that thread later replaced ``.verdict-context.md`` (and a retry's
-    newer context could be overwritten).  Block the probe, cancel ``run()``, and
-    require that cancellation completes only after the write has finished.
-    """
-    import threading
-
-    import verdict.orchestration.executor_opencode as module
-
-    payload = ndjson_success("done")
-    fake = make_fake_opencode(
-        tmp_path, f"sys.stdout.write({payload!r})\nsys.stdout.write('\\n')\nsys.exit(0)\n"
-    )
-    cwd = tmp_path / "work"
-    cwd.mkdir()
-    started, release = threading.Event(), threading.Event()
-    real_git = module._git
-
-    def blocking_git(path: Path, *args: str, **kwargs: object) -> object:
-        started.set()
-        assert release.wait(timeout=30), "test never released the blocked git probe"
-        return real_git(path, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(module, "_git", blocking_git)
-    executor = OpenCodeExecutor(opencode_bin=fake)
-
-    async def scenario() -> None:
-        task = asyncio.ensure_future(
-            executor.run("prompt", route_id=ROUTE, cwd=cwd, timeout_seconds=30.0)
-        )
-        for _ in range(500):  # up to 5 s for the thread to enter the probe
-            if started.is_set():
-                break
-            await asyncio.sleep(0.01)
-        assert started.is_set(), "preparation thread never reached the git probe"
-        task.cancel()
-        await asyncio.sleep(0.3)
-        assert not task.done(), "run() finished cancelling while the preparation thread still ran"
-        assert not (cwd / CONTEXT_FILE_NAME).exists()
-        release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        # The write completed before cancellation did: nothing can write afterwards.
-        assert (cwd / CONTEXT_FILE_NAME).exists()
-
-    asyncio.run(scenario())
 
 
 @requires_procfs
@@ -713,98 +452,6 @@ def test_collect_does_not_spin_when_one_pipe_closes_and_the_worker_keeps_running
     terminal = run_executor(executor, "closes stdout", cwd, timeout=30.0)
     assert terminal.ok is False and terminal.error.startswith("stalled"), terminal
     assert calls < 50, f"collector woke {calls} times while idle (busy loop)"
-
-
-def test_slow_git_probe_is_bounded_by_the_attempt_deadline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The git tracking probes must stop at the attempt deadline, not at their own 30 s.
-
-    Deducting elapsed time only after preparation would still let a short attempt take up
-    to a minute before returning (and cancellation waits for the preparation thread).  The
-    remaining budget is passed into each probe.  A fake ``git`` that hangs stands in for a
-    stuck repository.
-    """
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    slow_git = fake_bin / "git"
-    slow_git.write_text(
-        "#!/bin/sh\nexec sleep 60\n"
-    )  # exec: the killed PID is the sleeper, no orphan
-    slow_git.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
-    ran = tmp_path / "worker-ran.txt"
-    fake = make_fake_opencode(
-        tmp_path, f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\nsys.exit(0)\n"
-    )
-    cwd = tmp_path / "work"
-    cwd.mkdir()
-    started = time.monotonic()
-    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "hung git", cwd, timeout=1.5)
-    elapsed = time.monotonic() - started
-    assert terminal.ok is False and terminal.error == "timeout", terminal
-    assert elapsed < 10.0, (
-        f"hung git probe was not bounded by the attempt deadline ({elapsed:.1f}s)"
-    )
-    assert not ran.exists(), "worker was spawned after the deadline"
-
-
-def test_context_preparation_time_counts_against_the_attempt_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Slow preparation (two git probes of up to 30 s each) must not extend the budget."""
-    import verdict.orchestration.executor_opencode as module
-
-    async def slow_prepare(cwd: Path, prompt: str, deadline: float | None = None) -> None:
-        await asyncio.sleep(1.5)
-
-    monkeypatch.setattr(module, "_prepare_context", slow_prepare)
-    fake = make_fake_opencode(tmp_path, "time.sleep(60)\n")
-    cwd = tmp_path / "work"
-    cwd.mkdir()
-    executor = OpenCodeExecutor(opencode_bin=fake, idle_output_seconds=120.0)
-    started = time.monotonic()
-    terminal = run_executor(executor, "slow prep", cwd, timeout=2.5)
-    elapsed = time.monotonic() - started
-    assert terminal.ok is False and terminal.error == "timeout", terminal
-    # Budget 2.5 s in total: 1.5 s preparing leaves ~1.0 s for the worker.  Restarting the
-    # full budget after preparation would take about 4 s.
-    assert elapsed < 3.4, f"preparation time was not deducted from the budget ({elapsed:.1f}s)"
-
-
-def test_attempt_times_out_without_spawning_when_preparation_used_the_whole_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import verdict.orchestration.executor_opencode as module
-
-    async def slow_prepare(cwd: Path, prompt: str, deadline: float | None = None) -> None:
-        await asyncio.sleep(0.6)
-
-    monkeypatch.setattr(module, "_prepare_context", slow_prepare)
-    ran = tmp_path / "worker-ran.txt"
-    fake = make_fake_opencode(
-        tmp_path, f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\nsys.exit(0)\n"
-    )
-    cwd = tmp_path / "work"
-    cwd.mkdir()
-    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "no budget", cwd, timeout=0.3)
-    assert terminal.ok is False and terminal.error == "timeout", terminal
-    assert not ran.exists(), "worker was spawned with no time left"
-
-
-def test_write_context_file_still_replaces_an_untracked_symlink_in_a_git_repo(
-    tmp_path: Path,
-) -> None:
-    """Untracked (so excluded) entries keep working: the symlink is replaced, not followed."""
-    outside = tmp_path / "outside-target.txt"
-    outside.write_text("ORIGINAL OUTSIDE CONTENT")
-    repo = tmp_path / "work"
-    repo.mkdir()
-    _git(repo, "init", "-q")
-    (repo / CONTEXT_FILE_NAME).symlink_to(outside)  # untracked
-    _write_context_file(repo, "Build the feature X.")
-    assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT"
-    assert not (repo / CONTEXT_FILE_NAME).is_symlink()
 
 
 # ---------------------------------------------------------------------------
@@ -988,32 +635,6 @@ def test_opencode_executor_config_has_no_plaintext_key(tmp_path: Path) -> None:
     config_text = capture.read_text()
     assert "real-secret-key-xyz" not in config_text
     assert "{env:VERDICT_WORKER_API_KEY}" in config_text
-
-
-def test_opencode_executor_writes_context_file(tmp_path: Path) -> None:
-    """The context file must be written to the cwd before spawn."""
-    capture = tmp_path / "context_exists.txt"
-    prompt = "implement the foo feature"
-    fake = make_fake_opencode(
-        tmp_path,
-        f"import sys, pathlib\n"
-        f"ctx = pathlib.Path(sys.argv[-1]).parent / {CONTEXT_FILE_NAME!r}\n"
-        # sys.argv[-1] is the prompt; cwd is the working directory of the script
-        f"import os\n"
-        f"ctx2 = pathlib.Path(os.getcwd()) / {CONTEXT_FILE_NAME!r}\n"
-        f"pathlib.Path({str(capture)!r}).write_text(str(ctx2.exists()))\n"
-        f"sys.exit(0)\n",
-    )
-    cwd = tmp_path / "work"
-    cwd.mkdir()
-    executor = OpenCodeExecutor(opencode_bin=fake)
-    run_executor(executor, prompt, cwd)
-    # The context file must exist at the time the child runs
-    assert capture.read_text().strip() == "True"
-    # Context file contains the prompt
-    ctx_path = cwd / CONTEXT_FILE_NAME
-    assert ctx_path.exists()
-    assert prompt in ctx_path.read_text()
 
 
 def test_opencode_executor_idle_stall_returns_failure(tmp_path: Path) -> None:
@@ -2229,7 +1850,78 @@ _MARKED_STATUSES = [
     ("upstream answered 503 Service Unavailable twice", 503),
     ("(401 Unauthorized)", 401),
     ("502 bad gateway", 502),
+    # The ``requests`` library's own wording (``HTTPError`` text): the number is followed by
+    # ``Client Error`` or ``Server Error``, then the reason and the url.
+    ("429 Client Error: Too Many Requests for url: http://127.0.0.1:8000/v1/chat/completions", 429),
+    (
+        "503 Server Error: Service Unavailable for url: http://127.0.0.1:8000/v1/chat/completions",
+        503,
+    ),
+    ("requests.exceptions.HTTPError: 502 Server Error: Bad Gateway for url: http://x/y", 502),
+    ("401 Client Error: Unauthorized for url: https://example.test/v1", 401),
+    ("404 Client Error: Not Found for url: https://example.test/v1/models", 404),
+    ("500 Server Error: Internal Server Error for url: https://example.test/v1", 500),
 ]
+
+# Near misses of that wording: a count, a different noun, or the wrong class for the number.
+_NOT_REQUESTS_ERRORS = [
+    "500 server errors today",
+    "failed after 429 client errors",
+    "retrying in 500 ms",
+    "failed after 429 attempts",
+    "429 Server Error: Too Many Requests for url: http://x",  # requests says Client for 4xx
+    "503 Client Error: Service Unavailable for url: http://x",  # and Server for 5xx
+    "the 500 Server Error page",  # no colon after Error
+    "1429 Client Error: not a status",
+    "429 Client",
+]
+
+
+@pytest.mark.parametrize("text", _NOT_REQUESTS_ERRORS)
+def test_near_misses_of_the_requests_wording_are_not_a_status(text: str) -> None:
+    assert _parse_status_code(text) is None
+    assert _status_from_full_text(text) is None
+    assert _status_from_full_text(f"{text}.{_LONG_DIAGNOSTIC} {text}") is None
+
+
+@pytest.mark.parametrize(
+    ("text", "status", "category"),
+    [
+        (
+            "429 Client Error: Too Many Requests for url: http://127.0.0.1:8000/v1/chat/completions",
+            429,
+            "rate_limited",
+        ),
+        (
+            "503 Server Error: Service Unavailable for url: http://127.0.0.1:8000/v1/chat/completions",
+            503,
+            "upstream_temporary",
+        ),
+    ],
+)
+@pytest.mark.parametrize("where", ["stderr", "ndjson-message"])
+def test_a_requests_error_gives_its_status_and_a_reroute(
+    tmp_path: Path, where: str, text: str, status: int, category: str
+) -> None:
+    """End to end, as recovery sees it: the status reaches the terminal and the failure is a
+    reroute (a rate limit or an upstream outage), not an unclassified one."""
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    if where == "stderr":
+        body = f"sys.stderr.write({text!r})\nsys.exit(1)\n"
+    else:
+        event = {"type": "error", "message": text}
+        body = f"sys.stdout.write({json.dumps(event)!r} + '\\n')\nsys.exit(1)\n"
+    fake = make_fake_opencode(tmp_path, body)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is False and terminal.status_code == status  # type: ignore[attr-defined]
+    failure = FailureIntelligence().classify(
+        terminal,  # type: ignore[arg-type]
+        now=datetime(2026, 11, 24, tzinfo=timezone.utc),
+    )
+    assert failure.action == "REROUTE" and failure.category == category, failure
 
 
 @pytest.mark.parametrize("text", _INCIDENTAL_NUMBERS)
@@ -2694,6 +2386,377 @@ def test_a_failed_pipe_read_is_not_reported_as_a_finished_attempt(
     terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
     assert terminal.ok is False, terminal
     assert terminal.error.startswith("worker_io_failed"), terminal.error
+
+
+# ---------------------------------------------------------------------------
+# Task delivery (#1327): an instructions file in the attempt's config directory and one short
+# prompt on stdin; nothing is written into the worktree
+# ---------------------------------------------------------------------------
+
+#: The instructions file the task is delivered in, beside the per-attempt ``opencode.json``.
+TASK_FILE = "verdict-task.md"
+#: A marker that only the task text carries: how many times it reaches OpenCode is the check.
+TASK_MARK = "TASKMARK-9f3a1c"
+
+
+def _recording_worker(tmp_path: Path, behaviour: str = "") -> tuple[str, Path]:
+    """A fake opencode that records everything it is handed, then behaves as ``behaviour`` says.
+
+    The record holds its argv, all of its stdin, the files of its config directory (read at
+    launch, so a file that is missing then is missing here) and a listing of its working
+    directory.  ``behaviour`` is Python run after the record is written (default: succeed).
+    """
+    capture = tmp_path / "delivery.json"
+    payload = ndjson_success("done")
+    body = (
+        "import pathlib\n"
+        "cfg = pathlib.Path(os.environ['OPENCODE_CONFIG_DIR'])\n"
+        "files = {str(p.relative_to(cfg)): p.read_text(errors='replace')\n"
+        "         for p in sorted(cfg.rglob('*')) if p.is_file()}\n"
+        "record = {'argv': sys.argv[1:], 'stdin': sys.stdin.read(), 'config_dir': str(cfg),\n"
+        "          'files': files, 'cwd_listing': sorted(os.listdir(os.getcwd()))}\n"
+        f"pathlib.Path({str(capture)!r}).write_text(json.dumps(record))\n"
+        + (behaviour or f"sys.stdout.write({payload!r} + '\\n')\nsys.exit(0)\n")
+    )
+    return make_fake_opencode(tmp_path, body), capture
+
+
+def _deliver(tmp_path: Path, task: str, **kwargs: object) -> tuple[dict[str, object], object]:
+    """Run ``task`` through a recording worker; return what it was handed and the terminal."""
+    fake, capture = _recording_worker(tmp_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir(exist_ok=True)
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), task, cwd, **kwargs)  # type: ignore[arg-type]
+    assert capture.exists(), f"the worker never ran: {terminal}"
+    return json.loads(capture.read_text()), terminal
+
+
+def test_the_task_is_an_instructions_file_in_the_attempt_config_directory(tmp_path: Path) -> None:
+    """The file exists when the worker launches, holds the task, and is the entry the
+    per-attempt ``opencode.json`` lists (OpenCode skips a listed file that is missing, so the
+    path the worker is told to load and the path that was written must be the same one)."""
+    record, terminal = _deliver(tmp_path, f"Implement the feature. {TASK_MARK}")
+    assert terminal.ok is True  # type: ignore[attr-defined]
+    files = record["files"]
+    assert TASK_FILE in files, (
+        f"no instructions file at launch; the config dir held {sorted(files)}"
+    )
+    assert TASK_MARK in files[TASK_FILE]
+    config = json.loads(files["opencode.json"])
+    listed = Path(str(record["config_dir"])) / TASK_FILE
+    assert str(listed) in config["instructions"]
+
+
+def test_the_prompt_is_one_short_ask_that_carries_no_task_text(tmp_path: Path) -> None:
+    record, _ = _deliver(tmp_path, f"Implement the feature. {TASK_MARK}")
+    argv = [str(a) for a in record["argv"]]  # type: ignore[attr-defined]
+    ask = str(record["stdin"])
+    assert ask.strip(), "no prompt reached the worker's stdin"
+    assert len(ask) <= 600, f"the prompt is not short ({len(ask)} characters)"
+    assert TASK_MARK not in ask and not any(TASK_MARK in arg for arg in argv)
+    assert "--" not in argv, "the prompt must not also travel as an argument"
+    assert not any(arg == ask or ask in arg for arg in argv), "the prompt was sent twice"
+
+
+def test_the_ask_is_the_same_for_every_task(tmp_path: Path) -> None:
+    first, _ = _deliver(tmp_path, "Task one: rename a variable.")
+    second_dir = tmp_path / "second"
+    second_dir.mkdir()
+    second, _ = _deliver(second_dir, "Task two: " + "x" * 5000)
+    assert first["stdin"] and first["stdin"] == second["stdin"]
+
+
+def test_the_task_text_reaches_opencode_exactly_once(tmp_path: Path) -> None:
+    """Sending it as the prompt too doubled those input tokens on every model call (#1299)."""
+    record, _ = _deliver(tmp_path, f"Implement the feature. {TASK_MARK}")
+    everything = json.dumps(record["argv"]) + str(record["stdin"]) + json.dumps(record["files"])
+    assert everything.count(TASK_MARK) == 1
+
+
+def test_a_task_larger_than_one_argument_is_delivered_whole(tmp_path: Path) -> None:
+    """Linux refuses one argument over 131072 bytes; the task no longer travels as one."""
+    task = f"{TASK_MARK} " + "pack line of the context\n" * 12_000  # about 300 KB
+    assert len(task.encode()) > 131_072
+    record, terminal = _deliver(tmp_path, task)
+    assert terminal.ok is True  # type: ignore[attr-defined]
+    delivered = record["files"][TASK_FILE]  # type: ignore[index]
+    assert task in delivered and len(delivered) < len(task) + 1000
+
+
+def test_the_title_is_given_so_opencode_makes_no_second_request(tmp_path: Path) -> None:
+    """Without ``--title`` OpenCode 2.3.2 makes a second, title-agent request on the route."""
+    record, _ = _deliver(tmp_path, "task")
+    argv = [str(a) for a in record["argv"]]  # type: ignore[attr-defined]
+    assert "--title" in argv
+    title = argv[argv.index("--title") + 1]
+    assert title.strip() and not title.startswith("-")
+    session = argv[argv.index("--session") + 1]
+    assert session in title
+
+
+@pytest.mark.parametrize("how", ["success", "nonzero-exit", "spawn-failure"])
+def test_nothing_is_written_into_the_worktree(tmp_path: Path, how: str) -> None:
+    """The worktree is the repository: the worker's own edits are all that may appear in it."""
+    work = tmp_path / "work"
+    work.mkdir()
+    _git(work, "init", "-q")
+    (work / "tracked.txt").write_text("content\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "base")
+    before = sorted(p.name for p in work.iterdir())
+    if how == "spawn-failure":
+        bin_path = "/nonexistent/path/to/opencode-xyz"
+        record = None
+    else:
+        behaviour = "sys.exit(1)\n" if how == "nonzero-exit" else ""
+        bin_path, capture = _recording_worker(tmp_path, behaviour)
+        record = capture
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=bin_path), "the task", work)
+    assert terminal.ok is (how == "success")  # type: ignore[attr-defined]
+    assert sorted(p.name for p in work.iterdir()) == before
+    assert _git(work, "status", "--porcelain") == ""
+    if record is not None:
+        launched = json.loads(record.read_text())
+        assert launched["cwd_listing"] == [".git", "tracked.txt"], launched["cwd_listing"]
+
+
+@pytest.mark.parametrize("how", ["success", "nonzero-exit", "timeout", "stalled", "spawn-failure"])
+def test_the_instructions_file_is_removed_with_the_attempt_directory_on_every_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """Every attempt directory lives under one temp root here, so a leftover is visible."""
+    import tempfile
+
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
+    behaviours = {
+        "success": "",
+        "nonzero-exit": "sys.exit(1)\n",
+        "timeout": "time.sleep(60)\n",
+        "stalled": "time.sleep(60)\n",
+    }
+    if how == "spawn-failure":
+        bin_path, capture = "/nonexistent/path/to/opencode-xyz", None
+    else:
+        bin_path, capture = _recording_worker(tmp_path, behaviours[how])
+    work = tmp_path / "work"
+    work.mkdir()
+    executor = OpenCodeExecutor(
+        opencode_bin=bin_path, idle_output_seconds=1.0 if how == "stalled" else 120.0
+    )
+    run_executor(executor, f"the task {TASK_MARK}", work, timeout=1.5 if how == "timeout" else 30.0)
+    if capture is not None:
+        launched = json.loads(capture.read_text())
+        assert TASK_FILE in launched["files"], "the instructions file was not there at launch"
+        assert not Path(launched["config_dir"]).exists()
+    assert list(temp_root.iterdir()) == [], "the per-attempt directory outlived the attempt"
+
+
+def test_the_instructions_file_is_removed_when_the_attempt_is_cancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tempfile
+
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
+    bin_path, capture = _recording_worker(tmp_path, "time.sleep(60)\n")
+    work = tmp_path / "work"
+    work.mkdir()
+    executor = OpenCodeExecutor(opencode_bin=bin_path, idle_output_seconds=120.0)
+
+    async def scenario() -> None:
+        task = asyncio.ensure_future(
+            executor.run("the task", route_id=ROUTE, cwd=work, timeout_seconds=60.0)
+        )
+        for _ in range(500):  # up to 5 s for the worker to launch and record
+            if capture.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert capture.exists(), "the worker never launched"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=30.0)
+
+    asyncio.run(scenario())
+    assert TASK_FILE in json.loads(capture.read_text())["files"]
+    assert list(temp_root.iterdir()) == [], "the per-attempt directory outlived the cancellation"
+
+
+def _write_nothing(config_dir: Path, task: str) -> None:
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _write_empty(config_dir: Path, task: str) -> None:
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / TASK_FILE).write_text("")
+
+
+def _write_a_directory(config_dir: Path, task: str) -> None:
+    (config_dir / TASK_FILE).mkdir(parents=True, exist_ok=True)
+
+
+def _write_unreadable(config_dir: Path, task: str) -> None:
+    config_dir.mkdir(parents=True, exist_ok=True)
+    target = config_dir / TASK_FILE
+    target.write_text(task)
+    target.chmod(0)
+
+
+@pytest.mark.parametrize(
+    "writer",
+    [_write_nothing, _write_empty, _write_a_directory, _write_unreadable],
+    ids=["missing", "empty", "a-directory", "unreadable"],
+)
+def test_a_missing_or_unusable_instructions_file_fails_the_attempt_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, writer: object
+) -> None:
+    """OpenCode skips a listed instructions file that is not there and carries on, so the worker
+    would run without its task.  The adapter must catch that before it launches anything."""
+    import tempfile
+
+    if writer is _write_unreadable and hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root reads a mode-0 file")
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
+    monkeypatch.setattr(executor_module, "_write_task_file", writer)
+    fake, marker = _spawn_recorder(tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "the task", work)
+    assert terminal.ok is False  # type: ignore[attr-defined]
+    assert terminal.error.startswith("config_write_failed:"), terminal.error  # type: ignore[attr-defined]
+    assert TASK_FILE in terminal.error  # type: ignore[attr-defined]
+    assert not marker.exists(), "the worker was launched without its task"
+    assert list(temp_root.iterdir()) == [], "the per-attempt directory outlived the attempt"
+    assert list(work.iterdir()) == []
+
+
+def test_a_worker_that_never_reads_its_stdin_is_not_an_error(tmp_path: Path) -> None:
+    """Most scripts here exit without reading stdin: writing the ask must not fail the attempt."""
+    fake = make_fake_opencode(tmp_path, "sys.exit(0)\n")
+    work = tmp_path / "work"
+    work.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", work)
+    assert terminal.ok is True  # type: ignore[attr-defined]
+
+
+def test_the_ask_is_sent_even_when_the_worker_has_already_gone() -> None:
+    """A process that exited before the ask was written is a broken pipe, not a crash."""
+
+    async def scenario() -> None:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", "pass", stdin=asyncio.subprocess.PIPE
+        )
+        await proc.wait()
+        await executor_module._send_prompt(proc, "the ask")  # type: ignore[attr-defined]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("symlink", [True, False], ids=["tracked-symlink", "tracked-file"])
+def test_a_repository_that_tracks_a_file_with_the_old_context_name_is_left_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symlink: bool
+) -> None:
+    """Older versions refused to start in such a repository (they wrote that name there).  Now
+    nothing is written into the worktree, and git is not asked anything, so the attempt runs and
+    the tracked entry, the index and the symlink's outside target are exactly as they were."""
+    outside = tmp_path / "outside-target.txt"
+    outside.write_text("ORIGINAL OUTSIDE CONTENT")
+    repo = tmp_path / "work"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    old_name = repo / ".verdict-context.md"
+    if symlink:
+        old_name.symlink_to(outside)
+    else:
+        old_name.write_text("tracked content\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    (repo / ".git" / "index").write_bytes(b"not a git index")  # git itself could not answer now
+
+    def no_git(*args: object, **kwargs: object) -> object:
+        raise AssertionError(f"the executor ran a subprocess through subprocess.run: {args}")
+
+    monkeypatch.setattr("verdict.orchestration.executor_opencode.subprocess.run", no_git)
+    fake, capture = _recording_worker(tmp_path)
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "the task", repo)
+    assert terminal.ok is True, terminal  # type: ignore[attr-defined]
+    assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT"
+    assert old_name.is_symlink() is symlink
+    if not symlink:
+        assert old_name.read_text() == "tracked content\n"
+    launched = json.loads(capture.read_text())
+    assert launched["cwd_listing"] == [".git", ".verdict-context.md"]
+
+
+def test_a_task_that_cannot_be_encoded_fails_closed_before_launch(tmp_path: Path) -> None:
+    """A lone surrogate cannot be written as UTF-8: a failed attempt, not an exception."""
+    fake, marker = _spawn_recorder(tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "bad \ud800 task", work)
+    assert terminal.ok is False and terminal.error.startswith("config_write_failed:"), terminal  # type: ignore[attr-defined]
+    assert not marker.exists()
+    assert list(work.iterdir()) == []
+
+
+def test_pre_dispatch_time_counts_against_the_attempt_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow readiness check must not extend the budget: the worker gets only what is left."""
+
+    def slow_serve(*args: object, **kwargs: object) -> None:
+        time.sleep(1.5)
+
+    monkeypatch.setattr(executor_module, "_check_serve", slow_serve)
+    fake = make_fake_opencode(tmp_path, "time.sleep(60)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    executor = OpenCodeExecutor(opencode_bin=fake, idle_output_seconds=120.0)
+    started = time.monotonic()
+    terminal = run_executor(executor, "slow check", cwd, timeout=2.5)
+    elapsed = time.monotonic() - started
+    assert terminal.ok is False and terminal.error == "timeout", terminal  # type: ignore[attr-defined]
+    # Budget 2.5 s in total: 1.5 s in the check leaves ~1.0 s for the worker.  Restarting the
+    # full budget after the check would take about 4 s.
+    assert elapsed < 3.4, f"pre-dispatch time was not deducted from the budget ({elapsed:.1f}s)"
+
+
+def test_nothing_is_launched_when_the_pre_dispatch_checks_used_the_whole_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A check that answers "fine" only after the deadline must not be followed by a launch."""
+
+    def late_but_fine(*args: object, **kwargs: object) -> None:
+        time.sleep(0.6)
+
+    monkeypatch.setattr(executor_module, "_check_serve", late_but_fine)
+    fake, marker = _spawn_recorder(tmp_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "no budget", cwd, timeout=0.3)
+    assert terminal.ok is False and terminal.error == "timeout", terminal  # type: ignore[attr-defined]
+    assert not marker.exists(), "worker was spawned with no time left"
+
+
+def test_the_worktree_context_file_and_its_git_probe_code_are_gone() -> None:
+    source = Path(executor_module.__file__).read_text()
+    for name in (
+        "CONTEXT_FILE_NAME",
+        "_write_context_file",
+        "_prepare_context",
+        "_context_path_is_tracked",
+        "_git",
+        "_probe_timeout",
+        "_TrackingUnknownError",
+        "_PreparationDeadlineError",
+    ):
+        assert not hasattr(executor_module, name), name
+    assert ".verdict-context" not in source
+    assert "ls-files" not in source
 
 
 # ---------------------------------------------------------------------------

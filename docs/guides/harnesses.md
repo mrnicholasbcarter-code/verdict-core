@@ -353,7 +353,8 @@ OpenCode becomes the default only after a live smoke passes with that fix.  With
 every coding node runs a full edit–test–fix loop:
 
 ```bash
-opencode run --standalone --auto --format json --archived --model verdict/<route>
+opencode run --standalone --auto --format json --archived --session <id> \
+  --model verdict/<route> --title "verdict <id>"      # the ask arrives on stdin
 ```
 
 The harness writes a per-attempt isolated config (`OPENCODE_CONFIG_DIR` → temp
@@ -386,6 +387,31 @@ Run `verdict setup --apply --allow host.serve` to create the serve token and uni
 
 **Serve address.** Workers call `http://127.0.0.1:8000` unless told otherwise: pass
 `--serve-url` to `verdict orchestrate` or set `VERDICT_SERVE_URL` (the flag wins).
+
+**Task delivery.** The task (the context pack and the node's prompt) is sent to the model once,
+as an instructions file: `verdict-task.md` in the per-attempt config directory, beside
+`opencode.json`, which lists it in `instructions` (the worktree's own `AGENTS.md` is listed
+too, when there is one).  OpenCode 2.3.2 puts instructions in the system message, once.
+The prompt is one short ask on stdin, the same for every task ("carry out the task described in
+your instructions ... stop when verification passes"): OpenCode reads its message from stdin
+when it is given none, so no argument-size limit applies to the task.  `--title` is given so
+that OpenCode does not make a second, title-agent request on the assigned route (on 2.3.2 an
+attempt makes two requests without it).  Nothing is written into the worktree: the per-attempt
+directory, and the task text in it, is removed on every way out of an attempt (success,
+failure, timeout, stall, cancellation).
+
+OpenCode skips a listed instructions file that does not exist without a word, so a worker would
+run without its task.  Verdict therefore checks, as the last step before launch, that the file
+is there, is a regular file, opens and is not empty; if not, the attempt ends with a
+`config_write_failed:` message and nothing is launched (the message names the file, never the
+task).  A task text that cannot be written as UTF-8 ends the same way.
+
+**Failure status.** A failed attempt's HTTP status is read from OpenCode's structured error
+first, then from the text.  Besides `HTTP 429`, `status 503` and `429 Too Many Requests`, the
+text form of the `requests` library is recognised (`429 Client Error: Too Many Requests for
+url: ...`, `503 Server Error: Service Unavailable for url: ...`), so recovery reroutes those as a
+rate limit and an upstream outage.  A bare number is still not a status (`retrying in 500 ms`,
+`failed after 429 attempts`).
 
 **What this does not restrict** (ADR-053 decision 4): the worker keeps the operator's home
 directory and an unrestricted shell, so it can read files there and reach the gateway

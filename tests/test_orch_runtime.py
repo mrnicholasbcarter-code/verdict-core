@@ -440,6 +440,19 @@ async def test_tool_byproducts_are_not_ownership_violations(repo: Path) -> None:
     assert all(r.state is NodeState.VALIDATED for r in result.nodes.values())
 
 
+def test_byproduct_excludes_no_longer_name_the_opencode_context_file(repo: Path) -> None:
+    """The OpenCode worker's task is delivered in its own temp config directory, so the
+    worktree never holds a Verdict-written file and nothing needs to hide one (#1327)."""
+    from verdict.orchestration.runtime import BYPRODUCT_EXCLUDES, _ensure_local_excludes
+
+    assert ".verdict-context.md" not in BYPRODUCT_EXCLUDES
+    assert not any("verdict-context" in pattern for pattern in BYPRODUCT_EXCLUDES)
+    _ensure_local_excludes(repo)
+    exclude = (repo / ".git" / "info" / "exclude").read_text()
+    assert "verdict-context" not in exclude
+    assert "__pycache__/" in exclude, "the other byproduct patterns must still be written"
+
+
 async def test_owned_path_under_byproduct_prefix_stays_a_deliverable(repo: Path) -> None:
     """A node that genuinely owns a path under venv/ must still see it as its
     deliverable: the byproduct exclude must never hide an owned path, only a
