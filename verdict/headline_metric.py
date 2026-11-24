@@ -113,7 +113,9 @@ def load_receipts_since(
         events_bytes: bytes | None
         try:
             events_bytes = _read_bytes_nofollow(run_dir / "events.jsonl")
-        except OrchestrationError:
+        except (OrchestrationError, OSError):
+            # _read_bytes_nofollow wraps only the open; a file that opens but
+            # cannot be read (a directory) raises a bare OSError.
             events_bytes = None
         if verify_run_receipt_from_bytes(receipt_bytes, events_bytes, run_dir):
             skipped_live += 1

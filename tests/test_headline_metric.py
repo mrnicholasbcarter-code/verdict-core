@@ -1558,3 +1558,28 @@ class TestVerifiedBytesAreAggregatedBytes:
         receipts, skipped_live, _ = load_receipts_since(runs)
         assert receipts == []
         assert skipped_live == 1
+
+    def test_unreadable_events_log_skips_the_run_instead_of_aborting_the_report(
+        self, tmp_path: Path
+    ) -> None:
+        """events.jsonl that opens but cannot be read (a directory) is one skipped run."""
+        from verdict.headline_metric import load_receipts_since
+
+        broken = tmp_path / "run-broken-events"
+        _build_live_run(broken, "run-broken-events")
+        (broken / "events.jsonl").unlink()
+        (broken / "events.jsonl").mkdir()
+        good = tmp_path / "run-good"
+        _build_live_run(good, "run-good")
+
+        receipts, skipped_live, _ = load_receipts_since(tmp_path)
+        assert [path.name for path, _ in receipts] == ["run-good"]
+        assert skipped_live == 1
+
+    def test_receipt_json_that_is_a_directory_is_skipped(self, tmp_path: Path) -> None:
+        from verdict.headline_metric import load_receipts_since
+
+        (tmp_path / "run-dir-receipt" / "receipt.json").mkdir(parents=True)
+        receipts, skipped_live, _ = load_receipts_since(tmp_path)
+        assert receipts == []
+        assert skipped_live == 1
