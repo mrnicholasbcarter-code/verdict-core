@@ -228,15 +228,17 @@ def _sqlite_file_targets(value: str) -> list[str]:
 
     The audit event carries the raw string, and the caller may have passed
     ``uri=True``, so a ``file:`` string is also decoded (``file:/p?mode=rwc``,
-    ``file:///p``, percent escapes). ``mode=ro`` opens cannot write and are
-    skipped. The raw string is always checked too: without ``uri=True`` it is
-    just a path.
+    ``file:///p``, percent escapes). ``mode=ro`` URIs cannot write, so only
+    their decoded target is skipped. The raw string is always checked too:
+    without ``uri=True`` it is just a (writable) path.
     """
     targets = [value]
     if value.startswith("file:"):
         split = urllib.parse.urlsplit(value)
         if "ro" in urllib.parse.parse_qs(split.query).get("mode", []):
-            return []
+            # Read-only as a URI, but without ``uri=True`` this is a writable
+            # literal filename: the decoded target is skipped, the raw one kept.
+            return targets
         if split.netloc in ("", "localhost"):
             decoded = urllib.parse.unquote(split.path)
             if decoded:

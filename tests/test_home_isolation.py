@@ -252,6 +252,23 @@ def test_guard_event_table(event: str, args: tuple[Any, ...], denied: bool, tmp_
         assert guard.violations == []
 
 
+def test_guard_checks_the_literal_filename_of_a_read_only_sqlite_uri(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without ``uri=True`` the string is a writable literal filename in cwd."""
+    root = tmp_path / "real" / ".verdict"
+    root.mkdir(parents=True)
+    monkeypatch.chdir(root)
+    guard = HomeWriteGuard([root])
+    with pytest.raises(PermissionError):
+        guard.check("sqlite3.connect", ("file:state.db?mode=ro",))
+    with GUARD.protect(root):
+        with pytest.raises(PermissionError):
+            sqlite3.connect("file:state.db?mode=ro")
+        GUARD.drain()
+    assert list(root.iterdir()) == []
+
+
 def test_guard_resolves_relative_paths_against_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
