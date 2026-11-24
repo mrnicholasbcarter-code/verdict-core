@@ -109,6 +109,14 @@ invariants (narrow-only admission, ratings joined exactly, executors unchanged).
     planner. With fewer than two families admissible across both bands,
     planning fails closed and the reason names how many families were found.
 
+    **Amended (operator, 2026-11-23; D39):** When fewer than two model families
+    are admissible across both bands, planning proceeds with the one admissible
+    family instead of failing closed, and the receipt records
+    ``single_family_planner: true`` and the families that were unavailable, with
+    their reasons.  As soon as a second family is admissible, the two-family
+    planner list is used again.  With no admissible family at all, planning still
+    fails closed with ``no_frontier_or_fallback_planner``.
+
 ## Consequences
 
 - Planner quality tracks the live leaderboard without code edits when new models ship.

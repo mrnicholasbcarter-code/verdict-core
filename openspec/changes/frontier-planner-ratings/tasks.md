@@ -15,3 +15,10 @@
 
 - [x] 3.1 Run the full suite, ruff, mypy strict, reachability, the lint gates and both OpenSpec validators, and get an independent review. Verify: all commands green.
 - [ ] (post-merge) 4.1 On installed main, an autodev run and an orchestrate run each record a frontier-band planner (or a recorded fallback), and doctor shows the `planner_supply` row.
+
+## D39 amendment: single-family planner proceeds
+
+- [x] 5.1 When fewer than two model families are admissible, `select_planner_routes` proceeds with the one family and annotates each result with `single_family_planner=True` and `unavailable_families` (family → reason). Zero families still fails closed. Verify: `test_fewer_than_two_families_proceeds_single_family`, `test_single_family_records_unavailable_families_with_reasons`, `test_two_families_no_single_family_flag`, `test_zero_admissible_routes_still_fails_closed`.
+- [x] 5.2 `_live_planner_models` passes `exclusion_reasons` from non-admitted verdicts to `select_planner_routes`; docstring updated. Verify: existing autodev planner wiring tests.
+- [x] 5.3 ADR-051 D16 amended in-place; D39 added to `docs/decisions/LOG.md`. Verify: doc-link check.
+- [ ] (post-merge) 5.4 On installed main, an autodev run with only one admissible family records `single_family_planner: true` and the unavailable families in the receipt.
