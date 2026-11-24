@@ -373,14 +373,23 @@ class TestOperatorOverlay:
 
         _cb._overlay_cache = None
 
-    def test_overlay_cache_respects_home_change_within_ttl(self, tmp_path: Path) -> None:
-        """Switching VERDICT_HOME within the 100ms TTL returns the new home's overlay.
+    def test_overlay_cache_respects_home_change_within_ttl(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Switching VERDICT_HOME within the 100ms TTL must return the new home's overlay.
 
-        Root cause of #1295: the keyless fast path skipped verdict_home(env)
-        entirely and returned a stale overlay when env changed within the TTL
-        window. This test asserts that two different homes with different overlay
-        contents each always return their own overlay, never the other's.
+        Root cause of the reverted keyless fast path: when env=None and the TTL
+        had not expired, _load_overlay returned the cached overlay without
+        recomputing verdict_home(), so a stale home1 overlay was served for home2.
+
+        This test uses env=None lookups (via VERDICT_HOME) so it exercises the
+        exact code path the fast path would short-circuit. The clock is frozen
+        so both lookups are guaranteed to land within the TTL window on slow
+        CI runners — without freezing, an expiry between calls would let even
+        the broken code produce the correct answer.
         """
+        import time
+
         import verdict.connection_billing as _cb
 
         home1 = tmp_path / "home1"
@@ -397,15 +406,21 @@ class TestOperatorOverlay:
         (home1 / "connection_billing_overlay.json").write_text(json.dumps(overlay1))
         (home2 / "connection_billing_overlay.json").write_text(json.dumps(overlay2))
 
-        # Reset cache; both env-keyed lookups happen in rapid succession (within
-        # the 100ms TTL window) to reproduce the original bug.
+        # Freeze the clock so both lookups are always within the 100ms TTL window,
+        # making the test deterministic on slow CI runners.
+        frozen_ns = time.monotonic_ns()
+        monkeypatch.setattr(time, "monotonic_ns", lambda: frozen_ns)
+
+        # Reset cache so the first lookup starts fresh.
         _cb._overlay_cache = None
 
-        env1 = {"VERDICT_HOME": str(home1)}
-        env2 = {"VERDICT_HOME": str(home2)}
+        # Use VERDICT_HOME and env=None so lookups go through the default path
+        # (the path the keyless fast-path bug affected).
+        monkeypatch.setenv("VERDICT_HOME", str(home1))
+        fact1 = lookup("openai", None)  # loads home1 overlay
 
-        fact1 = lookup("openai", None, env=env1)
-        fact2 = lookup("openai", None, env=env2)
+        monkeypatch.setenv("VERDICT_HOME", str(home2))
+        fact2 = lookup("openai", None)  # must load home2, not return stale home1
 
         assert fact1 is not None, "home1 overlay must be found"
         assert fact2 is not None, "home2 overlay must be found"
