@@ -225,7 +225,9 @@ rejected and classified as a failure before verification runs.
   service, and still is), and rewriting the model after admission cannot work because
   admission mints a route-bound proof only for the route it selects. Pinning therefore
   happens inside admission (see "Worker identity" above), so the receipt attests the
-  pinned route and a worker cannot substitute another.
+  route that was admitted and had its proof minted, and a route that is not admitted can
+  never be selected. It does not authenticate the worker-supplied route against the one
+  Verdict dispatched: until #1313 a worker can name another *admitted* route.
 - **JSON output field names** from `opencode --format json` are confirmed at
   build time. If usage fields are absent, `opencode session export <attempt_id>`
   is used as a fallback; the builder handles the case where both sources are

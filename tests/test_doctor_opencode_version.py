@@ -162,6 +162,14 @@ def _wrapper_leaving_detached_descendant(tmp_path: Path, stdout_line: str) -> tu
     return str(script), pid_file
 
 
+def _kill_recorded_descendant(pid_file: Path) -> None:
+    """Cleanup that never depends on the assertions above it having passed."""
+    recorded = pid_file.read_text().strip() if pid_file.exists() else ""
+    if recorded.isdigit():
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.kill(int(recorded), signal.SIGKILL)
+
+
 def _assert_descendant_cleaned_up(pid_file: Path) -> None:
     assert pid_file.exists(), "wrapper never started its descendant"
     descendant = int(pid_file.read_text().strip())
@@ -183,10 +191,13 @@ def test_normally_exiting_wrapper_leaves_no_descendant_behind(
     descendant (output detached, so the pipes close) running behind it."""
     binary, pid_file = _wrapper_leaving_detached_descendant(tmp_path, f"echo {PINNED_VERSION}")
     monkeypatch.setattr(executor_module, "_opencode_binary", lambda *a, **k: binary)
-    diag = dd.DoctorDiagnostics()
-    dd._doctor_opencode_version(diag)
-    assert _section(diag)[1:] == ("ok", f"v{PINNED_VERSION}")
-    _assert_descendant_cleaned_up(pid_file)
+    try:
+        diag = dd.DoctorDiagnostics()
+        dd._doctor_opencode_version(diag)
+        assert _section(diag)[1:] == ("ok", f"v{PINNED_VERSION}")
+        _assert_descendant_cleaned_up(pid_file)
+    finally:
+        _kill_recorded_descendant(pid_file)
 
 
 @requires_procfs
@@ -196,11 +207,14 @@ def test_undecodable_output_still_cleans_up_the_wrapper_group(
     """A decoding error from ``communicate()`` must not skip the group kill and the reap."""
     binary, pid_file = _wrapper_leaving_detached_descendant(tmp_path, r"printf '\377\376\375'")
     monkeypatch.setattr(executor_module, "_opencode_binary", lambda *a, **k: binary)
-    diag = dd.DoctorDiagnostics()
-    dd._doctor_opencode_version(diag)
-    _name, level, message = _section(diag)
-    assert level == "note" and "version check error" in message, (level, message)
-    _assert_descendant_cleaned_up(pid_file)
+    try:
+        diag = dd.DoctorDiagnostics()
+        dd._doctor_opencode_version(diag)
+        _name, level, message = _section(diag)
+        assert level == "note" and "version check error" in message, (level, message)
+        _assert_descendant_cleaned_up(pid_file)
+    finally:
+        _kill_recorded_descendant(pid_file)
 
 
 def test_procfs_guard_reports_a_missing_procfs(tmp_path: Path) -> None:

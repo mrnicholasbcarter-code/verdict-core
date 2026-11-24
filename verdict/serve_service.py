@@ -162,19 +162,29 @@ def resolve_serve_token(
     """The bearer token for ``verdict serve`` and its source, or None.
 
     The sources and the order ``verdict setup`` uses (:func:`_existing_token`): the
-    environment (``LLMGATE_AUTH_TOKEN``), the credential store, then ``serve.env``.  It is the
-    token serve itself authenticates with, never the OmniRoute gateway key.  The value is for
+    environment (``LLMGATE_AUTH_TOKEN``), the credential store, then ``serve.env``.  Each source
+    is read only when the ones above it gave nothing, and a lower source that cannot be read or
+    decoded is skipped, so a malformed file never hides a valid token above it nor raises.  It is
+    the token serve itself authenticates with, never the OmniRoute gateway key.  The value is for
     the caller that must present it; it is never logged here.
     """
     from verdict.credentials_store import CredentialsStore
 
     source = os.environ if environ is None else environ
+    value = (source.get(TOKEN_ENV) or "").strip()
+    if value:
+        return value, "environment"
     try:
-        stored = CredentialsStore().load()
-    except (PermissionError, OSError):
-        stored = {}
-    token, origin = _existing_token(env_file_path(home), stored, source)
-    return (token, origin) if token else None
+        stored = (CredentialsStore().load().get(TOKEN_ENV) or "").strip()
+    except (OSError, ValueError):  # unreadable store, or one that does not decode
+        stored = ""
+    if stored:
+        return stored, "credential_store"
+    try:
+        from_file = (_read_env_file(env_file_path(home)).get(TOKEN_ENV) or "").strip()
+    except (OSError, ValueError):
+        from_file = ""
+    return (from_file, "serve_env") if from_file else None
 
 
 def _write_private(path: Path, text: str) -> None:

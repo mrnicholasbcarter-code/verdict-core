@@ -665,16 +665,25 @@ def test_output_over_the_limit_kills_the_worker_instead_of_buffering_it(tmp_path
         opencode_bin=fake, idle_output_seconds=120.0, max_output_bytes=256 * 1024
     )
     started = time.monotonic()
-    terminal = run_executor(executor, "flood", cwd, timeout=60.0)
-    assert time.monotonic() - started < 30.0, "worker was buffered until the timeout"
-    assert terminal.ok is False
-    assert terminal.error.startswith("output_limit"), terminal.error
-    assert pid_file.exists()
-    writer = int(pid_file.read_text())
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and not _pid_gone(writer):
-        time.sleep(0.05)
-    assert _pid_gone(writer), "worker process group was not killed on the output limit"
+    try:
+        terminal = run_executor(executor, "flood", cwd, timeout=60.0)
+        assert time.monotonic() - started < 30.0, "worker was buffered until the timeout"
+        assert terminal.ok is False
+        assert terminal.error.startswith("output_limit"), terminal.error
+        assert pid_file.exists()
+        writer = int(pid_file.read_text())
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not _pid_gone(writer):
+            time.sleep(0.05)
+        assert _pid_gone(writer), "worker process group was not killed on the output limit"
+    finally:
+        # Whatever failed above, never leave an endless writer running.
+        recorded = pid_file.read_text().strip() if pid_file.exists() else ""
+        if recorded.isdigit():
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.killpg(int(recorded), signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.kill(int(recorded), signal.SIGKILL)
 
 
 def test_collect_does_not_spin_when_one_pipe_closes_and_the_worker_keeps_running(
@@ -1486,6 +1495,90 @@ def test_unrunnable_binary_fails_closed_before_launch(tmp_path: Path, flavour: s
     assert terminal.ok is False
     assert terminal.error.startswith("harness_configuration: opencode binary"), terminal.error
     assert list(cwd.iterdir()) == [], "the worktree was written to before the binary check"
+
+
+def test_binary_probe_runs_with_a_minimal_environment_without_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The version probe needs no credential: the serve token and provider keys exported in the
+    orchestrator's environment must not reach it (the worker's allowlist drops them too)."""
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", _SERVE_TOKEN)
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "omniroute-key-for-the-probe-test")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "provider-key-for-the-probe-test")
+    dump = tmp_path / "probe-env.json"
+    script = tmp_path / "opencode-env-dump"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        f"import json, os, pathlib\npathlib.Path({str(dump)!r}).write_text(json.dumps(dict(os.environ)))\n"
+        "print('2.3.2')\n"
+    )
+    script.chmod(0o755)
+    assert _REAL_CHECK_BINARY(str(script)) is None
+    seen = json.loads(dump.read_text())
+    leaked = [
+        k
+        for k, v in seen.items()
+        if any(x in v for x in (_SERVE_TOKEN, "omniroute-key", "provider-key"))
+    ]
+    assert leaked == [], f"credentials reached the version probe: {leaked}"
+    assert "PATH" in seen  # still runnable
+
+
+@requires_procfs
+def test_binary_probe_kills_a_helper_it_leaves_holding_the_pipes(tmp_path: Path) -> None:
+    """``subprocess.run`` kills only the direct child; a forked helper that keeps stdout open
+    must not hold the probe (or survive it)."""
+    pid_file = tmp_path / "helper.pid"
+    script = tmp_path / "opencode-forks-a-helper"
+    script.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > '{pid_file}'\necho 2.3.2\n")
+    script.chmod(0o755)
+    started = time.monotonic()
+    try:
+        assert _REAL_CHECK_BINARY(str(script), timeout=2.0) is None
+        assert time.monotonic() - started < 10.0, "the probe waited for the helper's pipes"
+        helper = int(pid_file.read_text())
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not _pid_gone(helper):
+            time.sleep(0.05)
+        assert _pid_gone(helper), "the probe left its helper running"
+    finally:
+        recorded = pid_file.read_text().strip() if pid_file.exists() else ""
+        if recorded.isdigit():
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.kill(int(recorded), signal.SIGKILL)
+
+
+def test_pre_dispatch_checks_are_bounded_by_the_attempt_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow ``--version`` must not hold an attempt past its own budget; running out of
+    budget is a ``timeout``, not a configuration block."""
+    script = tmp_path / "opencode-slow-version"
+    script.write_text("#!/bin/sh\nexec sleep 30\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(executor_module, "_check_binary", _REAL_CHECK_BINARY)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    started = time.monotonic()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=str(script)), "task", cwd, timeout=1.0)
+    assert time.monotonic() - started < 8.0, "the binary check ignored the attempt deadline"
+    assert terminal.ok is False and terminal.error == "timeout", terminal
+    assert list(cwd.iterdir()) == []
+
+
+def test_a_failing_credential_lookup_is_a_configuration_failure_not_an_exception(
+    tmp_path: Path,
+) -> None:
+    def exploding(route: str, attempt: str) -> str:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "malformed credentials file")
+
+    fake = make_fake_opencode(tmp_path, "sys.exit(0)\n")
+    terminal = run_executor(
+        OpenCodeExecutor(opencode_bin=fake, credential_provider=exploding), "task", tmp_path
+    )
+    assert terminal.ok is False
+    assert terminal.error.startswith("harness_configuration: serve credential lookup failed")
+    assert "UnicodeDecodeError" in terminal.error
 
 
 def test_runnable_binary_passes_the_real_check(tmp_path: Path) -> None:

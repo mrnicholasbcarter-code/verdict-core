@@ -386,24 +386,57 @@ def _worker_credential(route_id: str, attempt_id: str) -> str | None:
 _CREDENTIAL_HELP = "run 'verdict setup --apply --allow host.serve' to create it"
 
 
-def _check_binary(binary: str) -> str | None:
-    """None when ``binary --version`` runs; else a short, non-secret reason."""
+#: Returned by the pre-dispatch checks when the attempt's own budget ran out first.
+_BUDGET_EXHAUSTED = "budget exhausted"
+
+
+def _probe_env(base_env: dict[str, str]) -> dict[str, str]:
+    """The environment for the version probe: the worker allowlist, and no credentials."""
+    return {
+        key: value
+        for key, value in base_env.items()
+        if key in _CHILD_ENV_ALLOWLIST
+        or any(key.startswith(prefix) for prefix in _CHILD_ENV_ALLOWLIST_PREFIXES)
+    }
+
+
+def _check_binary(
+    binary: str, timeout: float = 15.0, env: dict[str, str] | None = None
+) -> str | None:
+    """None when ``binary --version`` runs; else a short, non-secret reason.
+
+    The probe runs in its own process group with a credential-free environment, and the whole
+    group is killed on every exit (a helper that keeps the pipes open must not hold it).
+    """
     resolved = shutil.which(binary) if os.sep not in binary else binary
     if not resolved or not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
         return f"opencode binary not found or not executable at {binary!r}"
+    probe_env = _probe_env(dict(os.environ) if env is None else env)
     try:
-        done = subprocess.run(
+        proc = subprocess.Popen(
             [resolved, "--version"],
-            capture_output=True,
-            timeout=15,
-            check=False,
             stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,  # only the exit status matters: no pipe a helper can hold
+            stderr=subprocess.DEVNULL,
+            env=probe_env,
             start_new_session=True,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except OSError as exc:
         return f"opencode binary is not runnable ({type(exc).__name__})"
-    if done.returncode != 0:
-        return f"opencode binary is not runnable (`--version` exited {done.returncode})"
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return (
+            _BUDGET_EXHAUSTED if timeout < 15.0 else "opencode binary is not runnable (timed out)"
+        )
+    except OSError as exc:
+        return f"opencode binary is not runnable ({type(exc).__name__})"
+    finally:
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+    if proc.returncode != 0:
+        return f"opencode binary is not runnable (`--version` exited {proc.returncode})"
     return None
 
 
@@ -745,18 +778,29 @@ class OpenCodeExecutor:
             duration_seconds=time.monotonic() - started,
         )
 
-    def _pre_dispatch_reason(self, credential: str, budget_seconds: float) -> str | None:
-        """Why this attempt cannot be launched (binary, then serve), or None.  Blocking."""
+    def _pre_dispatch_reason(self, credential: str, deadline: float) -> str | None:
+        """Why this attempt cannot be launched (binary, then serve), or None.  Blocking.
+
+        Both checks share the attempt's absolute ``deadline`` (``time.monotonic()``): each gets
+        at most what is left, and running out is :data:`_BUDGET_EXHAUSTED`, not a block.
+        """
         if not self._binary_checked:
-            reason = _check_binary(self._resolve_bin())
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return _BUDGET_EXHAUSTED
+            reason = _check_binary(self._resolve_bin(), min(15.0, left), self._base_env())
             if reason is not None:
                 return reason
             self._binary_checked = True
-        return _check_serve(
-            self._serve_base_url,
-            credential,
-            max(0.5, min(_SERVE_CHECK_TIMEOUT_SECONDS, budget_seconds)),
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return _BUDGET_EXHAUSTED
+        reason = _check_serve(
+            self._serve_base_url, credential, min(_SERVE_CHECK_TIMEOUT_SECONDS, left)
         )
+        if reason is not None and time.monotonic() >= deadline:
+            return _BUDGET_EXHAUSTED  # the check ran into the attempt's own deadline
+        return reason
 
     async def _run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
@@ -766,7 +810,15 @@ class OpenCodeExecutor:
 
         # --- pre-dispatch: credential, binary, serve (one message, nothing launched) ---
         provider = self._credential_provider or _worker_credential
-        credential = provider(route_id, session_id)
+        try:
+            credential = provider(route_id, session_id)
+        except Exception as exc:  # a malformed store or file must not escape as an exception
+            return self._failure(
+                route_id,
+                started,
+                f"harness_configuration: serve credential lookup failed ({type(exc).__name__}); "
+                f"{_CREDENTIAL_HELP}",
+            )
         if not credential:
             return self._failure(
                 route_id,
@@ -776,10 +828,10 @@ class OpenCodeExecutor:
             )
         secrets = [credential, self._base_env().get(self._api_key_env, "")]
         reason = await asyncio.to_thread(
-            self._pre_dispatch_reason,
-            credential,
-            max(0.0, timeout_seconds - (time.monotonic() - started)),
+            self._pre_dispatch_reason, credential, started + timeout_seconds
         )
+        if reason == _BUDGET_EXHAUSTED:
+            return self._failure(route_id, started, "timeout")
         if reason is not None:
             return self._failure(
                 route_id, started, f"harness_configuration: {_sanitize(reason, secrets=secrets)}"

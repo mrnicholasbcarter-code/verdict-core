@@ -98,3 +98,41 @@ def test_serve_origin_prefers_the_flag_then_the_variable(monkeypatch: pytest.Mon
 def test_a_bad_serve_address_is_refused_not_replaced_by_the_default(bad: str) -> None:
     with pytest.raises(serve_service.ServeServiceError):
         serve_service.resolve_serve_origin(bad)
+
+
+def test_a_valid_environment_token_is_not_hidden_by_an_undecodable_credential_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each source is read only when the ones above it gave nothing: a malformed lower file
+    must neither raise nor stop a valid environment token being used."""
+    calls: list[str] = []
+
+    def undecodable(self: object) -> dict[str, str]:
+        calls.append("store")
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "malformed store")
+
+    monkeypatch.setattr("verdict.credentials_store.CredentialsStore.load", undecodable)
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", TOKEN)
+    assert serve_service.resolve_serve_token(home=tmp_path / "home") == (TOKEN, "environment")
+    assert calls == [], "a lower-priority source was read although the environment had the token"
+
+
+def test_an_undecodable_serve_env_is_skipped_not_raised(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    path = serve_service.env_file_path(home)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"LLMGATE_AUTH_TOKEN=\xff\xfe\xfd\n")
+    assert serve_service.resolve_serve_token(home=home) is None
+
+
+def test_an_undecodable_credential_store_falls_through_to_serve_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    _write_serve_env(home, TOKEN)
+
+    def undecodable(self: object) -> dict[str, str]:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "malformed store")
+
+    monkeypatch.setattr("verdict.credentials_store.CredentialsStore.load", undecodable)
+    assert serve_service.resolve_serve_token(home=home) == (TOKEN, "serve_env")
