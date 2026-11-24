@@ -24,29 +24,37 @@ JSON output with `--format json`.
 **Code fact (verified):** `harness.py` registers `DirectGatewayAdapter(default=True)`.
 ADR-041 declared `prime-headless` as the initial default; the
 `default-executor-direct-gateway` OpenSpec change moved the code default to
-`direct-gateway` before this ADR. ADR-053 makes `opencode` the new default,
-which is the second amendment to ADR-041's initial default.
+`direct-gateway` before this ADR. ADR-053 Decision 2 first made `opencode` the new default;
+the operator amended it on 2026-11-24: `opencode` merges opt-in (`--executor opencode`) and
+`direct-gateway` stays the default until a live smoke passes after #1313. The live smoke of
+this change (task 2.8) showed why: `verdict serve` refused all 13 of the worker's requests
+before any upstream call (11 by the escalation keyword scanner, whose branch of `route()`
+returns before the route pin is applied; 2 by the capability gate, which had no metadata for
+streaming and tools on the relay path). The serve fix is #1313, with the signed per-attempt
+assignment: a worker request with a valid assignment is pinned before serve classifies
+anything itself.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Register `OpenCodeAdapter` in `DEFAULT_REGISTRY` as the new default worker
-  executor for `verdict orchestrate`.
+- Register `OpenCodeAdapter` in `DEFAULT_REGISTRY` as an opt-in worker executor for
+  `verdict orchestrate` (`--executor opencode`); `direct-gateway` stays the default.
 - Build `OpenCodeExecutor` that runs `opencode run --auto --standalone
   --format json --model verdict/<route_id>` with per-attempt isolated config
-  (`OPENCODE_CONFIG` → temp directory).
+  (`OPENCODE_CONFIG_DIR` → temp directory).
 - Route all worker model calls through `verdict serve` (:8000); never direct to
   OmniRoute (:20128). Add per-request route pinning to serve if not present.
 - Declare all nine `HarnessCapability` facets explicitly (ADR-041 requirement).
-- Add OpenCode as the model-tier coding executor in `verdict autodev`.
 - Pin OpenCode at v2.3.2; add a `verdict doctor` version warning.
+
+2026-11-24: the autodev model-tier rung moved to issue #1301 (OC2), which will carry its own OpenSpec change, after cross-family review found isolation and retry defects.
 
 **Non-Goals:**
 
 - Interactive OpenCode sessions (outside scope of this story).
 - MCP server use inside the worker (disabled by `--standalone`).
-- Replacing PatchExecutor for mechanical autodev units.
+- Any change to `verdict autodev` (PatchExecutor stays its executor here; see the dated note above).
 - Changing the planner executor (`--planner-executor` stays `direct-gateway`).
 - Full shell command allow-listing inside OpenCode (operator's explicit choice
   not to restrict shell; see Decision 4 / ADR-053).
@@ -79,20 +87,94 @@ declaration:
 | `event_stream` | PARTIAL | `--format json` emits structured JSON; not a full event-stream integration |
 
 **Per-attempt config isolation (design detail):** Each attempt writes a fresh
-OpenCode config to a temp directory, sets `OPENCODE_CONFIG` for that process,
-and deletes the temp directory on exit. This prevents cross-attempt and
+OpenCode config to a temp directory, sets `OPENCODE_CONFIG_DIR` for that
+process, and deletes the temp directory on exit. This prevents cross-attempt and
 cross-worker session DB contamination. The config contains:
 
 - Provider entry: `verdict`, base URL `http://127.0.0.1:8000/v1`, API key from
   the serve bearer token (never written to disk or logs).
 - Model entry: `verdict/<route_id>` mapped to `<route_id>`.
-- Agent config: `permissions` restricting file edits to the node worktree;
-  `external_directory` denied; shell commands not restricted (Decision 4).
-- Instructions: path to `.verdict-context.md` in the worktree (context pack).
+- Policies: deny all `provider.use` actions; allow only `verdict`. Prevents the
+  worker from calling openrouter, bedrock, or any other provider directly.
+- Permissions: `external_directory` deny (V2 action name). Prevents the worker
+  from opening directories outside the worktree as project roots.
+- Agents: `title.model` pinned to `verdict/<route_id>` so the title summariser
+  cannot pick its own model.
+- Instructions: path to `.verdict-context.md` in the worktree (context pack),
+  plus `AGENTS.md` when present.
 
-No secrets appear in the config file or in logs. The API key is passed as an
-environment variable or via the config's credential field; the builder confirms
-the exact mechanism during implementation.
+No secrets appear in the config file or in logs. The API key is passed as
+`{env:VERDICT_WORKER_API_KEY}` so the value is never written to disk.
+
+Subprocess output is untrusted and may echo the key. Before any stderr or NDJSON text
+(error, text, session id) reaches `WorkerTerminal`, events or logs, the executor replaces the
+worker key value and any `Authorization: Bearer` value with `[REDACTED]`, before truncating, so
+a key cannot survive as a fragment.
+
+> **Deviation note (2026-11-23):** The original spec said `OPENCODE_CONFIG` →
+> temp file; the implementation uses `OPENCODE_CONFIG_DIR` → temp directory,
+> which is what OpenCode v2.3.2 reads for per-attempt isolation. `OPENCODE_CONFIG`
+> (a single-file path) also exists in v2.3.2 but was not used because the
+> directory form is what the binary expects when running `--standalone`. This
+> deviation is intentional and correct.
+
+**Worker identity (design detail):** A request carrying the `X-Verdict-Worker` header must name
+its assigned route in a non-empty string `model`. The relay hands that route to admission as a
+typed input (`WorkerAssignedRoute`, set only by the relay and only when the header is present;
+client JSON cannot supply it). `_decision_from_admit` selects it within the admitted set, only
+when that exact route id is in `receipt.admitted` for this request, and mints its route-bound
+proof with the same `_chosen_route_proof` call as for a chosen route; the provider, context pack
+and receipt follow the pinned route and there are no fallback routes. A route outside the
+admitted set is denied with no proof minted. The relay only verifies that outcome and never
+rewrites a worker's decision. A missing, empty, null or non-string `model` is denied, and no
+denial contacts upstream; a worker request never falls through to automatic selection.
+An accepted worker decision comes only from this admission pinning, so a worker request has
+no fallback attempts; the relay also clears the alternatives of any accepted worker decision
+(defence in depth).
+
+**Execution-path requests are rejected (operator decision, 2026-11-24):** a worker request that
+carries `execution_path_request` is refused with 400 before any routing, because the
+execution-path flow selects its own offer and so cannot pin the assigned route. Pinned
+execution-path support for workers is not built. The relay checks this first (present, whatever
+the value, on both relay surfaces); `IntelligenceService.route` also refuses a worker-assigned
+route combined with `execution_path_request`, so no other caller can select a worker's route
+through that flow. This rejection is the contract, not a gap.
+
+2026-11-24: the worker holds the serve token and the route is pinned by the worker header until #1313; a worker could name another admitted route, never a non-admitted one. (#1313, OC1b, carries the signed per-attempt assignment, the real dispatch-origin check and a prompt-only task delivery; this change keeps `LOCAL_EXECUTOR_ORIGIN` and its documented stopgap, and `.verdict-context.md`.)
+
+**Worker credential and pre-dispatch check (design detail):** The credential is serve's own
+bearer token, resolved by Verdict (`serve_service.resolve_serve_token`: the environment's
+`LLMGATE_AUTH_TOKEN`, the credential store, then `serve.env`, in the order `verdict setup` uses),
+never an operator-exported worker variable and never the OmniRoute gateway key. It is chosen in
+one small function (`_worker_credential`) so a signed assignment can replace it. It is set in the
+child environment only under the configured key name (the config holds the `{env:...}`
+reference) and is covered by redaction. Before an attempt writes or launches anything the
+executor checks, once, that the credential resolves, that the `opencode` binary runs
+(`--version`) and that serve is reachable and accepts the credential (`GET /v1/guidance/status`,
+no redirect followed). Any failure is one `harness_configuration:` message with a non-secret
+reason, which recovery maps to BLOCK (no retry, no cooldown).
+
+**Serve address (design detail):** `--serve-url` on `verdict orchestrate`, else
+`VERDICT_SERVE_URL`, else the serve unit's own address (`serve_service.DEFAULT_ORIGIN`,
+`http://127.0.0.1:8000`); there is no other copy of that default. The address becomes the
+per-attempt provider `baseURL`.
+
+**Recorded cost (design detail):** OpenCode reports a cost of 0 for a custom provider with no
+pricing, which is not "free". `cost_usd` is recorded only for a real positive figure across
+every step; otherwise it is `null` with a `cost_note` (also written to the attempt evidence).
+Tokens are always recorded. A structured `error` event keeps its HTTP `status` and
+`retryAfterMs`, so recovery sees an upstream 429 or 503 as the reroutable failure it is.
+When the text has no structured status (stderr, or a message with no `status` field), a status
+is read only from a number marked as one (`HTTP 429`, `status code: 401`, `429 Too Many
+Requests`); a retry delay or an attempt count in the text is not a status, because a wrong 429
+would send the route into a provider cooldown.
+
+**Cancellation (design detail):** the pre-dispatch checks block (the `--version` probe and one
+HTTP request), so they run in a thread. Cancelling the await cannot stop a thread, so on a cancel
+the executor sets an event, the probe is killed and reaped within a poll interval, no further
+check starts, and the cancellation completes only after the thread has returned (the same
+boundary the context-file write keeps). A serve request that has already started is waited for
+(it is bounded by 5 s and is read-only).
 
 **Open point:** Whether to pass the API key via an env var or via the OpenCode
 config's credential field. Both keep it out of the command line and logs; the
@@ -118,11 +200,30 @@ output onto `WorkerTerminal`:
 3. `exit_nonzero` — non-zero exit code from `opencode run`.
 4. `malformed_json` — `--format json` output cannot be parsed.
 
+Two further bounds protect the orchestrator. Worker output (stdout plus stderr) kept in memory
+is capped at 16 MiB per attempt (`output_limit`; the process group is killed). Context
+preparation counts against the attempt timeout: each git probe (30 s at most) gets only what is
+left of the attempt's budget, so a hung repository cannot hold an attempt past its deadline; the
+worker gets only the remainder, and nothing is spawned when none is left.
+
 **Context pack delivery (design detail):** The context pack and owned-files list
 are written to `.verdict-context.md` in the node worktree before the attempt
 starts, and the OpenCode instructions list references that file. The context
 pack is Verdict's standard format; the builder confirms the exact injection
 mechanism.
+The file is written without following symlinks (a fresh regular file atomically replaces
+whatever entry exists), because a repository can track `.verdict-context.md` as a symlink to a
+path outside the worktree.
+`.git/info/exclude` hides only untracked paths, so if the index already tracks `.verdict-context.md`
+the attempt fails closed (`context_write_failed`) before the worker starts: replacing a tracked
+entry would be staged by `git add -A` into the node deliverable. The same applies when git cannot
+answer (missing, timeout, nonzero exit, unreadable index, bare repository); only git's own report
+that the directory is not inside a repository counts as certainly untracked. Git decides under the
+process environment, as the runtime's own git calls do, so `GIT_DIR`/`GIT_WORK_TREE` setups are
+covered. Context preparation runs off the event loop (`asyncio.to_thread`) because the check can
+take seconds and the loop is shared by every concurrent worker.
+A cancelled attempt waits for that thread to finish before the cancellation propagates, so no
+write to the worktree can outlive a cancellation that the caller has already seen complete.
 
 **Concurrency under `--max-parallel` (design detail):** Each attempt runs in its
 own temp directory for the OpenCode config and its own node worktree. The
@@ -145,32 +246,45 @@ rejected and classified as a failure before verification runs.
   before the first build task ships (Decision 5); the licence placeholder in
   ADR-053 is to be filled by that task. Any upgrade resets the live-check
   requirement.
-- **Per-request route pinning in `verdict serve`** may require non-trivial relay
-  changes. If serve's current relay uses `allow_client_model_override` to pass
-  the route, the builder must verify that model identity is correctly attested in
-  the receipt and cannot be substituted by the worker.
+- **Per-request route pinning in `verdict serve`** needed more than a relay change. The
+  relay never honoured `allow_client_model_override` (the flag is only stored on the
+  service, and still is), and rewriting the model after admission cannot work because
+  admission mints a route-bound proof only for the route it selects. Pinning therefore
+  happens inside admission (see "Worker identity" above), so the receipt attests the
+  route that was admitted and had its proof minted, and a route that is not admitted can
+  never be selected. It does not authenticate the worker-supplied route against the one
+  Verdict dispatched: until #1313 a worker can name another *admitted* route.
 - **JSON output field names** from `opencode --format json` are confirmed at
   build time. If usage fields are absent, `opencode session export <attempt_id>`
   is used as a fallback; the builder handles the case where both sources are
   incomplete.
-- **`direct-gateway` users** who relied on the implicit default will get
-  `opencode` after this merges. This is a breaking change for those users; the
-  proposal documents it. Passing `--executor direct-gateway` explicitly is the
-  migration path.
+- **No behaviour change for runs that do not name `opencode`.** `direct-gateway` stays the
+  default, so a run without `--executor` is unchanged. A run that opts in with
+  `--executor opencode` before #1313 lands has its worker refused by serve and fails its
+  nodes; that is why the default was not switched.
+- **Known gap: the status matcher misses the `requests` forms.** An HTTP status in
+  unstructured text needs an HTTP or status marker or its reason phrase right after the number,
+  so `429 Client Error: Too Many Requests for url: ...` and
+  `503 Server Error: Service Unavailable for url: ...` get no status and are not rerouted;
+  accepted by the operator on 2026-11-24 and moved to #1313.
 
 ## Migration / rollback
 
-- Existing `verdict orchestrate` runs with no `--executor` flag switch from
-  `direct-gateway` to `opencode`. To keep `direct-gateway`, pass
-  `--executor direct-gateway` explicitly.
+- Existing `verdict orchestrate` runs with no `--executor` flag are unchanged: they use
+  `direct-gateway`. To use OpenCode, pass `--executor opencode`.
 - `prime-headless` users are unaffected.
-- If the OpenCode adapter is defective, reverting the `DEFAULT_REGISTRY` default
-  back to `direct-gateway` restores prior behaviour without any other changes.
+- Making OpenCode the default is a later one-line change to the `DEFAULT_REGISTRY` default
+  (`default=True` on `OpenCodeAdapter`, removed from `DirectGatewayAdapter`), with the
+  default tests flipped, made only after a live smoke passes with #1313 in place. If the
+  adapter is defective before then, nothing needs reverting for runs that do not name it.
 
 ## ADR impact
 
-- Amends [ADR-041](../../../docs/adr/ADR-041-generic-harness-contracts.md) default
-  worker executor (from `prime-headless`, later `direct-gateway`, to `opencode`).
+- Amends nothing yet: [ADR-041](../../../docs/adr/ADR-041-generic-harness-contracts.md)'s
+  default worker executor (`direct-gateway`) is unchanged until the default is switched.
+  This change adds an opt-in `opencode` worker executor, and ADR-053 Decision 2 is amended
+  (2026-11-24): the move of the default to `opencode` waits for #1313 and a passing live
+  smoke.
 - Relates to [ADR-036](../../../docs/adr/ADR-036-goal-to-receipt-orchestration.md)
   (goal-to-receipt orchestration): worker output becomes richer (edit loop
   instead of answer-only).

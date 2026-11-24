@@ -91,6 +91,18 @@ def test_registry_resolves_production_adapters_and_aliases() -> None:
     assert DEFAULT_REGISTRY.default_name() == "direct-gateway"
 
 
+def test_opencode_is_registered_and_selectable_but_not_the_default() -> None:
+    """ADR-053 Decision 2, amended 2026-11-24: OpenCode is opt-in.
+
+    It stays registered and resolvable by name (``--executor opencode``), and it is
+    not the default until a live smoke passes after #1313.
+    """
+    assert "opencode" in DEFAULT_REGISTRY.names()
+    assert DEFAULT_REGISTRY.resolve("opencode").name == "opencode"
+    assert DEFAULT_REGISTRY.default_name() != "opencode"
+    assert DEFAULT_REGISTRY.resolve(DEFAULT_REGISTRY.default_name()).name == "direct-gateway"
+
+
 def test_unknown_adapter_raises() -> None:
     with pytest.raises(OrchestrationError, match="unknown harness adapter"):
         DEFAULT_REGISTRY.resolve("bogus")

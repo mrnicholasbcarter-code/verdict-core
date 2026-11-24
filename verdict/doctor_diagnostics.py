@@ -770,6 +770,166 @@ def _doctor_acceptance(diag: DoctorDiagnostics) -> None:
     diag.warnings.extend(warnings)
 
 
+_OPENCODE_VERSION_TIMEOUT_SECONDS = 10.0
+#: Most bytes (stdout and stderr together) kept from the ``--version`` check.  The line it
+#: reads is a few bytes; a wrapper that prints more is broken or hostile, and unbounded
+#: buffering would let it exhaust doctor's memory inside the timeout.
+_OPENCODE_VERSION_MAX_OUTPUT_BYTES = 64 * 1024
+#: Longest version text echoed in a doctor row.
+_OPENCODE_VERSION_ECHO_CHARS = 60
+_OPENCODE_READ_CHUNK_BYTES = 8192
+
+
+class _OutputLimitExceededError(Exception):
+    """A bounded subprocess printed more than the byte cap it was given."""
+
+
+def _run_bounded(
+    argv: list[str], timeout: float, max_output_bytes: int | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` in its own process group, bounded in time and output, and kill that group.
+
+    ``VERDICT_OPENCODE_BIN`` may be a wrapper that spawns descendants, and
+    ``subprocess.run`` kills only the direct child (and only on timeout), leaving them
+    running.  Here the whole group is killed and the child reaped on every path: a normal
+    exit, a timeout, too much output, and an error such as undecodable output.  Output is
+    discarded on failure, so nothing is drained after the kill.
+
+    Both streams are read in small chunks against one shared byte budget
+    (``max_output_bytes``, default :data:`_OPENCODE_VERSION_MAX_OUTPUT_BYTES`); passing it
+    raises :class:`_OutputLimitExceededError` instead of buffering further.  The wall-clock
+    ``timeout`` still raises :class:`subprocess.TimeoutExpired`.
+    """
+    import contextlib
+    import selectors
+    import signal
+    import time
+
+    limit = _OPENCODE_VERSION_MAX_OUTPUT_BYTES if max_output_bytes is None else max_output_bytes
+    proc = subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+    )
+    try:
+        deadline = time.monotonic() + timeout
+        captured: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
+        total = 0
+        with selectors.DefaultSelector() as selector:
+            if proc.stdout is not None:
+                selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
+            if proc.stderr is not None:
+                selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                for key, _events in selector.select(remaining):
+                    chunk = os.read(key.fd, _OPENCODE_READ_CHUNK_BYTES)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    total += len(chunk)
+                    if total > limit:
+                        raise _OutputLimitExceededError(
+                            f"`--version` output exceeded {limit} bytes"
+                        )
+                    captured[key.data].extend(chunk)
+        proc.wait(timeout=max(deadline - time.monotonic(), 0.001))
+        return subprocess.CompletedProcess(
+            argv,
+            proc.returncode,
+            bytes(captured["stdout"]).decode(),
+            bytes(captured["stderr"]).decode(),
+        )
+    finally:
+        # The child leads the group (start_new_session), so its pid is the group id; a
+        # group outlives its leader while any member runs, and the kernel does not reuse
+        # a pid that is still a group id.
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                with contextlib.suppress(OSError):
+                    stream.close()
+        proc.wait()
+
+
+_OPENCODE_VERSION_TOKEN = re.compile(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]*)?")
+
+
+def _installed_opencode_version(line: str) -> str:
+    """The version an ``opencode --version`` line reports, as a whole token.
+
+    The installed binary prints ``opencode v2.3.2``; ``2.3.2``, ``v2.3.2`` and
+    ``opencode 2.3.2`` are accepted too.  Anything after the optional prefix is the version:
+    it is never reduced to a leading ``X.Y.Z`` (``2.3.2.1`` and ``2.3.2custom`` are not
+    ``2.3.2``).  Text that is not a version token is returned unchanged, so it can never equal
+    the pinned release.
+    """
+    text = line.strip()
+    if text.lower().startswith("opencode") and text[8:9].isspace():
+        text = text[8:].strip()
+    if text[:1] in {"v", "V"} and _OPENCODE_VERSION_TOKEN.match(text[1:]):
+        text = text[1:]
+    return text
+
+
+def _doctor_opencode_version(diag: DoctorDiagnostics) -> None:
+    """ADR-053 Decision 5: warn when installed OpenCode version differs from pinned v2.3.2.
+
+    OpenCode is optional as an executor; a missing binary is a note, not an
+    issue.  A version mismatch is a warning: the adapter is pinned to v2.3.2
+    and an upgrade or downgrade needs a re-run of the adapter's live check.
+    """
+
+    from verdict.orchestration.executor_opencode import PINNED_VERSION, _opencode_binary
+
+    try:
+        binary = _opencode_binary()
+    except Exception as exc:
+        diag.sections.append(("OpenCode", "note", f"binary resolution error: {exc}"))
+        return
+
+    try:
+        result = _run_bounded([binary, "--version"], _OPENCODE_VERSION_TIMEOUT_SECONDS)
+        if result.returncode != 0:
+            # A wrapper can print the pinned version and still fail (for example before
+            # reporting an initialisation error): that is a failed check, never "ok".
+            diag.sections.append(
+                (
+                    "OpenCode",
+                    "note",
+                    f"version check failed: `--version` exited {result.returncode}",
+                )
+            )
+            return
+        version_line = (result.stdout or result.stderr or "").strip().splitlines()
+        installed = version_line[0].strip() if version_line else ""
+        # The adapter is pinned to the exact release: the whole token must match, so
+        # "2.3.2-rc.1", "2.3.2.1" and "2.3.2custom" are each not "2.3.2".
+        installed_version = _installed_opencode_version(installed)
+    except FileNotFoundError:
+        diag.sections.append(("OpenCode", "note", "not installed (binary not found on PATH)"))
+        return
+    except Exception as exc:
+        diag.sections.append(("OpenCode", "note", f"version check error: {exc}"))
+        return
+
+    if not installed_version:
+        diag.sections.append(("OpenCode", "note", "version unavailable"))
+        return
+
+    if installed_version == PINNED_VERSION:
+        diag.sections.append(("OpenCode", "ok", f"v{installed_version}"))
+    else:
+        shown = installed_version[:_OPENCODE_VERSION_ECHO_CHARS]
+        msg = (
+            f"installed v{shown}, expected v{PINNED_VERSION}; "
+            "re-run the adapter live check after upgrading"
+        )
+        diag.sections.append(("OpenCode", "warn", msg))
+        diag.warnings.append(f"OpenCode version mismatch: {msg}")
+
+
 def _collect_doctor_diagnostics(
     fix: bool,
     *,
@@ -1037,6 +1197,7 @@ def _collect_doctor_diagnostics(
     _doctor_billing_catalog_drift(diag)
     _doctor_billing_overlay_conflicts(diag)
     _doctor_planner_supply(diag)
+    _doctor_opencode_version(diag)
     # 1d-iii. Verdict's key is DB-backed, never the gateway's env key.
     if gateway_url:
         _doctor_gateway_key(diag, gateway_url)

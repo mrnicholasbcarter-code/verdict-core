@@ -361,6 +361,8 @@ BYPRODUCT_EXCLUDES = (
     ".serena/",
     "venv/",
     ".venv/",
+    # OpenCode worker context file written per attempt; not part of deliverables.
+    ".verdict-context.md",
 )
 
 
@@ -1894,6 +1896,11 @@ class DagRuntime:
                                 "cost_usd": terminal.usage.cost_usd,
                                 "tokens_source": terminal.usage.tokens_source,
                                 "turns": terminal.usage.turns,
+                                **(
+                                    {"cost_note": terminal.usage.cost_note}
+                                    if terminal.usage.cost_note
+                                    else {}
+                                ),
                             }
                         }
                         if terminal.usage is not None
@@ -2131,6 +2138,7 @@ class DagRuntime:
                     "cost_usd": terminal.usage.cost_usd,
                     "tokens_source": terminal.usage.tokens_source,
                     "turns": terminal.usage.turns,
+                    **({"cost_note": terminal.usage.cost_note} if terminal.usage.cost_note else {}),
                 }
             if terminal.served_check is not None:
                 record["served_check"] = terminal.served_check

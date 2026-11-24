@@ -34,6 +34,11 @@ HEALTH_URL = f"http://{HOST}:{PORT}/health"
 TOKEN_ENV = "LLMGATE_AUTH_TOKEN"
 RECEIPTS_ENV = "VERDICT_RECEIPTS_DB"
 ENV_FILE_NAME = "serve.env"
+#: The origin workers and other clients call by default: the unit's own address.
+DEFAULT_ORIGIN = f"http://{HOST}:{PORT}"
+#: Overrides :data:`DEFAULT_ORIGIN` for clients (``verdict orchestrate`` workers), the way
+#: ``VERDICT_GATEWAY`` overrides the OmniRoute address; ``--serve-url`` wins over it.
+SERVE_URL_ENV = "VERDICT_SERVE_URL"
 #: Characters an unquoted EnvironmentFile value carries verbatim.
 _SAFE_VALUE = re.compile(r"[A-Za-z0-9._~+/=:@-]+")
 
@@ -127,6 +132,59 @@ def _existing_token(
         if value and value.strip():
             return value.strip(), source
     return None, "generate"
+
+
+def resolve_serve_origin(
+    configured: str | None = None, environ: Mapping[str, str] | None = None
+) -> str:
+    """The ``scheme://host:port`` origin of the ``verdict serve`` that workers call.
+
+    ``configured`` (a flag), then ``VERDICT_SERVE_URL``, then the unit's own address
+    (:data:`DEFAULT_ORIGIN`).  A path such as ``/v1`` is dropped.  An address that is not an
+    http(s) origin raises :class:`ServeServiceError` instead of silently falling back.
+    """
+    from verdict.orchestration.contracts import normalize_gateway_origin
+
+    source = os.environ if environ is None else environ
+    raw = (configured or "").strip() or (source.get(SERVE_URL_ENV) or "").strip()
+    origin = normalize_gateway_origin(raw or DEFAULT_ORIGIN)
+    if origin is None or not origin.startswith(("http://", "https://")):
+        raise ServeServiceError(
+            f"the verdict serve address {raw!r} is not an http(s) origin; "
+            f"set --serve-url or {SERVE_URL_ENV} to e.g. {DEFAULT_ORIGIN}"
+        )
+    return origin
+
+
+def resolve_serve_token(
+    environ: Mapping[str, str] | None = None, *, home: Path | None = None
+) -> tuple[str, str] | None:
+    """The bearer token for ``verdict serve`` and its source, or None.
+
+    The sources and the order ``verdict setup`` uses (:func:`_existing_token`): the
+    environment (``LLMGATE_AUTH_TOKEN``), the credential store, then ``serve.env``.  Each source
+    is read only when the ones above it gave nothing, and a lower source that cannot be read or
+    decoded is skipped, so a malformed file never hides a valid token above it nor raises.  It is
+    the token serve itself authenticates with, never the OmniRoute gateway key.  The value is for
+    the caller that must present it; it is never logged here.
+    """
+    from verdict.credentials_store import CredentialsStore
+
+    source = os.environ if environ is None else environ
+    value = (source.get(TOKEN_ENV) or "").strip()
+    if value:
+        return value, "environment"
+    try:
+        stored = (CredentialsStore().load().get(TOKEN_ENV) or "").strip()
+    except (OSError, ValueError):  # unreadable store, or one that does not decode
+        stored = ""
+    if stored:
+        return stored, "credential_store"
+    try:
+        from_file = (_read_env_file(env_file_path(home)).get(TOKEN_ENV) or "").strip()
+    except (OSError, ValueError):
+        from_file = ""
+    return (from_file, "serve_env") if from_file else None
 
 
 def _write_private(path: Path, text: str) -> None:

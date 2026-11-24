@@ -11,6 +11,7 @@ a production caller from day one so the reachability baseline does not grow.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -144,16 +145,24 @@ class HarnessRegistry:
         return getattr(cls, "__name__", str(cls))
 
     def executor_for(
-        self, target: ExecutionTarget, *, gateway: str, api_key: str
+        self, target: ExecutionTarget, *, gateway: str, api_key: str, serve_url: str | None = None
     ) -> WorkerExecutor:
         """Build the worker executor for an ``ExecutionTarget``'s harness.
 
         Dispatch selects the adapter by ``target.harness`` alone; the adapter
         translates the target into a launch.  ``gateway``/``api_key`` are the
         dispatch credentials (Verdict key precedence applies inside the
-        executor).
+        executor).  ``serve_url`` is the configured ``verdict serve`` address; only adapters
+        whose ``worker_executor`` takes a ``serve_url`` keyword (workers that route through
+        serve) receive it.
         """
-        return self.resolve(target.harness).worker_executor(gateway=gateway, api_key=api_key)
+        adapter = self.resolve(target.harness)
+        if (
+            serve_url is not None
+            and "serve_url" in inspect.signature(adapter.worker_executor).parameters
+        ):
+            return adapter.worker_executor(gateway=gateway, api_key=api_key, serve_url=serve_url)  # type: ignore[call-arg]
+        return adapter.worker_executor(gateway=gateway, api_key=api_key)
 
 
 DEFAULT_REGISTRY = HarnessRegistry()
@@ -246,7 +255,77 @@ class DirectGatewayAdapter:
         raise OrchestrationError(f"direct-gateway does not implement {feature}")
 
 
+class OpenCodeAdapter:
+    """Harness adapter for OpenCode agentic coding workers (ADR-053).
+
+    OpenCode runs a full edit-test-fix loop inside a repository before
+    returning.  Each attempt gets an isolated per-attempt config
+    (``OPENCODE_CONFIG_DIR`` → temp dir) and routes all model calls through
+    ``verdict serve`` (:8000), never directly to OmniRoute.
+
+    The adapter is registered and OPT-IN: ``verdict orchestrate --executor opencode``
+    selects it.  ``direct-gateway`` stays the default (ADR-053 Decision 2, amended
+    2026-11-24: the default waits for a live smoke that passes after #1313).
+    """
+
+    name = "opencode"
+    executor_label = "opencode"
+
+    def capabilities(self) -> HarnessCapabilities:
+        return HarnessCapabilities(
+            harness="opencode",
+            facets={
+                HarnessCapability.WORKER_LAUNCH: CapabilityLevel.SUPPORTED,
+                HarnessCapability.INTERACTIVE_ATTACH: CapabilityLevel.UNSUPPORTED,
+                HarnessCapability.MODEL_SWITCHING: CapabilityLevel.SUPPORTED,
+                HarnessCapability.CONTEXT_INJECTION: CapabilityLevel.SUPPORTED,
+                HarnessCapability.RESUME_CHECKPOINT: CapabilityLevel.UNSUPPORTED,
+                HarnessCapability.MCP: CapabilityLevel.UNSUPPORTED,
+                HarnessCapability.HOOKS: CapabilityLevel.UNSUPPORTED,
+                HarnessCapability.TOOL_INTERCEPTION: CapabilityLevel.UNSUPPORTED,
+                HarnessCapability.EVENT_STREAM: CapabilityLevel.PARTIAL,
+            },
+            notes=(
+                "Full edit-test-fix loop via opencode run --standalone --auto --format json",
+                "Per-attempt OPENCODE_CONFIG_DIR isolation; API key referenced by env var only",
+                "MODEL_SWITCHING: per-attempt config pins the exact admitted route",
+                "CONTEXT_INJECTION: instructions file written to worktree before each attempt",
+                "EVENT_STREAM: NDJSON collected after completion, not streamed live",
+            ),
+        )
+
+    def worker_executor(
+        self, *, gateway: str, api_key: str, serve_url: str | None = None
+    ) -> WorkerExecutor:
+        # gateway/api_key unused: they are the OmniRoute address and key, and OpenCodeExecutor
+        # routes through verdict serve instead.  It resolves its own serve credential
+        # (Verdict's code, not an operator variable) and takes the serve address from
+        # ``serve_url``, else VERDICT_SERVE_URL, else the serve unit's default.
+        from verdict.orchestration.executor_opencode import OpenCodeExecutor
+
+        return OpenCodeExecutor(serve_base_url=serve_url)
+
+    def harness_visibility(self, *, catalog_rows: Any, sync_visibility: bool) -> HarnessVisibility:
+        # OpenCode routes all calls through Verdict serve, which forwards to
+        # OmniRoute.  The same concrete-route visibility as direct-gateway
+        # applies: all concrete (non-combo, non-auto) live routes are visible.
+        from verdict.orchestration.eligibility import HarnessVisibility
+        from verdict.prime_inventory import concrete_rows
+
+        live_concrete, _ = concrete_rows(catalog_rows)
+        return HarnessVisibility(
+            frozenset(str(r["id"]) for r in live_concrete), source="live-gateway"
+        )
+
+    def label(self) -> str:
+        return self.executor_label
+
+    def not_implemented(self, feature: str) -> None:
+        raise OrchestrationError(f"opencode does not implement {feature}")
+
+
 # Wire up executor classes after import so the module has no import cycle.
+from verdict.orchestration.executor_opencode import OpenCodeExecutor  # noqa: E402
 from verdict.orchestration.executors import (  # noqa: E402
     DirectGatewayExecutor,
     FaultInjectingExecutor,
@@ -257,6 +336,9 @@ from verdict.orchestration.executors import (  # noqa: E402
 
 # direct-gateway is the default worker backend (1.0): it needs only the gateway.
 # Prime Agent is an optional harness selected with ``--executor prime-headless``.
+# OpenCode (a full edit-test-fix loop per node) is opt-in with ``--executor opencode``; it
+# becomes the default only after a live smoke passes once #1313 lands (ADR-053 Decision 2,
+# amended 2026-11-24).
 DEFAULT_REGISTRY.register(
     PrimeHeadlessAdapter(),
     aliases=("prime",),
@@ -268,6 +350,9 @@ DEFAULT_REGISTRY.register(
     default=True,
     executor_class=DirectGatewayExecutor,
     executor_label="direct-gateway",
+)
+DEFAULT_REGISTRY.register(
+    OpenCodeAdapter(), executor_class=OpenCodeExecutor, executor_label="opencode"
 )
 # Wrapper labels so run.py's receipt table can be fully delegated to the registry.
 DEFAULT_REGISTRY._executor_labels[FaultInjectingExecutor] = "fault-injecting"
