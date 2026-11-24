@@ -85,6 +85,11 @@ models.json, **models.json wins**.
 - Soft ranks (`aa_agentic`, Arena Elo, BFCL, Open LLM) are stored **only** when
   a fetcher actually returned them. Missing P1 sources are `skipped` with a
   documented reason — the fields stay null.
+- A refresh that skips a source (for example without `--include-p1`) keeps the
+  values that source wrote to the store earlier, with their original
+  `fetched_at`, and says so in that source's `reason` (`carried forward N
+  value(s) on M record(s)`). Readers' freshness rules still apply: the planner
+  band ignores carried ratings older than 12 hours.
 - Unmapped OmniRoute ids, map targets missing from models.dev, and required
   fields that were not fetched are **named drops** (`unmapped`,
   `map_target_missing`, `required_unknown`). They are not guessed.
