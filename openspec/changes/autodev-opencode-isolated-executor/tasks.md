@@ -45,34 +45,50 @@ Conventions for every task:
 - [ ] 2.2 Manifest and delta (D4). `attempt_delta(tree, m0, repo, unit)` walks the tree with
       the root `.git` excluded, builds M1, applies the byproduct rule through
       `git check-ignore --no-index -z --stdin` run in the user's repository, then ownership
-      through `WorkUnit.owns`, the regular-file rule and the empty-delta rule. It never runs
-      git in the tree. Files: `verdict/autodev_opencode.py`, `tests/test_autodev_opencode.py`.
+      through `WorkUnit.owns` on leaf entries (directories are not entries), the regular-file rule
+      and the empty-delta rule. It never runs git in the tree, never follows a link in it and
+      opens only regular files, with `O_NOFOLLOW | O_NONBLOCK` and an `fstat` check. Files: `verdict/autodev_opencode.py`, `tests/test_autodev_opencode.py`.
       Verify: `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py -k delta`
       with tests for: a plain edit, a `git add`ed edit, a committed edit and a reverted edit
       (delta follows file contents only); an unowned new file; an owned delete; a mode change;
       a symlink in an owned path; a planted `core.fsmonitor` and a planted `pre-commit` hook in
-      the tree's `.git` leave their marker file uncreated; a new path in a user-ignored
+      the tree's `.git` leave their marker file uncreated; a new owned file in a new directory is
+      the only changed path (the directory is not); a directory swapped for an owned file's
+      parent and a file swapped for a directory are rejected by ownership; a FIFO and a symlink
+      substituted for a regular file are recorded by kind and never opened (the test would hang
+      on a FIFO without `O_NONBLOCK`); a path that changes kind between `lstat` and open is
+      `error`; a file over the per-file limit is a named refusal; a new path in a user-ignored
       directory is a byproduct; the same path existing at seed is not; a worker-written
       `.gitignore` hiding an unowned file is itself out of bounds and does not hide it; a tree
       over the limit is a named refusal.
-- [ ] 2.3 Transfer with a journal (D5). `transfer(delta, user_repo, m0)` reads each delta file
-      once and checks it against M1, refuses on a non-regular target, a symlinked parent, a
-      path that escapes the repository, a user file that differs from its M0 hash or exists
-      when M0 has no entry, and an oversized file; writes through a temporary name and
-      `os.replace`; sets the executable bit; records the journal; and rolls back on any write
-      failure. Files: `verdict/autodev_opencode.py`, `tests/test_autodev_opencode.py`. Verify:
+- [ ] 2.3 Transfer with a journal (D5). `transfer(delta, user_repo, m0)` resolves every path
+      from a root descriptor with `O_DIRECTORY | O_NOFOLLOW` per component, creates missing
+      parents with `mkdir` by descriptor, compares each path's kind, executable bit and
+      SHA-256 with M0 before any write and again immediately before its own write, writes a
+      temporary file by descriptor and `rename`s it by descriptor, sets the executable bit from
+      M1, records the journal (prior bytes, kind and mode, written fingerprint, created
+      directories), and rolls back through restore on any write failure. It refuses to run
+      where `os.supports_dir_fd` lacks what it needs. Files: `verdict/autodev_opencode.py`,
+      `tests/test_autodev_opencode.py`. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py -k transfer`
-      with tests for each refusal (nothing written, user repository byte-identical), an
-      injected failure on the second of three files (all three paths restored), and a hash
-      mismatch between the delta read and M1.
-- [ ] 2.4 Restore (D6). `restore(journal)` undoes the last transfer in reverse order, leaves
-      alone and reports any path whose content is no longer what the transfer wrote, removes
-      directories it created when empty, and is idempotent. Files:
-      `verdict/autodev_opencode.py`, `tests/test_autodev_opencode.py`. Verify:
+      with tests for: each refusal writes nothing and leaves the user's repository
+      byte-identical (a symlinked parent, a non-regular target, a changed user file, a user file
+      that exists when M0 has no entry, an oversized file, a path that escapes the root); a
+      `chmod`-only change by the user after the seed is a refusal; an intervening user edit
+      injected through a test seam between the preflight check and the write is refused, not
+      overwritten; a parent directory swapped for a symlink through the same seam is refused
+      and nothing is written through it; an injected failure on the second of three files
+      restores all three; a hash mismatch between the delta read and M1 is `error`.
+- [ ] 2.4 Restore (D6). `restore(journal)` undoes the last transfer in reverse order with the
+      same descriptor-relative traversal and at-the-moment re-check as task 2.3, checking kind,
+      executable bit and SHA-256 against what the transfer wrote; it leaves alone and reports
+      any path that differs, removes directories it created when empty, and is idempotent.
+      Files: `verdict/autodev_opencode.py`, `tests/test_autodev_opencode.py`. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py -k restore`
       with tests for: a modified owned file, a created file and its created directory, a
-      deleted file, a user edit made after the transfer (not overwritten, named), and a second
-      call (no-op).
+      deleted file, a user edit made after the transfer (not overwritten, named), a user
+      `chmod` made after the transfer (not undone, named), a parent swapped for a symlink
+      between transfer and restore (nothing written through it), and a second call (no-op).
 
 ## 3. The executor
 
@@ -114,9 +130,9 @@ Conventions for every task:
 ## 4. `run_autodev` wiring
 
 - [ ] 4.1 Protocols, the gateway check and the restore hook (D6, D7). Add the `UnitExecutor`
-      protocol and its restoring variant; type the `executor` parameter and
-      `_run_unit_once` with them; skip only the base-URL equality for a restoring executor and
-      keep the model equality; call `restore()` in `_run_unit_once` after a failed `_verify`
+      protocol and the two separate markers (`isolated` and a `restore` method); type the
+      `executor` parameter and `_run_unit_once` with them; skip only the base-URL equality for
+      an executor marked `isolated` and keep the model equality; call `restore()` in `_run_unit_once` after a failed `_verify`
       for an `applied` attempt and append the real restore result to the reason. Files:
       `verdict/autodev_run.py`, `tests/test_autodev_opencode_wiring.py`. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode_wiring.py -k "restore or gateway"`
@@ -125,8 +141,11 @@ Conventions for every task:
       a transfer leaves the repository byte-identical to before the attempt, with a
       pre-existing dirty unowned file untouched; a verified unit is not restored; a user edit
       after the transfer is not overwritten and the reason names it; a `PatchExecutor` run
-      never calls `restore`.
-- [ ] 4.2 Refuse retries and handle null sampling (D7). With an isolated executor and non-empty
+      never calls `restore`; an executor that has `restore()` but is not marked `isolated` still
+      fails the gateway equality check and is not subject to the retry refusal; the same
+      failed verification where the verification command itself rewrites a transferred file
+      leaves that file alone and names it, and leaves a file it created in place.
+- [ ] 4.2 Refuse retries and handle null sampling (D7). With an executor marked `isolated` and non-empty
       `retry_routes` or a `retry_executor_factory`, raise `AutodevError` before the planner
       call. Make `_executor_lineage` and the attempt-record write accept `None` sampling values,
       omitting the keys if the record schema requires numbers. Files:

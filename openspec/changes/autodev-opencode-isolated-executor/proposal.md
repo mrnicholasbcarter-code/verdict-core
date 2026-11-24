@@ -130,8 +130,11 @@ Mapped from #1301 as split. Each test must fail before the build and pass after.
   plain edit, a staged edit, a worker commit, an unowned new file and a symlink swap.
 - A successful owned-file repair is accepted although the executor's context file was
   created, and the file never reaches the user's repository.
-- A failed verification after transfer restores every owned file; a pre-existing dirty
-  unowned file is untouched; a file the user changed after the transfer is not overwritten.
+- A failed verification after transfer restores every owned file (for a verification command
+  that writes nothing to the repository); a pre-existing dirty unowned file is untouched; a
+  file the user changed after the transfer, its mode included, is not overwritten.
+- A transfer never writes through a symlinked or swapped parent directory and never overwrites
+  a file the user changed, its mode included, after the seed.
 - With opencode or serve unavailable, autodev stops with one message before any probe or
   model call, and does not construct `PatchExecutor`.
 - With retry routes supplied and the isolated executor, `run_autodev` refuses before any

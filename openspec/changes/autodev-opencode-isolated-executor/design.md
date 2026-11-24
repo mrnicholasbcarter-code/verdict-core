@@ -153,8 +153,12 @@ The seed fails closed, with a named reason, before any worker starts, when:
 The user's repository receives no git object, ref, config or hook from the seed.
 
 Then Verdict walks the clone's working tree (the root `.git` excluded) and records the
-**seed manifest M0**: for each path, a kind (file, symlink, other), the executable bit, and
-the SHA-256 of a file's bytes or a symlink's target. M0 is computed by Verdict before the
+**seed manifest M0**. The manifest has one entry per non-directory path: a kind (regular
+file, symlink, other), the executable bit, and the SHA-256 of a file's bytes or a symlink's
+target. Directories are not entries: git does not track them, a directory is implied by the
+files under it, and an empty directory is not part of the tree's content. The walk never
+follows a symlink, opens only regular files, and opens them without following links and
+without blocking (see D4, "Reading the worker's tree"). M0 is computed by Verdict before the
 worker starts.
 
 ### D4. The delta is a filesystem comparison; no git runs in the tree after launch
@@ -181,43 +185,87 @@ Classification, in order:
 3. **Ownership.** Every remaining changed path must satisfy `WorkUnit.owns` (the same
    normalisation `_verify` uses). Otherwise the attempt is `rejected`, naming the paths, and
    nothing is transferred.
-4. Every remaining changed path must be a regular file in M1 or be absent from M1 (a delete).
-   A symlink, a device, a directory in the place of a file or any other kind is `rejected`.
+4. Every remaining changed path must have a regular-file entry in M1 or no entry in M1 (a
+   delete). A symlink, a device, a FIFO or any other kind is `rejected`. Ownership is
+   decided on these leaf entries only, so creating an owned file `newdir/file.py` makes
+   `newdir/file.py` the changed path and `newdir` is not one. Directory-for-file swaps need
+   no separate rule: replacing the directory `a` that held an owned `a/b.py` by a file `a`
+   shows as a delete of `a/b.py` and a new unowned path `a`, and is rejected by rule 3.
 5. An empty delta is `rejected` with the reason "worker made no change to the owned files".
 
-The delta's bytes are read once, into memory, for each transferred path and checked against
-the M1 hash. If a path's hash differs from M1 the attempt fails ("attempt tree changed
-during validation"). Nothing is read from the clone after that. This closes the window in
-which a descendant that left the process group (for example through `setsid`) keeps writing.
+**Reading the worker's tree.** The clone is worker-controlled, so no step may follow a
+link or block on a special file. The walk uses `lstat` and `scandir` without following
+symlinks. Each regular file is opened with `O_NOFOLLOW | O_NONBLOCK`, checked with `fstat`
+to be a regular file after it is open, and read in bounded chunks up to the per-file limit
+(Open point 3). A path that is not a regular file at open time is recorded with its real
+kind and never opened again. If an open fails because the path changed kind during the
+walk, the attempt is `error` ("attempt tree changed during validation").
+
+**Read once.** The delta's bytes are read once into memory for each transferred path, from
+an open descriptor, and hashed; that hash must equal the M1 entry. A mismatch is the same
+`error`. Nothing is read from the clone after that, and what is transferred is exactly the
+bytes that were hashed. This narrows, but does not close, the window in which a descendant
+that left the process group (for example through `setsid`) keeps writing: it can still
+change the clone while the walk runs, and the walk fails closed on what it can detect. A
+descendant that outlives the attempt and writes elsewhere is the shell risk ADR-053
+Decision 4 accepts.
 
 ### D5. Transfer is all-or-nothing and never overwrites what changed since the seed
 
-For each delta path, in the user's tree, before writing anything:
+The user's tree is a place that other processes, and the user, can change while the transfer
+runs, so the transfer is built on directory descriptors and re-checks at the moment of each
+write. It assumes a POSIX host (`os.open` with `dir_fd`; the executor refuses to run where
+`os.supports_dir_fd` lacks `open`, `stat`, `mkdir`, `rename` or `unlink`).
 
-- every existing parent component is a real directory (not a symlink) and the resolved path
-  stays under the repository root;
-- the path itself, if it exists, is a regular file whose SHA-256 equals its M0 hash. If M0
-  has no entry the path must not exist in the user's tree. Anything else means the user's
-  tree changed after the seed, and the attempt is `rejected` with that reason;
-- the new content is at most the per-file transfer limit (Open point 3).
+**Traversal.** Each delta path is resolved component by component from a descriptor opened on
+the repository root, every component opened with `O_DIRECTORY | O_NOFOLLOW` relative to its
+parent descriptor. A component that is a symlink, or is not a directory, is a refusal. A
+missing parent directory is created with `mkdir` relative to its parent descriptor and
+recorded in the journal. No step uses a path string that could be re-resolved.
 
-Each file is then written to a temporary name in its target directory and `os.replace`d. The
-executable bit is set from M1. Before each write the executor records a journal entry: the
-path, whether it existed, its prior bytes and executable bit, and any directories it created.
-If any write fails, the entries written so far are undone and the attempt is `error`. A file
-the worker deleted is removed.
+**Fingerprint.** For each delta path the executor compares what the user's tree holds now
+with what M0 recorded for it: kind, executable bit and SHA-256 of the bytes, or absence when
+M0 has no entry. The user's file is opened relative to its parent descriptor with
+`O_NOFOLLOW | O_NONBLOCK` and checked by `fstat` before it is read. Any difference means the
+user's tree changed after the seed, and the attempt is `rejected` with that reason. The
+content is also checked against the per-file transfer limit (Open point 3).
+
+**Write.** The check runs for every path before any write, and again for that path immediately
+before its own write. The executor writes a temporary file in the target directory by
+descriptor, sets the executable bit from M1, and `rename`s it over the target relative to the
+parent descriptor. A file the worker deleted is `unlink`ed the same way. Before each write it
+records a journal entry: the path, whether it existed, its prior bytes, kind and executable
+bit, the fingerprint it wrote, and any directories it created. If any write fails, the
+entries written so far are undone by the restore procedure and the attempt is `error`.
+
+**What this does not guarantee.** POSIX has no compare-and-swap for a file's content. A user
+or tool that writes an owned file in the instant between the last check and the `rename` is
+overwritten. The design narrows that window to the code between two system calls and does not
+claim to close it. Autodev assumes it is the only writer to a unit's owned files while that
+unit runs, and nothing in this change detects a violation of that assumption (Open point 5).
 
 ### D6. Restore after a failed verification
 
-`restore()` undoes the last transfer from the journal, in reverse order. For each path it
-first checks that the file still has the content the transfer wrote (or still does not
-exist, for a delete). If it does not, the executor leaves it alone and reports it as not
-restored, with the reason, because the user or another tool changed it. It never overwrites
-content it did not write. It removes the directories it created if they are empty. It is
-idempotent, and the journal is replaced by the next `execute_unit`.
+`restore()` undoes the last transfer from the journal, in reverse order, with the same
+descriptor-relative, no-follow traversal and at-the-moment re-check as D5. For each path it
+first checks that the user's tree still holds exactly what the transfer wrote: the same
+kind, executable bit and SHA-256 (or still no file, for a delete). If it does not, the
+executor leaves the path alone and reports it as not restored, with the reason, because the
+user or another tool changed it, a `chmod` included. It never overwrites content it did not
+write. It removes the directories it created if they are empty. It is idempotent, and the
+journal is replaced by the next `execute_unit`.
+
+Restore covers only the paths the transfer wrote. If the unit's verification command itself
+edits a transferred file, restore leaves that file alone and names it. If the command creates
+other files (a cache, a build output) they are not this executor's to remove and stay, exactly
+as they do after a failed verification on the default path today. So "byte-identical after a
+failed verification" holds for a verification command that does not write to the repository;
+for one that does, the outcome reason lists the owned paths that were restored and the ones
+that were not.
 
 `_run_unit_once` calls `restore()` after `_verify` returns false for an `applied` attempt,
-only for an executor that has it. It appends the result to the outcome reason
+only for an executor that has a `restore` method. That is a rollback capability and nothing
+more: it grants no transport authority (D7). It appends the result to the outcome reason
 ("restored N owned file(s)" or "NOT restored: <paths>: changed since the transfer"). The
 outcome's `changed_files` stays the attempt's delta. `PatchExecutor` has no `restore`, so
 its path is unchanged.
@@ -234,17 +282,24 @@ Every use of the executor in `run_autodev`, `_run_unit_once`, `_executor_lineage
 | Use | Isolated executor |
 |---|---|
 | `executor.config.model`: model equality with the decision, retry-ladder filter, receipt `executor_model`, lineage | The selected route id. The model-identity check is kept. |
-| `executor.config.base_url`: equality with the decision's gateway at injection | **Skipped** for an isolated executor. Its transport is serve, not the gateway the route was probed on. Gateway authority for this path is serve's own pinned admission [U]. |
+| `executor.config.base_url`: equality with the decision's gateway at injection | **Skipped** for an executor marked `isolated`. Its transport is serve, not the gateway the route was probed on. Gateway authority for this path is serve's own pinned admission [U]. |
 | `executor.config.temperature`, `max_tokens`: `_executor_lineage` | `None`. OpenCode owns sampling. Unknown is null, not 0. If the attempt-record writer rejects a null, `_executor_lineage` omits the keys for this executor (task 4.2). |
 | `executor.response_headers`: `served_headers` in the receipt and the `x-omniroute-model` identity check | `{}`. The identity check is therefore a no-op: **this change attests no served identity**. The receipt shows the requested route. What would attest it is serve's routing receipt, read by OC2b's live check. |
 | `executor.execute_unit(unit)` | Returns a `PatchAttempt` (below). |
 | `replace(executor.config, ...)` in the default retry factory | Never reached: retries are refused. |
 
 `run_autodev`'s `executor` parameter becomes a `UnitExecutor` protocol (`config`,
-`response_headers`, `execute_unit`) and the restoring variant adds `restore()`. A
-`PatchExecutor` satisfies the first unchanged.
+`response_headers`, `execute_unit`). A `PatchExecutor` satisfies it unchanged. Two separate,
+explicit markers sit on top of it, and neither implies the other:
 
-**Retries are refused, not just omitted.** If the executor is isolated and `retry_routes` or
+- `isolated: Literal[True]`, set only by `OpenCodeUnitExecutor`: the executor's transport is
+  serve through an attempt clone. The gateway base-URL skip and the retry refusal key on this
+  marker and on nothing else, so a later executor that merely implements `restore()` over a
+  gateway transport still goes through the existing gateway equality check.
+- a `restore()` method: a rollback capability. `_run_unit_once` calls it after a failed
+  `_verify`; it grants no transport authority.
+
+**Retries are refused, not just omitted.** If the executor is marked `isolated` and `retry_routes` or
 `retry_executor_factory` is non-empty, `run_autodev` raises `AutodevError` before the planner
 call. Otherwise the default factory would build a `PatchExecutor` for it, which is defect 3.
 The CLI passes `retry_routes=()` with the flag.
@@ -380,8 +435,8 @@ change; `PatchExecutor` never depended on them.
 - The worker's tree is a separate git directory. Hooks, config and excludes it writes stay
   in it, and Verdict never executes git there after launch.
 - Only paths the unit owns, validated by the existing `WorkUnit` normalisation, are copied
-  back, as regular files, through non-symlinked parents, over content that has not changed
-  since the seed.
+  back, as regular files, through descriptor-relative no-follow traversal, over content and
+  mode that have not changed since the seed (checked again at each write).
 - The worker's output, the clone's contents and `.gitignore` edits are untrusted data.
 - No credential is added to code, logs, events or receipts; the unit executor never holds
   one. No new dependency.

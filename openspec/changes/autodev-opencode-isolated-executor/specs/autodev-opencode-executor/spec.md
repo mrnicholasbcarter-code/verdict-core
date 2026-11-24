@@ -94,7 +94,10 @@ configuration or hooks the worker could have written.
 ### Requirement: Only owned-file changes SHALL be transferred, and any other change SHALL leave the user's repository untouched
 
 The executor SHALL transfer an attempt only when every changed path is owned by the unit
-(`WorkUnit.owns`), is a regular file or a deletion, and the change is not empty. Otherwise
+(`WorkUnit.owns`), is a regular file or a deletion, and the change is not empty. Ownership
+SHALL be decided on file and link entries only, never on directories, and the executor SHALL
+read the attempt tree without following links and without opening anything that is not a
+regular file. Otherwise
 the attempt SHALL be `rejected` with a reason naming the offending paths, and the user's
 repository SHALL be byte-identical to before the attempt. An attempt whose worker did not end
 successfully SHALL transfer nothing even if the attempt tree holds edits.
@@ -102,6 +105,18 @@ successfully SHALL transfer nothing even if the attempt tree holds edits.
 #### Scenario: Out-of-bounds edits are rejected
 - **WHEN** a worker edits an unowned file by a plain edit, by staging it, by committing it, by creating an unowned new file, or by swapping a symlink into an owned path
 - **THEN** the attempt is `rejected` naming the path and the user's repository is byte-identical
+
+#### Scenario: A new owned file in a new directory
+- **WHEN** a worker creates the owned file `newdir/file.py` and nothing else
+- **THEN** the changed path is `newdir/file.py` alone, the attempt is `applied`, and `newdir` is not reported as out of bounds
+
+#### Scenario: Directory and file swapped
+- **WHEN** a worker replaces the directory holding an owned file with a plain file of the same name as the directory
+- **THEN** the attempt is `rejected` for the new unowned path
+
+#### Scenario: Special files in the attempt tree
+- **WHEN** a worker leaves a FIFO, or a symlink pointing outside the tree, where a regular file was
+- **THEN** it is recorded by its real kind, never opened or followed, and the attempt is `rejected` if the path is in the delta
 
 #### Scenario: A valid owned repair is applied
 - **WHEN** a worker changes only an owned file
@@ -145,20 +160,34 @@ executor-written context file and SHALL work when none is written.
 
 ### Requirement: Transfer SHALL be all-or-nothing and SHALL NOT overwrite a file that changed after the seed
 
-Before writing, the executor SHALL verify for each path that existing parents are real
-directories under the repository root, that an existing target is a regular file whose bytes
-match the seed manifest, and that a target absent from the manifest does not exist. If any
-check fails the attempt SHALL be `rejected` with the reason and nothing SHALL be written. If
-a write fails part-way the executor SHALL undo every write already made and the attempt SHALL
-be `error`.
+The executor SHALL resolve every transfer path component by component from a descriptor on
+the repository root without following symlinks, and SHALL compare, for each path, the user's
+current kind, executable bit and bytes with the seed manifest (or absence, when the manifest
+has no entry), both before any write and again immediately before that path's write. If any
+comparison differs the attempt SHALL be `rejected` with the reason and nothing SHALL be written
+for a pre-write difference. If a write fails part-way the executor SHALL undo every write
+already made and the attempt SHALL be `error`. The executor SHALL refuse to run on a host
+whose descriptor-relative file operations it needs are unavailable.
 
 #### Scenario: Owned file changed after the seed
 - **WHEN** the user edits an owned file after the seed and before the transfer
 - **THEN** the attempt is `rejected` with the reason that the file changed since the seed, and the user's edit is intact
 
+#### Scenario: Only the mode changed
+- **WHEN** the user changes only the executable bit of an owned file after the seed
+- **THEN** the attempt is `rejected` for that file and the user's mode is intact
+
 #### Scenario: Symlinked parent
 - **WHEN** an owned path's parent directory in the user's tree is a symlink
 - **THEN** the attempt is `rejected` and nothing is written through the link
+
+#### Scenario: Parent swapped for a symlink during the transfer
+- **WHEN** a parent directory is replaced by a symlink after the first comparison and before the write
+- **THEN** nothing is written through the link, the attempt is `rejected` or `error`, and every path already written is restored
+
+#### Scenario: User edit between the comparison and the write
+- **WHEN** the user edits an owned file after the first comparison and before its write
+- **THEN** the second comparison refuses the write and the user's edit is intact
 
 #### Scenario: Failure part-way
 - **WHEN** a transfer of three owned files fails on the second
@@ -166,20 +195,29 @@ be `error`.
 
 ### Requirement: A failed verification after a transfer SHALL restore the owned files, and restore SHALL NOT overwrite content it did not write
 
-When `_verify` fails for an applied attempt of an executor that can restore, `_run_unit_once`
-SHALL call `restore()` and SHALL record its real result in the outcome reason. Restore SHALL
-return each transferred path to its prior bytes or absence, remove directories it created
-when empty, and SHALL leave alone and name any path whose content is no longer what the
-transfer wrote. A verified unit SHALL NOT be restored. The `PatchExecutor` path SHALL be
-unchanged.
+When `_verify` fails for an applied attempt of an executor that has a `restore` method,
+`_run_unit_once` SHALL call `restore()` and SHALL record its real result in the outcome
+reason. Restore SHALL return each transferred path to its prior bytes, mode or absence, using
+the same no-follow traversal and at-the-moment comparison as the transfer, remove directories
+it created when empty, and SHALL leave alone and name any path whose kind, executable bit or
+bytes are no longer what the transfer wrote. Restore SHALL cover only paths the transfer wrote.
+A verified unit SHALL NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 
 #### Scenario: Verification fails after an applied attempt
-- **WHEN** an owned-file change is transferred and the unit's verification command exits non-zero
+- **WHEN** an owned-file change is transferred and the unit's verification command, which writes nothing to the repository, exits non-zero
 - **THEN** the repository is byte-identical to before the attempt, a pre-existing dirty unowned file is untouched, and the reason says the owned files were restored
+
+#### Scenario: The verification command writes to the repository
+- **WHEN** the verification command rewrites a transferred file or creates a new file and then exits non-zero
+- **THEN** restore leaves the rewritten file as it is and names it as not restored, the new file is not removed, and the reason lists which owned paths were and were not restored
 
 #### Scenario: The user edits after the transfer
 - **WHEN** the user changes a transferred file after the transfer and verification then fails
 - **THEN** restore leaves that file as the user left it and the reason names it as not restored
+
+#### Scenario: The user changes only the mode after the transfer
+- **WHEN** the user changes only the executable bit of a transferred file and verification then fails
+- **THEN** restore leaves that mode as the user left it and the reason names the file as not restored
 
 #### Scenario: Created files are removed
 - **WHEN** the transferred change created an owned file in a new directory and verification fails
@@ -191,14 +229,20 @@ unchanged.
 
 ### Requirement: Retries SHALL be refused for the isolated executor, and PatchExecutor SHALL never run in its place
 
-When the executor is isolated and `retry_routes` or `retry_executor_factory` is non-empty,
-`run_autodev` SHALL raise `AutodevError` before any planner call. A failed unit on the
+The isolated executor SHALL carry an explicit `isolated` marker that is separate from having a
+`restore` method. When the executor is marked `isolated` and `retry_routes` or
+`retry_executor_factory` is non-empty, `run_autodev` SHALL raise `AutodevError` before any planner call. The base-URL equality check for an injected executor SHALL be skipped only for an executor
+marked `isolated`, and the model-identity check SHALL still apply to it. A failed unit on the
 isolated executor SHALL NOT be retried on any executor and SHALL NOT cause `PatchExecutor`
 to be constructed. With the flag the CLI SHALL pass no retry routes.
 
 #### Scenario: Retry routes with the isolated executor
 - **WHEN** `run_autodev` is given the isolated executor and one retry route
 - **THEN** it raises `AutodevError` before the decomposer is called
+
+#### Scenario: Restore capability alone grants nothing
+- **WHEN** an executor has a `restore` method but is not marked `isolated` and its base URL differs from the decision's gateway
+- **THEN** `run_autodev` refuses it through the existing gateway equality check, as it does today
 
 #### Scenario: Failed unit
 - **WHEN** a unit's attempt is rejected or errors on the isolated executor
