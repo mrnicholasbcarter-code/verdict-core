@@ -27,20 +27,20 @@
       `WorkerTerminal`, and deletes the temp directory on exit. Verify: unit tests
       for the executor, including timeout kill, idle kill, non-zero exit, and
       malformed JSON.
-- [ ] 2.3 Per-attempt config isolation: each attempt writes a fresh config to a
+- [x] 2.3 Per-attempt config isolation: each attempt writes a fresh config to a
       new temp directory. The config sets the provider base URL to
       `http://127.0.0.1:8000/v1`, maps `verdict/<route_id>` to `<route_id>`, sets
       `permissions` to restrict file edits to the node worktree, and denies
       `external_directory`. The API key is not written to the config file or to
-      any log. Verify: a live check confirms session DB and state are isolated
-      between two concurrent workers; no credentials appear in temp config files or
-      logs.
-      **Not ticked (2026-11-24).** A live run through this branch's serve on a spare port
-      verified the pre-dispatch checks and the launch for real, but serve admitted no FREE route:
-      the pinned `openrouter/baidu/ernie-5.5-flash-preview:free` was excluded (`passport_stale`,
-      `confirm_budget_exhausted`) and the three admitted routes were subscription routes, so no
-      worker edit ran. The passport store is still overwritten by tests on main (#1306). Raw output:
-      `/tmp/claude-takeover/oc1-smoke/run-20261124T042116Z/`. Retry on installed main after #1306.
+      any log. Verify (tests, `tests/test_opencode_executor.py`): the config holds no key
+      (`test_write_attempt_config_no_plaintext_key`, `test_opencode_executor_config_has_no_plaintext_key`)
+      and the key is redacted everywhere it could be recorded
+      (`test_executor_redacts_worker_key_everywhere`); each attempt's config, data and state
+      directories are its own and are removed afterwards, including when two attempts run at
+      the same time (`test_opencode_executor_temp_dirs_cleaned_up`,
+      `test_two_concurrent_attempts_never_share_config_data_or_state`) and when the temp
+      filesystem fails (`test_a_full_temp_filesystem_is_a_failed_terminal_not_an_exception`).
+      The live run with the real OpenCode binary is task 2.8; it is not ticked here.
 - [x] 2.5 Worker credential and pre-dispatch check: resolve serve's bearer token with
       Verdict's own code, set it in the child env only under the key name, redact it, and check
       once before launch that the credential resolves, the binary runs and serve accepts it
@@ -57,6 +57,33 @@
       and the receipt attests that model identity. Verify: a test or live check
       confirms no call reaches OmniRoute (:20128) directly; the receipt shows the
       correct route.
+- [ ] (post-merge) 2.8 Live smoke of the worker on an admitted route: one attempt through
+      `OpenCodeExecutor`, in a scratch git repository, against a spare `verdict serve` with a
+      private copy of the state, pinned to the cheapest admitted SUBSCRIPTION route (the
+      operator's decision of 2026-11-24). Verify: the edit lands in the scratch repository, the
+      attempt's exit code is 0, tokens are recorded, serve's receipt shows the pinned route, the
+      raw `step_finish.cost` for that route is recorded (does OpenCode report 0 for a custom
+      provider?), OpenCode's session DB and state land under the per-attempt directories, and no
+      credential appears in the live config or in any log.
+      **Run once, not completed (2026-11-24):** the spare serve admitted three subscription routes
+      when probed (`antigravity/gemini-3.1-flash-lite`, `cc/claude-haiku-5-5`,
+      `cc/claude-opus-5-5`); the attempt was pinned to `cc/claude-haiku-5-5`, the lowest list
+      price in Verdict's model metadata ($0.10 in and $0.50 out per million tokens, against $0.25
+      and $1.50, and $4.00 and $20.00). The pre-dispatch checks passed and OpenCode ran (exit 1,
+      10 retries), but serve refused all 13 of the worker's own requests before any upstream
+      call: 11 were decided `fallback` ("critical — never offload", escalation `money-path`) and
+      2 were denied ("fail_closed — empty active ∩ fresh-passport ∩ confirmed intersection",
+      escalation `auth-security`); the receipts of those two list the requirements `streaming`
+      and `tools` and drop every one of 3074 candidates as `required_unknown` ("Core metadata
+      store unavailable"). So no edit landed, no tokens were reported, and no `step_finish` event
+      (the only carrier of `cost`) was produced. The per-attempt config held no key and its
+      directory was removed; no request was sent upstream. This is how serve admits a worker's
+      requests, not the adapter or a missing passport; it is outside this change, was not worked
+      around (no admission rule or passport was changed), and blocks this task and 8.1 until it
+      is decided. An earlier attempt on a free route (`run-20261124T042116Z`) was also denied, for
+      other admission reasons (`passport_stale`, `confirm_budget_exhausted`). Raw output:
+      `/tmp/claude-takeover/oc1-smoke/run-20261124T051739Z/` (`smoke-run-transcript.txt`,
+      `worker-denial-evidence.json`).
 
 ## 3. Post-attempt enforcement
 
@@ -89,9 +116,14 @@
       worker executor and the route-through-serve contract. Update ETHOS.md `In
       force` or `NOW` only if the operator asks. Verify: `check_doc_links.py` and
       `check_reachability.py` are green; no host paths in fixtures or docs.
-- [ ] 7.2 Run the full suite, ruff, mypy --strict, reachability, the lint gates,
+- [x] 7.2 Run the full suite, ruff, mypy --strict, reachability, the lint gates,
       both OpenSpec validators, and get a cross-family (non-Claude) review. Verify:
-      all commands green; review from a different model family.
+      all commands green; review from a different model family. Evidence: ruff, ruff format,
+      `mypy verdict --strict`, `scripts/check_lint_gates.py` (reachability, definition of done,
+      claims, proof-path trailers, `openspec validate`, the vendored validator) and the focused
+      tests ran green locally on the final head; the full suite is run by CI on the pushed head
+      (not run locally, by the shared-machine rule); the cross-family review (`ocr`,
+      `cx/gpt-6.1-sol`) of the final head is recorded in the PR body.
 
 - [ ] (post-merge) 8.1 On installed main, run a `verdict orchestrate` task on a
       coding node using an OpenCode worker: the node edits a file, runs

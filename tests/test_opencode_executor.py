@@ -1341,6 +1341,64 @@ def test_opencode_executor_temp_dirs_cleaned_up(tmp_path: Path) -> None:
     assert not root.exists(), f"per-attempt temp root {str(root)!r} was not cleaned up"
 
 
+def test_two_concurrent_attempts_never_share_config_data_or_state(tmp_path: Path) -> None:
+    """Task 2.3 isolation: workers that run at the same time each get their own config, data
+    (session DB) and state directories, and each finds its own written config while both run; every
+    directory is removed afterwards.
+
+    The fake worker records its own directories and then waits until the other worker has
+    recorded theirs, so the two attempts genuinely overlap.
+    """
+    record_dir = tmp_path / "records"
+    record_dir.mkdir()
+    fake = make_fake_opencode(
+        tmp_path,
+        f"""
+        import pathlib
+        record_dir = pathlib.Path({str(record_dir)!r})
+        session = sys.argv[sys.argv.index('--session') + 1]
+        dirs = {{k: os.environ.get(v, '') for k, v in
+                 (('config', 'OPENCODE_CONFIG_DIR'), ('data', 'XDG_DATA_HOME'),
+                  ('state', 'XDG_STATE_HOME'))}}
+        dirs['config_present'] = os.path.isfile(os.path.join(dirs['config'], 'opencode.json'))
+        (record_dir / (session + '.json')).write_text(json.dumps(dirs))
+        deadline = time.monotonic() + 8
+        while len(list(record_dir.glob('*.json'))) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        sys.exit(0 if len(list(record_dir.glob('*.json'))) == 2 else 3)
+        """,
+    )
+    cwds = []
+    for name in ("one", "two"):
+        cwd = tmp_path / name
+        cwd.mkdir()
+        cwds.append(cwd)
+    executor = OpenCodeExecutor(
+        opencode_bin=fake, env={"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "")}
+    )
+
+    async def both() -> list[object]:
+        return list(
+            await asyncio.gather(
+                *(
+                    executor.run("task", route_id=ROUTE, cwd=cwd, timeout_seconds=20.0)
+                    for cwd in cwds
+                )
+            )
+        )
+
+    terminals = asyncio.run(both())
+    assert [t.ok for t in terminals] == [True, True], [t.error for t in terminals]
+    records = [json.loads(path.read_text()) for path in sorted(record_dir.glob("*.json"))]
+    assert len(records) == 2, "the two workers did not overlap"
+    paths = [r[k] for r in records for k in ("config", "data", "state")]
+    assert all(paths), f"an isolation variable was empty: {records}"
+    assert len(set(paths)) == 6, f"two concurrent attempts shared a directory: {records}"
+    assert len({Path(p).parent for p in paths}) == 2, "each attempt needs its own root"
+    assert [r["config_present"] for r in records] == [True, True], "a worker ran without its config"
+    assert not any(Path(p).exists() for p in paths), "an attempt directory outlived its attempt"
+
+
 # ---------------------------------------------------------------------------
 # A full or unwritable temp filesystem: run() never raises
 # ---------------------------------------------------------------------------
@@ -1900,6 +1958,50 @@ def test_a_structured_status_still_wins_over_a_number_in_the_text() -> None:
         {"type": "error", "error": {"status": 429, "message": f"retry in 503 ms{_LONG_DIAGNOSTIC}"}}
     )
     assert _parse_ndjson_output(line)["error_status"] == 429
+
+
+def test_a_status_in_the_tail_still_beats_an_earlier_stray_number_in_stderr(
+    tmp_path: Path,
+) -> None:
+    """Reading the whole text must not change an answer the tail already gave.
+
+    The last 400 characters were always searched, and a status there wins; only when the tail
+    has none is the rest of the text read.  A stray ``500`` (a duration) at the start of a long
+    stderr must not beat the real ``HTTP 429`` at its end.
+    """
+    text = f"retrying in 500 ms.{_LONG_DIAGNOSTIC} fatal: HTTP 429 Too Many Requests"
+    fake = make_fake_opencode(tmp_path, f"sys.stderr.write({text!r})\nsys.exit(1)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.status_code == 429
+    assert "HTTP 429" in terminal.error
+
+
+def test_a_status_in_the_tail_still_beats_an_earlier_stray_number_in_an_ndjson_message(
+    tmp_path: Path,
+) -> None:
+    line = json.dumps(
+        {
+            "type": "error",
+            "message": f"retrying in 500 ms.{_LONG_DIAGNOSTIC} fatal: HTTP 429 Too Many Requests",
+        }
+    )
+    fake = make_fake_opencode(tmp_path, f"sys.stdout.write({line!r} + '\\n')\nsys.exit(1)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.status_code == 429
+
+
+def test_a_status_from_an_earlier_error_event_does_not_stick_to_a_later_message() -> None:
+    """The status belongs to the event whose message is kept: a later error without a status
+    of its own must not inherit the first one's."""
+    first = json.dumps({"type": "error", "message": "HTTP 429 rate limited"})
+    second = json.dumps({"type": "error", "message": "the provider crashed"})
+    parsed = _parse_ndjson_output(first + "\n" + second)
+    assert parsed["error_message"] == "the provider crashed"
+    assert parsed["error_status"] is None
 
 
 def test_a_secret_in_the_head_of_a_long_error_never_reaches_the_terminal(tmp_path: Path) -> None:

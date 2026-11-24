@@ -115,6 +115,17 @@ def _parse_status_code(message: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _status_from_full_text(full: str) -> int | None:
+    """The HTTP status in sanitized, untruncated ``full``: its tail first, then the rest.
+
+    The tail (the part that is recorded) is searched first and wins, so reading the whole text
+    never changes an answer the tail already gave: a stray number early in a long diagnostic
+    cannot beat the real status at its end.  Only when the tail has none is the text before it
+    read, which is what keeps a status that a long diagnostic pushed out of the tail.
+    """
+    return _parse_status_code(full[-_STDERR_TAIL_CHARS:]) or _parse_status_code(full)
+
+
 def _as_int(value: Any) -> int | None:
     if value is None or isinstance(value, bool):
         return None
@@ -633,9 +644,11 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
         elif event_type == "error":
             detail = event.get("error")
             msg = event.get("message")
+            structured_status: int | None = None
             if isinstance(detail, dict):
                 msg = detail.get("message") or msg
-                error_status = _as_int(detail.get("status"))
+                structured_status = _as_int(detail.get("status"))
+                error_status = structured_status
                 retry_ms = _as_float(detail.get("retryAfterMs"))
                 if retry_ms is not None and retry_ms > 0:
                     retry_after_seconds = retry_ms / 1000.0
@@ -644,11 +657,16 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
             if isinstance(msg, str) and msg:
                 full_message = _sanitize_full(msg, secrets)
                 error_message = full_message[-_STDERR_TAIL_CHARS:]
-                if error_status is None:
-                    # No structured status: read it from the whole message.  The recorded text
-                    # is only its tail, and a long provider diagnostic after "HTTP 429" would
-                    # otherwise cut the status away before recovery could classify it.
-                    error_status = _parse_status_code(full_message)
+                # The status belongs to the event whose message is kept: its structured status,
+                # else one read from its whole text.  The recorded text is only the tail, and a
+                # long provider diagnostic after "HTTP 429" would otherwise cut the status away
+                # before recovery could classify it.  An earlier event's status never carries
+                # over to this message.
+                error_status = (
+                    structured_status
+                    if structured_status is not None
+                    else _status_from_full_text(full_message)
+                )
 
     usage: AttemptUsage | None = None
     if has_usage:
@@ -1103,7 +1121,7 @@ class OpenCodeExecutor:
             # An NDJSON error's status was already read (structured, else from its full text).
             stderr_full = "" if error_message else _sanitize_full(stderr, secrets)
             tail = error_message or stderr_full[-_STDERR_TAIL_CHARS:] or f"exit {returncode}"
-            status = parsed["error_status"] or _parse_status_code(stderr_full)
+            status = parsed["error_status"] or _status_from_full_text(stderr_full)
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
