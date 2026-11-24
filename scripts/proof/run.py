@@ -20,7 +20,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from scripts.proof.contract import ContractError, load_contract  # noqa: E402
-from scripts.proof.runner import ProofRunner, default_executor  # noqa: E402
+from scripts.proof.runner import ProofRunner, ShardError, default_executor  # noqa: E402
 
 
 def _repo_root() -> Path:
@@ -46,6 +46,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--targets", nargs="*", default=[], help="Targeted test paths (used by unit_targeted gate)"
+    )
+    parser.add_argument(
+        "--shard",
+        type=int,
+        default=None,
+        metavar="K",
+        help=(
+            "Run leg K of the full proof (1..modes.full.shards). Without it the whole "
+            "suite runs in one process group, as before."
+        ),
     )
     parser.add_argument(
         "--no-cache", action="store_true", help="Final proof mode: disable tool caches / bytecode"
@@ -79,13 +89,19 @@ def main(argv: list[str] | None = None) -> int:
         root=args.root,
         executor=lambda argv, *, env, cwd: default_executor(argv, env, cwd),
     )
-    report = runner.run(
-        mode=args.mode,
-        targets=args.targets,
-        no_cache=args.no_cache,
-        llm_boundary=args.llm_boundary,
-        otel=args.otel,
-    )
+    try:
+        report = runner.run(
+            mode=args.mode,
+            targets=args.targets,
+            no_cache=args.no_cache,
+            llm_boundary=args.llm_boundary,
+            otel=args.otel,
+            shard=args.shard,
+        )
+    except ShardError as exc:
+        payload = {"ok": False, "error": str(exc), "valid": False}
+        print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+        return 2
     payload = report.to_dict()
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
