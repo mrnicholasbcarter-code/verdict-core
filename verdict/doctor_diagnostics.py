@@ -774,34 +774,35 @@ _OPENCODE_VERSION_TIMEOUT_SECONDS = 10.0
 
 
 def _run_bounded(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
-    """Run ``argv`` in its own process group; on timeout kill the whole group.
+    """Run ``argv`` in its own process group and always kill that group afterwards.
 
     ``VERDICT_OPENCODE_BIN`` may be a wrapper that spawns descendants, and
-    ``subprocess.run`` kills only the direct child on timeout, leaving them running.  The
-    group is killed instead, and draining the pipes afterwards is itself bounded.
+    ``subprocess.run`` kills only the direct child (and only on timeout), leaving them
+    running.  Here the whole group is killed and the child reaped on every path: a normal
+    exit, a timeout, and an error such as undecodable output.  Output is discarded on
+    failure, so nothing is drained after the kill.
     """
     import contextlib
     import os
     import signal
-    import subprocess
 
     proc = subprocess.Popen(
         argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
     )
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+    finally:
+        # The child leads the group (start_new_session), so its pid is the group id; a
+        # group outlives its leader while any member runs, and the kernel does not reuse
+        # a pid that is still a group id.
         with contextlib.suppress(ProcessLookupError, OSError):
             os.killpg(proc.pid, signal.SIGKILL)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.communicate(timeout=5)  # a descendant that left the group may still hold a pipe
         for stream in (proc.stdout, proc.stderr):
             if stream is not None:
                 with contextlib.suppress(OSError):
                     stream.close()
         proc.wait()
-        raise
-    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
 def _doctor_opencode_version(diag: DoctorDiagnostics) -> None:

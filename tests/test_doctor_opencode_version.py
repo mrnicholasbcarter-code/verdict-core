@@ -135,6 +135,56 @@ def test_timed_out_wrapper_leaves_no_descendant_behind(
                 os.kill(descendant, signal.SIGKILL)  # never leak the test process
 
 
+def _wrapper_leaving_detached_descendant(tmp_path: Path, stdout_line: str) -> tuple[str, Path]:
+    """A wrapper that backgrounds a sleeper with its output detached, prints, and exits 0."""
+    pid_file = tmp_path / "descendant.pid"
+    script = tmp_path / "wrapper-opencode"
+    script.write_text(
+        f"#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\necho $! > {pid_file}\n{stdout_line}\nexit 0\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    return str(script), pid_file
+
+
+def _assert_descendant_cleaned_up(pid_file: Path) -> None:
+    assert pid_file.exists(), "wrapper never started its descendant"
+    descendant = int(pid_file.read_text().strip())
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not _gone(descendant):
+            time.sleep(0.05)
+        assert _gone(descendant), f"descendant {descendant} outlived the finished check"
+    finally:
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.kill(descendant, signal.SIGKILL)  # never leak the test process
+
+
+def test_normally_exiting_wrapper_leaves_no_descendant_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cleanup is not only for timeouts: a wrapper can print the version, exit 0 and leave a
+    descendant (output detached, so the pipes close) running behind it."""
+    binary, pid_file = _wrapper_leaving_detached_descendant(tmp_path, f"echo {PINNED_VERSION}")
+    monkeypatch.setattr(executor_module, "_opencode_binary", lambda *a, **k: binary)
+    diag = dd.DoctorDiagnostics()
+    dd._doctor_opencode_version(diag)
+    assert _section(diag)[1:] == ("ok", f"v{PINNED_VERSION}")
+    _assert_descendant_cleaned_up(pid_file)
+
+
+def test_undecodable_output_still_cleans_up_the_wrapper_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A decoding error from ``communicate()`` must not skip the group kill and the reap."""
+    binary, pid_file = _wrapper_leaving_detached_descendant(tmp_path, r"printf '\377\376\375'")
+    monkeypatch.setattr(executor_module, "_opencode_binary", lambda *a, **k: binary)
+    diag = dd.DoctorDiagnostics()
+    dd._doctor_opencode_version(diag)
+    _name, level, message = _section(diag)
+    assert level == "note" and "version check error" in message, (level, message)
+    _assert_descendant_cleaned_up(pid_file)
+
+
 def _gone(pid: int) -> bool:
     """True when ``pid`` no longer exists or is only a zombie awaiting reaping."""
     try:

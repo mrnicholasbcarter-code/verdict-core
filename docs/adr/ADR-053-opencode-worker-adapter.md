@@ -31,6 +31,11 @@ provider interface that accepts any OpenAI-compatible endpoint. These properties
 make it a natural fit for coding nodes in `verdict orchestrate` and for the
 model-tier coding rung in `verdict autodev`.
 
+*Implementation note (2026-11-24): the adapter isolates each attempt with
+`OPENCODE_CONFIG_DIR` (a per-attempt temp directory). `OPENCODE_CONFIG` (a single file)
+exists in v2.3.2 but is not used. The autodev rung named above is delivered separately,
+in #1301 (OC2).*
+
 Research findings and decision points were gathered on 2026-11-23 and agreed
 with the operator in two rounds before this ADR was written.
 
@@ -49,6 +54,13 @@ Workers' model calls go through `verdict serve` (:8000), never straight to
 OmniRoute (:20128). Each request must use exactly the route Verdict chose; the
 relay pins it and records the attempt, and admission and cost rules still apply.
 If serve cannot pin a route per request today, adding that is part of the build.
+
+*Implementation note (2026-11-24): pinning is done inside admission, not by the relay. The relay
+passes the worker's assigned route to admission as a typed input (`WorkerAssignedRoute`, set only
+when the `X-Verdict-Worker` header is present). Admission selects that route only when that exact
+id is in the request's admitted set, mints its route-bound proof exactly as for a chosen route
+(ADR-035), and otherwise denies without minting a proof. The relay only verifies the outcome. The
+decision above is unchanged.*
 
 **2. OpenCode becomes the default orchestrate worker executor.**
 `opencode` becomes the DEFAULT worker executor for `verdict orchestrate` as soon
