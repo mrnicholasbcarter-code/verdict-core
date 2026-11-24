@@ -432,9 +432,10 @@ key. When verification fails, serve's log line SHALL carry the reason code only;
 succeeds, a later refusal MAY also carry the verified route, run and node ids. No log line SHALL
 carry the token, its tag or the key. These guarantees cover transport credentials, not request
 content: message content a client sends is forwarded verbatim. The lane's receipt id, which is also
-the persisted routing attempt id, SHALL be derived from an unambiguous (injective) encoding of the
-route id, the profile digest, the run id and the node id, so that assignments whose ids differ,
-including ids that contain a delimiter character such as `|`, never share a receipt id.
+the persisted routing attempt id for an admitted decision, SHALL be derived from an unambiguous
+(injective) encoding of the route id, the profile digest, the run id and the node id, so that
+assignments whose ids differ, including ids that contain a delimiter character such as `|`, never
+produce the same hash input.
 
 #### Scenario: Receipts name the run and node
 
@@ -443,8 +444,8 @@ including ids that contain a delimiter character such as `|`, never share a rece
 
 #### Scenario: Ids that hold the delimiter characters keep distinct receipt ids
 
-- **WHEN** two assignments for the same route and the same request have the run and node ids
-  (`a|b`, `c`) and (`a`, `b|c`), and again (`a","b`, `c`) and (`a`, `b","c`)
+- **WHEN** two assignments for the same route and the same request are admitted with the run and
+  node ids (`a|b`, `c`) and (`a`, `b|c`), and again with (`a","b`, `c`) and (`a`, `b","c`)
 - **THEN** the lane's receipt ids differ within each pair, the persisted routing attempt ids
   differ with them, and the same assignment sent twice gets the same receipt id both times
 

@@ -296,15 +296,23 @@ Details the table leaves out:
   JSON, not a delimiter join, because the ids are free text: `route_id`, `run_id` and `node_id` may
   hold any non-control character, `|` included (D1). With `|` as the delimiter, the pairs
   (`a|b`, `c`) and (`a`, `b|c`) for the same route and profile give the same seed, so two
-  distinct assignments would share one receipt id. That id is not only a label:
-  `_persist_routing_receipt_from_admit` writes `receipt.receipt_id` as the persisted routing
-  attempt id, so a collision would merge two nodes' routing attribution. A JSON array of strings is
-  injective: each element is quoted, `"` and `\` are escaped, and the element boundaries are
-  therefore never ambiguous, whatever characters an id holds. (The unpinned path's seed joins
-  `|`-separated values that are route, digest and outcome strings; it is not changed here.)
-  `_chosen_route_proof` mints nothing without a receipt id and a profile digest; both are always
-  set on the lane. A repeated identical request gets the same id, as an unpinned request does
-  today.
+  distinct assignments would share one seed, and so one receipt id. That id is not only a label:
+  `_persist_routing_receipt_from_admit` (not from #1299; only its call in the pin's denial branch
+  is **[#1299]**) writes `receipt.receipt_id` as the persisted routing attempt id when one is set,
+  so a collision would merge two nodes' routing attribution. A JSON array of strings is injective:
+  each element is quoted, `"` and `\` are escaped, and the element boundaries are therefore never
+  ambiguous, whatever characters an id holds. This removes the structural collision; the id is
+  then the first 96 bits of a SHA-256, so what remains is the hash's own residual, the same as an
+  unpinned receipt id has today. (The unpinned path's seed joins route, digest and outcome strings
+  with `|`; it is not changed here.) `_chosen_route_proof` mints nothing without a receipt id and a
+  profile digest; both are always set on the lane. A repeated identical request gets the same id,
+  as an unpinned request does today.
+  **Where the id must be set.** `_persist_routing_receipt_from_admit` falls back to a hash of the
+  chosen route alone (`admit-` plus 16 hex characters) when `receipt.receipt_id` is empty, which is
+  the same for every assignment to that route. The lane therefore sets the receipt id on the
+  admitted path before that helper is called. Denied decisions persist before any id is set, as
+  every denied decision does today, and keep that fallback; this story does not change that, so the
+  "persisted attempt id" guarantee is for admitted lane decisions.
 - **Recorded tier.** The decision records no computed escalation (`escalated` false, no reason,
   `protected` false) and the tier that `evidence._TIER_TO_POLICY_FLOOR` maps to `best_effort` (3),
   so evidence does not claim a floor the lane never computed.
@@ -329,9 +337,11 @@ Details the table leaves out:
   (four characters per token), a family allowance, 256 per required capability and 192 per
   criterion. On the lane the family is the constant `agentic` (D6), whose allowance is 3,072
   tokens, and the capability and criterion counts come from request fields only. So the words in
-  the text change the estimate only through the text's length: two texts of the same length get
-  the same estimate, and no family or capability inferred from a keyword ever enters it. Neither
-  the digest nor the estimate selects, ranks or refuses a route by what the text means.
+  the text change the estimate only through the text's length (and not at all once the estimate
+  reaches the 16,384-token cap, at about 26,600 characters with no capability or criterion): two
+  texts of the same length get the same estimate, and no family or capability inferred from a
+  keyword ever enters it. Neither the digest nor the estimate selects, ranks or refuses a route by
+  what the text means.
 - **Keyword parity (decision 6).** The default `direct-gateway` worker never reaches serve and the
   orchestrator never runs the scanner: its floor is `required_capability_tier(node)`, from the
   node's risk and kind. An assigned request gets the same: no keyword protection on node text. The

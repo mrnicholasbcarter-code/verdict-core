@@ -131,7 +131,8 @@ so docs describe only what runs.
   `_route` refusal of a worker with `execution_path_request`, `resolve_serve_token`,
   `_worker_credential`, `_check_serve`, `DEFAULT_ORIGIN` and the per-attempt config that sends the
   header. `verdict/candidate_pool.py`, `ContextPlan.estimate_for_candidate`, the planner, the
-  capability gate, `prepared_task_profile` and the middleware are not from #1299.
+  capability gate, `prepared_task_profile`, the middleware and `_persist_routing_receipt_from_admit`
+  (only its one call inside the pin's denial branch is from #1299) are not from #1299.
 - **KNOWN:** `ContextPlan.estimate_for_candidate` caps its estimated input at 16,384 tokens, so the
   context-plan step never denies a route for request size alone; the 34,000-character denial
   comes from the compiled pack, which the lane does not build.
