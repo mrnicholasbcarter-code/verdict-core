@@ -112,9 +112,10 @@ byte.
 | unsharded (local, agents) | `pytest tests/ -q --tb=short` | recorded `skip`, "unit_full runs the timing tests" |
 | leg K of N | `pytest tests/ -q --tb=short -m "not timing" --splits N --group K --splitting-algorithm least_duration --junitxml=proof-shard-K/junit-unit_full.xml` | K = 1: `... -m timing -p no:xdist --junitxml=proof-shard-1/junit-unit_timing.xml`; K > 1: recorded `skip` |
 
-- `-m "not timing"` is the only deselection the change introduces. The 12 tests
-  it removes from `unit_full` are exactly the ones `unit_timing` runs, and the
-  aggregate proves that (D6, checks A5).
+- `-m "not timing"` is the only marker deselection the change introduces. The
+  12 tests it removes from `unit_full` are exactly the ones `unit_timing` runs.
+  `--splits/--group` also deselects, in each leg, what another leg runs. The
+  aggregate proves both: nothing is lost by the marker or by the split (D6, A5).
 - pytest-split runs after `-m` deselection (`pytest_collection_modifyitems` is
   `trylast`; CI relies on the same order). `least_duration` sorts the items by
   their string form before assigning them, so the partition depends much less on
@@ -132,15 +133,17 @@ byte.
   Both the runner and the aggregate derive the selection arguments from one
   function, so they cannot diverge.
 - A leg writes to `proof-shard-K/`: `proof-report-full.json` (today's report plus
-  `"shard": {"index": K, "count": N}`, `null` when unsharded), `ids-<gate>.json`
-  and `junit-<gate>.xml`.
+  `"shard": {"index": K, "count": N}`, `null` when unsharded, and `"targets"`, the
+  `--targets` it was given), `ids-<gate>.json` and `junit-<gate>.xml`. The
+  `unit_targeted` command depends on `--targets`, which the workflow (not the
+  contract) supplies; recording it lets the aggregate recompute that command.
 - `classify_failure` has a hard-coded id map; `unit_timing` is added as `test`.
 
 ### D5. Workflow shape
 
 ```yaml
 jobs:
-  proof-targeted: ...        # not edited by this change (open question 2)
+  proof-targeted: ...        # left as is unless open question 2 is answered "retire"
   proof-shard:               # new matrix, no `needs`
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -156,7 +159,7 @@ jobs:
     timeout-minutes: 10
     steps: [checkout fetch-depth 0, python 3.13, uv, uv sync (same extras),
             download-artifact@v7 pattern proof-shard-* (continue-on-error),
-            aggregate.py --reports . --leg-result "${{ needs.proof-shard.result }}"
+            uv run python scripts/proof/aggregate.py --reports . --leg-result "${{ needs.proof-shard.result }}"
                          --expected-sha "$GITHUB_SHA" --report proof-report-full.json --json,
             upload-artifact proof-report-full (if: always())]
 ```
@@ -190,7 +193,7 @@ or non-object file, becomes a reason; the exit code is 1 when there is any.
 | A0 | The matrix result passed in is `success`. |
 | A1 | Reports exist for exactly leg indices `1..N`, N = the contract's `shards`: no missing, duplicate or extra index; each file is a JSON object. |
 | A2 | Each report: `schema_version` 1, `mode` `full`, `cache_mode` `no-cache`, same `contract_name`, `runner` `native`, `shard` equal to `{index, count: N}`, `head_sha` a non-empty string equal to the aggregate's own `GITHUB_SHA`. |
-| A3 | Each report's gate ids are exactly the contract's full-mode gates. Each recorded `command` equals the command recomputed from the contract for that leg (so a leg cannot drop `-m`, `--splits`, `--group`, or add a deselect). Each `required` flag equals the contract's. Every required gate is `pass`. `unit_timing` is `pass` in leg 1 and `skip` in the others. A failing or skipped **non-required** gate keeps today's meaning: it is listed, and does not fail the aggregate. |
+| A3 | Each report's gate ids are exactly the contract's full-mode gates. Each recorded `command` equals the command recomputed from the contract for that leg (so a leg cannot drop `-m`, `--splits`, `--group`, or add a deselect). Each `required` flag equals the contract's. Every required gate is `pass`. The `targets` are the same in every leg and the recomputation uses them (the workflow test pins the value). A gate conditioned on `llm_boundary` is `skip`. `unit_timing` is `pass` in leg 1 and `skip` in the others. A failing or skipped **non-required** gate keeps today's meaning: it is listed, and does not fail the aggregate. |
 | A4 | Each report's `ok` is true. |
 | A5 | Only when A0-A4 hold: reference sets F (all ids collected with no marker) and T (collected with `-m timing`) are collected by the aggregate, independent of the legs. The legs' `unit_full` id sets must have union = F minus T (nothing missing, nothing extra) and be pairwise disjoint, using `check_union`. Leg 1's `unit_timing` ids must equal T, and T must not be empty. |
 | A6 | Each JUnit file has `tests` equal to the number of ids that leg selected, and no failures or errors; the sum over legs equals the size of F. Sums of `tests` and `skipped` are recorded in the merged report. |
@@ -215,10 +218,35 @@ restores a job of the same name. Nothing in the repository depends on the name
 except fixture literals in `tests/test_ci_policy.py` and `tests/test_pr_watcher.py`.
 Legs are `proof-shard (1)`, `(2)`, ...; they are not required.
 
-### D8. Drop the wait on `proof-targeted`; do not edit that job
+### D8. Drop the wait on `proof-targeted`
 
-`proof-shard` has no `needs`. `proof-targeted` is neither required nor forbidden
-by this change; whether it stays is open question 2.
+`proof-shard` has no `needs`. This change does not otherwise edit
+`proof-targeted`, and does not decide whether it stays: that is open question 2.
+If the operator answers "retire" before the build starts, the build deletes the
+job in the same edit of `proof.yml`.
+
+## Differences from the research
+
+The research of 2026-11-24 (`issue-1307.md`, kept in
+`.claude/tools-backup/research/` per the issue comment) recommends option B,
+N = 3, drop the `proof-targeted` dependency. This design follows it and differs
+in five places:
+
+1. **An append rule and a per-gate `shard:` field, not a `{shard}` placeholder.**
+   Appending leaves an unsharded argv equal to the contract's command by
+   construction, and one field also expresses "leg 1 only". Same README rule: the
+   contract is extended, not paralleled.
+2. **The leg count comes from the contract** (`modes.full.shards`), not only from
+   the workflow matrix, so the aggregate has a number to check against.
+3. **Legs record the ids they selected** (`ids-<gate>.json`) so the aggregate can
+   run `check_union` on id sets and not only compare junit counts.
+4. **The aggregate installs the environment and collects its own reference set.**
+   The research estimated the aggregate at about 15 s; with that independence it
+   is about 55 s (Estimates). This is why N = 2 loses its margin, and why the
+   design does not claim "every N from 2 is under CI's 416 s".
+5. **No `.test_durations` refresh.** The research lists it with `least_duration`;
+   this design uses only the flag, because a refresh needs a full-suite run that
+   belongs to CI, and the live evidence reports the leg spread.
 
 ## What the proof checks today, and where it is checked after
 
@@ -226,7 +254,7 @@ by this change; whether it stays is open question 2.
 |---|---|---|
 | Every gate of full mode (16 entries in today's report) runs with the contract's commands; each `required` gate exits 0 | Every leg runs every gate; the aggregate compares each recorded command and `required` flag to the contract and requires every required gate `pass` (A3) | `tests/test_proof_aggregate.py`: altered command, flipped `required`, missing gate each fail |
 | `unit_full` runs all 13,606 tests, exit 0 | The 13,594 non-timing tests run once each across the legs; the 12 timing tests run once in `unit_timing`; exit 0 in every leg | Union, disjointness, F and T from an independent collection (A5), counts (A6) |
-| `-m "not timing"` deselects nothing today | It deselects exactly T from `unit_full`; T is run by `unit_timing`, serially | A5: leg 1's ids equal T and T is non-empty; a leg-1 `unit_timing` log with 12 passed and no worker prefix |
+| `unit_full` deselects nothing today | `-m "not timing"` deselects exactly T from `unit_full` (T is run by `unit_timing`, serially); `--splits/--group` deselects per leg what another leg runs | A5: leg 1's ids equal T and T is non-empty; a leg-1 `unit_timing` log with 12 passed and no worker prefix |
 | Local `run.py --mode full --no-cache` runs the whole suite | Same argv for every gate; `unit_timing` is recorded `skip` | Test asserts the exact `unit_full` argv; `acceptance_smoke` passes |
 | Same environment | Same steps in every leg: Python 3.13, `uv sync` with the same extras, `fetch-depth: 0`, Semgrep tool, `build`, `PYTEST_ADDOPTS`, `--no-cache`, `--otel`, `--targets` | `tests/test_proof_workflow.py` compares the leg's setup with the recorded steps |
 | 34 skipped and 27 xfailed tests (decided by the tests themselves) | Nothing re-marks a test. The aggregate records summed JUnit `skipped` (JUnit reports xfail as skipped; INFERRED) | `git diff origin/main...HEAD` shows no removed `skip`, `xfail`, `deselect` or marker line and an empty `pyproject.toml` diff (task 5.1); live total compared with the baseline |
@@ -269,7 +297,8 @@ Every new test is written first and shown red on unchanged code, then green.
   duplicate and out-of-range index; count different from the contract; mixed
   `head_sha`; `head_sha` different from the run's commit; wrong `mode`,
   `cache_mode` or `contract_name`; altered command (no `-m`, no `--splits`, extra
-  `--deselect`); flipped `required`; missing gate; `unit_timing` absent in leg 1
+  `--deselect`); flipped `required`; missing gate; `targets` different between
+  legs; a `llm_boundary` gate that ran; `unit_timing` absent in leg 1
   or run in leg 2; test missing from every leg; test in two legs; unexpected
   test; timing ids different from T; empty T; JUnit count different from ids;
   failures in JUnit; missing, malformed or non-object report, ids file or JUnit
@@ -386,17 +415,20 @@ Both are for the operator. Neither changes the spec or the task breakdown: the
 spec and tasks say "the declared number of legs", and no task requires or
 forbids `proof-targeted`.
 
-1. **Shard count if legs queue.** Suggested default (research): **N = 3**, then
-   choose by queueing evidence; every N from 2 to 4 left the round CI-bound in
-   the research's estimate. This design's aggregate does its own collection, so
+1. **Shard count if legs queue.** Suggested default (the research's
+   recommendation): **N = 3 to start**, then choose by queueing evidence; every N
+   from 2 to 4 left the round CI-bound in the research's estimate. This design's aggregate does its own collection, so
    N = 2 leaves about 15 s of margin (Estimates, INFERRED) and N = 3 is the safer start.
    Changing N is two numbers (`modes.full.shards`, the matrix list), checked by
    `tests/test_proof_workflow.py` and by the aggregate. Evidence to decide on:
    per-leg start delay in the live rounds (the plan tier and cap are NOT
-   AVAILABLE). Suggested trigger: if the median leg starts more than 60 s after
-   the run was created, reduce N.
-2. **Keep or retire `proof-targeted`.** Suggested default (research): **keep it**,
-   with the wait dropped, as a 43-46 s early signal that is off the critical
-   path. Retiring it frees one job slot at the start of a round and removes a
-   check that every leg already repeats (the targeted gates are a subset of full
-   mode); that is a one-job deletion in a later change.
+   AVAILABLE). This design's own proposal, not from the research: reduce N if the
+   median leg starts more than 60 s after the run was created.
+2. **Keep or retire `proof-targeted`.** The research names no default: it
+   recommends only dropping the dependency and lists keep-or-retire as an
+   operator decision (its decision 5). This design's proposal, for the operator
+   to confirm or reverse: **keep it** with the wait dropped, as a 43-46 s early
+   signal that is off the critical path. Retiring it frees one job slot at the
+   start of a round and removes a check that every leg already repeats (the
+   targeted gates are a subset of full mode); that is a one-job deletion, in this
+   change if the operator answers before the build starts, else in a later one.
