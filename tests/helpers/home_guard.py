@@ -268,24 +268,24 @@ def _as_path(value: object) -> str | None:
 def _sqlite_file_targets(value: str) -> list[str]:
     """Filesystem targets of a ``sqlite3.connect`` argument.
 
-    The audit event carries the raw string, and the caller may have passed
-    ``uri=True``, so a ``file:`` string is also decoded (``file:/p?mode=rwc``,
-    ``file:///p``, percent escapes). ``mode=ro`` and ``mode=memory`` URIs touch no file, so only
-    their decoded target is skipped. The raw string is always checked too:
-    without ``uri=True`` it is just a (writable) path.
+    The audit event carries the raw string and not ``uri=``, so a ``file:``
+    string is read both ways. As a URI it is decoded (``file:/p?mode=rwc``,
+    ``file:///p``, percent escapes); ``mode=ro`` and ``mode=memory`` URIs touch
+    no file, so their decoded target is skipped. As a plain filename it is a
+    literal name in the cwd (``file:state.db?mode=ro`` is a writable file
+    there), but a literal can only be created when its directory exists, so
+    ``file:/abs/p`` (needs a directory named ``file:``) is not a literal target.
     """
-    targets = [value]
-    if value.startswith("file:"):
-        split = urllib.parse.urlsplit(value)
-        if {"ro", "memory"} & set(urllib.parse.parse_qs(split.query).get("mode", [])):
-            # Read-only or in-memory as a URI, but without ``uri=True`` this is
-            # a writable literal filename: the decoded target is skipped, the
-            # raw one kept.
-            return targets
-        if split.netloc in ("", "localhost"):
-            decoded = urllib.parse.unquote(split.path)
-            if decoded:
-                targets.append(decoded)
+    if not value.startswith("file:"):
+        return [value]
+    targets = [value] if os.path.isdir(os.path.dirname(_normalise(value))) else []
+    split = urllib.parse.urlsplit(value)
+    if {"ro", "memory"} & set(urllib.parse.parse_qs(split.query).get("mode", [])):
+        return targets
+    if split.netloc in ("", "localhost"):
+        decoded = urllib.parse.unquote(split.path)
+        if decoded:
+            targets.append(decoded)
     return targets
 
 

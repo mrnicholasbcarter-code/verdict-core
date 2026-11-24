@@ -379,6 +379,33 @@ def test_moving_or_deleting_an_ancestor_of_the_protected_root_is_refused(
     assert (root / "model-metadata.json").read_text() == '{"ratings": 1}'
 
 
+def test_absolute_sqlite_uris_are_fine_when_cwd_is_inside_a_protected_root(
+    fake_real_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a literal name that could really be created in cwd counts as one."""
+    root = fake_real_home / ".verdict"
+    monkeypatch.chdir(root)
+    with GUARD.protect(root):
+        for uri in (
+            f"file:{tmp_path}/scratch?mode=memory",
+            f"file:{tmp_path}/scratch?mode=memory&cache=shared",
+            f"file:{tmp_path}/other.db?mode=ro",
+        ):
+            guard_only = HomeWriteGuard([root])
+            guard_only.check("sqlite3.connect", (uri,))  # no violation
+        scratch = sqlite3.connect(f"file:{tmp_path}/scratch?mode=memory", uri=True)
+        scratch.close()
+        assert not GUARD.violations
+        # ...while a literal that CAN be created in the protected cwd stays refused,
+        with pytest.raises(PermissionError):
+            sqlite3.connect("file:state.db?mode=ro")
+        # ...and so does a real write URI into the root.
+        with pytest.raises(PermissionError):
+            sqlite3.connect(f"file:{root}/uri.db", uri=True)
+        assert len(GUARD.drain()) == 2
+    assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
+
+
 def test_double_leading_slash_cannot_reach_a_protected_root(fake_real_home: Path) -> None:
     root = fake_real_home / ".verdict"
     doubled = "/" + str(root / "state.json")  # '//tmp/...': the same file on Linux
