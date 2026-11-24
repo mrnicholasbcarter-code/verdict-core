@@ -1111,7 +1111,8 @@ def _action_headline_metric(**kwargs: Any) -> ActionResult:
     """M0 headline metric report: accepted work per paid model share.
 
     Computes the headline metric from verified receipts in *runs_dir*, excluding
-    fixture runs (run_id starting with "test-").
+    fixture runs (run_id starting with "test-").  A missing *runs_dir* gives an
+    empty report (``runs_dir_found`` false), never an error.
 
     kwargs:
         runs_dir (str): Path to the runs directory.
@@ -1126,11 +1127,9 @@ def _action_headline_metric(**kwargs: Any) -> ActionResult:
     runs_dir_str: str = kwargs.get("runs_dir", ".verdict/runs")
     since_str: str | None = kwargs.get("since")
 
+    # A runs directory that does not exist (a fresh install) is an empty report,
+    # not an error; the report says the directory was not found.
     runs_dir = Path(runs_dir_str)
-    if not runs_dir.exists():
-        return ActionResult(
-            data={"error": f"runs directory not found: {runs_dir}"}, ok=False, exit_code=2
-        )
 
     since: date | None = None
     if since_str:
