@@ -1602,10 +1602,65 @@ def _pr_watcher_timer_row(
     return {"label": label, "status": "failed", "detail": detail}
 
 
+def _context_lift_last_bench_result(home: Path | None = None) -> dict[str, Any] | None:
+    """Read the most-recent context-lift bench receipt from disk, None on any error.
+
+    Returns None when the file is missing, unreadable, or its contents are not a
+    JSON object — a list, string or number is never a valid receipt and must not
+    reach the timer-row check (which calls .get() on the result).
+    """
+    import json as _json
+
+    from verdict.paths import verdict_home as _verdict_home
+
+    path = (home or _verdict_home()) / "context-lift" / "latest.json"
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _receipt_is_from_invocation(bench: dict[str, Any], state: dict[str, Any]) -> bool:
+    """Return True when the receipt was written by the unit run that failed.
+
+    The bench records systemd's ``$INVOCATION_ID`` in its receipt and the unit
+    reports the same value as ``InvocationID`` (systemd.exec(5)).  A blocked
+    receipt from an earlier run, or one written later by a manual or ``--dry-run``
+    bench that overwrote ``latest.json``, has no matching ID, so it cannot turn a
+    crash or a usage-error exit into a warning.  A time window could not tell
+    these apart.
+
+    Returns False when either ID is absent, empty or not a string (systemd older
+    than v232 reports none).
+    """
+    receipt_id = bench.get("invocation_id")
+    unit_id = state.get("invocation_id")
+    if not isinstance(receipt_id, str) or not isinstance(unit_id, str):
+        return False
+    receipt_id, unit_id = receipt_id.strip().lower(), unit_id.strip().lower()
+    return bool(receipt_id) and receipt_id == unit_id
+
+
 def _context_lift_timer_row(
     timer_state: Callable[[str], dict[str, Any]] | None = None,
+    bench_result: Callable[[], dict[str, Any] | None] | None = None,
 ) -> dict[str, str]:
-    """The daily context-lift bench timer is active and its last run succeeded."""
+    """The daily context-lift bench timer is active and its last run succeeded.
+
+    When the service exited non-zero because all routes were blocked, the row
+    reports a warning (not a failure) and names the block reason so the operator
+    knows why no free routes are available without an install being unhealthy.
+
+    A warning is only issued when ALL of these hold:
+    - The service's ExecMainStatus is "2" (the intentional blocked-exit code).
+    - The receipt was written by that same unit run: its invocation_id equals the
+      service's InvocationID.
+    - The timer itself is active, so the bench will run again.  The service can
+      have failed while the timer was stopped or failed.
+    """
     from verdict import context_lift_service
     from verdict.setup_host import CONTEXT_LIFT, setup_repair
 
@@ -1617,6 +1672,21 @@ def _context_lift_timer_row(
 
     if name == "active" and result in {"success", "unknown"}:
         return {"label": label, "status": "ok", "detail": detail}
+    if name == "failed" and result == "exit-code":
+        # Distinguish a blocked bench (no free routes, expected) from a crash.
+        # Require ExecMainStatus=2 (intentional exit), a receipt written by this
+        # very unit run (matching invocation ID), and a timer that is still active.
+        bench = (bench_result or _context_lift_last_bench_result)()
+        if (
+            isinstance(bench, dict)
+            and bench.get("conclusion") == "blocked"
+            and str(state.get("exec_main_status", "")) == "2"
+            and _receipt_is_from_invocation(bench, state)
+            and state.get("timer_active_state") == "active"
+        ):
+            br = str(bench.get("block_reason") or "no eligible routes")
+            detail += f"; blocked: {br}"
+            return {"label": label, "status": "warning", "detail": detail}
     if name == "missing":
         detail += f"; repair: {setup_repair(CONTEXT_LIFT)}"
         return {"label": label, "status": "failed", "detail": detail}

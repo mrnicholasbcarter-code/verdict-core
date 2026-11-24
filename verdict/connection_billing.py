@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -123,6 +125,34 @@ _OVERLAY_STAT_TTL_NS = 100_000_000  # 100 ms in nanoseconds
 # owns all env-var reads per test_no_other_module_reads_verdict_home_directly).
 _overlay_cache: tuple[str, int, dict[tuple[str, str | None], BillingFact], int] | None = None
 
+# Thread-local for batch callers (e.g. routing_view) that load the overlay once
+# and share it across all lookup() calls within a single projection.  When
+# _batch.overlay is set, lookup() uses it instead of calling _load_overlay().
+_batch: threading.local = threading.local()
+
+
+@contextmanager
+def preload_overlay(env: Mapping[str, str] | None = None) -> Iterator[None]:
+    """Context manager: load the overlay once and reuse it within the block.
+
+    Use this in tight classification loops (e.g. a 7000-route inventory view)
+    to avoid calling _load_overlay() — and therefore verdict_home() — once per
+    route.  The loaded index is stored in a thread-local so xdist workers with
+    different VERDICT_HOME values each keep their own copy.
+
+    Example::
+
+        with preload_overlay():
+            for route_id in routes:
+                result = lookup(provider, auth_type)
+    """
+    prev = getattr(_batch, "overlay", None)
+    _batch.overlay = _load_overlay(env)
+    try:
+        yield
+    finally:
+        _batch.overlay = prev
+
 
 def _overlay_path(env: Mapping[str, str] | None = None) -> Path:
     from verdict.paths import verdict_home
@@ -136,10 +166,11 @@ def _load_overlay(
     """Load the operator overlay, returning an empty index when absent or invalid."""
     global _overlay_cache
 
+    now_ns = time.monotonic_ns()
+
     from verdict.paths import verdict_home
 
     cache_key = verdict_home(env).as_posix()
-    now_ns = time.monotonic_ns()
 
     # Fast path: same home path, recently checked — skip stat().
     if (
@@ -234,7 +265,10 @@ def lookup(
     p = _BILLING_PROVIDER_ALIASES.get(p, p)
     a = auth_type.lower() if isinstance(auth_type, str) else None
 
-    overlay = _load_overlay(env)
+    # Use the pre-loaded overlay from preload_overlay() when available and no
+    # custom env is requested (the batch overlay was loaded with the same env).
+    batch_overlay = getattr(_batch, "overlay", None)
+    overlay = batch_overlay if (env is None and batch_overlay is not None) else _load_overlay(env)
     snapshot, _ = _load_snapshot()
 
     # Overlay wins over snapshot; auth-typed entry wins over provider-wide.

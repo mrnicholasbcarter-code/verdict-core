@@ -2,7 +2,8 @@
 
 The timer runs ``verdict bench context-lift --json`` once a day on FREE capacity
 only.  A blocked result (no free identity, gateway down) is written as evidence
-and the unit exits 0 — verdict doctor only fails when the unit itself is broken.
+and the unit exits 2 — verdict doctor reports it as a warning so the operator
+knows why no free routes are available, without blocking a healthy install.
 """
 
 from __future__ import annotations
@@ -37,7 +38,21 @@ def timer_state(unit: str = TIMER) -> dict[str, Any]:
         state = "failed"
     else:
         state = "active" if values.get("ActiveState") == "active" else "inactive"
-    return {"state": state, "result": service.get("Result") or "unknown"}
+    return {
+        "state": state,
+        "result": service.get("Result") or "unknown",
+        # ExecMainStatus is the actual exit code from the last service run;
+        # "2" means the bench exited intentionally with blocked.
+        "exec_main_status": service.get("ExecMainStatus"),
+        # InvocationID identifies the last runtime cycle of the service.  The
+        # bench records the same value ($INVOCATION_ID) in its receipt, so doctor
+        # can tell the receipt of this failed run from a later manual run.  It
+        # persists after the unit exits and is unset on systemd before v232.
+        "invocation_id": service.get("InvocationID") or None,
+        # The timer's own ActiveState: "state" above is "failed" whenever the
+        # service failed, even if the timer was stopped and will not fire again.
+        "timer_active_state": values.get("ActiveState"),
+    }
 
 
 def manage_service(
@@ -50,8 +65,9 @@ def manage_service(
     """Render or apply the daily context-lift units.  Dry-run never writes or runs systemctl.
 
     The service runs this interpreter from this checkout on FREE capacity.
-    A blocked result (no qualified identity) exits 0 — the unit never fails
-    over a missing free route.  Resource bounds keep host pressure minimal.
+    A blocked result (no qualified identity) exits 2 — the unit records a
+    non-success so doctor can surface the block as a warning.  Resource bounds
+    keep host pressure minimal.
     """
     directory = unit_dir or (
         Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd" / "user"

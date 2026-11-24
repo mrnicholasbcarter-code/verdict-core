@@ -237,6 +237,7 @@ def test_planted_token_never_in_evidence_file(tmp_path: Path) -> None:
     with (
         patch("verdict.context_lift.run_context_lift", return_value=_blocked_result(planted_token)),
         patch("verdict.paths.verdict_home", return_value=home_dir),
+        pytest.raises(SystemExit),  # blocked result exits 2 (#1279)
     ):
         _dispatch._cmd_bench_context_lift(args)
 
@@ -269,6 +270,7 @@ def test_planted_token_never_on_stdout(tmp_path: Path, capsys: pytest.CaptureFix
     with (
         patch("verdict.context_lift.run_context_lift", return_value=_blocked_result(planted_token)),
         patch("verdict.paths.verdict_home", return_value=home_dir),
+        pytest.raises(SystemExit),  # blocked result exits 2 (#1279)
     ):
         _dispatch._cmd_bench_context_lift(args)
 
