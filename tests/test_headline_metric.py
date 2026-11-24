@@ -928,3 +928,81 @@ class TestMissingNumbersAreNull:
         )
         assert "undefined" not in text
         assert "Accepted/dollar:  null  (" in text
+
+    def test_dollars_reason_distinguishes_no_runs_from_unknown_cost(self) -> None:
+        from verdict.headline_metric import aggregate_extended_metrics
+
+        empty = aggregate_extended_metrics([])
+        assert empty["dollars"] is None
+        assert empty["has_unknown_cost"] is False
+        assert empty["dollars_note"] == "no runs in selected period"
+
+        unknown = aggregate_extended_metrics(
+            [
+                (
+                    Path("/tmp/fake"),
+                    _make_receipt(
+                        nodes=[
+                            _node(
+                                "n1",
+                                "implement",
+                                attempts=[_attempt("sub/x", "subscription", cost_usd=None)],
+                            )
+                        ]
+                    ),
+                )
+            ]
+        )
+        assert unknown["dollars"] is None
+        assert "unknown cost" in unknown["dollars_note"]
+
+        known = aggregate_extended_metrics(
+            [
+                (
+                    Path("/tmp/fake"),
+                    _make_receipt(
+                        nodes=[
+                            _node(
+                                "n1",
+                                "implement",
+                                attempts=[_attempt("sub/x", "subscription", cost_usd=0.5)],
+                            )
+                        ]
+                    ),
+                )
+            ]
+        )
+        assert known["dollars"] == pytest.approx(0.5)
+        assert known["dollars_note"] is None
+
+    def test_formatter_empty_report_does_not_claim_unknown_cost(self) -> None:
+        from verdict.headline_metric import compute_headline_report, format_headline_report
+
+        text = format_headline_report(
+            compute_headline_report(Path("/tmp/nonexistent-verdict-format-empty-runs"))
+        )
+        dollars_line = next(line for line in text.splitlines() if line.startswith("Dollars spent"))
+        assert "no runs in selected period" in dollars_line
+        assert "unknown cost" not in dollars_line
+
+    def test_formatter_unknown_cost_report_says_unknown_cost(self, tmp_path: Path) -> None:
+        import verdict.headline_metric as hm
+        from verdict.headline_metric import compute_headline_report, format_headline_report
+
+        receipt = _make_receipt(
+            run_id="run-unknown",
+            nodes=[
+                _node(
+                    "n1", "implement", attempts=[_attempt("sub/x", "subscription", cost_usd=None)]
+                )
+            ],
+        )
+        original = hm.load_receipts_since
+        hm.load_receipts_since = lambda runs_dir, since=None: ([(tmp_path / "r", receipt)], 0, 0)  # type: ignore[assignment]
+        try:
+            text = format_headline_report(compute_headline_report(tmp_path))
+        finally:
+            hm.load_receipts_since = original
+        dollars_line = next(line for line in text.splitlines() if line.startswith("Dollars spent"))
+        assert "unknown cost" in dollars_line
+        assert "no runs" not in dollars_line

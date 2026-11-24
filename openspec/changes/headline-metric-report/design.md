@@ -103,10 +103,11 @@ computable from local receipts without network access and without a management
 token.  The paid-quota denominator is not part of this change (see Denominator).
 
 **Decision 4: an unavailable number is null with a reason, not a sentinel string.**
-`headline_accepted_per_paid_share` and `tasks_per_dollar` are `null` (Python
-`None`) in the JSON output when they cannot be computed, with a companion
-`*_note` key carrying the reason (no paid attempts, unknown cost, no recorded
-spend, no runs). Callers check for missing data with a null guard instead of a
+`headline_accepted_per_paid_share`, `tasks_per_dollar` and `dollars` are `null`
+(Python `None`) in the JSON output when they cannot be computed, with a
+companion `*_note` key carrying the reason (no paid attempts, unknown cost, no
+recorded spend, no runs). An empty report and a report with unknown cost are
+told apart by that reason, not by guessing from the null. Callers check for missing data with a null guard instead of a
 string parse. `compute_run_metrics` still returns the string `"undefined"` for
 the existing per-run `verdict metrics` table, whose tests pin it; the headline
 report normalises that value to null in `verdict/headline_metric.py` so its JSON

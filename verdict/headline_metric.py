@@ -128,6 +128,7 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
         return {
             "accepted_tasks": 0,
             "dollars": None,
+            "dollars_note": "no runs in selected period",
             "has_unknown_cost": False,
             "tasks_per_dollar": None,
             "tasks_per_dollar_note": "no runs in selected period",
@@ -272,6 +273,7 @@ def aggregate_extended_metrics(receipts: list[tuple[Path, dict[str, Any]]]) -> d
     return {
         "accepted_tasks": total_accepted,
         "dollars": dollars,
+        "dollars_note": "some model attempts have unknown cost" if has_unknown_cost else None,
         "has_unknown_cost": has_unknown_cost,
         "tasks_per_dollar": tasks_per_dollar,
         "tasks_per_dollar_note": tasks_per_dollar_note,
@@ -364,7 +366,8 @@ def format_headline_report(data: dict[str, Any]) -> str:
     if dollars is not None:
         lines.append(f"Dollars spent:    ${dollars:.4f}")
     else:
-        lines.append("Dollars spent:    null  (some model attempts have unknown cost)")
+        dollars_reason = data.get("dollars_note") or "unavailable"
+        lines.append(f"Dollars spent:    null  ({dollars_reason})")
     tpd = data.get("tasks_per_dollar")
     if isinstance(tpd, float):
         lines.append(f"Accepted/dollar:  {tpd:.2f}")
