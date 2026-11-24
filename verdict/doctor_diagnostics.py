@@ -791,10 +791,12 @@ def _doctor_opencode_version(diag: DoctorDiagnostics) -> None:
         result = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10)
         version_line = (result.stdout or result.stderr or "").strip().splitlines()
         installed = version_line[0].strip() if version_line else ""
-        # OpenCode outputs "2.3.2" or "opencode 2.3.2"; extract the version number.
+        # OpenCode outputs "2.3.2" or "opencode 2.3.2"; extract the whole version token,
+        # keeping any prerelease/build suffix: the adapter is pinned to the exact release, so
+        # "2.3.2-rc.1" is not "2.3.2".
         import re
 
-        match = re.search(r"\d+\.\d+\.\d+", installed)
+        match = re.search(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]*)?", installed)
         installed_version = match.group(0) if match else installed
     except FileNotFoundError:
         diag.sections.append(("OpenCode", "note", "not installed (binary not found on PATH)"))

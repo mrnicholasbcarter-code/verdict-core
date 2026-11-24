@@ -536,9 +536,9 @@ def test_context_file_is_prepared_off_the_event_loop(
     seen: list[bool] = []
     real = module._write_context_file
 
-    def spy(cwd: Path, prompt: str) -> None:
+    def spy(cwd: Path, prompt: str, *args: object) -> None:
         seen.append(threading.current_thread() is threading.main_thread())
-        real(cwd, prompt)
+        real(cwd, prompt, *args)  # type: ignore[arg-type]
 
     monkeypatch.setattr(module, "_write_context_file", spy)
     payload = ndjson_success("done")
@@ -578,10 +578,10 @@ def test_cancelling_run_waits_for_the_context_preparation_thread(
     started, release = threading.Event(), threading.Event()
     real_git = module._git
 
-    def blocking_git(path: Path, *args: str) -> object:
+    def blocking_git(path: Path, *args: str, **kwargs: object) -> object:
         started.set()
         assert release.wait(timeout=30), "test never released the blocked git probe"
-        return real_git(path, *args)
+        return real_git(path, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(module, "_git", blocking_git)
     executor = OpenCodeExecutor(opencode_bin=fake)
@@ -670,13 +670,45 @@ def test_collect_does_not_spin_when_one_pipe_closes_and_the_worker_keeps_running
     assert calls < 50, f"collector woke {calls} times while idle (busy loop)"
 
 
+def test_slow_git_probe_is_bounded_by_the_attempt_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The git tracking probes must stop at the attempt deadline, not at their own 30 s.
+
+    Deducting elapsed time only after preparation would still let a short attempt take up
+    to a minute before returning (and cancellation waits for the preparation thread).  The
+    remaining budget is passed into each probe.  A fake ``git`` that hangs stands in for a
+    stuck repository.
+    """
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    slow_git = fake_bin / "git"
+    slow_git.write_text("#!/bin/sh\nsleep 60\n")
+    slow_git.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
+    ran = tmp_path / "worker-ran.txt"
+    fake = make_fake_opencode(
+        tmp_path, f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\nsys.exit(0)\n"
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    started = time.monotonic()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "hung git", cwd, timeout=1.5)
+    elapsed = time.monotonic() - started
+    assert terminal.ok is False and terminal.error == "timeout", terminal
+    assert elapsed < 10.0, (
+        f"hung git probe was not bounded by the attempt deadline ({elapsed:.1f}s)"
+    )
+    assert not ran.exists(), "worker was spawned after the deadline"
+
+
 def test_context_preparation_time_counts_against_the_attempt_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Slow preparation (two git probes of up to 30 s each) must not extend the budget."""
     import verdict.orchestration.executor_opencode as module
 
-    async def slow_prepare(cwd: Path, prompt: str) -> None:
+    async def slow_prepare(cwd: Path, prompt: str, deadline: float | None = None) -> None:
         await asyncio.sleep(1.5)
 
     monkeypatch.setattr(module, "_prepare_context", slow_prepare)
@@ -698,7 +730,7 @@ def test_attempt_times_out_without_spawning_when_preparation_used_the_whole_budg
 ) -> None:
     import verdict.orchestration.executor_opencode as module
 
-    async def slow_prepare(cwd: Path, prompt: str) -> None:
+    async def slow_prepare(cwd: Path, prompt: str, deadline: float | None = None) -> None:
         await asyncio.sleep(0.6)
 
     monkeypatch.setattr(module, "_prepare_context", slow_prepare)

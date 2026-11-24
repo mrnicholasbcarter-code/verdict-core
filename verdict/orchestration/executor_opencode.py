@@ -218,7 +218,11 @@ class _TrackingUnknownError(OSError):
     """Git could not say whether the context file is tracked; callers fail closed."""
 
 
-def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+class _PreparationDeadlineError(OSError):
+    """The attempt's time budget ran out while the context file was being prepared."""
+
+
+def _git(cwd: Path, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess[bytes]:
     """Run git under the process environment, as the runtime's own git calls do.
 
     ``LC_ALL=C`` only pins the wording of git's messages so a confirmed
@@ -227,11 +231,21 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     env = dict(os.environ)
     env["LC_ALL"] = "C"
     return subprocess.run(
-        ["git", "-C", str(cwd), *args], capture_output=True, timeout=30, check=False, env=env
+        ["git", "-C", str(cwd), *args], capture_output=True, timeout=timeout, check=False, env=env
     )
 
 
-def _context_path_is_tracked(cwd: Path) -> bool:
+def _probe_timeout(deadline: float | None) -> float:
+    """Timeout for one git probe: 30 s, or what is left of the attempt budget if less."""
+    if deadline is None:
+        return 30.0
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise _PreparationDeadlineError("attempt deadline reached while preparing the context file")
+    return min(30.0, left)
+
+
+def _context_path_is_tracked(cwd: Path, deadline: float | None = None) -> bool:
     """True when ``cwd`` is a git worktree whose index tracks the context file.
 
     Returns False only when that is *known*: git itself reports that ``cwd`` is not
@@ -241,6 +255,10 @@ def _context_path_is_tracked(cwd: Path) -> bool:
     timing out, exiting nonzero for another reason, a bare repository, an unreadable
     index) raises ``OSError``: treating it as "untracked" could let a tracked entry
     be replaced and then staged into the node deliverable.
+
+    ``deadline`` (an absolute ``time.monotonic()`` value) bounds the probes: each gets at
+    most what is left of it, and ``_PreparationDeadlineError`` is raised once it passes, so
+    a hung repository cannot hold an attempt past its own budget.
     """
 
     def unknown(why: str) -> _TrackingUnknownError:
@@ -249,16 +267,30 @@ def _context_path_is_tracked(cwd: Path) -> bool:
         )
 
     try:
-        probe = _git(cwd, "rev-parse", "--is-inside-work-tree")
+        probe = _git(cwd, "rev-parse", "--is-inside-work-tree", timeout=_probe_timeout(deadline))
         if probe.returncode != 0:
             if b"not a git repository" in probe.stderr:
                 return False  # confirmed: nothing here can be tracked
             raise unknown(f"git exited {probe.returncode}")
         if probe.stdout.strip() != b"true":
             raise unknown("not inside a git work tree")
-        done = _git(cwd, "ls-files", "--cached", "-z", "--", CONTEXT_FILE_NAME)
-    except _TrackingUnknownError:
+        done = _git(
+            cwd,
+            "ls-files",
+            "--cached",
+            "-z",
+            "--",
+            CONTEXT_FILE_NAME,
+            timeout=_probe_timeout(deadline),
+        )
+    except (_TrackingUnknownError, _PreparationDeadlineError):
         raise
+    except subprocess.TimeoutExpired as exc:
+        if deadline is not None and time.monotonic() >= deadline - 0.05:
+            raise _PreparationDeadlineError(
+                "attempt deadline reached while preparing the context file"
+            ) from exc
+        raise unknown("TimeoutExpired") from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise unknown(type(exc).__name__) from exc
     if done.returncode != 0:
@@ -266,7 +298,7 @@ def _context_path_is_tracked(cwd: Path) -> bool:
     return bool(done.stdout)
 
 
-def _write_context_file(cwd: Path, prompt: str) -> None:
+def _write_context_file(cwd: Path, prompt: str, deadline: float | None = None) -> None:
     """Write ``.verdict-context.md`` to the worktree for OpenCode's instructions.
 
     The file is listed in ``instructions`` in the per-attempt config so opencode
@@ -285,7 +317,9 @@ def _write_context_file(cwd: Path, prompt: str) -> None:
     # uses O_EXCL, so it never follows a link) and ``os.replace`` it over the
     # entry: rename replaces the symlink itself and never touches its target.
     target = cwd / CONTEXT_FILE_NAME
-    if _context_path_is_tracked(cwd):
+    if deadline is not None and time.monotonic() >= deadline:
+        raise _PreparationDeadlineError("attempt deadline reached while preparing the context file")
+    if _context_path_is_tracked(cwd, deadline):
         # ``.git/info/exclude`` only hides *untracked* paths.  Replacing a tracked
         # entry would be staged by ``git add -A`` into the node deliverable (an
         # ownership failure, or the task prompt committed if the path were owned).
@@ -303,7 +337,7 @@ def _write_context_file(cwd: Path, prompt: str) -> None:
         raise
 
 
-async def _prepare_context(cwd: Path, prompt: str) -> None:
+async def _prepare_context(cwd: Path, prompt: str, deadline: float | None = None) -> None:
     """Write the context file off the event loop, without letting a write outlive a cancel.
 
     The git tracking check can take seconds and the loop is shared by every
@@ -311,9 +345,10 @@ async def _prepare_context(cwd: Path, prompt: str) -> None:
     interrupted: if this coroutine is cancelled it waits for the thread to finish
     (the write then either completes or fails) before propagating the cancellation,
     so a caller that has seen the cancellation complete can clean up or reuse the
-    worktree without a late write racing it.
+    worktree without a late write racing it.  ``deadline`` (absolute monotonic time) bounds
+    the thread itself, so that wait cannot outlast the attempt's budget by much.
     """
-    task = asyncio.ensure_future(asyncio.to_thread(_write_context_file, cwd, prompt))
+    task = asyncio.ensure_future(asyncio.to_thread(_write_context_file, cwd, prompt, deadline))
     try:
         await asyncio.shield(task)
     except asyncio.CancelledError:
@@ -585,7 +620,16 @@ class OpenCodeExecutor:
 
         # --- write context file to worktree (Task 4.1) ---
         try:
-            await _prepare_context(cwd, prompt)
+            await _prepare_context(cwd, prompt, started + timeout_seconds)
+        except _PreparationDeadlineError:
+            return WorkerTerminal(
+                executor_kind="live",
+                ok=False,
+                model=route_id,
+                harness="opencode",
+                error="timeout",
+                duration_seconds=time.monotonic() - started,
+            )
         except OSError as exc:
             return WorkerTerminal(
                 executor_kind="live",

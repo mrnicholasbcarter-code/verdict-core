@@ -151,7 +151,8 @@ output onto `WorkerTerminal`:
 
 Two further bounds protect the orchestrator. Worker output (stdout plus stderr) kept in memory
 is capped at 16 MiB per attempt (`output_limit`; the process group is killed). Context
-preparation, whose git probes can take up to 30 s each, counts against the attempt timeout: the
+preparation counts against the attempt timeout: each git probe (30 s at most) gets only what is
+left of the attempt's budget, so a hung repository cannot hold an attempt past its deadline; the
 worker gets only the remainder, and nothing is spawned when none is left.
 
 **Context pack delivery (design detail):** The context pack and owned-files list

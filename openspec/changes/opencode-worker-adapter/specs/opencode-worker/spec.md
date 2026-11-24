@@ -158,10 +158,11 @@ OpenCode worker attempts SHALL be bounded by the existing per-attempt timeout
 
 #### Scenario: Context preparation counts against the attempt timeout
 
-- **WHEN** preparing the context file (including its git tracking check) takes part of
-  the attempt timeout
-- **THEN** the worker gets only the remaining budget, and when none remains the
-  attempt ends as a timeout without spawning the worker
+- **WHEN** preparing the context file (including its git tracking probes) takes part of
+  the attempt timeout, or a probe hangs
+- **THEN** each probe is bounded by what is left of the budget, the worker gets only
+  the remaining budget, and when none remains the attempt ends as a timeout without
+  spawning the worker
 
 #### Scenario: Per-node budget is exhausted
 
@@ -181,6 +182,7 @@ when the installed OpenCode version differs from v2.3.2.
 
 #### Scenario: Installed version differs from pinned version
 
-- **WHEN** OpenCode at a version other than v2.3.2 is installed
+- **WHEN** OpenCode at a version other than v2.3.2 is installed, including a
+  prerelease or build of the same numbers such as `2.3.2-rc.1`
 - **THEN** `verdict doctor` shows a non-fatal warning naming the installed version
   and the pinned version
