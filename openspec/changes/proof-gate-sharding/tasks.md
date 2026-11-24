@@ -1,0 +1,69 @@
+# Tasks
+
+This change is design only: nothing below is built yet, so every task is open and
+the pull request carries the `wip` label. Build tasks are never marked
+`(post-merge)`; that marker is only for live checks that need merged main.
+
+Rules for every test task: write the test first, run it on the unchanged code and
+keep the red output, then make it green and keep that output for the PR body.
+Each test must go red when the check it covers is removed. Run focused tests with
+`-n 2` at most. Do not run the full suite; CI on the exact head is the full suite.
+
+The leg count is "the declared number" everywhere below. Only task 1.7 sets the
+starting value (3, open question 1 in the design). Nothing below requires or
+forbids `proof-targeted` (open question 2).
+
+## 1. Contract and runner (an unsharded run is unchanged)
+
+Verification for the group: `uv run --frozen python -m pytest -q -n 2 tests/test_proof_pipeline.py tests/test_ci_shard_union.py` is green, and the unsharded `unit_full` argv equals today's command exactly.
+
+- [ ] 1.1 Failing tests for contract parsing: `shards` (positive integer; zero, negative, boolean, string and a non-full mode are refused), per-gate `shard` (`split` or `leader`; any other word is refused), `ProofContract` exposes the declared count. Files: `tests/test_proof_pipeline.py`. Verify: `uv run --frozen python -m pytest -q tests/test_proof_pipeline.py -k shard` fails before 1.2.
+- [ ] 1.2 Parse `shards` and `shard` in the contract loader; refuse bad values with `ContractError`. Files: `scripts/proof/contract.py`. Verify: the 1.1 tests pass and `uv run --frozen ruff check scripts/proof` exits 0.
+- [ ] 1.3 Failing tests for expansion: unsharded argv of `unit_full` equals `["pytest", "tests/", "-q", "--tb=short"]`; leg argv for N = 1..5 and every K holds `-m`, `not timing`, `--splits N`, `--group K`, `--splitting-algorithm least_duration`, `--junitxml=proof-shard-K/junit-unit_full.xml`; `unit_timing` runs only for K = 1, is recorded `skip` for K > 1 and when unsharded; an index outside `1..N`, a contract without `shards`, and `--shard` in targeted mode exit 2 before any gate; the report carries `shard` (`null` unsharded); `classify_failure("unit_timing")` is `test`. Files: `tests/test_proof_pipeline.py`. Verify: `uv run --frozen python -m pytest -q tests/test_proof_pipeline.py -k "shard or timing"` fails before 1.4.
+- [ ] 1.4 Add `--shard K` to the entry point and the append rule, skip recording, the `shard` report field and the `unit_timing` id in the failure map. One function builds a gate's selection arguments (also used by the aggregate). Files: `scripts/proof/run.py`, `scripts/proof/runner.py`. Verify: the 1.3 tests pass.
+- [ ] 1.5 Failing tests: `ci_shard_union.py --emit-ids` writes the selected ids as JSON, the existing default mode is unchanged (existing tests untouched and green), and the collector ignores `PYTEST_ADDOPTS="-p xdist -n auto"` (a controller collects nothing under xdist); for generated item lists (seeded `random`, no new dependency) and N = 1..5, the `least_duration` groups are pairwise disjoint with the input as their union. Files: `tests/test_ci_shard_union.py`. Verify: the new tests fail before 1.6; `uv run --frozen python -m pytest -q tests/test_ci_shard_union.py` afterwards.
+- [ ] 1.6 Add the `--emit-ids` mode to the collector and make the runner record each sharded pytest gate's selection in `proof-shard-K/ids-<gate>.json` before it runs the gate. Files: `scripts/ci_shard_union.py`, `scripts/proof/runner.py`. Verify: the 1.5 tests pass and a runner test shows the ids file is written next to the report.
+- [ ] 1.7 Declare `shards: 3` in the full mode, add `unit_timing` to the full phases and directly after `unit_full` in the gate list, and add `shard: split` to `unit_full`. Change no existing command or `required` flag. Files: `proof/contract.yaml`. Verify: `uv run --frozen python scripts/proof/acceptance_smoke.py` prints `acceptance_smoke: ok`, `uv run --frozen python -m pytest -q tests/test_proof_pipeline.py` is green, and `git diff -U0 origin/main...HEAD -- proof/contract.yaml | grep '^-[^-]'` prints nothing.
+
+## 2. Aggregate
+
+Verification for the group: `uv run --frozen python -m pytest -q -n 2 tests/test_proof_aggregate.py` is green; every failure test goes red when its check is removed.
+
+- [ ] 2.1 Failing tests for presence and identity (design checks A0-A2, A4): leg job result not success; failed, cancelled-and-missing and skipped legs; absent report; one leg too few and one too many; duplicate and out-of-range index; count different from the contract; mixed `head_sha`; `head_sha` different from the expected commit or missing; wrong `mode`, `cache_mode`, `contract_name`; `ok: false`. Build the leg directories as fixtures in a temp directory. Files: `tests/test_proof_aggregate.py`. Verify: the tests fail before 2.2.
+- [ ] 2.2 Implement A0-A2 and A4: discover every `proof-report-full.json` under the reports directory recursively and trust only the `shard` field; never raise; collect reasons; exit 1 on any. Files: `scripts/proof/aggregate.py`. Verify: the 2.1 tests pass.
+- [ ] 2.3 Failing tests for gates (A3): altered `unit_full` command (no `-m`, no `--splits`, extra `--deselect`), flipped `required`, missing and extra gate, `unit_timing` absent in leg 1 or run in leg 2, required gate not `pass`, and a failing or skipped non-required gate that keeps `ok` true. Files: `tests/test_proof_aggregate.py`. Verify: the tests fail before 2.4.
+- [ ] 2.4 Implement A3 by recomputing each leg's expected commands from the contract with the function from task 1.4. Files: `scripts/proof/aggregate.py`. Verify: the 2.3 tests pass.
+- [ ] 2.5 Failing tests for accounting (A5, A6): a test missing from every leg, in two legs, or unexpected; timing ids different from T or T empty; JUnit `tests` different from the selected count; JUnit failures or errors; sums recorded; missing, malformed, non-object or wrong-typed ids file or JUnit file (each asserts the aggregate raises nothing). Use a stub collector so no real suite is collected. Files: `tests/test_proof_aggregate.py`. Verify: the tests fail before 2.6.
+- [ ] 2.6 Implement A5 and A6: collect F and T once through the `--emit-ids` mode, compare with `check_union`, parse JUnit with `defusedxml`, run these checks only when A0-A4 hold. Files: `scripts/proof/aggregate.py`. Verify: the 2.5 tests pass.
+- [ ] 2.7 Failing tests, then implement the merged report: today's top-level keys, one entry per gate id (worst status, maximum duration), `shards`, `failures` with a `shard` field plus one `shard_aggregate` entry per reason, `otel.spans` with `proof.shard`, written even when legs failed; `--report` and `--json` as in `run.py`. Files: `tests/test_proof_aggregate.py`, `scripts/proof/aggregate.py`. Verify: `uv run --frozen python -m pytest -q tests/test_proof_aggregate.py` is green and `uv run --frozen python scripts/check_reachability.py --ratchet-base origin/main` reports nothing new.
+
+## 3. Workflow
+
+Verification for the group: `uv run --frozen python -m pytest -q tests/test_proof_workflow.py` is green and `uv run --frozen python scripts/check_lint_gates.py` passes.
+
+- [ ] 3.1 Failing tests that read `proof.yml` and the contract: the matrix equals `1..shards`; the leg job has no `needs` and a `timeout-minutes`; the aggregate job is named `proof-full`, has `needs` on the leg job, `if: always()` and a timeout; the leg upload uses `overwrite: true` and `if: always()`; the leg's setup steps (Python 3.13, `uv sync` with the same extras, `fetch-depth: 0`, Semgrep tool, `build`, `PYTEST_ADDOPTS`, `--no-cache`, `--otel`, `--targets`) match the list recorded today; no script or workflow writes the branch protection endpoint (`required_status_checks`). Files: `tests/test_proof_workflow.py`. Verify: the tests fail before 3.2.
+- [ ] 3.2 Replace the `proof-full` job with the `proof-shard` matrix and the `proof-full` aggregate as designed (D5); leave every other job as it is unless open question 2 is answered "retire" before the build starts. Files: `.github/workflows/proof.yml`. Verify: the 3.1 tests pass; `uv run --frozen python -c "import yaml; yaml.safe_load(open('.github/workflows/proof.yml'))"` exits 0.
+
+## 4. Documentation
+
+Verification for the group: `uv run --frozen python scripts/check_doc_links.py` exits 0 and `uv run --frozen python -m pytest -q tests/test_proof_workflow.py` is green.
+
+- [ ] 4.1 Failing test: `proof/README.md` names the check `proof-full`, holds the apply, read-back and rollback commands of the design, and says they are applied by the operator after the aggregate has been green on main. Files: `tests/test_proof_workflow.py`. Verify: the test fails before 4.2.
+- [ ] 4.2 Document in `proof/README.md`: legs and `--shard`, the `unit_timing` gate, what the aggregate checks (A0-A6), the merged report's `shards` key and `shard_aggregate` failures, that local runs are unsharded, "Re-run all jobs" when a leg is missing, and the operator commands. Files: `proof/README.md`. Verify: the 4.1 test passes and `uv run --frozen python scripts/check_doc_links.py` exits 0.
+
+## 5. Gates before the push
+
+Verification for the group: every command below exits 0 (or prints nothing where stated) and the PR body carries the red-then-green output.
+
+- [ ] 5.1 Show that nothing is weakened: `git diff origin/main...HEAD -- tests | grep -E '^-[^-]' | grep -Ei 'skip|xfail|deselect|mark'` prints nothing; `git diff --stat origin/main...HEAD -- pyproject.toml .test_durations` prints nothing; `git diff -U0 origin/main...HEAD -- proof/contract.yaml | grep '^-[^-]'` prints nothing. Files: none changed. Verify: the three commands, output pasted in the PR body.
+- [ ] 5.2 `uv run --frozen ruff check . && uv run --frozen ruff format --check .`, `uv run --frozen mypy verdict --strict`, `uv run --frozen python scripts/check_lint_gates.py`, `git diff --check`. Files: none changed. Verify: all exit 0.
+- [ ] 5.3 Run the focused tests for the changed files: `uv run --frozen python -m pytest -q -n 2 tests/test_proof_pipeline.py tests/test_proof_aggregate.py tests/test_proof_workflow.py tests/test_ci_shard_union.py tests/test_proof_matrix_doc.py`. Files: none changed. Verify: all pass.
+
+## 6. Live acceptance and closeout
+
+Verification for the group: each item is run on merged main and its raw output goes into the evidence file `docs/proof/dod/proof-gate-sharding.json`, which `uv run python scripts/check_dod.py` must accept. The branch-protection command is the operator's, after 6.1; no task applies it.
+
+- [ ] (post-merge) 6.1 On the first main push run of the Proof workflow after the merge, the `proof-full` aggregate is green, the declared number of `proof-shard` legs ran, and the downloaded merged report (`gh run download <run-id> -n proof-report-full`) has `ok: true` and one `shards` entry per leg. Its summed JUnit `tests` equals the independently collected count and, against the previous main push run, differs only by the tests the merged PR added (counted from its diff); its summed `skipped` equals the baseline's 34 skipped plus 27 xfailed, adjusted the same way.
+- [ ] (post-merge) 6.2 In the leg-1 artifact of that run, the `unit_timing` gate passed with 12 tests, and its log slice shows no `[gw` worker prefix (`gh run download <run-id> -n proof-shard-1`, then search `proof-report-full.json`).
+- [ ] (post-merge) 6.3 Measure at least 10 pull-request rounds after the merge. A round is the earliest `createdAt` to the latest `updatedAt` of the `pull_request` runs on one PR head (`gh run list --commit <sha> --json workflowName,createdAt,updatedAt,conclusion`); the baseline is 531 s over 28 rounds. Record the median, the range, the per-job durations, each leg's start delay and the leg duration spread, and how often `proof-full` was the last job to finish. Passes when the median is below 531 s and `proof-full` was last in at most half of the rounds. The start delays and spread are the evidence for open question 1.
+- [ ] (post-merge) 6.4 Build the evidence file outside the repository, commit it with the archived change only when `scripts/check_dod.py <file>` passes, with the trailer `Proof: docs/proof/dod/proof-gate-sharding.json`; then archive the change.
