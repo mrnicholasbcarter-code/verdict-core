@@ -219,3 +219,23 @@ def test_non_worker_request_with_a_model_field_behaves_as_before(
     assert [r["body"]["model"] for r in harness.transport.requests] == [default]
     assert [list(proofs) for proofs in harness.minted] == [[default]]
     assert harness.decisions[-1].model == default
+
+
+def test_client_model_override_flag_does_not_change_relay_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On main the relay never honours ``allow_client_model_override`` (the flag is only
+    stored); admission mints a proof for its own pick only, so rewriting the model after
+    admission could only fail closed.  Non-worker routing is unchanged, flag or not."""
+    service = _service()
+    service.allow_client_model_override = True
+    harness = _Harness(monkeypatch, service)
+    with TestClient(api.app) as client:
+        default = _default_choice(harness, client)
+        other = SUBSCRIPTION if default == FREE else FREE
+        harness.reset()
+        response = harness.post(client, worker=False, model=other)
+
+    assert response.status_code == 200, response.text
+    assert response.headers["x-verdict-model"] == default
+    assert [r["body"]["model"] for r in harness.transport.requests] == [default]

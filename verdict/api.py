@@ -2222,8 +2222,9 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     # a typed input (above); admission selects it within the set it already admitted and
     # mints its route-bound proof, or denies.  Here the relay only *verifies* that outcome:
     # it never rewrites a worker's decision, so a route can never be dispatched without the
-    # proof admission minted for it.  ``LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE`` remains the
-    # separate, unchanged gate for non-worker callers.
+    # proof admission minted for it.  Non-worker requests are untouched: their ``model``
+    # field does not select the route (``LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE`` is only
+    # stored on the service, as before; the relay never honoured it).
     # Any denial sets ``decision="denied"`` so the existing evidence-recording path handles it.
     _client_model = payload.get("model")
     # Presence of the header marks a worker request, whatever its value.
@@ -2262,22 +2263,6 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             # decision (the execution-path branch lists alternatives and proofs for several
             # offers), a worker request never falls back to a route it was not assigned.
             decision = replace(decision, alternatives=[])
-    elif getattr(intelligence_instance, "allow_client_model_override", False) and _has_client_model:
-        _admitted_ids = {
-            str(r.get("model_id"))
-            for r in decision.candidate_states
-            if isinstance(r, dict) and r.get("admitted") is True
-        }
-        if _client_model in _admitted_ids:
-            decision = replace(decision, model=_client_model, alternatives=[])
-        else:
-            # Fail closed: set decision="denied" so _start_evidence records
-            # the trace and the existing denied block returns 503 with headers.
-            decision = replace(
-                decision,
-                decision="denied",
-                reason=f"route {_client_model!r} was not in the admitted set for this request",
-            )
     attempts = build_attempts(proxy_instance, decision, protocol=protocol, admitted=relay_admitted)
     if not attempts:
         if "free_supply_unknown" in decision.safety_flags:

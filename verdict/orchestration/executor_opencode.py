@@ -762,12 +762,17 @@ class OpenCodeExecutor:
         cut = ""
         try:
             while True:
-                now = time.monotonic()
-                hard_left = timeout_seconds - (now - started)
-                idle_left = self.idle_output_seconds - (now - last_output)
                 if over_limit.is_set():
                     cut = "output_limit"
                     break
+                # Wait only on unfinished work: a task that is already done would make
+                # FIRST_COMPLETED return at once, every time, and spin the shared event loop.
+                unfinished = {task for task in tasks if not task.done()}
+                if not unfinished:
+                    break
+                now = time.monotonic()
+                hard_left = timeout_seconds - (now - started)
+                idle_left = self.idle_output_seconds - (now - last_output)
                 if hard_left <= 0:
                     cut = "timeout"
                     break
@@ -775,14 +780,10 @@ class OpenCodeExecutor:
                     cut = "stalled"
                     break
                 await asyncio.wait(
-                    {*tasks, limit_waiter},
+                    {*unfinished, limit_waiter},
                     timeout=min(hard_left, idle_left),
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                if over_limit.is_set():
-                    continue  # re-enter the loop head: reported as "output_limit"
-                if all(task.done() for task in tasks):
-                    break
         finally:
             for task in (*tasks, limit_waiter):
                 if not task.done():

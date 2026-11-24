@@ -643,6 +643,33 @@ def test_output_over_the_limit_kills_the_worker_instead_of_buffering_it(tmp_path
     assert _pid_gone(writer), "worker process group was not killed on the output limit"
 
 
+def test_collect_does_not_spin_when_one_pipe_closes_and_the_worker_keeps_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A finished pump must not make the wait return immediately on every iteration.
+
+    The worker closes stdout and carries on silently.  The collector should then sleep until
+    the idle timer fires; a wait set that still contains the finished task would return at
+    once, again and again, burning CPU on the event loop shared by every worker.
+    """
+    fake = make_fake_opencode(tmp_path, "os.close(1)\ntime.sleep(60)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    calls = 0
+    real_wait = asyncio.wait
+
+    async def counting_wait(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return await real_wait(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(asyncio, "wait", counting_wait)
+    executor = OpenCodeExecutor(opencode_bin=fake, idle_output_seconds=1.5)
+    terminal = run_executor(executor, "closes stdout", cwd, timeout=30.0)
+    assert terminal.ok is False and terminal.error.startswith("stalled"), terminal
+    assert calls < 50, f"collector woke {calls} times while idle (busy loop)"
+
+
 def test_context_preparation_time_counts_against_the_attempt_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
