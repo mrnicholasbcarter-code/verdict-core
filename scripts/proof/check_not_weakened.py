@@ -103,7 +103,19 @@ SKIP_NAMES = frozenset(
 HOOK_NAMES = frozenset(
     {"pytest_deselected", "pytest_collection_modifyitems", "pytest_ignore_collect"}
 )
-ASSIGN_NAMES = frozenset({"pytestmark", "collect_ignore", "collect_ignore_glob"})
+ASSIGN_NAMES = frozenset(
+    {
+        "pytestmark",
+        "collect_ignore",
+        "collect_ignore_glob",
+        # unittest's own skip switches, a class that opts out of collection, and plugins a
+        # conftest loads: each can stop tests from running without a call to skip().
+        "__unittest_skip__",
+        "__unittest_skip_why__",
+        "__test__",
+        "pytest_plugins",
+    }
+)
 # Applying a marker to a test at run time, by name or object (request.node.add_marker('skip')).
 MARKER_APPLIERS = frozenset({"add_marker", "applymarker"})
 # ``config.option.<name> = ...`` changes what pytest selects.
@@ -264,12 +276,24 @@ class _Collector(ast.NodeVisitor):
         name = self._resolved(node)
         if name in SKIP_NAMES or name in HOOK_NAMES or name in MARKER_APPLIERS:
             return True
-        return isinstance(node, ast.Attribute) and self._is_marker(node)
+        if not isinstance(node, ast.Attribute):
+            return False
+        return (
+            self._is_marker(node)
+            or node.attr.startswith("pytest_")  # a hook invoked, e.g. config.hook.pytest_x(...)
+            or (  # pytest.exit(...) ends the whole session
+                node.attr == "exit"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "pytest"
+            )
+        )
 
     def _visit_definition(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
     ) -> None:
-        if not isinstance(node, ast.ClassDef) and node.name in HOOK_NAMES:
+        if not isinstance(node, ast.ClassDef) and (
+            node.name in HOOK_NAMES or node.name.startswith("pytest_")
+        ):
             # The whole definition, not its name: a hook that is edited to drop or ignore
             # tests keeps its name.
             self._record("hook definition", ast.unparse(_without_docstring(node)), node)
@@ -311,7 +335,33 @@ class _Collector(ast.NodeVisitor):
             self._record("deletion", ast.unparse(node), node)
         self.generic_visit(node)
 
+    @staticmethod
+    def _is_hookimpl_with_specname(node: ast.Call) -> bool:
+        """``@pytest.hookimpl(specname="pytest_x")``: any function name can be a hook."""
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        return name == "hookimpl" and any(k.arg == "specname" for k in node.keywords)
+
+    @staticmethod
+    def _is_empty_parametrize(node: ast.Call) -> bool:
+        """``parametrize("v", [])``: pytest skips a test given an empty parameter set."""
+        func = node.func
+        return (
+            isinstance(func, ast.Attribute)
+            and func.attr == "parametrize"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.List | ast.Tuple | ast.Set)
+            and not node.args[1].elts
+        )
+
     def visit_Call(self, node: ast.Call) -> None:
+        if self._is_hookimpl_with_specname(node) or self._is_empty_parametrize(node):
+            self._record("call", ast.unparse(node), node)
+            for arg in node.args:
+                self.visit(arg)
+            for keyword in node.keywords:
+                self.visit(keyword.value)
+            return
         if isinstance(node.func, ast.Attribute) and (
             self._is_protected(node.func.value) or self._is_selection_option(node.func.value)
         ):

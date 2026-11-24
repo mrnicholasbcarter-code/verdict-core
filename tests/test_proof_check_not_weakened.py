@@ -200,6 +200,21 @@ CONSTRUCTS: dict[str, str] = {
     "pytestmark insert": "pytestmark.insert(0, 1)\n\ndef test_a():\n    assert True\n",
     "deleting an exclusion": "del collect_ignore[0]\n\ndef test_a():\n    assert True\n",
     "an import of a skip function": "from pytest import skip\n\ndef test_a():\n    assert True\n",
+    "unittest skip attribute": "import unittest\n\nclass TestK(unittest.TestCase):\n    __unittest_skip__ = True\n\n    def test_a(self):\n        pass\n",
+    "unittest skip reason attribute": "import unittest\n\nclass TestK(unittest.TestCase):\n    __unittest_skip_why__ = 'r'\n\n    def test_a(self):\n        pass\n",
+    "a class that opts out of collection": "class TestK:\n    __test__ = False\n\n    def test_a(self):\n        pass\n",
+    "pytest_plugins assignment": "pytest_plugins = ['some_plugin']\n\ndef test_a():\n    assert True\n",
+    "hookimpl with another function name": "@pytest.hookimpl(specname='pytest_collection_modifyitems')\ndef drop_items(items):\n    items.clear()\n",
+    "hookimpl specname on a pytest_ name": "@pytest.hookimpl(specname='pytest_collection_modifyitems')\ndef pytest_drop_items(items):\n    items.clear()\n",
+    "pycollect hook": "def pytest_pycollect_makeitem(collector, name, obj):\n    if name == 'test_a':\n        return []\n",
+    "runtest_protocol hook": "def pytest_runtest_protocol(item, nextitem):\n    return True\n",
+    "runtest_setup hook": "def pytest_runtest_setup(item):\n    pass\n",
+    "generate_tests hook": "def pytest_generate_tests(metafunc):\n    metafunc.parametrize('v', [])\n",
+    "collect_file hook": "def pytest_collect_file(file_path, parent):\n    return None\n",
+    "a hook invoked directly": "def test_a(config):\n    config.hook.pytest_runtest_logreport(report=None)\n",
+    "pytest.exit call": "def test_a():\n    pytest.exit('stop')\n",
+    "empty parametrize list": "@pytest.mark.parametrize('v', [])\ndef test_a(v):\n    pass\n",
+    "empty parametrize tuple": "@pytest.mark.parametrize('v', ())\ndef test_a(v):\n    pass\n",
     "skipTest call": "def test_a(self):\n    self.skipTest('x')\n",
     "SkipTest raise": "import unittest\n\ndef test_a():\n    raise unittest.SkipTest('x')\n",
     "param with a skip mark": "@pytest.mark.parametrize('v', [pytest.param(1, marks=pytest.mark.skip)])\ndef test_a(v):\n    assert v\n",
@@ -1585,5 +1600,18 @@ def test_reformatting_and_docstring_edits_in_a_file_that_skips_pass(
     repo = scenario(
         tmp_path, {"tests/test_a.py": after}, base=base_files() | {"tests/test_a.py": before}
     )
+    code, output = check(repo, capsys)
+    assert code == 0, output
+
+
+def test_a_non_empty_parametrize_and_unrelated_pytest_names_are_not_constructs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = (
+        "import pytest_asyncio\n\n@pytest.mark.parametrize('v', [1, 2])\ndef test_b(v):\n    assert v\n\n"
+        "@pytest_asyncio.fixture\nasync def fx():\n    return 1\n\n"
+        "def helper_for_pytest_style():\n    return pytest_style_name\n\npytest_style_name = 1\n"
+    )
+    repo = scenario(tmp_path, {"tests/test_a.py": CLEAN_TEST + "\n\n" + text})
     code, output = check(repo, capsys)
     assert code == 0, output
