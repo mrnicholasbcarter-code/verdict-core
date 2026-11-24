@@ -363,6 +363,29 @@ verdict orchestrate "goal" --executor prime-headless # Prime Agent instead
 differs from the pinned v2.3.2.  The binary must be on `PATH` or at
 `~/.opencode/bin/opencode`; set `VERDICT_OPENCODE_BIN` to override.
 
+**Credential.** The worker authenticates to `verdict serve` with serve's own bearer token,
+which Verdict resolves itself (the environment's `LLMGATE_AUTH_TOKEN`, then the credential
+store, then `~/.config/verdict/serve.env`: the sources `verdict setup` uses).  It is never the
+OmniRoute gateway key, and there is no separate variable to export.  It reaches OpenCode only
+as `VERDICT_WORKER_API_KEY` in the child environment (the per-attempt config holds just the
+`{env:VERDICT_WORKER_API_KEY}` reference), and it is redacted from anything recorded.
+
+**Pre-dispatch check.** Before an attempt launches anything, Verdict checks once that the
+credential resolves, that the `opencode` binary runs, and that `verdict serve` is reachable and
+accepts the credential.  A failure is a single `harness_configuration:` message and recovery
+treats it as a block, not a retry, so a misconfigured host does not burn a node's attempts.
+Run `verdict setup --apply --allow host.serve` to create the serve token and unit.
+
+**Serve address.** Workers call `http://127.0.0.1:8000` unless told otherwise: pass
+`--serve-url` to `verdict orchestrate` or set `VERDICT_SERVE_URL` (the flag wins).
+
+**What this does not restrict** (ADR-053 decision 4): the worker keeps the operator's home
+directory and an unrestricted shell, so it can read files there and reach the gateway
+directly.  "All model calls go through serve" holds for OpenCode's own provider calls only.
+Until [#1313](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1313) the worker
+holds the serve token and its route is pinned by the worker header: a worker could name
+another *admitted* route, never a non-admitted one.
+
 ## Prime Agent
 
 Architect lock: `verdict harness prime discover|enable|disable|status|certify`.

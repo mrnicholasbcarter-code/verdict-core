@@ -125,6 +125,31 @@ Whichever path produced an accepted worker decision (the execution-path branch a
 alternatives and several proofs), the relay clears its alternatives, so a worker request has
 no fallback attempts.
 
+2026-11-24: the worker holds the serve token and the route is pinned by the worker header until #1313; a worker could name another admitted route, never a non-admitted one. (#1313, OC1b, carries the signed per-attempt assignment, the real dispatch-origin check and a prompt-only task delivery; this change keeps `LOCAL_EXECUTOR_ORIGIN` and its documented stopgap, and `.verdict-context.md`.)
+
+**Worker credential and pre-dispatch check (design detail):** The credential is serve's own
+bearer token, resolved by Verdict (`serve_service.resolve_serve_token`: the environment's
+`LLMGATE_AUTH_TOKEN`, the credential store, then `serve.env`, in the order `verdict setup` uses),
+never an operator-exported worker variable and never the OmniRoute gateway key. It is chosen in
+one small function (`_worker_credential`) so a signed assignment can replace it. It is set in the
+child environment only under the configured key name (the config holds the `{env:...}`
+reference) and is covered by redaction. Before an attempt writes or launches anything the
+executor checks, once, that the credential resolves, that the `opencode` binary runs
+(`--version`) and that serve is reachable and accepts the credential (`GET /v1/guidance/status`,
+no redirect followed). Any failure is one `harness_configuration:` message with a non-secret
+reason, which recovery maps to BLOCK (no retry, no cooldown).
+
+**Serve address (design detail):** `--serve-url` on `verdict orchestrate`, else
+`VERDICT_SERVE_URL`, else the serve unit's own address (`serve_service.DEFAULT_ORIGIN`,
+`http://127.0.0.1:8000`); there is no other copy of that default. The address becomes the
+per-attempt provider `baseURL`.
+
+**Recorded cost (design detail):** OpenCode reports a cost of 0 for a custom provider with no
+pricing, which is not "free". `cost_usd` is recorded only for a real positive figure across
+every step; otherwise it is `null` with a `cost_note` (also written to the attempt evidence).
+Tokens are always recorded. A structured `error` event keeps its HTTP `status` and
+`retryAfterMs`, so recovery sees an upstream 429 or 503 as the reroutable failure it is.
+
 **Open point:** Whether to pass the API key via an env var or via the OpenCode
 config's credential field. Both keep it out of the command line and logs; the
 builder resolves this during implementation.

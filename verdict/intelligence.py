@@ -640,6 +640,17 @@ class IntelligenceService:
         )
 
         trace_stages: dict[str, Any] | None = None
+        if (
+            isinstance(context, dict)
+            and "execution_path_request" in context
+            and isinstance(context.get(CONTEXT_WORKER_ASSIGNED_ROUTE), WorkerAssignedRoute)
+        ):
+            # The execution-path flow below selects its own offer and never reaches
+            # ``_decision_from_admit``, where a worker's assigned route is pinned.  Refuse the
+            # combination rather than let a worker request select another route.
+            raise ExecutionPathError(
+                "a worker request with an assigned route must not carry execution_path_request"
+            )
         if isinstance(context, dict) and "execution_path_request" in context:
             context = dict(context)
             context["execution_path_request"], trace_stages = (

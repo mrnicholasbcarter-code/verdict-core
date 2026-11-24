@@ -556,6 +556,51 @@ def test_default_executor_builds_opencode_not_prime() -> None:
     assert isinstance(_worker_executor(empty), OpenCodeExecutor)
 
 
+def test_serve_url_flag_reaches_the_opencode_executor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review item 11: the serve address is configuration, not a constant in the executor."""
+    import argparse
+
+    from verdict.orchestration.cli import _worker_executor, add_parsers
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
+
+    monkeypatch.delenv("VERDICT_SERVE_URL", raising=False)
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    flagged = parser.parse_args(
+        [
+            "orchestrate",
+            "ship",
+            "--gateway",
+            "http://gateway.invalid",
+            "--serve-url",
+            "http://127.0.0.1:9321",
+        ]
+    )
+    executor = _worker_executor(flagged)
+    assert isinstance(executor, OpenCodeExecutor)
+    assert executor._serve_base_url == "http://127.0.0.1:9321"
+    # No flag: the variable, then the unit's default.
+    plain = parser.parse_args(["orchestrate", "ship", "--gateway", "http://gateway.invalid"])
+    assert plain.serve_url is None
+    assert _worker_executor(plain)._serve_base_url == "http://127.0.0.1:8000"  # type: ignore[attr-defined]
+    monkeypatch.setenv("VERDICT_SERVE_URL", "http://127.0.0.1:9444")
+    assert _worker_executor(plain)._serve_base_url == "http://127.0.0.1:9444"  # type: ignore[attr-defined]
+
+
+def test_serve_url_is_not_forced_on_adapters_that_do_not_take_it() -> None:
+    """Only adapters whose worker_executor accepts ``serve_url`` receive it."""
+    from verdict.orchestration.cli import _build_single_executor
+    from verdict.orchestration.executors import DirectGatewayExecutor
+
+    executor = _build_single_executor(
+        "direct-gateway",
+        gateway="http://gateway.invalid",
+        api_key="",
+        serve_url="http://127.0.0.1:9",
+    )
+    assert isinstance(executor, DirectGatewayExecutor)
+
+
 @pytest.mark.parametrize("name", ["prime", "prime-headless"])
 def test_explicit_prime_executor_still_builds_prime(name: str) -> None:
     import argparse

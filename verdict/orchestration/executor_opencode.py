@@ -5,6 +5,10 @@ dispatch (``opencode run --standalone --auto --format json --archived``).
 
 Each attempt:
 
+0. Resolves the serve credential through :func:`_worker_credential` and checks, once and
+   before anything is launched, that the opencode binary runs and that ``verdict serve``
+   is reachable and accepts that credential.  Any failure is one
+   ``harness_configuration:`` message, which recovery treats as a block, not a retry.
 1. Writes a per-attempt ``opencode.json`` to a temp directory, pointed at by
    ``OPENCODE_CONFIG_DIR``.
 2. Writes ``.verdict-context.md`` to the worktree as ambient instructions.
@@ -36,8 +40,10 @@ import signal
 import subprocess
 import tempfile
 import time
+import urllib.error
+import urllib.request
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -53,8 +59,6 @@ PINNED_VERSION = "2.3.2"
 OPENCODE_BIN_ENV = "VERDICT_OPENCODE_BIN"
 #: Env var the per-attempt config references for the worker API key.
 WORKER_API_KEY_ENV = "VERDICT_WORKER_API_KEY"
-#: Default Verdict serve base URL for the per-attempt provider config.
-SERVE_BASE_URL_DEFAULT = "http://127.0.0.1:8000"
 #: Context file written to the worktree before each attempt (Task 4.1).
 CONTEXT_FILE_NAME = ".verdict-context.md"
 
@@ -364,6 +368,70 @@ async def _prepare_context(cwd: Path, prompt: str, deadline: float | None = None
         raise
 
 
+def _worker_credential(route_id: str, attempt_id: str) -> str | None:
+    """The bearer credential this attempt's worker presents to ``verdict serve``.
+
+    The single place the worker credential is chosen, so it is easy to swap: today it is
+    serve's own bearer token, resolved by Verdict's code (the same sources and order
+    ``verdict setup`` uses: environment, credential store, ``serve.env``).  A per-attempt
+    signed assignment bound to ``route_id`` and ``attempt_id`` is expected to replace it.
+    Never the OmniRoute gateway key.
+    """
+    from verdict.serve_service import resolve_serve_token
+
+    resolved = resolve_serve_token()
+    return resolved[0] if resolved else None
+
+
+_CREDENTIAL_HELP = "run 'verdict setup --apply --allow host.serve' to create it"
+
+
+def _check_binary(binary: str) -> str | None:
+    """None when ``binary --version`` runs; else a short, non-secret reason."""
+    resolved = shutil.which(binary) if os.sep not in binary else binary
+    if not resolved or not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
+        return f"opencode binary not found or not executable at {binary!r}"
+    try:
+        done = subprocess.run(
+            [resolved, "--version"],
+            capture_output=True,
+            timeout=15,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"opencode binary is not runnable ({type(exc).__name__})"
+    if done.returncode != 0:
+        return f"opencode binary is not runnable (`--version` exited {done.returncode})"
+    return None
+
+
+def _check_serve(origin: str, token: str, timeout: float) -> str | None:
+    """None when serve at ``origin`` is reachable and accepts ``token``; else a short reason.
+
+    One authenticated ``GET /v1/guidance/status`` (read-only, answered without any upstream
+    call).  No redirect is followed, so the credential cannot be sent elsewhere.  The reason
+    never contains the credential.
+    """
+    from verdict.http_safety import open_no_redirect
+
+    request = urllib.request.Request(
+        f"{origin.rstrip('/')}/v1/guidance/status",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with open_no_redirect(request, timeout=timeout):
+            return None
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            return f"verdict serve at {origin} rejected the worker credential (HTTP {exc.code})"
+        return f"verdict serve at {origin} answered HTTP {exc.code} to the readiness check"
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return f"verdict serve is unreachable at {origin}"
+
+
 _CHILD_ENV_ALLOWLIST: frozenset[str] = frozenset(
     {
         "PATH",
@@ -392,6 +460,7 @@ def _build_child_env(
     data_dir: Path,
     state_dir: Path,
     api_key_env: str,
+    api_key_value: str | None = None,
     base_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Build an isolated environment for the opencode subprocess.
@@ -410,19 +479,22 @@ def _build_child_env(
     The child env is built from an explicit allowlist (``_CHILD_ENV_ALLOWLIST``
     plus ``LC_*`` prefixed vars), not by stripping individual keys.  This
     prevents ``*_API_KEY``, ``*_TOKEN``, ``AWS_*`` and any other provider
-    credential from reaching the worker.  ``VERDICT_WORKER_API_KEY`` (or the
-    configured ``api_key_env``) is explicitly allowed so the
-    ``{env:...}`` reference in the per-attempt config can expand at runtime.
+    credential from reaching the worker.  The worker credential is set explicitly, only
+    under ``api_key_env`` (so the ``{env:...}`` reference in the per-attempt config can
+    expand at runtime), from ``api_key_value``; a value for that name already in
+    ``base_env`` never reaches the child when one is passed.
     """
     source = dict(base_env if base_env is not None else os.environ)
     env: dict[str, str] = {}
     for key, val in source.items():
         if (
-            key == api_key_env
+            (key == api_key_env and api_key_value is None)
             or key in _CHILD_ENV_ALLOWLIST
             or any(key.startswith(p) for p in _CHILD_ENV_ALLOWLIST_PREFIXES)
         ):
             env[key] = val
+    if api_key_value is not None:
+        env[api_key_env] = api_key_value
     env["OPENCODE_CONFIG_DIR"] = str(config_dir)
     env["XDG_DATA_HOME"] = str(data_dir)
     env["XDG_STATE_HOME"] = str(state_dir)
@@ -446,17 +518,27 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
     is decoded, so JSON escaping cannot hide a secret from the replacement and a
     secret split across ``text`` deltas is caught once the deltas are joined.
 
+    An ``error`` event is ``{"error": {"message", "status", "retryAfterMs", ...}}``: the HTTP
+    status and retry delay are kept so recovery can classify an upstream 429 or 503.
+
+    Cost is recorded only when OpenCode reports a real positive figure.  A custom provider
+    has no pricing, so OpenCode reports 0 even for a paid route; that is "unknown", not
+    "free", so it is ``None`` with a ``cost_note``.  Tokens are still recorded.
+
     Returns a dict with keys: ``usage``, ``session_id``, ``last_text``,
-    ``error_message``.
+    ``error_message``, ``error_status``, ``retry_after_seconds``.
     """
     session_id = ""
     text_parts: list[str] = []
     error_message = ""
+    error_status: int | None = None
+    retry_after_seconds: float | None = None
 
     total_input: int | None = None
     total_output: int | None = None
     total_cost: float | None = None
     all_have_cost = True
+    saw_zero_cost = False
     has_usage = False
 
     for line in stdout.splitlines():
@@ -498,23 +580,47 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
                 if out is not None:
                     total_output = (total_output or 0) + out
                     has_usage = True
-                if cost_val is not None:
+                if cost_val is not None and cost_val > 0:
                     total_cost = (total_cost or 0.0) + cost_val
                 else:
+                    # No figure, or a 0: a custom provider has no pricing, so a 0 is
+                    # "unknown", not "free".  One such step makes the attempt's total unknown
+                    # rather than an under-count.
                     all_have_cost = False
+                    saw_zero_cost = saw_zero_cost or cost_val is not None
 
         elif event_type == "error":
-            msg = event.get("message") or event.get("error") or ""
+            detail = event.get("error")
+            msg = event.get("message")
+            if isinstance(detail, dict):
+                msg = detail.get("message") or msg
+                error_status = _as_int(detail.get("status"))
+                retry_ms = _as_float(detail.get("retryAfterMs"))
+                if retry_ms is not None and retry_ms > 0:
+                    retry_after_seconds = retry_ms / 1000.0
+            elif not msg and isinstance(detail, str):
+                msg = detail
             if isinstance(msg, str) and msg:
                 error_message = _sanitize(msg, secrets=secrets)
 
     usage: AttemptUsage | None = None
     if has_usage:
+        if all_have_cost and total_cost is not None and total_cost > 0:
+            cost_usd: float | None = total_cost
+            cost_note: str | None = None
+        else:
+            cost_usd = None
+            cost_note = (
+                "not_reported: opencode reported 0 for a step (no pricing for a custom provider)"
+                if saw_zero_cost
+                else "not_reported: opencode gave no cost"
+            )
         usage = AttemptUsage(
             input_tokens=total_input,
             output_tokens=total_output,
-            cost_usd=total_cost if all_have_cost else None,
+            cost_usd=cost_usd,
             tokens_source="opencode_ndjson",
+            cost_note=cost_note,
         )
 
     return {
@@ -522,6 +628,8 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
         "session_id": _redact(session_id, secrets),
         "last_text": _redact("".join(text_parts), secrets),
         "error_message": error_message,
+        "error_status": error_status,
+        "retry_after_seconds": retry_after_seconds,
     }
 
 
@@ -561,6 +669,14 @@ async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
                 await asyncio.wait_for(proc.wait(), timeout=_TERM_GRACE_SECONDS)
 
 
+class _WorkerIOError(OSError):
+    """Reading the worker's pipes (or waiting on it) failed; the attempt cannot be trusted."""
+
+
+#: Longest wait for the serve readiness check before an attempt is launched.
+_SERVE_CHECK_TIMEOUT_SECONDS = 5.0
+
+
 class OpenCodeExecutor:
     """Run one task through OpenCode's non-interactive dispatch.
 
@@ -575,15 +691,21 @@ class OpenCodeExecutor:
         self,
         *,
         opencode_bin: str = "",
-        serve_base_url: str = SERVE_BASE_URL_DEFAULT,
+        serve_base_url: str | None = None,
         api_key_env: str = WORKER_API_KEY_ENV,
         idle_output_seconds: float | None = None,
         max_output_bytes: int | None = None,
+        credential_provider: Callable[[str, str], str | None] | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
+        from verdict.serve_service import resolve_serve_origin
+
         self._opencode_bin = opencode_bin
-        self._serve_base_url = serve_base_url
+        # The one serve address: the configured origin, else the unit's default.
+        self._serve_base_url = resolve_serve_origin(serve_base_url)
         self._api_key_env = api_key_env
+        self._credential_provider = credential_provider
+        self._binary_checked = False
         self._env = dict(env) if env is not None else None
         self.max_output_bytes: int = (
             max_output_bytes if max_output_bytes is not None else MAX_OUTPUT_BYTES
@@ -613,44 +735,70 @@ class OpenCodeExecutor:
             terminal = replace(terminal, harness="opencode")
         return terminal
 
+    def _failure(self, route_id: str, started: float, error: str) -> WorkerTerminal:
+        return WorkerTerminal(
+            executor_kind="live",
+            ok=False,
+            model=route_id,
+            harness="opencode",
+            error=error,
+            duration_seconds=time.monotonic() - started,
+        )
+
+    def _pre_dispatch_reason(self, credential: str, budget_seconds: float) -> str | None:
+        """Why this attempt cannot be launched (binary, then serve), or None.  Blocking."""
+        if not self._binary_checked:
+            reason = _check_binary(self._resolve_bin())
+            if reason is not None:
+                return reason
+            self._binary_checked = True
+        return _check_serve(
+            self._serve_base_url,
+            credential,
+            max(0.5, min(_SERVE_CHECK_TIMEOUT_SECONDS, budget_seconds)),
+        )
+
     async def _run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
         started = time.monotonic()
+        session_id = _attempt_session_id()
+
+        # --- pre-dispatch: credential, binary, serve (one message, nothing launched) ---
+        provider = self._credential_provider or _worker_credential
+        credential = provider(route_id, session_id)
+        if not credential:
+            return self._failure(
+                route_id,
+                started,
+                "harness_configuration: no verdict serve credential found (looked in the "
+                f"environment, the Verdict credential store and serve.env); {_CREDENTIAL_HELP}",
+            )
+        secrets = [credential, self._base_env().get(self._api_key_env, "")]
+        reason = await asyncio.to_thread(
+            self._pre_dispatch_reason,
+            credential,
+            max(0.0, timeout_seconds - (time.monotonic() - started)),
+        )
+        if reason is not None:
+            return self._failure(
+                route_id, started, f"harness_configuration: {_sanitize(reason, secrets=secrets)}"
+            )
 
         # --- write context file to worktree (Task 4.1) ---
         try:
             await _prepare_context(cwd, prompt, started + timeout_seconds)
         except _PreparationDeadlineError:
-            return WorkerTerminal(
-                executor_kind="live",
-                ok=False,
-                model=route_id,
-                harness="opencode",
-                error="timeout",
-                duration_seconds=time.monotonic() - started,
-            )
+            return self._failure(route_id, started, "timeout")
         except OSError as exc:
-            return WorkerTerminal(
-                executor_kind="live",
-                ok=False,
-                model=route_id,
-                harness="opencode",
-                error=f"context_write_failed: {_sanitize(str(exc))}",
-                duration_seconds=time.monotonic() - started,
+            return self._failure(
+                route_id, started, f"context_write_failed: {_sanitize(str(exc), secrets=secrets)}"
             )
 
         # Preparation (two git probes of up to 30 s each) counts against the attempt budget:
         # the worker gets only what is left, and nothing is spawned when nothing is.
         if timeout_seconds - (time.monotonic() - started) <= 0:
-            return WorkerTerminal(
-                executor_kind="live",
-                ok=False,
-                model=route_id,
-                harness="opencode",
-                error="timeout",
-                duration_seconds=time.monotonic() - started,
-            )
+            return self._failure(route_id, started, "timeout")
 
         # --- create per-attempt temp directories (Task 2.3) ---
         attempt_tmp = tempfile.TemporaryDirectory(prefix="verdict-oc-")
@@ -669,13 +817,10 @@ class OpenCodeExecutor:
                     cwd=cwd,
                 )
             except OSError as exc:
-                return WorkerTerminal(
-                    executor_kind="live",
-                    ok=False,
-                    model=route_id,
-                    harness="opencode",
-                    error=f"config_write_failed: {_sanitize(str(exc))}",
-                    duration_seconds=time.monotonic() - started,
+                return self._failure(
+                    route_id,
+                    started,
+                    f"config_write_failed: {_sanitize(str(exc), secrets=secrets)}",
                 )
 
             child_env = _build_child_env(
@@ -683,10 +828,10 @@ class OpenCodeExecutor:
                 data_dir=data_dir,
                 state_dir=state_dir,
                 api_key_env=self._api_key_env,
+                api_key_value=credential,
                 base_env=self._base_env(),
             )
 
-            session_id = _attempt_session_id()
             # ``--model verdict/<route_id>`` selects provider "verdict" and the
             # exact route registered in the per-attempt config (Task 2.2/2.3).
             argv = [
@@ -708,6 +853,7 @@ class OpenCodeExecutor:
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(cwd),
@@ -715,56 +861,50 @@ class OpenCodeExecutor:
                     start_new_session=True,
                 )
             except OSError as exc:
-                return WorkerTerminal(
-                    executor_kind="live",
-                    ok=False,
-                    model=route_id,
-                    harness="opencode",
-                    error=f"spawn_failed: {_sanitize(str(exc))}",
-                    duration_seconds=time.monotonic() - started,
+                return self._failure(
+                    route_id, started, f"spawn_failed: {_sanitize(str(exc), secrets=secrets)}"
                 )
 
             try:
-                stdout_b, stderr_b, cut = await self._collect(
-                    proc, max(0.0, timeout_seconds - (time.monotonic() - started))
-                )
-                # Always reap the whole process group before returning, on a normal
-                # exit as well as on stall/timeout: a descendant with redirected
-                # pipes can outlive its leader and keep editing the worktree while
-                # owned-files validation runs.
-                await _kill_process_group(proc)
-                if cut:
-                    stalled = cut == "stalled"
-                    if stalled:
-                        cut_error = f"stalled: no worker output for {self.idle_output_seconds:g}s"
-                    elif cut == "output_limit":
-                        cut_error = (
-                            f"output_limit: worker output exceeded {self.max_output_bytes} bytes"
-                        )
-                    else:
-                        cut_error = "timeout"
-                    return WorkerTerminal(
-                        executor_kind="live",
-                        ok=False,
-                        model=route_id,
-                        harness="opencode",
-                        stop_reason="stalled" if stalled else "",
-                        error=cut_error,
-                        duration_seconds=time.monotonic() - started,
+                try:
+                    stdout_b, stderr_b, cut = await self._collect(
+                        proc, max(0.0, timeout_seconds - (time.monotonic() - started))
                     )
-            except asyncio.CancelledError:
-                with contextlib.suppress(BaseException):
+                finally:
+                    # Always reap the whole process group before returning, whatever the
+                    # path (normal exit, stall, timeout, cancellation or any error): a
+                    # descendant with redirected pipes can outlive its leader and keep
+                    # editing the worktree while owned-files validation runs.
                     await _kill_process_group(proc)
-                raise
+            except _WorkerIOError as exc:
+                return self._failure(
+                    route_id, started, f"worker_io_failed: {_sanitize(str(exc), secrets=secrets)}"
+                )
+            except Exception as exc:
+                return self._failure(route_id, started, f"worker_io_failed: {type(exc).__name__}")
+            if cut:
+                stalled = cut == "stalled"
+                if stalled:
+                    cut_error = f"stalled: no worker output for {self.idle_output_seconds:g}s"
+                elif cut == "output_limit":
+                    cut_error = (
+                        f"output_limit: worker output exceeded {self.max_output_bytes} bytes"
+                    )
+                else:
+                    cut_error = "timeout"
+                return replace(
+                    self._failure(route_id, started, cut_error),
+                    stop_reason="stalled" if stalled else "",
+                )
 
-            duration = time.monotonic() - started
             return self._interpret(
                 stdout=stdout_b.decode("utf-8", "replace"),
                 stderr=stderr_b.decode("utf-8", "replace"),
                 returncode=proc.returncode if proc.returncode is not None else -1,
                 route_id=route_id,
-                duration=duration,
+                duration=time.monotonic() - started,
                 session_id=session_id,
+                secrets=secrets,
             )
         finally:
             attempt_tmp.cleanup()
@@ -777,7 +917,9 @@ class OpenCodeExecutor:
         Returns ``(stdout, stderr, cut)``; ``cut`` is ``""`` on normal exit,
         ``"timeout"`` when the whole attempt runs past ``timeout_seconds``,
         ``"stalled"`` when no output byte arrived for ``idle_output_seconds``, and
-        ``"output_limit"`` when stdout plus stderr exceed ``max_output_bytes``.
+        ``"output_limit"`` when stdout plus stderr exceed ``max_output_bytes``.  A pipe
+        read that fails raises :class:`_WorkerIOError`: partial output is never
+        presented as a finished attempt.
         """
         buffers: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
         last_output = time.monotonic()
@@ -809,6 +951,8 @@ class OpenCodeExecutor:
                 if over_limit.is_set():
                     cut = "output_limit"
                     break
+                if any(t.done() and not t.cancelled() and t.exception() is not None for t in tasks):
+                    break  # a failed read or wait: stop now, report it below
                 # Wait only on unfinished work: a task that is already done would make
                 # FIRST_COMPLETED return at once, every time, and spin the shared event loop.
                 unfinished = {task for task in tasks if not task.done()}
@@ -832,7 +976,12 @@ class OpenCodeExecutor:
             for task in (*tasks, limit_waiter):
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(*tasks, limit_waiter, return_exceptions=True)
+            results = await asyncio.gather(*tasks, limit_waiter, return_exceptions=True)
+        # Reached only when nothing is propagating (a cancellation skips this): a pump or
+        # wait that really failed (not one we cancelled ourselves) must not be discarded.
+        for result in results:
+            if isinstance(result, Exception):
+                raise _WorkerIOError(f"{type(result).__name__}: {result}") from result
         return bytes(buffers["stdout"]), bytes(buffers["stderr"]), cut
 
     def _interpret(
@@ -844,13 +993,15 @@ class OpenCodeExecutor:
         route_id: str,
         duration: float,
         session_id: str,
+        secrets: Iterable[str] = (),
     ) -> WorkerTerminal:
         """Map opencode output to WorkerTerminal.
 
         Exit code is authoritative: 0 → ok=True, non-zero → ok=False.
-        NDJSON is parsed for usage (``step_finish`` tokens) and session ID.
+        NDJSON is parsed for usage (``step_finish`` tokens), the session ID and, on a
+        failure, the upstream HTTP status and retry delay it reports.
         """
-        secrets = [self._base_env().get(self._api_key_env, "")]
+        secrets = list(secrets)
         parsed = _parse_ndjson_output(stdout, secrets)
         usage = parsed["usage"]
         actual_session_id = parsed["session_id"] or session_id
@@ -859,13 +1010,15 @@ class OpenCodeExecutor:
 
         if returncode != 0:
             tail = error_message or _sanitize(stderr, secrets=secrets) or f"exit {returncode}"
+            status = parsed["error_status"] or _parse_status_code(tail)
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,
                 model=route_id,
                 harness="opencode",
-                error=_sanitize(tail),
-                status_code=_parse_status_code(tail) if not error_message else None,
+                error=_sanitize(tail, secrets=secrets),
+                status_code=status,
+                retry_after_seconds=parsed["retry_after_seconds"],
                 duration_seconds=duration,
                 session_ref=actual_session_id,
                 usage=usage,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shlex
 import signal
 import stat
 import time
@@ -19,6 +20,16 @@ import pytest
 import verdict.orchestration.executor_opencode as executor_module
 from verdict import doctor_diagnostics as dd
 from verdict.orchestration.executor_opencode import PINNED_VERSION
+
+
+def _procfs_available(root: Path = Path("/proc")) -> bool:
+    """True when process state can be read from procfs (the liveness helper depends on it)."""
+    return (root / "self" / "stat").exists()
+
+
+requires_procfs = pytest.mark.skipif(
+    not _procfs_available(), reason="process liveness is read from procfs"
+)
 
 
 def _fake_binary(tmp_path: Path, output: str, exit_code: int = 0) -> str:
@@ -97,6 +108,7 @@ def test_failed_version_command_is_not_reported_ok(
     assert not diag.warnings
 
 
+@requires_procfs
 def test_timed_out_wrapper_leaves_no_descendant_behind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -106,9 +118,11 @@ def test_timed_out_wrapper_leaves_no_descendant_behind(
     return promptly and must not leave that descendant running (``subprocess.run`` kills
     only the direct child).  The check runs in its own process group, killed on timeout.
     """
-    pid_file = tmp_path / "descendant.pid"
-    script = tmp_path / "wrapper-opencode"
-    script.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {pid_file}\nwait\n")
+    workdir = tmp_path / "a dir with spaces"
+    workdir.mkdir()
+    pid_file = workdir / "descendant.pid"
+    script = workdir / "wrapper-opencode"
+    script.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {shlex.quote(str(pid_file))}\nwait\n")
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setattr(executor_module, "_opencode_binary", lambda *a, **k: str(script))
     monkeypatch.setattr(dd, "_OPENCODE_VERSION_TIMEOUT_SECONDS", 1.0)
@@ -137,10 +151,12 @@ def test_timed_out_wrapper_leaves_no_descendant_behind(
 
 def _wrapper_leaving_detached_descendant(tmp_path: Path, stdout_line: str) -> tuple[str, Path]:
     """A wrapper that backgrounds a sleeper with its output detached, prints, and exits 0."""
-    pid_file = tmp_path / "descendant.pid"
-    script = tmp_path / "wrapper-opencode"
+    workdir = tmp_path / "a dir with spaces"
+    workdir.mkdir(exist_ok=True)
+    pid_file = workdir / "descendant.pid"
+    script = workdir / "wrapper-opencode"
     script.write_text(
-        f"#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\necho $! > {pid_file}\n{stdout_line}\nexit 0\n"
+        f"#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\necho $! > {shlex.quote(str(pid_file))}\n{stdout_line}\nexit 0\n"
     )
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     return str(script), pid_file
@@ -159,6 +175,7 @@ def _assert_descendant_cleaned_up(pid_file: Path) -> None:
             os.kill(descendant, signal.SIGKILL)  # never leak the test process
 
 
+@requires_procfs
 def test_normally_exiting_wrapper_leaves_no_descendant_behind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -172,6 +189,7 @@ def test_normally_exiting_wrapper_leaves_no_descendant_behind(
     _assert_descendant_cleaned_up(pid_file)
 
 
+@requires_procfs
 def test_undecodable_output_still_cleans_up_the_wrapper_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -183,6 +201,10 @@ def test_undecodable_output_still_cleans_up_the_wrapper_group(
     _name, level, message = _section(diag)
     assert level == "note" and "version check error" in message, (level, message)
     _assert_descendant_cleaned_up(pid_file)
+
+
+def test_procfs_guard_reports_a_missing_procfs(tmp_path: Path) -> None:
+    assert _procfs_available(tmp_path / "no-proc-here") is False
 
 
 def _gone(pid: int) -> bool:
@@ -205,6 +227,7 @@ def _gone(pid: int) -> bool:
     return False
 
 
+@requires_procfs
 @pytest.mark.parametrize(
     "error",
     [FileNotFoundError(2, "No such file or directory"), ProcessLookupError(3, "No such process")],
@@ -234,6 +257,7 @@ def test_liveness_helper_treats_a_pid_reaped_mid_probe_as_gone(
     assert _gone(999_999_999) is True
 
 
+@requires_procfs
 def test_liveness_helper_does_not_call_a_live_process_gone(tmp_path: Path) -> None:
     """The helper must still see a running process as alive (guards against an always-True stub)."""
     import subprocess

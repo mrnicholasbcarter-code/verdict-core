@@ -239,3 +239,25 @@ def test_client_model_override_flag_does_not_change_relay_routing(
     assert response.status_code == 200, response.text
     assert response.headers["x-verdict-model"] == default
     assert [r["body"]["model"] for r in harness.transport.requests] == [default]
+
+
+def test_route_refuses_a_worker_pin_combined_with_an_execution_path_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defence in depth: ``route()`` itself refuses the combination, so no caller can get a
+    worker request selected through the execution-path flow (which never pins)."""
+    import asyncio
+
+    from verdict.execution_path import ExecutionPathError
+    from verdict.models import CONTEXT_WORKER_ASSIGNED_ROUTE, WorkerAssignedRoute
+
+    harness = _Harness(monkeypatch, _service())
+    context = {
+        "execution_path_request": {"schema_version": "anything"},
+        CONTEXT_WORKER_ASSIGNED_ROUTE: WorkerAssignedRoute(SUBSCRIPTION),
+    }
+    service = api._build_intelligence()
+    with pytest.raises(ExecutionPathError, match="worker"):
+        asyncio.run(service.route("summarize this", context=context))
+    assert harness.minted == []
+    assert harness.transport.requests == []

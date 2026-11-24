@@ -19,10 +19,12 @@ import subprocess
 import sys
 import textwrap
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+import verdict.orchestration.executor_opencode as executor_module
 from verdict.orchestration.executor_opencode import (
     CONTEXT_FILE_NAME,
     PINNED_VERSION,
@@ -38,10 +40,41 @@ from verdict.orchestration.executor_opencode import (
 
 ROUTE = "cc/claude-sonnet-5"
 
+# The real pre-dispatch functions, captured before the autouse fixture replaces them.
+_REAL_WORKER_CREDENTIAL = executor_module._worker_credential
+_REAL_CHECK_BINARY = executor_module._check_binary
+_REAL_CHECK_SERVE = executor_module._check_serve
+
+
+@pytest.fixture(autouse=True)
+def _serve_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default for every test here: a serve credential resolves, the binary runs, serve accepts.
+
+    The fake workers are scripts that record what they are given, so the real binary check
+    (which runs ``--version``) is replaced too.  The tests of the pre-dispatch checks put the
+    real functions back.  Nothing here ever reads a real credential store or contacts a real
+    serve.
+    """
+    monkeypatch.setattr(
+        executor_module, "_worker_credential", lambda *a, **k: "fixture-serve-token-0000"
+    )
+    monkeypatch.setattr(executor_module, "_check_binary", lambda *a, **k: None)
+    monkeypatch.setattr(executor_module, "_check_serve", lambda *a, **k: None)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _procfs_available(root: Path = Path("/proc")) -> bool:
+    """True when process state can be read from procfs (``_pid_gone`` depends on it)."""
+    return (root / "self" / "stat").exists()
+
+
+requires_procfs = pytest.mark.skipif(
+    not _procfs_available(), reason="process liveness is read from procfs"
+)
 
 
 def make_fake_opencode(tmp_path: Path, body: str) -> str:
@@ -608,6 +641,7 @@ def test_cancelling_run_waits_for_the_context_preparation_thread(
     asyncio.run(scenario())
 
 
+@requires_procfs
 def test_output_over_the_limit_kills_the_worker_instead_of_buffering_it(tmp_path: Path) -> None:
     """A worker that prints without end must fail the attempt, not exhaust memory.
 
@@ -1027,6 +1061,7 @@ def _pid_gone(pid: int) -> bool:
     return False
 
 
+@requires_procfs
 def test_kill_process_group_cleans_up_sigterm_ignoring_grandchild(tmp_path: Path) -> None:
     """_kill_process_group must kill the whole process group, not just the leader.
 
@@ -1057,7 +1092,7 @@ def test_kill_process_group_cleans_up_sigterm_ignoring_grandchild(tmp_path: Path
         "sys.exit(0)\n"
     )
 
-    async def scenario() -> int:
+    async def scenario() -> None:
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             str(leader),
@@ -1066,11 +1101,11 @@ def test_kill_process_group_cleans_up_sigterm_ignoring_grandchild(tmp_path: Path
             stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True,
         )
-        # The leader exits only after the grandchild has recorded its PID.
-        await asyncio.wait_for(proc.wait(), timeout=60.0)
-        assert capture.exists(), "grandchild never recorded its PID"
-        grandchild_pid = int(capture.read_text().strip())
         try:
+            # The leader exits only after the grandchild has recorded its PID.
+            await asyncio.wait_for(proc.wait(), timeout=60.0)
+            assert capture.exists(), "grandchild never recorded its PID"
+            grandchild_pid = int(capture.read_text().strip())
             # Precondition: the grandchild outlives the reaped leader.
             assert not _pid_gone(grandchild_pid)
             await _kill_process_group(proc)
@@ -1081,13 +1116,16 @@ def test_kill_process_group_cleans_up_sigterm_ignoring_grandchild(tmp_path: Path
                 f"grandchild PID {grandchild_pid} still alive after _kill_process_group"
             )
         finally:
+            # Unconditional, and covering a timeout or a failed assertion above: kill the whole
+            # group (the grandchild is in it), then reap the leader.
             with contextlib.suppress(ProcessLookupError, OSError):
-                os.kill(grandchild_pid, signal.SIGKILL)  # never leak the test process
-        return grandchild_pid
+                os.killpg(proc.pid, signal.SIGKILL)
+            await proc.wait()
 
     asyncio.run(scenario())
 
 
+@requires_procfs
 def test_executor_kills_descendant_left_behind_by_normal_exit(tmp_path: Path) -> None:
     """A worker that exits 0 but leaves a detached-pipe descendant must not leave it running.
 
@@ -1283,10 +1321,463 @@ def test_opencode_executor_temp_dirs_cleaned_up(tmp_path: Path) -> None:
     run_executor(executor, "cleanup test", cwd)
     assert capture.exists(), "capture file not written — fake binary failed to run"
     dirs = json.loads(capture.read_text())
-    for key, path in dirs.items():
-        parent = Path(path).parent if path else None
-        if parent and "verdict-oc-" in str(parent):
-            assert not Path(path).parent.exists(), f"Temp dir {path!r} ({key}) was not cleaned up"
+    # The assertion must never be skipped: every isolation path must have been set, and all
+    # three must live under one per-attempt root (otherwise a persistent directory was used).
+    assert set(dirs) == {"config", "data", "state"}
+    assert all(dirs.values()), f"an isolation env var was empty: {dirs}"
+    roots = {Path(path).parent for path in dirs.values()}
+    assert len(roots) == 1, f"isolation dirs are not under one per-attempt root: {dirs}"
+    (root,) = roots
+    assert root.name.startswith("verdict-oc-"), f"not a per-attempt temp root: {root}"
+    assert not root.exists(), f"per-attempt temp root {str(root)!r} was not cleaned up"
+
+
+# ---------------------------------------------------------------------------
+# Serve credential and pre-dispatch checks (review item 1)
+# ---------------------------------------------------------------------------
+
+_SERVE_TOKEN = "serve-token-UNIQUE-4f9a1c"
+
+
+def _isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No real credential store, serve.env or exported token can be read by the test."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("VERDICT_HOME", str(home / "verdict"))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    for name in ("LLMGATE_AUTH_TOKEN", "OMNIROUTE_API_KEY", "VERDICT_OMNIROUTE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+
+class _FakeServe:
+    """A local stand-in for ``verdict serve``'s readiness endpoint (no model, no upstream)."""
+
+    def __init__(self, accepts: str, status_if_rejected: int = 401) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        accepted = f"Bearer {accepts}"
+        outer = self
+        self.requests: list[str] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                outer.requests.append(self.path)
+                ok = self.path == "/v1/guidance/status" and (
+                    self.headers.get("Authorization") == accepted
+                )
+                self.send_response(200 if ok else status_if_rejected)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.origin = f"http://127.0.0.1:{self._server.server_address[1]}"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def test_serve_credential_reaches_only_the_child_env_under_the_configured_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolved by Verdict's own code (here via serve's documented LLMGATE_AUTH_TOKEN) and
+    handed to the worker only as VERDICT_WORKER_API_KEY: not in argv, the config file, the
+    context file, or any other variable."""
+    _isolated_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("LLMGATE_AUTH_TOKEN", _SERVE_TOKEN)
+    monkeypatch.setattr(executor_module, "_worker_credential", _REAL_WORKER_CREDENTIAL)
+    capture = tmp_path / "capture.json"
+    fake = make_fake_opencode(
+        tmp_path,
+        f"import pathlib\n"
+        f"cfg = pathlib.Path(os.environ['OPENCODE_CONFIG_DIR'])\n"
+        f"files = {{p.name: p.read_text() for p in cfg.iterdir() if p.is_file()}}\n"
+        f"ctx = pathlib.Path(os.getcwd()) / '.verdict-context.md'\n"
+        f"pathlib.Path({str(capture)!r}).write_text(json.dumps({{\n"
+        f"    'env': dict(os.environ), 'argv': sys.argv, 'config': files,\n"
+        f"    'context': ctx.read_text() if ctx.exists() else '',\n"
+        f"}}))\n"
+        f"sys.exit(0)\n",
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "do the task", cwd)
+    assert terminal.ok is True, terminal
+    data = json.loads(capture.read_text())
+    holders = [name for name, value in data["env"].items() if _SERVE_TOKEN in value]
+    assert holders == ["VERDICT_WORKER_API_KEY"], holders
+    for surface in ("argv", "config", "context"):
+        assert _SERVE_TOKEN not in json.dumps(data[surface]), f"credential leaked into {surface}"
+    assert "{env:VERDICT_WORKER_API_KEY}" in json.dumps(data["config"])
+
+
+def test_the_omniroute_gateway_key_is_never_the_worker_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolated_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "omniroute-gateway-key-NOT-FOR-WORKERS")
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "omniroute-gateway-key-NOT-FOR-WORKERS")
+    assert _REAL_WORKER_CREDENTIAL("cc/claude-sonnet-5", "ses_x") is None
+
+
+def test_missing_serve_credential_fails_closed_before_anything_is_launched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolated_home(monkeypatch, tmp_path)
+    monkeypatch.setattr(executor_module, "_worker_credential", _REAL_WORKER_CREDENTIAL)
+    ran = tmp_path / "worker-ran.txt"
+    fake = make_fake_opencode(
+        tmp_path, f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\nsys.exit(0)\n"
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is False
+    assert terminal.error.startswith("harness_configuration: no verdict serve credential")
+    assert not ran.exists(), "the worker was launched without a credential"
+    assert list(cwd.iterdir()) == [], "the worktree was written to before the pre-dispatch check"
+
+
+def test_pre_dispatch_failure_is_classified_as_a_block_not_a_retry(tmp_path: Path) -> None:
+    """One message, no burnt attempts: recovery maps ``harness_configuration:`` to BLOCK."""
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    terminal = run_executor(
+        OpenCodeExecutor(
+            opencode_bin=make_fake_opencode(tmp_path, "sys.exit(0)\n"),
+            credential_provider=lambda route, attempt: None,
+        ),
+        "task",
+        tmp_path,
+    )
+    verdict = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
+    assert (verdict.category, verdict.action) == ("harness_configuration", "BLOCK")
+
+
+@pytest.mark.parametrize("flavour", ["missing", "not-executable", "exits-nonzero"])
+def test_unrunnable_binary_fails_closed_before_launch(tmp_path: Path, flavour: str) -> None:
+    if flavour == "missing":
+        binary = str(tmp_path / "no-such-opencode")
+    elif flavour == "not-executable":
+        script = tmp_path / "opencode-plain-file"
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o644)
+        binary = str(script)
+    else:
+        script = tmp_path / "opencode-broken"
+        script.write_text("#!/bin/sh\nexit 3\n")
+        script.chmod(0o755)
+        binary = str(script)
+    assert _REAL_CHECK_BINARY(binary) is not None
+    executor_module_check = executor_module._check_binary
+    executor_module._check_binary = _REAL_CHECK_BINARY  # restored by the autouse fixture
+    try:
+        cwd = tmp_path / "work"
+        cwd.mkdir()
+        terminal = run_executor(OpenCodeExecutor(opencode_bin=binary), "task", cwd)
+    finally:
+        executor_module._check_binary = executor_module_check
+    assert terminal.ok is False
+    assert terminal.error.startswith("harness_configuration: opencode binary"), terminal.error
+    assert list(cwd.iterdir()) == [], "the worktree was written to before the binary check"
+
+
+def test_runnable_binary_passes_the_real_check(tmp_path: Path) -> None:
+    script = tmp_path / "opencode-ok"
+    script.write_text("#!/bin/sh\necho 2.3.2\n")
+    script.chmod(0o755)
+    assert _REAL_CHECK_BINARY(str(script)) is None
+
+
+def test_serve_readiness_check_accepts_a_reachable_serve_that_takes_the_credential() -> None:
+    serve = _FakeServe(accepts=_SERVE_TOKEN)
+    try:
+        assert _REAL_CHECK_SERVE(serve.origin, _SERVE_TOKEN, 5.0) is None
+        assert serve.requests == ["/v1/guidance/status"]
+    finally:
+        serve.close()
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_serve_readiness_check_reports_a_rejected_credential_without_echoing_it(
+    status: int,
+) -> None:
+    serve = _FakeServe(accepts="some-other-token", status_if_rejected=status)
+    try:
+        reason = _REAL_CHECK_SERVE(serve.origin, _SERVE_TOKEN, 5.0)
+    finally:
+        serve.close()
+    assert reason is not None and f"HTTP {status}" in reason and "rejected" in reason
+    assert _SERVE_TOKEN not in reason
+
+
+def test_serve_readiness_check_reports_an_unreachable_serve() -> None:
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]  # closed again: nothing listens here
+    reason = _REAL_CHECK_SERVE(f"http://127.0.0.1:{port}", _SERVE_TOKEN, 2.0)
+    assert reason is not None and "unreachable" in reason and _SERVE_TOKEN not in reason
+
+
+def test_executor_stops_before_launch_when_serve_rejects_the_credential(tmp_path: Path) -> None:
+    serve = _FakeServe(accepts="some-other-token")
+    ran = tmp_path / "worker-ran.txt"
+    fake = make_fake_opencode(
+        tmp_path, f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\nsys.exit(0)\n"
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    saved = executor_module._check_serve
+    executor_module._check_serve = _REAL_CHECK_SERVE  # restored by the autouse fixture
+    try:
+        executor = OpenCodeExecutor(
+            opencode_bin=fake,
+            serve_base_url=serve.origin,
+            credential_provider=lambda route, attempt: _SERVE_TOKEN,
+        )
+        terminal = run_executor(executor, "task", cwd)
+    finally:
+        executor_module._check_serve = saved
+        serve.close()
+    assert terminal.ok is False
+    assert terminal.error.startswith("harness_configuration: verdict serve at ")
+    assert "rejected the worker credential" in terminal.error
+    assert _SERVE_TOKEN not in terminal.error
+    assert not ran.exists()
+    assert list(cwd.iterdir()) == []
+
+
+def test_serve_credential_value_never_reaches_terminal_events_or_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """The worker echoes the credential it was given (from its env) to stderr and into NDJSON."""
+    monkeypatch.setattr(executor_module, "_worker_credential", lambda *a, **k: _SERVE_TOKEN)
+    fake = make_fake_opencode(
+        tmp_path,
+        "tok = os.environ['VERDICT_WORKER_API_KEY']\n"
+        "sys.stderr.write('debug Authorization: Bearer ' + tok + ' key=' + tok + '\\n')\n"
+        "sys.stdout.write(json.dumps({'type': 'error', 'error': {'message': 'bad ' + tok}}) + '\\n')\n"
+        "sys.exit(1)\n",
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    with caplog.at_level(logging.DEBUG):
+        terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert _SERVE_TOKEN not in json.dumps(dataclasses.asdict(terminal), default=str)
+    assert _SERVE_TOKEN not in caplog.text
+    captured = capfd.readouterr()
+    assert _SERVE_TOKEN not in captured.out + captured.err
+    assert "[REDACTED]" in terminal.error
+
+
+# ---------------------------------------------------------------------------
+# Serve address (review item 11)
+# ---------------------------------------------------------------------------
+
+
+def test_serve_address_comes_from_configuration_and_defaults_to_the_unit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("VERDICT_SERVE_URL", raising=False)
+    assert OpenCodeExecutor()._serve_base_url == "http://127.0.0.1:8000"
+    monkeypatch.setenv("VERDICT_SERVE_URL", "http://127.0.0.1:9123/v1")
+    assert OpenCodeExecutor()._serve_base_url == "http://127.0.0.1:9123"
+    # An explicit address (the --serve-url flag) wins over the variable.
+    assert OpenCodeExecutor(serve_base_url="http://localhost:9555")._serve_base_url == (
+        "http://localhost:9555"
+    )
+
+
+def test_the_configured_serve_address_is_what_the_worker_calls(tmp_path: Path) -> None:
+    capture = tmp_path / "config.json"
+    fake = make_fake_opencode(
+        tmp_path,
+        f"import pathlib\n"
+        f"cfg = pathlib.Path(os.environ['OPENCODE_CONFIG_DIR']) / 'opencode.json'\n"
+        f"pathlib.Path({str(capture)!r}).write_text(cfg.read_text())\n"
+        f"sys.exit(0)\n",
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    run_executor(
+        OpenCodeExecutor(opencode_bin=fake, serve_base_url="http://127.0.0.1:9123"), "t", cwd
+    )
+    config = json.loads(capture.read_text())
+    assert config["providers"]["verdict"]["settings"]["baseURL"] == "http://127.0.0.1:9123/v1"
+
+
+# ---------------------------------------------------------------------------
+# Upstream HTTP status and cost (review items 4 and 12)
+# ---------------------------------------------------------------------------
+
+
+def _ndjson_error(status: int, message: str, retry_after_ms: int | None = None) -> str:
+    detail: dict[str, object] = {"type": "provider.error", "message": message, "status": status}
+    if retry_after_ms is not None:
+        detail["retryAfterMs"] = retry_after_ms
+    return json.dumps({"type": "error", "error": detail})
+
+
+@pytest.mark.parametrize(("status", "retry_ms"), [(429, 7000), (503, None), (500, None)])
+def test_structured_error_keeps_its_http_status_and_retry_delay(
+    tmp_path: Path, status: int, retry_ms: int | None
+) -> None:
+    """OpenCode reports an upstream failure as {"error": {"status", "message", "retryAfterMs"}}.
+
+    The status must reach recovery, or a 429/503 is an unclassified failure instead of a
+    reroutable one.
+    """
+    line = _ndjson_error(status, "upstream said no", retry_ms)
+    fake = make_fake_opencode(tmp_path, f"sys.stdout.write({line!r} + '\\n')\nsys.exit(1)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is False
+    assert terminal.status_code == status
+    assert terminal.retry_after_seconds == (retry_ms / 1000 if retry_ms else None)
+    assert terminal.error == "upstream said no"
+
+
+def test_status_in_plain_error_text_is_still_recognised(tmp_path: Path) -> None:
+    line = json.dumps({"type": "error", "message": "HTTP 503 Service Unavailable"})
+    fake = make_fake_opencode(tmp_path, f"sys.stdout.write({line!r} + '\\n')\nsys.exit(1)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.status_code == 503
+
+
+def _step_finish(cost: object, tokens_in: int = 100, tokens_out: int = 42) -> str:
+    event: dict[str, object] = {
+        "type": "step_finish",
+        "tokens": {"input": tokens_in, "output": tokens_out},
+    }
+    if cost is not None:
+        event["cost"] = cost
+    return json.dumps(event)
+
+
+@pytest.mark.parametrize("reported", [0, 0.0, {"total": 0}])
+def test_a_reported_zero_cost_is_never_recorded_as_zero(reported: object) -> None:
+    parsed = _parse_ndjson_output(_step_finish(reported))
+    usage = parsed["usage"]
+    assert usage.cost_usd is None
+    assert usage.cost_note and "0" in usage.cost_note
+    assert (usage.input_tokens, usage.output_tokens) == (100, 42)  # tokens are still recorded
+
+
+def test_a_missing_cost_is_unknown_with_a_reason() -> None:
+    usage = _parse_ndjson_output(_step_finish(None))["usage"]
+    assert usage.cost_usd is None and usage.cost_note
+    assert usage.input_tokens == 100
+
+
+def test_a_positive_cost_is_recorded_and_summed() -> None:
+    stream = "\n".join([_step_finish(0.0123), _step_finish({"total": 0.0077})])
+    usage = _parse_ndjson_output(stream)["usage"]
+    assert usage.cost_usd == pytest.approx(0.02)
+    assert usage.cost_note is None
+    assert usage.input_tokens == 200
+
+
+def test_one_unpriced_step_makes_the_whole_attempt_cost_unknown() -> None:
+    stream = "\n".join([_step_finish(0.5), _step_finish(0)])
+    usage = _parse_ndjson_output(stream)["usage"]
+    assert usage.cost_usd is None
+    assert usage.cost_note
+
+
+# ---------------------------------------------------------------------------
+# Cleanup and I/O errors (review item 6)
+# ---------------------------------------------------------------------------
+
+
+@requires_procfs
+def test_group_is_killed_when_collecting_raises_an_ordinary_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-cancellation exception from ``_collect`` must still reap the worker's group and
+    come back as a terminal (run() never raises)."""
+    capture = tmp_path / "descendant.pid"
+    fake = make_fake_opencode(
+        tmp_path,
+        "import signal\n"
+        f"capture = {str(capture)!r}\n"
+        "if os.fork() == 0:\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    with open(capture + '.tmp', 'w') as fh:\n"
+        "        fh.write(str(os.getpid()))\n"
+        "    os.replace(capture + '.tmp', capture)\n"
+        "    while True:\n"
+        "        time.sleep(0.05)\n"
+        "time.sleep(120)\n",
+    )
+
+    async def exploding_collect(self: object, proc: object, timeout_seconds: float) -> object:
+        for _ in range(1200):  # the worker must be running before we fail
+            if capture.exists():
+                break
+            await asyncio.sleep(0.05)
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(OpenCodeExecutor, "_collect", exploding_collect)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    try:
+        terminal = run_executor(
+            OpenCodeExecutor(opencode_bin=fake, idle_output_seconds=120.0),
+            "task",
+            cwd,
+            timeout=120.0,
+        )
+        assert terminal.ok is False
+        assert terminal.error.startswith("worker_io_failed"), terminal.error
+        descendant = int(capture.read_text())
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not _pid_gone(descendant):
+            time.sleep(0.05)
+        assert _pid_gone(descendant), "worker group survived a collect failure"
+    finally:
+        recorded = capture.read_text().strip() if capture.exists() else ""
+        if recorded.isdigit():
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.kill(int(recorded), signal.SIGKILL)
+
+
+def test_a_failed_pipe_read_is_not_reported_as_a_finished_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pump that fails while the worker exits 0 must not yield ok=True with partial usage."""
+    payload = ndjson_success("done")
+    fake = make_fake_opencode(
+        tmp_path, f"sys.stdout.write({payload!r})\nsys.stdout.write('\\n')\nsys.exit(0)\n"
+    )
+    real_read = asyncio.StreamReader.read
+    state = {"failed": False}
+
+    async def failing_read(self: asyncio.StreamReader, n: int = -1) -> bytes:
+        if not state["failed"]:
+            state["failed"] = True
+            raise OSError("pipe read failed")
+        return await real_read(self, n)
+
+    monkeypatch.setattr(asyncio.StreamReader, "read", failing_read)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is False, terminal
+    assert terminal.error.startswith("worker_io_failed"), terminal.error
 
 
 # ---------------------------------------------------------------------------

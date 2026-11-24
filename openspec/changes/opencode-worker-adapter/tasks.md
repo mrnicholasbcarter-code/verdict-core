@@ -36,6 +36,16 @@
       between two concurrent workers; no credentials appear in temp config files or
       logs.
       **Blocked on #1306** (tests on main write the real `~/.verdict`); the live check runs on installed main after #1306 and the reinstall.
+- [x] 2.5 Worker credential and pre-dispatch check: resolve serve's bearer token with
+      Verdict's own code, set it in the child env only under the key name, redact it, and check
+      once before launch that the credential resolves, the binary runs and serve accepts it
+      (one `harness_configuration:` message, treated as a block). Verify: tests in
+      `tests/test_opencode_executor.py` and `tests/test_serve_service_resolvers.py`.
+- [x] 2.6 Serve address from configuration (`--serve-url`, `VERDICT_SERVE_URL`, default
+      `http://127.0.0.1:8000`). Verify: `tests/test_orch_executors.py`,
+      `tests/test_serve_service_resolvers.py`.
+- [x] 2.7 Keep the upstream HTTP status of a structured error; never record a cost of 0.
+      Verify: `tests/test_opencode_executor.py`.
 - [x] 2.4 Route enforcement: verify that every model call from an OpenCode worker
       reaches `verdict serve` (:8000). If per-request route pinning is absent from
       the relay, add it so that each request uses exactly the route Verdict chose

@@ -229,3 +229,28 @@ def test_worker_request_never_falls_back_even_if_the_decision_carries_alternativ
     assert response.status_code == 200, response.text
     assert attempted == [["selected-model"]], f"fallback attempts were built: {attempted}"
     assert [r["body"]["model"] for r in transport.requests] == ["selected-model"]
+
+
+def test_worker_request_carrying_execution_path_request_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The execution-path flow selects its own offer and would bypass the worker's pin.
+
+    A worker request carrying that field is refused with 400, with no upstream contact,
+    whatever the field contains.
+    """
+    transport = _configure(monkeypatch)
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "selected-model",
+                "messages": [{"role": "user", "content": "worker task"}],
+                "execution_path_request": {"schema_version": "anything"},
+            },
+            headers={"x-verdict-worker": "opencode"},
+        )
+    assert response.status_code == 400, response.text
+    assert "execution_path_request" in response.json()["error"]["message"]
+    assert "worker" in response.json()["error"]["message"]
+    assert transport.requests == []

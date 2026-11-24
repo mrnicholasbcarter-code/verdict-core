@@ -62,6 +62,13 @@ id is in the request's admitted set, mints its route-bound proof exactly as for 
 (ADR-035), and otherwise denies without minting a proof. The relay only verifies the outcome. The
 decision above is unchanged.*
 
+*Implementation note (2026-11-24): the worker authenticates to serve with serve's own bearer
+token, resolved by Verdict (`verdict.serve_service.resolve_serve_token`), passed to the child only
+as `VERDICT_WORKER_API_KEY`, and checked once before launch together with the binary and serve's
+reachability. Until issue #1313 (OC1b) the route is pinned by the worker header: a worker could
+name another admitted route, never a non-admitted one. #1313 replaces the credential with a signed
+per-attempt assignment.*
+
 **2. OpenCode becomes the default orchestrate worker executor.**
 `opencode` becomes the DEFAULT worker executor for `verdict orchestrate` as soon
 as the adapter merges. The planner executor is unchanged: `--planner-executor`,
@@ -84,6 +91,11 @@ commands are NOT restricted to an allow-list; this is the operator's explicit
 choice. Verdict still enforces owned files afterwards (a diff outside owned
 files is rejected), and runs the node's verification and the repo gates itself.
 OpenCode's own checks are advisory.
+
+*Accepted risk (2026-11-24, operator): the worker keeps the operator's home directory, so it
+can read files there and reach the gateway directly; "all calls go through serve" holds for
+OpenCode's own provider calls only. Restricting the shell would reverse this decision and
+needs its own design.*
 
 **5. Licence and terms; pinned version; doctor warning.**
 The first build task records OpenCode's licence and terms, taken from its

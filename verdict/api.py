@@ -2149,6 +2149,14 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         return _proxy_error(400, "request body must be valid JSON", surface=surface)
     if not isinstance(payload, dict):
         return _proxy_error(400, "request body must be a JSON object", surface=surface)
+    if request.headers.get("x-verdict-worker") is not None and "execution_path_request" in payload:
+        # A worker is pinned to the route it was assigned.  The execution-path flow selects its
+        # own offer and would bypass that pin, so a worker request may not carry one.
+        return _proxy_error(
+            400,
+            "worker requests must not carry execution_path_request: the assigned route is pinned",
+            surface=surface,
+        )
 
     task = _task_text(payload)
     protocol = protocol_for_surface(surface)

@@ -54,6 +54,12 @@ attest that route identity.
   the provider follows the pinned route; there are no fallback routes; and the
   request is dispatched on that proof
 
+#### Scenario: A worker request cannot carry an execution-path request
+
+- **WHEN** a request with the `X-Verdict-Worker` header carries `execution_path_request`
+- **THEN** it is refused with 400 and no upstream contact, because the execution-path flow
+  selects its own offer and would bypass the worker's pin
+
 #### Scenario: A worker request never falls back to another route
 
 - **WHEN** a worker request is accepted, whichever path produced the decision (the
@@ -186,3 +192,58 @@ when the installed OpenCode version differs from v2.3.2.
   prerelease or build of the same numbers such as `2.3.2-rc.1`
 - **THEN** `verdict doctor` shows a non-fatal warning naming the installed version
   and the pinned version
+
+### Requirement: Worker credential resolved by Verdict; one pre-dispatch check
+
+An OpenCode worker SHALL authenticate to `verdict serve` with the serve bearer token that
+Verdict resolves itself (environment, credential store, `serve.env`), never the OmniRoute gateway
+key and never an undocumented operator variable.  It SHALL reach the child only under the
+configured key variable name and SHALL be redacted from everything recorded.  Before an attempt
+writes or launches anything, the executor SHALL check that the credential resolves, that the
+`opencode` binary runs and that serve is reachable and accepts the credential; a failure SHALL be
+one `harness_configuration:` message that recovery treats as a block.
+
+#### Scenario: Credential reaches only the child environment
+
+- **WHEN** an attempt launches
+- **THEN** the credential appears in the child's environment under the key variable name only,
+  not in its arguments, its config file or any other variable
+
+#### Scenario: Missing credential fails once, before launch
+
+- **WHEN** no serve credential can be resolved
+- **THEN** the attempt ends with a `harness_configuration:` terminal, nothing is written to the
+  worktree, no worker is launched and recovery blocks instead of retrying
+
+#### Scenario: Unrunnable binary, unreachable serve or rejected credential
+
+- **WHEN** the binary does not run, serve is unreachable, or serve answers 401 or 403
+- **THEN** the attempt ends the same way, with a reason that never contains the credential
+
+### Requirement: Serve address comes from configuration
+
+Workers SHALL call the serve address given by `--serve-url`, else `VERDICT_SERVE_URL`, else the
+serve unit's default `http://127.0.0.1:8000`.  An address that is not an http(s) origin SHALL be
+refused, not replaced by the default.
+
+#### Scenario: Configured address is used
+
+- **WHEN** `--serve-url http://127.0.0.1:9123` is passed
+- **THEN** the per-attempt provider base URL is `http://127.0.0.1:9123/v1`
+
+### Requirement: Upstream status and cost are recorded honestly
+
+A failed attempt SHALL keep the HTTP status and retry delay OpenCode reports in a structured
+`error` event.  `cost_usd` SHALL be recorded only for a real positive figure; a reported 0, a
+missing figure, or any unpriced step SHALL give `null` with a reason, and tokens SHALL still be
+recorded.
+
+#### Scenario: Upstream 429 keeps its status
+
+- **WHEN** OpenCode exits 1 after an error event with `status` 429 and `retryAfterMs` 7000
+- **THEN** the terminal carries status 429 and a 7 s retry delay
+
+#### Scenario: Zero cost is not recorded
+
+- **WHEN** OpenCode reports a cost of 0 for a step
+- **THEN** `cost_usd` is `null` with a reason, and the token counts are recorded

@@ -11,6 +11,7 @@ a production caller from day one so the reachability baseline does not grow.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -144,16 +145,24 @@ class HarnessRegistry:
         return getattr(cls, "__name__", str(cls))
 
     def executor_for(
-        self, target: ExecutionTarget, *, gateway: str, api_key: str
+        self, target: ExecutionTarget, *, gateway: str, api_key: str, serve_url: str | None = None
     ) -> WorkerExecutor:
         """Build the worker executor for an ``ExecutionTarget``'s harness.
 
         Dispatch selects the adapter by ``target.harness`` alone; the adapter
         translates the target into a launch.  ``gateway``/``api_key`` are the
         dispatch credentials (Verdict key precedence applies inside the
-        executor).
+        executor).  ``serve_url`` is the configured ``verdict serve`` address; only adapters
+        whose ``worker_executor`` takes a ``serve_url`` keyword (workers that route through
+        serve) receive it.
         """
-        return self.resolve(target.harness).worker_executor(gateway=gateway, api_key=api_key)
+        adapter = self.resolve(target.harness)
+        if (
+            serve_url is not None
+            and "serve_url" in inspect.signature(adapter.worker_executor).parameters
+        ):
+            return adapter.worker_executor(gateway=gateway, api_key=api_key, serve_url=serve_url)  # type: ignore[call-arg]
+        return adapter.worker_executor(gateway=gateway, api_key=api_key)
 
 
 DEFAULT_REGISTRY = HarnessRegistry()
@@ -285,12 +294,16 @@ class OpenCodeAdapter:
             ),
         )
 
-    def worker_executor(self, *, gateway: str, api_key: str) -> WorkerExecutor:
-        # gateway/api_key unused: OpenCodeExecutor routes through verdict serve
-        # (:8000) and reads VERDICT_WORKER_API_KEY from the child environment.
+    def worker_executor(
+        self, *, gateway: str, api_key: str, serve_url: str | None = None
+    ) -> WorkerExecutor:
+        # gateway/api_key unused: they are the OmniRoute address and key, and OpenCodeExecutor
+        # routes through verdict serve instead.  It resolves its own serve credential
+        # (Verdict's code, not an operator variable) and takes the serve address from
+        # ``serve_url``, else VERDICT_SERVE_URL, else the serve unit's default.
         from verdict.orchestration.executor_opencode import OpenCodeExecutor
 
-        return OpenCodeExecutor()
+        return OpenCodeExecutor(serve_base_url=serve_url)
 
     def harness_visibility(self, *, catalog_rows: Any, sync_visibility: bool) -> HarnessVisibility:
         # OpenCode routes all calls through Verdict serve, which forwards to
