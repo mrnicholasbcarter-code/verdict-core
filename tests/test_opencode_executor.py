@@ -41,6 +41,8 @@ from verdict.orchestration.executor_opencode import (
 )
 
 ROUTE = "cc/claude-sonnet-5"
+#: The instructions file the task is delivered in, beside the per-attempt ``opencode.json``.
+TASK_FILE = "verdict-task.md"
 
 # The real pre-dispatch functions, captured before the autouse fixture replaces them.
 _REAL_WORKER_CREDENTIAL = executor_module._worker_credential
@@ -2392,8 +2394,6 @@ def test_a_failed_pipe_read_is_not_reported_as_a_finished_attempt(
 # prompt on stdin; nothing is written into the worktree
 # ---------------------------------------------------------------------------
 
-#: The instructions file the task is delivered in, beside the per-attempt ``opencode.json``.
-TASK_FILE = "verdict-task.md"
 #: A marker that only the task text carries: how many times it reaches OpenCode is the check.
 TASK_MARK = "TASKMARK-9f3a1c"
 
