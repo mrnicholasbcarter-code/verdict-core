@@ -94,13 +94,15 @@ configuration or hooks the worker could have written.
 ### Requirement: Only owned-file changes SHALL be transferred, and any other change SHALL leave the user's repository untouched
 
 The executor SHALL transfer an attempt only when every changed path is owned by the unit
-(`WorkUnit.owns`), is a regular file or a deletion, and the change is not empty. Ownership
-SHALL be decided on file and link entries only, never on directories, and the executor SHALL
-read the attempt tree without following links and without opening anything that is not a
-regular file. Otherwise
+(`WorkUnit.owns`), is a regular file or a deletion, and the change is not empty. Otherwise
 the attempt SHALL be `rejected` with a reason naming the offending paths, and the user's
 repository SHALL be byte-identical to before the attempt. An attempt whose worker did not end
 successfully SHALL transfer nothing even if the attempt tree holds edits.
+
+Ownership SHALL be decided on file and link entries only, never on directories. The executor
+SHALL read the attempt tree without following links and without opening anything that is not a
+regular file, resolving every directory component relative to a held descriptor, so that
+swapping an ancestor directory for a symlink cannot redirect a read.
 
 #### Scenario: Out-of-bounds edits are rejected
 - **WHEN** a worker edits an unowned file by a plain edit, by staging it, by committing it, by creating an unowned new file, or by swapping a symlink into an owned path
@@ -113,6 +115,10 @@ successfully SHALL transfer nothing even if the attempt tree holds edits.
 #### Scenario: Directory and file swapped
 - **WHEN** a worker replaces the directory holding an owned file with a plain file of the same name as the directory
 - **THEN** the attempt is `rejected` for the new unowned path
+
+#### Scenario: Ancestor directory swapped during validation
+- **WHEN** a surviving worker process replaces a directory of the attempt tree by a symlink to a path outside the tree while the tree is being read
+- **THEN** nothing outside the tree is read, and the attempt is `error` with the reason that the attempt tree changed during validation
 
 #### Scenario: Special files in the attempt tree
 - **WHEN** a worker leaves a FIFO, or a symlink pointing outside the tree, where a regular file was
@@ -165,9 +171,13 @@ the repository root without following symlinks, and SHALL compare, for each path
 current kind, executable bit and bytes with the seed manifest (or absence, when the manifest
 has no entry), both before any write and again immediately before that path's write. If any
 comparison differs the attempt SHALL be `rejected` with the reason and nothing SHALL be written
-for a pre-write difference. If a write fails part-way the executor SHALL undo every write
-already made and the attempt SHALL be `error`. The executor SHALL refuse to run on a host
-whose descriptor-relative file operations it needs are unavailable.
+for a pre-write difference. The second comparison SHALL also confirm that every held directory
+descriptor is still the directory reachable at its name, by device and inode. A refusal found
+before the first write SHALL make the attempt `rejected`. A refusal or failure after the first
+write SHALL roll back every path already written, SHALL make the attempt `error`, and its
+reason SHALL name the refused path and list any path the rollback could not restore. The
+executor SHALL refuse to run on a host whose descriptor-relative file operations it needs are
+unavailable.
 
 #### Scenario: Owned file changed after the seed
 - **WHEN** the user edits an owned file after the seed and before the transfer
@@ -183,11 +193,19 @@ whose descriptor-relative file operations it needs are unavailable.
 
 #### Scenario: Parent swapped for a symlink during the transfer
 - **WHEN** a parent directory is replaced by a symlink after the first comparison and before the write
-- **THEN** nothing is written through the link, the attempt is `rejected` or `error`, and every path already written is restored
+- **THEN** nothing is written through the link
 
-#### Scenario: User edit between the comparison and the write
-- **WHEN** the user edits an owned file after the first comparison and before its write
-- **THEN** the second comparison refuses the write and the user's edit is intact
+#### Scenario: Parent directory renamed away during the transfer
+- **WHEN** a parent directory is renamed and a symlink or another directory is put at its old name after the first comparison and before the write
+- **THEN** the second comparison finds the held descriptor is no longer the directory at that name, nothing is written into the displaced directory, and the attempt is `rejected` if no write had happened and `error` otherwise
+
+#### Scenario: Late conflict after earlier paths were written
+- **WHEN** a transfer of three owned files has written the first and the user edits the second before its write
+- **THEN** the second comparison refuses that write, the first path is restored, the user's edit is intact, and the attempt is `error` naming the second path
+
+#### Scenario: Rollback blocked by a later user edit
+- **WHEN** a late conflict triggers rollback and the user has also changed an earlier written path
+- **THEN** that path is left as the user left it and the `error` reason lists it as not restored
 
 #### Scenario: Failure part-way
 - **WHEN** a transfer of three owned files fails on the second

@@ -47,8 +47,11 @@ Conventions for every task:
       `git check-ignore --no-index -z --stdin` run in the user's repository, then ownership
       through `WorkUnit.owns` on leaf entries (directories are not entries), the regular-file rule
       and the empty-delta rule. It never runs git in the tree, never follows a link in it and
-      opens only regular files, with `O_NOFOLLOW | O_NONBLOCK` and an `fstat` check. Files: `verdict/autodev_opencode.py`, `tests/test_autodev_opencode.py`.
-      Verify: `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py -k delta`
+      opens only regular files. The walk, M0, M1 and the delta-byte reads are all
+      descriptor-relative (`scandir` on a directory descriptor, children opened with
+      `O_DIRECTORY | O_NOFOLLOW` relative to their parent, files with `O_NOFOLLOW | O_NONBLOCK`
+      and an `fstat` check). Files: `verdict/autodev_opencode.py`,
+      `tests/test_autodev_opencode.py`. Verify: `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py -k delta`
       with tests for: a plain edit, a `git add`ed edit, a committed edit and a reverted edit
       (delta follows file contents only); an unowned new file; an owned delete; a mode change;
       a symlink in an owned path; a planted `core.fsmonitor` and a planted `pre-commit` hook in
@@ -56,8 +59,9 @@ Conventions for every task:
       the only changed path (the directory is not); a directory swapped for an owned file's
       parent and a file swapped for a directory are rejected by ownership; a FIFO and a symlink
       substituted for a regular file are recorded by kind and never opened (the test would hang
-      on a FIFO without `O_NONBLOCK`); a path that changes kind between `lstat` and open is
-      `error`; a file over the per-file limit is a named refusal; a new path in a user-ignored
+      on a FIFO without `O_NONBLOCK`); a path that changes kind between the metadata read and the open is `error`; an ancestor
+      directory swapped for a symlink to a path outside the tree, through a test seam between
+      the directory listing and the open, reads nothing outside the tree and is `error`; a file over the per-file limit is a named refusal; a new path in a user-ignored
       directory is a byproduct; the same path existing at seed is not; a worker-written
       `.gitignore` hiding an unowned file is itself out of bounds and does not hide it; a tree
       over the limit is a named refusal.
@@ -75,10 +79,16 @@ Conventions for every task:
       byte-identical (a symlinked parent, a non-regular target, a changed user file, a user file
       that exists when M0 has no entry, an oversized file, a path that escapes the root); a
       `chmod`-only change by the user after the seed is a refusal; an intervening user edit
-      injected through a test seam between the preflight check and the write is refused, not
-      overwritten; a parent directory swapped for a symlink through the same seam is refused
-      and nothing is written through it; an injected failure on the second of three files
-      restores all three; a hash mismatch between the delta read and M1 is `error`.
+      injected through a test seam between the preflight check and the first write is
+      `rejected` and not overwritten; the same edit on the second of three files restores the
+      first, leaves the edit and is `error` naming the second path (a multi-file late
+      conflict); a late conflict where the user also changed an earlier written path leaves
+      that path and lists it as not restored; a parent directory swapped for a symlink through
+      the seam is refused and nothing is written through it; a parent directory renamed away
+      with a symlink or another directory put at its old name is refused by the device and
+      inode check and nothing is written into the displaced directory; an injected write
+      failure on the second of three files restores all three; a hash mismatch between the
+      delta read and M1 is `error`.
 - [ ] 2.4 Restore (D6). `restore(journal)` undoes the last transfer in reverse order with the
       same descriptor-relative traversal and at-the-moment re-check as task 2.3, checking kind,
       executable bit and SHA-256 against what the transfer wrote; it leaves alone and reports
@@ -109,8 +119,11 @@ Conventions for every task:
       with tests for: an owned edit is `applied` with usage `reported=False` when tokens are
       null; a not-ok terminal (timeout, stall, serve refusal text, non-zero exit) transfers
       nothing even though the tree holds edits; an exception and a cancelled run both remove
-      the tree; a running event loop returns `error` and removes the tree; an echoed secret
-      in a terminal error never appears in the attempt reason.
+      the tree; a running event loop returns `error` and removes the tree; a stub terminal
+      whose error text is already redacted (it contains `[REDACTED]`) while the credential
+      value sits in the process environment gives an attempt reason that keeps the redacted
+      text and never contains the credential value. Redaction stays the OpenCode executor's job
+      [U] and is not reimplemented here.
 - [ ] 3.3 Isolation acceptance matrix against a hostile stub worker. Each `rejected` variant
       checks the user's repository with the byte-identical definition (design.md) before and
       after: a plain out-of-bounds edit; a staged out-of-bounds edit; a worker `git commit`

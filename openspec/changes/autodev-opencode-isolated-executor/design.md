@@ -194,12 +194,20 @@ Classification, in order:
 5. An empty delta is `rejected` with the reason "worker made no change to the owned files".
 
 **Reading the worker's tree.** The clone is worker-controlled, so no step may follow a
-link or block on a special file. The walk uses `lstat` and `scandir` without following
-symlinks. Each regular file is opened with `O_NOFOLLOW | O_NONBLOCK`, checked with `fstat`
-to be a regular file after it is open, and read in bounded chunks up to the per-file limit
-(Open point 3). A path that is not a regular file at open time is recorded with its real
-kind and never opened again. If an open fails because the path changed kind during the
-walk, the attempt is `error` ("attempt tree changed during validation").
+link or block on a special file, and `O_NOFOLLOW` alone is not enough because it protects
+only the last component of a path: a descendant that outlives the attempt could swap an
+ancestor directory for a symlink between a `scandir` and an open. The walk (M0, M1 and the
+later delta-byte reads alike) is therefore descriptor-relative throughout. It opens the
+tree's root once with `O_DIRECTORY`, lists each directory with `scandir` on its descriptor,
+reads link targets with `readlink` and metadata with `stat(follow_symlinks=False)` relative
+to the directory descriptor, and descends only by opening the child with
+`O_DIRECTORY | O_NOFOLLOW` relative to its parent descriptor. No path string is ever
+re-resolved. Each regular file is opened relative to its directory descriptor with
+`O_NOFOLLOW | O_NONBLOCK`, checked with `fstat` to be a regular file after it is open, and
+read in bounded chunks up to the per-file limit (Open point 3). A path that is not a regular
+file at open time is recorded with its real kind and never opened again. If an open or a
+descent fails because the path changed kind or became a link during the walk, the attempt is
+`error` ("attempt tree changed during validation").
 
 **Read once.** The delta's bytes are read once into memory for each transferred path, from
 an open descriptor, and hashed; that hash must equal the M1 entry. A mismatch is the same
@@ -231,12 +239,23 @@ user's tree changed after the seed, and the attempt is `rejected` with that reas
 content is also checked against the per-file transfer limit (Open point 3).
 
 **Write.** The check runs for every path before any write, and again for that path immediately
-before its own write. The executor writes a temporary file in the target directory by
-descriptor, sets the executable bit from M1, and `rename`s it over the target relative to the
-parent descriptor. A file the worker deleted is `unlink`ed the same way. Before each write it
-records a journal entry: the path, whether it existed, its prior bytes, kind and executable
-bit, the fingerprint it wrote, and any directories it created. If any write fails, the
-entries written so far are undone by the restore procedure and the attempt is `error`.
+before its own write. A held directory descriptor stays valid if its directory is renamed away
+and a symlink is put at the old name, so the second check also confirms that every held
+component descriptor is still the directory reachable at its name: `stat(name,
+dir_fd=<parent descriptor>, follow_symlinks=False)` must report the same device and inode as
+`fstat` on the held descriptor, from the root down. A mismatch is a refusal. The executor then
+writes a temporary file in the target directory by descriptor, sets the executable bit from
+M1, and `rename`s it over the target relative to the parent descriptor. A file the worker
+deleted is `unlink`ed the same way. Before each write it records a journal entry: the path,
+whether it existed, its prior bytes, kind and executable bit, the fingerprint it wrote, and
+any directories it created.
+
+**Outcomes.** A refusal found by the checks before the first write is `rejected`, and nothing
+was written. Any refusal or failure after the first write (a write error, a changed file, a
+swapped or displaced parent found by the second check) first rolls back every path already
+written by the restore procedure of D6, and the attempt is then `error`, whose reason names
+the refused path and lists any path the rollback could not restore (because the user changed
+it, under D6's rules). Partial transfer is never reported as `rejected`.
 
 **What this does not guarantee.** POSIX has no compare-and-swap for a file's content. A user
 or tool that writes an owned file in the instant between the last check and the `rename` is
@@ -352,8 +371,9 @@ for the unit; the repository is untouched and, with retries disabled, the unit s
   builds that executor for the CLI. When #1313 swaps the credential for a signed per-attempt
   assignment, that function and the executor's own construction change; the unit executor
   does not. The executor's text that reaches a reason has already passed OC1's redaction
-  [U]; the unit executor passes it through unchanged and a test echoes a secret through a
-  fake terminal to prove nothing adds it back.
+  [U]; the unit executor passes it through unchanged. A test gives it an already-redacted
+  error while the credential sits in the environment, and asserts the credential never appears
+  in a reason, an outcome, an attempt record or a receipt, so nothing adds it back.
 - **Context file.** If the OpenCode executor writes `.verdict-context.md` into `cwd` [U], it
   lands in the clone, never in the user's tree, and D4's byproduct rule keeps it out of the
   delta. The byproduct set is a constant holding that name. If #1313 removes the file the
