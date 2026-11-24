@@ -2420,7 +2420,14 @@ def _live_planner_models(
         ):
             admitted_route_ids.append(route_id)
         else:
-            _verdict_reasons[route_id] = str(getattr(v, "reason", None) or "not_admitted")
+            # Distinguish local guard rejections from ladder rejections so the reason
+            # in unavailable_families is actionable, never a success reason like "ranked".
+            if cap not in eligible_cap:
+                _verdict_reasons[route_id] = "metered_excluded"
+            elif _is_premium_reserved(route_id):
+                _verdict_reasons[route_id] = "premium_reserved"
+            else:
+                _verdict_reasons[route_id] = str(getattr(v, "reason", None) or "not_admitted")
 
     # Compute planner bands from the full inventory.
     snap: MetadataSnapshot | None = metadata if isinstance(metadata, MetadataSnapshot) else None

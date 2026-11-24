@@ -562,17 +562,41 @@ def select_planner_routes(
         # D39: proceed with one family instead of failing closed; annotate the result.
         # (len(selected) >= 1 here because the empty check above already raised.)
         all_band_keys = band.frontier_model_keys | band.fallback_model_keys
-        # Build all_band_families using FULL route ids (same as how the main loop
-        # builds used_families via route_family(route_id)), so the two sets are
-        # comparable even when routes carry a :free or :nitro suffix.
+
+        # Enumerate all band families from three sources so no family is silently
+        # omitted from unavailable_families:
+        # 1. Routes that competed in the main loop (all_candidates_in_order).
+        # 2. Admitted routes in the band that _filter_to_band excluded (capacity, e.g. METERED).
+        # 3. Non-admitted routes supplied by the caller in exclusion_reasons.
         all_band_families: set[str] = {route_family(r) for r, _, _, _ in all_candidates_in_order}
+        candidate_route_ids = {r for r, _, _, _ in all_candidates_in_order}
+
+        # Source 2: admitted routes filtered by _filter_to_band due to capacity class.
+        local_cap_reasons: dict[str, str] = {}
+        for route_id in admitted_route_ids:
+            if _strip_suffix(route_id) not in all_band_keys or route_id in candidate_route_ids:
+                continue
+            cap = capacity_classes.get(route_id, CapacityClass.UNKNOWN)
+            reason = "metered_excluded" if cap not in _NON_METERED else "filtered"
+            all_band_families.add(route_family(route_id))
+            local_cap_reasons[route_id] = reason
+
+        # Source 3: non-admitted routes from the caller's exclusion map.
         if exclusion_reasons:
             for excl_route in exclusion_reasons:
                 if _strip_suffix(excl_route) in all_band_keys:
                     all_band_families.add(route_family(excl_route))
+
         unavailable_family_set = all_band_families - used_families
 
         family_reasons: dict[str, str] = {}
+        # Populate from local capacity exclusions first (explicit guard reason takes priority).
+        for excl_route, reason in local_cap_reasons.items():
+            fam = route_family(excl_route)
+            if fam not in unavailable_family_set or fam in family_reasons:
+                continue
+            family_reasons[fam] = reason
+        # Then populate from caller-supplied exclusion reasons.
         if exclusion_reasons:
             for excl_route, reason in exclusion_reasons.items():
                 stripped = _strip_suffix(excl_route)

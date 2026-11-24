@@ -1306,6 +1306,60 @@ def test_live_planner_models_single_family_proceeds_with_d39(
     assert band_records["cc/claude-sonnet-5"]["unavailable_families"] == {"dead:free": "unhealthy"}
 
 
+def test_live_planner_models_metered_route_gets_explicit_exclusion_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D39/finding-2: a task-eligible METERED route records 'metered_excluded' in
+    unavailable_families, never the ladder success reason 'ranked'."""
+    import verdict.autodev_run as autodev
+
+    # Both routes are TASK_ELIGIBLE; GPT is METERED so the local capacity guard rejects it.
+    # Before the fix, v.reason="ranked" (a success reason) would leak into unavailable_families.
+    verdicts = [
+        _route_verdict("cc/claude-sonnet-5", rank=0, capacity=CapacityClass.FREE),
+        _route_verdict("cx/gpt-4o", rank=1, capacity=CapacityClass.METERED),
+    ]
+
+    class _Selector:
+        def select(self, req, *, now):
+            return None, tuple(verdicts)
+
+    route_ids, band_records = autodev._live_planner_models(_Selector(), top_n=3)
+
+    assert route_ids == ("cc/claude-sonnet-5",)
+    assert band_records["cc/claude-sonnet-5"]["single_family_planner"] is True
+    unavail = band_records["cc/claude-sonnet-5"]["unavailable_families"]
+    assert unavail.get("gpt") == "metered_excluded"
+    assert "ranked" not in unavail.values()
+
+
+def test_live_planner_models_premium_reserved_route_gets_explicit_exclusion_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D39/finding-2: a task-eligible premium-reserved route records 'premium_reserved' in
+    unavailable_families, never the ladder success reason 'ranked'."""
+    import verdict.autodev_run as autodev
+
+    # gc/grok-4.7 is premium-reserved; it reaches TASK_ELIGIBLE on the ladder but the local
+    # premium-reservation guard rejects it.  The reason must be explicit, not "ranked".
+    verdicts = [
+        _route_verdict("cc/claude-sonnet-5", rank=0, capacity=CapacityClass.FREE),
+        _route_verdict("gc/grok-4.7", rank=1, capacity=CapacityClass.FREE),
+    ]
+
+    class _Selector:
+        def select(self, req, *, now):
+            return None, tuple(verdicts)
+
+    route_ids, band_records = autodev._live_planner_models(_Selector(), top_n=3)
+
+    assert route_ids == ("cc/claude-sonnet-5",)
+    assert band_records["cc/claude-sonnet-5"]["single_family_planner"] is True
+    unavail = band_records["cc/claude-sonnet-5"]["unavailable_families"]
+    assert unavail.get("grok") == "premium_reserved"
+    assert "ranked" not in unavail.values()
+
+
 def test_prepare_live_autodev_selected_works_with_two_subscription_families(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

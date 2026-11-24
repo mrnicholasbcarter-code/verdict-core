@@ -675,6 +675,21 @@ class TestSelectPlannerRoutes:
         with pytest.raises(PlannerBandError, match="no_frontier_or_fallback_planner"):
             select_planner_routes([], caps, band, snap, None, top_n=3, now=NOW)
 
+    def test_admitted_metered_band_route_appears_in_unavailable_families(self) -> None:
+        """D39/finding-1: an admitted METERED band route's family appears in unavailable_families
+        even when no exclusion_reasons map is supplied for it."""
+        band, snap = self._two_family_band()
+        # Claude is admitted FREE; GPT is admitted but METERED — _filter_to_band excludes it.
+        # No exclusion_reasons is passed; the capacity exclusion must still be recorded.
+        admitted = ["cc/claude-3-opus", "oa/gpt-4o"]
+        caps = {"cc/claude-3-opus": CapacityClass.FREE, "oa/gpt-4o": CapacityClass.METERED}
+        selected = select_planner_routes(admitted, caps, band, snap, None, top_n=2, now=NOW)
+        assert len(selected) == 1
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        assert result.unavailable_families == (("gpt", "metered_excluded"),)
+        assert result.to_dict()["unavailable_families"] == {"gpt": "metered_excluded"}
+
     def test_band_result_fields_populated(self) -> None:
         records = [_record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0))]
         snap = _snapshot(*records)
