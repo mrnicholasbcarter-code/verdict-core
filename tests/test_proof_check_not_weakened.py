@@ -1093,3 +1093,49 @@ def test_the_checked_in_contract_satisfies_the_checkers_shape_rules() -> None:
     root = Path(__file__).resolve().parents[1]
     loaded = yaml.safe_load((root / "proof" / "contract.yaml").read_text(encoding="utf-8"))
     _validate_shape(loaded, "proof/contract.yaml")
+
+
+# --- whatever the real loader rejects is a failure to check, however it is malformed ---
+
+LOADER_REJECTS = {
+    "a gate id repeated": lambda c: c["gates"].append(dict(_gate(c, "format"))),
+    "a command part that is blank": lambda c: _gate(c, "unit_full").update(command=["pytest", " "]),
+    "a classify the loader does not know": lambda c: _gate(c, "unit_full").update(classify="magic"),
+    "a shard word the loader does not know": lambda c: _gate(c, "unit_full").update(shard="all"),
+    "shards that is zero": lambda c: c["modes"]["full"].update(shards=0),
+    "shards that is a boolean": lambda c: c["modes"]["full"].update(shards=True),
+    "shards on a mode that is not full": lambda c: c["modes"]["targeted"].update(shards=2),
+    "a schema version other than 1": lambda c: c.update(schema_version=2),
+    "a runner the loader does not allow": lambda c: c.update(runner="dagger"),
+    "no name": lambda c: c.pop("name"),
+    "an empty gate list": lambda c: c.update(gates=[]),
+}
+
+
+@pytest.mark.parametrize("name", sorted(LOADER_REJECTS))
+def test_a_contract_the_real_loader_rejects_is_a_failure_to_check(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    repo = scenario(tmp_path, _contract_case(LOADER_REJECTS[name]))
+    code, output = check(repo, capsys)
+    assert code == 2, output
+    assert "proof/contract.yaml" in output
+
+
+def test_the_base_contract_is_judged_by_the_loader_too(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    broken = _edited(lambda c: c["gates"].append(dict(_gate(c, "format"))))
+    repo = scenario(
+        tmp_path, {"README.md": "x\n"}, base=base_files() | {"proof/contract.yaml": broken}
+    )
+    assert check(repo, capsys)[0] == 2
+
+
+def test_the_toy_base_contract_is_one_the_real_loader_accepts(tmp_path: Path) -> None:
+    """The fixtures above only mean something if their starting point is valid."""
+    from scripts.proof.contract import load_contract
+
+    path = tmp_path / "contract.yaml"
+    path.write_text(_contract_text(BASE_CONTRACT), encoding="utf-8")
+    assert len(load_contract(path).gates) == len(BASE_CONTRACT["gates"])

@@ -41,6 +41,7 @@ import copy
 import os
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -52,6 +53,13 @@ try:
     import tomllib
 except ImportError:  # Python 3.10
     import tomli as tomllib
+
+# Ensure the repository root is importable when this file runs as a script.
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from scripts.proof.contract import ContractError, load_contract  # noqa: E402
 
 EXIT_OK, EXIT_WEAKENED, EXIT_ERROR = 0, 1, 2
 
@@ -362,7 +370,24 @@ def _load_contract(source: bytes | None, label: str) -> dict[str, Any] | None:
     if not isinstance(loaded, dict):
         raise CheckError(f"{label}: the contract is not a mapping")
     _validate_shape(loaded, label)
+    _validate_with_loader(source, label)
     return loaded
+
+
+def _validate_with_loader(source: bytes, label: str) -> None:
+    """Hold the contract to the proof loader's own rules, not a copy of them.
+
+    A contract ``scripts/proof/run.py`` would refuse (a repeated gate id, a blank command
+    part, an unknown ``classify`` or ``shard`` word, a bad ``shards``) cannot be compared:
+    it is a failure to check, never a pass.
+    """
+    with tempfile.TemporaryDirectory(prefix="proof-contract-") as tmp:
+        path = Path(tmp) / "contract.yaml"
+        path.write_bytes(source)
+        try:
+            load_contract(path)
+        except ContractError as exc:
+            raise CheckError(f"{label}: the proof loader rejects it: {exc}") from exc
 
 
 def _validate_shape(contract: Mapping[str, Any], label: str) -> None:
