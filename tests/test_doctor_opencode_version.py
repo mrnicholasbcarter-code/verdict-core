@@ -18,9 +18,9 @@ from verdict import doctor_diagnostics as dd
 from verdict.orchestration.executor_opencode import PINNED_VERSION
 
 
-def _fake_binary(tmp_path: Path, output: str) -> str:
+def _fake_binary(tmp_path: Path, output: str, exit_code: int = 0) -> str:
     script = tmp_path / "fake-opencode"
-    script.write_text(f"#!/bin/sh\necho '{output}'\n")
+    script.write_text(f"#!/bin/sh\necho '{output}'\nexit {exit_code}\n")
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     return str(script)
 
@@ -77,3 +77,18 @@ def test_missing_binary_is_only_a_note(tmp_path: Path, monkeypatch: pytest.Monke
     assert _section(diag)[1] == "note"
     assert not diag.warnings
     assert os.path.exists(str(tmp_path))
+
+
+def test_failed_version_command_is_not_reported_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wrapper can print the pinned version and still exit nonzero (for example before
+    reporting an initialisation error); that is a failed check, not ``ok``."""
+    binary = _fake_binary(tmp_path, PINNED_VERSION, exit_code=3)
+    monkeypatch.setattr(executor_module, "_opencode_binary", lambda *a, **k: binary)
+    diag = dd.DoctorDiagnostics()
+    dd._doctor_opencode_version(diag)
+    _name, level, message = _section(diag)
+    assert level == "note", (level, message)
+    assert "exit" in message and "3" in message
+    assert not diag.warnings

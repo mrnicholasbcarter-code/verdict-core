@@ -789,6 +789,17 @@ def _doctor_opencode_version(diag: DoctorDiagnostics) -> None:
 
     try:
         result = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            # A wrapper can print the pinned version and still fail (for example before
+            # reporting an initialisation error): that is a failed check, never "ok".
+            diag.sections.append(
+                (
+                    "OpenCode",
+                    "note",
+                    f"version check failed: `--version` exited {result.returncode}",
+                )
+            )
+            return
         version_line = (result.stdout or result.stderr or "").strip().splitlines()
         installed = version_line[0].strip() if version_line else ""
         # OpenCode outputs "2.3.2" or "opencode 2.3.2"; extract the whole version token,

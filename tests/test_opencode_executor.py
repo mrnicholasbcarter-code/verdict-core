@@ -683,7 +683,9 @@ def test_slow_git_probe_is_bounded_by_the_attempt_deadline(
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     slow_git = fake_bin / "git"
-    slow_git.write_text("#!/bin/sh\nsleep 60\n")
+    slow_git.write_text(
+        "#!/bin/sh\nexec sleep 60\n"
+    )  # exec: the killed PID is the sleeper, no orphan
     slow_git.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
     ran = tmp_path / "worker-ran.txt"
