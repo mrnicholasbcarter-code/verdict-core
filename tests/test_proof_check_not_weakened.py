@@ -1022,3 +1022,74 @@ def test_unrelated_imports_and_unchanged_aliases_still_pass(
         base=base_files() | {"tests/test_a.py": text},
     )
     assert check(repo, capsys)[0] == 0
+
+
+# --- a hook's docstring is not behaviour; the loader's types are the contract's ---
+
+
+def test_changing_only_the_docstring_of_a_collection_hook_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = 'def pytest_collection_modifyitems(items):\n    """Old words."""\n    items.sort()\n'
+    after = 'def pytest_collection_modifyitems(items):\n    """New, longer words."""\n    items.sort()\n'
+    repo = scenario(
+        tmp_path, {"tests/conftest.py": after}, base=base_files() | {"tests/conftest.py": before}
+    )
+    code, output = check(repo, capsys)
+    assert code == 0, output
+
+
+def test_changing_a_hooks_body_beside_an_unchanged_docstring_still_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    doc = '    """Same words."""\n'
+    before = "def pytest_collection_modifyitems(items):\n" + doc + "    items.sort()\n"
+    after = "def pytest_collection_modifyitems(items):\n" + doc + "    items.clear()\n"
+    repo = scenario(
+        tmp_path, {"tests/conftest.py": after}, base=base_files() | {"tests/conftest.py": before}
+    )
+    assert check(repo, capsys)[0] == 1
+
+
+def test_a_hook_that_is_only_a_docstring_can_gain_a_body_only_with_a_finding(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = 'def pytest_ignore_collect(collection_path):\n    """Nothing yet."""\n'
+    after = 'def pytest_ignore_collect(collection_path):\n    """Nothing yet."""\n    return True\n'
+    repo = scenario(
+        tmp_path, {"tests/conftest.py": after}, base=base_files() | {"tests/conftest.py": before}
+    )
+    assert check(repo, capsys)[0] == 1
+
+
+MALFORMED_LIKE_THE_LOADER = {
+    "required is 0": lambda c: _gate(c, "unit_full").update(required=0),
+    "required is the string false": lambda c: _gate(c, "unit_full").update(required="false"),
+    "required is null": lambda c: _gate(c, "unit_full").update(required=None),
+    "command is a string": lambda c: _gate(c, "unit_full").update(command="pytest tests/"),
+    "command is empty": lambda c: _gate(c, "unit_full").update(command=[]),
+    "command holds a number": lambda c: _gate(c, "unit_full").update(command=["pytest", 1]),
+    "phase is a number": lambda c: _gate(c, "unit_full").update(phase=3),
+    "when is a number": lambda c: _gate(c, "promptfoo").update(when=5),
+    "targets_placeholder is a list": lambda c: _gate(c, "unit_targeted").update(
+        targets_placeholder=["{targets}"]
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(MALFORMED_LIKE_THE_LOADER))
+def test_a_value_the_real_loader_rejects_is_a_failure_to_check_never_a_pass(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    repo = scenario(tmp_path, _contract_case(MALFORMED_LIKE_THE_LOADER[name]))
+    code, output = check(repo, capsys)
+    assert code == 2, output
+    assert "proof/contract.yaml" in output
+
+
+def test_the_checked_in_contract_satisfies_the_checkers_shape_rules() -> None:
+    from scripts.proof.check_not_weakened import _validate_shape
+
+    root = Path(__file__).resolve().parents[1]
+    loaded = yaml.safe_load((root / "proof" / "contract.yaml").read_text(encoding="utf-8"))
+    _validate_shape(loaded, "proof/contract.yaml")

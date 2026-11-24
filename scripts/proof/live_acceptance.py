@@ -425,13 +425,19 @@ def evaluate_head(head: str, *, post: bool, shards: int) -> Round | str:
         if run.get("conclusion") == "action_required":
             return f"run {run.get('name')} is waiting for approval"
     created: list[datetime] = []
+    named: list[dict[str, Any]] = []
     jobs: list[tuple[dict[str, Any], datetime, datetime | None, datetime | None]] = []
     for run in runs:
         run_created = parse_timestamp(run.get("created_at"), f"run {run.get('name')} created_at")
         created.append(run_created)
         for job in _pages(f"repos/{{owner}}/{{repo}}/actions/runs/{run['id']}/jobs", "jobs"):
+            named.append(job)
+            if job.get("status") == "completed" and job.get("conclusion") == "skipped":
+                continue  # its condition skipped it: it never ran, so it has no execution time
             if job.get("status") != "completed" or job.get("completed_at") is None:
                 return f"job {job.get('name')} of run {run.get('name')} not finished"
+            if job.get("started_at") is None:
+                return f"job {job.get('name')} of run {run.get('name')} has no start time"
             started = parse_timestamp(job.get("started_at"), f"job {job.get('name')} started_at")
             completed = parse_timestamp(
                 job.get("completed_at"), f"job {job.get('name')} completed_at"
@@ -441,13 +447,15 @@ def evaluate_head(head: str, *, post: bool, shards: int) -> Round | str:
         return "the head's runs have no jobs"
     legs = [(j, rc, st, ct) for j, rc, st, ct in jobs if _LEG_JOB.fullmatch(str(j.get("name")))]
     if post:
-        found = sorted(int(_LEG_JOB.fullmatch(str(j["name"])).group(1)) for j, *_ in legs)  # type: ignore[union-attr]
+        # Judged on every job, skipped ones included: a skipped leg is not a successful leg.
+        named_legs = [j for j in named if _LEG_JOB.fullmatch(str(j.get("name")))]
+        found = sorted(int(_LEG_JOB.fullmatch(str(j["name"])).group(1)) for j in named_legs)  # type: ignore[union-attr]
         if found != list(range(1, shards + 1)):
             return f"proof-shard legs found {found}, expected 1..{shards}"
-        for job, *_ in legs:
+        for job in named_legs:
             if job.get("conclusion") != "success":
                 return f"{job['name']} did not succeed ({job.get('conclusion')})"
-        aggregates = [j for j, *_ in jobs if j.get("name") == "proof-full"]
+        aggregates = [j for j in named if j.get("name") == "proof-full"]
         if len(aggregates) != 1:
             return f"expected one proof-full job, found {len(aggregates)}"
         if aggregates[0].get("conclusion") != "success":

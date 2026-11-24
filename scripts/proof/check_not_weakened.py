@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 import os
 import subprocess
 import sys
@@ -170,6 +171,19 @@ def changed_files(repo: Path, baseline: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _without_docstring(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.AST:
+    """A copy of a function without its docstring: wording is not behaviour."""
+    clone = copy.deepcopy(node)
+    first = clone.body[0] if clone.body else None
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        clone.body = clone.body[1:] or [ast.Pass()]
+    return clone
+
+
 class _Collector(ast.NodeVisitor):
     def __init__(self, tree: ast.AST) -> None:
         self.scope: list[str] = []
@@ -225,7 +239,7 @@ class _Collector(ast.NodeVisitor):
         if not isinstance(node, ast.ClassDef) and node.name in HOOK_NAMES:
             # The whole definition, not its name: a hook that is edited to drop or ignore
             # tests keeps its name.
-            self._record("hook definition", ast.unparse(node))
+            self._record("hook definition", ast.unparse(_without_docstring(node)))
         self.scope.append(node.name)
         self.generic_visit(node)
         self.scope.pop()
@@ -364,6 +378,20 @@ def _validate_shape(contract: Mapping[str, Any], label: str) -> None:
         env = gate.get("env_clear")
         if env is not None and not (isinstance(env, list) and all(isinstance(n, str) for n in env)):
             raise CheckError(f"{label}: gates[{position}].env_clear must be a list of strings")
+        # The types the proof loader (scripts/proof/contract.py) requires: a contract it would
+        # refuse is a failure to check, never a pass.
+        command = gate.get("command")
+        if not (isinstance(command, list) and command and all(isinstance(c, str) for c in command)):
+            raise CheckError(
+                f"{label}: gates[{position}].command must be a non-empty list of strings"
+            )
+        if not isinstance(gate.get("phase"), str):
+            raise CheckError(f"{label}: gates[{position}].phase must be a string")
+        if "required" in gate and not isinstance(gate["required"], bool):
+            raise CheckError(f"{label}: gates[{position}].required must be a boolean")
+        for key in ("when", "targets_placeholder"):
+            if gate.get(key) is not None and not isinstance(gate[key], str):
+                raise CheckError(f"{label}: gates[{position}].{key} must be a string")
     modes = contract.get("modes")
     if modes is not None and not isinstance(modes, dict):
         raise CheckError(f"{label}: modes must be a mapping")

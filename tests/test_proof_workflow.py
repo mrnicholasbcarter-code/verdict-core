@@ -194,6 +194,8 @@ def test_the_aggregate_uploads_the_merged_report_even_when_it_failed() -> None:
     assert str(uploads[0]["if"]).strip() == "always()"
     assert uploads[0]["with"]["name"] == "proof-report-full"
     assert uploads[0]["with"]["path"] == "proof-report-full.json"
+    # "Re-run all jobs" uploads the merged report again into the same run.
+    assert uploads[0]["with"]["overwrite"] is True
 
 
 def test_the_targeted_job_is_kept_and_nothing_waits_on_it() -> None:

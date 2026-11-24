@@ -966,6 +966,78 @@ def test_a_job_without_a_completion_time_excludes_the_head(
     assert head_sha("post", 1) in out and "not finished" in out
 
 
+def _skipped_job(name: str) -> dict[str, Any]:
+    """A job that was skipped by its condition: completed, with no execution times."""
+    return {
+        "name": name,
+        "status": "completed",
+        "conclusion": "skipped",
+        "started_at": None,
+        "completed_at": None,
+    }
+
+
+def test_a_skipped_job_without_timestamps_does_not_exclude_the_head_or_change_the_time(
+    rounds_data: tuple[FakeGitHub, Path, Path],
+    contract_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gh, pre, post = rounds_data
+    assert main(rounds_args(contract_path, pre, post)) == 0
+    baseline = capsys.readouterr().out
+    figures = [ln for ln in baseline.splitlines() if "median" in ln or "rounds:" in ln]
+    for side in ("pre", "post"):
+        for i in range(12):
+            gh.jobs[gh.runs[head_sha(side, i)][0]["id"]].append(
+                _skipped_job("typescript-contract-parity")
+            )
+    code = main(rounds_args(contract_path, pre, post))
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "excluded" not in out
+    assert [ln for ln in out.splitlines() if "median" in ln or "rounds:" in ln] == figures
+
+
+def test_a_job_that_completed_without_ever_starting_excludes_only_its_head(
+    rounds_data: tuple[FakeGitHub, Path, Path],
+    contract_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gh, pre, post = rounds_data
+    bad = head_sha("post", 4)
+    gh.jobs[gh.runs[bad][0]["id"]].append(
+        {
+            "name": "coverage",
+            "status": "completed",
+            "conclusion": "cancelled",
+            "started_at": None,
+            "completed_at": iso(50),
+        }
+    )
+    code = main(rounds_args(contract_path, pre, post))
+    out = capsys.readouterr().out
+    assert code == 0, out
+    line = next(line for line in out.splitlines() if bad in line)
+    assert "coverage" in line and "no start time" in line
+
+
+def test_a_skipped_proof_leg_still_excludes_a_post_merge_head(
+    rounds_data: tuple[FakeGitHub, Path, Path],
+    contract_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gh, pre, post = rounds_data
+    bad = head_sha("post", 2)
+    jobs = gh.jobs[gh.runs[bad][1]["id"]]
+    leg = next(j for j in jobs if j["name"] == "proof-shard (2)")
+    leg.update(conclusion="skipped", started_at=None, completed_at=None)
+    code = main(rounds_args(contract_path, pre, post))
+    out = capsys.readouterr().out
+    assert code == 0, out
+    line = next(line for line in out.splitlines() if bad in line)
+    assert "proof-shard (2)" in line and "skipped" in line
+
+
 def test_runs_of_other_events_are_not_part_of_a_round(
     rounds_data: tuple[FakeGitHub, Path, Path],
     contract_path: Path,

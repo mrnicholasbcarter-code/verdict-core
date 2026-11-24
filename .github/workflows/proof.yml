@@ -161,6 +161,8 @@ jobs:
         with:
           name: proof-report-full
           path: proof-report-full.json
+          # "Re-run all jobs" uploads the merged report again into the same run.
+          overwrite: true
           if-no-files-found: warn
           retention-days: 30
 
