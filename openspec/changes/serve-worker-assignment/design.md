@@ -290,10 +290,21 @@ Details the table leaves out:
 - **No execution inside `route()`.** Serve builds the service with `execute_offload=False`; the
   lane never executes the offload. The relay makes the one dispatch.
 - **Receipt id.** With no pack there is no pack digest or prompt digest. The lane's receipt id is
-  `vrct_` plus the first 24 hex characters of the SHA-256 of
-  `route_id | profile digest | run_id | node_id | "worker-assignment"`. `_chosen_route_proof` mints
-  nothing without a receipt id and a profile digest; both are always set on the lane. (A repeated
-  identical request gets the same id, as an unpinned request does today.)
+  `vrct_` plus the first 24 hex characters of the SHA-256 of the UTF-8 bytes of one compact JSON
+  array of strings, `["worker-assignment/v1", route_id, profile_digest, run_id, node_id]`,
+  serialised with `json.dumps(seed, separators=(",", ":"), ensure_ascii=True)`. The encoding is
+  JSON, not a delimiter join, because the ids are free text: `route_id`, `run_id` and `node_id` may
+  hold any non-control character, `|` included (D1). With `|` as the delimiter, the pairs
+  (`a|b`, `c`) and (`a`, `b|c`) for the same route and profile give the same seed, so two
+  distinct assignments would share one receipt id. That id is not only a label:
+  `_persist_routing_receipt_from_admit` writes `receipt.receipt_id` as the persisted routing
+  attempt id, so a collision would merge two nodes' routing attribution. A JSON array of strings is
+  injective: each element is quoted, `"` and `\` are escaped, and the element boundaries are
+  therefore never ambiguous, whatever characters an id holds. (The unpinned path's seed joins
+  `|`-separated values that are route, digest and outcome strings; it is not changed here.)
+  `_chosen_route_proof` mints nothing without a receipt id and a profile digest; both are always
+  set on the lane. A repeated identical request gets the same id, as an unpinned request does
+  today.
 - **Recorded tier.** The decision records no computed escalation (`escalated` false, no reason,
   `protected` false) and the tier that `evidence._TIER_TO_POLICY_FLOOR` maps to `best_effort` (3),
   so evidence does not claim a floor the lane never computed.
@@ -313,9 +324,14 @@ Details the table leaves out:
   requirement exists, and `worker_assigned_lane`. Never `cheap_path_context_pack`.
 - **What still reads the text, and why it is not a classifier.** The profile digest hashes the
   text, which binds the proof to this exact request. The context-plan estimate uses the text's
-  token size, a per-route hard gate that can only remove the route; its family allowance comes from
-  the constant family `agentic` (D6), so no keyword in the text changes whether a route fits.
-  Neither selects, ranks or refuses a route by what the text means.
+  token size, a per-route hard gate that can only remove the route.
+  `ContextPlan.estimate_for_candidate` (not from #1299) builds it from `estimate_tokens(task) * 2`
+  (four characters per token), a family allowance, 256 per required capability and 192 per
+  criterion. On the lane the family is the constant `agentic` (D6), whose allowance is 3,072
+  tokens, and the capability and criterion counts come from request fields only. So the words in
+  the text change the estimate only through the text's length: two texts of the same length get
+  the same estimate, and no family or capability inferred from a keyword ever enters it. Neither
+  the digest nor the estimate selects, ranks or refuses a route by what the text means.
 - **Keyword parity (decision 6).** The default `direct-gateway` worker never reaches serve and the
   orchestrator never runs the scanner: its floor is `required_capability_tier(node)`, from the
   node's risk and kind. An assigned request gets the same: no keyword protection on node text. The
