@@ -194,10 +194,12 @@ rejected and classified as a failure before verification runs.
   before the first build task ships (Decision 5); the licence placeholder in
   ADR-053 is to be filled by that task. Any upgrade resets the live-check
   requirement.
-- **Per-request route pinning in `verdict serve`** may require non-trivial relay
-  changes. If serve's current relay uses `allow_client_model_override` to pass
-  the route, the builder must verify that model identity is correctly attested in
-  the receipt and cannot be substituted by the worker.
+- **Per-request route pinning in `verdict serve`** needed more than a relay change. The
+  relay never honoured `allow_client_model_override` (the flag is only stored on the
+  service, and still is), and rewriting the model after admission cannot work because
+  admission mints a route-bound proof only for the route it selects. Pinning therefore
+  happens inside admission (see "Worker identity" above), so the receipt attests the
+  pinned route and a worker cannot substitute another.
 - **JSON output field names** from `opencode --format json` are confirmed at
   build time. If usage fields are absent, `opencode session export <attempt_id>`
   is used as a fallback; the builder handles the case where both sources are
