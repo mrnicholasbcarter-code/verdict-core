@@ -111,6 +111,15 @@ def add_parsers(subparsers: Any) -> None:
     orch.add_argument(
         "--gateway", default=os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128")
     )
+    orch.add_argument(
+        "--serve-url",
+        default=None,
+        metavar="URL",
+        help=(
+            "verdict serve address for workers that route through it (the opencode executor); "
+            "default: VERDICT_SERVE_URL, else http://127.0.0.1:8000"
+        ),
+    )
     orch.add_argument("--max-parallel", type=int, default=3)
     orch.add_argument("--max-attempts-per-node", type=_positive_int, default=4)
     orch.add_argument(
@@ -175,7 +184,9 @@ def add_parsers(subparsers: Any) -> None:
         help=f"Worker executor backend (default: {DEFAULT_REGISTRY.default_name()}). "
         "Backends are the registered HarnessAdapter names. Prime Agent is an "
         "optional harness: select it with --executor prime-headless (the legacy "
-        "alias 'prime' resolves to prime-headless).",
+        "alias 'prime' resolves to prime-headless). OpenCode is opt-in: select it "
+        "with --executor opencode (it needs a running 'verdict serve'; it does not "
+        "yet work through serve, see issue #1313).",
     )
     orch.add_argument(
         "--planner-executor",
@@ -511,7 +522,9 @@ def _prime_visibility(args: argparse.Namespace) -> int:
     return 0 if report["in_sync"] else 1
 
 
-def _build_single_executor(name: str, *, gateway: str, api_key: str) -> WorkerExecutor:
+def _build_single_executor(
+    name: str, *, gateway: str, api_key: str, serve_url: str | None = None
+) -> WorkerExecutor:
     """Build one named executor backend via the HarnessRegistry.
 
     CLI/backend selection knows only the harness name; the eligibility ladder
@@ -519,7 +532,9 @@ def _build_single_executor(name: str, *, gateway: str, api_key: str) -> WorkerEx
     carries the harness plus unknown identity here.
     """
     target = ExecutionTarget(harness=name, capacity_class=CapacityClass.UNKNOWN)
-    return DEFAULT_REGISTRY.executor_for(target, gateway=gateway, api_key=api_key)
+    return DEFAULT_REGISTRY.executor_for(
+        target, gateway=gateway, api_key=api_key, serve_url=serve_url
+    )
 
 
 def _parse_executor_map(raw: str) -> dict[str, str]:
@@ -591,11 +606,16 @@ def _worker_executor(args: argparse.Namespace) -> WorkerExecutor:
     node_backend_map = _parse_executor_map(raw_map)
 
     default_name = getattr(args, "executor", "") or DEFAULT_REGISTRY.default_name()
-    default_executor = _build_single_executor(default_name, gateway=args.gateway, api_key=api_key)
+    serve_url = getattr(args, "serve_url", None)
+    default_executor = _build_single_executor(
+        default_name, gateway=args.gateway, api_key=api_key, serve_url=serve_url
+    )
 
     if node_backend_map:
         named: dict[str, WorkerExecutor] = {
-            node_id: _build_single_executor(backend, gateway=args.gateway, api_key=api_key)
+            node_id: _build_single_executor(
+                backend, gateway=args.gateway, api_key=api_key, serve_url=serve_url
+            )
             for node_id, backend in node_backend_map.items()
         }
         return MixedExecutor(node_map=named, default=default_executor)

@@ -65,7 +65,14 @@ from verdict.metadata.store import (
     lookup_omniroute_id,
 )
 from verdict.model_passports import ModelPassport
-from verdict.models import AdmissionProof, ModelInfo, ProviderConfig, RoutingDecision
+from verdict.models import (
+    CONTEXT_WORKER_ASSIGNED_ROUTE,
+    AdmissionProof,
+    ModelInfo,
+    ProviderConfig,
+    RoutingDecision,
+    WorkerAssignedRoute,
+)
 from verdict.outcome_shadow import (
     attach_outcome_shadow,
     load_verified_outcome_observations,
@@ -633,6 +640,19 @@ class IntelligenceService:
         )
 
         trace_stages: dict[str, Any] | None = None
+        if (
+            isinstance(context, dict)
+            and "execution_path_request" in context
+            and isinstance(context.get(CONTEXT_WORKER_ASSIGNED_ROUTE), WorkerAssignedRoute)
+        ):
+            # The execution-path flow below selects its own offer and never reaches
+            # ``_decision_from_admit``, where a worker's assigned route is pinned.  Pinned
+            # execution-path support for workers is not built (operator decision, 2026-11-24):
+            # the relay rejects the combination with 400 first, and this refuses it for any
+            # other caller rather than let a worker request select another route.
+            raise ExecutionPathError(
+                "a worker request with an assigned route must not carry execution_path_request"
+            )
         if isinstance(context, dict) and "execution_path_request" in context:
             context = dict(context)
             context["execution_path_request"], trace_stages = (
@@ -2108,11 +2128,45 @@ class IntelligenceService:
                 admit_receipt=receipt.to_dict(),
             )
         chosen = receipt.chosen
+        contract = context if isinstance(context, dict) else {}
+        # A worker executor (ADR-053 decision 1) names the route it was assigned.  Admission
+        # narrows its *selection* to that route, and only when that exact route id is in this
+        # request's admitted set; nothing is ever admitted here.  Everything downstream (the
+        # provider, the context pack, the receipt, and the route-bound proof minted below by
+        # the same ``_chosen_route_proof`` call) then follows the pinned route.
+        assigned = contract.get(CONTEXT_WORKER_ASSIGNED_ROUTE)
+        pinned = assigned.route_id if isinstance(assigned, WorkerAssignedRoute) else None
+        if pinned is not None:
+            if pinned not in receipt.admitted:
+                self._persist_routing_receipt_from_admit(
+                    receipt, task_class=task_class, decision="denied", transport_outcome="not_sent"
+                )
+                return RoutingDecision(
+                    model=NO_ELIGIBLE_TARGET,
+                    provider="none",
+                    tier=final_tier,
+                    reason=f"route {pinned!r} was not in the admitted set for this request",
+                    escalated=escalated,
+                    escalation_reason=esc_reason or None,
+                    policy_version=self._policy_version,
+                    degraded_mode=False,
+                    managed_backend_status=self.managed_backend_status,
+                    protected=False,
+                    task_class=task_class,
+                    decision="denied",
+                    transport_outcome="not_sent",
+                    quality_outcome="unknown",
+                    candidate_states=eligibility_record.get("records", []),
+                    safety_flags=["worker_assigned_route_not_admitted"],
+                    admit_receipt=receipt.to_dict(),
+                )
+            # The chooser's ranking reason described a different route; do not carry it over.
+            receipt = replace(receipt, chosen=pinned, selected_because=None)
+            chosen = pinned
         provider = next(
             (model.provider for model in eligibility.admitted if model.id == chosen),
             chosen.split("/", 1)[0] if "/" in chosen else "omniroute",
         )
-        contract = context if isinstance(context, dict) else {}
         acceptance_criteria = tuple(
             str(item) for item in contract.get("acceptance_criteria", ()) if str(item).strip()
         )
@@ -2273,7 +2327,8 @@ class IntelligenceService:
             tier=final_tier,
             reason=f"active ∩ fresh-passport ∩ confirmed admitted {chosen}",
             admission_proofs=_chosen_route_proof(receipt, chosen, provider, contract),
-            alternatives=list(receipt.admitted[:8]),
+            # A pinned worker request is bound to exactly the route it was assigned: no fallbacks.
+            alternatives=[] if pinned is not None else list(receipt.admitted[:8]),
             escalated=escalated,
             escalation_reason=esc_reason or None,
             policy_version=self._policy_version,

@@ -77,7 +77,13 @@ from verdict.intelligence import (
     prepared_task_profile,
 )
 from verdict.model_passports import ModelPassport
-from verdict.models import ModelInfo, ProviderConfig, RoutingDecision
+from verdict.models import (
+    CONTEXT_WORKER_ASSIGNED_ROUTE,
+    ModelInfo,
+    ProviderConfig,
+    RoutingDecision,
+    WorkerAssignedRoute,
+)
 from verdict.omniroute import CATALOG_MAX_RESPONSE_BYTES, OmniRouteHTTPTransport
 from verdict.omniroute_webhook import MAX_BODY_BYTES as MAX_OMNIROUTE_WEBHOOK_BYTES
 from verdict.omniroute_webhook import RECEIVER_PATH as OMNIROUTE_WEBHOOK_PATH
@@ -2143,6 +2149,16 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         return _proxy_error(400, "request body must be valid JSON", surface=surface)
     if not isinstance(payload, dict):
         return _proxy_error(400, "request body must be a JSON object", surface=surface)
+    if request.headers.get("x-verdict-worker") is not None and "execution_path_request" in payload:
+        # A worker is pinned to the route it was assigned.  The execution-path flow selects its
+        # own offer and would bypass that pin, so a worker request may not carry one: this
+        # rejection, before any routing, is the contract (operator decision, 2026-11-24);
+        # pinned execution-path support for workers is not built.
+        return _proxy_error(
+            400,
+            "worker requests must not carry execution_path_request: the assigned route is pinned",
+            surface=surface,
+        )
 
     task = _task_text(payload)
     protocol = protocol_for_surface(surface)
@@ -2167,6 +2183,17 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         authority_context = _authority_context(payload, task=task)
         authority_context["_dispatch_gateway_origin"] = proxy_instance.base_url
         authority_context["_relay_protocol"] = protocol
+        _assigned = payload.get("model")
+        if (
+            request.headers.get("x-verdict-worker") is not None
+            and isinstance(_assigned, str)
+            and _assigned.strip()
+        ):
+            # Typed, server-set input (ADR-053 decision 1): admission selects this route
+            # within its admitted set and mints the route-bound proof for it.  A non-worker
+            # request never carries it, and a client cannot forge it (underscore keys are
+            # dropped from the public payload and JSON cannot build the typed value).
+            authority_context[CONTEXT_WORKER_ASSIGNED_ROUTE] = WorkerAssignedRoute(_assigned)
         decision = await intelligence_instance.route(
             task,
             criticality=payload.get("criticality", "medium"),
@@ -2199,6 +2226,53 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             return _proxy_error(
                 503, f"live admission unavailable: {type(exc).__name__}", surface=surface
             )
+    # --- Task 2.4: Per-request route pinning for worker calls (ADR-053 Decision 1) ---
+    # A worker executor (OpenCode) sends the ``X-Verdict-Worker`` header and sets the
+    # ``model`` field to its assigned route_id.  The relay passes that route to admission as
+    # a typed input (above); admission selects it within the set it already admitted and
+    # mints its route-bound proof, or denies.  Here the relay only *verifies* that outcome:
+    # it never rewrites a worker's decision, so a route can never be dispatched without the
+    # proof admission minted for it.  Non-worker requests are untouched: their ``model``
+    # field does not select the route (``LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE`` is only
+    # stored on the service, as before; the relay never honoured it).
+    # Any denial sets ``decision="denied"`` so the existing evidence-recording path handles it.
+    _client_model = payload.get("model")
+    # Presence of the header marks a worker request, whatever its value.
+    _is_worker = request.headers.get("x-verdict-worker") is not None
+    _has_client_model = isinstance(_client_model, str) and bool(_client_model)
+    if _is_worker and not _has_client_model:
+        # A worker request must name the route it was assigned.  Without a valid
+        # model it must fail closed, never fall through to automatic selection
+        # (which would run a model the worker was not assigned).
+        decision = replace(
+            decision,
+            decision="denied",
+            reason="worker request must name its assigned route in a non-empty string 'model' field",
+        )
+    elif _is_worker:
+        if decision.decision != "denied" and decision.model != _client_model:
+            # Admission did not select the assigned route (an intelligence without worker
+            # pinning).  Dispatching its own pick would run a route the worker was not
+            # assigned, and rewriting the model here would bypass the route-bound proof.
+            _admitted_ids = {
+                str(r.get("model_id"))
+                for r in decision.candidate_states
+                if isinstance(r, dict) and r.get("admitted") is True
+            }
+            decision = replace(
+                decision,
+                decision="denied",
+                reason=(
+                    f"route {_client_model!r} was not selected by admission for this request"
+                    if _client_model in _admitted_ids
+                    else f"route {_client_model!r} was not in the admitted set for this request"
+                ),
+            )
+        elif decision.decision != "denied":
+            # Accepted: bound the request to exactly the assigned route.  Admission's pin already
+            # lists no alternatives; clearing them here is defence in depth, so a worker request
+            # never falls back to a route it was not assigned.
+            decision = replace(decision, alternatives=[])
     attempts = build_attempts(proxy_instance, decision, protocol=protocol, admitted=relay_admitted)
     if not attempts:
         if "free_supply_unknown" in decision.safety_flags:

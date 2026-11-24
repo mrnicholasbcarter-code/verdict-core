@@ -497,6 +497,7 @@ class AttemptUsage:
     cost_usd: float | None = None  # None unless actually reported; never fabricated
     tokens_source: str | None = None  # e.g. "prime_stdout", "http_header"
     turns: int | None = None  # count of distinct assistant messages summed
+    cost_note: str | None = None  # why cost_usd is None when the worker gave none (never a 0)
 
 
 @dataclass(frozen=True)

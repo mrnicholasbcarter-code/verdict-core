@@ -201,7 +201,7 @@ verdict run-receipt <run-id>                    # show and verify its receipt
 
 `verdict serve` is the HTTP service (install it with `pip install -e '.[server]'`). `POST /v1/route` returns a route decision for a request that carries an `execution_path_request`. `POST /v1/chat/completions` routes a call and relays it upstream. It needs `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB` before it starts; `verdict setup --apply --allow host.serve` sets both. See [first run](docs/CONFIGURATION.md#first-run).
 
-Claude Code, Codex, Cursor, Cline and OpenCode can be pointed at that relay as their model endpoint: `verdict harness <tool> enable`. That makes the tool a client of Verdict. It does not make it a worker: `verdict orchestrate` cannot run a worker on any of them. See the [harness guide](docs/guides/harnesses.md).
+Claude Code, Codex, Cursor, Cline and OpenCode can be pointed at that relay as their model endpoint: `verdict harness <tool> enable`. That makes the tool a client of Verdict. It does not make it a worker: `verdict orchestrate` cannot run a worker on any of them, except OpenCode through the separate opt-in `--executor opencode` (it does not yet work through `verdict serve`, issue #1313). See the [harness guide](docs/guides/harnesses.md).
 
 ## Architecture
 
@@ -224,7 +224,7 @@ Component map and data flow: [`docs/architecture.md`](docs/architecture.md). The
 - **Self-hosting is early.** One story built by Verdict itself, in six runs, five of them `BLOCKED`.
 - **Live orchestration requires a gateway.** OmniRoute must be running at `http://localhost:20128`. The credential-free quickstart and benchmark paths need no gateway. <!-- claim:C-019 -->
 - **Worker model availability is external.** Verdict combines gateway inventory and account evidence with its own runtime health and admission evidence before selection. Quota, rate limits, and provider outages are not under Verdict's control. It recovers from them, but cannot prevent them. <!-- claim:C-020 -->
-- **Workers run on `direct-gateway` by default.** There is no worker executor for OpenCode, Claude Code or Codex.
+- **Workers run on `direct-gateway` by default.** There is an opt-in worker executor for OpenCode (`--executor opencode`) that does not yet work through `verdict serve` (issue #1313); there is none for Claude Code or Codex.
 - **Independent review requires `ocr` on PATH.** `open-code-review` is a separate binary. `--no-review` skips it and ends the run `BLOCKED`. <!-- claim:C-021 -->
 - **Receipt integrity covers event logs, not LLM or OCR output.** Verification detects event-log changes against the retained receipt. Recorded reviewer PASS alone can lack semantic coverage. Neither the receipt nor the log is signed or externally anchored against replacing both files. <!-- claim:C-022 -->
 - **No static fallback chains (retries stay inside the admitted set); OpenTelemetry is optional (`verdict-core[tracing]`).** See [How Verdict differs](docs/guides/comparison.md#how-verdict-differs). <!-- claim:C-023 -->
@@ -255,7 +255,7 @@ Component map and data flow: [`docs/architecture.md`](docs/architecture.md). The
 None of this is done. It is listed so nothing above is read as covering it.
 
 - **Publish 1.0.0.** Waits on a passing certification rehearsal.
-- **A worker executor for OpenCode.** Planned, not started.
+- **OpenCode as the default worker executor.** The executor exists and is opt-in; it becomes the default only after a live smoke passes once serve admits its requests (issue #1313).
 - **Cross-provider fencing on the first worker failure.** Today a failure cools down only the failed route or its own provider.
 - **A single retry authority.** Node recovery, the relay and the reviewer each keep their own bounded retry loop today.
 - **Subscription headroom-aware selection.** Admission drops exhausted subscription routes. Selection does not yet rank eligible routes by the headroom left.
