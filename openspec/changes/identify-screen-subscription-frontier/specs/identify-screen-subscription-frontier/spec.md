@@ -51,11 +51,38 @@ connection namespace), not the `owned_by` field from the route inventory.
 - **WHEN** a route has `live_candidates.provider = "cc"` and `route_identities` says `"anthropic"`
 - **THEN** `--provider cc` includes the route and `--provider anthropic` excludes it
 
-### Requirement: Opaque routes SHALL never be added to the extra-ratings pool
-Routes matched by `is_opaque(rid)` or `is_non_chat_route(rid)` SHALL be
-excluded from `extra_ratings` regardless of their presence in the inventory or
-live candidates.
+### Requirement: Opaque, non-chat and cooling-down routes SHALL never be added to the extra-ratings pool
+Routes matched by `is_opaque(rid)` SHALL be excluded from `extra_ratings`
+regardless of their presence in the inventory or live candidates.  A route
+SHALL also be excluded when it is non-chat, which holds when
+`is_non_chat_route(rid)` is true for its id alone or `is_non_chat_route(rid,
+row)` is true for its inventory row (an explicit non-chat `type`, or an
+unambiguous capability such as `embedding`, `rerank` or `tts`).  A route listed
+in `cooled_models` (the gateway reports it cooling down) SHALL be excluded.
+These are the exclusions the roster path applies; they only narrow the set, so
+an explicit chat row does not clear an id marker.  An excluded route does not
+appear in the screen report and is never probed.
 
 #### Scenario: Opaque inventory route is never screened
 - **WHEN** an opaque route (`auto/best`) is in `inventory_route_ids`
 - **THEN** the route does not appear in the screen report
+
+#### Scenario: Cooling-down inventory route is never screened or probed
+- **WHEN** a route is in `inventory_route_ids` and in `cooled_models`, whether
+  or not it is in `live_candidates`
+- **THEN** the route does not appear in the screen report and no probe is sent
+  to it
+- **AND** a route that is not cooling down is still screened
+
+#### Scenario: Inventory row marked non-chat excludes a route with a neutral id
+- **WHEN** a route in `inventory_route_ids` has no id marker (for example
+  `cc/atlas-7`) and its inventory row has `type` `embedding`, `image` or
+  `rerank`, or an `embedding` capability
+- **THEN** the route does not appear in the screen report and no probe is sent
+  to it
+
+#### Scenario: An explicit chat row does not clear an id marker
+- **WHEN** a route id carries a non-chat marker (for example `cc/embed-chat-9`)
+  and its inventory row has `type` `chat`
+- **THEN** the route is still not screened, as before; the row check only
+  narrows the set
