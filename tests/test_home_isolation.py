@@ -221,6 +221,12 @@ def _flags(*names: str) -> int:
         ("shutil.rmtree", ("{r}", None), True),
         ("sqlite3.connect", ("{r}/receipts.db",), True),
         ("sqlite3.connect", (":memory:",), False),
+        ("sqlite3.connect", ("file:{r}/receipts.db",), True),
+        ("sqlite3.connect", ("file://{r}/receipts.db?mode=rwc",), True),
+        ("sqlite3.connect", ("file:{r}/receipts.db?mode=ro",), False),
+        ("sqlite3.connect", ("file:{o}/receipts.db",), False),
+        ("sqlite3.connect", ("file:{o}/x?cache=shared",), False),
+        ("sqlite3.connect", ("file::memory:?cache=shared",), False),
         ("os.listdir", ("{r}",), False),
         ("socket.connect", (None, ("127.0.0.1", 1)), False),
     ],
@@ -266,6 +272,8 @@ def test_guard_prevents_every_write_route_to_the_fake_real_home(
     before = metadata.read_bytes()
     source = tmp_path / "source.json"
     source.write_text("source")
+    existing_db = root / "existing.db"
+    sqlite3.connect(existing_db).close()  # created before the root is protected
 
     attempts = {
         "pathlib write": lambda: (root / "state.json").write_text("leak"),
@@ -278,6 +286,10 @@ def test_guard_prevents_every_write_route_to_the_fake_real_home(
         "copyfile": lambda: shutil.copyfile(source, root / "copied.json"),
         "remove": lambda: os.remove(metadata),
         "sqlite create": lambda: sqlite3.connect(root / "receipts.db"),
+        "sqlite uri create": lambda: sqlite3.connect(f"file:{root}/uri.db", uri=True),
+        "sqlite uri percent-escaped": lambda: sqlite3.connect(
+            f"file:{str(root).replace('-', '%2D')}/uri2.db", uri=True
+        ),
     }
     with GUARD.protect(root):
         for label, attempt in attempts.items():
@@ -286,8 +298,11 @@ def test_guard_prevents_every_write_route_to_the_fake_real_home(
             assert GUARD.violations, f"{label} was not reported"
             GUARD.drain()
         # Reading is untouched: the guard refuses writes only.
+        readonly = sqlite3.connect(f"file:{existing_db}?mode=ro", uri=True)
+        readonly.execute("select 1").fetchall()
+        readonly.close()
         assert metadata.read_bytes() == before
-        assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
+        assert sorted(p.name for p in root.iterdir()) == ["existing.db", "model-metadata.json"]
         assert source.read_text() == "source"
 
 

@@ -36,6 +36,7 @@ import os
 import sys
 import sysconfig
 import threading
+import urllib.parse
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -222,6 +223,27 @@ def _as_path(value: object) -> str | None:
     return None
 
 
+def _sqlite_file_targets(value: str) -> list[str]:
+    """Filesystem targets of a ``sqlite3.connect`` argument.
+
+    The audit event carries the raw string, and the caller may have passed
+    ``uri=True``, so a ``file:`` string is also decoded (``file:/p?mode=rwc``,
+    ``file:///p``, percent escapes). ``mode=ro`` opens cannot write and are
+    skipped. The raw string is always checked too: without ``uri=True`` it is
+    just a path.
+    """
+    targets = [value]
+    if value.startswith("file:"):
+        split = urllib.parse.urlsplit(value)
+        if "ro" in urllib.parse.parse_qs(split.query).get("mode", []):
+            return []
+        if split.netloc in ("", "localhost"):
+            decoded = urllib.parse.unquote(split.path)
+            if decoded:
+                targets.append(decoded)
+    return targets
+
+
 def _normalise(path: str) -> str:
     if not path.startswith("/"):
         path = os.path.join(os.getcwd(), path)
@@ -304,8 +326,10 @@ class HomeWriteGuard:
             indexes: tuple[int, ...] = (0,)
         else:
             indexes = _MUTATED_ARGS.get(event, ())
-        paths = (_as_path(args[i]) for i in indexes if i < len(args))
-        return [p for p in paths if p]
+        paths = [p for p in (_as_path(args[i]) for i in indexes if i < len(args)) if p]
+        if event == "sqlite3.connect":
+            return [target for p in paths for target in _sqlite_file_targets(p)]
+        return paths
 
     def check(self, event: str, args: tuple[Any, ...]) -> None:
         if event != "open" and event not in _MUTATED_ARGS:
