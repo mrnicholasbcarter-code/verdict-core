@@ -12,8 +12,11 @@ subscription frontier routes like `cc/claude-opus-5-5`:
 
 2. The tier filter called `(tier is None or tier > max_capability_tier)`.
    New models return `None` from `_capability_tier` because they are not yet
-   in the classifier.  The screen was the tool designed to discover them, so
-   blocking at the tier filter was circular.
+   in the classifier, so a new frontier model could never be screened.  Letting
+   every no-tier route through is too broad, though: the screen spends real
+   quota on subscription routes, and a no-tier route with no rating evidence
+   may be a weak model that the ceiling exists to exclude.  A no-tier route
+   passes only when fresh ratings place its model in the ADR-051 planner band.
 
 3. `extra_ratings` required `live is not None` (route in OmniRoute's auto-combo
    pool).  Subscription frontier routes appear in `/v1/models` but not in the
@@ -24,7 +27,9 @@ subscription frontier routes like `cc/claude-opus-5-5`:
 **Goals:**
 - Subscription frontier routes are included in the extra-ratings pool when
   their route-prefix provider has a usable connection.
-- Unknown-tier routes pass the `--max-capability-tier` filter.
+- A no-tier route passes the `--max-capability-tier` filter only when its
+  model is in the ADR-051 planner band (frontier or fallback) on fresh ratings;
+  otherwise it keeps `skipped_unknown_tier`.
 - Provider names in extra-ratings use the connection namespace consistently.
 - Opaque routes (`auto/*`, `combo/*`) remain excluded.
 
@@ -33,7 +38,8 @@ subscription frontier routes like `cc/claude-opus-5-5`:
   never candidates).
 - Adding frontier routes to the ranked/traffic-proven pool; they still appear
   last (unrated, basis=unknown).
-- Modifying ranking, review, or any other verdict subsystem.
+- Letting every no-tier route through the tier filter.
+- Modifying `planner_band.py`, ranking, review, or any other verdict subsystem.
 
 ## Decisions
 
@@ -51,17 +57,27 @@ routes for providers with no active connection.
 runs before the `live` lookup so it applies equally to routes that happen to
 appear in the inventory as opaque entries.
 
-**Tier-filter semantics.** The screen's purpose is to produce tool proofs for
-unproven routes.  Blocking an unknown-tier route at the filter means it can
-never be discovered.  The correct semantics: `tier is not None and tier > N`.
-Routes whose tier is a known value above the ceiling are still excluded.
+**Tier-filter semantics.** Three cases.  A known tier above the ceiling is
+`skipped_capability_tier`, as before.  A route with no tier is
+`skipped_unknown_tier` by default, the conservative reading of "unknown is
+never healthy".  It passes the filter only when its stripped model key (the
+route id without a trailing `:suffix`) is in `fallback_model_keys` from
+`planner_band.compute_planner_bands`, used read-only; the fallback set
+includes the frontier set.  The band is built from fresh `aa_intelligence`
+ratings, meaning the newest batch inside the 12-hour window that module already
+uses.  It is computed once per screen and only when `--max-capability-tier` is
+set.  With no metadata, or only stale ratings, it is empty, so the screen falls
+back to skipping every no-tier route.  Band membership is rating evidence that
+the model is strong enough to be worth a probe.  It does not admit the route:
+the probe still has to pass, and admission is unchanged.
 
 ## Risks / Trade-offs
 
 Subscription frontier routes are expensive (they use real API quota when
 probed).  The existing `max_routes`, `max_per_provider` and `--capacity`
 filters remain the primary governors; this change only makes those routes
-visible to the screen.
+visible to the screen.  The band gate keeps a no-tier route from being probed
+without rating evidence.
 
 ## Security / trust implications
 
@@ -75,9 +91,9 @@ routes.  They do not affect the ranked pool or advisory signals.
 
 ## Migration / rollback
 
-No migration required.  The change is backward-compatible: screens that
-previously skipped unknown-tier routes now probe them (subject to existing
-caps).
+No migration required.  Behaviour for known-tier routes, and for no-tier
+routes outside the planner band, is unchanged.  No-tier routes inside the band
+are now probed (subject to existing caps).
 
 ## ADR impact
 

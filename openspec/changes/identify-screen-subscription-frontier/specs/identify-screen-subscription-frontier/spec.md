@@ -7,8 +7,10 @@ When `--max-capability-tier N` is set, the screen SHALL skip routes whose
 capability tier is a known value greater than N with result `skipped_capability_tier`.
 Routes whose capability tier is unknown (classifier returns None) SHALL be
 filtered with result `skipped_unknown_tier` UNLESS their stripped model key
-appears in the ADR-051 fallback planner band per fresh `aa_intelligence` ratings.
-A no-tier route whose model is in the fallback band SHALL proceed to the probe stage.
+appears in the ADR-051 planner band, frontier or fallback (the fallback set
+includes the frontier set), per fresh `aa_intelligence` ratings.  A no-tier
+route whose model is in the band SHALL proceed to the probe stage.  Band
+membership SHALL NOT admit the route or count as proof of capability.
 
 #### Scenario: Unknown-tier route in planner band passes the tier filter
 - **WHEN** `--max-capability-tier 1` is set and a route has an unknown tier
