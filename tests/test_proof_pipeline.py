@@ -1053,3 +1053,207 @@ def test_a_leader_gate_must_be_a_narrower_run_of_a_split_gate(tmp_path: Path) ->
         with pytest.raises(ContractError, match=r"shard|leader|split"):
             load_contract(build(edit))
         assert label
+
+
+# ---------------------------------------------------------------------------
+# An unsharded run skips a leader gate only when a covering split gate runs it
+# ---------------------------------------------------------------------------
+
+LEADER_SKIPPED_UNSHARDED = "skipped: unsharded run, so unit_full runs the tests of unit_timing"
+
+
+def _full_mode(payload: dict[str, object]) -> dict[str, object]:
+    modes = payload["modes"]
+    assert isinstance(modes, dict)
+    return modes["full"]  # type: ignore[no-any-return]
+
+
+def _unsharded_plan(
+    tmp_path: Path, payload: dict[str, object], *, llm_boundary: bool = False
+) -> dict[str, object]:
+    from scripts.proof.runner import plan_gates
+
+    contract = load_contract(_write_payload(tmp_path / "contract.yaml", payload))
+    planned = plan_gates(contract, mode="full", targets=[], shard=None, llm_boundary=llm_boundary)
+    return {item.gate.id: item for item in planned}
+
+
+def _run_payload(
+    tmp_path: Path, payload: dict[str, object], *, llm_boundary: bool = False
+) -> tuple[_Recorder, object]:
+    contract = load_contract(_write_payload(tmp_path / "contract.yaml", payload))
+    rec = _Recorder()
+    report = ProofRunner(contract, root=tmp_path, executor=rec).run(
+        mode="full", no_cache=True, llm_boundary=llm_boundary
+    )
+    return rec, report
+
+
+def test_unsharded_run_runs_the_leader_when_its_mode_has_no_split_gate(tmp_path: Path) -> None:
+    """A mode that selects only the leader gate must execute the leader's tests."""
+    payload = _sharded_payload()
+    full = _full_mode(payload)
+    full["phases"] = [p for p in full["phases"] if p != "unit_full"]  # type: ignore[attr-defined]
+    rec, report = _run_payload(tmp_path, payload)
+    assert UNIT_TIMING_COMMAND in rec.gate_argvs()
+    assert "unit_full" not in {g.id for g in report.gates}  # type: ignore[attr-defined]
+    timing = next(g for g in report.gates if g.id == "unit_timing")  # type: ignore[attr-defined]
+    assert timing.status == "pass"
+    assert timing.command == UNIT_TIMING_COMMAND
+
+
+# Each case: how the fixture contract is edited, whether llm_boundary is enabled, and which of
+# the two test gates then runs. Whatever the case, the timing tests must be run by one of them.
+_LEADER_COVERAGE_CASES = {
+    "split gate is unconditional (the checked-in shape)": (lambda p: None, False, {"unit_full"}),
+    "split gate is conditional and the condition is not met": (
+        lambda p: _gate_payload(p, "unit_full").update(when="llm_boundary"),
+        False,
+        {"unit_timing"},
+    ),
+    "split gate is conditional and the condition is met": (
+        lambda p: _gate_payload(p, "unit_full").update(when="llm_boundary"),
+        True,
+        {"unit_full"},
+    ),
+    "leader is conditional and the condition is not met": (
+        lambda p: _gate_payload(p, "unit_timing").update(when="llm_boundary"),
+        False,
+        {"unit_full"},
+    ),
+    "leader is conditional and the condition is met": (
+        lambda p: _gate_payload(p, "unit_timing").update(when="llm_boundary"),
+        True,
+        {"unit_full"},
+    ),
+    "split gate is optional, so its failure would not fail the proof": (
+        lambda p: _gate_payload(p, "unit_full").update(required=False),
+        False,
+        {"unit_full", "unit_timing"},
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_LEADER_COVERAGE_CASES))
+def test_unsharded_leader_is_skipped_only_when_a_covering_split_gate_runs(
+    tmp_path: Path, case: str
+) -> None:
+    edit, llm_boundary, expected = _LEADER_COVERAGE_CASES[case]
+    payload = _sharded_payload()
+    edit(payload)
+    plan = _unsharded_plan(tmp_path, payload, llm_boundary=llm_boundary)
+    ran = {gid for gid in ("unit_full", "unit_timing") if plan[gid].skip_reason is None}  # type: ignore[attr-defined]
+    assert ran == expected
+    assert ran, "no gate would run the timing tests"
+
+
+def test_unsharded_run_launches_the_leader_when_the_covering_gate_is_conditional(
+    tmp_path: Path,
+) -> None:
+    """The recorded report and the launched argv agree: the leader's tests do run."""
+    payload = _sharded_payload()
+    _gate_payload(payload, "unit_full").update(when="llm_boundary")
+    rec, report = _run_payload(tmp_path, payload, llm_boundary=False)
+    assert UNIT_TIMING_COMMAND in rec.gate_argvs()
+    by_id = {g.id: g for g in report.gates}  # type: ignore[attr-defined]
+    assert by_id["unit_timing"].status == "pass"
+    assert by_id["unit_full"].status == "skip"
+    assert "llm_boundary" in by_id["unit_full"].log_slice
+
+
+def test_the_leader_is_not_skipped_for_a_split_gate_that_the_targets_rule_skips() -> None:
+    """A split gate skipped for want of --targets runs nothing, so it cannot stand in for the leader."""
+    import dataclasses
+
+    from scripts.proof.runner import plan_gates
+
+    contract = load_contract(CONTRACT_PATH)
+    gates = tuple(
+        dataclasses.replace(g, targets_placeholder="{targets}") if g.id == "unit_full" else g
+        for g in contract.gates
+    )
+    built_by_hand = dataclasses.replace(contract, gates=gates)
+    plan = {p.gate.id: p for p in plan_gates(built_by_hand, mode="full", targets=[], shard=None)}
+    assert plan["unit_full"].skip_reason is not None
+    assert plan["unit_timing"].skip_reason is None
+
+
+def test_a_sharded_gate_cannot_take_the_targets_placeholder(tmp_path: Path) -> None:
+    """The targets rule would skip a sharded gate in a way no leg or aggregate accounts for."""
+    from scripts.proof.contract import ContractError
+
+    for gate_id in ("unit_full", "unit_timing"):
+        payload = _sharded_payload()
+        _gate_payload(payload, gate_id)["targets_placeholder"] = "{targets}"
+        with pytest.raises(ContractError, match="targets"):
+            load_contract(_write_payload(tmp_path / "contract.yaml", payload))
+
+
+def test_checked_in_contract_plans_unsharded_and_sharded_runs_exactly_as_before() -> None:
+    """The fix changes no plan for the contract we ship: same skips, same commands."""
+    from scripts.proof.runner import ShardPosition, plan_gates
+
+    contract = load_contract(CONTRACT_PATH)
+    no_targets = "skipped: no --targets; unit_full runs the same suite"
+    off = "skipped: llm_boundary not enabled"
+    unsharded = {p.gate.id: p for p in plan_gates(contract, mode="full", targets=[], shard=None)}
+    assert {gid: p.skip_reason for gid, p in unsharded.items() if p.skip_reason} == {
+        "unit_targeted": no_targets,
+        "unit_timing": LEADER_SKIPPED_UNSHARDED,
+        "promptfoo": off,
+    }
+    assert list(unsharded["unit_full"].command) == UNIT_FULL_COMMAND
+    assert unsharded["unit_full"].skip_reason is None
+    assert list(unsharded["unit_timing"].command) == UNIT_TIMING_COMMAND
+    for planned in unsharded.values():
+        if planned.skip_reason is None:
+            assert list(planned.command) == list(planned.gate.command)
+
+    with_targets = plan_gates(contract, mode="full", targets=["tests/x.py"], shard=None)
+    assert {p.gate.id: p.skip_reason for p in with_targets if p.skip_reason} == {
+        "unit_timing": LEADER_SKIPPED_UNSHARDED,
+        "promptfoo": off,
+    }
+    enabled = plan_gates(contract, mode="full", targets=[], shard=None, llm_boundary=True)
+    assert {p.gate.id: p.skip_reason for p in enabled if p.skip_reason} == {
+        "unit_targeted": no_targets,
+        "unit_timing": LEADER_SKIPPED_UNSHARDED,
+    }
+
+    for leg in (1, 2, 3):
+        planned_leg = plan_gates(contract, mode="full", targets=[], shard=ShardPosition(leg, 3))
+        timing_skip = next(p.skip_reason for p in planned_leg if p.gate.id == "unit_timing")
+        assert (timing_skip is None) == (leg == 1)
+        if leg != 1:
+            assert timing_skip == "skipped: only leg 1 runs unit_timing"
+
+
+def test_checked_in_contract_unsharded_run_launches_unit_full_unchanged_and_skips_timing(
+    tmp_path: Path,
+) -> None:
+    contract = load_contract(CONTRACT_PATH)
+    rec = _Recorder()
+    report = ProofRunner(contract, root=tmp_path, executor=rec).run(mode="full", no_cache=True)
+    argvs = rec.gate_argvs()
+    assert argvs.count(UNIT_FULL_COMMAND) == 1
+    assert UNIT_TIMING_COMMAND not in argvs
+    assert not rec.collector_calls()
+    by_id = {g.id: g for g in report.gates}
+    assert by_id["unit_full"].command == UNIT_FULL_COMMAND
+    assert by_id["unit_full"].status == "pass"
+    assert by_id["unit_timing"].status == "skip"
+    assert by_id["unit_timing"].log_slice == LEADER_SKIPPED_UNSHARDED
+
+
+def test_a_sharded_run_plans_the_leader_by_leg_whatever_the_split_gate_does(tmp_path: Path) -> None:
+    """The coverage rule is for unsharded runs: a leg's plan, which the aggregate re-derives, is by index."""
+    from scripts.proof.runner import ShardPosition, plan_gates
+
+    for edit in (lambda p: None, lambda p: _gate_payload(p, "unit_full").update(required=False)):
+        payload = _sharded_payload()
+        edit(payload)
+        contract = load_contract(_write_payload(tmp_path / "contract.yaml", payload))
+        for leg in (1, 2, 3):
+            planned = plan_gates(contract, mode="full", targets=[], shard=ShardPosition(leg, 3))
+            timing = next(p for p in planned if p.gate.id == "unit_timing")
+            assert (timing.skip_reason is None) == (leg == 1)

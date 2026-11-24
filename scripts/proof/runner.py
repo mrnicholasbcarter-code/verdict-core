@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from scripts.proof.contract import GateSpec, ProofContract
+from scripts.proof.contract import GateSpec, ProofContract, gate_extends
 
 LOG_SLICE_CHARS = 4000
 SPLIT_MARKER = "not timing"
@@ -226,6 +226,18 @@ class PlannedGate:
     skip_reason: str | None = None
 
 
+def _covered_by(leader: GateSpec, covering: Sequence[GateSpec]) -> str | None:
+    """The id of a gate in ``covering`` that runs ``leader``'s tests, or None.
+
+    The gate must command a wider run of the same tests, and it must fail the proof
+    whenever the leader would: a required leader is not covered by an optional gate.
+    """
+    for gate in covering:
+        if gate_extends(leader, gate) and (gate.required or not leader.required):
+            return gate.id
+    return None
+
+
 def plan_gates(
     contract: ProofContract,
     *,
@@ -247,6 +259,14 @@ def plan_gates(
     # Without --targets the targeted gate would rerun the exact full-suite
     # command; in a mode that also runs unit_full, record it as skipped.
     runs_full_suite = any(g.phase == "unit_full" for g in selected)
+    # A split gate covers a leader gate in an unsharded run only if that run really
+    # executes it: it is in this mode, its condition is met, the targets rule does not
+    # skip it, and its failure fails the proof when the leader's would.
+    covering = [
+        g
+        for g in selected
+        if g.shard == "split" and not (g.targets_placeholder and not targets and runs_full_suite)
+    ]
     planned: list[PlannedGate] = []
     for gate in selected:
         base = _resolve_command(gate, targets)
@@ -256,12 +276,11 @@ def plan_gates(
                     gate, tuple(base), "skipped: no --targets; unit_full runs the same suite"
                 )
             )
-        elif gate.shard == "leader" and (shard is None or shard.index != 1):
-            reason = (
-                f"skipped: unsharded run, so unit_full runs the tests of {gate.id}"
-                if shard is None
-                else f"skipped: only leg 1 runs {gate.id}"
-            )
+        elif gate.shard == "leader" and shard is not None and shard.index != 1:
+            planned.append(PlannedGate(gate, tuple(base), f"skipped: only leg 1 runs {gate.id}"))
+        elif gate.shard == "leader" and shard is None and _covered_by(gate, covering):
+            cover = _covered_by(gate, covering)
+            reason = f"skipped: unsharded run, so {cover} runs the tests of {gate.id}"
             planned.append(PlannedGate(gate, tuple(base), reason))
         else:
             planned.append(PlannedGate(gate, tuple([*base, *selection_args(gate, shard)])))

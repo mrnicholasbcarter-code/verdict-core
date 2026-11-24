@@ -85,6 +85,18 @@ class ProofContract:
         return tuple(selected)
 
 
+def gate_extends(leader: GateSpec, split: GateSpec) -> bool:
+    """True when ``leader``'s command is ``split``'s plus more arguments: a narrower run of it.
+
+    The loader requires this of a leader gate, and the runner requires it before it
+    lets a split gate stand in for a leader that an unsharded run skips.
+    """
+    return (
+        len(leader.command) > len(split.command)
+        and leader.command[: len(split.command)] == split.command
+    )
+
+
 def _require_str(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ContractError(f"{field} must be a non-empty string")
@@ -193,10 +205,12 @@ def load_contract(path: Path) -> ProofContract:
     for gate in gates:
         if gate.shard is not None and gate.classify != "test":
             raise ContractError(f"gate {gate.id}: shard requires classify: test")
-        if gate.shard == "leader" and not any(
-            len(gate.command) > len(s.command) and gate.command[: len(s.command)] == s.command
-            for s in split
-        ):
+        if gate.shard is not None and gate.targets_placeholder is not None:
+            raise ContractError(
+                f"gate {gate.id}: a sharded gate cannot take a targets placeholder, because "
+                "the runner would skip it for want of --targets, outside any leg's accounting"
+            )
+        if gate.shard == "leader" and not any(gate_extends(gate, s) for s in split):
             raise ContractError(
                 f"gate {gate.id}: a leader gate must extend the command of a split gate, "
                 "because an unsharded run skips it and relies on that gate to run its tests"

@@ -91,7 +91,10 @@ python scripts/proof/run.py --mode full --no-cache --shard 2 --report proof-shar
   unsharded run, it is recorded as skipped: an unsharded `unit_full` runs the
   timing tests itself. The loader accepts `shard: leader` only on a `classify: test`
   gate whose command extends a `shard: split` gate's, because an unsharded run skips
-  it and relies on that gate to run its tests.
+  it and relies on that gate to run its tests. It does so only when that split gate
+  runs in the same run: in the mode, with its `when` condition met, and required if
+  the leader is. Otherwise `unit_timing` runs its own command in an unsharded run.
+  The loader also refuses `targets_placeholder` on a sharded gate.
 - **Local runs are unsharded.** `python scripts/proof/run.py --mode full --no-cache`
   runs `pytest tests/ -q --tb=short` exactly as before, records `shard: null` and
   `unit_timing` as skipped. `--shard` is refused (exit 2, before any gate) in
