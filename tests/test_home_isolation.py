@@ -205,6 +205,10 @@ def _flags(*names: str) -> int:
         ("open", ("{o}/state.json", "w", _flags("O_WRONLY", "O_CREAT")), False),
         ("open", ("{r}-sibling/state.json", "w", _flags("O_WRONLY", "O_CREAT")), False),
         ("open", ("{r}/../escape.json", "w", _flags("O_WRONLY", "O_CREAT")), False),
+        ("open", ("/{r}/state.json", "w", _flags("O_WRONLY", "O_CREAT")), True),  # //p == /p
+        ("open", ("///{r}/state.json", "w", _flags("O_WRONLY", "O_CREAT")), True),
+        ("open", ("{r}//sub///state.json", "w", _flags("O_WRONLY", "O_CREAT")), True),
+        ("open", ("{r}/./sub/../state.json", "w", _flags("O_WRONLY", "O_CREAT")), True),
         ("open", ("{o}/../{rn}/x.json", "w", _flags("O_WRONLY", "O_CREAT")), True),
         ("os.rename", ("{o}/a", "{r}/b", None, None), True),
         ("os.rename", ("{r}/a", "{o}/b", None, None), True),
@@ -250,6 +254,50 @@ def test_guard_event_table(event: str, args: tuple[Any, ...], denied: bool, tmp_
     else:
         guard.check(event, filled)
         assert guard.violations == []
+
+
+def test_double_leading_slash_cannot_reach_a_protected_root(fake_real_home: Path) -> None:
+    root = fake_real_home / ".verdict"
+    doubled = "/" + str(root / "state.json")  # '//tmp/...': the same file on Linux
+    assert doubled.startswith("//")
+    with GUARD.protect(root):
+        with pytest.raises(PermissionError), open(doubled, "w"):
+            pass
+        with pytest.raises(PermissionError):
+            os.mkdir("/" + str(root / "dir"))
+        GUARD.drain()
+    assert list(root.glob("state.json")) == []
+
+
+def test_exported_xdg_bases_protect_only_verdicts_own_subdirectories(tmp_path: Path) -> None:
+    config, data = tmp_path / "operator-config", tmp_path / "operator-data"
+    roots = home_guard.real_state_roots(
+        {"HOME": str(tmp_path / "h"), "XDG_CONFIG_HOME": str(config), "XDG_DATA_HOME": str(data)}
+    )
+    assert str(config / "verdict") in roots
+    assert str(config / "systemd" / "user") in roots
+    assert str(data / "verdict") in roots
+    assert str(config) not in roots and str(data) not in roots
+    assert str(tmp_path / "h" / ".verdict") in roots
+
+
+def test_relocated_verdict_config_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """XDG_CONFIG_HOME exported at start-up: the config path it relocates stays protected."""
+    from verdict.setup_config import config_path
+
+    operator_config = tmp_path / "operator-config"
+    environ = {"HOME": str(tmp_path / "h"), "XDG_CONFIG_HOME": str(operator_config)}
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(operator_config))  # as the operator's shell had it
+    target = config_path()
+    assert target == operator_config / "verdict" / "verdict.yaml"
+    guard = HomeWriteGuard(home_guard.real_state_roots(environ))
+    with pytest.raises(PermissionError):
+        guard.check("open", (str(target), "w", _flags("O_WRONLY", "O_CREAT", "O_TRUNC")))
+    guard.check(
+        "open", (str(operator_config / "other-tool" / "c.yaml"), "w", _flags("O_WRONLY", "O_CREAT"))
+    )
 
 
 def test_guard_checks_the_literal_filename_of_a_read_only_sqlite_uri(

@@ -37,7 +37,7 @@ import sys
 import sysconfig
 import threading
 import urllib.parse
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -134,9 +134,20 @@ _STATE_PATH_ENV: tuple[str, ...] = (
 )
 
 
-def _home_directories() -> list[Path]:
+#: Verdict's own subdirectories under an exported XDG base. Never the base
+#: itself: protecting ``~/.config`` would protect every other tool's config.
+_XDG_STATE_SUBDIRS: dict[str, tuple[str, ...]] = {
+    "XDG_CONFIG_HOME": ("verdict", "systemd/user"),
+    "XDG_DATA_HOME": ("verdict",),
+    "XDG_STATE_HOME": ("verdict",),
+    "XDG_CACHE_HOME": ("verdict",),
+}
+
+
+def _home_directories(environ: Mapping[str, str] | None = None) -> list[Path]:
     homes: list[Path] = []
-    env_home = (os.environ.get("HOME") or "").strip()
+    source = os.environ if environ is None else environ
+    env_home = (source.get("HOME") or "").strip()
     if env_home:
         homes.append(Path(env_home))
     try:
@@ -148,16 +159,20 @@ def _home_directories() -> list[Path]:
     return homes
 
 
-def real_state_roots(environ: dict[str, str] | None = None) -> list[str]:
+def real_state_roots(environ: Mapping[str, str] | None = None) -> list[str]:
     """The operator's real state locations as this process was started.
 
     Both ``$HOME`` and the passwd home count: a fixture that re-points ``HOME``
     does not change where a ``pwd``-based lookup lands.
     """
-    source = dict(os.environ) if environ is None else environ
+    source: Mapping[str, str] = dict(os.environ) if environ is None else environ
     roots: list[str] = []
-    for home in _home_directories():
+    for home in _home_directories(source):
         roots.extend(str(home / rel) for rel in STATE_RELATIVE)
+    for name, subdirs in _XDG_STATE_SUBDIRS.items():
+        base = (source.get(name) or "").strip()
+        if base:
+            roots.extend(os.path.join(os.path.expanduser(base), sub) for sub in subdirs)
     for name in _STATE_PATH_ENV:
         value = (source.get(name) or "").strip()
         if value:
@@ -247,10 +262,13 @@ def _sqlite_file_targets(value: str) -> list[str]:
 
 
 def _normalise(path: str) -> str:
+    """Absolute, ``..``-free, with one leading slash (``//p`` is ``/p`` on Linux)."""
     if not path.startswith("/"):
         path = os.path.join(os.getcwd(), path)
-    if "/." in path:
+    if "//" in path or "/." in path:
         path = os.path.normpath(path)
+        if path.startswith("//"):  # normpath keeps exactly two leading slashes
+            path = "/" + path.lstrip("/")
     return path
 
 
@@ -289,17 +307,18 @@ class HomeWriteGuard:
     def roots(self) -> tuple[str, ...]:
         return tuple(self._roots)
 
+    @staticmethod
+    def _forms(root: str | os.PathLike[str]) -> list[str]:
+        raw = _normalise(os.fsdecode(os.fspath(root))).rstrip("/")
+        return [raw, os.path.realpath(raw)] if raw else []
+
     def add_root(self, root: str | os.PathLike[str]) -> None:
-        raw = os.fsdecode(os.fspath(root)).rstrip("/")
-        if not raw:
-            return
-        for form in (raw, os.path.realpath(raw)):
+        for form in self._forms(root):
             if form not in self._roots:
                 self._roots.append(form)
 
     def remove_root(self, root: str | os.PathLike[str]) -> None:
-        raw = os.fsdecode(os.fspath(root)).rstrip("/")
-        for form in (raw, os.path.realpath(raw)):
+        for form in self._forms(root):
             if form in self._roots:
                 self._roots.remove(form)
 
