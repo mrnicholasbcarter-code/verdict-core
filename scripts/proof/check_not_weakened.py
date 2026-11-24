@@ -29,17 +29,18 @@ It exits 1 when any of these holds, and prints every finding:
 * The ``[tool.pytest.ini_options]`` table of ``pyproject.toml`` differs, a
   ``pytest.ini`` appears or changes, or ``.test_durations`` differs.
 
-What a construct's record holds. Its own text; the scope it sits in; the whole unit it sits in
-(the outermost statement of the module or class body, or the outermost function, docstring
-aside), so that any edit anywhere in it is a finding, whether it moves a guard, an assignment,
-a loop iterable, an augmented write or a default; and every module and class statement that
-mentions a name that unit reads (read, assigned, unpacked, chained, augmented, mutated, imported),
-followed through the names those statements mention in turn. No data flow is modelled: every
-mention counts, so none can be missed. So ``if False: skip()`` becoming ``if True:``, a flag
-flipping, ``FLAGS.append(True)`` appearing, or ``SKIP = False`` becoming ``SKIP = True`` under an
-unchanged ``skipif(SKIP)`` are findings. A hook is recorded as its whole definition, docstring
-aside, with what it reads. This errs on the side of reporting: an edit inside a test that already
-skips is reviewed by a person, never passed silently.
+How a changed test file is judged. Two checks, both from parsing:
+
+* The skip-like constructs themselves, as a multiset (scope, kind, text), so a skip, expected
+  failure, marker, exclusion or hook that is added or removed is named. A hook is recorded as
+  its whole definition (docstring aside).
+* If the file contains any such construct, before or after, the whole file is compared as
+  normalised code (formatting, comments and docstrings aside). Any other difference is a finding:
+  whatever a skip depends on, a guard, a constant, a helper, an inherited attribute, a string
+  ``skipif`` condition, the order of statements, is in the same file, and no data-flow model is
+  needed to see that it changed. This errs on the side of reporting: an edit to a file that
+  skips is reviewed by a person, never passed silently. A file with no such construct, before or
+  after, may change freely.
 
 What it does not see: it reads code, not behaviour. A guard that depends on something outside
 the changed file (a constant imported from another module, an environment variable, a fixture's
@@ -213,45 +214,12 @@ def _without_docstring(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.AST:
     return clone
 
 
-def _mention_index(body: list[ast.stmt]) -> dict[str, list[ast.stmt]]:
-    """Every statement of one scope's body by each name it mentions.
-
-    A name is mentioned when it is read, assigned, mutated (``FLAGS.append(True)``), unpacked
-    (``SKIP, LIMIT = ...``), chained, augmented or imported. No data flow is modelled: all of them
-    count, so none can be missed. A function or class is indexed under its own name only (a helper
-    a guard calls is a dependency of the guard; every test that happens to read the same constant
-    is not).
-    """
-    index: dict[str, list[ast.stmt]] = {}
-    for stmt in body:
-        if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            index.setdefault(stmt.name, []).append(stmt)
-            continue
-        mentioned = {n.id for n in ast.walk(stmt) if isinstance(n, ast.Name)}
-        for part in ast.walk(stmt):
-            if isinstance(part, ast.Import | ast.ImportFrom):
-                mentioned |= {(a.asname or a.name).split(".")[0] for a in part.names}
-        for name in mentioned:
-            index.setdefault(name, []).append(stmt)
-    return index
-
-
 class _Collector(ast.NodeVisitor):
     def __init__(self, tree: ast.AST) -> None:
         self.scope: list[str] = []
         self.found: Counter[Construct] = Counter()
         self.mark_aliases: set[str] = {"mark"}
         self.name_aliases: dict[str, str] = {}
-        # A construct is recorded with the whole statement or function it sits in: the outermost
-        # statement of a module or class body, or the outermost function. So an edit anywhere in
-        # that unit (a guard, an assignment before or after it, a loop iterable, an augmented
-        # write, a decorator, a default) changes the record; none is modelled, none is missed.
-        self.unit: ast.AST | None = None
-        self.unit_text = ""
-        # What the unit reads is followed to every module and class statement that mentions it.
-        self.indices: list[dict[str, list[ast.stmt]]] = [
-            _mention_index(tree.body if isinstance(tree, ast.Module) else [])
-        ]
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module in SKIP_MODULES:
                 for alias in node.names:
@@ -263,69 +231,11 @@ class _Collector(ast.NodeVisitor):
                         for name in SKIP_NAMES:
                             self.name_aliases.setdefault(name, name)
 
-    @staticmethod
-    def _names(node: ast.AST) -> frozenset[str]:
-        """Names a piece of code reads, and the attributes it reads from ``self`` or ``cls``."""
-        found: set[str] = set()
-        for part in ast.walk(node):
-            if isinstance(part, ast.Name):
-                found.add(part.id)
-            elif (
-                isinstance(part, ast.Attribute)
-                and isinstance(part.value, ast.Name)
-                and part.value.id in {"self", "cls"}
-            ):
-                found.add(part.attr)
-        return frozenset(found)
-
-    def _dependencies(self, names: set[str]) -> list[str]:
-        """Every module and class statement that mentions ``names``, and those they mention.
-
-        In source order: ``FLAGS.append(True)`` then ``FLAGS.clear()`` is not the same as the
-        reverse.
-        """
-        statements: dict[int, tuple[int, str]] = {}
-        seen: set[str] = set()
-        pending = list(names)
-        while pending:
-            name = pending.pop()
-            if name in seen:
-                continue
-            seen.add(name)
-            for index in self.indices:
-                for stmt in index.get(name, []):
-                    if id(stmt) not in statements:
-                        is_function = isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef)
-                        text = ast.unparse(_without_docstring(stmt) if is_function else stmt)  # type: ignore[arg-type]
-                        statements[id(stmt)] = (stmt.lineno, text)
-                        pending.extend(self._names(stmt))
-        return [text for _, text in sorted(statements.values())]
-
     def _record(self, kind: str, text: str, node: ast.AST | None = None) -> None:
-        names: set[str] = set(self._names(node)) if node is not None else set()
-        suffix = ""
-        if self.unit is not None:
-            names |= self._names(self.unit)
-            suffix += f" [in: {self.unit_text}]"
-        dependencies = self._dependencies(names)
-        if dependencies:
-            suffix += " [with: " + "; ".join(dependencies) + "]"
-        self.found[(tuple(self.scope), kind, text + suffix)] += 1
-
-    def _visit_body(self, body: list[ast.stmt]) -> None:
-        """Visit a module or class body, making each top-level statement the unit it records."""
-        for stmt in body:
-            if self.unit is not None or isinstance(stmt, ast.ClassDef):
-                self.visit(stmt)
-                continue
-            self.unit = stmt
-            is_function = isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef)
-            self.unit_text = ast.unparse(_without_docstring(stmt) if is_function else stmt)  # type: ignore[arg-type]
-            self.visit(stmt)
-            self.unit, self.unit_text = None, ""
-
-    def visit_Module(self, node: ast.Module) -> None:
-        self._visit_body(node.body)
+        del (
+            node
+        )  # kept for the call sites; a file's record is its whole text (see file_fingerprint)
+        self.found[(tuple(self.scope), kind, text)] += 1
 
     def _resolved(self, node: ast.expr) -> str | None:
         if isinstance(node, ast.Attribute):
@@ -364,15 +274,7 @@ class _Collector(ast.NodeVisitor):
             # tests keeps its name.
             self._record("hook definition", ast.unparse(_without_docstring(node)), node)
         self.scope.append(node.name)
-        if isinstance(node, ast.ClassDef):
-            # Decorators, bases and keywords belong to the enclosing scope; the body is its own.
-            for part in [*node.decorator_list, *node.bases, *(k.value for k in node.keywords)]:
-                self.visit(part)
-            self.indices.append(_mention_index(node.body))
-            self._visit_body(node.body)
-            self.indices.pop()
-        else:
-            self.generic_visit(node)
+        self.generic_visit(node)
         self.scope.pop()
 
     visit_FunctionDef = _visit_definition  # noqa: N815
@@ -460,6 +362,37 @@ class _Collector(ast.NodeVisitor):
     visit_AugAssign = _visit_assignment  # noqa: N815
 
 
+class _StripDocstrings(ast.NodeTransformer):
+    """Remove module, class and function docstrings: wording is not behaviour."""
+
+    def _strip(self, node: ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):  # type: ignore[no-untyped-def]
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            node.body = node.body[1:] or [ast.Pass()]
+        self.generic_visit(node)
+        return node
+
+    visit_Module = _strip  # noqa: N815
+    visit_ClassDef = _strip  # noqa: N815
+    visit_FunctionDef = _strip  # noqa: N815
+    visit_AsyncFunctionDef = _strip  # noqa: N815
+
+
+def file_fingerprint(source: bytes | None, path: str) -> str:
+    """A file's code, normalised: comments, formatting and docstrings do not count."""
+    if source is None:
+        return ""
+    try:
+        tree = ast.parse(source.decode("utf-8"), filename=path)
+    except (SyntaxError, ValueError, RecursionError, UnicodeDecodeError) as exc:
+        raise CheckError(f"{path}: cannot be parsed ({type(exc).__name__}: {exc})") from exc
+    return ast.unparse(_StripDocstrings().visit(tree))
+
+
 def constructs_in(source: bytes | None, path: str) -> Counter[Construct]:
     """Skip-like constructs of one Python file, as a multiset; empty for an absent file."""
     if source is None:
@@ -483,6 +416,15 @@ def test_findings(repo: Path, baseline: str, changed: Mapping[str, str]) -> list
         status = changed[path]
         before = constructs_in(None if status == "A" else _show(repo, baseline, path), path)
         after = constructs_in(None if status == "D" else _show(repo, "HEAD", path), path)
+        if (before or after) and file_fingerprint(
+            None if status == "A" else _show(repo, baseline, path), path
+        ) != file_fingerprint(None if status == "D" else _show(repo, "HEAD", path), path):
+            # Whatever a skip depends on (a guard, a constant, a helper, an inherited attribute,
+            # the order of statements) is somewhere in the same file: compare the file whole.
+            findings.append(
+                f"{path}: a file with skip-like constructs changed "
+                f"({sum(before.values())} before, {sum(after.values())} after): review the whole file"
+            )
         for verb, delta in (("added", after - before), ("removed", before - after)):
             for (scope, kind, text), count in sorted(delta.items()):
                 where = ".".join(scope) or "<module>"

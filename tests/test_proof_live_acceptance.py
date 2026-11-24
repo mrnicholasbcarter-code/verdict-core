@@ -589,6 +589,43 @@ def test_merged_run_exits_two_when_no_gate_is_split_across_the_legs(
     assert "shard: split" in capsys.readouterr().err
 
 
+def test_merged_run_refuses_a_contract_with_a_second_split_gate(
+    merged: tuple[FakeGitHub, Collected, list[str]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Its totals and the parent's unit_full total would cover different populations."""
+    payload = _contract_payload()
+    payload["gates"].append(
+        {
+            "id": "unit_extra",
+            "phase": "unit_full",
+            "classify": "test",
+            "command": [*UNIT_FULL, "-k", "extra"],
+            "shard": "split",
+        }
+    )
+    path = tmp_path / "twosplits.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    assert main(merged_args(path)) == 2
+    assert "exactly one" in capsys.readouterr().err
+
+
+def test_merged_run_refuses_a_split_gate_that_is_not_unit_full(
+    merged: tuple[FakeGitHub, Collected, list[str]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = _contract_payload()
+    for gate in payload["gates"]:
+        if gate["id"] == "unit_full":
+            gate["id"] = "unit_everything"
+    path = tmp_path / "renamed.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    assert main(merged_args(path)) == 2
+    assert "unit_full" in capsys.readouterr().err
+
+
 def test_merged_run_accepts_another_main_branch_name_when_told(
     merged: tuple[FakeGitHub, Collected, list[str]],
     contract_path: Path,

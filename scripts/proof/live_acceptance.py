@@ -315,8 +315,16 @@ def cmd_merged_run(args: argparse.Namespace) -> int:
     contract = _contract(args.contract)
     count = _shard_count(contract)
     sharded = [g for g in contract.gates_for_mode("full") if g.shard is not None]
-    if not any(g.shard == "split" for g in sharded):
+    split = [g for g in sharded if g.shard == "split"]
+    if not split:
         raise FetchError("the contract has shards but no full-mode gate with shard: split")
+    if len(split) != 1 or split[0].id != "unit_full":
+        # The JUnit total, the collected count and the parent's unit_full total must describe
+        # one population; with another split gate they would not.
+        raise FetchError(
+            "merged-run compares the tests of exactly one shard: split gate, named unit_full, "
+            f"with the parent's unit_full total; the contract has {[g.id for g in split]}"
+        )
     checks = Checks()
     merged_sha = resolve_revision(args.merged_rev, args.root)
     parent_sha = resolve_revision(args.parent_rev, args.root)

@@ -1012,16 +1012,23 @@ def test_the_same_alias_in_two_functions_is_told_apart_by_scope(
     assert "test_a" in output or "test_b" in output
 
 
-def test_unrelated_imports_and_unchanged_aliases_still_pass(
+def test_an_unchanged_aliased_import_file_passes_and_an_added_import_is_reported(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     text = CLEAN_TEST + "\n\n" + TWO_SCOPES.format(a="skip", b="xfail")
-    repo = scenario(
-        tmp_path,
+    untouched = scenario(
+        tmp_path / "a", {"README.md": "x\n"}, base=base_files() | {"tests/test_a.py": text}
+    )
+    assert check(untouched, capsys)[0] == 0
+    # The file skips, so it is compared whole: even an unrelated import is a reason to look.
+    edited = scenario(
+        tmp_path / "b",
         {"tests/test_a.py": text + "\nimport os\nfrom pytest import fixture, approx\n"},
         base=base_files() | {"tests/test_a.py": text},
     )
-    assert check(repo, capsys)[0] == 0
+    code, output = check(edited, capsys)
+    assert code == 1, output
+    assert "file with skip-like constructs changed" in output
 
 
 # --- a hook's docstring is not behaviour; the loader's types are the contract's ---
@@ -1300,6 +1307,22 @@ CONDITION_EDITS = {
         "class TestK:\n    def guard(self):\n        return False\n\n    def test_b(self):\n        if self.guard():\n            pytest.skip('r')\n",
         "class TestK:\n    def guard(self):\n        return True\n\n    def test_b(self):\n        if self.guard():\n            pytest.skip('r')\n",
     ),
+    "a string skipif condition reads a constant that flips": (
+        "SKIP = False\n\n@pytest.mark.skipif('SKIP', reason='r')\ndef test_b():\n    pass\n",
+        "SKIP = True\n\n@pytest.mark.skipif('SKIP', reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "an inherited class attribute flips": (
+        "class Base:\n    DISABLED = False\n\nclass TestK(Base):\n    def test_a(self):\n        if self.DISABLED:\n            pytest.skip('r')\n",
+        "class Base:\n    DISABLED = True\n\nclass TestK(Base):\n    def test_a(self):\n        if self.DISABLED:\n            pytest.skip('r')\n",
+    ),
+    "a decorated test moves below a rebinding": (
+        "SKIP = False\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n\nSKIP = True\n",
+        "SKIP = False\nSKIP = True\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "an unrelated test beside a skipping one changes": (
+        "def test_b(flag=False):\n    if flag:\n        pytest.skip('r')\n\ndef test_c():\n    assert 1\n",
+        "def test_b(flag=False):\n    if flag:\n        pytest.skip('r')\n\ndef test_c():\n    assert 2\n",
+    ),
     "a keyword-only default flips": (
         "def test_b(*, flag=False):\n    if flag:\n        pytest.skip('r')\n",
         "def test_b(*, flag=True):\n    if flag:\n        pytest.skip('r')\n",
@@ -1335,22 +1358,6 @@ def test_changing_the_condition_a_skip_runs_under_fails(
     )
     code, output = check(repo, capsys)
     assert code == 1, output
-
-
-def test_changing_a_constant_only_another_function_reads_passes(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    before = (
-        "LIMIT = 1\nSKIP = False\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n"
-        "\n\ndef test_c():\n    assert LIMIT\n"
-    )
-    after = before.replace("LIMIT = 1", "LIMIT = 2")
-    repo = scenario(
-        tmp_path,
-        {"tests/test_a.py": CLEAN_TEST + "\n\n" + after},
-        base=base_files() | {"tests/test_a.py": CLEAN_TEST + "\n\n" + before},
-    )
-    assert check(repo, capsys)[0] == 0
 
 
 def test_a_condition_around_an_unchanged_skip_passes(
@@ -1413,41 +1420,6 @@ def test_changing_a_constant_a_collection_hook_reads_fails(
     assert code == 1, output
 
 
-SKIPPING = "def test_b(flag=False):\n    if flag:\n        pytest.skip('r')\n"
-
-UNRELATED_EDITS = {
-    "a local of another function": (
-        SKIPPING + "\n\ndef test_c():\n    limit = 1\n    assert limit\n",
-        SKIPPING + "\n\ndef test_c():\n    limit = 2\n    assert limit\n",
-    ),
-    "a default of another function": (
-        SKIPPING + "\n\ndef test_c(limit=1):\n    assert limit\n",
-        SKIPPING + "\n\ndef test_c(limit=2):\n    assert limit\n",
-    ),
-    "a class attribute only another method reads": (
-        "class TestK:\n    LIMIT = 1\n    SKIP = False\n\n    def test_b(self):\n        if self.SKIP:\n            pytest.skip('r')\n\n    def test_c(self):\n        assert self.LIMIT\n",
-        "class TestK:\n    LIMIT = 2\n    SKIP = False\n\n    def test_b(self):\n        if self.SKIP:\n            pytest.skip('r')\n\n    def test_c(self):\n        assert self.LIMIT\n",
-    ),
-    "a constant no hook reads": (
-        "LIMIT = 1\n\ndef pytest_ignore_collect(collection_path):\n    return False\n",
-        "LIMIT = 2\n\ndef pytest_ignore_collect(collection_path):\n    return False\n",
-    ),
-}
-
-
-@pytest.mark.parametrize("name", sorted(UNRELATED_EDITS))
-def test_changing_a_value_nothing_that_skips_reads_still_passes(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
-) -> None:
-    before, after = UNRELATED_EDITS[name]
-    repo = scenario(
-        tmp_path,
-        {"tests/test_a.py": CLEAN_TEST + "\n\n" + after},
-        base=base_files() | {"tests/test_a.py": CLEAN_TEST + "\n\n" + before},
-    )
-    assert check(repo, capsys)[0] == 0
-
-
 INSIDE_A_SKIPPING_FUNCTION = {
     "an unrelated local": (
         "def test_b():\n    limit = 1\n    flag = False\n    if flag:\n        pytest.skip('r')\n    assert limit\n",
@@ -1465,10 +1437,10 @@ INSIDE_A_SKIPPING_FUNCTION = {
 
 
 @pytest.mark.parametrize("name", sorted(INSIDE_A_SKIPPING_FUNCTION))
-def test_any_edit_inside_a_function_that_skips_is_reported_for_review(
+def test_any_edit_inside_a_file_that_skips_is_reported_for_review(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
 ) -> None:
-    """The record is the whole function: erring towards a finding, never a silent pass."""
+    """A file with a skip-like construct is compared whole: erring towards a finding."""
     before, after = INSIDE_A_SKIPPING_FUNCTION[name]
     repo = scenario(
         tmp_path,
@@ -1559,17 +1531,59 @@ def test_changing_a_pytest_selection_option_in_place_fails(
     assert code == 1, output
 
 
-def test_a_helper_the_skip_never_calls_does_not_make_an_edit_a_finding(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+NO_CONSTRUCTS_EDITS = {
+    "a helper and a constant": (
+        "LIMIT = 1\n\ndef helper():\n    return LIMIT\n\ndef test_b():\n    assert helper()\n",
+        "LIMIT = 2\n\ndef helper():\n    return LIMIT + 1\n\ndef test_b():\n    assert helper()\n",
+    ),
+    "an assertion and a parametrize": (
+        "@pytest.mark.parametrize('v', [1])\ndef test_b(v):\n    assert v\n",
+        "@pytest.mark.parametrize('v', [1, 2])\ndef test_b(v):\n    assert v == 1 or v == 2\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(NO_CONSTRUCTS_EDITS))
+def test_any_edit_to_a_file_with_no_skip_like_construct_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
 ) -> None:
-    before = (
-        "def unused():\n    return 1\n\n"
-        "@pytest.mark.skipif(False, reason='r')\ndef test_b():\n    pass\n"
-    )
-    after = before.replace("return 1", "return 2")
+    before, after = NO_CONSTRUCTS_EDITS[name]
     repo = scenario(
         tmp_path,
         {"tests/test_a.py": CLEAN_TEST + "\n\n" + after},
         base=base_files() | {"tests/test_a.py": CLEAN_TEST + "\n\n" + before},
     )
     assert check(repo, capsys)[0] == 0
+
+
+def test_an_edit_in_a_file_that_gains_a_skip_is_reported_as_a_whole_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = "def test_b():\n    assert 1\n"
+    after = "def test_b():\n    assert 2\n    pytest.skip('r')\n"
+    repo = scenario(
+        tmp_path,
+        {"tests/test_a.py": CLEAN_TEST + "\n\n" + after},
+        base=base_files() | {"tests/test_a.py": CLEAN_TEST + "\n\n" + before},
+    )
+    code, output = check(repo, capsys)
+    assert code == 1
+    assert "file with skip-like constructs changed" in output
+
+
+def test_reformatting_and_docstring_edits_in_a_file_that_skips_pass(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = (
+        '"""Old module words."""\nimport pytest\n\n\ndef test_b(flag=False):\n    """Old."""\n'
+        "    if flag:\n        pytest.skip('r')\n"
+    )
+    after = (
+        '"""New, longer module words."""\nimport pytest\n\n\n\ndef test_b(flag = False):\n    """New."""\n'
+        '    if flag:\n        pytest.skip( "r" )  # a comment\n'
+    )
+    repo = scenario(
+        tmp_path, {"tests/test_a.py": after}, base=base_files() | {"tests/test_a.py": before}
+    )
+    code, output = check(repo, capsys)
+    assert code == 0, output
