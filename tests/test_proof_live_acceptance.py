@@ -133,6 +133,7 @@ class FakeGitHub:
         self.runs: dict[str, list[dict[str, Any]]] = {}
         self.jobs: dict[int, list[dict[str, Any]]] = {}
         self.artifacts: dict[tuple[str, str], dict[str, str]] = {}
+        self.run_meta: dict[str, dict[str, Any]] = {}
         self.calls: list[list[str]] = []
         self.fail_on: str | None = None
 
@@ -149,6 +150,12 @@ class FakeGitHub:
                 head = query["head_sha"][0]
                 everything = self.runs.get(head, [])
                 return json.dumps({"workflow_runs": everything[(page - 1) * 100 : page * 100]})
+            single = re.fullmatch(r"repos/\{owner\}/\{repo\}/actions/runs/(\d+)", parsed.path)
+            if single:
+                meta = self.run_meta.get(single.group(1))
+                if meta is None:
+                    raise FetchError(f"no run {single.group(1)}")
+                return json.dumps(meta)
             match = re.fullmatch(r"repos/\{owner\}/\{repo\}/actions/runs/(\d+)/jobs", parsed.path)
             if match:
                 jobs = self.jobs.get(int(match.group(1)), [])
@@ -240,6 +247,25 @@ def _seed_merged(
             leg, unit_full=sizes[leg - 1], timing=len(TIMING_IDS) if timing is None else timing
         )
     gh.artifacts[("90", "proof-report-full")] = {"proof-report-full.json": _parent_report()}
+    gh.run_meta["100"] = {
+        "id": 100,
+        "name": "Proof",
+        "event": "push",
+        "head_sha": "mergedrev",
+        "status": "completed",
+        "conclusion": "success",
+    }
+    gh.run_meta["90"] = {
+        "id": 90,
+        "name": "Proof",
+        "event": "push",
+        "head_sha": "parentrev",
+        "status": "completed",
+        "conclusion": "success",
+    }
+    gh.jobs[100] = [_job(f"proof-shard ({k})", 5, 200) for k in range(1, SHARDS + 1)] + [
+        _job("proof-full", 210, 240)
+    ]
 
 
 @pytest.fixture
@@ -249,6 +275,7 @@ def merged(
     _seed_merged(gh)
     collected = Collected(ALL_IDS, TIMING_IDS)
     monkeypatch.setattr(live, "collect_ids", collected)
+    monkeypatch.setattr(live, "resolve_revision", lambda rev, repo: rev)
     # The parent revision lacks one test the merged revision has: added 1, removed 0.
     revisions = {"parentrev": ALL_IDS[:-1], "mergedrev": ALL_IDS}
     monkeypatch.setattr(
@@ -407,6 +434,106 @@ def test_merged_run_exits_two_when_an_artifact_cannot_be_fetched(
     merged[0].fail_on = fail_on
     assert main(merged_args(contract_path)) == 2
     assert capsys.readouterr().err
+
+
+RUN_BINDING_BREAKS: dict[str, Callable[[FakeGitHub], None]] = {
+    "the merged run is another commit's": lambda gh: gh.run_meta["100"].update(head_sha="otherrev"),
+    "the merged run is a pull request run": lambda gh: gh.run_meta["100"].update(
+        event="pull_request"
+    ),
+    "the merged run is another workflow": lambda gh: gh.run_meta["100"].update(name="CI"),
+    "the parent run is another commit's": lambda gh: gh.run_meta["90"].update(head_sha="otherrev"),
+    "the parent run is a pull request run": lambda gh: gh.run_meta["90"].update(
+        event="pull_request"
+    ),
+    "the parent run is another workflow": lambda gh: gh.run_meta["90"].update(name="CI"),
+    "the aggregate job did not succeed": lambda gh: gh.jobs[100][-1].update(conclusion="failure"),
+    "the aggregate job is missing": lambda gh: gh.jobs[100].pop(),
+    "a leg job did not succeed": lambda gh: gh.jobs[100][0].update(conclusion="cancelled"),
+    "a leg job is missing": lambda gh: gh.jobs[100].pop(0),
+    "there is a fourth leg": lambda gh: gh.jobs[100].append(_job("proof-shard (4)", 5, 200)),
+    "the aggregate job ran twice": lambda gh: gh.jobs[100].append(_job("proof-full", 210, 240)),
+}
+
+
+@pytest.mark.parametrize("name", sorted(RUN_BINDING_BREAKS))
+def test_merged_run_checks_that_the_runs_belong_to_the_revisions_and_the_aggregate_succeeded(
+    merged: tuple[FakeGitHub, Collected, list[str]],
+    contract_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+) -> None:
+    """Valid artifacts from the wrong run, or from a run whose proof failed, must not pass."""
+    RUN_BINDING_BREAKS[name](merged[0])
+    code = main(merged_args(contract_path))
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert re.search(r"FAIL .*(merged run|parent run|proof-full|proof-shard)", out), out
+
+
+def test_merged_run_exits_two_when_a_runs_metadata_cannot_be_fetched(
+    merged: tuple[FakeGitHub, Collected, list[str]],
+    contract_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    del merged[0].run_meta["90"]
+    assert main(merged_args(contract_path)) == 2
+    assert "no run 90" in capsys.readouterr().err
+
+
+def test_merged_run_prints_that_the_runs_were_bound_to_their_revisions(
+    merged: tuple[FakeGitHub, Collected, list[str]],
+    contract_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(merged_args(contract_path)) == 0
+    out = capsys.readouterr().out
+    assert "PASS merged run 100 ran on the merged revision" in out
+    assert "PASS parent run 90 ran on the parent revision" in out
+    assert "PASS merged run's proof-full aggregate job succeeded" in out
+
+
+def test_a_short_or_symbolic_revision_is_compared_as_the_full_commit_it_names(
+    merged: tuple[FakeGitHub, Collected, list[str]],
+    contract_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gh = merged[0]
+    full = {"mergedrev": "a" * 40, "parentrev": "b" * 40}
+    monkeypatch.setattr(live, "resolve_revision", lambda rev, repo: full[rev])
+    seen: list[str] = []
+
+    def collect(rev: str, repo: Path, args: Sequence[str] | None = None) -> list[str]:
+        seen.append(rev)
+        return list(ALL_IDS if rev == full["mergedrev"] else ALL_IDS[:-1])
+
+    monkeypatch.setattr(live, "collect_at_revision", collect)
+    gh.run_meta["100"]["head_sha"] = full["mergedrev"]
+    gh.run_meta["90"]["head_sha"] = full["parentrev"]
+    assert main(merged_args(contract_path)) == 0, capsys.readouterr().out
+    assert seen == [full["parentrev"], full["mergedrev"]]
+
+
+def test_a_revision_is_resolved_to_a_full_commit_in_the_repository_it_is_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    other = tmp_path / "other"
+    for path in (repo, other):
+        path.mkdir()
+        _git(path, "init", "-q", "-b", "main")
+        (path / "f.txt").write_text(path.name)
+        _git(path, "add", "-A")
+        _git(path, "commit", "-q", "-m", path.name)
+    full = _git(repo, "rev-parse", "HEAD")
+    assert live.resolve_revision("HEAD", repo) == full
+    assert live.resolve_revision(full[:10], repo) == full
+    with pytest.raises(FetchError, match="no-such-revision"):
+        live.resolve_revision("no-such-revision", repo)
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    assert live.resolve_revision("HEAD", repo) == full
 
 
 def test_merged_run_exits_two_when_the_parent_summary_cannot_be_read(

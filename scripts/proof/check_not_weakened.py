@@ -86,6 +86,10 @@ HOOK_NAMES = frozenset(
     {"pytest_deselected", "pytest_collection_modifyitems", "pytest_ignore_collect"}
 )
 ASSIGN_NAMES = frozenset({"pytestmark", "collect_ignore", "collect_ignore_glob"})
+# Applying a marker to a test at run time, by name or object (request.node.add_marker('skip')).
+MARKER_APPLIERS = frozenset({"add_marker", "applymarker"})
+# ``config.option.<name> = ...`` changes what pytest selects.
+SELECTION_OPTIONS = frozenset({"markexpr", "keyword", "deselect", "ignore", "ignore_glob"})
 SKIP_MODULES = frozenset({"pytest", "unittest", "unittest.case"})
 
 Construct = tuple[tuple[str, ...], str, str]
@@ -198,6 +202,19 @@ class _Collector(ast.NodeVisitor):
         self.found: Counter[Construct] = Counter()
         self.mark_aliases: set[str] = {"mark"}
         self.name_aliases: dict[str, str] = {}
+        # What a skip depends on besides its own text: the conditions around it, and the
+        # module-level constants those conditions and the construct itself read.
+        self.conditions: list[tuple[str, frozenset[str]]] = []
+        self.constants: dict[str, ast.expr] = {}
+        for stmt in tree.body if isinstance(tree, ast.Module) else []:
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+                target, value = stmt.targets[0], stmt.value
+            elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+                target, value = stmt.target, stmt.value
+            else:
+                continue
+            if isinstance(target, ast.Name):
+                self.constants[target.id] = value
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module in SKIP_MODULES:
                 for alias in node.names:
@@ -209,8 +226,56 @@ class _Collector(ast.NodeVisitor):
                         for name in SKIP_NAMES:
                             self.name_aliases.setdefault(name, name)
 
-    def _record(self, kind: str, text: str) -> None:
-        self.found[(tuple(self.scope), kind, text)] += 1
+    @staticmethod
+    def _names(node: ast.AST) -> frozenset[str]:
+        return frozenset(n.id for n in ast.walk(node) if isinstance(n, ast.Name))
+
+    def _dependencies(self, names: set[str]) -> list[str]:
+        """Module-level constants read by ``names``, followed through the constants they read."""
+        seen: set[str] = set()
+        pending = [n for n in names if n in self.constants]
+        while pending:
+            name = pending.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            pending.extend(n for n in self._names(self.constants[name]) if n in self.constants)
+        return sorted(f"{n} = {ast.unparse(self.constants[n])}" for n in seen)
+
+    def _record(self, kind: str, text: str, node: ast.AST | None = None) -> None:
+        names: set[str] = set(self._names(node)) if node is not None else set()
+        for _, read in self.conditions:
+            names |= read
+        suffix = ""
+        if self.conditions:
+            suffix += " [under: " + "; ".join(c for c, _ in self.conditions) + "]"
+        dependencies = self._dependencies(names)
+        if dependencies:
+            suffix += " [with: " + "; ".join(dependencies) + "]"
+        self.found[(tuple(self.scope), kind, text + suffix)] += 1
+
+    def _under(self, label: str, test: ast.expr, body: list[ast.stmt]) -> None:
+        self.conditions.append((f"{label} {ast.unparse(test)}", self._names(test)))
+        for statement in body:
+            self.visit(statement)
+        self.conditions.pop()
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        self._under("if", node.test, node.body)
+        self._under("else of", node.test, node.orelse)
+
+    def visit_While(self, node: ast.While) -> None:
+        self.visit(node.test)
+        self._under("while", node.test, node.body)
+        self._under("else of", node.test, node.orelse)
+
+    def visit_IfExp(self, node: ast.IfExp) -> None:
+        self.visit(node.test)
+        for label, branch in (("if", node.body), ("else of", node.orelse)):
+            self.conditions.append((f"{label} {ast.unparse(node.test)}", self._names(node.test)))
+            self.visit(branch)
+            self.conditions.pop()
 
     def _resolved(self, node: ast.expr) -> str | None:
         if isinstance(node, ast.Attribute):
@@ -237,7 +302,7 @@ class _Collector(ast.NodeVisitor):
 
     def _names_a_construct(self, node: ast.expr) -> bool:
         name = self._resolved(node)
-        if name in SKIP_NAMES or name in HOOK_NAMES:
+        if name in SKIP_NAMES or name in HOOK_NAMES or name in MARKER_APPLIERS:
             return True
         return isinstance(node, ast.Attribute) and self._is_marker(node)
 
@@ -263,6 +328,16 @@ class _Collector(ast.NodeVisitor):
             isinstance(node, ast.Attribute) and node.attr in ASSIGN_NAMES
         )
 
+    @staticmethod
+    def _is_selection_option(node: ast.AST) -> bool:
+        """``config.option.markexpr``: the attribute pytest reads to decide what to run."""
+        if not (isinstance(node, ast.Attribute) and node.attr in SELECTION_OPTIONS):
+            return False
+        holder = node.value
+        return (isinstance(holder, ast.Attribute) and holder.attr == "option") or (
+            isinstance(holder, ast.Name) and holder.id == "option"
+        )
+
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         # Recorded where it stands, with its scope, so that re-pointing an import (whatever
         # alias it takes, in whichever function) is a change even when its call sites are not.
@@ -273,20 +348,20 @@ class _Collector(ast.NodeVisitor):
 
     def visit_Delete(self, node: ast.Delete) -> None:
         if any(self._is_protected(part) for t in node.targets for part in ast.walk(t)):
-            self._record("deletion", ast.unparse(node))
+            self._record("deletion", ast.unparse(node), node)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Attribute) and self._is_protected(node.func.value):
             # collect_ignore.append(...), pytestmark.extend(...): changed in place.
-            self._record("call", ast.unparse(node))
+            self._record("call", ast.unparse(node), node)
             for arg in node.args:
                 self.visit(arg)
             for keyword in node.keywords:
                 self.visit(keyword.value)
             return
         if self._names_a_construct(node.func):
-            self._record("call", ast.unparse(node) + self._alias_note(node.func))
+            self._record("call", ast.unparse(node) + self._alias_note(node.func), node)
             for arg in node.args:
                 self.visit(arg)
             for keyword in node.keywords:
@@ -296,7 +371,7 @@ class _Collector(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if self._names_a_construct(node):
-            self._record("reference", ast.unparse(node))
+            self._record("reference", ast.unparse(node), node)
             return
         self.generic_visit(node)
 
@@ -304,16 +379,18 @@ class _Collector(ast.NodeVisitor):
         # A skip-like function imported from pytest or unittest, used without a call:
         # ``stop = skip``, ``raise SkipTest``, a decorator. Plain names are not flagged.
         if isinstance(node.ctx, ast.Load) and node.id in self.name_aliases:
-            self._record("reference", node.id + self._alias_note(node))
+            self._record("reference", node.id + self._alias_note(node), node)
 
     def _visit_assignment(self, node: ast.Assign | ast.AnnAssign | ast.AugAssign) -> None:
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         for target in targets:
             for part in ast.walk(target):
-                if (isinstance(part, ast.Name) and part.id in ASSIGN_NAMES) or (
-                    isinstance(part, ast.Attribute) and part.attr in ASSIGN_NAMES
+                if (
+                    (isinstance(part, ast.Name) and part.id in ASSIGN_NAMES)
+                    or (isinstance(part, ast.Attribute) and part.attr in ASSIGN_NAMES)
+                    or self._is_selection_option(part)
                 ):
-                    self._record("assignment", ast.unparse(node))
+                    self._record("assignment", ast.unparse(node), node)
                     break
         self.generic_visit(node)
 

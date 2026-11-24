@@ -158,6 +158,25 @@ def checkout_revision(rev: str, repo: Path) -> Iterator[Path]:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def resolve_revision(rev: str, repo: Path) -> str:
+    """The full commit SHA a revision names in ``repo`` (read-only)."""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+            env={k: v for k, v in os.environ.items() if k not in GIT_LOCAL_ENV},
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise FetchError(f"git rev-parse {rev} could not run: {exc}") from exc
+    sha = done.stdout.strip()
+    if done.returncode != 0 or not _HEAD.fullmatch(sha):
+        raise FetchError(f"{rev}: not a commit in {repo}")
+    return sha
+
+
 def collect_at_revision(rev: str, repo: Path, args: Sequence[str] | None = None) -> list[str]:
     """Node ids at one revision, collected in this environment against that revision's code."""
     wanted = list(args) if args is not None else ["tests/", "-q", "--tb=short"]
@@ -238,11 +257,65 @@ def _gate_entries(report: dict[str, Any], label: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _run_meta(run_id: str) -> dict[str, Any]:
+    body = gh_json(f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}")
+    if not isinstance(body, dict):
+        raise FetchError(f"run {run_id}: no run metadata in the response")
+    return body
+
+
+def _bind_run(checks: Checks, label: str, run_id: str, expected_sha: str) -> None:
+    """The run really is the main push run of the revision it is said to be."""
+    run = _run_meta(run_id)
+    checks.check(
+        run.get("head_sha") == expected_sha,
+        f"{label} run {run_id} ran on the {label} revision",
+        f"head_sha={run.get('head_sha')!r}, expected {expected_sha}",
+    )
+    checks.check(
+        run.get("event") == "push",
+        f"{label} run {run_id} is a push run",
+        f"event={run.get('event')!r}",
+    )
+    checks.check(
+        run.get("name") == "Proof",
+        f"{label} run {run_id} is the Proof workflow",
+        f"name={run.get('name')!r}",
+    )
+
+
+def _check_merged_jobs(checks: Checks, run_id: str, count: int) -> None:
+    """GitHub's own verdict on the legs and the aggregate, not the artifact's ``ok`` field."""
+    jobs = _pages(f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/jobs", "jobs")
+    legs = sorted(
+        (int(m.group(1)), j.get("conclusion"))
+        for j in jobs
+        if (m := _LEG_JOB.fullmatch(str(j.get("name"))))
+    )
+    checks.check(
+        [index for index, _ in legs] == list(range(1, count + 1))
+        and all(conclusion == "success" for _, conclusion in legs),
+        f"merged run's {count} proof-shard legs all succeeded",
+        f"found {legs}",
+    )
+    aggregates = [j for j in jobs if j.get("name") == "proof-full"]
+    checks.check(
+        len(aggregates) == 1 and aggregates[0].get("conclusion") == "success",
+        "merged run's proof-full aggregate job succeeded",
+        f"found {[j.get('conclusion') for j in aggregates]}",
+    )
+
+
 def cmd_merged_run(args: argparse.Namespace) -> int:
     contract = _contract(args.contract)
     count = _shard_count(contract)
     sharded = [g for g in contract.gates_for_mode("full") if g.shard is not None]
     checks = Checks()
+    merged_sha = resolve_revision(args.merged_rev, args.root)
+    parent_sha = resolve_revision(args.parent_rev, args.root)
+    _bind_run(checks, "merged", args.run, merged_sha)
+    _bind_run(checks, "parent", args.parent_run, parent_sha)
+    _check_merged_jobs(checks, args.run, count)
     with tempfile.TemporaryDirectory(prefix="proof-live-") as tmp_name:
         tmp = Path(tmp_name)
         merged = _json_file(
@@ -295,8 +368,7 @@ def cmd_merged_run(args: argparse.Namespace) -> int:
         parent_total = sum(n for word, n in counts.items() if word in OUTCOME_KEYS)
 
     added, removed = diff_node_ids(
-        collect_at_revision(args.parent_rev, args.root),
-        collect_at_revision(args.merged_rev, args.root),
+        collect_at_revision(parent_sha, args.root), collect_at_revision(merged_sha, args.root)
     )
     checks.note(f"summed JUnit tests: {total_tests}")
     checks.note(f"collected: {collected}")

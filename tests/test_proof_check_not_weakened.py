@@ -1139,3 +1139,104 @@ def test_the_toy_base_contract_is_one_the_real_loader_accepts(tmp_path: Path) ->
     path = tmp_path / "contract.yaml"
     path.write_text(_contract_text(BASE_CONTRACT), encoding="utf-8")
     assert len(load_contract(path).gates) == len(BASE_CONTRACT["gates"])
+
+
+# --- the condition a skip runs under, and markers added at run time ---
+
+CONDITION_EDITS = {
+    "if False becomes if True": (
+        "def test_b():\n    if False:\n        pytest.skip('r')\n",
+        "def test_b():\n    if True:\n        pytest.skip('r')\n",
+    ),
+    "a guard is dropped": (
+        "def test_b(flag):\n    if flag:\n        pytest.skip('r')\n",
+        "def test_b(flag):\n    pytest.skip('r')\n",
+    ),
+    "the else branch gains the skip": (
+        "def test_b(flag):\n    if flag:\n        pass\n    else:\n        pytest.skip('r')\n",
+        "def test_b(flag):\n    if not flag:\n        pass\n    else:\n        pytest.skip('r')\n",
+    ),
+    "a constant that guards a skip flips": (
+        "COND = False\n\ndef test_b():\n    if COND:\n        pytest.skip('r')\n",
+        "COND = True\n\ndef test_b():\n    if COND:\n        pytest.skip('r')\n",
+    ),
+    "a constant read by skipif flips": (
+        "SKIP = False\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+        "SKIP = True\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "a constant read through another constant flips": (
+        "FLAG = False\nSKIP = FLAG\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+        "FLAG = True\nSKIP = FLAG\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "a while guard changes": (
+        "def test_b():\n    while False:\n        pytest.skip('r')\n",
+        "def test_b():\n    while True:\n        pytest.skip('r')\n",
+    ),
+    "a ternary that guards a skip changes": (
+        "def test_b():\n    (pytest.skip('r') if False else None)\n",
+        "def test_b():\n    (pytest.skip('r') if True else None)\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(CONDITION_EDITS))
+def test_changing_the_condition_a_skip_runs_under_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    before, after = CONDITION_EDITS[name]
+    repo = scenario(
+        tmp_path,
+        {"tests/test_a.py": CLEAN_TEST + "\n\n" + after},
+        base=base_files() | {"tests/test_a.py": CLEAN_TEST + "\n\n" + before},
+    )
+    code, output = check(repo, capsys)
+    assert code == 1, output
+
+
+def test_changing_a_constant_nothing_skips_on_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = "LIMIT = 1\nSKIP = False\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_b():\n    assert LIMIT\n"
+    after = before.replace("LIMIT = 1", "LIMIT = 2")
+    repo = scenario(
+        tmp_path,
+        {"tests/test_a.py": CLEAN_TEST + "\n\n" + after},
+        base=base_files() | {"tests/test_a.py": CLEAN_TEST + "\n\n" + before},
+    )
+    assert check(repo, capsys)[0] == 0
+
+
+def test_a_condition_around_an_unchanged_skip_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = "def test_b(flag):\n    if flag:\n        pytest.skip('r')\n"
+    repo = scenario(
+        tmp_path,
+        {"tests/test_a.py": CLEAN_TEST + "\n\n" + text, "README.md": "y\n"},
+        base=base_files() | {"tests/test_a.py": CLEAN_TEST + "\n\n" + text},
+    )
+    assert check(repo, capsys)[0] == 0
+
+
+RUNTIME_MARKERS = {
+    "autouse fixture adds a skip marker": (
+        "@pytest.fixture(autouse=True)\ndef _no(request):\n    request.node.add_marker('skip')\n"
+    ),
+    "autouse fixture applies an xfail marker": (
+        "@pytest.fixture(autouse=True)\ndef _no(request):\n    request.applymarker('xfail')\n"
+    ),
+    "a hook adds a marker object": (
+        "def helper(item):\n    item.add_marker(pytest.mark.usefixtures('x'))\n"
+    ),
+    "the markexpr option is set": "def helper(config):\n    config.option.markexpr = 'not timing'\n",
+    "the keyword option is set": "def helper(config):\n    config.option.keyword = 'nothing'\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(RUNTIME_MARKERS))
+def test_a_marker_or_selection_option_applied_at_run_time_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    repo = scenario(tmp_path, {"tests/test_a.py": CLEAN_TEST + "\n\n" + RUNTIME_MARKERS[name]})
+    code, output = check(repo, capsys)
+    assert code == 1, output
