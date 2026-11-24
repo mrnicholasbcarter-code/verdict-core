@@ -613,8 +613,8 @@ class TestSelectPlannerRoutes:
         route_id, _ = selected[0]
         assert route_id == "cc/free"  # FREE before SUBSCRIPTION at same score
 
-    def test_fewer_than_two_families_raises_for_top_n_2(self) -> None:
-        # Only one family (claude) available across both bands
+    def test_fewer_than_two_families_proceeds_single_family(self) -> None:
+        # D39: only one family (claude) available across both bands → proceed with flag
         records = [
             _record("p/a", ("cc/claude-3-opus",), aa_intelligence=_score(95.0)),
             _record("p/b", ("cc/claude-3-sonnet",), aa_intelligence=_score(85.0)),
@@ -624,10 +624,71 @@ class TestSelectPlannerRoutes:
             ["cc/claude-3-opus", "cc/claude-3-sonnet"], snap, None, config=DEFAULT_CONFIG, now=NOW
         )
         caps = _caps_map("cc/claude-3-opus", "cc/claude-3-sonnet")
+        selected = select_planner_routes(
+            ["cc/claude-3-opus", "cc/claude-3-sonnet"], caps, band, snap, None, top_n=2, now=NOW
+        )
+        # Returns 1 result (best of the one family), annotated with the flag
+        assert len(selected) == 1
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        # No other family was in the band, so unavailable_families is empty
+        assert result.unavailable_families == ()
+
+    def test_single_family_records_unavailable_families_with_reasons(self) -> None:
+        # Use the two-family band (10 routes, frontier={claude-3-opus, gpt-4o}).
+        # Admit only claude routes; gpt-4o is in the band but excluded with a reason.
+        band, snap = self._two_family_band()
+        admitted = ["cc/claude-3-opus", "cc/claude-3-sonnet", "cc/claude-3-haiku"]
+        caps = _caps_map(*admitted)
+        exclusion_reasons = {"oa/gpt-4o": "metered_capacity", "oa/gpt-4-turbo": "quota_low"}
+        selected = select_planner_routes(
+            admitted, caps, band, snap, None, top_n=2, now=NOW, exclusion_reasons=exclusion_reasons
+        )
+        assert len(selected) == 1
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        # gpt-4o is the band representative for the gpt family
+        assert result.unavailable_families == (("gpt", "metered_capacity"),)
+        # to_dict includes the new keys when single_family_planner=True
+        d = result.to_dict()
+        assert d["single_family_planner"] is True
+        assert d["unavailable_families"] == {"gpt": "metered_capacity"}
+
+    def test_two_families_no_single_family_flag(self) -> None:
+        # Normal two-family case: single_family_planner must be False
+        band, snap = self._two_family_band()
+        admitted = ["cc/claude-3-opus", "oa/gpt-4o"]
+        caps = _caps_map("cc/claude-3-opus", "oa/gpt-4o")
+        selected = select_planner_routes(admitted, caps, band, snap, None, top_n=2, now=NOW)
+        assert len(selected) == 2
+        for _, result in selected:
+            assert result.single_family_planner is False
+            assert result.unavailable_families == ()
+        d = selected[0][1].to_dict()
+        assert "single_family_planner" not in d
+        assert "unavailable_families" not in d
+
+    def test_zero_admissible_routes_still_fails_closed(self) -> None:
+        # No routes admitted at all → PlannerBandError, even with top_n=3 (D39 does not apply)
+        band, snap = self._two_family_band()
+        caps: dict[str, CapacityClass] = {}
         with pytest.raises(PlannerBandError, match="no_frontier_or_fallback_planner"):
-            select_planner_routes(
-                ["cc/claude-3-opus", "cc/claude-3-sonnet"], caps, band, snap, None, top_n=2, now=NOW
-            )
+            select_planner_routes([], caps, band, snap, None, top_n=3, now=NOW)
+
+    def test_admitted_metered_band_route_appears_in_unavailable_families(self) -> None:
+        """D39/finding-1: an admitted METERED band route's family appears in unavailable_families
+        even when no exclusion_reasons map is supplied for it."""
+        band, snap = self._two_family_band()
+        # Claude is admitted FREE; GPT is admitted but METERED — _filter_to_band excludes it.
+        # No exclusion_reasons is passed; the capacity exclusion must still be recorded.
+        admitted = ["cc/claude-3-opus", "oa/gpt-4o"]
+        caps = {"cc/claude-3-opus": CapacityClass.FREE, "oa/gpt-4o": CapacityClass.METERED}
+        selected = select_planner_routes(admitted, caps, band, snap, None, top_n=2, now=NOW)
+        assert len(selected) == 1
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        assert result.unavailable_families == (("gpt", "metered_excluded"),)
+        assert result.to_dict()["unavailable_families"] == {"gpt": "metered_excluded"}
 
     def test_band_result_fields_populated(self) -> None:
         records = [_record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0))]
@@ -648,7 +709,10 @@ class TestSelectPlannerRoutes:
         assert result.rating == pytest.approx(95.0)
         assert result.metric == "aa_intelligence"
         assert result.fetched_at == FETCHED_NEW
+        assert result.single_family_planner is False
+        assert result.unavailable_families == ()
         d = result.to_dict()
+        # New fields absent from to_dict when single_family_planner=False
         assert set(d.keys()) == {
             "required",
             "used",
@@ -826,3 +890,94 @@ class TestBandLadderIntegration:
         choice, _ = ladder.select(req, now=NOW)
         assert choice is not None
         assert choice.route_id == "oa/sub"
+
+    def test_probe_order_uses_band_score_not_health_freshness(
+        self, tmp_path, billing_overlay_subscription
+    ) -> None:
+        """Bug: _probe_order groups healthy routes first, overriding band score order.
+
+        Reproduces the production incident where cc/claude-fable-5-1 (fallback,
+        score 50.0) was selected as planner instead of cc/claude-opus-5-5
+        (frontier, score 59.1) because fable had a fresh health-cache entry
+        (written by selection_refresh_hook) while opus/sonnet were unprobed.
+
+        _probe_order placed fable first (healthy→fresh group) then sorted by
+        _rank_key[:4]; without band metadata, all three SUB routes tie on
+        _rank_key so the stable sort preserved fable at index 0.
+
+        After fix: when self._planner_band is not None, _probe_order sorts by
+        the band _sort_key, so opus (score 59.1) goes before sonnet (54.5) and
+        fable (50.0) regardless of health freshness.
+        """
+        from tests.test_orch_eligibility import FakeProbe, conn, row
+        from verdict.orchestration.contracts import TaskRequirements
+        from verdict.orchestration.eligibility import EligibilityLadder
+        from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+        # All three routes are SUBSCRIPTION via billing overlay.
+        billing_overlay_subscription([("claude", "oauth")])
+        rows = [
+            row("cc/claude-opus-5-5", owned_by="claude"),
+            row("cc/claude-sonnet-5-5", owned_by="claude"),
+            row("cc/claude-fable-5-1", owned_by="claude"),
+        ]
+        conns = [conn("claude", auth="oauth")]
+
+        # Fable is "healthy" in the health cache — simulates selection_refresh_hook
+        # having probed it before the main select() loop runs.  Opus and sonnet
+        # have no cache entry and therefore health="unprobed".
+        cache = HealthCache(tmp_path / "health.json")
+        checked = NOW - timedelta(seconds=60)
+        cache.record(
+            "cc/claude-fable-5-1",
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            checked,
+        )
+        cache.save()
+
+        # Band built manually: opus/sonnet in frontier, fable only in fallback.
+        band = BandComputation(
+            frontier_model_keys=frozenset({"cc/claude-opus-5-5", "cc/claude-sonnet-5-5"}),
+            fallback_model_keys=frozenset(
+                {"cc/claude-opus-5-5", "cc/claude-sonnet-5-5", "cc/claude-fable-5-1"}
+            ),
+            cutoff_frontier=54.5,
+            cutoff_fallback=50.0,
+            rated_models=3,
+            fetched_at=FETCHED_NEW,
+            model_scores={
+                "cc/claude-opus-5-5": 59.1,
+                "cc/claude-sonnet-5-5": 54.5,
+                "cc/claude-fable-5-1": 50.0,
+            },
+            model_ranks={
+                "cc/claude-opus-5-5": 1,
+                "cc/claude-sonnet-5-5": 2,
+                "cc/claude-fable-5-1": 3,
+            },
+        )
+
+        # FakeProbe returns healthy for every route — the bug is purely about
+        # ordering, not about whether any individual probe result fails.
+        ladder = EligibilityLadder(
+            rows, conns, FakeProbe(), tmp_path / "state.json", metadata=None, health_cache=cache
+        )
+        ladder.set_planner_band(band)
+
+        req = TaskRequirements(role_ordering="strongest_first", arena_role="planner")
+        # Before fix: fable is probed first (health="healthy" group wins in
+        #   _probe_order round-robin) → fable selected as planner.
+        # After fix:  opus is probed first (band sort: score 59.1 beats 50.0)
+        #   → opus selected as planner.
+        choice, _ = ladder.select(req, now=NOW)
+        assert choice is not None, "selection must succeed"
+        assert choice.route_id == "cc/claude-opus-5-5", (
+            f"expected frontier route cc/claude-opus-5-5 but got {choice.route_id!r}; "
+            "likely _probe_order is still grouping by health freshness rather than band score"
+        )
