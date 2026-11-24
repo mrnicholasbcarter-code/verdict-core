@@ -60,19 +60,27 @@ own; a hostile or symlinked `AGENTS.md` is neither detected nor refused.
 
 ### Requirement: Receipt records the repo-map digest for each planning call
 
-Each `FrontierPlanner.plan()` call SHALL emit one `plan_context` event, before
-its first model call, carrying `repo_map_sha256`: the SHA-256 hex digest of the
-repo map text placed in that call's prompt. The receipt's `planner_attempts`
-section SHALL include that entry, in `seq` order with the other planner events.
-A validation-repair call made inside the same `plan()` call re-sends the same
-prompt (the planning prompt plus the validation error), so it carries the same
-repo map, and SHALL NOT emit a second `plan_context`.
+When an event sink is provided (`events` is not `None`; `verdict orchestrate`
+always provides one), each `FrontierPlanner.plan()` call SHALL emit one
+`plan_context` event, before its first model call, carrying `repo_map_sha256`:
+the SHA-256 hex digest of the repo map text placed in that call's prompt. The
+receipt's `planner_attempts` section SHALL include that entry, in `seq` order
+with the other planner events. A validation-repair call made inside the same
+`plan()` call re-sends the same prompt (the planning prompt plus the validation
+error), so it carries the same repo map, and SHALL NOT emit a second
+`plan_context`. A `plan()` call without an event sink emits nothing and plans
+as before.
 
 #### Scenario: Completed orchestrate run
 - **WHEN** planning succeeds
 - **THEN** `receipt.json` contains a `plan_context` entry in
   `planner_attempts` with a 64-character hex `repo_map_sha256` that equals the
   SHA-256 of the repo map in the prompt the planner received
+
+#### Scenario: No event sink
+- **GIVEN** `plan()` is called with `events=None`
+- **WHEN** planning succeeds
+- **THEN** the plan is returned as usual; no event sink is needed
 
 #### Scenario: Validation repair
 - **GIVEN** the first planner answer fails validation
