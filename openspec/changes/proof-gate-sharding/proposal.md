@@ -145,23 +145,30 @@ Issue #1307's acceptance check, line by line, and how this change meets it:
 | Test: the union of the shards equals today's set (same count, no duplicates, none dropped); a test in `tests/` proves the split is complete for an arbitrary collected set | Kept as written. The aggregate's union check against an independently collected set (design, A5-A6), and a generated-item-list test of the split (task 1.5) |
 | Test: a failing, cancelled or missing shard fails the aggregate | Kept as written (tasks 2.1, 2.3, 2.5) |
 | Live: on this PR and on main, wall time from run start to the last **required** check drops below the current `proof-full` time; record both run URLs and per-job durations | **Reworded, approved by the operator on 2026-11-24.** "Last required check" is already about 416 s (`ci-ok`), below `proof-full`'s 464 s, so it is true today. Measured instead as the last job of any workflow on the PR head. On this PR: the build PR's own Proof run (URL and per-job durations in the PR body). On main: tasks 6.1 and 6.3 |
-| Gates: proof matrix, `run.py --mode full --no-cache`, lint gates and the full suite pass; no test is skipped, deselected or re-marked | Proof matrix, lint gates and focused tests: task 5.2-5.3. The full suite and the sharded proof: CI on the exact head. The unsharded `run.py --mode full --no-cache` is a whole-suite run the build must not start on the shared machine: task 6.4, from merged main on the operator's setup. "Not skipped, deselected or re-marked": design, "What the proof checks today", and task 5.1. The one marker deselection (`-m "not timing"`) is run by `unit_timing` |
+| Gates: proof matrix, `run.py --mode full --no-cache`, lint gates and the full suite pass; no test is skipped, deselected or re-marked | Proof matrix, lint gates and focused tests: task 5.2-5.3. The full suite and the sharded proof: CI on the exact head. The unsharded `run.py --mode full --no-cache` is a whole-suite run the build must not start on the shared machine: task 6.4, from merged main on the operator's setup. Read as: sharding adds no skip and re-marks nothing, and the skips and expected failures the tests declare themselves (34 skipped, 27 xfailed on main) stay as they are: design, "What the proof checks today", and task 5.1. The one marker deselection (`-m "not timing"`) is run by `unit_timing` |
 | Outcome: required-check names keep working | `ci-ok` and `osv-security / osv-scan` are untouched; the aggregate keeps the name `proof-full` |
 | Outcome: "(or reuses the sharded test results where the proof contract allows it)" | Not taken: it makes `unit_full` an attestation of another job's run (design, Non-goals) |
 
 Criteria of this change:
 
-- Every test collected by `pytest tests/` runs exactly once per proof run: in one
-  `unit_full` leg, or, for the `timing` tests, in `unit_timing` in leg 1.
+- Across the combined `unit_full` and `unit_timing` gates, every test collected by
+  `pytest tests/` runs exactly once per sharded proof run: in one `unit_full` leg,
+  or, for the `timing` tests, in `unit_timing` in leg 1. The targeted gate
+  (`unit_targeted`) stays in every leg, as it is in the single job today, so its
+  tests repeat in each leg; that is intended and outside this count.
 - The aggregate fails closed on each of: a failed, cancelled, skipped or missing
   leg; a wrong or duplicated leg index; a leg count different from the declared
   one; a mixed or wrong commit; a command or `required` flag different from the
   contract; a missing, duplicated or unexpected test; a JUnit record that differs
-  from the selected tests (a substituted test with the same count included); and an unreadable or malformed leg file.
+  from the selected tests (a substituted test with the same count included); two
+  collected tests that share one JUnit identity; and an unreadable or malformed
+  leg file.
 - An unsharded `run.py --mode full` runs the same argv for every gate as today.
-- Nothing the proof checks today is weakened, skipped or re-marked, and no test is
-  deselected except by the marker and split selections, whose combined effect is
-  that every collected test runs once.
+- Nothing the proof checks today is weakened. Sharding adds no skip and re-marks
+  nothing: the skips and expected failures the tests declare themselves stay as
+  they are, and no test is deselected except by the marker and split selections,
+  whose combined effect is that every collected test runs once in `unit_full` or
+  `unit_timing`.
 - The `timing` tests run serially in one leg.
 - **Live, reworded:** over at least 10 pull-request rounds after merge, the
   median time from the first run's creation to the last job's completion, across

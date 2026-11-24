@@ -6,8 +6,8 @@ Run the full proof as a declared number of legs plus a fail-closed aggregate, so
 
 ## ADDED Requirements
 
-### Requirement: The full proof runs every collected test exactly once across its legs
-In a sharded full proof, every test that `pytest tests/` collects SHALL run exactly once: in one leg's `unit_full` gate, or, for tests marked `timing`, in the `unit_timing` gate of leg 1. The number of legs SHALL be the single number the proof contract declares for the full mode. A run without a leg index SHALL run the whole suite in `unit_full`, as before.
+### Requirement: The combined `unit_full` and `unit_timing` gates run every collected test exactly once across the legs
+In a sharded full proof, every test that `pytest tests/` collects SHALL run exactly once across the combined `unit_full` and `unit_timing` gates: in one leg's `unit_full` gate, or, for tests marked `timing`, in the `unit_timing` gate of leg 1. This accounting covers those two gates only. The targeted gate (`unit_targeted`, run with the workflow's `--targets`) SHALL stay in every leg, as it is in the single job today, so the tests it selects run in each leg in addition to their one run in `unit_full` or `unit_timing`; that repetition is intended and outside the exactly-once accounting. The number of legs SHALL be the single number the proof contract declares for the full mode. A run without a leg index SHALL run the whole suite in `unit_full`, as before.
 
 #### Scenario: Every test runs once
 - **WHEN** the legs' selected tests are compared with a set collected independently by the aggregate
@@ -28,6 +28,10 @@ In a sharded full proof, every test that `pytest tests/` collects SHALL run exac
 #### Scenario: A leg ran a test that was not collected
 - **WHEN** a leg's selection holds a test id absent from the independently collected set
 - **THEN** the aggregate fails and names the unexpected test
+
+#### Scenario: The targeted gate repeats in every leg
+- **WHEN** a sharded full proof's leg reports are read
+- **THEN** each leg records `unit_targeted` with the same targets and the contract's command, the aggregate does not count those runs towards the exactly-once accounting, and a leg whose `unit_targeted` gate is missing or has another command fails the aggregate
 
 #### Scenario: Unsharded run
 - **WHEN** the full proof runs without a leg index
@@ -53,7 +57,7 @@ The `timing` tests SHALL be excluded from every leg's `unit_full` and SHALL run 
 - **THEN** the aggregate fails
 
 ### Requirement: Sharding does not weaken any gate
-Every leg SHALL run every gate of the full mode with the command and `required` flag the contract declares, plus only the arguments that sharding adds: for the split test gate the marker filter, the split arguments and a report file, and for the timing gate a report file. A gate SHALL be skipped only where the contract authorizes it: the timing gate outside leg 1, a gate conditioned on `llm_boundary` when that is not enabled, and the targeted test gate when no targets are given. Across the split gate and the timing gate together, no collected test SHALL be left unrun, run twice, skipped or re-marked, and no marker, expected-failure or skip declaration SHALL change; the marker filter and the split deselect tests only because another gate or leg runs them. A failing or skipped gate that is not required SHALL keep its present meaning: listed in the report, without failing the proof.
+Every leg SHALL run every gate of the full mode with the command and `required` flag the contract declares, plus only the arguments that sharding adds: for the split test gate the marker filter, the split arguments and a report file, and for the timing gate a report file. A gate SHALL be skipped only where the contract authorizes it: the timing gate outside leg 1, a gate conditioned on `llm_boundary` when that is not enabled, and the targeted test gate when no targets are given. Across the split gate and the timing gate together, no collected test SHALL be left unrun or run twice. Sharding SHALL introduce no additional skip and SHALL re-mark nothing: no marker, expected-failure or skip declaration SHALL change, and the marker filter and the split deselect a test only because another gate or leg runs it. Skips and expected failures that the tests declare themselves SHALL stay as they are: they run in their one leg, are recorded as skipped in the JUnit file, and are neither a failure nor an error. A failing or skipped gate that is not required SHALL keep its present meaning: listed in the report, without failing the proof.
 
 #### Scenario: Leg runs the contract's commands
 - **WHEN** a leg report is checked against the contract
@@ -71,12 +75,20 @@ Every leg SHALL run every gate of the full mode with the command and `required` 
 - **WHEN** a leg report holds fewer or more gates than the contract's full mode
 - **THEN** the aggregate fails and names the difference
 
+#### Scenario: Skips written by the tests stay
+- **WHEN** a collected test skips itself or is an expected failure through a declaration in the test code
+- **THEN** it runs in its one leg as it does today, its JUnit case records the skip, and the aggregate accepts the case and adds it to the recorded `skipped` sum
+
+#### Scenario: Sharding adds no skip and re-marks nothing
+- **WHEN** the change's diff against `origin/main` is read
+- **THEN** it removes no `skip`, `xfail`, `deselect` or marker line from `tests/` and changes neither `pyproject.toml` nor `.test_durations`
+
 #### Scenario: Non-required gate keeps its meaning
 - **WHEN** a gate with `required: false` fails or is skipped in every leg
 - **THEN** it is listed in the merged report and the aggregate still passes if every other check holds
 
 ### Requirement: The aggregate fails closed
-The aggregate SHALL pass only when every check holds: the leg job result is success; reports exist for exactly the declared leg indices; every report is a readable JSON object from a full-mode, no-cache run of the same contract with the right leg index and count; every report records the commit the aggregate itself runs on; every required gate has the status the contract implies for its leg (passed, or skipped only where the contract authorizes it) and every gate, required or not, has the contract's command and `required` flag; every leg's `ok` is true; the tests add up to the independently collected set; and the tests each leg's JUnit file records as run are exactly the tests it selected, same identities and same number, with no failure or error. Any missing, unreadable, malformed or wrongly typed input SHALL be a failure reason and SHALL NOT raise.
+The aggregate SHALL pass only when every check holds: the leg job result is success; reports exist for exactly the declared leg indices; every report is a readable JSON object from a full-mode, no-cache run of the same contract with the right leg index and count; every report records the commit the aggregate itself runs on; every required gate has the status the contract implies for its leg (passed, or skipped only where the contract authorizes it) and every gate, required or not, has the contract's command and `required` flag; every leg's `ok` is true; the tests add up to the independently collected set; no two collected tests share one JUnit identity (`classname` and `name`); and the tests each leg's JUnit file records as run are exactly the tests it selected, same identities and same number, with no failure or error. Any missing, unreadable, malformed or wrongly typed input SHALL be a failure reason and SHALL NOT raise.
 
 #### Scenario: Leg failed
 - **WHEN** one leg's report says `ok: false`
@@ -105,6 +117,10 @@ The aggregate SHALL pass only when every check holds: the leg job result is succ
 #### Scenario: JUnit record differs from the selection
 - **WHEN** a leg's JUnit file records a different number of tests than it selected, or records a test it did not select in place of one it did (same count), or records a failure or error
 - **THEN** the aggregate fails and names the leg
+
+#### Scenario: Two collected tests share one JUnit identity
+- **WHEN** two different collected test ids map to the same JUnit `classname` and `name`, for example `tests/test_a/test_b.py::test_x` and `tests/test_a.test_b.py::test_x`
+- **THEN** the aggregate fails and names both ids, because a JUnit file could not show one of them being run in place of the other
 
 #### Scenario: Authorized skips are accepted, others are not
 - **WHEN** `unit_timing` is skipped in a leg other than leg 1, a `llm_boundary` gate is skipped, or `unit_targeted` is skipped because no targets were given
