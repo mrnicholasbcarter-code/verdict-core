@@ -118,9 +118,9 @@ INFERRED:
 - Leg, aggregate and round durations (design, "Estimates"). They are derived from
   the research's gate timings, not measured.
 - Whether legs queue behind CI jobs (peak 18-20 already; plan tier unknown).
-- Whether JUnit `tests` always equals the number of selected items on a passing
-  leg, and whether the xdist controller collects nothing (so the collector must
-  run outside xdist).
+- Whether the JUnit pairs of a healthy leg always equal the pairs derived from
+  its selected ids, for every parameter id in the suite, and whether the xdist
+  controller collects nothing (so the collector must run outside xdist).
 - Whether artifacts of legs that passed in attempt 1 stay downloadable after
   "Re-run failed jobs".
 
@@ -152,8 +152,8 @@ Criteria of this change:
 - The aggregate fails closed on each of: a failed, cancelled, skipped or missing
   leg; a wrong or duplicated leg index; a leg count different from the declared
   one; a mixed or wrong commit; a command or `required` flag different from the
-  contract; a missing, duplicated or unexpected test; a JUnit count different
-  from the selected count; and an unreadable or malformed leg file.
+  contract; a missing, duplicated or unexpected test; a JUnit record that differs
+  from the selected tests (a substituted test with the same count included); and an unreadable or malformed leg file.
 - An unsharded `run.py --mode full` runs the same argv for every gate as today.
 - Nothing the proof checks today is weakened, skipped, deselected or re-marked.
 - The `timing` tests run serially in one leg.

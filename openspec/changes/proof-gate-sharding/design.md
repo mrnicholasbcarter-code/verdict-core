@@ -193,10 +193,10 @@ or non-object file, becomes a reason; the exit code is 1 when there is any.
 | A0 | The matrix result passed in is `success`. |
 | A1 | Reports exist for exactly leg indices `1..N`, N = the contract's `shards`: no missing, duplicate or extra index; each file is a JSON object. |
 | A2 | Each report: `schema_version` 1, `mode` `full`, `cache_mode` `no-cache`, same `contract_name`, `runner` `native`, `shard` equal to `{index, count: N}`, `head_sha` a non-empty string equal to the aggregate's own `GITHUB_SHA`. |
-| A3 | Each report's gate ids are exactly the contract's full-mode gates. Each recorded `command` equals the command recomputed from the contract for that leg (so a leg cannot drop `-m`, `--splits`, `--group`, or add a deselect). Each `required` flag equals the contract's. Every required gate is `pass`. The `targets` are the same in every leg and the recomputation uses them (the workflow test pins the value). A gate conditioned on `llm_boundary` is `skip`. `unit_timing` is `pass` in leg 1 and `skip` in the others. A failing or skipped **non-required** gate keeps today's meaning: it is listed, and does not fail the aggregate. |
+| A3 | Each report's gate ids are exactly the contract's full-mode gates. Each recorded `command` equals the command recomputed from the contract for that leg (so a leg cannot drop `-m`, `--splits`, `--group`, or add a deselect). Each `required` flag equals the contract's. Every gate has the status the contract implies for that leg, taken from the same function the runner uses to decide a skip: `pass`, or `skip` only where the contract authorizes it (`unit_timing` in every leg but 1, a gate conditioned on `llm_boundary`, `unit_targeted` when no `--targets` are given). A required gate that is `skip` anywhere else fails, so `unit_timing` skipped in leg 1 fails and skipped in leg 2 passes. The `targets` are the same in every leg and the recomputation uses them (the workflow test pins the value). A failing or skipped **non-required** gate keeps today's meaning: it is listed, and does not fail the aggregate. |
 | A4 | Each report's `ok` is true. |
 | A5 | Only when A0-A4 hold: reference sets F (all ids collected with no marker) and T (collected with `-m timing`) are collected by the aggregate, independent of the legs. The legs' `unit_full` id sets must have union = F minus T (nothing missing, nothing extra) and be pairwise disjoint, using `check_union`. Leg 1's `unit_timing` ids must equal T, and T must not be empty. |
-| A6 | Each JUnit file has `tests` equal to the number of ids that leg selected, and no failures or errors; the sum over legs equals the size of F. Sums of `tests` and `skipped` are recorded in the merged report. |
+| A6 | What each leg executed is what it selected. pytest writes every test case's `classname` and `name` into JUnit from the node id by a fixed rule (path to a dotted module, class names joined, parameter id appended to the name). The aggregate derives the same pair from each selected id and requires the multiset of pairs in the leg's JUnit file to equal the multiset derived from its selection: same identities, same number, nothing substituted, no failure or error. The sum over legs equals the size of F. Sums of `tests` and `skipped` are recorded in the merged report. |
 
 The merged `proof-report-full.json` keeps today's top-level keys (`ok`, `mode`,
 `cache_mode`, `runner`, `contract_name`, `head_sha`, `gates`, `failures`, `otel`)
@@ -252,8 +252,8 @@ in five places:
 
 | Checked today | Checked after | What proves it |
 |---|---|---|
-| Every gate of full mode (16 entries in today's report) runs with the contract's commands; each `required` gate exits 0 | Every leg runs every gate; the aggregate compares each recorded command and `required` flag to the contract and requires every required gate `pass` (A3) | `tests/test_proof_aggregate.py`: altered command, flipped `required`, missing gate each fail |
-| `unit_full` runs all 13,606 tests, exit 0 | The 13,594 non-timing tests run once each across the legs; the 12 timing tests run once in `unit_timing`; exit 0 in every leg | Union, disjointness, F and T from an independent collection (A5), counts (A6) |
+| Every gate of full mode (16 entries in today's report) runs with the contract's commands; each `required` gate exits 0 | Every leg runs every gate; the aggregate compares each recorded command and `required` flag to the contract and requires each gate's status to be the one the contract implies for that leg: `pass`, or an authorized `skip` (A3) | `tests/test_proof_aggregate.py`: altered command, flipped `required`, missing gate each fail |
+| `unit_full` runs all 13,606 tests, exit 0 | The 13,594 non-timing tests run once each across the legs; the 12 timing tests run once in `unit_timing`; exit 0 in every leg | Union, disjointness, F and T from an independent collection (A5); executed identities equal to the selection (A6) |
 | `unit_full` deselects nothing today | `-m "not timing"` deselects exactly T from `unit_full` (T is run by `unit_timing`, serially); `--splits/--group` deselects per leg what another leg runs | A5: leg 1's ids equal T and T is non-empty; a leg-1 `unit_timing` log with 12 passed and no worker prefix |
 | Local `run.py --mode full --no-cache` runs the whole suite | Same argv for every gate; `unit_timing` is recorded `skip` | Test asserts the exact `unit_full` argv; `acceptance_smoke` passes |
 | Same environment | Same steps in every leg: Python 3.13, `uv sync` with the same extras, `fetch-depth: 0`, Semgrep tool, `build`, `PYTEST_ADDOPTS`, `--no-cache`, `--otel`, `--targets` | `tests/test_proof_workflow.py` compares the leg's setup with the recorded steps |
@@ -300,8 +300,12 @@ Every new test is written first and shown red on unchanged code, then green.
   `--deselect`); flipped `required`; missing gate; `targets` different between
   legs; a `llm_boundary` gate that ran; `unit_timing` absent in leg 1
   or run in leg 2; test missing from every leg; test in two legs; unexpected
-  test; timing ids different from T; empty T; JUnit count different from ids;
-  failures in JUnit; missing, malformed or non-object report, ids file or JUnit
+  test; timing ids different from T; empty T; JUnit identities different from the
+  selection (one id substituted, count unchanged), and a different count;
+  failures in JUnit; `unit_timing` skipped in leg 1 (fails) and in leg 2 (passes);
+  a toy-tree test in which real pytest writes a JUnit file and the derived
+  (`classname`, `name`) pairs equal the file's, including a nested class, a
+  subdirectory and parameter ids with brackets, spaces and `::`; missing, malformed or non-object report, ids file or JUnit
   (lesson 6: each also asserts that nothing else ran); matrix result not
   `success`; the merged report shape; non-required failure keeps `ok` true.
 - `tests/test_proof_workflow.py` (new): reads `proof.yml` and the contract.
@@ -322,9 +326,11 @@ Every new test is written first and shown red on unchanged code, then green.
   the leg spread. A refresh is not part of this change.
 - **[Flake exposure x N]** Non-test gates run N times and each must pass.
   -> Accepted; the failure names the leg and the gate. Not weakened.
-- **[JUnit count stricter than expected]** If `tests` differs from the selected
-  count on a healthy leg, A6 fails closed. -> The build stops and reports; it
-  does not loosen the check (lesson 12).
+- **[JUnit identities stricter than expected]** If the pairs recorded for a
+  healthy leg differ from the pairs derived from its selection (a parameter id
+  that pytest mangles in a way the toy-tree test did not cover), A6 fails
+  closed. -> The build stops and reports; it does not loosen the check
+  (lesson 12).
 - **[A dead leg looks like a code failure]** `classify_ci` treats a required
   `FAILURE` named `proof-full` as `CODE_FAILURE`, so a leg lost to the runner
   produces a repair record, not a rerun; `rerun_check` reruns one job and its

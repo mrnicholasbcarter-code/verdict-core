@@ -21,6 +21,10 @@ In a sharded full proof, every test that `pytest tests/` collects SHALL run exac
 - **WHEN** a test appears in the selection of two legs
 - **THEN** the aggregate fails and names the duplicated test
 
+#### Scenario: A leg executed a different set than it selected
+- **WHEN** a leg's JUnit file records one test it did not select and omits one it did, so the count is unchanged
+- **THEN** the aggregate fails and names the leg and the substituted test
+
 #### Scenario: A leg ran a test that was not collected
 - **WHEN** a leg's selection holds a test id absent from the independently collected set
 - **THEN** the aggregate fails and names the unexpected test
@@ -72,7 +76,7 @@ Every leg SHALL run every gate of the full mode with the command and `required` 
 - **THEN** it is listed in the merged report and the aggregate still passes if every other check holds
 
 ### Requirement: The aggregate fails closed
-The aggregate SHALL pass only when every check holds: the leg job result is success; reports exist for exactly the declared leg indices; every report is a readable JSON object from a full-mode, no-cache run of the same contract with the right leg index and count; every report records the commit the aggregate itself runs on; every required gate passed; every leg's `ok` is true; the tests add up to the independently collected set; and each leg's JUnit count equals the number of tests it selected with no failure or error. Any missing, unreadable, malformed or wrongly typed input SHALL be a failure reason and SHALL NOT raise.
+The aggregate SHALL pass only when every check holds: the leg job result is success; reports exist for exactly the declared leg indices; every report is a readable JSON object from a full-mode, no-cache run of the same contract with the right leg index and count; every report records the commit the aggregate itself runs on; every gate has the status the contract implies for its leg (passed, or skipped only where the contract authorizes it); every leg's `ok` is true; the tests add up to the independently collected set; and the tests each leg's JUnit file records as run are exactly the tests it selected, same identities and same number, with no failure or error. Any missing, unreadable, malformed or wrongly typed input SHALL be a failure reason and SHALL NOT raise.
 
 #### Scenario: Leg failed
 - **WHEN** one leg's report says `ok: false`
@@ -98,9 +102,13 @@ The aggregate SHALL pass only when every check holds: the leg job result is succ
 - **WHEN** a report is not a full-mode, no-cache run of the same contract
 - **THEN** the aggregate fails
 
-#### Scenario: JUnit count differs from the selection
-- **WHEN** a leg's JUnit test count differs from the number of tests it selected, or the file records a failure or error
+#### Scenario: JUnit record differs from the selection
+- **WHEN** a leg's JUnit file records a different number of tests than it selected, or records a test it did not select in place of one it did (same count), or records a failure or error
 - **THEN** the aggregate fails and names the leg
+
+#### Scenario: Authorized skips are accepted, others are not
+- **WHEN** `unit_timing` is skipped in a leg other than leg 1, a `llm_boundary` gate is skipped, or `unit_targeted` is skipped because no targets were given
+- **THEN** the aggregate accepts them; a required gate skipped anywhere else, including `unit_timing` in leg 1, fails the aggregate
 
 #### Scenario: Unreadable or malformed input
 - **WHEN** a report, selection file or JUnit file is missing, not valid, not an object, or has a wrong-typed field
