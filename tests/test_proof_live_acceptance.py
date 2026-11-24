@@ -1004,6 +1004,35 @@ def test_a_head_list_with_a_bad_entry_is_a_usage_failure(
     assert main(rounds_args(contract_path, pre, tmp_path / "missing.txt")) == 2
 
 
+def test_the_same_head_listed_twice_is_not_two_rounds(
+    gh: FakeGitHub, tmp_path: Path, contract_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for i in range(12):
+        pre_head(gh, head_sha("pre", i), total=600)
+    post_head(gh, head_sha("post", 0), ci_end=420)
+    post = tmp_path / "post-dup.txt"
+    post.write_text("\n".join([head_sha("post", 0)] * 10) + "\n", encoding="utf-8")
+    code = main(rounds_args(contract_path, write_heads(tmp_path, "pre", 12), post))
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "listed more than once" in captured.err
+    assert head_sha("post", 0) in captured.err
+
+
+def test_a_head_in_both_lists_is_refused(
+    rounds_data: tuple[FakeGitHub, Path, Path],
+    contract_path: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _, pre, _ = rounds_data
+    shared = tmp_path / "shared.txt"
+    shared.write_text(head_sha("pre", 1) + "\n" + head_sha("post", 1) + "\n", encoding="utf-8")
+    code = main(rounds_args(contract_path, pre, shared))
+    assert code == 2
+    assert "both" in capsys.readouterr().err
+
+
 def test_a_fetch_failure_in_rounds_exits_two(
     rounds_data: tuple[FakeGitHub, Path, Path],
     contract_path: Path,

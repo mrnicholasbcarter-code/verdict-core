@@ -192,6 +192,9 @@ CONSTRUCTS: dict[str, str] = {
     "unittest expectedFailure": "import unittest\n\n@unittest.expectedFailure\ndef test_a():\n    assert True\n",
     "pytestmark attribute assignment": "class TestK:\n    pass\n\nTestK.pytestmark = []\n",
     "bare imported decorator": "from unittest import expectedFailure\n\n@expectedFailure\ndef test_a():\n    assert True\n",
+    "bare reference to an imported skip": "from pytest import skip\n\nstop = skip\n\ndef test_a():\n    stop('x')\n",
+    "raise of an imported SkipTest": "from unittest import SkipTest\n\ndef test_a():\n    raise SkipTest\n",
+    "star import then a bare reference": "from pytest import *\n\ndef test_a():\n    f = xfail\n    f('x')\n",
     "skipTest call": "def test_a(self):\n    self.skipTest('x')\n",
     "SkipTest raise": "import unittest\n\ndef test_a():\n    raise unittest.SkipTest('x')\n",
     "param with a skip mark": "@pytest.mark.parametrize('v', [pytest.param(1, marks=pytest.mark.skip)])\ndef test_a(v):\n    assert v\n",
@@ -817,3 +820,130 @@ def test_the_checkers_list_of_git_variables_covers_what_git_reports() -> None:
         env=clean_git_env(),
     )
     assert set(done.stdout.split()) <= GIT_LOCAL_ENV
+
+
+# --- editing a construct that is already there must be seen too ---
+
+HOOK_EDITS = {
+    "modifyitems drops the items": (
+        "def pytest_collection_modifyitems(items):\n    pass\n",
+        "def pytest_collection_modifyitems(items):\n    items.clear()\n",
+    ),
+    "ignore_collect starts ignoring": (
+        "def pytest_ignore_collect(collection_path):\n    return False\n",
+        "def pytest_ignore_collect(collection_path):\n    return True\n",
+    ),
+    "deselected hook gains a body": (
+        "def pytest_deselected(items):\n    pass\n",
+        "def pytest_deselected(items):\n    items[:] = []\n",
+    ),
+    "a hook is edited without touching its name": (
+        "def pytest_collection_modifyitems(config, items):\n    for item in items:\n        item.add_marker('x')\n",
+        "def pytest_collection_modifyitems(config, items):\n    for item in items:\n        item.add_marker('y')\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(HOOK_EDITS))
+def test_changing_the_body_of_an_existing_collection_hook_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    before, after = HOOK_EDITS[name]
+    repo = scenario(
+        tmp_path, {"tests/conftest.py": after}, base=base_files() | {"tests/conftest.py": before}
+    )
+    code, output = check(repo, capsys)
+    assert code == 1, output
+    assert "tests/conftest.py" in output and "hook definition" in output
+
+
+def test_an_untouched_collection_hook_does_not_fail_the_check(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    hook = HOOK_EDITS["modifyitems drops the items"][0]
+    repo = scenario(
+        tmp_path,
+        {"tests/conftest.py": hook, "README.md": "new\n"},
+        base=base_files() | {"tests/conftest.py": hook},
+    )
+    assert check(repo, capsys)[0] == 0
+
+
+ALIAS_EDITS = {
+    "skip becomes xfail": (
+        "from pytest import skip as s\n\ndef test_a():\n    s('r')\n",
+        "from pytest import xfail as s\n\ndef test_a():\n    s('r')\n",
+    ),
+    "skip becomes importorskip": (
+        "from pytest import skip as s\n\ndef test_a():\n    s('r')\n",
+        "from pytest import importorskip as s\n\ndef test_a():\n    s('r')\n",
+    ),
+    "a bare reference is re-pointed": (
+        "from pytest import skip\n\nstop = skip\n",
+        "from pytest import xfail as skip\n\nstop = skip\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(ALIAS_EDITS))
+def test_changing_what_an_aliased_skip_import_points_at_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    before, after = ALIAS_EDITS[name]
+    repo = scenario(
+        tmp_path,
+        {"tests/test_a.py": CLEAN_TEST + "\n\n" + after},
+        base=base_files() | {"tests/test_a.py": CLEAN_TEST + "\n\n" + before},
+    )
+    code, output = check(repo, capsys)
+    assert code == 1, output
+
+
+def test_an_unchanged_aliased_import_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = CLEAN_TEST + "\n\n" + ALIAS_EDITS["skip becomes xfail"][0]
+    repo = scenario(tmp_path, {"README.md": "x\n"}, base=base_files() | {"tests/test_a.py": text})
+    assert check(repo, capsys)[0] == 0
+
+
+# --- a malformed contract is a failure to check, and a crash is never exit 1 ---
+
+MALFORMED = {
+    "env_clear is a number": lambda c: _gate(c, "unit_full").update(env_clear=1),
+    "env_clear holds a list": lambda c: _gate(c, "unit_full").update(env_clear=[["PATH"]]),
+    "env_clear is a string": lambda c: _gate(c, "unit_full").update(env_clear="PATH"),
+    "gates is a number": lambda c: c.update(gates=5),
+    "a gate is a number": lambda c: c["gates"].append(7),
+    "phases is a number": lambda c: c["modes"]["full"].update(phases=7),
+    "a phase is a list": lambda c: c["modes"]["full"]["phases"].append(["x"]),
+    "modes is a list": lambda c: c.update(modes=[1]),
+    "a mode is a number": lambda c: c["modes"].update(full=3),
+    "a gate has no id": lambda c: c["gates"].append({"phase": "format"}),
+}
+
+
+@pytest.mark.parametrize("name", sorted(MALFORMED))
+def test_a_malformed_nested_contract_value_is_a_failure_to_check_not_a_crash(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    repo = scenario(tmp_path, _contract_case(MALFORMED[name]))
+    code, output = check(repo, capsys)
+    assert code == 2, output
+    assert "proof/contract.yaml" in output
+    assert "Traceback" not in output
+
+
+def test_an_unexpected_exception_is_a_failure_to_check_never_exit_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import scripts.proof.check_not_weakened as module
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise ZeroDivisionError("kaboom")
+
+    monkeypatch.setattr(module, "contract_findings", explode)
+    repo = scenario(tmp_path, _contract_case(CONTRACT_STRENGTHENINGS["gate added"]))
+    code, output = check(repo, capsys)
+    assert code == 2, output
+    assert "kaboom" in output

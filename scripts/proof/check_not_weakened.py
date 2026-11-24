@@ -183,6 +183,9 @@ class _Collector(ast.NodeVisitor):
                         self.mark_aliases.add(alias.asname or alias.name)
                     elif alias.name in SKIP_NAMES:
                         self.name_aliases[alias.asname or alias.name] = alias.name
+                    elif alias.name == "*":
+                        for name in SKIP_NAMES:
+                            self.name_aliases.setdefault(name, name)
 
     def _record(self, kind: str, text: str) -> None:
         self.found[(tuple(self.scope), kind, text)] += 1
@@ -193,6 +196,14 @@ class _Collector(ast.NodeVisitor):
         if isinstance(node, ast.Name):
             return self.name_aliases.get(node.id, node.id)
         return None
+
+    def _alias_note(self, node: ast.expr) -> str:
+        """What an imported name stands for, so re-pointing the import changes the record."""
+        if isinstance(node, ast.Name):
+            target = self.name_aliases.get(node.id)
+            if target is not None and target != node.id:
+                return f" -> {target}"
+        return ""
 
     def _is_marker(self, node: ast.Attribute) -> bool:
         if node.attr == "parametrize":
@@ -212,11 +223,10 @@ class _Collector(ast.NodeVisitor):
         self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
     ) -> None:
         if not isinstance(node, ast.ClassDef) and node.name in HOOK_NAMES:
-            self._record("hook definition", node.name)
+            # The whole definition, not its name: a hook that is edited to drop or ignore
+            # tests keeps its name.
+            self._record("hook definition", ast.unparse(node))
         self.scope.append(node.name)
-        for decorator in node.decorator_list:
-            if isinstance(decorator, ast.Name) and self._resolved(decorator) in SKIP_NAMES:
-                self._record("decorator", ast.unparse(decorator))
         self.generic_visit(node)
         self.scope.pop()
 
@@ -226,7 +236,7 @@ class _Collector(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         if self._names_a_construct(node.func):
-            self._record("call", ast.unparse(node))
+            self._record("call", ast.unparse(node) + self._alias_note(node.func))
             for arg in node.args:
                 self.visit(arg)
             for keyword in node.keywords:
@@ -239,6 +249,12 @@ class _Collector(ast.NodeVisitor):
             self._record("reference", ast.unparse(node))
             return
         self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        # A skip-like function imported from pytest or unittest, used without a call:
+        # ``stop = skip``, ``raise SkipTest``, a decorator. Plain names are not flagged.
+        if isinstance(node.ctx, ast.Load) and node.id in self.name_aliases:
+            self._record("reference", node.id + self._alias_note(node))
 
     def _visit_assignment(self, node: ast.Assign | ast.AnnAssign | ast.AugAssign) -> None:
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -283,7 +299,9 @@ def test_findings(repo: Path, baseline: str, changed: Mapping[str, str]) -> list
             for (scope, kind, text), count in sorted(delta.items()):
                 where = ".".join(scope) or "<module>"
                 times = f" (x{count})" if count > 1 else ""
-                findings.append(f"{path}: in {where}: {kind} {verb}: {text}{times}")
+                shown = " ".join(text.split())
+                shown = shown if len(shown) <= 240 else shown[:237] + "..."
+                findings.append(f"{path}: in {where}: {kind} {verb}: {shown}{times}")
     return findings
 
 
@@ -301,7 +319,34 @@ def _load_contract(source: bytes | None, label: str) -> dict[str, Any] | None:
         raise CheckError(f"{label}: cannot be parsed ({type(exc).__name__})") from exc
     if not isinstance(loaded, dict):
         raise CheckError(f"{label}: the contract is not a mapping")
+    _validate_shape(loaded, label)
     return loaded
+
+
+def _validate_shape(contract: Mapping[str, Any], label: str) -> None:
+    """Refuse a contract whose nested values the comparison could not read, before comparing."""
+    gates = contract.get("gates")
+    if gates is not None and not isinstance(gates, list):
+        raise CheckError(f"{label}: gates must be a list")
+    for position, gate in enumerate(gates or []):
+        if not isinstance(gate, dict):
+            raise CheckError(f"{label}: gates[{position}] must be a mapping")
+        if not isinstance(gate.get("id"), str):
+            raise CheckError(f"{label}: gates[{position}].id must be a string")
+        env = gate.get("env_clear")
+        if env is not None and not (isinstance(env, list) and all(isinstance(n, str) for n in env)):
+            raise CheckError(f"{label}: gates[{position}].env_clear must be a list of strings")
+    modes = contract.get("modes")
+    if modes is not None and not isinstance(modes, dict):
+        raise CheckError(f"{label}: modes must be a mapping")
+    for name, config in (modes or {}).items():
+        if not isinstance(config, dict):
+            raise CheckError(f"{label}: modes.{name} must be a mapping")
+        phases = config.get("phases")
+        if phases is not None and not (
+            isinstance(phases, list) and all(isinstance(p, str) for p in phases)
+        ):
+            raise CheckError(f"{label}: modes.{name}.phases must be a list of strings")
 
 
 def effective_gates(contract: Mapping[str, Any], mode: str, llm_boundary: bool) -> set[str]:
@@ -449,6 +494,9 @@ def main(argv: list[str] | None = None) -> int:
         baseline, findings = check(args.repo, args.base)
     except CheckError as exc:
         print(f"check_not_weakened: error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except Exception as exc:  # a crash must never look like exit 1 (a weakening) or 0
+        print(f"check_not_weakened: error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_ERROR
     if findings:
         print(f"check_not_weakened: {len(findings)} finding(s) against {baseline[:12]}:")

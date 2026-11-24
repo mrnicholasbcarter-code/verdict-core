@@ -479,6 +479,8 @@ def load_heads(path: Path) -> list[str]:
             continue
         if not _HEAD.fullmatch(text):
             raise FetchError(f"{path}: {text!r} is not a 40-character commit SHA")
+        if text in heads:
+            raise FetchError(f"{path}: head {text} is listed more than once; a head is one round")
         heads.append(text)
     return heads
 
@@ -507,6 +509,9 @@ def cmd_rounds(args: argparse.Namespace) -> int:
         raise FetchError("--rounds must be at least 1")
     shards = _shard_count(_contract(args.contract))
     pre_heads, post_heads = load_heads(args.pre), load_heads(args.post)
+    shared = sorted(set(pre_heads) & set(post_heads))
+    if shared:
+        raise FetchError(f"{len(shared)} head(s) are in both lists: {', '.join(shared)}")
     checks = Checks()
     pre = _first_counting(
         pre_heads, args.rounds, post=False, shards=shards, checks=checks, side="pre-merge"

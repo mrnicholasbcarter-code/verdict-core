@@ -338,6 +338,16 @@ def _check_gates(contract: ProofContract, leg: _Leg, count: int, reasons: list[s
                 f"the contract's is {gate.required}"
             )
         status = entry["status"]
+        exit_code = entry["exit_code"]
+        if status == "pass" and exit_code != 0:
+            reasons.append(
+                f"{label}: gate {gate.id} status 'pass' with exit code {exit_code}: "
+                "the runner calls a gate passed only for exit 0"
+            )
+        elif item.skip_reason is not None and exit_code != 0:
+            reasons.append(
+                f"{label}: gate {gate.id} is skipped by the contract but records exit code {exit_code}"
+            )
         if item.skip_reason is not None and status != "skip":
             reasons.append(
                 f"{label}: gate {gate.id} status {status!r}, expected 'skip' ({item.skip_reason})"

@@ -624,6 +624,33 @@ def _report(fx: Fixture, leg: int) -> dict[str, Any]:
     return json.loads((fx.leg_dir(leg) / "proof-report-full.json").read_text(encoding="utf-8"))  # type: ignore[no-any-return]
 
 
+@pytest.mark.parametrize(
+    ("leg", "gate_id"),
+    [(1, "format"), (2, "unit_full"), (3, "unit_targeted"), (2, "security_bandit")],
+)
+def test_a_gate_recorded_as_passed_with_a_nonzero_exit_code_fails(
+    fx: Fixture, leg: int, gate_id: str
+) -> None:
+    """The runner calls a gate passed only for exit 0: a report that says both is not trusted."""
+    fx.edit_gate(leg, gate_id, lambda g: g.__setitem__("exit_code", 1))
+    assert_fails_with(fx.run(), f"leg {leg}", gate_id, "status 'pass'", "exit code 1")
+
+
+@pytest.mark.parametrize(("leg", "gate_id"), [(2, "unit_timing"), (1, "promptfoo")])
+def test_a_gate_recorded_as_skipped_by_the_contract_with_a_nonzero_exit_code_fails(
+    fx: Fixture, leg: int, gate_id: str
+) -> None:
+    fx.edit_gate(leg, gate_id, lambda g: g.__setitem__("exit_code", 127))
+    assert_fails_with(fx.run(), f"leg {leg}", gate_id, "exit code 127")
+
+
+def test_a_failing_gate_with_its_real_nonzero_exit_code_is_not_a_second_reason(fx: Fixture) -> None:
+    """A gate that failed honestly says fail with a nonzero code: only the status is reported."""
+    fx.edit_gate(2, "unit_full", lambda g: g.update(status="fail", exit_code=1))
+    result = fx.run()
+    assert not reasons_with(result, "leg 2", "unit_full", "exit code")
+
+
 @pytest.mark.parametrize("status", ["fail", "blocked", "skip"])
 def test_a_required_gate_that_did_not_pass_fails(fx: Fixture, status: str) -> None:
     fx.edit_gate(3, "format", lambda g: g.__setitem__("status", status))
