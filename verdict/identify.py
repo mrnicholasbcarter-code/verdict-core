@@ -402,7 +402,19 @@ def screen_models(
     for rid in sorted(evidence.inventory_route_ids):
         if rid in seen_ids:
             continue
-        if is_opaque(rid) or is_non_chat_route(rid):
+        # The roster path's exclusions apply here too, and only ever narrow the
+        # set: a route the gateway reports as cooling down is not probed, and a
+        # route is non-chat when its id marks it so (as before) or its inventory
+        # row does.  The id-only test stays: passing the row alone would let an
+        # explicit chat row clear an id marker and screen a route that was not
+        # screened before.
+        if rid in evidence.cooled_models:
+            continue
+        if (
+            is_opaque(rid)
+            or is_non_chat_route(rid)
+            or is_non_chat_route(rid, evidence.inventory_rows.get(rid, {}))
+        ):
             continue
         live = evidence.live_candidates.get(rid)
         if live is not None:

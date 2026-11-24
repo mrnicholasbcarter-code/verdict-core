@@ -53,9 +53,16 @@ route when its prefix is in `usable_providers` — meaning at least one
 connection for that provider is configured and usable.  This avoids adding
 routes for providers with no active connection.
 
-**Opaque guard before live check.** `is_opaque(rid) or is_non_chat_route(rid)`
-runs before the `live` lookup so it applies equally to routes that happen to
-appear in the inventory as opaque entries.
+**Exclusions before live check.** The guards run before the `live` lookup so
+they apply equally to routes in and out of the auto-combo pool.  A route in
+`cooled_models` is skipped (the roster path requires the same).  A route is
+skipped when `is_opaque(rid)`, when `is_non_chat_route(rid)` is true for its id
+alone, or when `is_non_chat_route(rid, row)` is true for its inventory row, so a
+catalog row typed embedding, image or rerank is excluded even with a neutral id
+(the roster path passes the row too).  The id-only test is kept on purpose:
+`is_non_chat_route` lets an explicit chat row clear an id marker, so passing the
+row alone would screen a route that was not screened before.  These checks only
+narrow the screened set.  `is_non_chat_route` itself is unchanged.
 
 **Tier-filter semantics.** Three cases.  A known tier above the ceiling is
 `skipped_capability_tier`, as before.  A route with no tier is
