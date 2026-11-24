@@ -42,11 +42,15 @@ In a sharded full proof, every test that `pytest tests/` collects SHALL run exac
 - **THEN** the runner exits with a usage error and runs no gate
 
 ### Requirement: The timing tests run serially in exactly one leg
-The `timing` tests SHALL be excluded from every leg's `unit_full` and SHALL run in `unit_timing` in leg 1 only, with parallel test execution disabled. In every other leg `unit_timing` SHALL be recorded as skipped. The set `unit_timing` runs SHALL equal the set `unit_full` excludes, and SHALL NOT be empty.
+The `timing` tests SHALL be excluded from every leg's `unit_full` and SHALL run in `unit_timing` in leg 1 only, with parallel test execution disabled by construction: the runner SHALL launch the `unit_timing` gate without `PYTEST_ADDOPTS`, so no xdist option set by the workflow reaches it, and the gate's command SHALL keep `-p no:xdist` as a second guard. Every other gate keeps the environment it has today. In every other leg `unit_timing` SHALL be recorded as skipped. The set `unit_timing` runs SHALL equal the set `unit_full` excludes, and SHALL NOT be empty.
 
 #### Scenario: Leg 1 runs the timing tests alone
 - **WHEN** leg 1 of a sharded full proof reaches `unit_timing`
 - **THEN** it runs only the tests marked `timing`, in one process, and the report records the gate as passed
+
+#### Scenario: The timing gate cannot inherit parallel options
+- **WHEN** a leg launches `unit_timing` in an environment where `PYTEST_ADDOPTS` is `-p xdist -n auto`
+- **THEN** the environment the gate's subprocess receives holds no `PYTEST_ADDOPTS`, holds every other variable, and the recorded command still holds `-p no:xdist`; `unit_full` in the same run still receives `PYTEST_ADDOPTS`
 
 #### Scenario: Other legs skip the timing gate
 - **WHEN** leg 2 or a later leg runs
@@ -81,7 +85,11 @@ Every leg SHALL run every gate of the full mode with the command and `required` 
 
 #### Scenario: Sharding adds no skip and re-marks nothing
 - **WHEN** the change's diff against `origin/main` is read
-- **THEN** it removes no `skip`, `xfail`, `deselect` or marker line from `tests/`, adds no skip, expected-failure, deselect or marker line to `tests/` (a `parametrize` mark aside), and changes neither `pyproject.toml` nor `.test_durations`
+- **THEN** it adds or removes no skip, expected-failure, deselect or marker decorator, call or assignment in a test under `tests/` (a `parametrize` mark aside), weakens no gate command or `required` flag in `proof/contract.yaml`, and changes neither the pytest settings in `pyproject.toml` nor `.test_durations`
+
+#### Scenario: Words held as data are not a change to a test
+- **WHEN** a test file added by the change holds `skip`, `xfail`, `deselect` or a marker name only as string data, such as an argv list or the source of a toy test written to a temporary directory
+- **THEN** the check that reads the diff finds the code of the file by parsing and does not flag it
 
 #### Scenario: Non-required gate keeps its meaning
 - **WHEN** a gate with `required: false` fails or is skipped in every leg

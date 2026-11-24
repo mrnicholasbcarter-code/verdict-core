@@ -30,7 +30,9 @@ can no longer be merged or ignored.
 - **Proof contract.** `proof/contract.yaml` declares how many legs the full proof
   has (`modes.full.shards`) and, per gate, how it is sharded. `unit_full` is
   split across the legs without the `timing` tests. A new gate `unit_timing`
-  runs the `timing` tests serially in leg 1 only. Every other gate runs in every
+  runs the `timing` tests serially in leg 1 only; the runner launches it without
+  `PYTEST_ADDOPTS` (the gate declares `env_clear`), so no xdist option can reach
+  it. Every other gate runs in every
   leg with its command and `required` flag unchanged. An unsharded run (`run.py
   --mode full`, the local and agent entry point) runs the same commands as today.
 - **Runner.** `scripts/proof/run.py --shard K` runs leg K. It records the shard
@@ -45,6 +47,12 @@ can no longer be merged or ignored.
   an aggregate job named `proof-full` (`if: always()`). Legs and the aggregate
   get timeouts. The check name `proof-full` is kept so that it already reports on
   every PR head.
+- **Checkers.** Two scripts, built and tested here and only run by the tasks:
+  `scripts/proof/check_not_weakened.py` fails on a skip, expected failure,
+  deselect or marker added to or removed from a real test (found by parsing), on a
+  weakened gate in the contract and on a changed pytest setting; and
+  `scripts/proof/live_acceptance.py` makes each live acceptance task an executable
+  check that can fail (design, D9).
 - **Docs.** `proof/README.md` describes the shards, the aggregate and the exact
   branch-protection commands that the operator applies.
 - **Not changed:** no gate command, no `required` flag, no test file other than
@@ -71,8 +79,12 @@ None. No existing capability spec covers the proof pipeline.
   `scripts/proof/aggregate.py` (new), `scripts/ci_shard_union.py` (a mode that
   writes node ids; default behaviour unchanged).
 - `.github/workflows/proof.yml`.
+- `scripts/proof/check_not_weakened.py` and `scripts/proof/live_acceptance.py`
+  (new): the two checkers (design, D9), with their own tests.
 - `tests/test_proof_pipeline.py`, `tests/test_proof_aggregate.py` (new),
-  `tests/test_proof_workflow.py` (new), `tests/test_ci_shard_union.py`.
+  `tests/test_proof_workflow.py` (new), `tests/test_ci_shard_union.py`,
+  `tests/test_proof_check_not_weakened.py` (new),
+  `tests/test_proof_live_acceptance.py` (new).
 - `proof/README.md`.
 - CI concurrency: the proof workflow starts N legs (starting value 3) instead of
   one full job, so N more jobs run at the start of a round. Peak was
@@ -107,7 +119,7 @@ KNOWN (read from the repository, the GitHub API or the docs on 2026-11-24):
   `unit_full` 422 s in the main-push report (13,545 passed, 34 skipped, 27
   xfailed). A PR run measured on 2026-11-24 had `unit_full` at 360 s.
   These baselines are `gh run` measurements, not a `docs/proof/` receipt; the
-  expected values are estimates. The live acceptance (task 6.3) produces the
+  expected values are estimates. The live acceptance (task 7.3) produces the
   receipt that the evidence file records.
 - `classify_ci` treats a required `FAILURE` whose name has no infrastructure word
   as `CODE_FAILURE`, and `CANCELLED` as retryable; `rerun_check` reruns one job.
@@ -115,7 +127,9 @@ KNOWN (read from the repository, the GitHub API or the docs on 2026-11-24):
   of that commit, including the Proof workflow.
 - On pytest 9.1.1 and xdist 3.8.0 (Python 3.10, a three-test toy file),
   `PYTEST_ADDOPTS="-p xdist -n auto"` plus `-p no:xdist -m timing` runs serially
-  with no error.
+  with no error. With `-q`, a toy xdist run prints "bringing up nodes..." and dots
+  and no `[gw` worker prefix, so a log search for one is not evidence of serial
+  execution.
 
 INFERRED:
 
@@ -144,8 +158,8 @@ Issue #1307's acceptance check, line by line, and how this change meets it:
 |---|---|
 | Test: the union of the shards equals today's set (same count, no duplicates, none dropped); a test in `tests/` proves the split is complete for an arbitrary collected set | Kept as written. The aggregate's union check against an independently collected set (design, A5-A6), and a generated-item-list test of the split (task 1.5) |
 | Test: a failing, cancelled or missing shard fails the aggregate | Kept as written (tasks 2.1, 2.3, 2.5) |
-| Live: on this PR and on main, wall time from run start to the last **required** check drops below the current `proof-full` time; record both run URLs and per-job durations | **Reworded, approved by the operator on 2026-11-24.** "Last required check" is already about 416 s (`ci-ok`), below `proof-full`'s 464 s, so it is true today. Measured instead as the last job of any workflow on the PR head. On this PR: the build PR's own Proof run (URL and per-job durations in the PR body). On main: tasks 6.1 and 6.3 |
-| Gates: proof matrix, `run.py --mode full --no-cache`, lint gates and the full suite pass; no test is skipped, deselected or re-marked | Proof matrix, lint gates and focused tests: task 5.2-5.3. The full suite and the sharded proof: CI on the exact head. The unsharded `run.py --mode full --no-cache` is a whole-suite run the build must not start on the shared machine: task 6.4, from merged main on the operator's setup. Read as: sharding adds no skip and re-marks nothing, and the skips and expected failures the tests declare themselves (34 skipped, 27 xfailed on main) stay as they are: design, "What the proof checks today", and task 5.1. The one marker deselection (`-m "not timing"`) is run by `unit_timing` |
+| Live: on this PR and on main, wall time from run start to the last **required** check drops below the current `proof-full` time; record both run URLs and per-job durations | **Reworded, approved by the operator on 2026-11-24.** "Last required check" is already about 416 s (`ci-ok`), below `proof-full`'s 464 s, so it is true today. Measured instead as the last job of any workflow on the PR head. On this PR: the build PR's own Proof run (URL and per-job durations in the PR body). On main: tasks 7.1 and 7.3 |
+| Gates: proof matrix, `run.py --mode full --no-cache`, lint gates and the full suite pass; no test is skipped, deselected or re-marked | Proof matrix, lint gates and focused tests: tasks 6.2-6.3. The full suite and the sharded proof: CI on the exact head. The unsharded `run.py --mode full --no-cache` is a whole-suite run the build must not start on the shared machine: task 7.4, from merged main on the operator's setup. Read as: sharding adds no skip and re-marks nothing, and the skips and expected failures the tests declare themselves (34 skipped, 27 xfailed on main) stay as they are: design, "What the proof checks today", and the weakening checker (tasks 5.1-5.2, run in 6.1). The one marker deselection (`-m "not timing"`) is run by `unit_timing` |
 | Outcome: required-check names keep working | `ci-ok` and `osv-security / osv-scan` are untouched; the aggregate keeps the name `proof-full` |
 | Outcome: "(or reuses the sharded test results where the proof contract allows it)" | Not taken: it makes `unit_full` an attestation of another job's run (design, Non-goals) |
 
@@ -169,7 +183,8 @@ Criteria of this change:
   they are, and no test is deselected except by the marker and split selections,
   whose combined effect is that every collected test runs once in `unit_full` or
   `unit_timing`.
-- The `timing` tests run serially in one leg.
+- The `timing` tests run serially in one leg, by construction: the runner launches
+  the gate without `PYTEST_ADDOPTS` and its command keeps `-p no:xdist`.
 - **Live, reworded:** over at least 10 pull-request rounds after merge, the
   median time from the first run's creation to the last job's completion, across
   every workflow on the PR head, is below the 531 s baseline and below the median

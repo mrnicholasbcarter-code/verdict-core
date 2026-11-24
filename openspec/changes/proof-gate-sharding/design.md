@@ -80,6 +80,7 @@ gates:
     classify: test
     command: ["pytest", "tests/", "-q", "--tb=short", "-m", "timing", "-p", "no:xdist"]
     shard: leader        # leg 1 only; recorded as skipped everywhere else
+    env_clear: [PYTEST_ADDOPTS]   # the runner launches this gate without these variables
 ```
 
 ### D2. The leg count is one declared number; the matrix supplies indices
@@ -129,10 +130,18 @@ byte.
   their string form before assigning them, so the partition depends much less on
   collection order than the default `duration_based_chunks`, which cuts the
   collected list in order.
-- `PYTEST_ADDOPTS="-p xdist -n auto"` stays on the legs and still reaches
-  `unit_timing`. In a toy check (proposal, Evidence boundary) `-p no:xdist` after
-  it ran serially with no error. The build must prove it on CI: the leg-1 log of
-  `unit_timing` shows 12 passed and no `[gwN]` worker prefix.
+- The `timing` tests run serially by construction. The workflow keeps
+  `PYTEST_ADDOPTS="-p xdist -n auto"` on every leg, but the gate `unit_timing`
+  declares `env_clear: [PYTEST_ADDOPTS]` and the runner removes those names from
+  the environment it launches that gate with (it builds one environment per run
+  and hands it to `_run_gate`). No xdist option can reach the timing tests, so no
+  test depends on what the workflow sets. `-p no:xdist` stays in the command as a
+  second guard (in the toy check of the proposal it ran serially even after
+  `-p xdist -n auto`). Every other gate keeps `PYTEST_ADDOPTS`. A runner unit test
+  records the environment each gate is launched with (task 1.3). A log search is
+  not used as evidence: with `-q` an xdist session prints "bringing up nodes..."
+  and dots, with no `[gwN]` prefix (toy check, 2026-11-24), so its absence proves
+  nothing.
 - Before each sharded pytest gate the runner records which test ids it will
   select, by running the same selection with `--collect-only` through
   `scripts/ci_shard_union.py --emit-ids <file>` (a new mode; the default
@@ -242,6 +251,74 @@ Legs are `proof-shard (1)`, `(2)`, ...; they are not required.
 that runs off the critical path, and no job waits on it. This change does not
 retire it (Decided by the operator, 2).
 
+### D9. The checkers are build deliverables, not text in the tasks
+
+Two checks decide whether the change is acceptable: that nothing is weakened
+(before the push) and that the live runs meet the issue's figures (after the
+merge). Each is a script with its own tests, built in group 5 of the tasks. The
+tasks only run them. Neither script is embedded in the tasks: embedded scripts had
+no tests of their own and each review round found a new fault in them.
+
+**`scripts/proof/check_not_weakened.py --base <ref>`** reads the diff
+`<ref>...HEAD` and exits 0 only when none of these holds:
+
+- A skip, expected failure, deselect or marker is added to or removed from a real
+  test. Every changed Python file under `tests/` (added, modified or deleted) is
+  parsed with `ast` at the base and at HEAD. The constructs collected are
+  decorators, calls and assignments that name `skip`, `skipif`, `xfail`,
+  `importorskip`, a `pytest.mark.<name>` other than `parametrize` (also through
+  `from pytest import mark`), `unittest.skip*`, `pytestmark`, `collect_ignore`,
+  `collect_ignore_glob`, or the `pytest_deselected` hook. Each is keyed by file,
+  enclosing definitions and its `ast.unparse` text, so reformatting does not count.
+  Any difference between the two multisets fails (a new file's constructs count as
+  added, a deleted file's as removed). Because only parsed code is read, a fixture
+  that holds these words as data (`"--deselect"` in an argv list, a toy test
+  source in a string) is not flagged. The build confirms the construct list.
+- A gate in `proof/contract.yaml` is weakened: a gate of the base is missing, its
+  `command` differs, its `required` flag goes from true (or absent) to false, or a
+  phase of a mode of the base is missing. Added gates, phases and keys are allowed.
+- The `[tool.pytest.ini_options]` table of `pyproject.toml` differs from the base
+  (`tomllib`), or `.test_durations` differs (non-goal: no refresh).
+- Git fails, or a changed file cannot be read or parsed. That is a failure, never
+  a skip.
+
+Exit 0 means nothing weakened, 1 a weakening (every finding is printed, naming
+file, scope and construct), 2 a usage, git or parse failure. Its tests build
+throwaway git repositories in a temporary directory and, for each rule, show it
+failing on a positive case (added and removed) and passing on a case that holds
+the same words only as strings.
+
+**`scripts/proof/live_acceptance.py`** has three subcommands, one per live task.
+Each prints the numbers it compared and exits 0 only when every assertion holds
+(1 an assertion failed, 2 usage or fetch failure):
+
+- `merged-run --run ID --parent-run ID --added N`: the merged report of the run
+  has `ok: true` and one `shards` entry per declared leg; the JUnit `tests` summed
+  over the leg artifacts equal the count the aggregate's own collector (`ci_shard_union.py
+  --emit-ids`, `PYTEST_ADDOPTS` cleared) lists, and equal the parent run's
+  `unit_full` total (read from its pytest summary line) plus N. It prints the
+  summed `skipped`, to be recorded beside the parent's skips and xfails.
+- `timing-leg --run ID`: in the leg-1 artifact, `unit_timing` has status `pass`
+  and its JUnit `tests` equal the number of `timing` tests the collector lists,
+  which must be above 0.
+- `rounds --pre FILE --post FILE --rounds N`: each file lists PR head SHAs, newest
+  first. For every head the checker reads the `pull_request` runs and their jobs
+  through `gh`. A head counts as a round only when every run on it has finished
+  and none was cancelled and, for a post-merge head, the declared number of
+  `proof-shard` jobs and the `proof-full` job succeeded. A head that does not
+  count is excluded and reported with its reason. Each side uses its first N
+  counting heads, and the checker fails if fewer than N remain on either side.
+  A round is the earliest `createdAt` to the latest `updatedAt` over its runs. It
+  passes when the post-merge median is below 531 s and below the pre-merge
+  median, and `proof-full` was the last job to finish in at most half of the
+  post-merge rounds. It prints both medians and ranges, each leg's start delay
+  (its job's `started_at` minus its run's `createdAt`) and the median over legs,
+  and the leg duration spread. The start delay is recorded, never asserted (the
+  operator's rule on the shard count uses it).
+
+All GitHub access sits in one small function that the tests replace, so the tests
+use synthetic report, JUnit and run files and make no network call.
+
 ## Differences from the research
 
 The research of 2026-11-24 (`issue-1307.md`, kept in
@@ -271,10 +348,10 @@ in five places:
 |---|---|---|
 | Every gate of full mode (16 entries in today's report) runs with the contract's commands; each `required` gate exits 0 | Every leg runs every gate; the aggregate compares each recorded command and `required` flag to the contract and requires each gate's status to be the one the contract implies for that leg: `pass`, or an authorized `skip` (A3) | `tests/test_proof_aggregate.py`: altered command, flipped `required`, missing gate each fail |
 | `unit_full` runs all 13,606 tests, exit 0 | The 13,594 non-timing tests run once each across the legs; the 12 timing tests run once in `unit_timing`; exit 0 in every leg | Union, disjointness, F and T from an independent collection and no two ids sharing a JUnit pair (A5); executed identities equal to the selection (A6). `unit_targeted` repeats its tests in every leg, as the single job already does, outside this count (D3) |
-| `unit_full` deselects nothing today | `-m "not timing"` deselects exactly T from `unit_full` (T is run by `unit_timing`, serially); `--splits/--group` deselects per leg what another leg runs | A5: leg 1's ids equal T and T is non-empty; a leg-1 `unit_timing` log with 12 passed and no worker prefix |
+| `unit_full` deselects nothing today | `-m "not timing"` deselects exactly T from `unit_full` (T is run by `unit_timing`, serially); `--splits/--group` deselects per leg what another leg runs | A5: leg 1's ids equal T and T is non-empty; the runner test of the environment `unit_timing` is launched with (no `PYTEST_ADDOPTS`); task 7.2 checks 12 timing tests passed in leg 1 |
 | Local `run.py --mode full --no-cache` runs the whole suite | Same argv for every gate; `unit_timing` is recorded `skip` | Test asserts the exact `unit_full` argv; `acceptance_smoke` passes |
-| Same environment | Same steps in every leg: Python 3.13, `uv sync` with the same extras, `fetch-depth: 0`, Semgrep tool, `build`, `PYTEST_ADDOPTS`, `--no-cache`, `--otel`, `--targets` | `tests/test_proof_workflow.py` compares the leg's setup with the recorded steps |
-| 34 skipped and 27 xfailed tests (decided by the tests themselves) | Sharding adds no skip and re-marks nothing; the skips and expected failures the tests declare stay as they are. The aggregate accepts them and records summed JUnit `skipped` (JUnit reports xfail as skipped; INFERRED) | The task 5.1 script exits 0: no removed or added `skip`, `xfail`, `deselect` or marker line in `tests/` (a `parametrize` mark aside) and no `pyproject.toml` or `.test_durations` change; live total compared with the baseline (task 6.1) |
+| Same environment | Same steps in every leg: Python 3.13, `uv sync` with the same extras, `fetch-depth: 0`, Semgrep tool, `build`, `PYTEST_ADDOPTS` (the runner clears it for `unit_timing` only, D4), `--no-cache`, `--otel`, `--targets` | `tests/test_proof_workflow.py` compares the leg's setup with the recorded steps |
+| 34 skipped and 27 xfailed tests (decided by the tests themselves) | Sharding adds no skip and re-marks nothing; the skips and expected failures the tests declare stay as they are. The aggregate accepts them and records summed JUnit `skipped` (JUnit reports xfail as skipped; INFERRED) | The weakening checker (D9, run in task 6.1) exits 0: no skip, expected failure, deselect or marker decorator or call added to or removed from a real test, found by parsing and not by matching words; live skipped total compared with the baseline (task 7.1) |
 | `structural_risk` fails (not required); `ast_grep` skips with exit 127 | Same `required` flags and statuses in every leg; `ok` unchanged by them | Aggregate test: non-required failure keeps `ok` true |
 | A red `proof-full` blocks nothing | Required once the operator applies the command | The aggregate fails closed on every case above |
 
@@ -303,7 +380,10 @@ Every new test is written first and shown red on unchanged code, then green.
   refusal of bad values (zero, negative, boolean, string, unknown `shard` word,
   `shards` in a mode without the full phases); exact unsharded argv; leg argv for
   N = 1..5 and every K; `unit_timing` runs only for K = 1 and is recorded `skip`
-  otherwise and when unsharded; index out of range exits 2; `classify_failure`.
+  otherwise and when unsharded; `env_clear` parsing (a list of strings; anything
+  else refused); the environment a stub executor records for `unit_timing` has no
+  `PYTEST_ADDOPTS` while `unit_full` keeps it and every other variable is kept;
+  index out of range exits 2; `classify_failure`.
 - `tests/test_ci_shard_union.py` (extended): for generated item lists (seeded
   `random`, no new dependency) and N = 1..5, pytest-split's `least_duration`
   groups are pairwise disjoint and their union is the input; `--emit-ids` writes
@@ -336,6 +416,25 @@ Every new test is written first and shown red on unchanged code, then green.
   It also asserts that `proof-targeted` is still a job of the workflow and that
   no job lists it in `needs` (the operator's decision 2), and nothing else about
   it.
+- `tests/test_proof_check_not_weakened.py` (new): throwaway git repositories in a
+  temporary directory. For each rule a positive case fails and a string-only case
+  passes: a skip, `skipif`, `xfail`, `importorskip`, marker, `pytestmark`,
+  `pytest_deselected` call or `collect_ignore` assignment added to or removed
+  from a test, and the same words held only in a string, an argv list and a
+  triple-quoted toy source; a `parametrize` mark added (passes); a gate command
+  changed, a `required` flag set to false, a gate or phase removed (each fails), a gate,
+  phase or key added (passes); a `pyproject.toml` pytest setting or
+  `.test_durations` changed; a bad base ref and an unparsable changed file (exit 2).
+- `tests/test_proof_live_acceptance.py` (new): synthetic report, JUnit and run
+  files with the GitHub layer replaced. Each subcommand passes on good data and
+  fails on each wrong figure (report not ok, wrong leg count, test totals that
+  differ, parent total plus added that differs, `unit_timing` not passed or with
+  0 or a different count). For rounds: a head with an unfinished run, a head with
+  a cancelled run and a post-merge head whose leg or aggregate failed are each
+  excluded and reported; fewer than N counting heads on either side fails; a
+  median above 531 s, a post median not below the pre median, and `proof-full`
+  last in more than half of the rounds each fail; a good set passes and records the
+  start delay without asserting it.
 
 ## Risks / Trade-offs
 
@@ -455,13 +554,13 @@ or an estimate above. Two things follow in the checks and tasks, and nothing els
   job of `proof.yml` and no job lists it in `needs`. It appears in the spec delta
   (Legs start without waiting), in task 3.1 and in the Test strategy; task 3.2
   now says to leave `proof-targeted` as it is.
-- Decision 1 adds no task. It only fixes what task 6.3 records: each leg's start
+- Decision 1 adds no task. It only fixes what task 7.3 records: each leg's start
   delay and its median.
 
 1. **Shard count: start at 3, reduce it on queueing evidence.** `modes.full.shards`
    is 3 and the matrix lists 1, 2, 3 (task 1.8). The operator's rule is to
    **reduce it if the median leg starts more than 60 s after the run was created**,
-   measured in the live rounds (task 6.3). The start delay of a leg is its job's
+   measured in the live rounds (task 7.3). The start delay of a leg is its job's
    `started_at` minus the creation time of its run. N = 3 is the safer start
    because this design's aggregate does its own collection, which leaves N = 2
    about 15 s of margin under CI's 416 s (Estimates, INFERRED). Changing N is two

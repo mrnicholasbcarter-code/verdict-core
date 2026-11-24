@@ -18,14 +18,14 @@ operator", 1). The `proof-targeted` job is kept as it is, with no wait on it
 
 Verification for the group: `uv run --frozen python -m pytest -q -n 2 tests/test_proof_pipeline.py tests/test_ci_shard_union.py` is green, and the unsharded `unit_full` argv equals today's command exactly.
 
-- [ ] 1.1 Failing tests for contract parsing: `shards` (positive integer; zero, negative, boolean, string and a non-full mode are refused), per-gate `shard` (`split` or `leader`; any other word is refused), `ProofContract` exposes the declared count. Files: `tests/test_proof_pipeline.py`. Verify: `uv run --frozen python -m pytest -q tests/test_proof_pipeline.py -k shard` fails before 1.2.
-- [ ] 1.2 Parse `shards` and `shard` in the contract loader; refuse bad values with `ContractError`. Files: `scripts/proof/contract.py`. Verify: the 1.1 tests pass and `uv run --frozen ruff check scripts/proof` exits 0.
-- [ ] 1.3 Failing tests for expansion: unsharded argv of `unit_full` equals `["pytest", "tests/", "-q", "--tb=short"]`; leg argv for N = 1..5 and every K holds `-m`, `not timing`, `--splits N`, `--group K`, `--splitting-algorithm least_duration`, `--junitxml=proof-shard-K/junit-unit_full.xml`; `unit_timing` runs only for K = 1, is recorded `skip` for K > 1 and when unsharded; an index outside `1..N`, a contract without `shards`, and `--shard` in targeted mode exit 2 before any gate; the report carries `shard` (`null` unsharded) and the `targets` it was given; `classify_failure("unit_timing")` is `test`. Files: `tests/test_proof_pipeline.py`. Verify: `uv run --frozen python -m pytest -q tests/test_proof_pipeline.py -k "shard or timing"` fails before 1.4.
-- [ ] 1.4 Add `--shard K` to the entry point and the append rule, skip recording, the `shard` report field and the `unit_timing` id in the failure map. One function builds a gate's selection arguments (also used by the aggregate). Files: `scripts/proof/run.py`, `scripts/proof/runner.py`. Verify: the 1.3 tests pass.
+- [ ] 1.1 Failing tests for contract parsing: `shards` (positive integer; zero, negative, boolean, string and a non-full mode are refused), per-gate `shard` (`split` or `leader`; any other word is refused), per-gate `env_clear` (a list of strings; any other type is refused), `ProofContract` exposes the declared count. Files: `tests/test_proof_pipeline.py`. Verify: `uv run --frozen python -m pytest -q tests/test_proof_pipeline.py -k shard` fails before 1.2.
+- [ ] 1.2 Parse `shards`, `shard` and `env_clear` in the contract loader; refuse bad values with `ContractError`. Files: `scripts/proof/contract.py`. Verify: the 1.1 tests pass and `uv run --frozen ruff check scripts/proof` exits 0.
+- [ ] 1.3 Failing tests for expansion: unsharded argv of `unit_full` equals `["pytest", "tests/", "-q", "--tb=short"]`; leg argv for N = 1..5 and every K holds `-m`, `not timing`, `--splits N`, `--group K`, `--splitting-algorithm least_duration`, `--junitxml=proof-shard-K/junit-unit_full.xml`; `unit_timing` runs only for K = 1, is recorded `skip` for K > 1 and when unsharded; an index outside `1..N`, a contract without `shards`, and `--shard` in targeted mode exit 2 before any gate; the report carries `shard` (`null` unsharded) and the `targets` it was given; with a stub executor that records the environment, `unit_timing` is launched with no `PYTEST_ADDOPTS` while `unit_full` keeps it and every other variable (such as `PATH`) is kept; `classify_failure("unit_timing")` is `test`. Files: `tests/test_proof_pipeline.py`. Verify: `uv run --frozen python -m pytest -q tests/test_proof_pipeline.py -k "shard or timing"` fails before 1.4.
+- [ ] 1.4 Add `--shard K` to the entry point and the append rule, skip recording, the `shard` report field, the removal of a gate's `env_clear` names from the environment it is launched with, and the `unit_timing` id in the failure map. One function builds a gate's selection arguments (also used by the aggregate). Files: `scripts/proof/run.py`, `scripts/proof/runner.py`. Verify: the 1.3 tests pass.
 - [ ] 1.5 Failing tests: `ci_shard_union.py --emit-ids` writes the selected ids as JSON, the existing default mode is unchanged (existing tests untouched and green), and the collector ignores `PYTEST_ADDOPTS="-p xdist -n auto"` (a controller collects nothing under xdist); for generated item lists (seeded `random`, no new dependency) and N = 1..5, the `least_duration` groups are pairwise disjoint with the input as their union. Files: `tests/test_ci_shard_union.py`. Verify: the new tests fail before 1.6; `uv run --frozen python -m pytest -q tests/test_ci_shard_union.py` afterwards.
 - [ ] 1.6 Add the `--emit-ids` mode to the collector and make the runner record each sharded pytest gate's selection in `proof-shard-K/ids-<gate>.json` before it runs the gate. Files: `scripts/ci_shard_union.py`, `scripts/proof/runner.py`. Verify: the 1.5 tests pass and a runner test shows the ids file is written next to the report.
-- [ ] 1.7 Failing test that loads the checked-in contract and asserts: `shards` is the starting value (3); `unit_full` keeps command `["pytest", "tests/", "-q", "--tb=short"]` and `required` true and has `shard: split`; `unit_timing` is the gate directly after `unit_full` with phase `unit_timing`, classify `test`, command `["pytest", "tests/", "-q", "--tb=short", "-m", "timing", "-p", "no:xdist"]`, `shard: leader` and `required` true; `unit_timing` is in the full phases and not in the targeted ones; every other gate's command and `required` flag equal the values on origin/main (listed in the test). Files: `tests/test_proof_pipeline.py`. Verify: the test fails before 1.8.
-- [ ] 1.8 Declare `shards: 3` in the full mode, add `unit_timing` to the full phases and the gate above directly after `unit_full`, and add `shard: split` to `unit_full`. Change no existing command or `required` flag. Files: `proof/contract.yaml`. Verify: the 1.7 test passes, `uv run --frozen python scripts/proof/acceptance_smoke.py` prints `acceptance_smoke: ok`, `uv run --frozen python -m pytest -q tests/test_proof_pipeline.py` is green, and the contract line of the task 5.1 script (`removed '' proof/contract.yaml`) exits 0.
+- [ ] 1.7 Failing test that loads the checked-in contract and asserts: `shards` is the starting value (3); `unit_full` keeps command `["pytest", "tests/", "-q", "--tb=short"]` and `required` true and has `shard: split`; `unit_timing` is the gate directly after `unit_full` with phase `unit_timing`, classify `test`, command `["pytest", "tests/", "-q", "--tb=short", "-m", "timing", "-p", "no:xdist"]`, `shard: leader`, `env_clear: ["PYTEST_ADDOPTS"]` and `required` true; `unit_timing` is in the full phases and not in the targeted ones; every other gate's command and `required` flag equal the values on origin/main (listed in the test). Files: `tests/test_proof_pipeline.py`. Verify: the test fails before 1.8.
+- [ ] 1.8 Declare `shards: 3` in the full mode, add `unit_timing` to the full phases and the gate above directly after `unit_full`, and add `shard: split` to `unit_full`. Change no existing command or `required` flag. Files: `proof/contract.yaml`. Verify: the 1.7 test passes, `uv run --frozen python scripts/proof/acceptance_smoke.py` prints `acceptance_smoke: ok`, `uv run --frozen python -m pytest -q tests/test_proof_pipeline.py` is green, and `uv run --frozen python scripts/proof/check_not_weakened.py --base origin/main` (built in 5.2) exits 0 once it exists; run it in 6.1 at the latest.
 
 ## 2. Aggregate
 
@@ -53,159 +53,28 @@ Verification for the group: `uv run --frozen python scripts/check_doc_links.py` 
 - [ ] 4.1 Failing test: `proof/README.md` names the check `proof-full`, holds the apply, read-back and rollback commands of the design, and says they are applied by the operator after the aggregate has been green on main. Files: `tests/test_proof_workflow.py`. Verify: the test fails before 4.2.
 - [ ] 4.2 Document in `proof/README.md`: legs and `--shard`, the `unit_timing` gate, what the aggregate checks (A0-A6), the merged report's `shards` key and `shard_aggregate` failures, that local runs are unsharded, "Re-run all jobs" when a leg is missing, and the operator commands. Files: `proof/README.md`. Verify: the 4.1 test passes and `uv run --frozen python scripts/check_doc_links.py` exits 0.
 
-## 5. Gates before the push
+## 5. Checkers (built and tested before the push; the gates and the live acceptance only run them)
+
+Verification for the group: `uv run --frozen python -m pytest -q -n 2 tests/test_proof_check_not_weakened.py tests/test_proof_live_acceptance.py` is green, each rule's test goes red when the rule is removed, and `uv run --frozen python scripts/check_reachability.py --ratchet-base origin/main` reports nothing new.
+
+- [ ] 5.1 Failing tests for the weakening checker (design, D9): throwaway git repositories in a temporary directory; for each rule a positive case that must fail (a skip, `skipif`, `xfail`, `importorskip`, marker, `pytestmark`, `pytest_deselected` call or `collect_ignore` assignment added to a test and the same removed from a test, in a modified, a new and a deleted file; a gate command changed, a `required` flag set to false, a gate removed, a phase removed; a `pyproject.toml` pytest setting changed; `.test_durations` changed) and a case that must pass (the same words only in a string, an argv list and a triple-quoted toy test source; a `parametrize` mark added or removed; a gate, phase or key added; reformatted code with the same constructs); a bad base ref and an unparsable changed Python file exit 2, never pass. Files: `tests/test_proof_check_not_weakened.py`. Verify: the tests fail before 5.2.
+- [ ] 5.2 Add `scripts/proof/check_not_weakened.py --base <ref>`: read the diff `<ref>...HEAD`, parse the base and HEAD versions of every changed Python file under `tests/` with `ast` and compare the multisets of skip-like constructs, compare the contract and the pytest table of `pyproject.toml` parsed (not matched as text), compare `.test_durations`; print every finding; exit 0, 1 (weakened) or 2 (git, usage or parse failure). Files: `scripts/proof/check_not_weakened.py`. Verify: the 5.1 tests pass and `uv run --frozen ruff check scripts/proof` exits 0.
+- [ ] 5.3 Failing tests for the live acceptance checker (design, D9) with the GitHub layer replaced and synthetic report, JUnit and run files: `merged-run`, `timing-leg` and `rounds` each pass on good data and fail on each wrong figure listed in the design's test strategy; for `rounds`, a head with an unfinished run, one with a cancelled run and a post-merge head whose `proof-shard` leg or `proof-full` job did not succeed are each excluded and reported, and fewer than N counting heads on either side fails. Files: `tests/test_proof_live_acceptance.py`. Verify: the tests fail before 5.4.
+- [ ] 5.4 Add `scripts/proof/live_acceptance.py` with the three subcommands; reuse `scripts/ci_shard_union.py --emit-ids` for the collected counts; parse JUnit with `defusedxml`; keep all `gh` access in one function the tests replace; exit 0 only when every assertion holds, 1 when one fails, 2 on a usage or fetch failure. Files: `scripts/proof/live_acceptance.py`. Verify: the 5.3 tests pass and `uv run --frozen ruff check scripts/proof` exits 0.
+
+## 6. Gates before the push
 
 Verification for the group: every command below exits 0 and the PR body carries the red-then-green output.
 
-- [ ] 5.1 Show that nothing is weakened and no skip or marker is added, with one script that exits non-zero on any such change and on any git error (a bare `grep` exits 0 on a match and 1 on none, so it cannot serve as the check). Run it from the worktree as `bash <file>`; paste its output and exit code in the PR body. A hit on an added line is reported in the PR body, never suppressed. Files: none changed. Verify: it prints `nothing weakened` and exits 0; to show it can fail, run it once in a throwaway detached worktree whose last commit deletes a `skip` marker line from a test and once with a commit that adds `@pytest.mark.skip` to a test, and keep each `FAIL` line and exit 1.
+- [ ] 6.1 Show that nothing is weakened: `uv run --frozen python scripts/proof/check_not_weakened.py --base origin/main`. Files: none changed. Verify: it exits 0; paste its output and exit code in the PR body. The checker's own tests (5.1) show it fails on a weakening, so no scratch worktree is needed.
+- [ ] 6.2 `uv run --frozen ruff check . && uv run --frozen ruff format --check .`, `uv run --frozen mypy verdict --strict`, `uv run --frozen python scripts/verify_proof_matrix.py`, `uv run --frozen python scripts/check_lint_gates.py`, `git diff --check`. Files: none changed. Verify: all exit 0.
+- [ ] 6.3 Run the focused tests for the changed files: `uv run --frozen python -m pytest -q -n 2 tests/test_proof_pipeline.py tests/test_proof_aggregate.py tests/test_proof_workflow.py tests/test_ci_shard_union.py tests/test_proof_matrix_doc.py tests/test_proof_check_not_weakened.py tests/test_proof_live_acceptance.py`. Files: none changed. Verify: all pass.
 
-```bash
-set -o pipefail
-removed() {  # $1: lower-case ERE a removed line must not match ('' = any removed line); rest: paths
-  pat=$1; shift
-  git diff -U0 --no-color origin/main...HEAD -- "$@" | awk -v pat="$pat" '
-    /^diff --git/ { head = 1; next }
-    /^@@/ { head = 0; next }
-    !head && /^-/ && (pat == "" || tolower($0) ~ pat) { print; bad = 1 }
-    END { exit bad + 0 }'
-}
-added() {  # $1: ERE an added line must not match (parametrize is ignored); rest: paths
-  pat=$1; shift
-  git diff -U0 --no-color origin/main...HEAD -- "$@" | awk -v pat="$pat" '
-    /^diff --git/ { head = 1; next }
-    /^@@/ { head = 0; next }
-    !head && /^[+]/ { line = $0; gsub(/(pytest[.]|@)?mark[.]parametrize/, "", line); if (line ~ pat) { print; bad = 1 } }
-    END { exit bad + 0 }'
-}
-removed 'skip|xfail|deselect|mark' tests || { echo "FAIL: tests lost a skip/xfail/deselect/mark line, or git failed"; exit 1; }
-added 'pytest[.](skip|xfail|importorskip|mark[.])|unittest[.]skip|@mark[.]|pytestmark|--deselect' tests || { echo "FAIL: tests gained a skip, xfail, deselect or marker line, or git failed"; exit 1; }
-removed '' proof/contract.yaml || { echo "FAIL: proof/contract.yaml lost a line, or git failed"; exit 1; }
-git diff --quiet origin/main...HEAD -- pyproject.toml .test_durations || { echo "FAIL: pyproject.toml or .test_durations changed, or git failed"; exit 1; }
-echo "nothing weakened"
-```
-- [ ] 5.2 `uv run --frozen ruff check . && uv run --frozen ruff format --check .`, `uv run --frozen mypy verdict --strict`, `uv run --frozen python scripts/verify_proof_matrix.py`, `uv run --frozen python scripts/check_lint_gates.py`, `git diff --check`. Files: none changed. Verify: all exit 0.
-- [ ] 5.3 Run the focused tests for the changed files: `uv run --frozen python -m pytest -q -n 2 tests/test_proof_pipeline.py tests/test_proof_aggregate.py tests/test_proof_workflow.py tests/test_ci_shard_union.py tests/test_proof_matrix_doc.py`. Files: none changed. Verify: all pass.
+## 7. Live acceptance
 
-## 6. Live acceptance
+Verification for the group: each item runs on merged main, only runs the checker built in 5.4 (which exits non-zero when its condition fails), and keeps the checker's raw output (commands, run URLs, dates) for the evidence file that AGENTS.md's definition of done requires. Building that file and archiving the change follow AGENTS.md and are not tasks here. The branch-protection command is the operator's, after 7.1; no task applies it.
 
-Verification for the group: each item runs on merged main and its raw output (commands, run URLs, dates) is kept for the evidence file that AGENTS.md's definition of done requires. Items 6.1 to 6.3 each end in a checker that exits non-zero when its condition fails; keep the checker's raw output with the downloads. Building that file and archiving the change follow AGENTS.md and are not tasks here. The branch-protection command is the operator's, after 6.1; no task applies it.
-
-- [ ] (post-merge) 6.1 On the first main push run of the Proof workflow after the merge, the `proof-full` aggregate is green, the declared number of `proof-shard` legs ran, and the downloaded merged report (`gh run download <run-id> -n proof-report-full`) has `ok: true` and one `shards` entry per leg. Its summed JUnit `tests` equals the independently collected count and, against the main push run of the merge commit's parent, differs only by the tests the merged PR added (counted from its diff). Record the summed `skipped` next to that run's 34 skipped plus 27 xfailed and explain any difference.
-
-```bash
-# From the root of a clean checkout of merged main, as `bash <file>`; the checker exits non-zero on any failed assertion.
-RUN=<run-id>; PARENT_RUN=<run-id of the main push run of the merge commit's parent>
-ADDED=<number of tests the merged PR added, counted from its diff>
-D=$(mktemp -d)
-gh run download "$RUN" -D "$D/merged" -n proof-report-full &&
-gh run download "$RUN" -D "$D/legs" -p 'proof-shard-*' &&
-gh run download "$PARENT_RUN" -D "$D/parent" -n proof-report-full || exit 1
-COLLECTED=$(env -u PYTEST_ADDOPTS uv run --frozen python -m pytest tests/ --collect-only -q | sed -nE 's#^[= ]*([0-9]+)(/[0-9]+)? tests? collected.*#\1#p')
-uv run --frozen python -I - "$D" "$COLLECTED" "$ADDED" <<'EOF'
-import json, re, sys
-from pathlib import Path
-import yaml
-from defusedxml import ElementTree as ET
-
-d, collected, added = Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
-merged = json.loads(next((d / "merged").rglob("proof-report-full.json")).read_text())
-parent = json.loads(next((d / "parent").rglob("proof-report-full.json")).read_text())
-legs = int(yaml.safe_load(Path("proof/contract.yaml").read_text())["modes"]["full"]["shards"])
-tests = skipped = 0
-for junit in (d / "legs").rglob("junit-unit_*.xml"):
-    for suite in ET.parse(junit).getroot().iter("testsuite"):
-        tests += int(suite.get("tests"))
-        skipped += int(suite.get("skipped"))
-summary = next(g["log_slice"] for g in parent["gates"] if g["id"] == "unit_full").strip().splitlines()[-1]
-parent_tests = sum(int(n) for n, w in re.findall(r"(\d+) (passed|failed|skipped|xfailed|xpassed|errors?)", summary))
-assert merged["ok"] is True, "merged report is not ok"
-assert len(merged["shards"]) == legs, f"{len(merged['shards'])} shard entries, contract declares {legs}"
-assert tests == collected, f"JUnit tests {tests} != independently collected {collected}"
-assert tests == parent_tests + added, f"JUnit tests {tests} != parent {parent_tests} + added {added}"
-print(f"ok: tests={tests} skipped={skipped} (record beside the parent's 34 skipped + 27 xfailed)")
-EOF
-```
-- [ ] (post-merge) 6.2 In the leg-1 artifact of that run (`gh run download <run-id> -n proof-shard-1`), the `unit_timing` gate passed with as many tests as `pytest tests/ --collect-only -q -m timing` lists (12 on 2026-11-24), and its log slice in `proof-report-full.json` shows no `[gw` worker prefix.
-
-```bash
-# From the root of a clean checkout of merged main, as `bash <file>`.
-RUN=<run-id>; D=$(mktemp -d)
-gh run download "$RUN" -D "$D" -n proof-shard-1 || exit 1
-EXPECTED=$(env -u PYTEST_ADDOPTS uv run --frozen python -m pytest tests/ --collect-only -q -m timing | sed -nE 's#^[= ]*([0-9]+)(/[0-9]+)? tests? collected.*#\1#p')
-uv run --frozen python -I - "$D" "$EXPECTED" <<'EOF'
-import json, sys
-from pathlib import Path
-from defusedxml import ElementTree as ET
-
-d, expected = Path(sys.argv[1]), int(sys.argv[2])
-report = json.loads(next(d.rglob("proof-report-full.json")).read_text())
-gate = next(g for g in report["gates"] if g["id"] == "unit_timing")
-suites = ET.parse(next(d.rglob("junit-unit_timing.xml"))).getroot().iter("testsuite")
-tests = sum(int(s.get("tests")) for s in suites)
-assert gate["status"] == "pass", f"unit_timing status {gate['status']}"
-assert tests == expected > 0, f"{tests} timing tests ran, {expected} collected"
-assert "[gw" not in gate["log_slice"], "worker prefix in the unit_timing log slice"
-print(f"ok: {tests} timing tests, serial")
-EOF
-```
-- [ ] (post-merge) 6.3 Measure at least 10 pull-request rounds after the merge, and the same number of rounds before it, with one command. A round is the earliest `createdAt` to the latest `updatedAt` of the `pull_request` runs on one PR head (`gh run list --commit <sha> --event pull_request --limit 100 --json databaseId,workflowName,createdAt,updatedAt,conclusion`; the event filter keeps push and manual runs on the same commit out of the round, and a count of 100 is far above the runs per head); which job finished last comes from `gh api repos/{owner}/{repo}/actions/runs/<run-id>/jobs`. Record both medians and ranges beside the research's 531 s (which it derived from job times), each round's run URLs and per-job durations, each leg's start delay (its job's `started_at` minus its run's `createdAt`) and the median over all legs of all measured post-merge rounds, the leg duration spread, and how often `proof-full` was the last job to finish. Passes when the post-merge median is below 531 s and below the same-command pre-merge median, and `proof-full` was last in at most half of the rounds. The median start delay is the figure the operator's rule on the shard count uses (design, "Decided by the operator", 1): above 60 s, the count is reduced by a later change. This task records it and does not pass or fail on it.
-
-```bash
-# pre-heads.txt and post-heads.txt: one PR head SHA per line, the same number in each, at least 10. As `bash <file>`.
-D=$(mktemp -d)
-fetch() {  # $1: file of PR head SHAs; $2: output folder
-  mkdir -p "$2"
-  while read -r sha; do
-    gh run list --commit "$sha" --event pull_request --limit 100 \
-      --json databaseId,workflowName,createdAt,updatedAt,conclusion > "$2/$sha.runs.json" || return 1
-    for id in $(jq -r '.[].databaseId' "$2/$sha.runs.json"); do
-      gh api --paginate "repos/{owner}/{repo}/actions/runs/$id/jobs" \
-        --jq '.jobs[] | {name, started_at, completed_at}' > "$2/$sha.$id.jobs.ndjson" || return 1
-    done
-  done < "$1"
-}
-fetch pre-heads.txt "$D/pre" && fetch post-heads.txt "$D/post" || exit 1
-python3 -I - "$D/pre" "$D/post" <<'EOF'
-import json, statistics, sys
-from datetime import datetime
-from pathlib import Path
-
-def ts(text):
-    return datetime.fromisoformat(text.replace("Z", "+00:00"))
-
-def measure(folder):
-    rounds, full_last, delays, durations = [], [], [], []
-    for runs_file in sorted(Path(folder).glob("*.runs.json")):
-        sha = runs_file.name.split(".")[0]
-        runs = json.loads(runs_file.read_text())
-        assert runs, f"{sha}: no pull_request runs"
-        rounds.append((max(ts(r["updatedAt"]) for r in runs) - min(ts(r["createdAt"]) for r in runs)).total_seconds())
-        done = []
-        for run in runs:
-            jobs_file = Path(folder) / f"{sha}.{run['databaseId']}.jobs.ndjson"
-            for line in jobs_file.read_text().splitlines():
-                job = json.loads(line)
-                if not job["completed_at"]:
-                    continue
-                done.append(job)
-                if job["name"].startswith("proof-shard"):
-                    delays.append((ts(job["started_at"]) - ts(run["createdAt"])).total_seconds())
-                    durations.append((ts(job["completed_at"]) - ts(job["started_at"])).total_seconds())
-        full_last.append(max(done, key=lambda j: ts(j["completed_at"]))["name"] == "proof-full")
-    return rounds, full_last, delays, durations
-
-pre, post = measure(sys.argv[1]), measure(sys.argv[2])
-assert len(post[0]) >= 10 and len(pre[0]) == len(post[0]), f"rounds: pre {len(pre[0])}, post {len(post[0])}; need the same number, at least 10"
-assert post[2], "no proof-shard job found after the merge"
-pre_median, post_median = statistics.median(pre[0]), statistics.median(post[0])
-print(f"pre  median {pre_median:.0f}s, range {min(pre[0]):.0f}-{max(pre[0]):.0f}s")
-print(f"post median {post_median:.0f}s, range {min(post[0]):.0f}-{max(post[0]):.0f}s")
-print(f"post proof-full last in {sum(post[1])} of {len(post[1])} rounds")
-print(f"post leg start delay median {statistics.median(post[2]):.0f}s (recorded, not asserted); leg duration {min(post[3]):.0f}-{max(post[3]):.0f}s")
-assert post_median < 531, f"post-merge median {post_median:.0f}s is not below 531s"
-assert post_median < pre_median, f"post-merge median {post_median:.0f}s is not below pre-merge {pre_median:.0f}s"
-assert sum(post[1]) * 2 <= len(post[1]), "proof-full was last in more than half of the rounds"
-print("ok")
-EOF
-```
-- [ ] (post-merge) 6.4 On the operator's machine, from merged main, `uv run python scripts/proof/run.py --mode full --no-cache --report /tmp/proof-unsharded.json` passes, and the report has `shard: null`, `unit_timing` recorded as skipped and a `unit_full` that ran the unsharded command. Run it on a quiet machine: it is a whole-suite run of several minutes.
+- [ ] (post-merge) 7.1 On the first main push run of the Proof workflow after the merge, run `uv run --frozen python scripts/proof/live_acceptance.py merged-run --run <run-id> --parent-run <run-id of the main push run of the merge commit's parent> --added <tests the merged PR added, counted from its diff>` from a clean checkout of merged main. Passes when it exits 0: the `proof-full` aggregate is green, its merged report (`gh run download <run-id> -n proof-report-full`) has `ok: true` and one `shards` entry per declared leg, and the summed JUnit `tests` equal the independently collected count and the parent run's total plus the added tests. Record the summed `skipped` it prints next to that parent run's 34 skipped plus 27 xfailed and explain any difference.
+- [ ] (post-merge) 7.2 For the same run, `uv run --frozen python scripts/proof/live_acceptance.py timing-leg --run <run-id>` exits 0: in the leg-1 artifact the `unit_timing` gate passed with as many tests as `pytest tests/ --collect-only -q -m timing` lists (12 on 2026-11-24). Serial execution is by construction (the runner launches the gate without `PYTEST_ADDOPTS`, tested in 1.3); the checker does not search the log for a worker prefix.
+- [ ] (post-merge) 7.3 Measure at least 10 pull-request rounds after the merge and the same number before it: write the PR head SHAs, newest first, to `pre-heads.txt` and `post-heads.txt` (more than 10 each, so that excluded heads can be replaced) and run `uv run --frozen python scripts/proof/live_acceptance.py rounds --pre pre-heads.txt --post post-heads.txt --rounds 10`. A round counts only when every workflow run on the head finished and none was cancelled and, after the merge, the declared number of `proof-shard` legs and the `proof-full` aggregate succeeded; the checker excludes and reports any other head and fails if fewer than 10 counting heads remain on either side. Passes when it exits 0: the post-merge median is below 531 s and below the pre-merge median, and `proof-full` was last to finish in at most half of the rounds. Record its output: both medians and ranges beside the research's 531 s (which it derived from job times), the excluded heads with reasons, each leg's start delay and their median, and the leg duration spread. The median start delay is the figure the operator's rule on the shard count uses (design, "Decided by the operator", 1): above 60 s, the count is reduced by a later change. This task records it and does not pass or fail on it.
+- [ ] (post-merge) 7.4 On the operator's machine, from merged main, `uv run python scripts/proof/run.py --mode full --no-cache --report /tmp/proof-unsharded.json` passes, and the report has `shard: null`, `unit_timing` recorded as skipped and a `unit_full` that ran the unsharded command. Run it on a quiet machine: it is a whole-suite run of several minutes.
