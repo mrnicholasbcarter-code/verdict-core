@@ -263,9 +263,9 @@ class OpenCodeAdapter:
     (``OPENCODE_CONFIG_DIR`` → temp dir) and routes all model calls through
     ``verdict serve`` (:8000), never directly to OmniRoute.
 
-    The adapter is registered as the DEFAULT worker executor for
-    ``verdict orchestrate`` (Decision 2 of ADR-053).  Pass
-    ``--executor direct-gateway`` or ``--executor prime-headless`` to override.
+    The adapter is registered and OPT-IN: ``verdict orchestrate --executor opencode``
+    selects it.  ``direct-gateway`` stays the default (ADR-053 Decision 2, amended
+    2026-11-24: the default waits for a live smoke that passes after #1313).
     """
 
     name = "opencode"
@@ -334,9 +334,11 @@ from verdict.orchestration.executors import (  # noqa: E402
     ScriptedExecutor,
 )
 
-# OpenCode is the default worker backend (ADR-053 Decision 2).  It runs a full
-# edit-test-fix loop per node.  Use ``--executor direct-gateway`` or
-# ``--executor prime-headless`` to restore the previous defaults.
+# direct-gateway is the default worker backend (1.0): it needs only the gateway.
+# Prime Agent is an optional harness selected with ``--executor prime-headless``.
+# OpenCode (a full edit-test-fix loop per node) is opt-in with ``--executor opencode``; it
+# becomes the default only after a live smoke passes once #1313 lands (ADR-053 Decision 2,
+# amended 2026-11-24).
 DEFAULT_REGISTRY.register(
     PrimeHeadlessAdapter(),
     aliases=("prime",),
@@ -344,10 +346,13 @@ DEFAULT_REGISTRY.register(
     executor_label="prime-headless",
 )
 DEFAULT_REGISTRY.register(
-    DirectGatewayAdapter(), executor_class=DirectGatewayExecutor, executor_label="direct-gateway"
+    DirectGatewayAdapter(),
+    default=True,
+    executor_class=DirectGatewayExecutor,
+    executor_label="direct-gateway",
 )
 DEFAULT_REGISTRY.register(
-    OpenCodeAdapter(), default=True, executor_class=OpenCodeExecutor, executor_label="opencode"
+    OpenCodeAdapter(), executor_class=OpenCodeExecutor, executor_label="opencode"
 )
 # Wrapper labels so run.py's receipt table can be fully delegated to the registry.
 DEFAULT_REGISTRY._executor_labels[FaultInjectingExecutor] = "fault-injecting"

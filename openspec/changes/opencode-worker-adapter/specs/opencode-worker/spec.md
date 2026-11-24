@@ -2,23 +2,39 @@
 
 ## ADDED Requirements
 
-### Requirement: OpenCode adapter is registered as the default worker executor
+### Requirement: OpenCode adapter is registered as an opt-in worker executor
 
-`DEFAULT_REGISTRY` SHALL register an `OpenCodeAdapter` as the default worker
-executor for `verdict orchestrate`. All nine `HarnessCapability` facets SHALL
-be declared explicitly. `direct-gateway` and `prime-headless` SHALL remain
-registered and selectable via `--executor`.
+`DEFAULT_REGISTRY` SHALL register an `OpenCodeAdapter` as a worker executor for
+`verdict orchestrate` that is selected only by name (`--executor opencode`). It SHALL NOT be
+the default: `direct-gateway` SHALL remain the default worker executor until a later change
+makes `opencode` the default after a live smoke passes (ADR-053 Decision 2, amended
+2026-11-24). All nine `HarnessCapability` facets SHALL be declared explicitly. `direct-gateway`
+and `prime-headless` SHALL remain registered and selectable via `--executor`.
 
-#### Scenario: Default executor is opencode
+#### Scenario: Default executor is unchanged
 
 - **WHEN** `verdict orchestrate` is invoked with no `--executor` flag
-- **THEN** coding nodes are dispatched to an OpenCode worker and the receipt
+- **THEN** coding nodes are dispatched to `direct-gateway`, `opencode` is not
+  invoked, and the receipt does not record `harness: opencode`
+
+#### Scenario: OpenCode is selected by name
+
+- **WHEN** `--executor opencode` is passed, or a node is mapped to it with
+  `--executor-map node=opencode`
+- **THEN** those coding nodes are dispatched to an OpenCode worker and the receipt
   records `harness: opencode`
 
 #### Scenario: Explicit executor overrides the default
 
-- **WHEN** `--executor direct-gateway` is passed
-- **THEN** coding nodes use `direct-gateway` and `opencode` is not invoked
+- **WHEN** `--executor prime-headless` is passed
+- **THEN** coding nodes use `prime-headless` and neither `direct-gateway` nor `opencode`
+  is invoked
+
+#### Scenario: The help text says OpenCode is opt-in
+
+- **WHEN** `verdict orchestrate --help` is shown
+- **THEN** the `--executor` option names `direct-gateway` as the default and says OpenCode
+  is selected with `--executor opencode`
 
 #### Scenario: Adapter registration rejects missing facets
 
@@ -241,7 +257,10 @@ refused, not replaced by the default.
 ### Requirement: Upstream status and cost are recorded honestly
 
 A failed attempt SHALL keep the HTTP status and retry delay OpenCode reports in a structured
-`error` event.  `cost_usd` SHALL be recorded only for a real positive figure; a reported 0, a
+`error` event.  When that event carries a message but no status, the HTTP status printed on
+stderr (sanitized, secrets redacted, read before any truncation) SHALL be used as the status,
+while the event's message stays the recorded error; a status the event does carry SHALL NOT be
+replaced by one from stderr.  `cost_usd` SHALL be recorded only for a real positive figure; a reported 0, a
 missing figure, or any unpriced step SHALL give `null` with a reason, and tokens SHALL still be
 recorded.
 
@@ -249,6 +268,12 @@ recorded.
 
 - **WHEN** OpenCode exits 1 after an error event with `status` 429 and `retryAfterMs` 7000
 - **THEN** the terminal carries status 429 and a 7 s retry delay
+
+#### Scenario: Stderr supplies the status when the error event has none
+
+- **WHEN** OpenCode exits 1 after an error event with the message `request failed` and no
+  status, and prints `HTTP 429 Too Many Requests` on stderr
+- **THEN** the terminal carries status 429 and the error `request failed`
 
 #### Scenario: Zero cost is not recorded
 

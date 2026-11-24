@@ -24,15 +24,22 @@ JSON output with `--format json`.
 **Code fact (verified):** `harness.py` registers `DirectGatewayAdapter(default=True)`.
 ADR-041 declared `prime-headless` as the initial default; the
 `default-executor-direct-gateway` OpenSpec change moved the code default to
-`direct-gateway` before this ADR. ADR-053 makes `opencode` the new default,
-which is the second amendment to ADR-041's initial default.
+`direct-gateway` before this ADR. ADR-053 Decision 2 first made `opencode` the new default;
+the operator amended it on 2026-11-24: `opencode` merges opt-in (`--executor opencode`) and
+`direct-gateway` stays the default until a live smoke passes after #1313. The live smoke of
+this change (task 2.8) showed why: `verdict serve` refused all 13 of the worker's requests
+before any upstream call (11 by the escalation keyword scanner, whose branch of `route()`
+returns before the route pin is applied; 2 by the capability gate, which had no metadata for
+streaming and tools on the relay path). The serve fix is #1313, with the signed per-attempt
+assignment: a worker request with a valid assignment is pinned before serve classifies
+anything itself.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Register `OpenCodeAdapter` in `DEFAULT_REGISTRY` as the new default worker
-  executor for `verdict orchestrate`.
+- Register `OpenCodeAdapter` in `DEFAULT_REGISTRY` as an opt-in worker executor for
+  `verdict orchestrate` (`--executor opencode`); `direct-gateway` stays the default.
 - Build `OpenCodeExecutor` that runs `opencode run --auto --standalone
   --format json --model verdict/<route_id>` with per-attempt isolated config
   (`OPENCODE_CONFIG_DIR` → temp directory).
@@ -240,24 +247,28 @@ rejected and classified as a failure before verification runs.
   build time. If usage fields are absent, `opencode session export <attempt_id>`
   is used as a fallback; the builder handles the case where both sources are
   incomplete.
-- **`direct-gateway` users** who relied on the implicit default will get
-  `opencode` after this merges. This is a breaking change for those users; the
-  proposal documents it. Passing `--executor direct-gateway` explicitly is the
-  migration path.
+- **No behaviour change for runs that do not name `opencode`.** `direct-gateway` stays the
+  default, so a run without `--executor` is unchanged. A run that opts in with
+  `--executor opencode` before #1313 lands has its worker refused by serve and fails its
+  nodes; that is why the default was not switched.
 
 ## Migration / rollback
 
-- Existing `verdict orchestrate` runs with no `--executor` flag switch from
-  `direct-gateway` to `opencode`. To keep `direct-gateway`, pass
-  `--executor direct-gateway` explicitly.
+- Existing `verdict orchestrate` runs with no `--executor` flag are unchanged: they use
+  `direct-gateway`. To use OpenCode, pass `--executor opencode`.
 - `prime-headless` users are unaffected.
-- If the OpenCode adapter is defective, reverting the `DEFAULT_REGISTRY` default
-  back to `direct-gateway` restores prior behaviour without any other changes.
+- Making OpenCode the default is a later one-line change to the `DEFAULT_REGISTRY` default
+  (`default=True` on `OpenCodeAdapter`, removed from `DirectGatewayAdapter`), with the
+  default tests flipped, made only after a live smoke passes with #1313 in place. If the
+  adapter is defective before then, nothing needs reverting for runs that do not name it.
 
 ## ADR impact
 
-- Amends [ADR-041](../../../docs/adr/ADR-041-generic-harness-contracts.md) default
-  worker executor (from `prime-headless`, later `direct-gateway`, to `opencode`).
+- Adds an opt-in worker executor under
+  [ADR-041](../../../docs/adr/ADR-041-generic-harness-contracts.md); its default worker
+  executor (`direct-gateway`) is unchanged for now. ADR-053 Decision 2 is amended
+  (2026-11-24): the move of the default to `opencode` waits for #1313 and a passing live
+  smoke.
 - Relates to [ADR-036](../../../docs/adr/ADR-036-goal-to-receipt-orchestration.md)
   (goal-to-receipt orchestration): worker output becomes richer (edit loop
   instead of answer-only).

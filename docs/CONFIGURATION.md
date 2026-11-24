@@ -34,7 +34,9 @@ On a new install, before anything is set up:
 default: each worker request goes straight to the gateway, so no agent harness
 has to be installed. Prime Agent is an optional harness. Select it with
 `--executor prime-headless` (alias `prime`), or per node with
-`--executor-map node-1=prime-headless`.
+`--executor-map node-1=prime-headless`. OpenCode is opt-in too: `--executor opencode`
+(see [the harnesses guide](guides/harnesses.md#opencode-as-a-worker-harness); it does not
+yet work through `verdict serve`, issue #1313).
 
 - Route visibility follows the executor. Plain `verdict eligibility` and the
   default run read the live gateway catalog; Prime's model registry
@@ -589,7 +591,7 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `LLMGATE_INTELLIGENCE_PROFILE` | Intelligence profile. Default `development` (`verdict.intelligence.DEFAULT_PROFILE`). `production` makes every `IntelligenceService.route` caller (CLI `route`, supervisor) require an execution-path authority `ExecutionPathDecision` (`serve_path_authority_required`), makes `VERDICT_ALLOW_UNVERIFIED_DEV` inert, and makes `/v1/route/explain` exclude unverified candidates. The default is kept `development` on purpose: fail-closed admission does not depend on it (unknown/error/timeout candidates are excluded unless `VERDICT_ALLOW_UNVERIFIED_DEV=1`), and `/v1/route` forces execution-path authority in every profile (the OpenAI-compatible relay surfaces do not; see [Admission boundary](#admission-boundary)) |
 | `LLMGATE_INTELLIGENCE_TIMEOUT_MS` | Intelligence timeout |
 | `LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE` | Allow client-requested model override |
-| `VERDICT_SERVE_URL` | Address of `verdict serve` for workers that route through it (the `opencode` executor of `verdict orchestrate`); default `http://127.0.0.1:8000`. `--serve-url` overrides it. A path such as `/v1` is dropped; anything that is not an http(s) origin is refused |
+| `VERDICT_SERVE_URL` | Address of `verdict serve` for workers that route through it (the opt-in `opencode` executor of `verdict orchestrate`); default `http://127.0.0.1:8000`. `--serve-url` overrides it. A path such as `/v1` is dropped; anything that is not an http(s) origin is refused |
 | `LLMGATE_LOG_PATH` | Decision log path |
 | `LLMGATE_DISCOVERY_TTL_SECONDS` | Discovery TTL |
 | `LLMGATE_FRONTIER_ALLOWLIST` | Comma-separated frontier allowlist |

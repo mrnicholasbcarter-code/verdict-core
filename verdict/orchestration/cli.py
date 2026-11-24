@@ -184,7 +184,9 @@ def add_parsers(subparsers: Any) -> None:
         help=f"Worker executor backend (default: {DEFAULT_REGISTRY.default_name()}). "
         "Backends are the registered HarnessAdapter names. Prime Agent is an "
         "optional harness: select it with --executor prime-headless (the legacy "
-        "alias 'prime' resolves to prime-headless).",
+        "alias 'prime' resolves to prime-headless). OpenCode is opt-in: select it "
+        "with --executor opencode (it needs a running 'verdict serve'; it does not "
+        "yet work through serve, see issue #1313).",
     )
     orch.add_argument(
         "--planner-executor",

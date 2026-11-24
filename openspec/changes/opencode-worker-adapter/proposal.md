@@ -1,8 +1,17 @@
-# OC1: OpenCode worker adapter — default orchestrate worker
+# OC1: OpenCode worker adapter — opt-in orchestrate worker
 
-> **Scope (2026-11-24):** this change covers the `verdict orchestrate` default worker
+> **Scope (2026-11-24):** this change covers the `verdict orchestrate` worker executor
 > only. The `verdict autodev` model-tier rung moved to issue #1301 (OC2), which will
 > carry its own OpenSpec change.
+>
+> **Opt-in, not the default (operator decision, 2026-11-24, "do recommended for all"):**
+> the adapter merges selectable with `--executor opencode`; `direct-gateway` stays the
+> default. The live smoke showed that `verdict serve` refuses every OpenCode worker request
+> before any upstream call (11 of 13 by the escalation keyword scanner, 2 by the capability
+> gate without streaming and tools metadata on the relay path), so a default worker would
+> burn each node's attempts. The serve fix is issue #1313 (with the signed per-attempt
+> assignment); OpenCode becomes the default only after a live smoke passes with it. This
+> amends ADR-053 Decision 2.
 
 ## Why
 
@@ -13,9 +22,10 @@ BLOCKED: one-shot workers produce edits but cannot verify them, so the
 post-attempt verification step always fails.
 
 OpenCode runs a full edit–test–fix loop inside a repository before returning.
-Switching the default worker executor from `direct-gateway` to `opencode` is
-the minimum change needed to unblock #1269 and enable Verdict to build its own
-pipeline stories through `verdict orchestrate`.
+Making `opencode` a selectable worker executor (`--executor opencode`) is the
+minimum change needed to unblock #1269 and enable Verdict to build its own
+pipeline stories through `verdict orchestrate`, once serve admits the worker's
+requests (#1313). The default worker executor stays `direct-gateway` until then.
 
 This directly advances the mission
 ([BOD-342 D15](https://linear.app/bodanglin/issue/BOD-342)): every story Verdict
@@ -24,11 +34,11 @@ run on the cheapest qualified route Verdict can admit.
 
 ## What Changes
 
-- A new `OpenCodeAdapter` is registered in `DEFAULT_REGISTRY` and becomes the
-  default worker executor for `verdict orchestrate`, replacing `direct-gateway`
-  as the default. `direct-gateway` and `prime-headless` stay registered and
-  selectable. The planner executor (`--planner-executor`, answer-only,
-  `direct-gateway`) is unchanged.
+- A new `OpenCodeAdapter` is registered in `DEFAULT_REGISTRY` as an opt-in worker
+  executor for `verdict orchestrate`, selected with `--executor opencode`.
+  `direct-gateway` remains the default; `direct-gateway` and `prime-headless` stay
+  registered and selectable. The planner executor (`--planner-executor`,
+  answer-only, `direct-gateway`) is unchanged.
 - A new `OpenCodeExecutor` runs `opencode run` in non-interactive mode
   (`--auto --standalone --format json`), passing the Verdict-chosen route via
   `--model verdict/<route_id>` and routing all model calls through
@@ -51,10 +61,10 @@ run on the cheapest qualified route Verdict can admit.
 
 ## Impact
 
-- **Existing orchestrate runs** that do not pass `--executor` will use
-  `opencode` instead of `direct-gateway` once the adapter merges. Users who
-  depend on `direct-gateway` for coding nodes must pass `--executor
-  direct-gateway` explicitly. `prime-headless` users are unchanged.
+- **Existing orchestrate runs** are unchanged: a run that does not pass `--executor`
+  keeps using `direct-gateway`, and `prime-headless` users are unchanged. A run opts
+  in with `--executor opencode` (or `--executor-map node=opencode`); until #1313 lands
+  serve refuses such a worker's requests, so an opted-in run fails its nodes.
 - **`verdict serve` gains a per-request route-pinning requirement** so the
   relay can enforce exactly the route Verdict chose. This is an implementation
   detail of the build (open point: serve today does not pin per request; adding
@@ -93,8 +103,10 @@ run on the cheapest qualified route Verdict can admit.
 
 ## Acceptance criteria
 
-- `verdict orchestrate` with no `--executor` flag dispatches coding nodes to
-  an OpenCode worker; the receipt shows `harness: opencode`.
+- `verdict orchestrate` with no `--executor` flag still dispatches coding nodes to
+  `direct-gateway`; `verdict orchestrate --executor opencode` dispatches them to an
+  OpenCode worker and the receipt shows `harness: opencode`. (The live check of the
+  second is post-merge and is expected to fail until #1313 lands.)
 - The OpenCode worker's model calls reach `verdict serve` (:8000), not
   OmniRoute (:20128) directly; the relay records the attempt with the exact
   chosen route.

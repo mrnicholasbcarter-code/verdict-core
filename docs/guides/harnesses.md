@@ -21,10 +21,11 @@ Direct provider traffic remains outside this relay boundary.
 makes a tool a *client* of Verdict's relay: the tool keeps running its own
 session and sends its model calls through Verdict. None of them makes the tool
 a worker of `verdict orchestrate`. Orchestration workers run on the built-in
-`opencode` executor by default (ADR-053): each coding node runs a full
-edit–test–fix loop via `opencode run --standalone --auto`. Pass
-`--executor direct-gateway` for a one-shot API call, or
-`--executor prime-headless` (alias `prime`) for the Prime Agent harness; see
+`direct-gateway` executor by default: a one-shot API call per worker. Two harnesses are
+opt-in: `--executor opencode` runs each coding node as a full edit–test–fix loop via
+`opencode run --standalone --auto` (ADR-053; it does not yet work through `verdict serve`,
+see [#1313](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1313)), and
+`--executor prime-headless` (alias `prime`) uses the Prime Agent harness; see
 [OpenCode as a worker harness](#opencode-as-a-worker-harness) and
 [Prime Agent as a worker harness](#prime-agent-as-a-worker-harness). There is no
 worker executor for Claude Code, Codex, Cursor or Cline.
@@ -341,8 +342,15 @@ Restores the pre-enable backup byte-for-byte.
 
 ### OpenCode as a worker harness
 
-OpenCode is the **default** worker executor for `verdict orchestrate` (ADR-053
-Decision 2).  Every coding node runs a full edit–test–fix loop:
+OpenCode is an **opt-in** worker executor for `verdict orchestrate`, selected with
+`--executor opencode` (ADR-053 Decision 2, amended 2026-11-24).  `direct-gateway` stays the
+default.  **It does not yet work through `verdict serve`:** the live smoke showed serve
+refusing every request of an OpenCode worker before any upstream call (11 of 13 by the
+escalation keyword scanner, 2 by the capability gate, which has no streaming and tools
+metadata on the relay path), so a run that opts in fails its nodes until
+[#1313](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1313) lands.
+OpenCode becomes the default only after a live smoke passes with that fix.  With the flag,
+every coding node runs a full edit–test–fix loop:
 
 ```bash
 opencode run --standalone --auto --format json --archived --model verdict/<route>
@@ -354,8 +362,8 @@ OmniRoute directly.  Verdict enforces the owned-files scope and runs
 verification commands after each attempt.
 
 ```bash
-verdict orchestrate "goal"                           # OpenCode by default
-verdict orchestrate "goal" --executor direct-gateway # one-shot API call instead
+verdict orchestrate "goal"                           # direct-gateway (the default)
+verdict orchestrate "goal" --executor opencode       # OpenCode (opt-in)
 verdict orchestrate "goal" --executor prime-headless # Prime Agent instead
 ```
 
@@ -452,7 +460,7 @@ verdict orchestrate "goal" --executor prime-headless          # every worker on 
 verdict orchestrate "goal" --executor-map "node-1=prime-headless"   # one node on Prime
 ```
 
-`--executor` accepts `opencode` (default), `direct-gateway`, `prime-headless`
+`--executor` accepts `direct-gateway` (default), `opencode` (opt-in), `prime-headless`
 and its alias `prime`. With `prime-headless`, each worker is a
 `prime-agent -p --model <exact route>` process. Prime never selects models:
 Verdict passes the exact admitted route. The planner always runs on

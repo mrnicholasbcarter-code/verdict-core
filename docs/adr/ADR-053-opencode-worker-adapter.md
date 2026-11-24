@@ -1,9 +1,9 @@
 # ADR-053: OpenCode worker adapter
 
-**Status:** Accepted — every decision agreed with the operator (2026-11-23, two rounds); not yet implemented
+**Status:** Accepted — every decision agreed with the operator (2026-11-23, two rounds); Decision 2 amended 2026-11-24 (OpenCode is opt-in; the default is deferred until a live smoke passes after #1313)
 **Date:** 2026-11-23
 **Deciders:** Operator
-**Amends:** [ADR-041](ADR-041-generic-harness-contracts.md) — changes the default worker executor for `verdict orchestrate`
+**Amends:** [ADR-041](ADR-041-generic-harness-contracts.md) — adds an opt-in worker executor for `verdict orchestrate`; the default worker executor is unchanged for now (Decision 2, amended 2026-11-24)
 **Relates to:**
 [ADR-036](ADR-036-goal-to-receipt-orchestration.md) (goal-to-receipt orchestration),
 [ADR-041](ADR-041-generic-harness-contracts.md) (generic harness contracts),
@@ -74,11 +74,24 @@ reachability. Until issue #1313 (OC1b) the route is pinned by the worker header:
 name another admitted route, never a non-admitted one. #1313 replaces the credential with a signed
 per-attempt assignment.*
 
-**2. OpenCode becomes the default orchestrate worker executor.**
-`opencode` becomes the DEFAULT worker executor for `verdict orchestrate` as soon
-as the adapter merges. The planner executor is unchanged: `--planner-executor`,
-answer-only, `direct-gateway`. `direct-gateway` and `prime-headless` stay
-registered. This amends ADR-041's default (prime-headless).
+**2. OpenCode becomes the default orchestrate worker executor, after a live smoke passes; until then it is opt-in.**
+`opencode` is registered and selected with `verdict orchestrate --executor opencode`.
+`direct-gateway` stays the DEFAULT worker executor until a live smoke passes after #1313 (one
+worker attempt through serve on a pinned route, the edit lands, the receipt shows the pinned
+route); the default then changes in its own change. The planner executor is unchanged:
+`--planner-executor`, answer-only, `direct-gateway`. `direct-gateway` and `prime-headless` stay
+registered. This leaves ADR-041's default (`direct-gateway`) as it is; the amendment of that
+default is deferred with the change.
+
+*Amendment (2026-11-24, operator, "do recommended for all"): as agreed on 2026-11-23, this
+decision made `opencode` the default as soon as the adapter merged; the operator deferred that
+default until a live smoke passes after #1313. The live smoke of #1299 (task 2.8) showed that
+`verdict serve` refuses every OpenCode worker request before any upstream call: 11 of 13 by the
+escalation keyword scanner (its branch of `route()` returns before the route pin is applied) and
+2 by the capability gate, which had no metadata for streaming and tools on the relay path. A
+default worker that cannot work would burn every node's attempts in `verdict orchestrate`, so the
+serve fix goes into #1313 with the signed per-attempt assignment (serve honours a worker's
+assignment before its own escalation and tier classification), and the adapter merges as opt-in.*
 
 **3. Autodev: OpenCode as the model-tier coding executor.**
 OpenCode is added as the coding executor for model-tier units in
@@ -118,8 +131,9 @@ The existing per-attempt timeout (default and maximum 900 s, confirmed:
 No new token cap is added.
 
 **7. Build order.**
-The adapter comes first. Next, re-run #1269 (deliver) on OpenCode workers. Then
-#1276 (gate environment) and #1274 (repo map).
+The adapter comes first. Next, re-run #1269 (deliver) on OpenCode workers (selected with
+`--executor opencode` while it is opt-in, after #1313). Then #1276 (gate environment) and #1274
+(repo map).
 
 **8. Builder and review.**
 A Claude subagent builds the adapter from this spec, with a non-Claude
@@ -162,9 +176,11 @@ binary. No ToS restrictions apply. Proceed.
 
 ## Consequences
 
-- `verdict orchestrate` coding nodes run a full edit–test–fix loop, which
-  resolves the core reason #1269 (deliver) runs were BLOCKED: one-shot workers
-  could not run their own tests and lint.
+- `verdict orchestrate` coding nodes selected with `--executor opencode` run a full
+  edit–test–fix loop, which resolves the core reason #1269 (deliver) runs were BLOCKED:
+  one-shot workers could not run their own tests and lint. That holds once serve admits the
+  worker's requests (#1313); until then an OpenCode worker is refused by serve, which is why
+  it is opt-in and `direct-gateway` stays the default.
 - The relay gains a per-request route-pinning requirement. Until that is built,
   the serve relay forwards the admission decision but cannot enforce per-call
   route identity; the adapter implementation covers this.

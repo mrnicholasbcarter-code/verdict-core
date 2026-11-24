@@ -12,11 +12,12 @@
 
 - [x] 2.1 Add `OpenCodeAdapter` to `verdict/orchestration/harness.py` with all
       nine `HarnessCapability` facets declared explicitly (ADR-041). Register it in
-      `DEFAULT_REGISTRY` as the new default (`default=True`), keeping
-      `direct-gateway` and `prime-headless` registered. Add `harness-opencode`
-      capability label to the registry executor map. Verify: `verdict harness list`
-      shows `opencode` as default; `direct-gateway` and `prime-headless` are still
-      selectable.
+      `DEFAULT_REGISTRY` as an opt-in executor (selected with `--executor opencode`; not
+      `default=True`; ADR-053 Decision 2 amended 2026-11-24), keeping `direct-gateway` as the
+      default and `prime-headless` registered. Add `harness-opencode` capability label to the
+      registry executor map. Verify: `DEFAULT_REGISTRY.names()` lists `opencode`,
+      `direct-gateway` and `prime-headless`, and the default stays `direct-gateway`
+      (`tests/test_harness_registry.py`, task 2.9).
 - [x] 2.2 Write `OpenCodeExecutor` in `verdict/orchestration/executors.py` (or a
       new `verdict/orchestration/harness_opencode_executor.py`). The executor
       writes a per-attempt config to a temp directory, sets `OPENCODE_CONFIG_DIR`,
@@ -57,7 +58,28 @@
       and the receipt attests that model identity. Verify: a test or live check
       confirms no call reaches OmniRoute (:20128) directly; the receipt shows the
       correct route.
-- [ ] (post-merge) 2.8 Live smoke of the worker on an admitted route: one attempt through
+- [x] 2.9 `direct-gateway` stays the default worker executor; OpenCode is opt-in with
+      `--executor opencode` (operator decision, 2026-11-24; ADR-053 Decision 2 amended). The
+      `--executor` help says so. Verify: `tests/test_harness_registry.py`
+      (`test_registry_resolves_production_adapters_and_aliases`,
+      `test_opencode_is_registered_and_selectable_but_not_the_default`) and
+      `tests/test_orch_executors.py` (`test_cli_parser_exposes_planner_executor_role`,
+      `test_default_executor_builds_direct_gateway_not_prime`,
+      `test_opencode_executor_is_built_only_when_named`,
+      `test_orchestrate_help_says_opencode_is_opt_in`); each fails against a registry that makes
+      `opencode` the default.
+- [x] 2.10 The HTTP status printed on stderr is the fallback when an NDJSON error carries a
+      message but no status; stderr is sanitized in every case and the NDJSON message stays the
+      recorded error (the last open review finding of the first review rounds). Verify:
+      `tests/test_opencode_executor.py`
+      (`test_stderr_status_is_the_fallback_when_the_ndjson_error_has_none`,
+      `test_a_status_in_a_long_stderr_is_found_when_the_ndjson_error_has_none`,
+      `test_a_structured_status_beats_stderr_when_both_exist`,
+      `test_a_secret_in_stderr_is_redacted_before_a_status_is_read_from_it`).
+- [ ] (post-merge) 2.8 Live smoke of the worker on an admitted route, run with
+      `--executor opencode` (OpenCode is opt-in) and **expected to fail until #1313 lands**
+      (serve refuses the worker's requests until it honours the worker's assignment before its
+      own escalation and tier classification): one attempt through
       `OpenCodeExecutor`, in a scratch git repository, against a spare `verdict serve` with a
       private copy of the state, pinned to the cheapest admitted SUBSCRIPTION route (the
       operator's decision of 2026-11-24). Verify: the edit lands in the scratch repository, the
@@ -78,10 +100,14 @@
       store unavailable"). So no edit landed, no tokens were reported, and no `step_finish` event
       (the only carrier of `cost`) was produced. The per-attempt config held no key and its
       directory was removed; no request was sent upstream. This is how serve admits a worker's
-      requests, not the adapter or a missing passport; it is outside this change, was not worked
-      around (no admission rule or passport was changed), and blocks this task and 8.1 until it
-      is decided. An earlier attempt on a free route (`run-20261124T042116Z`) was also denied, for
-      other admission reasons (`passport_stale`, `confirm_budget_exhausted`). Raw output:
+      requests, not the adapter or a missing passport; it was not worked around (no admission
+      rule or passport was changed). The operator decided on 2026-11-24 to merge the adapter as
+      opt-in and to move the serve fix to #1313 (serve honours a worker's assignment before its
+      own escalation and tier classification; the capability gate gets metadata on the relay
+      path); this task and 8.1 are expected to fail until #1313 lands, and OpenCode becomes the
+      default only after this smoke passes. An earlier attempt on a free route
+      (`run-20261124T042116Z`) was also denied, for other admission reasons (`passport_stale`,
+      `confirm_budget_exhausted`). Raw output:
       `/tmp/claude-takeover/oc1-smoke/run-20261124T051739Z/` (`smoke-run-transcript.txt`,
       `worker-denial-evidence.json`).
 
@@ -112,24 +138,23 @@
 
 ## 7. Docs, tests and gates
 
-- [x] 7.1 Update `docs/guides/harnesses.md` to record OpenCode as the default
-      worker executor and the route-through-serve contract. Update ETHOS.md `In
+- [x] 7.1 Update `docs/guides/harnesses.md` to record OpenCode as an opt-in
+      worker executor (`--executor opencode`; `direct-gateway` stays the default) and the
+      route-through-serve contract. Update ETHOS.md `In
       force` or `NOW` only if the operator asks. Verify: `check_doc_links.py` and
       `check_reachability.py` are green; no host paths in fixtures or docs.
 - [ ] 7.2 Run the full suite, ruff, mypy --strict, reachability, the lint gates,
       both OpenSpec validators, and get a cross-family (non-Claude) review. Verify:
-      all commands green; review from a different model family. **Not ticked:** ruff, ruff
-      format, `mypy verdict --strict`, `scripts/check_lint_gates.py` and the focused tests ran
-      green locally on the code of `acde1f6d`, but the cross-family review (`ocr`,
-      `cx/gpt-6.1-sol`) of that head is complete with one open finding (below), the two fix
-      rounds the story allows are used, and the full suite is run by CI on the pushed head (not
-      run locally, by the shared-machine rule). Open finding (hardening; the behaviour is
-      older than this change): `_interpret` ignores stderr when an NDJSON error message exists,
-      so a worker that reports `{"type":"error","message":"request failed"}` on stdout and
-      `HTTP 429` on stderr gets no status. Fix: read stderr's status as a fallback when the
-      event has none. Tick this task when that is fixed and the review of the final head is
-      clean and CI is green.
-- [ ] (post-merge) 8.1 On installed main, run a `verdict orchestrate` task on a
-      coding node using an OpenCode worker: the node edits a file, runs
-      verification, and the receipt shows `harness: opencode` with the correct
-      route and usage. Record the raw output in the story's DoD evidence file.
+      all commands green; review from a different model family. **Not ticked:** the cross-family
+      review (`ocr`, `cx/gpt-6.1-sol`) of the head `acde1f6d` ended with one open finding, the
+      stderr status fallback in `_interpret`; it is fixed in a later commit (task 2.10), but that
+      head and the opt-in change (task 2.9) are **unreviewed**: the reviewer route was
+      rate-limited on 2026-11-24 and the controller runs the review of the pushed head after
+      the reset. The full suite is run by CI on the pushed head (not run locally, by the
+      shared-machine rule). Tick this task when the review of the final head is clean and CI is
+      green on the same commit.
+- [ ] (post-merge) 8.1 On installed main, run `verdict orchestrate --executor opencode` on a
+      task with a coding node (OpenCode is opt-in, so the flag is required) and **expect it to
+      fail until #1313 lands**: once serve admits the worker, the node edits a file, runs
+      verification, and the receipt shows `harness: opencode` with the correct route and usage
+      and what OpenCode reports as cost. Record the raw output in the story's DoD evidence file.
