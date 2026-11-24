@@ -62,6 +62,11 @@ id is in the request's admitted set, mints its route-bound proof exactly as for 
 (ADR-035), and otherwise denies without minting a proof. The relay only verifies the outcome. The
 decision above is unchanged.*
 
+*Operator decision (2026-11-24): a worker request that carries `execution_path_request` is
+rejected with 400 before any routing. The execution-path flow selects its own offer and cannot
+pin the assigned route; pinned execution-path support for workers is not built, and rejection is
+the accepted contract.*
+
 *Implementation note (2026-11-24): the worker authenticates to serve with serve's own bearer
 token, resolved by Verdict (`verdict.serve_service.resolve_serve_token`), passed to the child only
 as `VERDICT_WORKER_API_KEY`, and checked once before launch together with the binary and serve's

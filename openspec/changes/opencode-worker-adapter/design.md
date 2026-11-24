@@ -121,9 +121,17 @@ and receipt follow the pinned route and there are no fallback routes. A route ou
 admitted set is denied with no proof minted. The relay only verifies that outcome and never
 rewrites a worker's decision. A missing, empty, null or non-string `model` is denied, and no
 denial contacts upstream; a worker request never falls through to automatic selection.
-Whichever path produced an accepted worker decision (the execution-path branch also lists
-alternatives and several proofs), the relay clears its alternatives, so a worker request has
-no fallback attempts.
+An accepted worker decision comes only from this admission pinning, so a worker request has
+no fallback attempts; the relay also clears the alternatives of any accepted worker decision
+(defence in depth).
+
+**Execution-path requests are rejected (operator decision, 2026-11-24):** a worker request that
+carries `execution_path_request` is refused with 400 before any routing, because the
+execution-path flow selects its own offer and so cannot pin the assigned route. Pinned
+execution-path support for workers is not built. The relay checks this first (present, whatever
+the value, on both relay surfaces); `IntelligenceService.route` also refuses a worker-assigned
+route combined with `execution_path_request`, so no other caller can select a worker's route
+through that flow. This rejection is the contract, not a gap.
 
 2026-11-24: the worker holds the serve token and the route is pinned by the worker header until #1313; a worker could name another admitted route, never a non-admitted one. (#1313, OC1b, carries the signed per-attempt assignment, the real dispatch-origin check and a prompt-only task delivery; this change keeps `LOCAL_EXECUTOR_ORIGIN` and its documented stopgap, and `.verdict-context.md`.)
 

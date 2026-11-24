@@ -244,8 +244,9 @@ def test_client_model_override_flag_does_not_change_relay_routing(
 def test_route_refuses_a_worker_pin_combined_with_an_execution_path_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Defence in depth: ``route()`` itself refuses the combination, so no caller can get a
-    worker request selected through the execution-path flow (which never pins)."""
+    """Defence in depth behind the relay's 400 (the accepted contract, operator decision
+    2026-11-24): ``route()`` itself refuses the combination, so no caller can get a worker
+    request selected through the execution-path flow, which never pins."""
     import asyncio
 
     from verdict.execution_path import ExecutionPathError

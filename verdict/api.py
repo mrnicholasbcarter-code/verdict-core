@@ -2151,7 +2151,9 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         return _proxy_error(400, "request body must be a JSON object", surface=surface)
     if request.headers.get("x-verdict-worker") is not None and "execution_path_request" in payload:
         # A worker is pinned to the route it was assigned.  The execution-path flow selects its
-        # own offer and would bypass that pin, so a worker request may not carry one.
+        # own offer and would bypass that pin, so a worker request may not carry one: this
+        # rejection, before any routing, is the contract (operator decision, 2026-11-24);
+        # pinned execution-path support for workers is not built.
         return _proxy_error(
             400,
             "worker requests must not carry execution_path_request: the assigned route is pinned",
@@ -2267,9 +2269,9 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 ),
             )
         elif decision.decision != "denied":
-            # Accepted: bound the request to exactly the assigned route.  Whatever produced the
-            # decision (the execution-path branch lists alternatives and proofs for several
-            # offers), a worker request never falls back to a route it was not assigned.
+            # Accepted: bound the request to exactly the assigned route.  Admission's pin already
+            # lists no alternatives; clearing them here is defence in depth, so a worker request
+            # never falls back to a route it was not assigned.
             decision = replace(decision, alternatives=[])
     attempts = build_attempts(proxy_instance, decision, protocol=protocol, admitted=relay_admitted)
     if not attempts:

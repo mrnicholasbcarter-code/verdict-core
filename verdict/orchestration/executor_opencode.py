@@ -92,14 +92,22 @@ def _redact(text: str, secrets: Iterable[str] = ()) -> str:
     return _AUTH_BEARER_RE.sub(lambda m: m.group(1) + REDACTED, text)
 
 
+def _sanitize_full(text: str, secrets: Iterable[str] = ()) -> str:
+    """Strip control characters and redact secrets; never truncate.
+
+    For reading a value out of the whole text (an HTTP status) before the part kept for the
+    record is cut.  What is recorded must come from :func:`_sanitize`, not from this.
+    """
+    return _redact(_CONTROL_RE.sub("", text), secrets).strip()
+
+
 def _sanitize(text: str, limit: int = _STDERR_TAIL_CHARS, secrets: Iterable[str] = ()) -> str:
     """Strip control characters, redact secrets, then keep the last ``limit`` chars.
 
     Redaction happens before truncation: truncating first could cut a secret in
     half and leave a fragment that an exact-match replacement no longer finds.
     """
-    clean = _redact(_CONTROL_RE.sub("", text), secrets).strip()
-    return clean[-limit:]
+    return _sanitize_full(text, secrets)[-limit:]
 
 
 def _parse_status_code(message: str) -> int | None:
@@ -634,7 +642,13 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
             elif not msg and isinstance(detail, str):
                 msg = detail
             if isinstance(msg, str) and msg:
-                error_message = _sanitize(msg, secrets=secrets)
+                full_message = _sanitize_full(msg, secrets)
+                error_message = full_message[-_STDERR_TAIL_CHARS:]
+                if error_status is None:
+                    # No structured status: read it from the whole message.  The recorded text
+                    # is only its tail, and a long provider diagnostic after "HTTP 429" would
+                    # otherwise cut the status away before recovery could classify it.
+                    error_status = _parse_status_code(full_message)
 
     usage: AttemptUsage | None = None
     if has_usage:
@@ -700,6 +714,20 @@ async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
         if proc.returncode is None:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(proc.wait(), timeout=_TERM_GRACE_SECONDS)
+
+
+def _cleanup_attempt_dir(attempt_tmp: tempfile.TemporaryDirectory[str]) -> None:
+    """Remove the per-attempt directory; never raise, and never leave it if it can be removed.
+
+    This runs in a ``finally`` after the result is known, so an OSError from it (a busy or
+    unreadable entry on a failing disk) must not replace that result with an exception.  When
+    the first attempt fails, a forced removal is tried; the directory holds no credential (the
+    key is only ever in the child environment), so a leftover is a disk-space problem, not a leak.
+    """
+    try:
+        attempt_tmp.cleanup()
+    except OSError:
+        shutil.rmtree(attempt_tmp.name, ignore_errors=True)
 
 
 class _WorkerIOError(OSError):
@@ -853,7 +881,16 @@ class OpenCodeExecutor:
             return self._failure(route_id, started, "timeout")
 
         # --- create per-attempt temp directories (Task 2.3) ---
-        attempt_tmp = tempfile.TemporaryDirectory(prefix="verdict-oc-")
+        try:
+            attempt_tmp = tempfile.TemporaryDirectory(prefix="verdict-oc-")
+        except OSError as exc:
+            # A full or unwritable temp filesystem: ``run()`` returns a terminal, never raises.
+            return self._failure(
+                route_id,
+                started,
+                f"config_write_failed: cannot create the per-attempt directory: "
+                f"{_sanitize(str(exc), secrets=secrets)}",
+            )
         try:
             tmp_path = Path(attempt_tmp.name)
             config_dir = tmp_path / "config"
@@ -959,7 +996,7 @@ class OpenCodeExecutor:
                 secrets=secrets,
             )
         finally:
-            attempt_tmp.cleanup()
+            _cleanup_attempt_dir(attempt_tmp)
 
     async def _collect(
         self, proc: asyncio.subprocess.Process, timeout_seconds: float
@@ -1061,8 +1098,12 @@ class OpenCodeExecutor:
         error_message = parsed["error_message"]
 
         if returncode != 0:
-            tail = error_message or _sanitize(stderr, secrets=secrets) or f"exit {returncode}"
-            status = parsed["error_status"] or _parse_status_code(tail)
+            # The status is read from the whole sanitized text, then the tail is kept: cutting
+            # first would lose a status that a long diagnostic pushed out of the last 400 chars.
+            # An NDJSON error's status was already read (structured, else from its full text).
+            stderr_full = "" if error_message else _sanitize_full(stderr, secrets)
+            tail = error_message or stderr_full[-_STDERR_TAIL_CHARS:] or f"exit {returncode}"
+            status = parsed["error_status"] or _parse_status_code(stderr_full)
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,

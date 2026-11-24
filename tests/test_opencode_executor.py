@@ -1342,6 +1342,105 @@ def test_opencode_executor_temp_dirs_cleaned_up(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# A full or unwritable temp filesystem: run() never raises
+# ---------------------------------------------------------------------------
+
+
+def _spawn_recorder(tmp_path: Path) -> tuple[str, Path]:
+    """A fake binary that records that it ran (it must not, in the tests that use this)."""
+    marker = tmp_path / "worker-ran"
+    return (
+        make_fake_opencode(
+            tmp_path,
+            f"import pathlib\npathlib.Path({str(marker)!r}).write_text('ran')\nsys.exit(0)\n",
+        ),
+        marker,
+    )
+
+
+def test_a_full_temp_filesystem_is_a_failed_terminal_not_an_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``run()`` promises to return a terminal.  Creating the per-attempt directory used to
+    sit outside the error handling, so ENOSPC (or an unwritable TMPDIR) escaped as OSError."""
+    import errno
+    import tempfile
+
+    real = tempfile.TemporaryDirectory
+
+    def full_disk(*args: object, **kwargs: object) -> object:
+        if kwargs.get("prefix") == "verdict-oc-":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", full_disk)
+    fake, marker = _spawn_recorder(tmp_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is False
+    assert terminal.harness == "opencode"
+    assert terminal.error.startswith("config_write_failed:"), terminal.error
+    assert "No space left" in terminal.error
+    assert not marker.exists(), "the worker was launched without its per-attempt directory"
+
+
+def test_a_failed_config_write_is_a_terminal_and_the_attempt_directory_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    created: list[str] = []
+
+    def full_disk(config_dir: Path, **_kwargs: object) -> None:
+        created.append(str(config_dir.parent))
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(executor_module, "_write_attempt_config", full_disk)
+    fake, marker = _spawn_recorder(tmp_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is False and terminal.error.startswith("config_write_failed:")
+    assert len(created) == 1 and Path(created[0]).name.startswith("verdict-oc-")
+    assert not Path(created[0]).exists(), "the per-attempt directory outlived the failed attempt"
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("worker_ok", [True, False], ids=["worker-succeeds", "worker-fails"])
+def test_a_failing_directory_cleanup_does_not_replace_the_result_and_still_removes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, worker_ok: bool
+) -> None:
+    """Cleanup runs in a ``finally``; an OSError from it (a busy or unreadable entry on a
+    full disk) must not turn a finished attempt into an exception, and the directory is
+    still removed on a best-effort basis."""
+    import errno
+    import tempfile
+
+    real = tempfile.TemporaryDirectory
+    roots: list[str] = []
+
+    class FailingCleanup(real):  # type: ignore[type-arg, misc]
+        def cleanup(self) -> None:
+            roots.append(self.name)
+            raise OSError(errno.EBUSY, "Device or resource busy")
+
+    def build(*args: object, **kwargs: object) -> object:
+        if kwargs.get("prefix") == "verdict-oc-":
+            return FailingCleanup(*args, **kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", build)
+    fake = make_fake_opencode(tmp_path, f"sys.exit({0 if worker_ok else 1})\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is worker_ok
+    assert len(roots) == 1
+    assert not Path(roots[0]).exists(), "the attempt directory was left behind"
+
+
+# ---------------------------------------------------------------------------
 # Serve credential and pre-dispatch checks (review item 1)
 # ---------------------------------------------------------------------------
 
@@ -1749,6 +1848,74 @@ def test_status_in_plain_error_text_is_still_recognised(tmp_path: Path) -> None:
     cwd.mkdir()
     terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
     assert terminal.status_code == 503
+
+
+# A diagnostic long enough that the 400-character tail kept for the terminal cannot contain the
+# status that opens the message.
+_LONG_DIAGNOSTIC = " provider diagnostic: the upstream closed the request before it finished." * 30
+
+
+@pytest.mark.parametrize(
+    ("event", "status"),
+    [
+        ({"type": "error", "message": f"HTTP 429: rate limited.{_LONG_DIAGNOSTIC}"}, 429),
+        ({"type": "error", "error": f"HTTP 503 Service Unavailable.{_LONG_DIAGNOSTIC}"}, 503),
+        ({"type": "error", "error": {"message": f"HTTP 502 Bad Gateway.{_LONG_DIAGNOSTIC}"}}, 502),
+    ],
+    ids=["message", "error-string", "error-object-without-status"],
+)
+def test_a_status_in_a_long_unstructured_error_is_not_lost_to_truncation(
+    tmp_path: Path, event: dict[str, object], status: int
+) -> None:
+    """The error text kept on the terminal is its last 400 characters, but the HTTP status is
+    read from the whole text first, so a long provider diagnostic cannot hide a 429 or 503
+    from recovery."""
+    line = json.dumps(event)
+    fake = make_fake_opencode(tmp_path, f"sys.stdout.write({line!r} + '\\n')\nsys.exit(1)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is False
+    assert terminal.status_code == status
+    assert len(terminal.error) <= 400, "the recorded error text must still be truncated"
+    assert f"HTTP {status}" not in terminal.error, "the test needs the status cut from the tail"
+
+
+def test_a_status_in_a_long_stderr_is_not_lost_to_truncation(tmp_path: Path) -> None:
+    """The same holds for a failure that printed no NDJSON error: the status is read from the
+    whole sanitized stderr before its tail is kept."""
+    text = f"fatal: HTTP 504 Gateway Timeout.{_LONG_DIAGNOSTIC}"
+    fake = make_fake_opencode(tmp_path, f"sys.stderr.write({text!r})\nsys.exit(1)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is False
+    assert terminal.status_code == 504
+    assert len(terminal.error) <= 400
+    assert "HTTP 504" not in terminal.error
+
+
+def test_a_structured_status_still_wins_over_a_number_in_the_text() -> None:
+    line = json.dumps(
+        {"type": "error", "error": {"status": 429, "message": f"retry in 503 ms{_LONG_DIAGNOSTIC}"}}
+    )
+    assert _parse_ndjson_output(line)["error_status"] == 429
+
+
+def test_a_secret_in_the_head_of_a_long_error_never_reaches_the_terminal(tmp_path: Path) -> None:
+    """Parsing the status from the full text must not let the full text out: the secret sits
+    in the part that is cut away and in the part that is kept, and neither is recorded."""
+    secret = "sk-test-LONGERROR-5e1d9c"
+    line = json.dumps(
+        {"type": "error", "message": f"HTTP 429 key={secret}.{_LONG_DIAGNOSTIC} key={secret}"}
+    )
+    fake = make_fake_opencode(tmp_path, f"sys.stdout.write({line!r} + '\\n')\nsys.exit(1)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    executor = OpenCodeExecutor(opencode_bin=fake, credential_provider=lambda *_a: secret)
+    terminal = run_executor(executor, "task", cwd)
+    assert terminal.status_code == 429
+    assert secret not in json.dumps(dataclasses.asdict(terminal), default=str)
 
 
 def _step_finish(cost: object, tokens_in: int = 100, tokens_out: int = 42) -> str:

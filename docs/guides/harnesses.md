@@ -384,7 +384,10 @@ directory and an unrestricted shell, so it can read files there and reach the ga
 directly.  "All model calls go through serve" holds for OpenCode's own provider calls only.
 Until [#1313](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1313) the worker
 holds the serve token and its route is pinned by the worker header: a worker could name
-another *admitted* route, never a non-admitted one.
+another *admitted* route, never a non-admitted one.  A worker request that carries
+`execution_path_request` is rejected with 400 before any routing: that flow selects its own
+offer and cannot pin the assigned route, and pinned execution-path support for workers is not
+built.
 
 ## Prime Agent
 

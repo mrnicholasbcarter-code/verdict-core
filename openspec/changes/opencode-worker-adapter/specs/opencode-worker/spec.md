@@ -54,18 +54,25 @@ attest that route identity.
   the provider follows the pinned route; there are no fallback routes; and the
   request is dispatched on that proof
 
-#### Scenario: A worker request cannot carry an execution-path request
+#### Scenario: A worker request carrying an execution-path request is rejected
+
+Operator decision (2026-11-24): pinned execution-path support for workers is not built. The
+execution-path flow selects its own offer, so a worker cannot be pinned through it; the
+contract is rejection, not a pinned decision.
 
 - **WHEN** a request with the `X-Verdict-Worker` header carries `execution_path_request`
-- **THEN** it is refused with 400 and no upstream contact, because the execution-path flow
-  selects its own offer and would bypass the worker's pin
+  (present, whatever its value, on `/v1/chat/completions` or `/v1/responses`)
+- **THEN** it is refused with 400 before any routing: nothing is routed, no proof is minted
+  and upstream is never contacted; `IntelligenceService.route` independently refuses a
+  worker-assigned route combined with `execution_path_request`
 
 #### Scenario: A worker request never falls back to another route
 
-- **WHEN** a worker request is accepted, whichever path produced the decision (the
-  execution-path decision lists alternatives and proofs for several offers)
+- **WHEN** a worker request is accepted (its decision comes from admission pinning the
+  assigned route)
 - **THEN** the relay bounds it to exactly the assigned route: it carries no
-  alternatives and no fallback attempt is built
+  alternatives and no fallback attempt is built, even if a decision were to list some
+  (defence in depth)
 
 #### Scenario: Worker pin to a route outside the admitted set is denied
 

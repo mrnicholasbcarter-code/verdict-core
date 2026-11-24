@@ -646,8 +646,10 @@ class IntelligenceService:
             and isinstance(context.get(CONTEXT_WORKER_ASSIGNED_ROUTE), WorkerAssignedRoute)
         ):
             # The execution-path flow below selects its own offer and never reaches
-            # ``_decision_from_admit``, where a worker's assigned route is pinned.  Refuse the
-            # combination rather than let a worker request select another route.
+            # ``_decision_from_admit``, where a worker's assigned route is pinned.  Pinned
+            # execution-path support for workers is not built (operator decision, 2026-11-24):
+            # the relay rejects the combination with 400 first, and this refuses it for any
+            # other caller rather than let a worker request select another route.
             raise ExecutionPathError(
                 "a worker request with an assigned route must not carry execution_path_request"
             )

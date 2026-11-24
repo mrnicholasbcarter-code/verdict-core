@@ -45,7 +45,15 @@ def _section(diag: dd.DoctorDiagnostics) -> tuple[str, str, str]:
     return rows[0]
 
 
-@pytest.mark.parametrize("output", [PINNED_VERSION, f"opencode {PINNED_VERSION}"])
+@pytest.mark.parametrize(
+    "output",
+    [
+        PINNED_VERSION,
+        f"opencode {PINNED_VERSION}",
+        f"v{PINNED_VERSION}",
+        f"opencode v{PINNED_VERSION}",  # what the installed 2.3.2 binary really prints
+    ],
+)
 def test_matching_version_is_ok(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: str
 ) -> None:
@@ -64,20 +72,42 @@ def test_matching_version_is_ok(
         "opencode 2.3.1",
         f"{PINNED_VERSION}-rc.1",
         f"opencode {PINNED_VERSION}-beta.2+build5",
+        # The whole token must be the pinned release: a longer or suffixed token that merely
+        # starts with it is a different build (the check used to read only its leading digits).
+        f"{PINNED_VERSION}.1",
+        f"opencode {PINNED_VERSION}.1",
+        f"opencode v{PINNED_VERSION}.1",
+        f"{PINNED_VERSION}custom",
+        f"opencode {PINNED_VERSION}custom",
+        f"{PINNED_VERSION}0",
+        f"1{PINNED_VERSION}",
     ],
-    ids=["newer", "older", "prerelease", "prerelease-with-build"],
+    ids=[
+        "newer",
+        "older",
+        "prerelease",
+        "prerelease-with-build",
+        "extra-numeric-component",
+        "extra-numeric-component-with-prefix",
+        "extra-numeric-component-with-v-prefix",
+        "glued-suffix",
+        "glued-suffix-with-prefix",
+        "longer-last-component",
+        "longer-first-component",
+    ],
 )
 def test_any_other_version_warns_and_names_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: str
 ) -> None:
-    """A prerelease of the pinned numbers is not the pinned release."""
+    """Only the exact pinned release is ``ok``: a prerelease, or a longer or suffixed token
+    that starts with the pinned numbers, is a different build."""
     binary = _fake_binary(tmp_path, output)
     monkeypatch.setattr(executor_module, "_opencode_binary", lambda *a, **k: binary)
     diag = dd.DoctorDiagnostics()
     dd._doctor_opencode_version(diag)
     _name, level, message = _section(diag)
     assert level == "warn", (level, message)
-    installed = output.split()[-1]
+    installed = output.split()[-1].removeprefix("v")
     assert f"installed v{installed}" in message
     assert f"expected v{PINNED_VERSION}" in message
     assert diag.warnings
@@ -212,6 +242,89 @@ def test_undecodable_output_still_cleans_up_the_wrapper_group(
         dd._doctor_opencode_version(diag)
         _name, level, message = _section(diag)
         assert level == "note" and "version check error" in message, (level, message)
+        _assert_descendant_cleaned_up(pid_file)
+    finally:
+        _kill_recorded_descendant(pid_file)
+
+
+def _write_wrapper(tmp_path: Path, body: str) -> tuple[str, Path]:
+    """A /bin/sh wrapper in a directory with spaces; returns (path, descendant pid file)."""
+    workdir = tmp_path / "a dir with spaces"
+    workdir.mkdir(exist_ok=True)
+    pid_file = workdir / "descendant.pid"
+    script = workdir / "noisy-opencode"
+    script.write_text("#!/bin/sh\n" + body.replace("PIDFILE", shlex.quote(str(pid_file))))
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    return str(script), pid_file
+
+
+def test_output_over_the_cap_is_a_failed_check_not_buffered_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``communicate()`` buffered everything a wrapper printed in memory, bounded only by the
+    timeout.  Output past the cap is now a failed check (a note naming the cap), never a
+    version read from a flood."""
+    monkeypatch.setattr(dd, "_OPENCODE_VERSION_MAX_OUTPUT_BYTES", 1024)
+    binary, _pid = _write_wrapper(tmp_path, "head -c 4096 /dev/zero | tr '\\0' 'a'\necho\nexit 0\n")
+    monkeypatch.setattr(executor_module, "_opencode_binary", lambda *a, **k: binary)
+    diag = dd.DoctorDiagnostics()
+    dd._doctor_opencode_version(diag)
+    _name, level, message = _section(diag)
+    assert level == "note", (level, message)
+    assert "output exceeded 1024 bytes" in message, message
+    assert not diag.warnings
+
+
+def test_the_cap_covers_stdout_and_stderr_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(dd, "_OPENCODE_VERSION_MAX_OUTPUT_BYTES", 1000)
+    binary, _pid = _write_wrapper(
+        tmp_path,
+        "head -c 600 /dev/zero | tr '\\0' 'a'\necho\nhead -c 600 /dev/zero | tr '\\0' 'b' >&2\nexit 0\n",
+    )
+    monkeypatch.setattr(executor_module, "_opencode_binary", lambda *a, **k: binary)
+    diag = dd.DoctorDiagnostics()
+    dd._doctor_opencode_version(diag)
+    _name, level, message = _section(diag)
+    assert level == "note" and "output exceeded 1000 bytes" in message, (level, message)
+
+
+def test_output_exactly_at_the_cap_is_still_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap is a limit, not an off-by-one trap: a version line that fills it exactly is read."""
+    cap = 256
+    monkeypatch.setattr(dd, "_OPENCODE_VERSION_MAX_OUTPUT_BYTES", cap)
+    padding = " " * (cap - len(PINNED_VERSION) - 1)  # the newline is the last byte
+    binary, _pid = _write_wrapper(tmp_path, f"printf '%s\\n' '{PINNED_VERSION}{padding}'\nexit 0\n")
+    monkeypatch.setattr(executor_module, "_opencode_binary", lambda *a, **k: binary)
+    diag = dd.DoctorDiagnostics()
+    dd._doctor_opencode_version(diag)
+    assert _section(diag)[1:] == ("ok", f"v{PINNED_VERSION}")
+
+
+@requires_procfs
+def test_a_wrapper_that_floods_and_hangs_is_killed_at_the_cap_not_the_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap ends the check at once: the process group is killed when the limit is passed,
+    well before the (here long) timeout, and no descendant is left running."""
+    monkeypatch.setattr(dd, "_OPENCODE_VERSION_MAX_OUTPUT_BYTES", 2048)
+    monkeypatch.setattr(dd, "_OPENCODE_VERSION_TIMEOUT_SECONDS", 8.0)
+    binary, pid_file = _write_wrapper(
+        tmp_path,
+        "sleep 30 >/dev/null 2>&1 &\necho $! > PIDFILE\nhead -c 65536 /dev/zero >&2\nwait\n",
+    )
+    monkeypatch.setattr(executor_module, "_opencode_binary", lambda *a, **k: binary)
+    try:
+        started = time.monotonic()
+        diag = dd.DoctorDiagnostics()
+        dd._doctor_opencode_version(diag)
+        elapsed = time.monotonic() - started
+        _name, level, message = _section(diag)
+        assert level == "note" and "output exceeded 2048 bytes" in message, (level, message)
+        assert elapsed < 5.0, f"the cap did not end the check; it ran {elapsed:.1f}s"
         _assert_descendant_cleaned_up(pid_file)
     finally:
         _kill_recorded_descendant(pid_file)

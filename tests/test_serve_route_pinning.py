@@ -6,6 +6,10 @@ assigned.  The relay hands it to admission as a typed input; admission selects i
 its admitted set and mints its proof, or denies.  The relay verifies that outcome and
 fails closed with 503 otherwise (invalid ``model``, route not admitted, or not selected).
 
+A worker request that carries ``execution_path_request`` is not pinned and not supported: the
+accepted contract (operator decision, 2026-11-24) is that it is rejected with 400 before any
+routing.  Pinned execution-path support for workers is not built.
+
 No live calls are made.  The upstream is a RecordingTransport fixture.
 """
 
@@ -168,9 +172,13 @@ def test_worker_header_without_valid_model_fails_closed(
     assert "model" in message
 
 
-class _ExecutionPathShapedIntelligence(_WorkerPinningIntelligence):
-    """Execution-path decisions bypass ``_decision_from_admit``: the selected route
-    arrives with alternatives and a proof for every admitted offer."""
+class _DecisionWithAlternativesIntelligence(_WorkerPinningIntelligence):
+    """A decision that selects the assigned route and also lists an admitted alternative.
+
+    No accepted worker request produces such a decision (a worker request carrying
+    ``execution_path_request`` is rejected before routing), so this is defence in depth: the
+    relay bounds an accepted worker request to its one route whatever the decision carries.
+    """
 
     async def route(
         self,
@@ -184,7 +192,7 @@ class _ExecutionPathShapedIntelligence(_WorkerPinningIntelligence):
             model="selected-model",
             provider="omniroute",
             tier=2,
-            reason="execution-path shaped fixture",
+            reason="decision-with-alternatives fixture",
             request_id="ep-req-1",
             managed_backend_status="healthy",
             quality_outcome="unknown",
@@ -204,10 +212,11 @@ def test_worker_request_never_falls_back_even_if_the_decision_carries_alternativ
 
     The decision selects the assigned route but also lists an admitted alternative with
     its own proof.  ``build_attempts`` would include it, so a failed first attempt could
-    dispatch to a route the worker was not assigned.
+    dispatch to a route the worker was not assigned.  Defence in depth: no accepted worker
+    request is expected to produce such a decision.
     """
     transport = _configure(monkeypatch)
-    monkeypatch.setattr(api, "_build_intelligence", lambda: _ExecutionPathShapedIntelligence())
+    monkeypatch.setattr(api, "_build_intelligence", lambda: _DecisionWithAlternativesIntelligence())
     attempted: list[list[str]] = []
     real_build_attempts = api.build_attempts
 
@@ -231,26 +240,77 @@ def test_worker_request_never_falls_back_even_if_the_decision_carries_alternativ
     assert [r["body"]["model"] for r in transport.requests] == ["selected-model"]
 
 
-def test_worker_request_carrying_execution_path_request_is_rejected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The execution-path flow selects its own offer and would bypass the worker's pin.
+class _RoutingSpy(_WorkerPinningIntelligence):
+    """Counts how often routing was reached."""
 
-    A worker request carrying that field is refused with 400, with no upstream contact,
-    whatever the field contains.
+    def __init__(self) -> None:
+        self.routed: list[str] = []
+
+    async def route(
+        self,
+        task: str,
+        criticality: str = "medium",
+        context: dict[str, Any] | None = None,
+        *,
+        request_id: str | None = None,
+    ) -> RoutingDecision:
+        self.routed.append(task)
+        return await super().route(task, criticality, context, request_id=request_id)
+
+
+_EXECUTION_PATH_VALUES: list[Any] = [{"schema_version": "anything"}, {}, None, "not-an-object"]
+
+
+@pytest.mark.parametrize("surface", ["/v1/chat/completions", "/v1/responses"])
+@pytest.mark.parametrize("value", _EXECUTION_PATH_VALUES, ids=["object", "empty", "null", "string"])
+def test_worker_request_carrying_execution_path_request_is_rejected_before_routing(
+    monkeypatch: pytest.MonkeyPatch, surface: str, value: Any
+) -> None:
+    """The contract (operator decision, 2026-11-24): a worker request that carries
+    ``execution_path_request`` is rejected with 400 before any routing, whatever the field
+    holds (present, even null, is enough) and on either relay surface.
+
+    The execution-path flow selects its own offer and would bypass the worker's pin, and
+    pinned execution-path support for workers is not built.  Nothing is routed, no proof is
+    minted and upstream is never contacted.
     """
     transport = _configure(monkeypatch)
+    spy = _RoutingSpy()
+    monkeypatch.setattr(api, "_build_intelligence", lambda: spy)
+    body = {
+        "model": "selected-model",
+        "messages": [{"role": "user", "content": "worker task"}],
+        "input": "worker task",
+        "execution_path_request": value,
+    }
+    with TestClient(api.app) as client:
+        response = client.post(surface, json=body, headers={"x-verdict-worker": "opencode"})
+    assert response.status_code == 400, response.text
+    message = response.json()["error"]["message"]
+    assert "execution_path_request" in message and "worker" in message
+    assert spy.routed == [], "a worker request with execution_path_request reached routing"
+    assert transport.requests == [], "upstream was contacted"
+
+
+def test_the_execution_path_rejection_is_only_for_worker_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scope of the rejection: without the worker header the request is judged as before.
+
+    An invalid ``execution_path_request`` gets the existing request validation error, not
+    the worker-specific rejection, so the guard does not change what other callers see.
+    """
+    _configure(monkeypatch)
     with TestClient(api.app) as client:
         response = client.post(
             "/v1/chat/completions",
             json={
                 "model": "selected-model",
-                "messages": [{"role": "user", "content": "worker task"}],
+                "messages": [{"role": "user", "content": "task"}],
                 "execution_path_request": {"schema_version": "anything"},
             },
-            headers={"x-verdict-worker": "opencode"},
         )
     assert response.status_code == 400, response.text
-    assert "execution_path_request" in response.json()["error"]["message"]
-    assert "worker" in response.json()["error"]["message"]
-    assert transport.requests == []
+    message = response.json()["error"]["message"]
+    assert "schema_version" in message, message
+    assert "worker" not in message, message
