@@ -266,10 +266,10 @@ Details the table leaves out:
 - **Safety flags.** `free_tier_active_admit`, `prove_confirm_admit`, `capability_hard_gate` when a
   requirement exists, and `worker_assigned_lane`. Never `cheap_path_context_pack`.
 - **What still reads the text, and why it is not a classifier.** The profile digest hashes the
-  text (it binds the proof to this exact request) and `profile_task` attaches a task-family label
-  by keyword; no lane decision uses the label. The context-plan estimate uses the text's token size
-  and that label to size a per-route budget (a hard gate that can only remove the route). Neither
-  selects, ranks or refuses a route by what the text means.
+  text, which binds the proof to this exact request. The context-plan estimate uses the text's
+  token size, a per-route hard gate that can only remove the route; its family allowance comes from
+  the constant family `agentic` (D6), so no keyword in the text changes whether a route fits.
+  Neither selects, ranks or refuses a route by what the text means.
 - **Keyword parity (decision 6).** The default `direct-gateway` worker never reaches serve and the
   orchestrator never runs the scanner: its floor is `required_capability_tier(node)`, from the
   node's risk and kind. An assigned request gets the same: no keyword protection on node text. The
@@ -286,8 +286,11 @@ other way (skipped the planner, or waived `streaming` before hashing) every assi
 be denied "proof scope or observation mismatch". So:
 
 - `prepared_task_profile` gains an `assigned` mode. In it the planner is **not** consulted (no text
-  capability inference) and the requirements are `derive_requirements` over request fields only.
-  The digest therefore reflects what the request asked for, `streaming` included.
+  capability inference), the requirements are `derive_requirements` over request fields only, and
+  the profile's task family is the constant `agentic`, not inferred from text and not taken from a
+  `task_family` field in the body (design choice: a worker is an agent with tools, and `agentic`
+  carries the largest context-plan allowance, so the size gate errs toward failing closed). The
+  digest therefore reflects what the request asked for, `streaming` included.
 - `_offload_free_tier` (lane) and `_relay_completion` both call it with the same inputs: the same
   task text, the same `authority_context`, `assigned=True`. The relay passes `assigned=True`
   exactly when it holds a verified assignment. There is no second implementation.
@@ -353,9 +356,16 @@ with no confirm transport (`no_passport` or `confirm_unavailable`) and the `Elig
 ### D9. Receipts and secrets
 
 Serve's receipts and evidence carry run id, node id, route id, expiry and `assignment_digest`.
-They never carry the token, the signature or the key, and a denial log line carries only the reason
-code. A test echoes the token and the key into a request and asserts neither appears in the
-response, the evidence record, the receipt or the logs.
+They never carry the token, the signature or the key. Logging has two cases: when verification
+**fails** nothing in the token can be trusted, so the log line carries the reason code only; after
+verification **succeeds**, a later refusal (a `model` mismatch, for example) may carry the verified
+route, run and node ids. Neither case ever logs the token, tag or key.
+
+The guarantee is about transport credentials, not request content. The bearer and the key are never
+copied into any serve output (responses serve itself writes, evidence, receipts, logs, and the
+upstream request's headers; the proxy builds those from its own gateway key). Message content a
+client chooses to send is forwarded verbatim, as every relay request is, and what an upstream echoes
+back is outside this guarantee; no test puts the token in message content and expects redaction.
 
 ## Supersedes
 

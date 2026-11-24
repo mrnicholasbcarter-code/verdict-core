@@ -269,10 +269,10 @@ SHALL NOT fall through to the legacy path.
 
 On the assigned lane the keyword scanner, the worthiness classification and the planner's
 text-derived capabilities SHALL NOT run, so no request text SHALL select, filter or refuse a route
-through them. Two things still read the text and are not classifiers: the task-profile digest (a
-hash of the text, which binds the proof to the request, plus the profile's task-family label, a
-keyword label that no lane decision uses), and the context-plan estimate (token size of the text
-against the route's window, a per-route hard gate). The request body SHALL be forwarded verbatim
+through them. Two things still read the text and are not classifiers: the task-profile digest (a hash of the
+text, which binds the proof to the request) and the context-plan estimate (token size of the text
+against the route's window, a per-route hard gate), whose task family is the constant `agentic` and
+never inferred from the text. The request body SHALL be forwarded verbatim
 except that `model` is the pinned route and Verdict-local fields are stripped as for every relay
 request: no pack SHALL be built and no message added. The lane's decision SHALL NOT carry the
 `cheap_path_context_pack` flag. Keyword protection for an assigned request is parity with the
@@ -353,11 +353,19 @@ A proof minted by the lane SHALL verify at the relay.
   no `tools`
 - **THEN** `tool-calling` is not added to its requirements by either side
 
+#### Scenario: Words in the text do not change the family
+
+- **WHEN** two assigned requests differ only in words such as "review", "plan" or "docs"
+- **THEN** both profiles have the task family `agentic` and the context-plan estimate is the same
+
 ### Requirement: Serve's receipts record the assignment and never a secret
 
 Serve's evidence and admission receipt for an assigned request SHALL carry the route id, run id,
 node id, expiry and the payload digest, and SHALL NOT carry the assignment token, its tag or the
-key. A denial log line SHALL carry the reason code only.
+key. When verification fails, serve's log line SHALL carry the reason code only; after verification
+succeeds, a later refusal MAY also carry the verified route, run and node ids. No log line SHALL
+carry the token, its tag or the key. These guarantees cover transport credentials, not request
+content: message content a client sends is forwarded verbatim.
 
 #### Scenario: Receipts name the run and node
 
@@ -366,10 +374,16 @@ key. A denial log line SHALL carry the reason code only.
 
 #### Scenario: A secret never appears
 
-- **WHEN** a request is made with an assignment and the assignment, its tag and the key are searched
-  for in the response, the evidence record, the admission receipt, the persisted routing receipt,
-  the log output and the upstream request
+- **WHEN** a request is made with an assignment as its bearer (and not in its body) and the
+  assignment, its tag and the key are searched for in the response serve writes, the evidence
+  record, the admission receipt, the persisted routing receipt, the log output and the upstream
+  request's headers and body
 - **THEN** none is found
+
+#### Scenario: A failed verification logs the reason only
+
+- **WHEN** an assignment fails verification
+- **THEN** the log line holds the reason code and no field taken from the token
 
 ### Requirement: Requests without an assignment are unchanged
 
