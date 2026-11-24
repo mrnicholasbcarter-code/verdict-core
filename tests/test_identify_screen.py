@@ -9,13 +9,14 @@ import pytest
 
 from verdict import identify
 from verdict.metadata.records import (
+    SOURCE_OPENROUTER_AA,
     FieldProvenance,
     ModelMetadataRecord,
     ProvenancedField,
     SoftScores,
 )
 from verdict.metadata.store import MetadataSnapshot
-from verdict.omniroute_evidence import OmniRouteEvidence, TrafficEvidence
+from verdict.omniroute_evidence import LiveCandidate, OmniRouteEvidence, TrafficEvidence
 from verdict.orchestration.health_cache import (
     CATEGORY_PAYMENT,
     HealthCache,
@@ -622,12 +623,16 @@ def test_tier_cap_never_probes_insufficient_or_unknown_tier(tmp_path):
     assert {r[0] for r in calls} == {"p/claude-sonnet-4.5"}
     by_id = {r["route_id"]: r for r in report["routes"]}
     assert by_id["p/gemma-4-26b-a4b-it"]["result"] == "skipped_capability_tier"
+    # Unknown-tier routes with no band membership get skipped_unknown_tier (fix
+    # for #1284 narrowed by ADR-051): metadata=None → empty band → q/zzqx-blob
+    # is filtered before consuming a cap slot.
     assert by_id["q/zzqx-blob"]["result"] == "skipped_unknown_tier"
     assert by_id["p/claude-sonnet-4.5"]["capability_tier"] == 1
     assert by_id["p/claude-sonnet-4.5"]["supports_tools"] is True
     assert by_id["p/claude-sonnet-4.5"]["context_window"] == 200_000
-    # Skipped routes do not consume the route cap.
+    # Only the probed route consumed the cap; tier-filtered routes did not.
     assert report["routes_checked"] == report["passed"] == 1
+    # stopped_reason is complete: the skipped routes were filtered, not capped.
     assert report["stopped_reason"] == "complete"
 
 
@@ -869,6 +874,8 @@ def test_new_options_only_remove_routes_from_the_probed_set(tmp_path):
         tmp_path / "floor", calls, GOLDEN_INVENTORY, max_routes=99, max_per_pool=1, **PLANNER_FLOOR
     )
     assert [r["route_id"] for r in report["routes"]] == [r["route_id"] for r in plain["routes"]]
+    # zz/unknown-tier has no band membership (metadata=None → empty band) so it
+    # receives skipped_unknown_tier and is never probed (ADR-051 narrowing).
     assert probed(calls) == ["agy/alpha", "cerebras/zeta", "kc/gamma:free", "nvidia/epsilon"]
     assert set(probed(calls)) < set(probed(plain_calls))
     assert results(report) == {
@@ -1099,3 +1106,232 @@ def test_rescreen_requested_bypasses_skipped_fresh_and_probes(tmp_path: object) 
     # The hint must be consumed after the probe sends its first turn.
     reloaded = HealthCache(tmp_path / "health.json")  # type: ignore[operator]
     assert "alias/strong" not in reloaded.rescreen_requests()
+
+
+# ---------------------------------------------------------------------------
+# Issue #1284: subscription frontier routes + tier filter + provider namespace
+# ---------------------------------------------------------------------------
+
+
+def _band_evidence(route_id: str) -> OmniRouteEvidence:
+    """Evidence where route_id is in inventory_route_ids but not proven_by_traffic.
+
+    The route has no capability_tier in its inventory row (tier is None).
+    """
+    prefix = route_id.split("/", 1)[0]
+    return OmniRouteEvidence(
+        fetched_at=NOW,
+        connections=(),
+        usable_providers=frozenset({prefix}),
+        proven_by_traffic={},
+        cooled_models=frozenset(),
+        source_errors=(),
+        route_capacities={route_id: "subscription"},
+        inventory_route_ids=frozenset({route_id}),
+        inventory_rows={
+            route_id: {
+                "id": route_id,
+                "context_length": 200_000,
+                "capabilities": {"tool_calling": True},
+                # no capability_tier → tier is None
+            }
+        },
+    )
+
+
+def _intelligence_snapshot(route_id: str, *, stale: bool = False) -> MetadataSnapshot:
+    """MetadataSnapshot with a fresh (or stale) aa_intelligence score for route_id."""
+    hours_before = 24 if stale else 3
+    fetched_at = (NOW - timedelta(hours=hours_before)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    prov = ProvenancedField(
+        value=0.95, provenance=FieldProvenance(source=SOURCE_OPENROUTER_AA, fetched_at=fetched_at)
+    )
+    record = ModelMetadataRecord(
+        id=route_id, omniroute_ids=(route_id,), scores=SoftScores(aa_intelligence=prov)
+    )
+    return MetadataSnapshot(
+        schema_version="1", refreshed_at=fetched_at, sources={}, records=(record,)
+    )
+
+
+def test_unknown_tier_in_band_passes_tier_filter(tmp_path: Path) -> None:
+    """A no-tier route in the planner band passes the max_capability_tier filter.
+
+    Issue #1284 narrowed: unknown-tier routes pass only when their stripped
+    model key is in the ADR-051 fallback band per fresh aa_intelligence ratings.
+    With a fresh score, the route is in the band and must reach the probe stage.
+    The route id uses a prefix unknown to the classifier so tier stays None.
+    """
+    rid = "zz/frontier-test-model"
+    calls: list[object] = []
+    report = identify.screen_models(
+        _band_evidence(rid),
+        metadata=_intelligence_snapshot(rid),
+        cache=HealthCache(tmp_path / "health.json"),
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=2,
+        max_routes=2,
+        clock=lambda: NOW,
+        capacities=("subscription",),
+        max_capability_tier=1,
+    )
+    rows = {r["route_id"]: r for r in report["routes"]}
+    assert rid in rows
+    assert rows[rid]["result"] != "skipped_unknown_tier", (
+        "Route in planner band must not be filtered by max_capability_tier"
+    )
+    assert calls != [], "Route in band must be probed"
+
+
+def test_unknown_tier_with_stale_ratings_is_filtered(tmp_path: Path) -> None:
+    """A no-tier route with stale aa_intelligence ratings gets skipped_unknown_tier.
+
+    The planner band is computed only from fresh ratings (within 12 hours of now).
+    A route whose only rating is older than 12 hours falls out of the band and is
+    filtered with skipped_unknown_tier; it must not be probed.
+    The route id uses a prefix unknown to the classifier so tier stays None.
+    """
+    rid = "zz/frontier-test-model"
+    calls: list[object] = []
+    report = identify.screen_models(
+        _band_evidence(rid),
+        metadata=_intelligence_snapshot(rid, stale=True),
+        cache=HealthCache(tmp_path / "health.json"),
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=2,
+        max_routes=2,
+        clock=lambda: NOW,
+        capacities=("subscription",),
+        max_capability_tier=1,
+    )
+    rows = {r["route_id"]: r for r in report["routes"]}
+    assert rid in rows
+    assert rows[rid]["result"] == "skipped_unknown_tier", (
+        "Route with stale ratings must be filtered (not in band)"
+    )
+    assert calls == [], "Stale-rated route must not be probed"
+
+
+def test_screen_uses_live_candidate_provider_for_provider_filter(tmp_path: Path) -> None:
+    """Extra-ratings provider name uses live_candidates.provider, not route_identities.
+
+    When owned_by ('cc') differs from the connection provider ('cursor'), the
+    --provider filter must use the connection namespace so the route is not dropped.
+    """
+    rid = "cursor/sonnet-4"
+    ev = replace(
+        snapshot(),
+        usable_providers=frozenset({"p", "q", "cursor"}),
+        route_identities={
+            **{
+                r: ("q" if r.startswith("q/") else "p", r.split("/", 1)[1])
+                for r in ["p/weak", "p/strong", "q/model", "alias/strong"]
+            },
+            rid: ("cc", "sonnet-4"),  # mismatched: owned_by is 'cc', connection is 'cursor'
+        },
+        inventory_route_ids=frozenset({rid}),
+        live_candidates={
+            rid: LiveCandidate(
+                route_id=rid,
+                provider="cursor",  # connection/live_candidates uses 'cursor'
+                connection_ids=("conn1",),
+                reachable=True,
+            )
+        },
+        route_capacities={
+            **{r: "subscription" for r in ["p/weak", "p/strong", "q/model", "alias/strong"]},
+            rid: "subscription",
+        },
+    )
+    calls: list[object] = []
+    cache = HealthCache(tmp_path / "health.json")  # type: ignore[operator]
+    report = identify.screen_models(
+        ev,
+        metadata=ratings(),
+        cache=cache,
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=2,
+        max_routes=1,
+        clock=lambda: NOW,
+        capacities=("subscription",),
+        providers=("cursor",),  # filter uses live_candidates.provider, not owned_by
+    )
+    rows = {r["route_id"]: r for r in report["routes"]}
+    assert rid in rows, f"Route must appear in screen report; got: {report['routes']}"
+    assert rows[rid]["result"] != "skipped_provider_filter", (
+        "Route must not be filtered: live_candidates.provider='cursor' matches --provider cursor"
+    )
+
+
+def test_screen_includes_subscription_frontier_route_not_in_live_candidates(tmp_path: Path) -> None:
+    """Subscription frontier routes in inventory but not live_candidates are screened.
+
+    The route's owned_by ('anthropic') differs from the route prefix ('cc') which
+    is the namespace usable_providers uses.  The fix must use the prefix.
+    """
+    rid = "cc/claude-opus-5-5"
+    ev = OmniRouteEvidence(
+        fetched_at=NOW,
+        connections=(),
+        usable_providers=frozenset({"cc"}),
+        proven_by_traffic={},
+        cooled_models=frozenset(),
+        source_errors=(),
+        route_identities={rid: ("anthropic", "claude-opus-5-5")},  # owned_by ≠ prefix
+        route_capacities={rid: "subscription"},
+        inventory_route_ids=frozenset({rid}),
+        # live_candidates is empty: not in auto-combo pool
+    )
+    calls: list[object] = []
+    cache = HealthCache(tmp_path / "health.json")  # type: ignore[operator]
+    report = identify.screen_models(
+        ev,
+        metadata=ratings(),
+        cache=cache,
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=2,
+        max_routes=2,
+        clock=lambda: NOW,
+        capacities=("subscription",),
+    )
+    rows = {r["route_id"]: r for r in report["routes"]}
+    assert rid in rows, (
+        f"Subscription frontier route must appear when its provider is usable; "
+        f"got: {report['routes']}"
+    )
+
+
+def test_screen_opaque_inventory_route_never_screened(tmp_path: Path) -> None:
+    """Opaque routes (auto/*, combo/*) in inventory must never appear in the screen."""
+    opaque_rid = "auto/best"
+    ev = OmniRouteEvidence(
+        fetched_at=NOW,
+        connections=(),
+        usable_providers=frozenset({"auto"}),
+        proven_by_traffic={},
+        cooled_models=frozenset(),
+        source_errors=(),
+        route_identities={opaque_rid: ("auto", "best")},
+        route_capacities={opaque_rid: "subscription"},
+        inventory_route_ids=frozenset({opaque_rid}),
+    )
+    calls: list[object] = []
+    cache = HealthCache(tmp_path / "health.json")  # type: ignore[operator]
+    report = identify.screen_models(
+        ev,
+        metadata=ratings(),
+        cache=cache,
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=2,
+        max_routes=2,
+        clock=lambda: NOW,
+        capacities=("subscription",),
+    )
+    rows = {r["route_id"]: r for r in report["routes"]}
+    assert opaque_rid not in rows, "Opaque route must never appear in screen report"
+    assert calls == [], "No requests must be sent for opaque routes"
