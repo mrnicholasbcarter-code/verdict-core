@@ -214,15 +214,18 @@ def _without_docstring(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.AST:
 
 
 def _mention_index(body: list[ast.stmt]) -> dict[str, list[ast.stmt]]:
-    """Every statement of one scope's body (definitions excluded) by each name it mentions.
+    """Every statement of one scope's body by each name it mentions.
 
     A name is mentioned when it is read, assigned, mutated (``FLAGS.append(True)``), unpacked
     (``SKIP, LIMIT = ...``), chained, augmented or imported. No data flow is modelled: all of them
-    count, so none can be missed.
+    count, so none can be missed. A function or class is indexed under its own name only (a helper
+    a guard calls is a dependency of the guard; every test that happens to read the same constant
+    is not).
     """
     index: dict[str, list[ast.stmt]] = {}
     for stmt in body:
         if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            index.setdefault(stmt.name, []).append(stmt)
             continue
         mentioned = {n.id for n in ast.walk(stmt) if isinstance(n, ast.Name)}
         for part in ast.walk(stmt):
@@ -276,8 +279,12 @@ class _Collector(ast.NodeVisitor):
         return frozenset(found)
 
     def _dependencies(self, names: set[str]) -> list[str]:
-        """Every module and class statement that mentions ``names``, and those they mention."""
-        statements: dict[int, str] = {}
+        """Every module and class statement that mentions ``names``, and those they mention.
+
+        In source order: ``FLAGS.append(True)`` then ``FLAGS.clear()`` is not the same as the
+        reverse.
+        """
+        statements: dict[int, tuple[int, str]] = {}
         seen: set[str] = set()
         pending = list(names)
         while pending:
@@ -288,9 +295,11 @@ class _Collector(ast.NodeVisitor):
             for index in self.indices:
                 for stmt in index.get(name, []):
                     if id(stmt) not in statements:
-                        statements[id(stmt)] = ast.unparse(stmt)
+                        is_function = isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef)
+                        text = ast.unparse(_without_docstring(stmt) if is_function else stmt)  # type: ignore[arg-type]
+                        statements[id(stmt)] = (stmt.lineno, text)
                         pending.extend(self._names(stmt))
-        return sorted(statements.values())
+        return [text for _, text in sorted(statements.values())]
 
     def _record(self, kind: str, text: str, node: ast.AST | None = None) -> None:
         names: set[str] = set(self._names(node)) if node is not None else set()
@@ -401,8 +410,11 @@ class _Collector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        if isinstance(node.func, ast.Attribute) and self._is_protected(node.func.value):
-            # collect_ignore.append(...), pytestmark.extend(...): changed in place.
+        if isinstance(node.func, ast.Attribute) and (
+            self._is_protected(node.func.value) or self._is_selection_option(node.func.value)
+        ):
+            # collect_ignore.append(...), pytestmark.extend(...), config.option.ignore.append(...):
+            # a list that decides what runs, changed in place.
             self._record("call", ast.unparse(node), node)
             for arg in node.args:
                 self.visit(arg)

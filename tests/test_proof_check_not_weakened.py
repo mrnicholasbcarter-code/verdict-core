@@ -1276,6 +1276,30 @@ CONDITION_EDITS = {
         "import helpers\n\n@pytest.mark.skipif(helpers.SKIP, reason='r')\ndef test_b():\n    pass\n",
         "import other_helpers as helpers\n\n@pytest.mark.skipif(helpers.SKIP, reason='r')\ndef test_b():\n    pass\n",
     ),
+    "mutations of a guard list are reordered": (
+        "FLAGS = []\nFLAGS.append(True)\nFLAGS.clear()\n\n@pytest.mark.skipif(FLAGS, reason='r')\ndef test_b():\n    pass\n",
+        "FLAGS = []\nFLAGS.clear()\nFLAGS.append(True)\n\n@pytest.mark.skipif(FLAGS, reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "class-level mutations of a guard are reordered": (
+        "class TestK:\n    FLAGS = []\n    FLAGS.append(True)\n    FLAGS.clear()\n\n    def test_b(self):\n        if self.FLAGS:\n            pytest.skip('r')\n",
+        "class TestK:\n    FLAGS = []\n    FLAGS.clear()\n    FLAGS.append(True)\n\n    def test_b(self):\n        if self.FLAGS:\n            pytest.skip('r')\n",
+    ),
+    "a helper that computes the guard changes": (
+        "def should_skip():\n    return False\n\n@pytest.mark.skipif(should_skip(), reason='r')\ndef test_b():\n    pass\n",
+        "def should_skip():\n    return True\n\n@pytest.mark.skipif(should_skip(), reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "a constant a helper reads flips": (
+        "LIMIT = 1\n\ndef should_skip():\n    return LIMIT > 5\n\n@pytest.mark.skipif(should_skip(), reason='r')\ndef test_b():\n    pass\n",
+        "LIMIT = 9\n\ndef should_skip():\n    return LIMIT > 5\n\n@pytest.mark.skipif(should_skip(), reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "a helper that calls another helper changes": (
+        "def inner():\n    return False\n\ndef outer():\n    return inner()\n\n@pytest.mark.skipif(outer(), reason='r')\ndef test_b():\n    pass\n",
+        "def inner():\n    return True\n\ndef outer():\n    return inner()\n\n@pytest.mark.skipif(outer(), reason='r')\ndef test_b():\n    pass\n",
+    ),
+    "a method helper a skip calls through self changes": (
+        "class TestK:\n    def guard(self):\n        return False\n\n    def test_b(self):\n        if self.guard():\n            pytest.skip('r')\n",
+        "class TestK:\n    def guard(self):\n        return True\n\n    def test_b(self):\n        if self.guard():\n            pytest.skip('r')\n",
+    ),
     "a keyword-only default flips": (
         "def test_b(*, flag=False):\n    if flag:\n        pytest.skip('r')\n",
         "def test_b(*, flag=True):\n    if flag:\n        pytest.skip('r')\n",
@@ -1515,3 +1539,37 @@ def test_a_new_leader_gate_and_an_existing_leader_staying_one_pass(
     )
     code, output = check(repo, capsys)
     assert code == 0, output
+
+
+SELECTION_MUTATIONS = {
+    "an ignore entry is appended": "def pytest_configure(config):\n    config.option.ignore.append('tests/test_a.py')\n",
+    "a deselect list is extended": "def helper(config):\n    config.option.deselect.extend(['tests/test_a.py::test_a'])\n",
+    "an ignore_glob entry is inserted": "def helper(config):\n    config.option.ignore_glob.insert(0, '*.py')\n",
+    "a selection option is updated in place": "def helper(option):\n    option.keyword.update({'x': 1})\n",
+    "an entry of a selection option is replaced": "def helper(config):\n    config.option.ignore[0] = 'tests/'\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(SELECTION_MUTATIONS))
+def test_changing_a_pytest_selection_option_in_place_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    repo = scenario(tmp_path, {"tests/conftest.py": SELECTION_MUTATIONS[name]}, base=base_files())
+    code, output = check(repo, capsys)
+    assert code == 1, output
+
+
+def test_a_helper_the_skip_never_calls_does_not_make_an_edit_a_finding(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = (
+        "def unused():\n    return 1\n\n"
+        "@pytest.mark.skipif(False, reason='r')\ndef test_b():\n    pass\n"
+    )
+    after = before.replace("return 1", "return 2")
+    repo = scenario(
+        tmp_path,
+        {"tests/test_a.py": CLEAN_TEST + "\n\n" + after},
+        base=base_files() | {"tests/test_a.py": CLEAN_TEST + "\n\n" + before},
+    )
+    assert check(repo, capsys)[0] == 0
