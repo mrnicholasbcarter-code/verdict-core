@@ -35,6 +35,7 @@
       any log. Verify: a live check confirms session DB and state are isolated
       between two concurrent workers; no credentials appear in temp config files or
       logs.
+      **Blocked on #1306** (tests on main write the real `~/.verdict`); the live check runs on installed main after #1306 and the reinstall.
 - [x] 2.4 Route enforcement: verify that every model call from an OpenCode worker
       reaches `verdict serve` (:8000). If per-request route pinning is absent from
       the relay, add it so that each request uses exactly the route Verdict chose
@@ -59,17 +60,6 @@
       in the node worktree before each attempt starts. Reference the file in the
       OpenCode agent `instructions` config field. Verify: a worker that reads the
       context pack from the file is able to target the correct owned files.
-
-## 5. Autodev model-tier rung
-
-- [ ] 5.1 Add `OpenCodeExecutor` as the coding executor for model-tier units in
-      `verdict autodev` (`verdict/orchestration/autodev_run.py` or equivalent).
-      PatchExecutor stays for mechanical units. Verify: an autodev model-tier unit
-      uses the OpenCode executor; a mechanical unit still uses PatchExecutor.
-      **Moved to #1301 (OC2) after cross-family review (2026-11-23) found isolation
-      and retry defects: `.verdict-context.md` counted as an out-of-bounds edit,
-      no rollback on direct worktree edits, and retry falls back to PatchExecutor.
-      Autodev wiring removed from this PR; behaviourally identical to main.**
 
 ## 6. Doctor version check
 

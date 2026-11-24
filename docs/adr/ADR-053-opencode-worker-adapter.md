@@ -61,6 +61,10 @@ OpenCode is added as the coding executor for model-tier units in
 `verdict autodev`. PatchExecutor is kept for mechanical units, together with its
 diff-path containment check.
 
+*Delivery note (2026-11-24): the autodev rung is delivered separately from the orchestrate
+default. It moved to issue #1301 (OC2), which carries its own OpenSpec change, after
+cross-family review found isolation and retry defects. The decision above is unchanged.*
+
 **4. Sandbox: worktree-scoped edits; shell commands not restricted.**
 An OpenCode worker may edit only inside its node worktree. Edits elsewhere and
 external directories are denied in its per-attempt OpenCode config. Shell

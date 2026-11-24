@@ -364,17 +364,14 @@ async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
     gap, whether or not the leader is still alive.
 
     The subprocess is always started with ``start_new_session=True``, which
-    makes it both session leader and process group leader, so its PID equals
-    its initial process group ID.  When the leader has already been reaped
-    ``os.getpgid(proc.pid)`` raises ``ProcessLookupError``, but the process
-    group itself persists as long as any member (e.g. a grandchild) is alive.
-    Using ``proc.pid`` as the fallback pgid keeps the killpg call reachable.
+    makes it both session leader and process group leader, so its PID is its
+    process group ID for life (a session leader cannot change its pgid).  The
+    group persists as long as any member (e.g. a grandchild) is alive, even
+    after the leader is reaped, and the kernel does not reuse a PID that is
+    still in use as a process group ID.  So ``proc.pid`` is always the right
+    target; looking the pgid up through the leader would fail once it is reaped.
     """
-    try:
-        pgid: int = os.getpgid(proc.pid)
-    except (ProcessLookupError, OSError):
-        # Leader reaped; proc.pid was the pgid at spawn (start_new_session=True).
-        pgid = proc.pid
+    pgid = proc.pid
 
     def _signal(sig: signal.Signals) -> None:
         with contextlib.suppress(ProcessLookupError, OSError):

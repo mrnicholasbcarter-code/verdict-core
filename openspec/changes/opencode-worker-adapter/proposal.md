@@ -1,4 +1,8 @@
-# OC1: OpenCode worker adapter — default orchestrate worker, autodev model-tier rung
+# OC1: OpenCode worker adapter — default orchestrate worker
+
+> **Scope (2026-11-24):** this change covers the `verdict orchestrate` default worker
+> only. The `verdict autodev` model-tier rung moved to issue #1301 (OC2), which will
+> carry its own OpenSpec change.
 
 ## Why
 
@@ -31,9 +35,6 @@ run on the cheapest qualified route Verdict can admit.
   `verdict serve` (:8000). Each attempt writes a per-attempt OpenCode config
   into a temp directory (`OPENCODE_CONFIG`), isolating session DB and global
   state between attempts and concurrent workers.
-- OpenCode is added as the coding executor for model-tier units in
-  `verdict autodev`. PatchExecutor is kept for mechanical units together with
-  its diff-path containment check.
 - The adapter declares all nine `HarnessCapability` facets explicitly, as
   required by ADR-041.
 - OpenCode is pinned at v2.3.2. `verdict doctor` warns when the installed
@@ -45,8 +46,6 @@ run on the cheapest qualified route Verdict can admit.
 
 - `opencode` harness adapter and executor: `worker_launch` SUPPORTED, edits
   inside node worktree, routes through serve, isolated per-attempt config.
-- Autodev model-tier coding executor: OpenCode replaces direct-gateway for
-  model-tier coding units.
 - Doctor version check: warns when the installed OpenCode version differs from
   the pinned v2.3.2.
 
@@ -56,8 +55,6 @@ run on the cheapest qualified route Verdict can admit.
   `opencode` instead of `direct-gateway` once the adapter merges. Users who
   depend on `direct-gateway` for coding nodes must pass `--executor
   direct-gateway` explicitly. `prime-headless` users are unchanged.
-- **Autodev model-tier units** switch to OpenCode; mechanical units keep
-  PatchExecutor.
 - **`verdict serve` gains a per-request route-pinning requirement** so the
   relay can enforce exactly the route Verdict chose. This is an implementation
   detail of the build (open point: serve today does not pin per request; adding

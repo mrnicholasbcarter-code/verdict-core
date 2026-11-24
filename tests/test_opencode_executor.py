@@ -8,9 +8,12 @@ real ~/.opencode or ~/.config/opencode are never read or written.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import signal
 import stat
+import sys
 import textwrap
 import time
 from pathlib import Path
@@ -23,6 +26,7 @@ from verdict.orchestration.executor_opencode import (
     OpenCodeExecutor,
     _attempt_session_id,
     _build_child_env,
+    _kill_process_group,
     _opencode_binary,
     _parse_ndjson_output,
     _write_attempt_config,
@@ -545,56 +549,79 @@ def test_opencode_executor_timeout_returns_failure(tmp_path: Path) -> None:
     assert terminal.ok is False
 
 
+def _pid_gone(pid: int) -> bool:
+    """True when ``pid`` no longer exists or is only a zombie awaiting reaping."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    try:
+        stat_text = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    # State is the first field after the parenthesised command name.
+    return stat_text.rsplit(")", 1)[-1].split()[0] == "Z"
+
+
 def test_kill_process_group_cleans_up_sigterm_ignoring_grandchild(tmp_path: Path) -> None:
     """_kill_process_group must kill the whole process group, not just the leader.
 
-    Regression for the case where the direct child exits within the TERM grace
-    period but a grandchild that ignores SIGTERM (and holds a pipe open) survives.
-    The old code only sent SIGKILL on timeout; the fixed code always sends it.
+    Regression: the leader exits (and is reaped) but a grandchild that ignores
+    SIGTERM survives in the recorded process group.  The old code looked the
+    pgid up through the dead leader and so never sent SIGKILL to the group.
+
+    Deterministic by construction: no idle or wall-clock timers race the fake
+    process.  The test waits (generous deadline, host-load tolerant) for the
+    grandchild to record its PID, reaps the leader, then calls
+    ``_kill_process_group`` directly.
     """
     capture = tmp_path / "grandchild_pid.txt"
-    # Leader: fork a SIGTERM-ignoring grandchild, wait for it to record its PID,
-    # then exit cleanly.  The grandchild holds stdout open and writes nothing —
-    # the idle timeout fires, triggering _kill_process_group.
-    fake = make_fake_opencode(
-        tmp_path,
-        f"import os, signal, pathlib\n"
-        f"pid = os.fork()\n"
-        f"if pid == 0:\n"
-        f"    # grandchild: ignore SIGTERM, write PID, loop forever\n"
-        f"    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-        f"    pathlib.Path({str(capture)!r}).write_text(str(os.getpid()))\n"
-        f"    while True:\n"
-        f"        time.sleep(0.05)\n"
-        f"else:\n"
-        f"    # leader: wait for grandchild to record its PID, then exit\n"
-        f"    for _ in range(50):\n"
-        f"        if pathlib.Path({str(capture)!r}).exists():\n"
-        f"            break\n"
-        f"        time.sleep(0.05)\n"
-        f"    sys.exit(0)\n",
+    leader = tmp_path / "leader.py"
+    leader.write_text(
+        "import os, signal, sys, time\n"
+        f"capture = {str(capture)!r}\n"
+        "if os.fork() == 0:\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    tmp = capture + '.tmp'\n"
+        "    with open(tmp, 'w') as fh:\n"
+        "        fh.write(str(os.getpid()))\n"
+        "    os.replace(tmp, capture)  # atomic: readers never see a partial PID\n"
+        "    while True:\n"
+        "        time.sleep(0.05)\n"
+        "while not os.path.exists(capture):\n"
+        "    time.sleep(0.02)\n"
+        "sys.exit(0)\n"
     )
-    cwd = tmp_path / "work"
-    cwd.mkdir()
-    # idle_output_seconds=0.1: stalls quickly because leader writes nothing
-    executor = OpenCodeExecutor(opencode_bin=fake, idle_output_seconds=0.1)
-    terminal = run_executor(executor, "grandchild test", cwd, timeout=5.0)
-    assert terminal.ok is False, "expected stall/timeout result"
-    assert capture.exists(), "grandchild never ran — fake binary failed to execute"
-    grandchild_pid = int(capture.read_text().strip())
-    # Give the OS up to 0.5 s to reap the grandchild, then verify it is gone.
-    deadline = time.monotonic() + 0.5
-    while time.monotonic() < deadline:
+
+    async def scenario() -> int:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(leader),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        # The leader exits only after the grandchild has recorded its PID.
+        await asyncio.wait_for(proc.wait(), timeout=60.0)
+        assert capture.exists(), "grandchild never recorded its PID"
+        grandchild_pid = int(capture.read_text().strip())
         try:
-            os.kill(grandchild_pid, 0)  # probe: raises if gone
-        except ProcessLookupError:
-            break
-        time.sleep(0.05)
-    try:
-        os.kill(grandchild_pid, 0)
-        pytest.fail(f"grandchild PID {grandchild_pid} still alive after executor returned")
-    except ProcessLookupError:
-        pass  # correctly cleaned up
+            # Precondition: the grandchild outlives the reaped leader.
+            assert not _pid_gone(grandchild_pid)
+            await _kill_process_group(proc)
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline and not _pid_gone(grandchild_pid):
+                await asyncio.sleep(0.05)
+            assert _pid_gone(grandchild_pid), (
+                f"grandchild PID {grandchild_pid} still alive after _kill_process_group"
+            )
+        finally:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.kill(grandchild_pid, signal.SIGKILL)  # never leak the test process
+        return grandchild_pid
+
+    asyncio.run(scenario())
 
 
 def test_opencode_executor_spawn_failure_returns_terminal(tmp_path: Path) -> None:

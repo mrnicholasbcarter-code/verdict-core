@@ -39,16 +39,15 @@ which is the second amendment to ADR-041's initial default.
 - Route all worker model calls through `verdict serve` (:8000); never direct to
   OmniRoute (:20128). Add per-request route pinning to serve if not present.
 - Declare all nine `HarnessCapability` facets explicitly (ADR-041 requirement).
-- Add OpenCode as the model-tier coding executor in `verdict autodev`.
-  **Moved to #1301 (OC2) after cross-family review (2026-11-23) found isolation
-  and retry defects. This PR is orchestrate-default only; autodev is on main.**
 - Pin OpenCode at v2.3.2; add a `verdict doctor` version warning.
+
+2026-11-24: the autodev model-tier rung moved to issue #1301 (OC2), which will carry its own OpenSpec change, after cross-family review found isolation and retry defects.
 
 **Non-Goals:**
 
 - Interactive OpenCode sessions (outside scope of this story).
 - MCP server use inside the worker (disabled by `--standalone`).
-- Replacing PatchExecutor for mechanical autodev units.
+- Any change to `verdict autodev` (PatchExecutor stays its executor here; see the dated note above).
 - Changing the planner executor (`--planner-executor` stays `direct-gateway`).
 - Full shell command allow-listing inside OpenCode (operator's explicit choice
   not to restrict shell; see Decision 4 / ADR-053).

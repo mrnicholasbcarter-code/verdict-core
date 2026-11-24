@@ -118,19 +118,3 @@ when the installed OpenCode version differs from v2.3.2.
 - **WHEN** OpenCode at a version other than v2.3.2 is installed
 - **THEN** `verdict doctor` shows a non-fatal warning naming the installed version
   and the pinned version
-
-### Requirement: OpenCode added as autodev model-tier coding executor
-
-`verdict autodev` SHALL use `OpenCodeExecutor` for model-tier coding units.
-`PatchExecutor` SHALL remain the executor for mechanical units together with its
-diff-path containment check.
-
-#### Scenario: Autodev model-tier unit uses OpenCode
-
-- **WHEN** `verdict autodev` dispatches a model-tier coding unit
-- **THEN** `OpenCodeExecutor` runs the unit; `PatchExecutor` is not invoked
-
-#### Scenario: Autodev mechanical unit keeps PatchExecutor
-
-- **WHEN** `verdict autodev` dispatches a mechanical unit
-- **THEN** `PatchExecutor` runs the unit; `OpenCodeExecutor` is not invoked
