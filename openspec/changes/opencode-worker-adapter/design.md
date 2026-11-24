@@ -140,7 +140,7 @@ the value, on both relay surfaces); `IntelligenceService.route` also refuses a w
 route combined with `execution_path_request`, so no other caller can select a worker's route
 through that flow. This rejection is the contract, not a gap.
 
-2026-11-24: the worker holds the serve token and the route is pinned by the worker header until #1313; a worker could name another admitted route, never a non-admitted one. (#1313, OC1b, carries the signed per-attempt assignment, the real dispatch-origin check and a prompt-only task delivery; this change keeps `LOCAL_EXECUTOR_ORIGIN` and its documented stopgap, and `.verdict-context.md`.)
+2026-11-24: the worker holds the serve token and the route is pinned by the worker header until #1313; a worker could name another admitted route, never a non-admitted one. (#1313, OC1b, carries the signed per-attempt assignment and a prompt-only task delivery; the real dispatch-origin check is done, see "Dispatch origin" below (#1326); `.verdict-context.md` stays until then.)
 
 **Worker credential and pre-dispatch check (design detail):** The credential is serve's own
 bearer token, resolved by Verdict (`serve_service.resolve_serve_token`: the environment's
@@ -158,6 +158,24 @@ reason, which recovery maps to BLOCK (no retry, no cooldown).
 `VERDICT_SERVE_URL`, else the serve unit's own address (`serve_service.DEFAULT_ORIGIN`,
 `http://127.0.0.1:8000`); there is no other copy of that default. The address becomes the
 per-attempt provider `baseURL`.
+
+**Dispatch origin (design detail, 2026-11-24, #1326):** the executor no longer declares
+`LOCAL_EXECUTOR_ORIGIN` (the stopgap, which matched any bound origin): its workers send, through
+serve. It reports the serve origin it really calls, the address it resolved for the per-attempt
+`baseURL` (`resolve_serve_origin`), as a `WorkerServeOrigin`. That is a `str` subclass in
+`contracts.py` and the type is the declaration: it survives `MixedExecutor` and
+`FaultInjectingExecutor`, which delegate `executor_gateway_origin`, and a URL read from a
+configuration file or reported by another executor is a plain `str` that cannot claim it.
+`DispatchAuthority` gains `worker_serve_origin` (default None); `verdict orchestrate` fills it
+from the same inputs the executor uses (`--serve-url`, `VERDICT_SERVE_URL`, the unit's address),
+and an address that is not an http(s) origin binds none. `dispatch_origin_problem` is the one
+decision the runtime makes before the permit: no origin is `executor origin unknown`; a
+`WorkerServeOrigin` is compared (normalised, both sides parseable) with `worker_serve_origin`
+only, never with `gateway_origin`, and is refused as `executor origin mismatch` when they differ
+or when none is bound; every other origin is compared with `gateway_origin` exactly as before. The
+permit still binds the gateway (serve's relay checks the permit against its own upstream), so the
+recorded `dispatch_permit` evidence and its redaction are unchanged. Not done here: serve's own
+proof that it forwards to the permit's gateway, and the signed per-attempt assignment (#1313).
 
 **Recorded cost (design detail):** OpenCode reports a cost of 0 for a custom provider with no
 pricing, which is not "free". `cost_usd` is recorded only for a real positive figure across

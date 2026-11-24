@@ -537,6 +537,22 @@ def _build_single_executor(
     )
 
 
+def _worker_serve_origin(args: argparse.Namespace) -> str | None:
+    """The ``verdict serve`` origin workers call, resolved as the opencode executor resolves it.
+
+    ``--serve-url``, else ``VERDICT_SERVE_URL``, else the serve unit's own address. An address
+    that is not an http(s) origin binds none (None): the opencode executor raises on it when it
+    is built, and an executor that sends through serve is refused when none is bound, so a bad
+    address is never replaced by the default. Runs that never use serve are not affected by it.
+    """
+    from verdict.serve_service import ServeServiceError, resolve_serve_origin
+
+    try:
+        return resolve_serve_origin(getattr(args, "serve_url", None))
+    except ServeServiceError:
+        return None
+
+
 def _parse_executor_map(raw: str) -> dict[str, str]:
     """Parse ``node-1=prime-headless,node-2=direct-gateway`` into a dict.
 
@@ -972,13 +988,16 @@ def _orchestrate(args: argparse.Namespace) -> int:
 
     # BOD-433: every worker send needs a permit proven by a stored, fresh passport.
     # Each worker executor must report this origin (Prime: its launch's models.json
-    # baseUrl; direct-gateway: --gateway), or its send is denied.
+    # baseUrl; direct-gateway: --gateway), or its send is denied. A worker that sends
+    # through verdict serve (opencode) reports its serve origin and is checked against
+    # ``worker_serve_origin`` instead (#1326).
     from verdict.orchestration.runtime import REDACT_GATEWAY_ORIGIN_ENV
 
     dispatch_authority = DispatchAuthority(
         gateway_origin=args.gateway.rstrip("/"),
         confirm=lambda route_ids, now: passport_confirmation(route_ids, now=now),
         record_gateway_origin=os.environ.get(REDACT_GATEWAY_ORIGIN_ENV) != "1",
+        worker_serve_origin=_worker_serve_origin(args),
     )
     events_path = run_dir / "events.jsonl"
     events_path.touch()

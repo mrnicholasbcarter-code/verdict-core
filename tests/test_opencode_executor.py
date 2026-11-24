@@ -2048,6 +2048,61 @@ def test_the_configured_serve_address_is_what_the_worker_calls(tmp_path: Path) -
 
 
 # ---------------------------------------------------------------------------
+# Dispatch origin (#1326): the executor reports where its worker really sends
+# ---------------------------------------------------------------------------
+
+
+def _reported_origin(executor: object) -> str | None:
+    from verdict.orchestration.contracts import executor_gateway_origin
+
+    return executor_gateway_origin(executor, "n", route_id=ROUTE, cwd=Path("unused"))
+
+
+def test_the_executor_reports_its_real_serve_origin_not_the_local_declaration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from verdict.orchestration import contracts
+
+    monkeypatch.delenv("VERDICT_SERVE_URL", raising=False)
+    default = _reported_origin(OpenCodeExecutor())
+    assert default == "http://127.0.0.1:8000"
+    assert default != contracts.LOCAL_EXECUTOR_ORIGIN
+    # It is reported as a serve origin, the one kind the runtime binds to the worker serve address.
+    assert isinstance(default, contracts.WorkerServeOrigin)
+    # Resolved the way the executor resolves its serve address: the variable, then the flag.
+    monkeypatch.setenv("VERDICT_SERVE_URL", "http://127.0.0.1:9123/v1")
+    assert _reported_origin(OpenCodeExecutor()) == "http://127.0.0.1:9123"
+    assert _reported_origin(OpenCodeExecutor(serve_base_url="http://localhost:9555")) == (
+        "http://localhost:9555"
+    )
+
+
+def test_the_reported_origin_is_the_one_the_worker_calls(tmp_path: Path) -> None:
+    capture = tmp_path / "config.json"
+    fake = make_fake_opencode(
+        tmp_path,
+        f"import pathlib\n"
+        f"cfg = pathlib.Path(os.environ['OPENCODE_CONFIG_DIR']) / 'opencode.json'\n"
+        f"pathlib.Path({str(capture)!r}).write_text(cfg.read_text())\n"
+        f"sys.exit(0)\n",
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    executor = OpenCodeExecutor(opencode_bin=fake, serve_base_url="http://127.0.0.1:9123")
+    reported = _reported_origin(executor)
+    run_executor(executor, "t", cwd)
+    config = json.loads(capture.read_text())
+    assert config["providers"]["verdict"]["settings"]["baseURL"] == f"{reported}/v1"
+
+
+def test_the_local_origin_declaration_and_its_stopgap_note_are_gone() -> None:
+    source = Path(executor_module.__file__).read_text()
+    assert not hasattr(executor_module, "LOCAL_EXECUTOR_ORIGIN")
+    assert "LOCAL_EXECUTOR_ORIGIN" not in source
+    assert "DISPATCH_ORIGIN_CONFLICT" not in source
+
+
+# ---------------------------------------------------------------------------
 # Upstream HTTP status and cost (review items 4 and 12)
 # ---------------------------------------------------------------------------
 

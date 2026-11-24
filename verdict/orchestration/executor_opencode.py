@@ -16,15 +16,11 @@ Each attempt:
 4. Maps the result to :class:`~verdict.orchestration.contracts.WorkerTerminal`.
 5. Deletes the temp directory on exit.
 
-**DISPATCH_ORIGIN_CONFLICT** — this executor declares
-:data:`~verdict.orchestration.contracts.LOCAL_EXECUTOR_ORIGIN` as a documented
-stopgap.  OpenCode workers route through Verdict serve (:8000), but
-``DispatchAuthority.gateway_origin`` is set from ``--gateway`` (OmniRoute
-:20128).  Reporting ``http://127.0.0.1:8000`` would fail the dispatch origin
-check in ``runtime.py`` (line ~1772).  Route identity is enforced by serve's
-per-request relay pinning instead (Decision 1, Task 2.4).  Follow-on: add a
-``worker_serve_origin`` field to ``DispatchAuthority`` so OpenCode can declare
-its real origin and the runtime accepts it without using LOCAL_EXECUTOR_ORIGIN.
+**Dispatch origin** — OpenCode workers send through Verdict serve (:8000), not the gateway
+(OmniRoute :20128), so this executor reports the serve origin it really calls (the address it
+resolved, as a :class:`~verdict.orchestration.contracts.WorkerServeOrigin`) and the runtime
+checks it against ``DispatchAuthority.worker_serve_origin`` before any send (#1326).  It never
+claims to send nothing: it sends.
 """
 
 from __future__ import annotations
@@ -49,7 +45,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypeVar
 
-from verdict.orchestration.contracts import LOCAL_EXECUTOR_ORIGIN, AttemptUsage, WorkerTerminal
+from verdict.orchestration.contracts import AttemptUsage, WorkerServeOrigin, WorkerTerminal
 from verdict.orchestration.executors import idle_output_seconds_from_env
 
 __all__ = ["PINNED_VERSION", "OpenCodeExecutor"]
@@ -871,12 +867,13 @@ _SERVE_CHECK_TIMEOUT_SECONDS = 5.0
 class OpenCodeExecutor:
     """Run one task through OpenCode's non-interactive dispatch.
 
-    See module docstring for the DISPATCH_ORIGIN_CONFLICT note and the
-    per-attempt isolation strategy.
+    See the module docstring for the dispatch origin and the per-attempt isolation strategy.
     """
 
-    # See DISPATCH_ORIGIN_CONFLICT note in module docstring.
-    gateway_origin: str = LOCAL_EXECUTOR_ORIGIN
+    @property
+    def gateway_origin(self) -> WorkerServeOrigin:
+        """The serve origin this executor's workers call, reported to the dispatch check."""
+        return WorkerServeOrigin(self._serve_base_url)
 
     def __init__(
         self,
