@@ -24,6 +24,8 @@ from verdict.prove_at_rest_service import (
 
 SERVICE = "verdict-context-lift.service"
 TIMER = "verdict-context-lift.timer"
+# `systemctl --timestamp=` value: "Day YYYY-MM-DD HH:MM:SS.UUUUUU UTC" on any host zone.
+UTC_TIMESTAMP_FORMAT = "us+utc"
 
 
 def timer_state(unit: str = TIMER) -> dict[str, Any]:
@@ -31,7 +33,11 @@ def timer_state(unit: str = TIMER) -> dict[str, Any]:
     from verdict import metadata_service
 
     values = metadata_service._show(unit, metadata_service._run_show)
-    service = metadata_service._show(SERVICE, metadata_service._run_show)
+    # Ask for explicit-UTC timestamps (systemd >= 246) so the invocation start can
+    # be compared with the receipt's UTC finish_time on a host in any timezone.
+    service = metadata_service._show(
+        SERVICE, metadata_service._run_show, timestamp=UTC_TIMESTAMP_FORMAT
+    )
     if values.get("LoadState") != "loaded":
         return {"state": "missing", "result": "unknown"}
     if values.get("ActiveState") == "failed" or service.get("ActiveState") == "failed":
@@ -44,10 +50,12 @@ def timer_state(unit: str = TIMER) -> dict[str, Any]:
         # ExecMainStatus is the actual exit code from the last service run;
         # "2" means the bench exited intentionally with blocked.
         "exec_main_status": service.get("ExecMainStatus"),
-        # ActiveEnterTimestamp is when the service last started (systemd format,
-        # e.g. "Thu 2026-01-01 12:00:00 UTC"); used to verify the receipt is
-        # from the same invocation.
-        "active_enter_timestamp": service.get("ActiveEnterTimestamp") or None,
+        # ExecMainStartTimestamp is when the last invocation's main process
+        # started.  A Type=oneshot unit exits while still "activating", so
+        # ActiveEnterTimestamp stays n/a (or left over from an older run) and
+        # cannot identify the invocation.  Doctor compares the receipt's
+        # finish_time with this value.
+        "exec_main_start_timestamp": service.get("ExecMainStartTimestamp") or None,
     }
 
 
