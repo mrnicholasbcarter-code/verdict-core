@@ -433,6 +433,58 @@ def test_executor_fails_closed_without_spawning_when_context_path_is_tracked(
     assert outside.read_text() == "ORIGINAL OUTSIDE CONTENT"
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [subprocess.TimeoutExpired(cmd="git", timeout=30), FileNotFoundError("git")],
+    ids=["git-timeout", "git-missing"],
+)
+def test_write_context_file_fails_closed_when_git_cannot_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    """If tracking status cannot be determined, do not write: it may be tracked.
+
+    A git timeout or missing executable must not read as "untracked" (that would
+    let a tracked entry be replaced and then staged into the deliverable).
+    """
+    repo, _outside = _repo_tracking_context(tmp_path, symlink=False)
+    real_run = subprocess.run
+
+    def flaky_run(cmd: list[str], *args: object, **kwargs: object) -> object:
+        if "ls-files" in cmd:
+            raise failure
+        return real_run(cmd, *args, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr("verdict.orchestration.executor_opencode.subprocess.run", flaky_run)
+    with pytest.raises(OSError, match="cannot determine"):
+        _write_context_file(repo, "task prompt that must not be written")
+    assert (repo / CONTEXT_FILE_NAME).read_text() == "tracked content\n"
+    assert sorted(p.name for p in repo.iterdir()) == sorted([".git", CONTEXT_FILE_NAME])
+
+
+def test_write_context_file_fails_closed_when_git_index_is_unreadable(tmp_path: Path) -> None:
+    """A failing ``git ls-files`` (nonzero exit) is indeterminate, not "untracked"."""
+    repo, _outside = _repo_tracking_context(tmp_path, symlink=False)
+    (repo / ".git" / "index").write_bytes(b"not a git index")
+    with pytest.raises(OSError, match="cannot determine"):
+        _write_context_file(repo, "task prompt that must not be written")
+    assert (repo / CONTEXT_FILE_NAME).read_text() == "tracked content\n"
+    assert sorted(p.name for p in repo.iterdir()) == sorted([".git", CONTEXT_FILE_NAME])
+
+
+def test_executor_does_not_spawn_when_git_index_is_unreadable(tmp_path: Path) -> None:
+    """Executor level: an indeterminate tracking check ends the attempt before spawn."""
+    repo, _outside = _repo_tracking_context(tmp_path, symlink=False)
+    (repo / ".git" / "index").write_bytes(b"not a git index")
+    ran = tmp_path / "worker-ran.txt"
+    fake = make_fake_opencode(
+        tmp_path, f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\nsys.exit(0)\n"
+    )
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "prompt", repo)
+    assert terminal.ok is False
+    assert terminal.error.startswith("context_write_failed")
+    assert not ran.exists(), "worker was spawned although tracking status was unknown"
+
+
 def test_write_context_file_still_replaces_an_untracked_symlink_in_a_git_repo(
     tmp_path: Path,
 ) -> None:

@@ -213,9 +213,16 @@ def _write_attempt_config(
 def _context_path_is_tracked(cwd: Path) -> bool:
     """True when ``cwd`` is a git worktree whose index tracks the context file.
 
-    A directory that is not a git worktree (or where git cannot run) tracks
-    nothing, so this returns False there.
+    Returns False only when that is *known*: either no ``.git`` exists at or above
+    ``cwd`` (not a git worktree, so nothing can be tracked) or git answered and
+    the path is not in the index.  Anything indeterminate (git missing, timing
+    out, exiting nonzero, an unreadable index) raises ``OSError``: treating it as
+    "untracked" could let a tracked entry be replaced and then staged into the
+    node deliverable.
     """
+    resolved = cwd.resolve()
+    if not any((d / ".git").exists() for d in (resolved, *resolved.parents)):
+        return False
     try:
         done = subprocess.run(
             ["git", "-C", str(cwd), "ls-files", "--cached", "-z", "--", CONTEXT_FILE_NAME],
@@ -223,8 +230,14 @@ def _context_path_is_tracked(cwd: Path) -> bool:
             timeout=30,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return False
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OSError(
+            f"cannot determine whether {CONTEXT_FILE_NAME} is tracked: {type(exc).__name__}"
+        ) from exc
+    if done.returncode != 0:
+        raise OSError(
+            f"cannot determine whether {CONTEXT_FILE_NAME} is tracked: git exited {done.returncode}"
+        )
     return bool(done.stdout)
 
 

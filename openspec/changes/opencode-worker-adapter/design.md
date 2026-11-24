@@ -150,7 +150,9 @@ whatever entry exists), because a repository can track `.verdict-context.md` as 
 path outside the worktree.
 `.git/info/exclude` hides only untracked paths, so if the index already tracks `.verdict-context.md`
 the attempt fails closed (`context_write_failed`) before the worker starts: replacing a tracked
-entry would be staged by `git add -A` into the node deliverable.
+entry would be staged by `git add -A` into the node deliverable. The same applies when git cannot
+answer (missing, timeout, nonzero exit, unreadable index); only a directory with no `.git` at or
+above it is treated as certainly untracked.
 
 **Concurrency under `--max-parallel` (design detail):** Each attempt runs in its
 own temp directory for the OpenCode config and its own node worktree. The
