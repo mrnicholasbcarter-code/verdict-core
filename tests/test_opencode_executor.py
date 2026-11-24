@@ -2018,6 +2018,116 @@ def test_a_secret_in_the_head_of_a_long_error_never_reaches_the_terminal(tmp_pat
     assert secret not in json.dumps(dataclasses.asdict(terminal), default=str)
 
 
+# ---------------------------------------------------------------------------
+# Malformed worker output and credentials never make run() raise (review of 13124378)
+# ---------------------------------------------------------------------------
+
+
+def test_deeply_nested_json_in_worker_output_is_malformed_not_a_crash() -> None:
+    """``json.loads`` raises RecursionError (not ValueError) on thousands of nested arrays, and a
+    worker can print such a line well within the output cap."""
+    parsed = _parse_ndjson_output("[" * 100_000 + "\n" + json.dumps({"type": "text", "text": "ok"}))
+    assert parsed["last_text"] == "ok", "the lines after the bad one must still be read"
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_a_worker_that_prints_deeply_nested_json_still_gets_a_terminal(
+    tmp_path: Path, exit_code: int
+) -> None:
+    fake = make_fake_opencode(
+        tmp_path, f"sys.stdout.write('[' * 100000 + '\\n')\nsys.exit({exit_code})\n"
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is (exit_code == 0)
+    assert terminal.harness == "opencode"
+
+
+def test_a_retry_delay_belongs_to_the_error_event_whose_message_is_kept() -> None:
+    """An earlier 429 with a one-hour retry delay must not stay attached to a later 503 that
+    has none: recovery schedules a cooldown from the delay."""
+    first = _ndjson_error(429, "rate limited", retry_after_ms=3_600_000)
+    second = _ndjson_error(503, "unavailable")
+    parsed = _parse_ndjson_output(first + "\n" + second)
+    assert parsed["error_status"] == 503
+    assert parsed["error_message"] == "unavailable"
+    assert parsed["retry_after_seconds"] is None
+
+
+def test_a_later_error_with_its_own_retry_delay_uses_it() -> None:
+    first = _ndjson_error(429, "rate limited", retry_after_ms=3_600_000)
+    second = _ndjson_error(429, "rate limited again", retry_after_ms=7000)
+    assert _parse_ndjson_output(first + "\n" + second)["retry_after_seconds"] == 7.0
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["tok\nen", "tok\r\nen", "tok\x00en", "tok\x7fen", "tok\u20acen"],
+    ids=["newline", "crlf", "nul", "del", "not-latin-1"],
+)
+def test_a_malformed_serve_credential_is_a_configuration_failure_not_an_exception(
+    tmp_path: Path, token: str
+) -> None:
+    """A token an HTTP header cannot carry (an embedded newline, say) made urllib raise
+    ValueError out of the readiness check and out of run().  It is one harness_configuration
+    failure, with no worker launched and the token never echoed."""
+    ran = tmp_path / "worker-ran.txt"
+    fake = make_fake_opencode(
+        tmp_path, f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\nsys.exit(0)\n"
+    )
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    executor_module._check_serve = _REAL_CHECK_SERVE  # restored by the autouse fixture
+    executor = OpenCodeExecutor(
+        opencode_bin=fake,
+        serve_base_url="http://127.0.0.1:9",
+        credential_provider=lambda route, attempt: token,
+    )
+    terminal = run_executor(executor, "task", cwd)
+    assert terminal.ok is False
+    assert terminal.error.startswith("harness_configuration:"), terminal.error
+    assert token not in terminal.error and token.strip() not in terminal.error
+    assert not ran.exists()
+
+
+def test_the_serve_readiness_check_itself_never_raises_on_a_bad_header_value() -> None:
+    reason = _REAL_CHECK_SERVE("http://127.0.0.1:9", "tok\u20acen", 1.0)
+    assert reason is not None and "tok" not in reason
+
+
+def test_an_unexpected_exception_inside_run_is_a_failed_terminal_not_an_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``run()`` promises never to raise: whatever else goes wrong after the worker has run is
+    one failed terminal that names the exception type (never its message) and leaves nothing
+    behind."""
+    roots: list[str] = []
+    fake = make_fake_opencode(
+        tmp_path,
+        "import os\nopen(os.environ['XDG_DATA_HOME'] + '.marker', 'w').write('x')\nsys.exit(0)\n",
+    )
+
+    def boom(self: object, **kwargs: object) -> object:
+        raise RuntimeError("internal detail containing fixture-serve-token-0000")
+
+    real_write = executor_module._write_attempt_config
+
+    def spying(config_dir: Path, **kwargs: object) -> None:
+        roots.append(str(config_dir.parent))
+        real_write(config_dir, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(OpenCodeExecutor, "_interpret", boom)
+    monkeypatch.setattr(executor_module, "_write_attempt_config", spying)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is False and terminal.harness == "opencode"
+    assert terminal.error == "worker_error: RuntimeError"
+    assert "fixture-serve-token-0000" not in terminal.error
+    assert len(roots) == 1 and not Path(roots[0]).exists(), "the attempt directory was left behind"
+
+
 def _step_finish(cost: object, tokens_in: int = 100, tokens_out: int = 42) -> str:
     event: dict[str, object] = {
         "type": "step_finish",

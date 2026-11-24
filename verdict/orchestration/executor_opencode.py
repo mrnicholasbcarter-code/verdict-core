@@ -482,6 +482,10 @@ def _check_serve(origin: str, token: str, timeout: float) -> str | None:
         return f"verdict serve at {origin} answered HTTP {exc.code} to the readiness check"
     except (urllib.error.URLError, OSError, TimeoutError):
         return f"verdict serve is unreachable at {origin}"
+    except ValueError:
+        # http.client refuses a header value it cannot carry (an embedded newline, a character
+        # outside latin-1); the reason never repeats the credential.
+        return "the verdict serve credential is not a valid HTTP header value"
 
 
 _CHILD_ENV_ALLOWLIST: frozenset[str] = frozenset(
@@ -599,7 +603,9 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
             continue
         try:
             event = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):
+            # Not JSON, or nested so deeply that the decoder gives up (RecursionError, not
+            # ValueError): a worker can print such a line within the output cap.  Skip it.
             continue
         if not isinstance(event, dict):
             continue
@@ -645,16 +651,21 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
             detail = event.get("error")
             msg = event.get("message")
             structured_status: int | None = None
+            event_retry: float | None = None
             if isinstance(detail, dict):
                 msg = detail.get("message") or msg
                 structured_status = _as_int(detail.get("status"))
                 error_status = structured_status
                 retry_ms = _as_float(detail.get("retryAfterMs"))
                 if retry_ms is not None and retry_ms > 0:
-                    retry_after_seconds = retry_ms / 1000.0
+                    event_retry = retry_ms / 1000.0
+                    retry_after_seconds = event_retry
             elif not msg and isinstance(detail, str):
                 msg = detail
             if isinstance(msg, str) and msg:
+                # The retry delay, like the status, belongs to the event whose message is kept:
+                # an earlier 429's hour-long delay must not stay attached to a later 503.
+                retry_after_seconds = event_retry
                 full_message = _sanitize_full(msg, secrets)
                 error_message = full_message[-_STDERR_TAIL_CHARS:]
                 # The status belongs to the event whose message is kept: its structured status,
@@ -806,10 +817,20 @@ class OpenCodeExecutor:
     async def run(
         self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
     ) -> WorkerTerminal:
-        """Run one task.  Never raises; always returns a terminal."""
-        terminal = await self._run(
-            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
-        )
+        """Run one task.  Never raises; always returns a terminal.
+
+        Cancellation still propagates.  Any other exception from the attempt is one failed
+        terminal naming only the exception type: the message of an unforeseen error may carry
+        worker output or a credential.  ``_run`` has already reaped the worker's process group
+        and removed its directory by the time one reaches here.
+        """
+        started = time.monotonic()
+        try:
+            terminal = await self._run(
+                prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+            )
+        except Exception as exc:
+            terminal = self._failure(route_id, started, f"worker_error: {type(exc).__name__}")
         if not terminal.harness:
             terminal = replace(terminal, harness="opencode")
         return terminal
@@ -873,6 +894,15 @@ class OpenCodeExecutor:
                 f"environment, the Verdict credential store and serve.env); {_CREDENTIAL_HELP}",
             )
         secrets = [credential, self._base_env().get(self._api_key_env, "")]
+        if not credential.isprintable():
+            # A control character (a newline from a mis-edited env file, say) can never be a
+            # bearer token and cannot be sent in a header.  Name the problem, not the value.
+            return self._failure(
+                route_id,
+                started,
+                "harness_configuration: the verdict serve credential contains a control "
+                f"character; {_CREDENTIAL_HELP}",
+            )
         reason = await asyncio.to_thread(
             self._pre_dispatch_reason, credential, started + timeout_seconds
         )
