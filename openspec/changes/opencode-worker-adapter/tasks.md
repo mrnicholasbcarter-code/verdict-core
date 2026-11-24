@@ -35,7 +35,12 @@
       any log. Verify: a live check confirms session DB and state are isolated
       between two concurrent workers; no credentials appear in temp config files or
       logs.
-      **Blocked on #1306** (tests on main write the real `~/.verdict`); the live check runs on installed main after #1306 and the reinstall.
+      **Not ticked (2026-11-24).** A live run through this branch's serve on a spare port
+      verified the pre-dispatch checks and the launch for real, but serve admitted no FREE route:
+      the pinned `openrouter/baidu/ernie-5.5-flash-preview:free` was excluded (`passport_stale`,
+      `confirm_budget_exhausted`) and the three admitted routes were subscription routes, so no
+      worker edit ran. The passport store is still overwritten by tests on main (#1306). Raw output:
+      `/tmp/claude-takeover/oc1-smoke/run-20261124T042116Z/`. Retry on installed main after #1306.
 - [x] 2.5 Worker credential and pre-dispatch check: resolve serve's bearer token with
       Verdict's own code, set it in the child env only under the key name, redact it, and check
       once before launch that the credential resolves, the binary runs and serve accepts it
