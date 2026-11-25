@@ -54,17 +54,20 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import http.client
 import json
 import math
 import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterable
@@ -686,19 +689,76 @@ def _probe_refusal_reason(origin: str, status: int) -> str:
     )
 
 
-def _json_body(response: Any) -> Any:
+def _json_body(response: http.client.HTTPResponse) -> Any:
     """The JSON an error response carries, or None for anything else (never raises).
 
-    At most :data:`_PROBE_BODY_LIMIT` bytes are read; a longer body, a body that cannot be read
-    to its end, and one that is not JSON are all None.
+    At most :data:`_PROBE_BODY_LIMIT` bytes are read.  A longer body, one that is not JSON, and
+    one that is shorter than the response's own ``Content-Length`` says (``read`` does not raise
+    when a sized response ends early, so a cut-off answer must be told by its length) are None.
     """
     try:
         raw = response.read(_PROBE_BODY_LIMIT + 1)
         if len(raw) > _PROBE_BODY_LIMIT:
             return None
+        declared = response.getheader("Content-Length")
+        if declared is not None and (not declared.isdigit() or int(declared) != len(raw)):
+            return None
         return json.loads(raw)
     except Exception:  # an unreadable answer proves nothing
         return None
+
+
+def _post_probe(origin: str, assignment: str, timeout: float) -> tuple[int, Any]:
+    """Send the probe and return serve's status and its JSON body (None when it has none worth
+    reading).  Raises on any transport failure: the caller turns every exception into unproven.
+
+    The whole exchange (connecting, sending, the status line, the headers and the body) shares one
+    budget of ``timeout`` seconds.  A socket timeout alone would restart with every byte received,
+    so a server that sends its answer a byte at a time could hold the attempt, and a cancellation
+    that waits for this thread, for as long as it likes; a watchdog shuts the socket down at the
+    deadline instead.  ``http.client`` is used rather than ``urllib`` because it never follows a
+    redirect, so the assignment cannot be sent anywhere but ``origin``, and it never goes through
+    a proxy.
+    """
+    parts = urllib.parse.urlsplit(origin)
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise ValueError("the serve address is not an http(s) URL")
+    connection_class = (
+        http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+    )
+    connection = connection_class(parts.hostname, parts.port, timeout=timeout)
+    expired = threading.Event()
+
+    def abort() -> None:
+        expired.set()
+        sock = connection.sock
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+
+    watchdog = threading.Timer(timeout, abort)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        connection.connect()
+        if expired.is_set():
+            raise TimeoutError("the probe's time ran out while connecting")
+        connection.request(
+            "POST",
+            f"{parts.path.rstrip('/')}/v1/chat/completions",
+            body=_assignment_probe_body(),
+            headers={
+                "Authorization": f"Bearer {assignment}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        response = connection.getresponse()
+        status = response.status
+        return status, _json_body(response) if status in {400, 403, 503} else None
+    finally:
+        watchdog.cancel()
+        connection.close()
 
 
 def _probe_assignment(origin: str, assignment: str, timeout: float) -> _AssignmentProbe:
@@ -707,39 +767,20 @@ def _probe_assignment(origin: str, assignment: str, timeout: float) -> _Assignme
     One ``POST /v1/chat/completions`` with the assignment as its bearer and the body
     :func:`_assignment_probe_body`.  Serve verifies the assignment in its middleware (403, or
     503 when it has no key, otherwise) and only then compares ``model`` with the assignment's
-    route and answers 400, before any routing: so 400 with serve's words means serve accepted
-    the assignment, and the probe made no decision, minted no proof and sent nothing upstream
-    (serve logs one WARNING, ``reason=model_mismatch``, per probe).  The orchestrator relies on
-    that order (pinned in ``tests/test_serve_worker_route_proof.py``).
+    route and answers 400, before any routing: so a 400 with serve's own body means serve
+    accepted the assignment, and the probe made no decision, minted no proof and sent nothing
+    upstream (serve logs one WARNING, ``reason=model_mismatch``, per probe).  The orchestrator
+    relies on that order (pinned in ``tests/test_serve_worker_route_proof.py``).
 
-    Only serve's exact refusal bodies are a refusal: a 403 or 503 with any other body (a proxy in
-    front of serve, a provider, "Proxy not initialized") and every other status are unproven.
-    No redirect is followed, so the assignment cannot be sent elsewhere.  The request carries the
-    assignment alone, never the serve token.  Never raises: a timeout, a refused connection,
-    anything unforeseen is unproven.
+    Only serve's exact bodies count: a 403 or 503 with any other body (a proxy in front of serve,
+    a provider, "Proxy not initialized"), a 400 that is not serve's model check, and every other
+    status are unproven.  No redirect is followed, so the assignment cannot be sent elsewhere.
+    The request carries the assignment alone, never the serve token, and is bounded by
+    ``timeout`` as a whole (:func:`_post_probe`).  Never raises: a timeout, a refused connection,
+    a cut-off answer, anything unforeseen is unproven.
     """
-    from verdict.http_safety import open_no_redirect
-
     try:
-        request = urllib.request.Request(
-            f"{origin.rstrip('/')}/v1/chat/completions",
-            data=_assignment_probe_body(),
-            headers={
-                "Authorization": f"Bearer {assignment}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with open_no_redirect(request, timeout=timeout) as reply:
-                return _AssignmentProbe("unproven", reply.status)
-        except urllib.error.HTTPError as exc:
-            try:
-                status = exc.code
-                body = _json_body(exc) if status in {400, 403, 503} else None
-            finally:
-                exc.close()
+        status, body = _post_probe(origin, assignment, timeout)
     except Exception:  # best effort: anything unforeseen proves nothing
         return _AssignmentProbe("unproven")
     if status == 400 and body == _SERVE_MODEL_CHECK_BODY:

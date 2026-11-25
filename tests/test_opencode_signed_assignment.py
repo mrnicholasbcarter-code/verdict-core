@@ -1109,6 +1109,9 @@ class Reply:
     delay: float = 0.0  # seconds before it answers
     hang_up: bool = False  # close the connection without any answer
     short_body: bool = False  # promise more bytes than are sent, then close
+    chunked: bool = False  # no Content-Length: the body is one chunk (as behind a proxy)
+    trickle: float = 0.0  # seconds between the bytes of the answer, which is sent a byte at a time
+    trickle_from: str = "start"  # "start": the status line and headers too; "body": only the body
 
 
 @dataclass
@@ -1142,21 +1145,50 @@ class ScriptedServe:
                 if reply.hang_up:
                     self.close_connection = True
                     return
+                if reply.trickle:
+                    self._trickle(reply)
+                    return
                 self.send_response(reply.status)
                 self.send_header("Content-Type", "application/json")
-                self.send_header(
-                    "Content-Length", str(len(reply.body) + (100 if reply.short_body else 0))
-                )
+                promised = len(reply.body) + (100 if reply.short_body else 0)
+                if reply.chunked:
+                    self.send_header("Transfer-Encoding", "chunked")
+                else:
+                    self.send_header("Content-Length", str(promised))
                 for name, value in reply.headers.items():
                     self.send_header(name, value)
                 self.end_headers()
                 try:
-                    self.wfile.write(reply.body)
+                    if reply.chunked:
+                        self.wfile.write(f"{promised:x}\r\n".encode() + reply.body)
+                        if not reply.short_body:
+                            self.wfile.write(b"\r\n0\r\n\r\n")
+                    else:
+                        self.wfile.write(reply.body)
                     self.wfile.flush()
                 except OSError:
                     pass
                 if reply.short_body:
                     self.close_connection = True
+
+            def _trickle(self, reply: Reply) -> None:
+                """Send the answer one byte at a time, each sooner than any socket timeout."""
+                head = (
+                    f"HTTP/1.1 {reply.status} X\r\nContent-Type: application/json\r\n"
+                    f"Content-Length: {len(reply.body)}\r\n\r\n"
+                ).encode("ascii")
+                self.close_connection = True
+                try:
+                    if reply.trickle_from == "body":
+                        self.wfile.write(head)
+                        self.wfile.flush()
+                        head = b""
+                    for byte in head + reply.body:
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                        time.sleep(reply.trickle)
+                except OSError:
+                    pass
 
             def do_GET(self) -> None:
                 self._answer()
@@ -1351,6 +1383,17 @@ UNPROVEN = [
     pytest.param(Reply(403, SERVE_NOT_CONFIGURED), id="403-with-the-503-body"),
     pytest.param(Reply(400, b'{"error": "bad"}'), id="400-another-body"),
     pytest.param(Reply(403, b'{"error"', short_body=True), id="403-cut-short"),
+    pytest.param(Reply(403, SERVE_REFUSAL, short_body=True), id="403-complete-json-cut-short"),
+    pytest.param(Reply(400, SERVE_MODEL_CHECK, short_body=True), id="400-complete-json-cut-short"),
+    pytest.param(
+        Reply(503, SERVE_NOT_CONFIGURED, short_body=True), id="503-complete-json-cut-short"
+    ),
+    pytest.param(
+        Reply(403, SERVE_REFUSAL + b" " * 10_000, chunked=True), id="403-chunked-over-limit"
+    ),
+    pytest.param(
+        Reply(403, SERVE_REFUSAL, chunked=True, short_body=True), id="403-chunked-cut-short"
+    ),
     pytest.param(Reply(hang_up=True), id="connection-closed-without-an-answer"),
 ]
 
@@ -1385,6 +1428,57 @@ def test_a_probe_that_gets_no_answer_in_time_is_unproven_and_the_attempt_goes_on
     terminal = go(executor(binary, serve_base_url=serve.origin), workdir(tmp_path))
     assert terminal.ok, terminal
     assert seen.read_text().startswith("vwa1.")
+
+
+@pytest.mark.parametrize(
+    ("reply", "outcome"),
+    [
+        pytest.param(Reply(403, SERVE_REFUSAL, chunked=True), "refused", id="403"),
+        pytest.param(Reply(503, SERVE_NOT_CONFIGURED, chunked=True), "refused", id="503"),
+        pytest.param(Reply(400, SERVE_MODEL_CHECK, chunked=True), "accepted", id="400"),
+    ],
+)
+def test_an_answer_without_a_content_length_is_read_the_same(
+    scripted: Callable[..., ScriptedServe], reply: Reply, outcome: str
+) -> None:
+    """Behind a proxy serve's answer may arrive chunked: it is still serve's body."""
+    serve = scripted(reply)
+    probe = executor_module._probe_assignment(serve.origin, an_assignment(), 5.0)
+    assert probe.outcome == outcome
+
+
+def test_a_probe_whose_connection_used_up_its_time_sends_nothing_more(
+    scripted: Callable[..., ScriptedServe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The watchdog only has a socket to shut down once the connection is made; if the time ran
+    out while connecting, the request is not sent at all."""
+    import http.client
+
+    real_connect = http.client.HTTPConnection.connect
+
+    def slow_connect(self: http.client.HTTPConnection) -> None:
+        time.sleep(0.5)
+        real_connect(self)
+
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", slow_connect)
+    serve = scripted(Reply(403, SERVE_REFUSAL))
+    probe = executor_module._probe_assignment(serve.origin, an_assignment(), 0.2)
+    assert (probe.outcome, probe.reason) == ("unproven", None)
+    assert serve.seen == [], "the assignment was sent after the probe's time had run out"
+
+
+@pytest.mark.parametrize("trickle_from", ["start", "body"])
+def test_an_answer_that_trickles_in_is_cut_off_at_the_probes_deadline(
+    scripted: Callable[..., ScriptedServe], trickle_from: str
+) -> None:
+    """A socket timeout restarts with every byte that arrives, so a server that sends its answer
+    a byte at a time, each sooner than the timeout, would hold the probe (and a cancellation that
+    waits for it) for as long as it likes.  The probe's time is one budget for the whole exchange."""
+    serve = scripted(Reply(403, SERVE_REFUSAL, trickle=0.1, trickle_from=trickle_from))
+    started = time.monotonic()
+    probe = executor_module._probe_assignment(serve.origin, an_assignment(), 0.5)
+    assert (probe.outcome, probe.reason) == ("unproven", None)
+    assert time.monotonic() - started < 2.0, "the probe waited for the whole slow answer"
 
 
 def test_a_probe_to_nothing_listening_is_unproven() -> None:
@@ -1482,8 +1576,8 @@ def test_the_probe_cannot_raise_into_the_attempt(
     def explode(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("unforeseen")
 
-    import verdict.http_safety as http_safety
+    import http.client
 
-    monkeypatch.setattr(http_safety, "open_no_redirect", explode)
+    monkeypatch.setattr(http.client.HTTPConnection, "request", explode)
     probe = executor_module._probe_assignment(serve.origin, an_assignment(), 5.0)
     assert (probe.outcome, probe.status, probe.reason) == ("unproven", None, None)

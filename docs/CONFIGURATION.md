@@ -692,8 +692,9 @@ assignment is refused with 403.
   its bearer (never the serve token; the readiness request carries the serve token and never the
   assignment) and a body that is only `{"model": <a value no route can equal>}`, with no
   messages. Serve verifies the assignment first and then refuses a `model` that differs from the
-  assignment's route with 400, before it routes anything. So a 400 means serve accepted the
-  assignment, and the probe makes no routing decision, mints no admission proof, sends nothing
+  assignment's route with 400, before it routes anything. So a 400 that carries serve's own
+  model-check body (`the request's model must equal the route in the worker assignment`) means
+  serve accepted the assignment, and the probe makes no routing decision, mints no admission proof, sends nothing
   upstream and writes no evidence. Serve's refusal (403 with its exact body, `authentication
   failed`) or its 503 `worker assignments are not configured` ends the attempt, on a run's first
   attempt as on any other, as a `harness_configuration:` block: nothing is launched, nothing is
@@ -703,7 +704,8 @@ assignment is refused with 403.
   anonymous) and the fix (`verdict setup --apply --allow host.serve`, one `HOME` for both). It
   reads no receipts, so a remote or spare serve whose database the orchestrator cannot open is
   covered. Any other result (no answer in time, a refused connection, a redirect, another 5xx, a
-  403 with another body, a 2xx, a 404) is unproven: the attempt goes on exactly as before, and an
+  400 or 403 with another body, which a proxy or a validation error can give, a 2xx, a 404, an
+  answer cut short) is unproven: the attempt goes on exactly as before, and an
   unproven probe is never a block and never a provider failure. The probe is bounded by the
   attempt's own deadline and counts against its budget. Serve logs one WARNING
   (`worker assignment refused: reason=model_mismatch`, with the signed ids and never the

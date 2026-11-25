@@ -251,15 +251,19 @@ the assignment's route with 400 `the request's model must equal the route in the
 assignment`, before the ladder, so no routing decision, no admission proof, no upstream call and
 no evidence. The sentinel holds a control character, which no route id of a verified assignment
 can (the signer refuses to sign one, the verifier rejects one), so it equals no route. Outcomes:
-400 with serve's body is accepted and the attempt goes on; 403 with exactly serve's refusal body
+400 with serve's own model-check body is accepted and the attempt goes on (a 400 from a proxy or
+a validation error proves nothing and is unproven); 403 with exactly serve's refusal body
 or 503 with exactly serve's not-configured body is `harness_configuration:` (a block, cooldown 0,
 nothing launched); anything else (no answer in time, a refused connection, a redirect, a 2xx, a
 404, another 5xx such as "Proxy not initialized", a 403 or 400 with another body, a body over
-4 KiB or cut short) is unproven, never a block and never a failure, and the attempt goes on exactly
+4 KiB or cut short, whether its length is declared or chunked) is unproven, never a block and never a failure, and the attempt goes on exactly
 as before. A proxy in front of serve can answer 403 too, which is why the body and not the
-status decides. The probe follows no redirect, is bounded by the attempt's own deadline like the
-readiness check (`min(5 s, what is left)`; a refusal that arrives after the deadline is the
-attempt's timeout), and a cancelled attempt does not start it. The block message lists what the
+status decides. The probe follows no redirect (it is sent with `http.client`, which never follows one and never
+uses a proxy), is bounded by the attempt's own deadline like the readiness check
+(`min(5 s, what is left)`; a refusal that arrives after the deadline is the attempt's timeout)
+and, unlike a bare socket timeout, by that time as a whole: a watchdog shuts the socket at the
+deadline, so a server that sends its answer a byte at a time cannot hold the attempt or a
+cancellation (the readiness check, which reads no body, keeps its socket timeout), and a cancelled attempt does not start it. The block message lists what the
 probe cannot tell apart (different `worker-assignment.key` files or homes, clocks more than 60 s
 apart, a serve older than the signed-assignment change or anonymous) and the fix. The receipts'
 classification of a refusal mid-run is unchanged; the probe does not replace it, because a key

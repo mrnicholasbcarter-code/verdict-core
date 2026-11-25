@@ -160,14 +160,16 @@
       `verdict/orchestration/executor_opencode.py`; the sentinel holds a control character, which
       no route id of a verified assignment can). Serve verifies the assignment and refuses a model
       that differs from the assignment's route with 400 before any routing, so 400 with serve's body
-      is "accepted" (no decision, no proof, no upstream call, no evidence); serve's exact 403
+      is "accepted" (a 400 that is not serve's model-check body is unproven; no decision, no proof, no upstream call, no evidence); serve's exact 403
       `authentication failed` or its 503 `worker assignments are not configured` ends the attempt
       as one `harness_configuration:` block (nothing launched, no cooldown, a message naming the
       possible causes and `verdict setup`), the run's first attempt included and without reading
       receipts, so a remote or spare serve is covered; anything else (timeout, connection error, a
-      redirect, another 5xx, another 403 body, a 2xx, a 404) is unproven and the attempt goes on as
-      before. No redirect is followed, the probe is bounded by what is left of the attempt's budget
-      and starts no request for a cancelled attempt. The receipt-based classification of a refusal
+      redirect, another 5xx, another 403 or 400 body, a 2xx, a 404, an answer cut short) is unproven
+      and the attempt goes on as before. No redirect is followed (the probe uses `http.client`, which never follows one), the
+      whole exchange is bounded by what is left of the attempt's budget (a watchdog shuts the
+      socket at the deadline, so an answer sent a byte at a time cannot stretch it) and no request
+      is started for a cancelled attempt. The receipt-based classification of a refusal
       mid-run is unchanged. Serve is not changed: it logs one WARNING (`reason=model_mismatch`) per
       probe, which is accepted and documented, and its order (the model is refused before routing)
       is now relied on and pinned. Not built: a `verdict doctor` probe of the same kind (a
@@ -188,14 +190,26 @@
       block; 11 of the end-to-end and serve-side tests failed in all, the other seven on the
       symbols they use), and the new unit tests failed on the missing `_check_assignment`.
       After the change each of these was applied in turn and a test failed: the 403 judged by
-      status alone (`403-another-body`), the 503 branch dropped, a redirect followed (301, 302
-      and 303 of `test_a_redirect_is_never_followed_so_the_assignment_goes_nowhere_else`), the
-      serve token sent as the probe's bearer, the probe run even when the readiness check failed,
-      an unproven result treated as a block, a sentinel that is a valid route id, no
-      budget bound on the probe, a refusal after the deadline kept as a block, an unbounded body
-      read, and exceptions let out of the probe; and with serve's model check disabled
-      (`if False and ...` in `_relay_completion`) the serve-side pin and the healthy-serve test
-      failed (HTTP 200, a routed request).
+      status alone, the 400 judged by status alone, the 503 branch dropped, the serve token sent
+      as the probe's bearer, the probe run even when the readiness check failed, an unproven
+      result treated as a block, a sentinel that is a valid route id, no budget bound on the probe,
+      a refusal after the deadline kept as a block, an unbounded body read (chunked answer), and
+      exceptions let out of the probe; and with serve's model check disabled (`if False and ...`
+      in `_relay_completion`) the serve-side pin and the healthy-serve test failed (HTTP 200, a
+      routed request). Review round 1 (2026-11-25, cross-family) found three things, fixed in the
+      next commit: a sized answer that ends early did not raise (`http.client` `read(n)` returns
+      what it got), so a cut-off answer whose bytes were serve's complete body was read as serve's
+      (red: `403-complete-json-cut-short` was `refused`, `400-complete-json-cut-short` was
+      `accepted`; now the declared length must match, and with that check removed the three
+      cut-short cases fail); a socket timeout restarts with every byte, so an answer sent a byte
+      at a time held the probe for as long as it liked (red: `test_an_answer_that_trickles_in_is_cut_off_at_the_probes_deadline`
+      for both `start` and `body` waited for the whole answer; the probe now uses `http.client`
+      with a watchdog that shuts the socket at the deadline, and without the watchdog both fail;
+      without the connect-phase expiry check `test_a_probe_whose_connection_used_up_its_time_sends_nothing_more`
+      fails); and the docs said a bare 400 is "accepted" (it is serve's own model-check body). The
+      earlier redirect check (301, 302 and 303 of
+      `test_a_redirect_is_never_followed_so_the_assignment_goes_nowhere_else` failed when the probe
+      used `urllib`'s default opener) still guards the contract, and `http.client` follows none.
 - [ ] (post-merge) 2.22 On installed main, after `verdict setup --apply --allow host.serve`: the
       installed serve answers `_probe_assignment` for an assignment signed with its own key 400
       (accepted), and for one signed with another key 403 (refused), with no model call and no

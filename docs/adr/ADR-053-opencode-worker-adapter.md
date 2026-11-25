@@ -122,10 +122,11 @@ after the pre-launch probe passed, on a run's first attempt, is not recognised a
 block). A key, home or clock mismatch is recognised before launch instead (#1340): the executor
 sends the attempt's own assignment, as the bearer and never with the serve token, to
 `POST /v1/chat/completions` with a body that is only a model no route can equal. Serve verifies
-the assignment and refuses the model with 400 before any routing, so 400 means accepted and the
-probe makes no decision, proof or upstream call; serve's exact 403 `authentication failed`, or its
+the assignment and refuses the model with 400 before any routing, so a 400 with serve's own
+model-check body means accepted and the probe makes no decision, proof or upstream call; serve's exact 403 `authentication failed`, or its
 503 `worker assignments are not configured`, ends the attempt as a configuration block with nothing
-launched and no cooldown, and any other result is unproven and changes nothing. It reads no
+launched and no cooldown, and any other result (including a 400 or 403 whose body is not serve's) is unproven and changes
+nothing. It reads no
 receipts, so a remote or spare serve is covered. The cost is one WARNING in serve's log per probe
 (`reason=model_mismatch`), accepted, and an ordering that is now relied on (serve refuses a
 mismatched model before routing; pinned in `tests/test_serve_worker_route_proof.py`). The streaming waiver serve records for an assigned request is read back by digest from

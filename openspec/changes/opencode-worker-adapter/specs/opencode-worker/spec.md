@@ -310,7 +310,8 @@ a failure SHALL be one `harness_configuration:` message that recovery treats as 
 before the receipts mark and the launch, it SHALL send serve one probe of the attempt's own
 assignment: `POST /v1/chat/completions` with the assignment as the bearer (and not the serve
 token) and a body that is only `{"model": <a value no route can equal>}`, with no `messages`,
-followed by no redirect and bounded by what is left of the attempt's budget.  Serve verifies the
+followed by no redirect and bounded, as a whole exchange and not only per socket operation, by
+what is left of the attempt's budget.  Serve verifies the
 assignment and then refuses a `model` that differs from the assignment's route with 400, before
 any routing, so the probe SHALL make no routing decision, mint no admission proof, send nothing
 upstream and write no serve evidence.  A 400 with serve's body SHALL mean accepted and the attempt
@@ -321,7 +322,7 @@ cooldown; its message SHALL name the causes the probe cannot tell apart (a diffe
 file or home, clocks more than 60 seconds apart, a serve older than the signed-assignment change
 or running anonymous) and the fix, and SHALL NOT need serve's receipts.  Any other result (no
 answer in time, a refused connection, a redirect, a 2xx, a 404, another 5xx, a 403 or 400 with
-another body) SHALL be unproven: the attempt goes on exactly as before, and an unproven probe is
+another body, an answer that ends before its declared length) SHALL be unproven: the attempt goes on exactly as before, and an unproven probe is
 never a block and never a provider failure.  Serve's order (the model is refused before routing)
 SHALL be pinned by a serve-side test that says the orchestrator relies on it.  The
 checks SHALL be safe under cancellation: when the attempt is cancelled, the version probe's process
@@ -378,12 +379,16 @@ cancellation SHALL complete only after the thread that ran the checks has finish
 
 - **WHEN** the probe gets no answer in time, a refused connection, a redirect, a 2xx, a 404, a 5xx
   other than serve's not-configured 503 (including "Proxy not initialized"), a 403 or 400 with a
-  body other than serve's, or a body that is too long or cut short
+  body other than serve's, a body that is too long or cut short (declared or chunked), or an answer
+  sent so slowly that it outlasts the probe's time
 - **THEN** nothing is concluded: the attempt goes on exactly as before, the worker is launched with
   its assignment, and it is never a block and never a failure of the attempt
   (`test_an_unclear_probe_result_is_unproven_and_the_attempt_goes_on_as_before`,
   `test_a_probe_that_gets_no_answer_in_time_is_unproven_and_the_attempt_goes_on`,
-  `test_a_probe_to_nothing_listening_is_unproven`, `test_the_probe_cannot_raise_into_the_attempt`)
+  `test_a_probe_to_nothing_listening_is_unproven`, `test_the_probe_cannot_raise_into_the_attempt`,
+  `test_an_answer_that_trickles_in_is_cut_off_at_the_probes_deadline`,
+  `test_an_answer_without_a_content_length_is_read_the_same`,
+  `test_a_probe_whose_connection_used_up_its_time_sends_nothing_more`)
 
 #### Scenario: The probe counts against the attempt's budget
 

@@ -391,14 +391,14 @@ exceed 1,800 seconds ends the attempt here), and checks once that the serve toke
 accepts this attempt's own assignment.  That last check is a probe: the assignment, as the bearer
 and never with the serve token, on a `POST /v1/chat/completions` whose body is only a model no route
 can equal.  Serve verifies the assignment and then refuses the model with 400 before it routes
-anything, so a 400 means "accepted" and the probe makes no decision, mints no proof and sends
-nothing upstream.  Serve's exact 403 `authentication failed` or its 503 `worker assignments are not
+anything, so a 400 with serve's own model-check body means "accepted" and the probe makes no
+decision, mints no proof and sends nothing upstream.  Serve's exact 403 `authentication failed` or its 503 `worker assignments are not
 configured` ends the attempt, the first of a run included, with nothing launched and no provider
 cooled down; the message lists the causes it cannot tell apart (different signing key files or
 homes, clocks more than 60 seconds apart, a serve older than the signed-assignment change or
 anonymous) and the fix.  It reads no receipts, so a remote or spare serve is covered.  Any other
-result (no answer, a redirect, another status or body) is unproven and the attempt goes on as
-before.  Serve logs one WARNING (`reason=model_mismatch`) per probe; that is the probe being
+result (no answer, a redirect, another status, or a 400, 403 or 503 whose body is not serve's) is
+unproven and the attempt goes on as before.  Serve logs one WARNING (`reason=model_mismatch`) per probe; that is the probe being
 refused by design.  A failure is a single `harness_configuration:` message and recovery treats it as
 a block, not a retry, so a misconfigured host does not burn a node's attempts.  The same holds when
 serve refuses the worker's own request later (it answers every refused assignment with one 403
