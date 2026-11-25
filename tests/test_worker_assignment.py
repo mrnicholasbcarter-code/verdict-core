@@ -562,3 +562,156 @@ def test_the_module_never_touches_the_environment() -> None:
     source = Path(module.__file__).read_text(encoding="utf-8")
     assert "environ" not in source
     assert "getenv" not in source
+
+
+# --- the production signer (executor story #1325) ---------------------------------------
+#
+# ``tests/worker_assignment_helpers.py`` stays the independent signer: it shares no code with
+# ``verdict.worker_assignment``.  These tests prove the production signer and that independent one
+# agree to the byte, so neither can drift from the written format without a test failing.
+
+
+def _mint(**overrides: Any) -> str:
+    args: dict[str, Any] = {
+        "route_id": "omniroute/a",
+        "run_id": "run-7",
+        "node_id": "node-3",
+        "lifetime_seconds": 900,
+        "now": NOW,
+    }
+    args.update(overrides)
+    return wa.mint_assignment(KEY, **args)
+
+
+@pytest.mark.parametrize(
+    ("route_id", "run_id", "node_id", "lifetime"),
+    [
+        pytest.param("omniroute/a", "run-7", "node-3", 900, id="plain"),
+        pytest.param("cc/claude-sonnet-5", "20261124T120000Z", "implement-1", 1, id="one-second"),
+        pytest.param("a" * 128, "b" * 128, "c" * 128, 1800, id="longest-ids-and-lifetime"),
+        pytest.param("r|1", 'run"q', "n\\x", 60, id="separators-quotes-backslash"),
+        pytest.param("café/é", "運行-9", "узел", 300, id="non-ascii-is-escaped-like-the-helper"),
+    ],
+)
+def test_a_minted_token_is_byte_identical_to_the_independent_signers(
+    route_id: str, run_id: str, node_id: str, lifetime: int
+) -> None:
+    minted = _mint(route_id=route_id, run_id=run_id, node_id=node_id, lifetime_seconds=lifetime)
+    independent = sign.assignment(
+        KEY, route_id=route_id, run_id=run_id, node_id=node_id, exp=NOW_S + lifetime, iat=NOW_S
+    )
+    assert minted == independent
+
+
+def test_a_minted_token_is_accepted_by_the_verifier_with_the_signed_fields() -> None:
+    token = _mint(route_id="omniroute/a", run_id="r9", node_id="n3", lifetime_seconds=900)
+    verified = _verify(token)
+    assert (verified.route_id, verified.run_id, verified.node_id) == ("omniroute/a", "r9", "n3")
+    assert verified.expires_at == NOW + timedelta(seconds=900)
+    fields = sign.decode_payload(token)
+    assert fields == {
+        "route_id": "omniroute/a",
+        "run_id": "r9",
+        "node_id": "n3",
+        "exp": NOW_S + 900,
+        "iat": NOW_S,
+    }
+
+
+def test_the_issued_at_is_the_clock_in_whole_seconds_rounded_down() -> None:
+    now = NOW + timedelta(microseconds=999_999)
+    fields = sign.decode_payload(_mint(now=now, lifetime_seconds=10))
+    assert fields["iat"] == NOW_S
+    assert fields["exp"] == NOW_S + 10
+
+
+def test_a_minted_token_under_another_key_is_a_bad_signature() -> None:
+    assert _refusal(_mint(), key=OTHER_KEY) == "bad_signature"
+
+
+def test_the_digest_of_a_minted_token_is_the_one_the_verifier_records() -> None:
+    token = _mint()
+    assert wa.assignment_digest(token) == _verify(token).assignment_digest
+    assert (
+        wa.assignment_digest(token) == hashlib.sha256(sign.payload_part(token).encode()).hexdigest()
+    )
+
+
+@pytest.mark.parametrize("token", ["", "vwa1", "vwa1.only", "vwa1.a.b.c", None, 7])
+def test_the_digest_of_something_that_is_not_a_token_is_a_value_error(token: Any) -> None:
+    with pytest.raises(ValueError):
+        wa.assignment_digest(token)
+
+
+@pytest.mark.parametrize("lifetime", [1, 900, 1800])
+def test_a_lifetime_from_one_second_to_the_format_maximum_is_minted(lifetime: int) -> None:
+    assert wa.MAX_LIFETIME_SECONDS == 1800
+    verified = _verify(_mint(lifetime_seconds=lifetime))
+    assert verified.expires_at == NOW + timedelta(seconds=lifetime)
+
+
+@pytest.mark.parametrize(
+    "lifetime", [0, -1, 1801, 10_000, True, False, 1.5, 900.0, float("nan"), "900", None]
+)
+def test_a_lifetime_outside_one_to_1800_whole_seconds_is_refused_not_clamped(lifetime: Any) -> None:
+    with pytest.raises(ValueError):
+        _mint(lifetime_seconds=lifetime)
+
+
+@pytest.mark.parametrize("field", ["route_id", "run_id", "node_id"])
+@pytest.mark.parametrize(
+    "value",
+    ["", "x" * 129, "a\nb", "a\x00b", "a\x7fb", "\ud800", 7, None, b"bytes"],
+    ids=["empty", "too-long", "newline", "nul", "del", "surrogate", "int", "none", "bytes"],
+)
+def test_an_id_the_verifier_would_refuse_is_never_signed(field: str, value: Any) -> None:
+    with pytest.raises(ValueError):
+        _mint(**{field: value})
+
+
+@pytest.mark.parametrize("key", [b"", bytes(31), "x" * 32, None, bytearray(31)])
+def test_a_key_the_verifier_would_not_use_never_signs(key: Any) -> None:
+    with pytest.raises(ValueError):
+        wa.mint_assignment(key, route_id="r", run_id="r", node_id="n", lifetime_seconds=60, now=NOW)
+
+
+def test_a_naive_clock_is_a_programming_error_when_minting() -> None:
+    with pytest.raises(ValueError):
+        _mint(now=datetime(2026, 11, 24, 12, 0))
+
+
+@pytest.mark.parametrize(
+    "now",
+    [
+        datetime(1969, 12, 31, 23, 59, 59, tzinfo=timezone.utc),
+        datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc),
+    ],
+    ids=["before-the-epoch", "no-room-for-the-lifetime"],
+)
+def test_a_clock_whose_expiry_is_not_a_representable_second_is_refused(now: datetime) -> None:
+    with pytest.raises(ValueError):
+        _mint(now=now, lifetime_seconds=900)
+
+
+def test_a_token_the_verifier_would_refuse_for_its_length_is_never_returned() -> None:
+    # Escaped non-ASCII is six characters in the JSON, so three 128-character ids overrun the
+    # 2048-character token limit although each id is within its own limit.
+    ids = {name: "é" * 128 for name in ("route_id", "run_id", "node_id")}
+    with pytest.raises(ValueError):
+        _mint(**ids)
+    longest_ascii = {name: "e" * 128 for name in ("route_id", "run_id", "node_id")}
+    assert len(_mint(**longest_ascii)) <= wa.MAX_TOKEN_CHARS
+
+
+def test_a_refusal_to_sign_names_neither_the_key_nor_the_ids() -> None:
+    with pytest.raises(ValueError) as raised:
+        wa.mint_assignment(
+            bytes(range(31)),
+            route_id="route-SECRET-ID",
+            run_id="r",
+            node_id="n",
+            lifetime_seconds=60,
+            now=NOW,
+        )
+    assert "route-SECRET-ID" not in str(raised.value)
+    assert str(bytes(range(31))) not in str(raised.value)

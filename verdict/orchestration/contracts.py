@@ -520,6 +520,12 @@ class WorkerTerminal:
     )
     served_check: dict[str, Any] | None = None  # ServedCheck.to_dict() for this response
     research_fetches: tuple[dict[str, Any], ...] | None = None
+    # An executor that signs a per-attempt worker assignment names it by digest (never the
+    # credential) and says what ``verdict serve`` recorded under it: ``{"assignment_digest",
+    # "serve_receipts": {"status", "reason", "requests", "requests_waived",
+    # "requirement_waivers"}}`` (``verdict.orchestration.serve_evidence``). None for every executor
+    # that signs nothing, and for an attempt that never launched a worker.
+    worker_assignment: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -714,6 +720,13 @@ class WorkerExecutor(Protocol):
     the policy omitted the provider override. Executors that do not accept
     the keyword are called exactly as before. Omitted (the sentinel, not
     ``None``) keeps the executor's own constructor default.
+
+    An executor MAY also accept optional ``run_id: str | None`` and ``node_id: str | None``
+    keywords: the id of the run (the run directory's name, the id the run receipt shows) and of
+    the node the attempt is for. An executor that signs a per-attempt credential bound to them
+    (``OpenCodeExecutor``) needs both and fails closed without them. They are passed only when
+    the caller has them (a worker attempt; planner calls have no node) and only to executors that
+    accept the keyword, so every other executor is called exactly as before.
     """
 
     async def run(
@@ -864,17 +877,24 @@ async def run_executor(
     timeout_seconds: float,
     tools: bool = True,
     effort: Any = EFFORT_OMITTED,
+    run_id: str | None = None,
+    node_id: str | None = None,
 ) -> WorkerTerminal:
     """Call ``executor.run``; pass optional keywords only to executors that accept them.
 
-    With ``tools=True`` and effort omitted, the call is byte-identical to a
-    plain ``executor.run(...)``, so existing executors and fakes are unchanged.
+    With ``tools=True``, effort omitted and no ids, the call is byte-identical to a
+    plain ``executor.run(...)``, so existing executors and fakes are unchanged.  ``run_id`` and
+    ``node_id`` are offered only when given (``None`` is "the caller has none", never a value).
     """
     kwargs: dict[str, Any] = {}
     if not tools and _accepts_keyword(executor, "tools"):
         kwargs["tools"] = False
     if effort is not EFFORT_OMITTED and _accepts_keyword(executor, "effort"):
         kwargs["effort"] = effort
+    if run_id is not None and _accepts_keyword(executor, "run_id"):
+        kwargs["run_id"] = run_id
+    if node_id is not None and _accepts_keyword(executor, "node_id"):
+        kwargs["node_id"] = node_id
     if not kwargs:
         return await executor.run(
             prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds

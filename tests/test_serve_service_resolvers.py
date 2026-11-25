@@ -136,3 +136,68 @@ def test_an_undecodable_credential_store_falls_through_to_serve_env(
 
     monkeypatch.setattr("verdict.credentials_store.CredentialsStore.load", undecodable)
     assert serve_service.resolve_serve_token(home=home) == (TOKEN, "serve_env")
+
+
+# --- serve's receipt database, which the run receipt reads back (#1325) ---------------------
+
+
+def _write_serve_env_with_receipts(home: Path, db: str) -> None:
+    path = serve_service.env_file_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{serve_service.TOKEN_ENV}={TOKEN}\n{serve_service.RECEIPTS_ENV}={db}\n")
+
+
+def test_no_receipt_database_anywhere_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("VERDICT_RECEIPTS_DB", "VERDICT_EVIDENCE_DB"):  # the suite sets :memory:
+        monkeypatch.delenv(name, raising=False)
+    assert serve_service.resolve_serve_receipts_db(home=tmp_path / "home") is None
+
+
+def test_the_environment_names_the_receipt_database_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    _write_serve_env_with_receipts(home, "/from/serve.env.db")
+    monkeypatch.setenv("VERDICT_RECEIPTS_DB", "  /from/the/environment.db  ")
+    assert serve_service.resolve_serve_receipts_db(home=home) == Path("/from/the/environment.db")
+
+
+def test_the_legacy_evidence_variable_is_read_as_serve_reads_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("VERDICT_RECEIPTS_DB", raising=False)
+    monkeypatch.setenv("VERDICT_EVIDENCE_DB", "/legacy/evidence.db")
+    assert serve_service.resolve_serve_receipts_db(home=tmp_path / "home") == Path(
+        "/legacy/evidence.db"
+    )
+
+
+def test_serve_env_names_the_receipt_database_when_the_environment_does_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("VERDICT_RECEIPTS_DB", "VERDICT_EVIDENCE_DB"):
+        monkeypatch.delenv(name, raising=False)
+    home = tmp_path / "home"
+    _write_serve_env_with_receipts(home, "/from/serve.env.db")
+    assert serve_service.resolve_serve_receipts_db(home=home) == Path("/from/serve.env.db")
+
+
+def test_memory_is_returned_as_memory_so_the_reader_can_say_why_it_cannot_read_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VERDICT_RECEIPTS_DB", ":memory:")
+    assert str(serve_service.resolve_serve_receipts_db(home=tmp_path / "home")) == ":memory:"
+
+
+def test_an_unreadable_serve_env_is_skipped_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("VERDICT_RECEIPTS_DB", "VERDICT_EVIDENCE_DB"):
+        monkeypatch.delenv(name, raising=False)
+    home = tmp_path / "home"
+    path = serve_service.env_file_path(home)
+    path.parent.mkdir(parents=True)
+    path.mkdir()  # a directory where the file should be
+    assert serve_service.resolve_serve_receipts_db(home=home) is None

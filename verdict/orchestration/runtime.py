@@ -1920,6 +1920,11 @@ class DagRuntime:
                         else {}
                     ),
                     **(
+                        {"worker_assignment": terminal.worker_assignment}
+                        if terminal.worker_assignment is not None
+                        else {}
+                    ),
+                    **(
                         {"research_duplication": research_metrics}
                         if research_metrics is not None
                         else {}
@@ -2150,6 +2155,8 @@ class DagRuntime:
                 }
             if terminal.served_check is not None:
                 record["served_check"] = terminal.served_check
+            if terminal.worker_assignment is not None:
+                record["worker_assignment"] = terminal.worker_assignment
             if terminal.research_fetches is not None:
                 record["research_fetches"] = list(terminal.research_fetches)
             if research_metrics is not None:
@@ -2255,6 +2262,10 @@ class DagRuntime:
                 phase="worker",
                 attempt_id=f"{node_id}-a{attempt}",
                 effort=effort,
+                # The run directory's name is the run id the run receipt shows (``run_started``
+                # and ``graph.json`` carry it); an executor that signs a credential binds it.
+                run_id=self.run_dir.name,
+                node_id=node_id,
             )
         except OwnershipError as exc:
             return WorkerTerminal(

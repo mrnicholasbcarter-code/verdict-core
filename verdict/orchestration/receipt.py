@@ -14,6 +14,9 @@ Event ``data`` conventions read by the receipt (extra keys are ignored):
 * ``dispatch``: ``attempt``, ``route_id``, ``provider``, ``capacity_class``, ``fault_injected``
 * ``terminal``: ``attempt``, ``ok``, ``route_id``, ``reported_model``, ``error``, ``duration_seconds``, ``fault_injected``,
   optional ``served_check`` (``verdict.served_identity.ServedCheck.to_dict()``), which then decides ``route_identity``
+  optional ``worker_assignment`` (``{"assignment_digest", "serve_receipts": {"status", "reason",
+  "requests", "requests_waived", "requirement_waivers"}}``, what ``verdict serve`` recorded under
+  the attempt's signed assignment; projected as given when well formed, omitted otherwise)
 * ``failure``: ``attempt``, ``category``          * ``node_state``: ``state``
 * ``verify``: ``ok``, ``command``, ``exit_code``   * ``barrier``: ``name``, ``ok``
 * ``repo_gates``: discovery summary (``gates``, ``declared``, optional ``note``)
@@ -328,6 +331,59 @@ def _classify_route_identity(
     return "mismatch"
 
 
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+_SERVE_RECEIPT_STATUSES = frozenset({"read", "unavailable"})
+_MAX_REASON_CHARS = 300
+
+
+def _count_or_none(value: Any) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def _worker_assignment_row(raw: Any) -> dict[str, Any] | None:
+    """The attempt's signed-assignment evidence, or None when ``raw`` is not that record.
+
+    Only the known fields are kept, so nothing an executor adds (and no credential) can reach the
+    receipt: the digest must be a SHA-256, the counts non-negative integers or null, and a
+    waiver a pair of strings.  A record that does not have this shape is dropped whole rather
+    than half-shown.
+    """
+    if not isinstance(raw, Mapping):
+        return None
+    digest, serve = raw.get("assignment_digest"), raw.get("serve_receipts")
+    if not isinstance(digest, str) or not _SHA256_HEX.fullmatch(digest):
+        return None
+    if not isinstance(serve, Mapping) or serve.get("status") not in _SERVE_RECEIPT_STATUSES:
+        return None
+    waivers: list[dict[str, str]] | None = None
+    raw_waivers = serve.get("requirement_waivers")
+    if raw_waivers is not None:
+        if not isinstance(raw_waivers, list):
+            return None
+        waivers = []
+        for item in raw_waivers:
+            if not (
+                isinstance(item, Mapping)
+                and isinstance(item.get("requirement"), str)
+                and isinstance(item.get("reason"), str)
+            ):
+                return None
+            waivers.append({"requirement": str(item["requirement"]), "reason": str(item["reason"])})
+    reason = serve.get("reason")
+    return {
+        "assignment_digest": digest,
+        "serve_receipts": {
+            "status": serve["status"],
+            "reason": scrub_secrets(reason)[:_MAX_REASON_CHARS]
+            if isinstance(reason, str)
+            else None,
+            "requests": _count_or_none(serve.get("requests")),
+            "requests_waived": _count_or_none(serve.get("requests_waived")),
+            "requirement_waivers": waivers,
+        },
+    }
+
+
 def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, Any]:
     attempts: dict[int, dict[str, Any]] = {}
     current = 0
@@ -429,6 +485,9 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                     if check.get("served_route"):
                         row["executed_model"] = str(check["served_route"])
                     row["_terminal_served_status"] = str(check.get("status") or "")
+                assignment = _worker_assignment_row(data.get("worker_assignment"))
+                if assignment is not None:
+                    row["worker_assignment"] = assignment
                 if ok:
                     last_success_seq = event.seq
             elif event.type == "failure":

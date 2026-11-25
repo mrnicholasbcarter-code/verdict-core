@@ -2209,3 +2209,47 @@ async def test_missing_binary_during_verify_is_env_error(repo: Path) -> None:
     )
     # The executor ran (attempt was made).
     assert len(ex.calls) == 1
+
+
+class IdTakingExecutor(Executor):
+    """An executor that asks for the run id and the node id (``OpenCodeExecutor`` does)."""
+
+    def __init__(self, behaviour: dict[tuple[str, str], str]) -> None:
+        super().__init__(behaviour, delay=0)
+        self.ids: list[tuple[str, str, str]] = []
+
+    async def run(  # type: ignore[override]
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        run_id: str | None = None,
+        node_id: str | None = None,
+    ) -> WorkerTerminal:
+        self.ids.append((route_id, str(run_id), str(node_id)))
+        return await super().run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+
+
+async def test_the_runtime_gives_the_executor_the_run_id_and_the_node_id(repo: Path) -> None:
+    """The run id is the run directory's name, the id the run receipt and serve's receipts show."""
+    graph = WorkGraph("g", (node("a"), node("b")), max_parallel=2)
+    ex = IdTakingExecutor({("a", "cc/s"): "quota"})
+    rt, _ev, _ = make(repo, graph, ex, ["cc/s", "cx/g"])
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert rt.run_dir.name == "run1"
+    # Node a was reassigned after its first route failed: each attempt carries the same ids.
+    assert sorted(ex.ids) == [("cc/s", "run1", "a"), ("cc/s", "run1", "b"), ("cx/g", "run1", "a")]
+
+
+async def test_an_executor_without_the_id_keywords_is_called_exactly_as_before(repo: Path) -> None:
+    graph = WorkGraph("g", (node("a"),))
+    ex = Executor({})  # a strict signature: a stray keyword would raise TypeError
+    rt, _ev, _ = make(repo, graph, ex, ["cc/s"])
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert ex.calls == [("a", "cc/s")]
