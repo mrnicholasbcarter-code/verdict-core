@@ -145,6 +145,49 @@ workers.
   reaches `WorkerTerminal`, events or logs, including a key that straddles the
   truncation window or is split across text events
 
+### Requirement: The task is delivered once, as an instructions file in the attempt's config directory
+
+The executor SHALL deliver the task text once: as an instructions file in the attempt's own
+config directory (beside the per-attempt `opencode.json`, never in the worktree), listed in that
+config's `instructions` together with the worktree's `AGENTS.md` when there is one.  The prompt
+SHALL be one short, constant ask on stdin that names no task text, and `--title` SHALL be given so
+OpenCode makes no second, title-agent request.  Nothing SHALL be written into the worktree and no
+git command SHALL run for delivery (#1327).
+
+#### Scenario: The task is an instructions file in the config directory
+
+- **WHEN** an attempt launches
+- **THEN** the instructions file exists in the config directory at launch and is listed in
+  `instructions` with `AGENTS.md`; the temp directory, and the file with it, is removed on
+  success, failure, timeout, stall, spawn failure and cancellation
+
+#### Scenario: One short prompt carries no task text
+
+- **WHEN** the worker is started
+- **THEN** its stdin holds the one constant, bounded ask, no task text is in its arguments or
+  its stdin, `--title` is given, the task text reaches OpenCode exactly once, and a task larger
+  than one argument is delivered whole
+
+#### Scenario: A missing or unusable instructions file fails the attempt before launch
+
+- **WHEN** the instructions file is missing, empty, not a regular file or unreadable, or the task
+  cannot be encoded
+- **THEN** the attempt ends `config_write_failed:` before any worker is launched
+
+#### Scenario: Nothing is written into the worktree
+
+- **WHEN** an attempt runs, including in a repository that tracks a file named
+  `.verdict-context.md`
+- **THEN** the worktree is untouched (no `.verdict-context.md`), that tracked file is left as it
+  is, and no git command runs
+
+#### Scenario: The requests-library status forms are read
+
+- **WHEN** a worker error reads `429 Client Error: Too Many Requests for url: ...` or
+  `503 Server Error: Service Unavailable for url: ...`
+- **THEN** the status (429, 503) is recorded and recovery reroutes; `retrying in 500 ms` and
+  `failed after 429 attempts` give no status
+
 ### Requirement: Worktree-scoped edits; owned-files enforcement
 
 An OpenCode worker SHALL edit only files inside its node worktree. After each
@@ -192,13 +235,14 @@ OpenCode worker attempts SHALL be bounded by the existing per-attempt timeout
 - **THEN** the process group is killed and the attempt is classified as an
   `output_limit` failure; the orchestrator never buffers unbounded worker output
 
-#### Scenario: Context preparation counts against the attempt timeout
+#### Scenario: Pre-dispatch time counts against the attempt timeout
 
-- **WHEN** preparing the context file (including its git tracking probes) takes part of
-  the attempt timeout, or a probe hangs
-- **THEN** each probe is bounded by what is left of the budget, the worker gets only
-  the remaining budget, and when none remains the attempt ends as a timeout without
-  spawning the worker
+- **WHEN** the pre-dispatch checks (the binary probe and the serve readiness check) take part of
+  the attempt timeout, or one hangs
+- **THEN** each check is bounded by what is left of the budget, the worker gets only the
+  remaining budget, and when none remains the attempt ends as a timeout without spawning the
+  worker (`test_pre_dispatch_time_counts_against_the_attempt_timeout`,
+  `test_nothing_is_launched_when_the_pre_dispatch_checks_used_the_whole_budget`)
 
 #### Scenario: Per-node budget is exhausted
 

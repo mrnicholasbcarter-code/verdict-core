@@ -79,7 +79,7 @@ declaration:
 | `worker_launch` | SUPPORTED | Core capability |
 | `interactive_attach` | UNSUPPORTED | No interactive mode in this adapter |
 | `model_switching` | SUPPORTED | `--model verdict/<route_id>` per attempt |
-| `context_injection` | PARTIAL | Context pack delivered as a file in the worktree; not all context pack formats are supported |
+| `context_injection` | PARTIAL | The task is delivered as an instructions file in the attempt's config directory (nothing in the worktree); not all context pack formats are supported |
 | `resume_checkpoint` | UNSUPPORTED | `--standalone` per-attempt; no cross-attempt session resume |
 | `mcp` | UNSUPPORTED | `--standalone` mode; MCP not activated |
 | `hooks` | UNSUPPORTED | No hook interception in this adapter |
@@ -100,8 +100,8 @@ cross-worker session DB contamination. The config contains:
   from opening directories outside the worktree as project roots.
 - Agents: `title.model` pinned to `verdict/<route_id>` so the title summariser
   cannot pick its own model.
-- Instructions: path to `.verdict-context.md` in the worktree (context pack),
-  plus `AGENTS.md` when present.
+- Instructions: the task file `verdict-task.md` in the attempt's config directory (the task
+  text), plus `AGENTS.md` when present.
 
 No secrets appear in the config file or in logs. The API key is passed as
 `{env:VERDICT_WORKER_API_KEY}` so the value is never written to disk.
@@ -137,7 +137,7 @@ the value, on both relay surfaces); `IntelligenceService.route` also refuses a w
 route combined with `execution_path_request`, so no other caller can select a worker's route
 through that flow. This rejection is the contract, not a gap.
 
-2026-11-24: the worker held the serve token and the route was pinned by the worker header until #1313 story 1; that is superseded (`serve-worker-assignment`): serve now accepts only a signed assignment from a worker and refuses the bare header, so the opt-in executor, which still sends the serve token, is refused by design until #1325. (#1313, OC1b, carries the signed per-attempt assignment and a prompt-only task delivery; the real dispatch-origin check is done, see "Dispatch origin" below (#1326); `.verdict-context.md` stays until then.)
+2026-11-24: the worker held the serve token and the route was pinned by the worker header until #1313 story 1; that is superseded (`serve-worker-assignment`): serve now accepts only a signed assignment from a worker and refuses the bare header, so the opt-in executor, which still sends the serve token, is refused by design until #1325. (#1313, OC1b, carries the signed per-attempt assignment and a prompt-only task delivery; the real dispatch-origin check is done, see "Dispatch origin" below (#1326); the task is now an instructions file in the config directory, #1327.)
 
 **Worker credential and pre-dispatch check (design detail):** (The serve side is superseded by
 `serve-worker-assignment`: serve refuses the serve token from a worker and accepts only a signed
@@ -190,7 +190,7 @@ would send the route into a provider cooldown.
 HTTP request), so they run in a thread. Cancelling the await cannot stop a thread, so on a cancel
 the executor sets an event, the probe is killed and reaped within a poll interval, no further
 check starts, and the cancellation completes only after the thread has returned (the same
-boundary the context-file write keeps). A serve request that has already started is waited for
+boundary the pre-dispatch checks keep). A serve request that has already started is waited for
 (it is bounded by 5 s and is read-only).
 
 **Open point:** Whether to pass the API key via an env var or via the OpenCode
@@ -218,29 +218,25 @@ output onto `WorkerTerminal`:
 4. `malformed_json` — `--format json` output cannot be parsed.
 
 Two further bounds protect the orchestrator. Worker output (stdout plus stderr) kept in memory
-is capped at 16 MiB per attempt (`output_limit`; the process group is killed). Context
-preparation counts against the attempt timeout: each git probe (30 s at most) gets only what is
-left of the attempt's budget, so a hung repository cannot hold an attempt past its deadline; the
-worker gets only the remainder, and nothing is spawned when none is left.
+is capped at 16 MiB per attempt (`output_limit`; the process group is killed). The
+pre-dispatch checks count against the attempt timeout: the binary probe (15 s at most) and the
+serve readiness check (5 s at most) each get only what is left of the attempt's budget, so a hung
+probe cannot hold an attempt past its deadline; the worker gets only the remainder, and nothing
+is spawned when none is left.
 
-**Context pack delivery (design detail):** The context pack and owned-files list
-are written to `.verdict-context.md` in the node worktree before the attempt
-starts, and the OpenCode instructions list references that file. The context
-pack is Verdict's standard format; the builder confirms the exact injection
-mechanism.
-The file is written without following symlinks (a fresh regular file atomically replaces
-whatever entry exists), because a repository can track `.verdict-context.md` as a symlink to a
-path outside the worktree.
-`.git/info/exclude` hides only untracked paths, so if the index already tracks `.verdict-context.md`
-the attempt fails closed (`context_write_failed`) before the worker starts: replacing a tracked
-entry would be staged by `git add -A` into the node deliverable. The same applies when git cannot
-answer (missing, timeout, nonzero exit, unreadable index, bare repository); only git's own report
-that the directory is not inside a repository counts as certainly untracked. Git decides under the
-process environment, as the runtime's own git calls do, so `GIT_DIR`/`GIT_WORK_TREE` setups are
-covered. Context preparation runs off the event loop (`asyncio.to_thread`) because the check can
-take seconds and the loop is shared by every concurrent worker.
-A cancelled attempt waits for that thread to finish before the cancellation propagates, so no
-write to the worktree can outlive a cancellation that the caller has already seen complete.
+**Task delivery (design detail, #1327):** The task text is written once, as the instructions
+file `verdict-task.md` beside `opencode.json` in the attempt's own temp config directory, and
+that config lists it in `instructions` (with the worktree's `AGENTS.md` when there is one).
+The prompt is one short, constant ask on stdin (OpenCode reads its message from stdin when it is
+given none), so no task text is sent twice, no text nears the limit of one argument, and a task
+of any size is delivered whole.  `--title` is given so OpenCode makes no second, title-agent
+request on the route.  Nothing is written into the worktree: no `.verdict-context.md`, no
+`BYPRODUCT_EXCLUDES` entry for it and no git probe, so a repository that tracks a file of that
+name is left alone.  OpenCode skips a listed instructions file that is missing without a word, so
+just before launch the executor checks that the file is a readable, non-empty regular file; a
+task that cannot be encoded, a full disk or a file that is not there ends the attempt
+`config_write_failed:` before any worker starts.  The temp directory, and the file with it, is
+removed on every way out.
 
 **Concurrency under `--max-parallel` (design detail):** Each attempt runs in its
 own temp directory for the OpenCode config and its own node worktree. The
@@ -330,8 +326,8 @@ rejected and classified as a failure before verification runs.
 - **Routing:** all model calls from OpenCode workers go to `verdict serve`
   (:8000), which applies admission, ranking and cost rules. OmniRoute (:20128)
   is never contacted directly by the worker.
-- **Context:** the context pack is delivered as a file in the node worktree
-  (`.verdict-context.md`). The OpenCode agent reads it via the `instructions`
-  config field. No memory is shared between attempts.
+- **Context:** the task is delivered as an instructions file in the attempt's config directory
+  (`verdict-task.md`), which the OpenCode agent reads via the `instructions` config field;
+  nothing is written to the worktree. No memory is shared between attempts.
 - **Memory:** no Hindsight or other memory plane interaction in the worker path;
   memory is a controller concern, not an executor concern.

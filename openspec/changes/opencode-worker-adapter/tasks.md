@@ -172,12 +172,12 @@
       advisory and do not replace Verdict's gates. Verify: a node whose
       verification command fails is classified as a failure.
 
-## 4. Context pack delivery
+## 4. Task delivery
 
-- [x] 4.1 Write the context pack and owned-files list to `.verdict-context.md`
-      in the node worktree before each attempt starts. Reference the file in the
-      OpenCode agent `instructions` config field. Verify: a worker that reads the
-      context pack from the file is able to target the correct owned files.
+- [x] 4.1 Deliver the task as an instructions file in the per-attempt config directory and one
+      short prompt on stdin with `--title`; remove `.verdict-context.md`, its `BYPRODUCT_EXCLUDES`
+      entry and its git probe (#1327). Verify: `tests/test_opencode_executor.py` (task delivery
+      section), `tests/test_orch_runtime.py::test_byproduct_excludes_no_longer_name_the_opencode_context_file`.
 
 ## 6. Doctor version check
 
