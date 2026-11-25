@@ -808,6 +808,57 @@ class TestSelectPlannerRoutes:
         _, result = selected[0]
         assert result.unavailable_families == (("dead:free", "unhealthy"),)
 
+    def _alias_band(self) -> tuple[BandComputation, MetadataSnapshot]:
+        """One model with two aliases of different route_family values, plus a gpt model and
+        a claude model.  Every model is in the band."""
+        records = [
+            _record("p/model", ("cc/alpha", "cc/beta"), aa_intelligence=_score(95.0)),
+            _record("p/g0", ("oa/gpt-4o",), aa_intelligence=_score(90.0)),
+            _record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(85.0)),
+        ]
+        snap = _snapshot(*records)
+        inventory = ["cc/alpha", "cc/beta", "oa/gpt-4o", "cc/claude-3-opus"]
+        everything_in_band = PlannerBandConfig(frontier_top=1.0, fallback_top=1.0)
+        band = compute_planner_bands(inventory, snap, None, config=everything_in_band, now=NOW)
+        assert {"cc/alpha", "cc/beta"} <= band.frontier_model_keys
+        return band, snap
+
+    def test_single_family_alias_of_selected_model_is_not_unavailable(self) -> None:
+        """Review of #1317: aliases of one model are one model.  When cc/beta is selected, its
+        alias cc/alpha (another route_family value) must not be reported as an unavailable family."""
+        band, snap = self._alias_band()
+        admitted = ["cc/beta"]
+        selected = select_planner_routes(
+            admitted, _caps_map(*admitted), band, snap, None, top_n=2, now=NOW
+        )
+        assert [r for r, _ in selected] == ["cc/beta"]
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        # The claude-3-opus model has no admitted route; the alpha alias of the selected model
+        # is not another family.
+        assert result.unavailable_families == (
+            ("claude", "no_admitted_route"),
+            ("gpt", "no_admitted_route"),
+        )
+
+    def test_single_family_alias_of_reasoned_model_is_listed_once(self) -> None:
+        """When the caller gives a reason for one alias, the model's other alias is not listed
+        again as ``no_admitted_route`` under a second family."""
+        band, snap = self._alias_band()
+        admitted = ["cc/claude-3-opus"]
+        selected = select_planner_routes(
+            admitted,
+            _caps_map(*admitted),
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"cc/alpha": "unhealthy"},
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (("alpha", "unhealthy"), ("gpt", "no_admitted_route"))
+
     def test_band_result_fields_populated(self) -> None:
         records = [_record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0))]
         snap = _snapshot(*records)

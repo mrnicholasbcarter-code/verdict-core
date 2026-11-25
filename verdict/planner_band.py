@@ -31,7 +31,7 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -142,6 +142,10 @@ class BandComputation:
     fetched_at: str
     model_scores: dict[str, float]  # model_key -> aa_intelligence score
     model_ranks: dict[str, int]  # model_key -> 1-indexed rank
+    # model_key -> id of the metadata record it resolves to.  Aliases of one model share a
+    # record id, so a receipt can tell "another alias of a model" from "another family".
+    # Empty when the caller built the band without metadata.
+    model_record_ids: dict[str, str] = field(default_factory=dict)
 
 
 def _strip_suffix(route_id: str) -> str:
@@ -302,13 +306,16 @@ def compute_planner_bands(
 
     # Step 6: expand bands and score/rank maps to include all aliases of each model
     # (all inventory routes that resolve to the same metadata record as a band member)
+    record_ids_map: dict[str, str] = {}
     for record_id, alias_keys in record_to_alias_keys.items():
         first_key = record_to_model_key.get(record_id)
         if first_key is None or first_key not in scores_map:
             continue  # record not in population (unrated or stale)
+        record_ids_map[first_key] = record_id
         for alias_key in alias_keys:
             if alias_key == first_key:
                 continue
+            record_ids_map[alias_key] = record_id
             scores_map[alias_key] = scores_map[first_key]
             ranks_map[alias_key] = ranks_map[first_key]
             if first_key in frontier_keys_set:
@@ -328,6 +335,7 @@ def compute_planner_bands(
         fetched_at=max_fetched,
         model_scores=scores_map,
         model_ranks=ranks_map,
+        model_record_ids=record_ids_map,
     )
 
 
@@ -593,13 +601,17 @@ def select_planner_routes(
                     all_band_families.add(route_family(excl_route))
 
         # Source 4: band models with no route in the admitted set or the caller's map.
-        # A model that a route above already names is skipped, so a suffixed route
-        # (``x/model:free``) is not listed twice, once under its full route id and once
-        # under its stripped band key.
+        # A model that a route above already names is skipped, both by band key (so a
+        # suffixed route ``x/model:free`` is not listed twice, once under its full route id
+        # and once under its stripped band key) and by metadata record (so another alias of
+        # a model that is already accounted for is not reported as a second family).
         named_keys = {_strip_suffix(r) for r in admitted_route_ids}
         if exclusion_reasons:
             named_keys.update(_strip_suffix(r) for r in exclusion_reasons)
+        named_records = {band.model_record_ids[k] for k in named_keys if k in band.model_record_ids}
         for model_key in all_band_keys - named_keys:
+            if band.model_record_ids.get(model_key) in named_records:
+                continue
             all_band_families.add(route_family(model_key))
 
         unavailable_family_set = all_band_families - used_families
