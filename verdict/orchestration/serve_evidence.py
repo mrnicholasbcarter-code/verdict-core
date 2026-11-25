@@ -20,9 +20,11 @@ of it per attempt would not do).  The result is one of three things, never a gue
 * ``status: "unavailable"`` with a ``reason`` and every figure ``None`` when the database cannot be
   read, is not configured, is in memory (another process cannot read it), holds too many rows to
   count, is no longer the file the mark was taken of (a mark's row watermark means nothing for
-  another file; a database first created after the mark has no identity to compare), or holds no
-  request under the assignment while nothing shows that it is the database of the serve the
-  worker called.  Unavailable is never reported as "no waiver".
+  another file; a database first created after the mark has no identity to compare), is replaced
+  while it is read (the path is compared before the connection and after the query, so a file
+  swapped in between is caught here and not only by :class:`SeenDatabases`), or holds no request
+  under the assignment while nothing shows that it is the database of the serve the worker
+  called.  Unavailable is never reported as "no waiver".
 
 The database is found from this host's configuration (``VERDICT_RECEIPTS_DB``, ``serve.env``),
 never from the serve at the address the worker called, so with a spare or remote serve it can be
@@ -71,6 +73,8 @@ NOT_SHOWN_REASON = (
     "no request under the assignment was found, and this host's receipt database is not shown "
     "to be the one the serve at the worker's address writes"
 )
+#: Why a read whose file changed under it says nothing (the reader and ``SeenDatabases`` agree).
+REPLACED_WHILE_READ_REASON = "serve's receipt database was replaced while it was read"
 #: The SQLite virtual-machine steps between two looks at the deadline.
 _PROGRESS_STEPS = 1000
 
@@ -219,7 +223,8 @@ def read_assignment_evidence(
         return _unavailable("serve's receipt database is not configured (VERDICT_RECEIPTS_DB)")
     if not mark.db_path.exists():
         return _unavailable("serve's receipt database does not exist")
-    if mark.identity is not None and database_identity(mark.db_path) != mark.identity:
+    opened = database_identity(mark.db_path)
+    if mark.identity is not None and opened != mark.identity:
         # The mark's row watermark counts the rows of the file it was taken of; applied to another
         # file it would hide requests at or below it and still read as authoritative above it.
         return _unavailable(
@@ -241,6 +246,11 @@ def read_assignment_evidence(
         return _unavailable(f"serve's receipt database cannot be read ({type(exc).__name__})")
     except (sqlite3.Error, OSError, ValueError) as exc:
         return _unavailable(f"serve's receipt database cannot be read ({type(exc).__name__})")
+    if database_identity(mark.db_path) != opened:
+        # The path can be replaced between the check above and the connection that opens it, and
+        # that connection reads whatever the path names by then: what was read is not known to be
+        # from the file the mark (or the check) was about.
+        return _unavailable(REPLACED_WHILE_READ_REASON)
     if len(rows) > MAX_MATCHING_ROOTS:
         return _unavailable(
             f"serve recorded more than {MAX_MATCHING_ROOTS} requests under one assignment"
@@ -302,7 +312,7 @@ class SeenDatabases:
             shown = key is not None and before == mark.identity and key in self._seen
         record = read_assignment_evidence(mark, digest, association_shown=shown)
         if database_identity(path) != before:
-            return _unavailable("serve's receipt database was replaced while it was read")
+            return _unavailable(REPLACED_WHILE_READ_REASON)
         if key is not None and record["status"] == "read" and record["requests"]:
             with self._lock:
                 self._seen.add(key)

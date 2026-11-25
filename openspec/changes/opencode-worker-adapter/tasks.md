@@ -129,6 +129,18 @@
       first, 3 tests failed (`test_a_file_replaced_after_the_mark_is_unavailable_with_rows_either_side_of_its_watermark`
       for the reader and for `SeenDatabases`, and
       `test_a_file_replaced_after_the_mark_is_not_associated_with_the_serve_it_was_read_for`).
+      A fourth review found the path could still be replaced after that check and before the
+      connection opened it, so the old watermark was applied to the other file and the read said
+      `read`, with an incomplete waiver count, for any caller of the reader that did not go
+      through `SeenDatabases`. The reader now takes the file's identity before the connection and
+      compares it again after the query, whether the mark has an identity or not, and a changed
+      identity is `unavailable`; written first, both cases of
+      `test_a_file_replaced_between_the_check_and_the_connection_is_unavailable_from_the_bare_reader`
+      (a mark of a file, and a database first created after the mark) failed with `read`, and
+      with the new check removed they fail again. `SeenDatabases` keeps its own check for a swap
+      after the reader has returned. What is not closed: a file replaced and then put back (or
+      replaced by one that takes the same device and inode, which a filesystem may reuse once the
+      first is deleted) between the two looks is not seen.
 - [x] 2.17 The executor-to-serve path through the real app (#1325): a loopback server runs the real
       `verdict serve` app with a recording upstream; the real executor signs and a fake worker sends
       one request; the assignment is served on the signed route and serve's evidence names the

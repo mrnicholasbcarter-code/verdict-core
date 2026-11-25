@@ -488,8 +488,11 @@ def test_a_file_replaced_while_it_is_read_is_unavailable(
 ) -> None:
     seen = evidence.SeenDatabases()
     db.put(_digest("mine"), [])
-    real = evidence.database_identity
-    answers = iter([real(db.path), (1, 2)])  # the path names another file by the end of the read
+    real = evidence.database_identity(db.path)
+    # SeenDatabases looks, the reader looks before and after its query (the same file both times),
+    # then the path names another file by the time SeenDatabases looks again: the swap came after
+    # the reader's own check, which is the window only SeenDatabases' check still covers.
+    answers = iter([real, real, real, (1, 2)])
     monkeypatch.setattr(evidence, "database_identity", lambda path: next(answers))
     result = seen.read(evidence.EvidenceMark(db.path, 0), _digest("mine"), origin=ORIGIN)
     assert result["status"] == "unavailable"
@@ -543,6 +546,54 @@ def test_a_file_replaced_after_the_mark_is_unavailable_with_rows_either_side_of_
     assert result["requests_waived"] is None
     assert result["requirement_waivers"] is None
     assert replaced.path.exists()
+
+
+@pytest.mark.parametrize("marked_file", ["a file that existed", "no file yet"])
+def test_a_file_replaced_between_the_check_and_the_connection_is_unavailable_from_the_bare_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marked_file: str
+) -> None:
+    """The identity check passes, then the path is replaced just before the connection opens it.
+
+    The connection opens whatever the path names by then: with a mark of a file the old watermark
+    would be applied to the other file, and read as authoritative.  Only a caller that goes through
+    ``SeenDatabases`` had a check after the read; the reader itself must have one.
+    """
+    mine = _digest("mine")
+    path = tmp_path / "serve-receipts.db"
+    if marked_file == "a file that existed":
+        first = Db(path)
+        for _ in range(3):
+            first.put(_digest("an earlier attempt"), [])
+        mark = evidence.take_mark(path)
+        assert mark.rowid == 3 and mark.identity is not None
+    else:
+        mark = evidence.take_mark(path)
+        assert (mark.rowid, mark.identity) == (0, None)
+        first = Db(path)
+        first.put(mine, [])
+    spare = Db(tmp_path / "spare.db")
+    for _ in range(3):
+        spare.put(mine, [WAIVER])
+    spare.put(mine, [])
+
+    real_connect = evidence._connect
+    connects: list[Path] = []
+
+    def replaced_just_before_the_connection(db_path: Path, deadline: float) -> Any:
+        assert evidence.database_identity(db_path) == mark.identity or mark.identity is None
+        connects.append(db_path)
+        os.replace(spare.path, path)  # another valid database moves in after the check passed
+        return real_connect(db_path, deadline)
+
+    monkeypatch.setattr(evidence, "_connect", replaced_just_before_the_connection)
+    result = evidence.read_assignment_evidence(mark, mine, association_shown=True)
+
+    assert connects == [path]  # the replacement happened after the first check, on the real path
+    assert result["status"] == "unavailable"
+    assert "replaced while it was read" in result["reason"]
+    assert result["requests"] is None
+    assert result["requests_waived"] is None
+    assert result["requirement_waivers"] is None
 
 
 def test_a_file_replaced_after_the_mark_is_not_associated_with_the_serve_it_was_read_for(
