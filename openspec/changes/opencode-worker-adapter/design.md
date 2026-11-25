@@ -169,7 +169,13 @@ spend the attempt's budget, so it ends 60 s after the attempt's deadline: room f
 request and the kill grace, and no more). The format allows at most 1,800 s, so an attempt whose
 timeout plus the margin would exceed it fails closed before launch; it is never clamped (the
 runtime caps an attempt at 900 s and gives the executor 10% less, so the real case is 945 s at
-most). The signer is `mint_assignment` in `verdict/worker_assignment.py` next to the verifier;
+most). The format has no attempt-specific field, only whole seconds, so two attempts of one node on
+one route signed in the same second would hold one credential and one digest, and serve's receipts
+could not tell their requests apart (a request of the first that serve commits after the second
+has started would be counted for the second). The executor therefore keeps the digests of its
+assignments that have not expired and dates a repeat one second later (at most 30, well inside
+the 60 s the verifier allows an `iat` to be ahead); the expiry follows from that issue time and is
+never shortened. The signer is `mint_assignment` in `verdict/worker_assignment.py` next to the verifier;
 `tests/worker_assignment_helpers.py` stays the independent signer, and a test proves both give
 the same token for the same payload and key. The worker's header `X-Verdict-Worker` is no longer
 sent: serve selects nothing from it.

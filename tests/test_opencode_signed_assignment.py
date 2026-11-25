@@ -556,21 +556,129 @@ def test_an_attempt_that_was_not_waived_carries_none(tmp_path: Path) -> None:
     assert serve["requirement_waivers"] == []
 
 
-def test_a_waiver_from_before_the_attempt_started_is_not_attributed_to_it(tmp_path: Path) -> None:
-    """The same clock second and the same node would give two attempts one digest; only rows
-    written after the worker started are looked at."""
+def test_a_request_of_an_earlier_attempt_is_not_attributed_to_a_retry_in_the_same_second(
+    tmp_path: Path,
+) -> None:
+    """Two attempts of one node on one route, signed in one clock second, would hold one credential
+    and one digest.  The second is dated a second later, so a request of the first that serve
+    commits after the second's mark (here: while the second worker runs) is not the second's."""
     db = tmp_path / "serve-receipts.db"
-    binary, seen = recording_worker(tmp_path)
+    credential, flag = tmp_path / "credential.txt", tmp_path / "late-digest.txt"
+    helper = tmp_path / "late.py"
+    helper.write_text(
+        textwrap.dedent(
+            f"""
+            import sys
+            sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+            from pathlib import Path
+            from tests.test_opencode_signed_assignment import seed_serve_root
+            seed_serve_root(Path({str(db)!r}), sys.argv[1], [{WAIVER!r}], 2)
+            """
+        )
+    )
+    binary = fake_worker(
+        tmp_path,
+        f"import subprocess\n"
+        f"open({str(credential)!r}, 'w').write(os.environ['VERDICT_WORKER_API_KEY'])\n"
+        f"if os.path.exists({str(flag)!r}):\n"
+        f"    subprocess.call([{sys.executable!r}, {str(helper)!r}, open({str(flag)!r}).read()])\n"
+        f"sys.exit(0)\n",
+    )
     now = datetime(2026, 11, 25, 12, 0, 0, tzinfo=timezone.utc)
     ex = executor(binary, receipts_db_provider=lambda: db, clock=lambda: now)
-    ReceiptStore(db, strict_scope=True)
-    go(ex, workdir(tmp_path))  # first attempt: learn the digest it would have
-    digest = wa.assignment_digest(seen.read_text())
-    seed_serve_root(db, digest, [WAIVER], 2)  # serve wrote these for the first attempt
-    terminal = go(ex, workdir(tmp_path))  # second attempt, same clock second, same ids
-    assert terminal.worker_assignment["assignment_digest"] == digest  # type: ignore[index]
-    serve = terminal.worker_assignment["serve_receipts"]  # type: ignore[index]
+    ReceiptStore(db, strict_scope=True)  # serve has created its database
+
+    first = go(ex, workdir(tmp_path))
+    first_digest = wa.assignment_digest(credential.read_text())
+    assert first.worker_assignment["assignment_digest"] == first_digest  # type: ignore[index]
+
+    flag.write_text(first_digest)  # from now on the worker also makes serve commit the first's rows
+    second = go(ex, workdir(tmp_path))
+    assert second.ok
+    assert second.worker_assignment["assignment_digest"] != first_digest  # type: ignore[index]
+    serve = second.worker_assignment["serve_receipts"]  # type: ignore[index]
     assert (serve["requests"], serve["requests_waived"]) == (0, 0)
+
+
+def test_each_live_assignment_of_one_executor_has_its_own_identity_even_in_one_second(
+    tmp_path: Path,
+) -> None:
+    binary, seen = recording_worker(tmp_path)
+    now = datetime(2026, 11, 25, 12, 0, 0, tzinfo=timezone.utc)
+    ex = executor(binary, clock=lambda: now)
+    digests, issued = [], []
+    for _ in range(3):
+        go(ex, workdir(tmp_path), timeout=10.0)
+        token = seen.read_text()
+        digests.append(wa.assignment_digest(token))
+        fields = sign.decode_payload(token)
+        issued.append((fields["iat"], fields["exp"] - fields["iat"]))
+    assert len(set(digests)) == 3
+    base = int(now.timestamp())
+    assert issued == [(base, 70), (base + 1, 70), (base + 2, 70)]
+    # still accepted by serve's verifier at the real clock of the signer
+    wa.verify_assignment(seen.read_text(), KEY, now=now)
+
+
+def test_concurrent_attempts_with_the_same_ids_get_distinct_identities(tmp_path: Path) -> None:
+    binary, _ = recording_worker(tmp_path)
+    now = datetime(2026, 11, 25, 12, 0, 0, tzinfo=timezone.utc)
+    ex = executor(binary, clock=lambda: now)
+
+    async def both() -> list[Any]:
+        cwd_a, cwd_b = tmp_path / "a", tmp_path / "b"
+        cwd_a.mkdir()
+        cwd_b.mkdir()
+        return list(
+            await asyncio.gather(
+                *(
+                    ex.run(
+                        "task",
+                        route_id=ROUTE,
+                        cwd=cwd,
+                        timeout_seconds=10.0,
+                        run_id=RUN_ID,
+                        node_id=NODE_ID,
+                    )
+                    for cwd in (cwd_a, cwd_b)
+                )
+            )
+        )
+
+    first, second = asyncio.run(both())
+    assert first.ok and second.ok
+    assert (
+        first.worker_assignment["assignment_digest"]  # type: ignore[index]
+        != second.worker_assignment["assignment_digest"]  # type: ignore[index]
+    )
+
+
+def test_an_expired_assignment_is_forgotten_so_the_clock_is_not_pushed_ahead_for_ever(
+    tmp_path: Path,
+) -> None:
+    binary, seen = recording_worker(tmp_path)
+    now = datetime(2026, 11, 25, 12, 0, 0, tzinfo=timezone.utc)
+    clock = {"now": now}
+    ex = executor(binary, clock=lambda: clock["now"])
+    go(ex, workdir(tmp_path))
+    first = sign.decode_payload(seen.read_text())
+    clock["now"] = now + timedelta(seconds=71)  # the first assignment (70 s) has expired
+    go(ex, workdir(tmp_path))
+    assert sign.decode_payload(seen.read_text())["iat"] == int(clock["now"].timestamp())
+    assert first["iat"] == int(now.timestamp())
+
+
+def test_more_live_assignments_than_the_identity_window_allows_is_a_block_not_a_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor_module, "MAX_IDENTITY_BUMP_SECONDS", 2)
+    binary, _ran = marker_worker(tmp_path)
+    now = datetime(2026, 11, 25, 12, 0, 0, tzinfo=timezone.utc)
+    ex = executor(binary, clock=lambda: now)
+    results = [go(ex, workdir(tmp_path)) for _ in range(4)]
+    assert [r.ok for r in results] == [True, True, True, False]
+    assert results[3].error.startswith("harness_configuration:")
+    assert "distinct identity" in results[3].error
 
 
 @pytest.mark.parametrize(

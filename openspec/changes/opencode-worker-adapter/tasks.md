@@ -86,7 +86,9 @@
       the serve token to the child (11 failures), no 1,800 s refusal (5), clamping (5), the
       assignment to the readiness check (1), no refusal mapping (2), margin 0 (8), no launched flag
       (8), a stale mark (3), no run id check (5), no timeout check (3), the serve token as the
-      fallback (34).
+      fallback (34). After review round 1 (2026-11-25) each live assignment of an executor also has
+      its own digest, so serve's receipts cannot be attributed to the wrong attempt of one node
+      in one second (the identity tests fail with that logic removed).
 - [x] 2.17 The executor-to-serve path through the real app (#1325): a loopback server runs the real
       `verdict serve` app with a recording upstream; the real executor signs and a fake worker sends
       one request; the assignment is served on the signed route and serve's evidence names the

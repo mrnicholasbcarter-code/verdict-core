@@ -329,6 +329,20 @@ cancellation SHALL complete only after the thread that ran the checks has finish
   `test_a_timeout_that_would_need_more_than_1800_seconds_fails_closed_before_launch`,
   `test_a_lifetime_outside_one_to_1800_whole_seconds_is_refused_not_clamped`)
 
+#### Scenario: Every live assignment has its own identity
+
+- **WHEN** one executor signs two assignments for the same route, run and node within one clock
+  second, sequentially or at once
+- **THEN** the later one is dated a second later so that its digest differs, its lifetime is
+  unchanged, and a request of the earlier attempt that serve commits afterwards is not counted for
+  the later one; more than 31 live assignments for one route, run and node in one second end the
+  attempt `harness_configuration:`
+  (`test_each_live_assignment_of_one_executor_has_its_own_identity_even_in_one_second`,
+  `test_concurrent_attempts_with_the_same_ids_get_distinct_identities`,
+  `test_a_request_of_an_earlier_attempt_is_not_attributed_to_a_retry_in_the_same_second`,
+  `test_an_expired_assignment_is_forgotten_so_the_clock_is_not_pushed_ahead_for_ever`,
+  `test_more_live_assignments_than_the_identity_window_allows_is_a_block_not_a_collision`)
+
 #### Scenario: A missing key or a missing id blocks before launch
 
 - **WHEN** the signing key is missing, unreadable, too short or not a key, or the run id or the
@@ -435,7 +449,7 @@ NOT fail an attempt that worked.  The reader SHALL NOT create, migrate or write 
 
 - **WHEN** serve's database already holds roots carrying the same digest from before the worker
   started
-- **THEN** they are not counted (`test_a_waiver_from_before_the_attempt_started_is_not_attributed_to_it`,
+- **THEN** they are not counted (`test_a_request_of_an_earlier_attempt_is_not_attributed_to_a_retry_in_the_same_second`,
   `test_only_rows_after_the_mark_can_belong_to_the_attempt`)
 
 ### Requirement: Serve address comes from configuration

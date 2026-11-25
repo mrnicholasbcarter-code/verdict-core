@@ -56,7 +56,7 @@ import urllib.request
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -99,6 +99,11 @@ TASK_PROMPT = (
 #: (:data:`~verdict.worker_assignment.MAX_LIFETIME_SECONDS`, 1,800 s) is refused before launch,
 #: never shortened.
 ASSIGNMENT_MARGIN_SECONDS = 60
+
+#: How many whole seconds a later issue time an assignment may be pushed to keep its identity
+#: unique among this executor's live assignments (see :meth:`OpenCodeExecutor._sign`).  The
+#: verifier accepts an ``iat`` up to 60 s ahead of its clock, so a few seconds is well inside it.
+MAX_IDENTITY_BUMP_SECONDS = 30
 
 _TERM_GRACE_SECONDS = 5.0
 #: Cap on worker output (stdout plus stderr) kept in memory per attempt.  NDJSON is parsed
@@ -930,6 +935,10 @@ class OpenCodeExecutor:
         self._serve_token_provider = serve_token_provider
         self._key_provider = key_provider
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        # The digests of the assignments this executor issued that have not expired yet, and when
+        # each expires: the identity serve's receipts are matched by (see ``_sign``).
+        self._issued: dict[str, datetime] = {}
+        self._issued_lock = threading.Lock()
         self._receipts_db_provider = receipts_db_provider
         self._binary_checked = False
         self._env = dict(env) if env is not None else None
@@ -1086,6 +1095,13 @@ class OpenCodeExecutor:
         Raises :class:`_UnsignableError` with a message that names the problem and never the key,
         the token or an id.  Nothing falls back to the serve token: an attempt that cannot sign
         is not launched.
+
+        An assignment has no attempt-specific field, only whole seconds, so two attempts of the
+        same node on the same route signed within one second would hold one credential and one
+        digest, and serve's receipts could not tell their requests apart.  Every assignment this
+        executor holds that has not yet expired therefore has its own digest: a later one that
+        would repeat it is dated one second later (the verifier allows an ``iat`` 60 s ahead of
+        its clock), never shortened, and the expiry still follows from that issue time.
         """
         if not isinstance(run_id, str) or not run_id:
             raise _UnsignableError(
@@ -1113,16 +1129,30 @@ class OpenCodeExecutor:
                 f"{_CREDENTIAL_HELP}"
             ) from exc
         try:
-            return mint_assignment(
-                key,
-                route_id=route_id,
-                run_id=run_id,
-                node_id=node_id,
-                lifetime_seconds=lifetime,
-                now=self._clock(),
-            )
+            now = self._clock()
+            with self._issued_lock:
+                self._issued = {d: end for d, end in self._issued.items() if end > now}
+                for bump in range(MAX_IDENTITY_BUMP_SECONDS + 1):
+                    issued_at = now + timedelta(seconds=bump)
+                    token = mint_assignment(
+                        key,
+                        route_id=route_id,
+                        run_id=run_id,
+                        node_id=node_id,
+                        lifetime_seconds=lifetime,
+                        now=issued_at,
+                    )
+                    digest = assignment_digest(token)
+                    if digest not in self._issued:
+                        self._issued[digest] = issued_at + timedelta(seconds=lifetime)
+                        return token
         except ValueError as exc:
             raise _UnsignableError(f"the worker assignment cannot be signed: {exc}") from exc
+        raise _UnsignableError(
+            "the worker assignment cannot be given a distinct identity: this executor already "
+            f"holds {MAX_IDENTITY_BUMP_SECONDS + 1} live assignments for the same route, run and "
+            "node signed within the same second"
+        )
 
     async def _run(
         self,

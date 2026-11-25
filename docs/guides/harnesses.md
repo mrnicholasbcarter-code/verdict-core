@@ -443,8 +443,10 @@ directory and an unrestricted shell, so it can read files there and reach the ga
 directly.  "All model calls go through serve" holds for OpenCode's own provider calls only.
 It can also read `~/.config/verdict/serve.env` and the signing key from disk, so the assignment keeps
 the serve token out of its environment, arguments, config and recorded output but is not a
-sandbox.  A worker could not name another route: the request's route is the signed one, or serve
-refuses it.  A worker request that carries
+sandbox.  A request that uses the executor-issued assignment cannot name another route: its route is
+the signed one, or serve refuses it.  A worker that reads the signing key could still mint an
+assignment for another route (serve's admission checks apply to it as to any); pinning stops a
+model choosing its route, it is not a boundary against a hostile worker.  A worker request that carries
 `execution_path_request` is rejected with 400 before any routing: that flow selects its own
 offer and cannot pin the assigned route, and pinned execution-path support for workers is not
 built.
