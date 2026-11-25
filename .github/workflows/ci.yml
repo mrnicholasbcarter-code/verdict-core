@@ -19,7 +19,7 @@ jobs:
   # Non-PR events (main push, nightly) always set code=true.
   #
   # Jobs that ALWAYS run (even on docs-only PRs):
-  #   test, test-shard, coverage, lint, security, type-check
+  #   changes, test, test-shard, shard-union, coverage, lint, security, type-check
   # Jobs SKIPPED on docs-only PRs (source unchanged; output unaffected):
   #   install-smoke, build, typescript-contract-parity, client-package-smoke
   #
@@ -116,8 +116,10 @@ jobs:
         run: cd verdict/client-sdk && npm run verify:package
 
   test:
-    # 3.10 on PRs; 3.10/3.11/3.12 on main push and nightly.
-    # 3.13 always runs in test-shard (sharded) instead of this job.
+    # 3.10 on PRs; 3.10/3.11/3.12 on main push and nightly. Each Python version is
+    # split into 2 parallel shards via pytest-split (same flags as test-shard).
+    # Every test runs exactly once per Python version; shard-union verifies it.
+    # 3.13 always runs in test-shard (4 shards) instead of this job.
     # Always runs: docs changes can break the 110+ test files that read docs/.
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -125,6 +127,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ${{ (github.event_name == 'pull_request') && fromJson('["3.10"]') || fromJson('["3.10","3.11","3.12"]') }}
+        group: [1, 2]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -141,19 +144,28 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,server,dashboard]"
-      - name: Run tests
-        run: pytest tests/ -n auto --dist loadfile -q --tb=short -o faulthandler_timeout=300 -m "not timing"
-      - name: Run wall-clock timing tests serially
+      - name: Run tests (shard ${{ matrix.group }}/2)
+        run: |
+          pytest tests/ \
+            -n auto --dist loadfile \
+            -q --tb=short \
+            -o faulthandler_timeout=300 \
+            -m "not timing" \
+            --splits 2 --group ${{ matrix.group }}
+      - name: Run wall-clock timing tests serially (shard 1 only)
+        if: matrix.group == 1
         run: pytest tests/ -q --tb=short -m timing -p no:xdist
-      - name: Validate versioned contract schema
+      - name: Validate versioned contract schema (shard 1 only)
+        if: matrix.group == 1
         run: python scripts/validate_contract_schema.py
-      - name: Validate public proof matrix and claims ledger
+      - name: Validate public proof matrix and claims ledger (shard 1 only)
+        if: matrix.group == 1
         run: python scripts/verify_proof_matrix.py
 
   test-shard:
     # Python 3.13 test suite split into 4 parallel shards via pytest-split.
     # Runs on both PRs and main push (sharding always used for 3.13).
-    # Every test runs exactly once; the coverage job verifies the union.
+    # Every test runs exactly once; the shard-union job verifies the union.
     # Always runs: same reasoning as test — docs changes break tests too.
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -204,8 +216,11 @@ jobs:
           include-hidden-files: true
 
   coverage:
-    # Combines coverage from all 4 shards, enforces the 70% floor, and verifies
-    # that the shard union equals the full test collection (every test ran once).
+    # Combines coverage from all 4 shards and enforces the 70% floor. The shards did
+    # the measuring, so this job installs only coverage itself, at the version that
+    # wrote their data (read from the data files), and reports over the checked-out
+    # sources named by [tool.coverage.run] source. The shard union check is its own
+    # job (shard-union), so it no longer sits on this job's path.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [test-shard]
@@ -218,16 +233,30 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-          cache: pip
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev,server,dashboard]"
       - name: Download coverage artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: coverage-shard-*
           merge-multiple: true
+      - name: Install coverage (the version that wrote the shard data)
+        run: |
+          version=$(python - <<'PY'
+          import glob
+          import sqlite3
+          import sys
+
+          versions = set()
+          for path in sorted(glob.glob(".coverage.shard.*")):
+              db = sqlite3.connect(path)
+              row = db.execute("select value from meta where key = 'version'").fetchone()
+              db.close()
+              versions.add(row[0] if row else None)
+          if len(versions) != 1 or None in versions:
+              sys.exit(f"cannot tell which coverage version wrote the shard data: {sorted(map(str, versions))}")
+          print(versions.pop())
+          PY
+          )
+          pip install "coverage==$version"
       - name: Combine and report coverage
         run: |
           coverage combine .coverage.shard.*
@@ -239,10 +268,37 @@ jobs:
           name: coverage-combined
           path: coverage.xml
           retention-days: 30
-      - name: Verify shard union covers full test collection
-        # scripts/ci_shard_union.py uses an in-process pytest plugin to collect
-        # exact node IDs; asserts union == full set and shards are pairwise disjoint.
-        run: python scripts/ci_shard_union.py --splits 4 --marker "not timing"
+
+  shard-union:
+    # Verifies that every test runs exactly once per Python version: the union of the
+    # shards equals the full collection and the shards are pairwise disjoint.
+    # scripts/ci_shard_union.py collects exact node IDs with an in-process pytest plugin
+    # (no test runs) using the same split flags as the shard jobs. One leg per sharded
+    # job and Python version, because collection can differ by Python version:
+    #   3.13 / 4 shards = test-shard;  3.10 (and 3.11, 3.12 off PRs) / 2 shards = test.
+    # It needs no shard output, so it runs beside the shards, not after them.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ (github.event_name == 'pull_request') && fromJson('[{"python-version":"3.13","splits":4},{"python-version":"3.10","splits":2}]') || fromJson('[{"python-version":"3.13","splits":4},{"python-version":"3.10","splits":2},{"python-version":"3.11","splits":2},{"python-version":"3.12","splits":2}]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Same depth as the shard jobs, so collection sees the same tree.
+          fetch-depth: 0
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server,dashboard]"
+      - name: Verify the shard union covers the full test collection (Python ${{ matrix.python-version }}, ${{ matrix.splits }} shards)
+        run: python scripts/ci_shard_union.py --splits ${{ matrix.splits }} --marker "not timing"
 
   lint:
     # Required check. The pipeline fixes formatting and safe lint fixes itself:
@@ -536,20 +592,23 @@ jobs:
   ci-ok:
     # Aggregate gate: the single required check for PRs.
     # Always runs (if: always()). Passes when:
-    #   - Required jobs (test, test-shard, coverage, lint, security, type-check)
-    #     all have result "success".
+    #   - Required jobs (changes, test, test-shard, shard-union, coverage, lint, security,
+    #     type-check) all have result "success". `changes` is required because a failed
+    #     `changes` skips every code-only job, and a skipped job passes below.
     #   - Skippable jobs (install-smoke, build, typescript-contract-parity,
     #     client-package-smoke) have result "success" or "skipped"; any
     #     "failure" or "cancelled" still fails this gate.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
-    needs: [test, test-shard, coverage, lint, security, type-check, install-smoke, build, typescript-contract-parity, client-package-smoke]
+    needs: [changes, test, test-shard, shard-union, coverage, lint, security, type-check, install-smoke, build, typescript-contract-parity, client-package-smoke]
     steps:
       - name: Evaluate gate
         env:
+          RESULT_CHANGES: ${{ needs.changes.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_TEST_SHARD: ${{ needs.test-shard.result }}
+          RESULT_SHARD_UNION: ${{ needs.shard-union.result }}
           RESULT_COVERAGE: ${{ needs.coverage.result }}
           RESULT_LINT: ${{ needs.lint.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
@@ -562,8 +621,10 @@ jobs:
           ok=true
           # Must succeed on every PR (never skip)
           for name_result in \
+            "changes:$RESULT_CHANGES" \
             "test:$RESULT_TEST" \
             "test-shard:$RESULT_TEST_SHARD" \
+            "shard-union:$RESULT_SHARD_UNION" \
             "coverage:$RESULT_COVERAGE" \
             "lint:$RESULT_LINT" \
             "security:$RESULT_SECURITY" \
