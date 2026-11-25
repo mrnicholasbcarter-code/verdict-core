@@ -152,7 +152,9 @@ run id or node id, an attempt timeout that is not a positive finite number or wh
 would exceed 1,800 s, and a missing, unreadable or short signing key each end the attempt here)
 and checks, once, that the serve token resolves, that the `opencode` binary runs (`--version`)
 and that serve is reachable and accepts the serve token (`GET /v1/guidance/status`, no redirect
-followed; an assignment is not accepted on that path, so it is never sent there). Any failure is
+followed; an assignment is not accepted on that path, so it is never sent there), and then, once,
+that serve accepts this attempt's own assignment (the pre-launch probe, below; it carries the
+assignment and never the serve token). Any failure is
 one `harness_configuration:` message with a non-secret reason, which recovery maps to BLOCK (no
 retry, no cooldown). Nothing falls back to the serve token.
 
@@ -226,17 +228,64 @@ has no file to compare (identity `None`) and is read from its first row. An empt
 "serve recorded nothing" only for a pair in that set; otherwise the record is `unavailable` with
 the reason that the database is not shown to be the selected serve's, and its figures are `null`.
 A request found under the assignment is read whether or not the pair was known (it is what adds
-the pair). The cost is accepted: a signing key serve does not share, refused from the run's first
-attempt, is not recognised as a configuration block (no attempt of that run is ever served, so
-nothing is shown), and a refusal read from a database nothing has tied to serve stays the
-provider's, with the cooldown that implies. What cannot be told from here is a serve restarted
-on another database while the orchestrator's configuration still names the old file: the old
-file is the one read, because the executor has no way to ask serve, and a provider's own refusal
-of that kind is then read as serve's; the same is true of a device and inode that the system
-reuses for another file. `--resume` and a restarted controller start from nothing seen. Telling a
-refusal from a provider's words without serve's receipts needs serve to say so in its answer or to
-name its database, which this story does not change (a decision for the operator in the pull
-request).
+the pair). The cost of the receipts alone, as first built, was that a signing key serve does not
+share, refused from the run's first attempt, was not recognised as a configuration block (no
+attempt of that run was ever served, so nothing was shown): the pre-launch probe below closes
+that for the executor's own assignment. A refusal read from a database nothing has tied to
+serve stays the provider's, with the cooldown that implies. What cannot be told from here is a
+serve restarted on another database while the orchestrator's configuration still names the old
+file: the old file is the one read, because the executor has no way to ask serve, and a
+provider's own refusal of that kind is then read as serve's; the same is true of a device and
+inode that the system reuses for another file. `--resume` and a restarted controller start from
+nothing seen.
+
+**Pre-launch assignment probe (design detail, #1340):** the receipts cannot show that serve
+refused the first assignment of a run, so before it launches a worker the executor asks serve
+itself. After the readiness check (which carries the serve token) and before the receipts mark
+and the launch, it sends the attempt's own assignment as the bearer (and nothing else: never the
+serve token) on `POST {serve-url}/v1/chat/completions` with the body
+`{"model": "<sentinel>"}` and no `messages` (`_probe_assignment`). Serve's order is what makes
+this free and decisive: its middleware verifies the assignment (403, or 503 when it has no key,
+a body that is serve's own `_proxy_error`); then the relay refuses a `model` that differs from
+the assignment's route with 400 `the request's model must equal the route in the worker
+assignment`, before the ladder, so no routing decision, no admission proof, no upstream call and
+no evidence. The sentinel holds a control character, which no route id of a verified assignment
+can (the signer refuses to sign one, the verifier rejects one), so it equals no route. Outcomes:
+400 with serve's own model-check body is accepted and the attempt goes on (a 400 from a proxy or
+a validation error proves nothing and is unproven); 403 with exactly serve's refusal body
+or 503 with exactly serve's not-configured body is `harness_configuration:` (a block, cooldown 0,
+nothing launched); anything else (no answer in time, a refused connection, a redirect, a 2xx, a
+404, another 5xx such as "Proxy not initialized", a 403 or 400 with another body, a body over
+4 KiB or cut short, whether its length is declared or chunked) is unproven, never a block and never a failure, and the attempt goes on exactly
+as before. A proxy in front of serve can answer 403 too, which is why the body and not the
+status decides. The probe follows no redirect (it is sent with `http.client`, which never follows one and never
+uses a proxy), is bounded by the attempt's own deadline like the readiness check
+(`min(5 s, what is left)`; a refusal that arrives after the deadline is the attempt's timeout)
+and, unlike a bare socket timeout, by that time as a whole: the request runs on a helper thread
+that the probe stops waiting for at the deadline (it then shuts the helper's socket down, and a
+host-name lookup that returns late sends nothing), so neither a server that sends its answer a
+byte at a time nor a resolver that never answers can hold the attempt or a cancellation (the
+readiness check, unchanged here, keeps its per-operation socket timeout). A helper stuck in a
+lookup outlives its probe, so at most 8 helpers are outstanding at once in the process: a probe
+that finds every place taken, or whose helper cannot be started, is unproven without sending
+anything, so stuck helpers cannot pile up with the attempts. A cancelled attempt does not start it. The block message lists what the
+probe cannot tell apart (different `worker-assignment.key` files or homes, clocks more than 60 s
+apart, a serve older than the signed-assignment change or anonymous) and the fix. The receipts'
+classification of a refusal mid-run is unchanged; the probe does not replace it, because a key
+replaced after the probe, or a worker's own tampered copy, is only seen there.
+
+Options weighed in the research (all against the first-attempt gap): (A) this probe, no change to
+serve, about fifty lines; (A1) a new serve-token endpoint that verifies an assignment and says
+why (names the cause and logs nothing alarming, but adds a serve surface that tells every holder
+of the serve token why an assignment fails, and an older serve answers 404); (B) a key
+fingerprint in `/v1/guidance/status` (proves key equality only, not the clock, and exposes a
+key-derived value); (C) marking serve's refusals (OpenCode surfaces no response headers, a body
+marker a provider could copy would need a MAC the orchestrator can share only through the serve
+token, and a receipt row per refusal breaks "a refusal writes nothing"); (D) docs and doctor only
+(cannot see the running serve's key). The costs of A are accepted: serve logs one WARNING
+(`reason=model_mismatch`) per probe, and the order in serve becomes a contract the orchestrator
+relies on (pinned in `tests/test_serve_worker_route_proof.py`: if serve routed a mismatched model
+the probe would become a spend). A `verdict doctor` probe of the same kind is a separate story.
 
 **What serve recorded, read back into the run receipt (design detail, #1325):** serve writes one
 evidence root per relay request to its receipt database (`VERDICT_RECEIPTS_DB`), naming the
@@ -295,7 +344,7 @@ HTTP request), so they run in a thread. Cancelling the await cannot stop a threa
 the executor sets an event, the probe is killed and reaped within a poll interval, no further
 check starts, and the cancellation completes only after the thread has returned (the same
 boundary the pre-dispatch checks keep). A serve request that has already started is waited for
-(it is bounded by 5 s and is read-only).
+(each is bounded by 5 s; the readiness request is read-only and the probe decides nothing).
 
 **Open point:** Whether to pass the API key via an env var or via the OpenCode
 config's credential field. Both keep it out of the command line and logs; the
@@ -323,9 +372,9 @@ output onto `WorkerTerminal`:
 
 Two further bounds protect the orchestrator. Worker output (stdout plus stderr) kept in memory
 is capped at 16 MiB per attempt (`output_limit`; the process group is killed). The
-pre-dispatch checks count against the attempt timeout: the binary probe (15 s at most) and the
-serve readiness check (5 s at most) each get only what is left of the attempt's budget, so a hung
-probe cannot hold an attempt past its deadline; the worker gets only the remainder, and nothing
+pre-dispatch checks count against the attempt timeout: the binary probe (15 s at most), the
+serve readiness check and the assignment probe (5 s at most each) each get only what is left of
+the attempt's budget, so a hung probe cannot hold an attempt past its deadline; the worker gets only the remainder, and nothing
 is spawned when none is left.
 
 **Task delivery (design detail, #1327):** The task text is written once, as the instructions

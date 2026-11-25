@@ -237,8 +237,8 @@ OpenCode worker attempts SHALL be bounded by the existing per-attempt timeout
 
 #### Scenario: Pre-dispatch time counts against the attempt timeout
 
-- **WHEN** the pre-dispatch checks (the binary probe and the serve readiness check) take part of
-  the attempt timeout, or one hangs
+- **WHEN** the pre-dispatch checks (the binary probe, the serve readiness check and the assignment
+  probe) take part of the attempt timeout, or one hangs
 - **THEN** each check is bounded by what is left of the budget, the worker gets only the
   remaining budget, and when none remains the attempt ends as a timeout without spawning the
   worker (`test_pre_dispatch_time_counts_against_the_attempt_timeout`,
@@ -306,7 +306,26 @@ serve receipts SHALL be `unavailable` with a reason, never "zero requests".
 
 Before an attempt writes or launches anything, the executor SHALL also check that the serve token
 resolves, that the `opencode` binary runs and that serve is reachable and accepts the serve token;
-a failure SHALL be one `harness_configuration:` message that recovery treats as a block.  The
+a failure SHALL be one `harness_configuration:` message that recovery treats as a block.  Then,
+before the receipts mark and the launch, it SHALL send serve one probe of the attempt's own
+assignment: `POST /v1/chat/completions` with the assignment as the bearer (and not the serve
+token) and a body that is only `{"model": <a value no route can equal>}`, with no `messages`,
+followed by no redirect and bounded, as a whole exchange (a host-name lookup, a connection, an
+answer sent slowly) and not only per socket operation, by what is left of the attempt's budget;
+a request whose time has run out SHALL NOT be sent.  Serve verifies the
+assignment and then refuses a `model` that differs from the assignment's route with 400, before
+any routing, so the probe SHALL make no routing decision, mint no admission proof, send nothing
+upstream and write no serve evidence.  A 400 with serve's body SHALL mean accepted and the attempt
+SHALL go on.  A 403 with exactly serve's refusal body, or a 503 with exactly serve's `worker
+assignments are not configured` body, SHALL end the attempt as one `harness_configuration:` block,
+on a run's first attempt as on any other, with nothing launched, no upstream call and no provider
+cooldown; its message SHALL name the causes the probe cannot tell apart (a different signing key
+file or home, clocks more than 60 seconds apart, a serve older than the signed-assignment change
+or running anonymous) and the fix, and SHALL NOT need serve's receipts.  Any other result (no
+answer in time, a refused connection, a redirect, a 2xx, a 404, another 5xx, a 403 or 400 with
+another body, an answer that ends before its declared length) SHALL be unproven: the attempt goes on exactly as before, and an unproven probe is
+never a block and never a provider failure.  Serve's order (the model is refused before routing)
+SHALL be pinned by a serve-side test that says the orchestrator relies on it.  The
 checks SHALL be safe under cancellation: when the attempt is cancelled, the version probe's process
 group SHALL be killed and reaped, no serve request SHALL be started afterwards, and the
 cancellation SHALL complete only after the thread that ran the checks has finished.
@@ -320,11 +339,82 @@ cancellation SHALL complete only after the thread that ran the checks has finish
   run id and node id (`test_the_worker_holds_only_the_signed_assignment_and_never_the_serve_token`,
   `test_a_serve_token_in_the_process_environment_never_reaches_the_worker`)
 
-#### Scenario: Serve is checked with the serve token, never with the assignment
+#### Scenario: The readiness check carries the serve token only and the probe the assignment only
 
-- **WHEN** the readiness check runs
-- **THEN** it sends the serve token, and no request carries the assignment off the relay
-  (`test_serve_is_checked_with_the_serve_token_and_never_with_the_assignment`)
+- **WHEN** the readiness check and the pre-launch probe run for an attempt
+- **THEN** the readiness request (`GET /v1/guidance/status`) carries the serve token and never the
+  assignment, and the probe (`POST /v1/chat/completions`, a relay path, the only kind that accepts
+  an assignment) carries this attempt's own assignment and never the serve token; the assignment
+  reaches serve nowhere else, and no redirect is followed with it
+  (`test_serve_is_checked_with_the_serve_token_and_never_with_the_assignment`,
+  `test_the_probe_carries_the_assignment_only_and_the_readiness_check_the_serve_token_only`,
+  `test_a_redirect_is_never_followed_so_the_assignment_goes_nowhere_else`)
+
+#### Scenario: A healthy serve accepts the probe and the probe costs nothing
+
+- **WHEN** serve verifies the attempt's assignment and the probe's model differs from the
+  assignment's route
+- **THEN** serve answers 400 before any routing, so the probe makes no routing decision, mints no
+  proof, sends nothing upstream and writes no evidence, serve logs one `model_mismatch` WARNING,
+  the attempt goes on, and the probe's model equals no route a verified assignment can name
+  (`test_a_healthy_serve_answers_the_probe_400_and_the_probe_decides_and_sends_nothing`,
+  `test_the_orchestrators_assignment_probe_is_refused_before_routing_and_costs_nothing`,
+  `test_the_probe_model_is_no_route_id_a_verified_assignment_can_carry`)
+
+#### Scenario: Serve refuses the first assignment of a run, before launch
+
+- **WHEN** serve answers the probe with its refusal (403 `authentication failed`) because the
+  assignment is signed with a key serve does not hold, expired, or dated ahead of serve's clock, or
+  with its 503 `worker assignments are not configured` because serve has no signing key
+- **THEN** the attempt ends `harness_configuration:` as the run's first attempt: no worker is
+  launched, nothing is sent upstream, no decision is made, no proof is minted, serve writes no
+  evidence, recovery blocks with no cooldown, the message names the possible causes and
+  `verdict setup`, and serve's receipts are not read, so a remote or spare serve is covered
+  (`test_a_first_attempt_serve_refuses_is_a_configuration_block_before_anything_is_launched`,
+  `test_a_serve_with_no_signing_key_is_the_same_block_naming_setup`,
+  `test_a_serve_whose_receipts_the_orchestrator_cannot_read_is_covered_by_the_probe`,
+  `test_serves_exact_refusal_ends_the_first_attempt_before_launch_naming_the_causes`,
+  `test_serves_503_not_configured_ends_the_attempt_the_same_way_naming_setup`)
+
+#### Scenario: An unclear probe result is unproven
+
+- **WHEN** the probe gets no answer in time, a refused connection, a redirect, a 2xx, a 404, a 5xx
+  other than serve's not-configured 503 (including "Proxy not initialized"), a 403 or 400 with a
+  body other than serve's, a body that is too long or cut short (declared or chunked), or an answer
+  sent so slowly that it outlasts the probe's time
+- **THEN** nothing is concluded: the attempt goes on exactly as before, the worker is launched with
+  its assignment, and it is never a block and never a failure of the attempt
+  (`test_an_unclear_probe_result_is_unproven_and_the_attempt_goes_on_as_before`,
+  `test_a_probe_that_gets_no_answer_in_time_is_unproven_and_the_attempt_goes_on`,
+  `test_a_probe_to_nothing_listening_is_unproven`, `test_the_probe_cannot_raise_into_the_attempt`,
+  `test_an_answer_that_trickles_in_is_cut_off_at_the_probes_deadline`,
+  `test_an_answer_without_a_content_length_is_read_the_same`,
+  `test_a_resolver_that_never_answers_cannot_hold_the_probe_past_its_deadline`,
+  `test_a_probe_whose_connection_used_up_its_time_sends_nothing_more`)
+
+#### Scenario: Probe helpers that cannot end do not pile up
+
+- **WHEN** the probe's helper thread is stuck (a host-name lookup that never returns) and later
+  attempts probe, or a helper thread cannot be started
+- **THEN** at most a fixed number of probe helpers (8) are outstanding in the process at once; a
+  probe that finds every place taken, or whose helper cannot be started, is unproven at once
+  without sending anything, the attempt goes on exactly as before and no exception reaches it, and
+  a place comes back when its helper ends
+  (`test_repeated_probes_behind_a_stuck_lookup_leave_a_bounded_number_of_helpers`,
+  `test_a_helper_that_cannot_be_started_is_unproven_and_frees_its_place`)
+
+#### Scenario: The probe counts against the attempt's budget
+
+- **WHEN** the readiness check fails, uses up the budget, or the probe runs into the deadline, or
+  the attempt is cancelled
+- **THEN** a failed readiness check ends the attempt without a probe, the probe is given at most
+  what is left of the attempt's budget, a refusal that arrives after the deadline is the attempt's
+  timeout and not a block, and a cancelled attempt starts no probe and waits for one in flight
+  (`test_a_failed_readiness_check_ends_the_attempt_with_no_probe`,
+  `test_a_readiness_check_that_uses_up_the_budget_leaves_no_time_for_the_probe`,
+  `test_the_probe_is_bounded_by_what_is_left_of_the_attempt`,
+  `test_a_refusal_that_arrives_after_the_attempts_deadline_is_a_timeout_not_a_block`,
+  `test_cancelling_run_waits_for_an_assignment_probe_that_is_already_in_flight`)
 
 #### Scenario: The signer agrees with the independent signer
 
@@ -385,25 +475,22 @@ cancellation SHALL complete only after the thread that ran the checks has finish
   node id launches nothing
   (`test_a_planner_call_has_no_node_and_the_answer_only_wrapper_refuses_an_agent_executor`)
 
-#### Scenario: An expired or tampered assignment fails closed with no upstream call
+#### Scenario: A refusal after the probe passed fails closed with no upstream call
 
-- **WHEN** the worker presents to the real serve an assignment that is expired, altered after
-  signing, signed with a key serve does not hold, or dated ahead of serve's clock, as the first
-  assignment of the run
+- **WHEN** the worker presents to the real serve an assignment that was altered after signing, or
+  serve's key was replaced after the probe passed, as the first assignment of the run
 - **THEN** serve refuses it with 403, nothing is sent upstream, serve writes no evidence, and the
   attempt fails; nothing yet shows that the database the executor read is the serve's it called,
   so the attempt is not called a configuration block: it stays the provider's denial and its
   serve receipts are `unavailable` with a reason
-  (`test_an_expired_assignment_fails_closed_with_no_upstream_call`,
-  `test_a_tampered_assignment_fails_closed_with_no_upstream_call`,
-  `test_an_assignment_signed_with_a_key_serve_does_not_hold_fails_closed`,
-  `test_an_assignment_dated_ahead_of_serves_clock_fails_closed`)
+  (`test_a_tampered_assignment_fails_closed_with_no_upstream_call`,
+  `test_a_key_rotated_after_the_probe_is_a_refusal_mid_run_and_stays_the_providers_at_first`)
 
 #### Scenario: Serve's refusal after serve admitted an earlier assignment of the run is a block
 
 - **WHEN** serve admitted an earlier assignment of this executor in its receipt database, and the
-  worker then presents an assignment that is expired, altered after signing, signed with a key
-  serve does not hold, or dated ahead of serve's clock
+  worker then presents an assignment that was altered after signing, or serve's key was replaced
+  after the probe passed
 - **THEN** serve refuses it with 403, nothing is sent upstream, serve writes no evidence, and the
   attempt ends `harness_configuration:` (a block with no cooldown), not as the provider denying the
   account, because serve's receipts, shown to be the serve's it called, hold no request under the
