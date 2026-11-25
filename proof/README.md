@@ -100,6 +100,14 @@ python scripts/proof/run.py --mode full --no-cache --shard 2 --report proof-shar
   `unit_timing` as skipped. `--shard` is refused (exit 2, before any gate) in
   targeted mode, when the contract declares no `shards`, and for an index outside
   `1..shards`.
+- **Checking a local report.** `python scripts/proof/live_acceptance.py unsharded
+  --report <file>` validates the report of an unsharded full run, not only its exit
+  code. A run made with `--llm-boundary` is checked with `--llm-boundary` too. The report
+  does not record that condition, so the checker is told it and judges the gate
+  statuses against it: a report made under the other condition fails, in either
+  direction. A split gate behind the condition covers `unit_timing` only when the
+  condition is met, so the condition also decides which of the two the checker expects
+  to run.
 - **A leg writes `proof-shard-K/`**: `proof-report-full.json` (today's report plus
   `shard` and `targets`), `ids-<gate>.json` (the test ids the gate selects, collected
   before it runs with `scripts/ci_shard_union.py --emit-ids`; a failed collection
