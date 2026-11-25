@@ -1,9 +1,10 @@
 # Design
 
 Tags: **[main]** read at main `c51cd994` (`_run_unit_once`, `_touched_since`, `_verify`, `_run`,
-`_try_mechanical` re-read at `f4577ee1`, the decomposer at `2d83e6b0`). **[U]** read on the unmerged OC1 branch at
-`f684a7df`, re-read by task 1.1. **[exp]** observed in a scratch repository, git 2.56.1. Behaviour is
-in the spec delta; descriptor mechanics, seams and test names are in tasks.md. This file is the why.
+`_try_mechanical` re-read at `f4577ee1`, the decomposer at `2d83e6b0`; re-read at `44be580c` for the
+build). **[U]** read on the OC1 branch at `f684a7df`; OC1 has merged and "Drift after #1299" below
+records what changed. **[exp]** observed in a scratch repository, git 2.56.1. Behaviour is in the
+spec delta; descriptor mechanics, seams and test names are in tasks.md. This file is the why.
 
 ## Context
 
@@ -33,6 +34,38 @@ the story is split, this is OC2a with retries off (D8); a dirty, untracked or ig
 refused and there is no on-disk journal (D5). Everything else is this design's proposal. **Divergences
 from the research (Option B):** the delta is computed from file contents, not git (D4); the gateway check
 skips only the base-URL equality (D8); credential and lineage stay in OC2b (D10).
+
+## Drift after #1299
+
+Task 1.1, read on main `44be580c`. Everything below is merged; where the text of this design still
+says otherwise it has been corrected in the same commit (lesson 2).
+
+- **#1336 (task delivery).** `OpenCodeExecutor` no longer writes `.verdict-context.md` (or anything)
+  into `cwd`: the task is an instructions file in the per-attempt configuration directory, with one
+  short prompt on standard input. The attempt tree is therefore never written by the executor. The
+  "executor-byproduct set", the context-file scenarios and the task 3.4 tests that planted such a file
+  are removed; the only byproduct rule is the user's ignore rules (D4). `build_opencode_prompt` (D10)
+  now supplies the task text the OpenCode executor puts in that file.
+- **#1338 (parser).** The output parser reads `part.text` and `part.tokens`. On an upstream 429 or 503
+  OpenCode retries for 85 to 100 s before the final error event, so an attempt timeout below about 100 s
+  loses the status. The unit executor's `ATTEMPT_TIMEOUT_SECONDS` is 600 and the constructor refuses a
+  value below 120 or above 1,740 (the assignment lifetime is `ceil(timeout) + 60` and is refused above
+  1,800).
+- **#1339 (signed assignment).** `OpenCodeExecutor.run(prompt, *, route_id, cwd, timeout_seconds,
+  run_id=None, node_id=None)` signs a per-attempt assignment bound to the route, the run id and the node
+  id; without a run id and a node id it ends with a `harness_configuration` terminal and launches
+  nothing. The worker's only credential is the assignment; the serve token stays in the calling process
+  and the signing key is `worker-assignment.key` under the Verdict home. Consequences: (1) autodev
+  passes its attempt-ledger run id and the unit id (D8, a fourth optional capability `begin_run`);
+  serve's receipts and the ledger then show the same ids; (2) the readiness check also covers the serve
+  token and the signing key (D9), because without them every unit would fail after the probe and the
+  planner call were paid for; (3) the CLI builds the executor with its default providers, so #1313 changes
+  only that builder (D10).
+- **Unchanged.** `PINNED_VERSION = "2.3.2"`, `WORKER_API_KEY_ENV`, `OPENCODE_BIN_ENV`, the binary resolver
+  `_opencode_binary` and the `run` never-raises contract. The doctor already has a version probe; the
+  readiness check does its own (it needs the version text) rather than import the doctor's private helper.
+- **#1313 (OC1b)** is still open: its remaining stories change the CLI's executor builder and the serve
+  side, not this change's seams. Retries, lineage, default selection and the live check stay with #1314.
 
 ## Verified git behaviour [exp]
 
@@ -80,9 +113,13 @@ walks the tree again (M1) and compares with M0: a path is changed when its kind,
 differs, added and removed paths included. Staging, committing and checkout change only git state, so
 they do not matter; a reverted edit leaves no delta. In order:
 
-1. A new path is a byproduct, dropped, if it is in the executor-byproduct set (D10) or ignored by the
-   user's rules (`git check-ignore --no-index -z --stdin` in the user's repository). A worker-edited
-   `.gitignore` is not consulted; a path in M0 is never a byproduct.
+1. A new path is a byproduct, dropped, if it is ignored by the user's rules (`git check-ignore
+   --no-index -z --stdin` in the user's repository) and the unit does not own it. An owned path is never
+   dropped: the filter would transfer half of a repair that creates an ignored and a plain owned file, or
+   reject a repair of only the ignored one as empty (carried review finding, Codex on #1319). A
+   worker-edited `.gitignore` is not consulted; a path in M0 is never a byproduct. Ownership precedence is
+   the delta's fail-safe; the policy is D5, which refuses a unit that owns an ignored path before any worker
+   starts, because `git status` (and so `changed_files` and the receipt) never lists an ignored file.
 2. Each remaining path must satisfy `WorkUnit.owns`, else `rejected`; leaf entries only, not directories.
 3. Each must be a regular file or a deletion (a symlink, device or FIFO is `rejected`); an empty delta is `rejected`.
 
@@ -102,11 +139,15 @@ unit when an owned path
 - is tracked and tagged other than `H` by `git ls-files -v -z -- <owned>` (`h` assume-unchanged, `S`
   skip-worktree: git does not read its bytes);
 - is tracked and `git check-attr -z filter ident -- <owned>` gives a value other than `unspecified` or
-  `unset` (the filter or keyword maps other bytes to the same blob).
+  `unset` (the filter or keyword maps other bytes to the same blob); or
+- does not exist and is matched by an ignore rule (`git check-ignore -z --stdin` with the owned absent
+  paths; exit 0 means ignored, 1 not ignored, anything else is a failed read). A file the unit creates
+  there would be invisible to `git status`, so `changed_files` and the receipt would omit a file the
+  executor wrote, and a half-transfer is impossible only because the whole unit is refused.
 
-It also refuses when any of the three reads fails (`_tree_state` returns `{}` on failure, so it is not
-reused). An absent, unreported owned path is accepted whatever attributes match its name: git holds no
-bytes of it to lose. Unowned dirty files are still seeded. Line endings and encoding are not checked
+It also refuses when any of the reads fails (`_tree_state` returns `{}` on failure, so it is not
+reused). An absent, unreported, not-ignored owned path is accepted whatever attributes match its name:
+git holds no bytes of it to lose. Unowned dirty files are still seeded. Line endings and encoding are not checked
 (open point 7).
 
 `_run_unit_once` calls `preflight` before the mechanical tier, because `ruff --fix` may edit an owned
@@ -144,8 +185,11 @@ On main `_touched_since` and `_verify` run outside any handler and `_run` catche
 not "restore after a false verify" but "call `restore()` once on every exit after `execute_unit` was
 called other than a verified success" (the spec lists the exits). An exception is re-raised unchanged, and
 a failure inside `restore()` is printed to standard error (Python 3.10 has no `add_note`), never replacing
-it; a second interrupt during `restore()` is not covered. The transfer is the last fallible step of
-`execute_unit`, after the clone is removed.
+it; a second interrupt during `restore()` is not covered. An `Exception` that `execute_unit` itself
+raises keeps main's behaviour (`_run_unit_once` turns it into an unverified `executor error:` outcome and
+does not re-raise), after the one `restore()` call, so the default path is untouched; a `KeyboardInterrupt`
+and any exception from `_touched_since` or `_verify` are re-raised. The transfer is the last fallible step
+of `execute_unit`, after the clone is removed.
 
 The journal belongs to one `execute_unit` call: that call empties it first, so a later unit's failure
 cannot undo an earlier unit's verified files (`run_autodev` reuses one executor).
@@ -155,7 +199,18 @@ journalled before it is made, with the path's prior and intended state; appendin
 would let a `KeyboardInterrupt` between the two leave a change restore cannot see. Restore therefore
 accepts either state for an entry (the intended one is undone; the prior one means the mutation was never
 made and is not reported) and leaves alone and reports any other (a user edit or `chmod`), so it never
-overwrites content it did not write. It walks the journal in reverse with D6's traversal and helper and
+overwrites content it did not write.
+
+**Created directories carry their identity.** The device and inode of a directory exist only after
+`mkdir` returns, so the journal entry is appended first (write-ahead) and its identity is filled in right
+after the directory is opened. Restore removes a created directory only when it is empty and `fstat` of the
+directory now at that name equals the recorded identity; a directory that was removed and replaced by
+another empty one is left and reported (carried review finding, Codex on #1319; the test makes the
+replacement while the original inode is still held so a reused inode number cannot hide the swap). If an
+interrupt arrives after the `mkdir` call returned and before the identity was recorded, the identity is
+unknown: restore then removes the directory only if it exists, is a real directory and is empty, which is
+what "Interrupt right after a directory creation" requires. That window (one statement wide) is a stated
+limit. It walks the journal in reverse with D6's traversal and helper and
 covers only paths the transfer wrote; a verification command's other files stay, as on main.
 
 A crash (SIGKILL, SIGTERM's default action, an uncaught crash) runs no handler and the journal is lost;
@@ -172,9 +227,12 @@ checkout` restores an owned file only while the index is as it was at the unit's
 ### D8. `run_autodev` wiring
 
 `run_autodev`'s `executor` becomes a `UnitExecutor` protocol (`config`, `response_headers`,
-`execute_unit`) that `PatchExecutor` satisfies, with three optional capabilities, none implying another:
-`isolated` (the base-URL skip and the retry refusal key on it alone), `restore()` (D7) and
-`preflight(unit)` (D5). For the isolated executor the model-identity check stays; `config.base_url`
+`execute_unit`) that `PatchExecutor` satisfies, with four optional capabilities, none implying another:
+`isolated` (the base-URL skip and the retry refusal key on it alone), `restore()` (D7),
+`preflight(unit)` (D5) and `begin_run(run_id)`. `run_autodev` creates `attempt_run_id` after the executor
+exists, so it hands the id to an executor that has `begin_run` once, before the first unit; the isolated
+executor signs each OpenCode attempt under that run id and the unit's `unit_id` as node id (#1339), the
+same ids the attempt ledger and the receipt hold. For the isolated executor the model-identity check stays; `config.base_url`
 equality is skipped because its transport is serve, whose pinned admission is the authority [U];
 sampling fields are `None` (`_executor_lineage` omits the keys if the attempt record rejects null, task
 4.2); `response_headers` is `{}`, so **no served identity is attested**.
@@ -191,22 +249,28 @@ redacted error text [U]. `execute_unit` uses `asyncio.run` and returns `error` i
 
 ### D9. The flag and the readiness check
 
-`verdict autodev --worker-harness opencode` (Open point 1). With it, `cmd_autodev` first checks, before
-`prepare_live_autodev`, `prepare_live_autodev_selected` (both probe) and any planner call, that the
-opencode binary resolves (OC1's resolver [U]) and runs `--version`, and that `GET <serve>/health` is 200
-with `"engine": "verdict"`. A failure prints one message and exits 1 through `_report_autodev_failure`
-with a new label argument (it hard-codes "decomposition failed"; the default is unchanged), with one JSON
-object under `--json`; nothing is probed, planned or cloned and there is no fallback. A different
-OpenCode version is named, not failed (Open point 2).
+`verdict autodev --worker-harness opencode` (Open point 1). With the flag, `--allow-live` and no
+`--dry-run`, `cmd_autodev` first checks, before `prepare_live_autodev`, `prepare_live_autodev_selected`
+(both probe), any planner call and whatever the `execution_path_decision` argument holds (the check sits
+above that branch, so a supplied decision does not skip it), that the opencode binary resolves (OC1's
+resolver [U]) and runs `--version`, that `GET <serve>/health` is 200 with `"engine": "verdict"`, and that
+the serve token resolves and the worker signing key is readable (`resolve_serve_token`,
+`load_assignment_key`: both read-only, and the message never repeats a value). Without the last two every
+unit would fail after the probe and the planner call were paid for (#1339). A failure prints one message
+and exits 1 through `_report_autodev_failure` with a new label argument (it hard-codes "decomposition
+failed"; the default is unchanged), with one JSON object under `--json`; nothing is probed, planned or
+cloned and there is no fallback. A different OpenCode version is named, not failed (Open point 2). The
+checks take injectable providers so no test reads the real home, serve or binary.
 
 ### D10. The credential, the context file and the prompt are seams
 
 The unit executor receives an already-built OpenCode executor (`async run(prompt, *, route_id, cwd,
-timeout_seconds)`) and never reads, stores or records the credential; one function builds it for the
-CLI, so #1313 changes only that. A `.verdict-context.md` the OpenCode executor writes into `cwd` [U]
-lands in the clone and D4's byproduct constant keeps it out of the delta; the unit executor neither
-needs nor reads it. `build_opencode_prompt(unit)` carries the objective, owned files, command and
-context pack, and tells the worker to edit only owned files and not commit or push.
+timeout_seconds, run_id, node_id)`) and never reads, stores or records the credential; one function
+builds it for the CLI, so #1313 changes only that. The OpenCode executor writes nothing into `cwd` (#1336),
+so there is no context-file byproduct to handle; a test stub is checked against
+`inspect.signature(OpenCodeExecutor.run)` so a stub that ignores `run_id` and `node_id` cannot hide an
+unwired id. `build_opencode_prompt(unit)` carries the objective, owned files, command and context pack,
+and tells the worker to edit only owned files and not commit or push.
 
 ## Risks / Trade-offs
 
@@ -214,6 +278,8 @@ context pack, and tells the worker to edit only owned files and not commit or pu
   stash it to use the flag, a real loss against the default path.
 - The clone has no ignored files (`.venv`, caches), so the worker's own test loop may fail or be slow;
   the judge is unaffected. Unmeasured; OC2b's live run shows it. An oversized seed is a named refusal.
+  Whether OpenCode itself leaves other files in the working directory is also unmeasured here (no live
+  run): such a file is an unowned new path and would reject the attempt.
 - A shell is still a shell: a worker can write an absolute path in the user's repository (ADR-053
   Decision 4). A crash leaves D7's residue, and an attempt directory (`0700`, no sweep) can remain.
 - Known gaps until OC2b: ledger rows for OpenCode units keep the label `verdict-autodev-executor`

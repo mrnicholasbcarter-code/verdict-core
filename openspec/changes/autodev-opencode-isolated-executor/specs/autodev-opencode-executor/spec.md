@@ -26,10 +26,14 @@ no readiness check runs, no attempt tree is made and no OpenCode process starts.
 
 ### Requirement: With the flag, autodev SHALL stop with one message when opencode or serve is unavailable
 
-With `--worker-harness opencode` and live consent, autodev SHALL check, before any probe,
-planner call, attempt tree or model call, that the opencode binary resolves and runs, and
-that `verdict serve` answers `GET /health` with status 200 and `"engine": "verdict"`. When a
-check fails it SHALL print one message naming the failed check and the remedy, exit with
+With `--worker-harness opencode`, live consent and no `--dry-run`, autodev SHALL check, before
+any probe, planner call, attempt tree or model call and whether or not an execution-path
+decision was supplied, that the opencode binary resolves and runs, that `verdict serve` answers
+`GET /health` with status 200 and `"engine": "verdict"`, and that the credentials the
+OpenCode executor signs with exist: the serve token resolves and the worker signing key is
+readable. Without them every unit would fail after the probe and the planner call had been paid
+for. The credential check reads and creates nothing and its message never contains a value.
+When a check fails it SHALL print one message naming the failed check and the remedy, exit with
 status 1, and SHALL NOT fall back to `PatchExecutor`. A version of OpenCode different from
 the pinned one SHALL NOT fail the check and SHALL be named in the output.
 
@@ -40,6 +44,14 @@ the pinned one SHALL NOT fail the check and SHALL be named in the output.
 #### Scenario: serve not answering
 - **WHEN** the connection to serve is refused, times out, returns a non-200, or returns a body whose `engine` is not `verdict`
 - **THEN** autodev exits 1 with one message naming the serve check, with no upstream request beyond that health request
+
+#### Scenario: Credentials missing
+- **WHEN** the serve token does not resolve, or the worker signing key file is absent or unreadable, and the binary and serve checks pass
+- **THEN** autodev exits 1 with one message naming the credential check and the remedy, and the route probe, the decomposer, `run_autodev` and `PatchExecutor` are never called
+
+#### Scenario: Readiness runs even when a decision is supplied
+- **WHEN** an execution-path decision is passed to the command and the binary check fails
+- **THEN** autodev exits 1 with the binary message and `run_autodev` is never called
 
 #### Scenario: One message in JSON mode
 - **WHEN** a readiness check fails and `--json` is given
@@ -96,7 +108,9 @@ file was replaced cannot undo it, and git must hold the user's bytes. The execut
 therefore refuse a unit when any of its owned paths:
 
 - is reported by `git status` (modified, staged, deleted, renamed or untracked), or exists and
-  is not tracked (an ignored file);
+  is not tracked (an ignored file), or does not exist and is ignored by the repository's ignore
+  rules (`git check-ignore`; `git status` never lists an ignored path, so neither the change
+  the unit makes nor the receipt's `changed_files` would show it);
 - is tracked and `git ls-files -v` tags it with anything but `H` (`h` assume-unchanged, `S` or
   `s` skip-worktree: git does not read the working-tree bytes, so an edit leaves `git status`
   clean); or
@@ -104,8 +118,9 @@ therefore refuse a unit when any of its owned paths:
   `unset` (a clean filter or an `ident` keyword can map different working-tree bytes to the same
   blob, so `git status` reports clean while `git checkout` writes other bytes).
 
-It SHALL also refuse when any of the three reads (`git status`, `git ls-files -v`, `git
-check-attr`) fails. An owned path that does not exist and that git does not report SHALL NOT be
+It SHALL also refuse when any of the four reads (`git status`, `git ls-files -v`, `git
+check-attr`, and `git check-ignore` for an owned path that does not exist) fails. An owned path
+that does not exist, that git does not report and that no ignore rule matches SHALL NOT be
 refused, whatever attributes match its name, and no other file is checked. Line endings and
 encoding are not checked: under a `text`, `eol`, `core.autocrlf` or `working-tree-encoding`
 conversion `git checkout` writes the bytes git chooses. The reads are made at the start of the unit, before the mechanical tier; a
@@ -147,15 +162,23 @@ owned file.
 - **THEN** the unit is refused as above, naming the file and the attribute
 
 #### Scenario: Absent owned file accepted
-- **WHEN** an owned path does not exist, git does not report it, and the unit is to create it, even where a `filter` attribute matches its name
+- **WHEN** an owned path does not exist, git does not report it, no ignore rule matches it, and the unit is to create it, even where a `filter` attribute matches its name
 - **THEN** the unit is not refused
+
+#### Scenario: Ignored absent owned file refused
+- **WHEN** an owned path does not exist and an ignore rule of the user's repository matches it
+- **THEN** the unit is refused as above, naming the file and saying that an ignored file is not shown by `git status`, and no worker starts
+
+#### Scenario: Ignored and plain absent owned files refused
+- **WHEN** a unit owns one absent path that an ignore rule matches and one absent path that none matches
+- **THEN** the unit is refused naming the ignored path, no worker starts and nothing is created, so a repair cannot transfer only the plain file
 
 #### Scenario: Unowned dirty file does not refuse
 - **WHEN** a file the unit does not own has uncommitted changes
 - **THEN** the unit is not refused and the file is carried into the seed
 
 #### Scenario: Git read fails closed
-- **WHEN** `git status`, `git ls-files -v` or `git check-attr` exits non-zero
+- **WHEN** `git status`, `git ls-files -v`, `git check-attr` or `git check-ignore` exits with a failure (for `check-ignore`, any status other than 0 and 1)
 - **THEN** the unit is refused with the git failure as the reason, and is not treated as clean
 
 #### Scenario: Mechanical edit does not refuse
@@ -238,29 +261,33 @@ swapping an ancestor directory for a symlink cannot redirect a read.
 - **WHEN** the worker times out, stalls, exits non-zero, or serve refuses the route, and the attempt tree holds edits
 - **THEN** the attempt is `error` with the worker's redacted reason and the user's repository is byte-identical
 
-### Requirement: Worker byproducts SHALL NOT count as edits, and a path that existed at seed time SHALL NOT be a byproduct
+### Requirement: A new path ignored by the user's rules SHALL NOT count as an edit unless the unit owns it, and a path that existed at seed time SHALL NOT be a byproduct
 
 A path absent from the seed manifest SHALL be dropped from the delta, and never transferred,
-when it is in the executor-byproduct set or is ignored by the user's own ignore rules. A path
-present in the seed manifest SHALL always be subject to the ownership check. A `.gitignore`
-written by the worker SHALL NOT be consulted. The executor SHALL NOT require any
-executor-written context file and SHALL work when none is written.
-
-#### Scenario: Context file created by the executor
-- **WHEN** the OpenCode executor writes `.verdict-context.md` into the attempt tree and the worker repairs an owned file
-- **THEN** the attempt is `applied`, the context file is absent from the user's repository, and the unit is not rejected for it
+when it is ignored by the user's own ignore rules and the unit does not own it. A path the unit
+owns SHALL NEVER be dropped as a byproduct: dropping it would transfer only part of a repair or
+reject a whole repair as empty. A path present in the seed manifest SHALL always be subject to
+the ownership check. A `.gitignore` written by the worker SHALL NOT be consulted. The executor
+writes no context file into the attempt tree (the OpenCode executor delivers the task through its
+own configuration directory), SHALL NOT require any executor-written file and SHALL treat a file
+a worker or the OpenCode process writes that is neither ignored nor owned like any other
+out-of-bounds path.
 
 #### Scenario: No context file at all
-- **WHEN** the OpenCode executor writes no context file
-- **THEN** the same repair is `applied` with the same result
-
-#### Scenario: A tracked file with the byproduct name
-- **WHEN** `.verdict-context.md` is tracked in the user's repository and a worker edits it while the unit does not own it
-- **THEN** the attempt is `rejected` for that path
+- **WHEN** the OpenCode executor writes nothing into the attempt tree and the worker repairs an owned file
+- **THEN** the attempt is `applied`, `changed_files` lists exactly the owned file and nothing else is in the user's repository
 
 #### Scenario: Ignored byproduct
 - **WHEN** a worker's test run creates `.pytest_cache/` and `__pycache__/` files that the user's `.gitignore` ignores
 - **THEN** they are not in the delta and are not transferred
+
+#### Scenario: Ignored owned new file
+- **WHEN** a worker creates only a new owned file that the user's ignore rules match
+- **THEN** the file is in the delta (it is not dropped as a byproduct and the delta is not empty)
+
+#### Scenario: Ignored and plain owned new files
+- **WHEN** a worker creates two new owned files, one that the user's ignore rules match and one that they do not
+- **THEN** both are in the delta, so a transfer cannot carry only the plain one
 
 #### Scenario: A worker cannot hide a path by editing .gitignore
 - **WHEN** a worker adds a new unowned file and rewrites `.gitignore` in the attempt tree to ignore it
@@ -352,9 +379,12 @@ an exception from `execute_unit`, including one raised after its transfer; an ex
 `_touched_since` or `_verify`, including any error the command runner raises that `_run` does
 not catch (for example `PermissionError`); and `KeyboardInterrupt`. `restore()` is a no-op
 when nothing was transferred. For a false result `_run_unit_once` SHALL record the real
-restore result in the outcome reason. For an exception it SHALL re-raise the original
-exception unchanged after restore; a failure inside `restore()` SHALL be caught and reported
-on standard error and SHALL NOT replace or hide the original exception. A second interrupt
+restore result in the outcome reason. An `Exception` from `execute_unit` keeps its behaviour on
+main: it becomes an unverified outcome whose reason begins `executor error:`, after the one
+`restore()` call, and is not re-raised. Every other exception (a `KeyboardInterrupt` from
+anywhere, and any exception from `_touched_since` or `_verify`) SHALL be re-raised unchanged
+after restore. A failure inside `restore()` SHALL be caught and reported on standard error and
+SHALL NOT replace or hide the original exception. A second interrupt
 during `restore()` is not covered. The executor SHALL make the transfer the last step of
 `execute_unit` that can fail: the attempt tree is removed before it. The executor's journal
 SHALL belong to one `execute_unit` call: it is emptied as that call's first action and after a
@@ -369,7 +399,14 @@ holds the intended state to the prior state, using the same no-follow traversal 
 at-the-moment comparison as the transfer; SHALL leave a path that already holds the prior state
 as it is and not report it (the mutation was never made); SHALL leave alone and name a path in
 any other state (kind, executable bit or bytes differ from both); and SHALL remove directories
-it created when empty. Restore SHALL cover only paths the transfer wrote. A verified unit SHALL
+it created when they are empty and are still the directory it created. The transfer SHALL record
+the device and inode of each directory it creates as soon as the creation has returned, and
+restore SHALL compare them with the directory now at that name before removing it: a directory
+that was removed and replaced by another one (even an empty one) is left alone and named as not
+restored. A journal entry whose directory identity was never recorded (a `KeyboardInterrupt`
+arrived between the creation returning and the identity being read) cannot be compared; restore
+removes that directory only if it exists, is a real directory and is empty. That window is a
+stated limit. Restore SHALL cover only paths the transfer wrote. A verified unit SHALL
 NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 
 #### Scenario: Verification fails after an applied attempt
@@ -387,6 +424,10 @@ NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 #### Scenario: User mode change after the transfer is kept
 - **WHEN** the user changes only the executable bit of a transferred file and verification then fails
 - **THEN** restore leaves that mode as the user left it and the reason names the file as not restored
+
+#### Scenario: Created directory replaced
+- **WHEN** a directory the transfer created is removed and replaced by another empty real directory before restore runs
+- **THEN** restore leaves the replacement in place and names it as not restored
 
 #### Scenario: Created files and directories are removed
 - **WHEN** the transferred change created an owned file in a new directory and verification fails
@@ -421,8 +462,8 @@ NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 - **THEN** `restore()` is called once, the repository is byte-identical to before the attempt, and the `KeyboardInterrupt` propagates
 
 #### Scenario: Executor raises after its transfer
-- **WHEN** `execute_unit` raises after the transfer was written
-- **THEN** `restore()` is called once and the owned files hold their prior content
+- **WHEN** `execute_unit` raises an `Exception` after the transfer was written
+- **THEN** `restore()` is called once, the owned files hold their prior content, and the unit is unverified with a reason beginning `executor error:`
 
 #### Scenario: Interrupt inside the executor
 - **WHEN** a `KeyboardInterrupt` is raised inside `execute_unit` right after a mutation of its transfer, with the real `OpenCodeUnitExecutor`
@@ -509,6 +550,26 @@ to be constructed. With the flag the CLI SHALL pass no retry routes.
 #### Scenario: Failed unit is not retried
 - **WHEN** a unit's attempt is rejected or errors on the isolated executor
 - **THEN** the unit is reported unverified once, no second attempt runs, and `PatchExecutor` patched to raise is never constructed
+
+### Requirement: Each OpenCode attempt SHALL be signed under the autodev run id and the unit id
+
+The OpenCode executor signs a per-attempt worker assignment bound to a run id and a node id and
+launches nothing without them. `run_autodev` SHALL give an executor that has a `begin_run`
+method the attempt-ledger run id (`autodev-<uuid>`) once, before the first unit, and the
+isolated executor SHALL pass that run id and the unit's `unit_id` as `run_id` and `node_id` on
+every OpenCode attempt, so `verdict serve`'s receipts and the autodev attempt ledger name the
+same ids. An isolated executor that was not given a run id SHALL return an `error` attempt
+without creating an attempt tree. The attempt timeout SHALL be above the time OpenCode spends
+retrying an upstream 429 or 503 before it prints the status (about 100 s) and short enough for
+the assignment lifetime (the timeout rounded up plus 60 s, at most 1,800 s).
+
+#### Scenario: Run id and unit id reach the OpenCode executor
+- **WHEN** `run_autodev` runs a unit on the isolated executor
+- **THEN** the OpenCode executor receives the same `run_id` the unit's receipt records as `attempt_run_id` and the unit's `unit_id` as `node_id`
+
+#### Scenario: No run id
+- **WHEN** the isolated executor's `execute_unit` is called before `begin_run`
+- **THEN** it returns an `error` attempt naming the missing run id, the OpenCode executor is not called and no attempt tree is created
 
 ### Requirement: Unknown values SHALL be recorded as unknown, and the unit executor SHALL NOT hold the worker credential
 

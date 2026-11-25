@@ -1,8 +1,8 @@
 # Tasks
 
-Build plan for OC2a (#1301). The build waits on #1299 (OC1) being merged. Every spec scenario
-has one test below, named `test_` plus the scenario title in snake case; a scenario with no
-test here is a defect in this plan.
+Build plan for OC2a (#1301). #1299 (OC1) has merged; task 1.1 records the drift since this plan was
+written. Every spec scenario has one test below, named `test_` plus the scenario title in snake case; a
+scenario with no test here is a defect in this plan.
 
 Conventions for every task:
 
@@ -24,11 +24,15 @@ Conventions for every task:
 - Each task's tests are one class in the test file, named on its Verify line (`file::Class`). A
   Verify command never uses `-k`: it names a file or a class, so it runs exactly the tests the task
   names. Task 7.1 runs the complete files.
-- Only tasks 1.1 and 5.1 import OC1 code. Tasks 2 to 4 depend on the stub contract only.
+- Only tasks 1.1, 3.2 and 5.1 import OC1 code. Tasks 2 to 4 otherwise depend on the stub contract only;
+  task 3.2 pins that stub's parameters to the real `OpenCodeExecutor.run`.
+- Tests of the readiness check and the CLI pin `VERDICT_OPENCODE_BIN`, `VERDICT_SERVE_URL` and the
+  serve-token and key providers to fakes: this host has opencode installed and `verdict serve` running,
+  and a test that reaches either would pass for the wrong reason.
 
 ## 1. Preconditions
 
-- [ ] 1.1 Confirm #1299 is merged to main. Re-read what the design took from it [U]: the
+- [x] 1.1 Confirm #1299 is merged to main. Re-read what the design took from it [U]: the
       `OpenCodeExecutor.run(prompt, *, route_id, cwd, timeout_seconds)` signature and that it
       never raises, the `harness`, `env=` and binary-resolver symbols, `PINNED_VERSION`, the
       context file and its byproduct handling, the serve base-URL setting and the credential
@@ -36,6 +40,23 @@ Conventions for every task:
       and 5 before coding. Re-read #1313's state. Files: design.md. Verify:
       `git log origin/main --oneline -- verdict/orchestration/executor_opencode.py` lists the
       OC1 merge, and `$TESTENV uv run --frozen python -c "from verdict.orchestration.executor_opencode import OpenCodeExecutor, PINNED_VERSION"` exits 0.
+      Evidence: the log lists `b0010c10` (OC1) and `44be580c` (#1339), the import exits 0 and prints
+      `2.3.2`; design.md "Drift after #1299" records #1336, #1338 and #1339 and the adjustments to
+      tasks 3 and 5 are made in this commit.
+- [ ] 1.2 Carried review finding 1, ignored owned new files (Codex on #1319). Spec scenarios
+      "Ignored owned new file", "Ignored and plain owned new files", "Ignored absent owned file
+      refused" and "Ignored and plain absent owned files refused". Both remedies the finding offers are
+      built: `preflight` refuses an owned absent path that an ignore rule matches (the policy: `git
+      status` and so `changed_files` would not show it), and `attempt_delta` never drops an owned path as
+      a byproduct (the fail-safe). Ticked when the tests named in tasks 2.2 and 3.3 pass and each fails
+      with its guard removed. Files: none of its own. Verify:
+      `$TESTENV uv run --frozen python -m pytest -q -n 2 "tests/test_autodev_opencode.py::TestDelta::test_ignored_owned_new_file" "tests/test_autodev_opencode.py::TestDelta::test_ignored_and_plain_owned_new_files" "tests/test_autodev_opencode.py::TestPreflight::test_ignored_absent_owned_file_refused" "tests/test_autodev_opencode.py::TestPreflight::test_ignored_and_plain_absent_owned_files_refused"`.
+- [ ] 1.3 Carried review finding 2, created-directory identity on rollback (Codex on #1319). Spec scenario
+      "Created directory replaced" and the identity rule in the restore requirement. The transfer records
+      device and inode of each directory it creates; restore checks them before removing it and treats a
+      replacement as not restored. Ticked when the test named in task 2.4 passes and fails with the
+      identity check removed. Files: none of its own. Verify:
+      `$TESTENV uv run --frozen python -m pytest -q -n 2 "tests/test_autodev_opencode.py::TestRestore::test_created_directory_replaced"`.
 
 ## 2. The attempt tree (no OpenCode needed)
 
@@ -57,7 +78,7 @@ Conventions for every task:
 - [ ] 2.2 Manifest and delta (D4). `attempt_delta(tree, m0, repo, unit)` builds M1 with a
       descriptor-relative walk (root opened `O_DIRECTORY`; `scandir` on each directory
       descriptor; children opened `O_DIRECTORY | O_NOFOLLOW` relative to their parent; files
-      `O_NOFOLLOW | O_NONBLOCK` then `fstat`), applies the byproduct rule through
+      `O_NOFOLLOW | O_NONBLOCK` then `fstat`), applies the byproduct rule (new, unowned, ignored paths are dropped) through
       `git check-ignore --no-index -z --stdin` in the user's repository, then ownership on leaf
       entries, the regular-file rule and the empty-delta rule, and reads each delta file once.
       It never runs git in the tree. Files: `verdict/autodev_opencode.py`,
@@ -67,8 +88,9 @@ Conventions for every task:
       `test_directory_and_file_swapped`, `test_special_files_in_the_attempt_tree` (a FIFO would
       hang without `O_NONBLOCK`), `test_a_regular_file_replaced_by_a_fifo_during_validation` and
       `test_ancestor_directory_swapped_during_validation` (both through a `hooks` seam between
-      the metadata read and the open), `test_a_tracked_file_with_the_byproduct_name`,
-      `test_ignored_byproduct` (a new path in a user-ignored directory is dropped),
+      the metadata read and the open), `test_ignored_byproduct` (a new path in a user-ignored directory is dropped),
+      `test_ignored_owned_new_file` and `test_ignored_and_plain_owned_new_files` (task 1.2: an owned
+      path is never dropped as a byproduct, alone or beside a plain owned file),
       `test_a_worker_cannot_hide_a_path_by_editing_gitignore`; plus
       `test_ignored_path_present_at_seed_is_not_a_byproduct`, `test_owned_delete_is_in_the_delta`,
       `test_mode_only_change_is_in_the_delta`, `test_symlink_in_an_owned_path_is_rejected`,
@@ -79,7 +101,8 @@ Conventions for every task:
       opened relative to its parent with `O_NOFOLLOW | O_NONBLOCK` and checked by `fstat` before it
       is read; kind, mode and SHA-256, or absence, compared with M0; limits), then the write phase (each
       mutation (`mkdir` by descriptor, rename over a target, unlink) is appended to `journal`, with the
-      path's prior and intended state, before the call that makes it; comparison and
+      path's prior and intended state, before the call that makes it, and a created directory's device
+      and inode are recorded in its entry as soon as `mkdir` has returned; comparison and
       device and inode check repeated before each write; one `replace_file(parent_fd, name,
       data, mode)` helper that creates a unique `.verdict-transfer-*` file with
       `O_CREAT | O_EXCL | O_NOFOLLOW`, writes, sets the mode and renames, and unlinks the
@@ -114,13 +137,17 @@ Conventions for every task:
 - [ ] 2.4 Restore (D7). `restore(journal)` undoes the current attempt's transfer in reverse with task 2.3's
       traversal, re-check and `replace_file` helper. For each entry it compares kind, executable bit
       and SHA-256 with the intended state (undo it), with the prior state (the mutation was never
-      made: change nothing, report nothing) and otherwise leaves the path alone and reports it; it
-      removes created directories when empty and is idempotent. Files: `verdict/autodev_opencode.py`,
+      made: change nothing, report nothing) and otherwise leaves the path alone and reports it; it removes a created directory only when it is empty and its device and inode still equal the recorded
+      ones (an entry whose identity was never recorded, see design D7, is removed only when it is an empty
+      real directory), and is idempotent. Files: `verdict/autodev_opencode.py`,
       `tests/test_autodev_opencode.py`. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py::TestRestore`
       with `test_created_files_and_directories_are_removed`,
       `test_user_edit_after_the_transfer_is_kept`,
       `test_user_mode_change_after_the_transfer_is_kept`,
+            `test_created_directory_replaced` (task 1.3: the original directory is renamed away, an empty real
+      directory takes its name, then the original is removed, so a reused inode number cannot hide the
+      swap; restore leaves the replacement and names it),
       `test_parent_swapped_between_transfer_and_restore`, `test_restore_twice`,
       `test_restore_without_a_transfer`, `test_journal_is_emptied_at_the_start_of_each_attempt`, `test_restore_write_failure_leaves_no_temporary_file`,
       `test_restore_of_a_modified_file_and_of_a_deleted_file` and the write-ahead tests
@@ -147,7 +174,11 @@ Conventions for every task:
       read it once, remove the tree, transfer (the last fallible step), and map to `applied`,
       `rejected` or `error` with the real reason; the tree is also removed in a `finally`.
       `config.model` is the route, sampling fields `None`, `response_headers` `{}`,
-      `resolved_model` `None`, `isolated` true, `restore()` delegates to task 2.4. Files:
+      `resolved_model` `None`, `isolated` true, `restore()` delegates to task 2.4. `begin_run(run_id)`
+      stores the autodev run id; every OpenCode attempt passes it as `run_id` and the unit's `unit_id` as
+      `node_id` (an executor without a run id returns `error` before any tree is made), and the attempt
+      timeout is `ATTEMPT_TIMEOUT_SECONDS` (600; the constructor refuses below 120 or above 1,740).
+      Files:
       `verdict/autodev_opencode.py`, `tests/test_autodev_opencode.py`. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py::TestExecute`
       with `test_a_valid_owned_repair_is_applied` (usage `reported=False` when tokens are null),
@@ -155,18 +186,23 @@ Conventions for every task:
       transferred although the tree holds edits), `test_worker_makes_no_change`,
       `test_attempt_tree_removed_on_every_exit_path` (applied, rejected, error, exception,
       cancellation), `test_tree_is_removed_before_the_transfer`, `test_running_event_loop_returns_error`,
+            `test_no_run_id`, `test_attempt_timeout_bounds`,
+      `test_stub_matches_the_real_run_signature` (the stub's parameters equal
+      `inspect.signature(OpenCodeExecutor.run)` and the stub records `run_id` and `node_id`),
       `test_no_served_identity_is_claimed` and `test_credential_never_appears_in_a_record` (a stub
       terminal whose error text is already redacted while the credential sits in the
       environment; reason, outcome, attempt record and receipt payload contain the redacted text
       and never the credential).
 - [ ] 3.3 Owned-file precondition (D5). `OpenCodeUnitExecutor.preflight(unit)` reads
-      `git status --porcelain=v1 -z --untracked-files=all`, `git ls-files -v -z -- <owned>` and
-      `git check-attr -z filter ident -- <owned>` in the user's repository and returns a reason
+      `git status --porcelain=v1 -z --untracked-files=all`, `git ls-files -v -z -- <owned>`,
+      `git check-attr -z filter ident -- <owned>` and `git check-ignore -z --stdin` in the user's repository
+      (read-only: `GIT_OPTIONAL_LOCKS=0`, literal pathspecs) and returns a reason
       naming the path and the remedy when an owned path is listed by status (modified, staged,
       deleted, renamed, untracked), exists untracked (ignored), is tracked with a tag other than
       `H` (assume-unchanged `h`, skip-worktree `S` or `s`), or is tracked with a `filter` or `ident`
-      value other than `unspecified` or `unset`; or when any of the three commands fails. An absent,
-      unreported path is accepted whatever attributes match. Files: `verdict/autodev_opencode.py`,
+      value other than `unspecified` or `unset`, or is absent and matched by an ignore rule (`git
+      check-ignore -z --stdin`: exit 0 ignored, 1 not, else a failed read); or when any of the four
+      commands fails. An absent, unreported, not-ignored path is accepted whatever attributes match. Files: `verdict/autodev_opencode.py`,
       `tests/test_autodev_opencode.py`. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py::TestPreflight`
       with `test_tracked_and_unmodified_owned_file`, `test_modified_owned_file_refused`,
@@ -177,19 +213,22 @@ Conventions for every task:
       `test_owned_file_with_a_filter_or_ident_attribute_refused` (parametrised: a clean filter
       that drops a line, and `ident`; a same-size edit; the same empty-status assertion first),
       `test_absent_owned_file_accepted` (once with a `filter` attribute matching its name),
+      `test_ignored_absent_owned_file_refused` and `test_ignored_and_plain_absent_owned_files_refused`
+      (task 1.2; the mixed case creates nothing),
       `test_unowned_dirty_file_does_not_refuse` and `test_git_read_fails_closed` (parametrised over
-      the three reads: a runner whose command exits non-zero must not read as clean). Each refusal
+      the four reads: a runner whose command exits non-zero, or for `check-ignore` with a status other
+      than 0 and 1, must not read as clean). Each refusal
       case asserts the repository is byte-identical and no attempt directory exists.
 - [ ] 3.4 Isolation matrix against a hostile stub worker. Each `rejected` variant compares the
       user's repository before and after with the spec's byte-identical definition. Files:
       `tests/test_autodev_opencode.py`. Verify: `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py::TestMatrix`
       with `test_out_of_bounds_edits_are_rejected` (parametrised: a plain edit, a staged edit, a
       worker `git commit`, an unowned new file, a symlink swapped into an owned path, a worker
-      `git push origin` which has no target, a planted `core.fsmonitor` and hook). Two more run
-      end to end through `execute_unit` with a stub that also writes `.verdict-context.md` into
-      `cwd`: `test_context_file_created_by_the_executor` (the owned repair is `applied` and the
-      file is absent from the user's repository) and `test_no_context_file_at_all` (the same
-      repair with no such file). One more test records the limit ADR-053 Decision 4 accepts:
+      `git push origin` which has no target, a planted `core.fsmonitor` and hook). One more runs
+      end to end through `execute_unit` (the executor writes nothing into the attempt tree since
+      #1336, so no context file is planted): `test_no_context_file_at_all` (the owned repair is
+      `applied`, `changed_files` lists exactly the owned file and nothing else reaches the user's
+      repository). One more test records the limit ADR-053 Decision 4 accepts:
       `test_absolute_path_write_is_an_accepted_risk` is `xfail(strict=True)` on "the user's
       repository is unchanged", so closing the limit turns it red until the mark is removed.
 
@@ -215,7 +254,8 @@ Conventions for every task:
       `test_user_edit_after_the_transfer_is_kept` (the same scenario through `_run_unit_once`: the
       reason names the file), `test_verification_raises` (a runner raising
       `PermissionError` in `_verify`; the `PermissionError` propagates), `test_attribution_raises`,
-      `test_interrupt_after_the_transfer` (`KeyboardInterrupt`), `test_executor_raises_after_its_transfer`,
+      `test_interrupt_after_the_transfer` (`KeyboardInterrupt`), `test_executor_raises_after_its_transfer` (an `Exception` after the transfer: one `restore()`, an
+      unverified `executor error:` outcome, not re-raised),
       `test_interrupt_inside_the_executor` (the real `OpenCodeUnitExecutor` over a stub OpenCode
       executor, its `rename` patched to perform the call and raise `KeyboardInterrupt`, which
       propagates out of `_run_unit_once` unchanged after one `restore()`),
@@ -223,6 +263,12 @@ Conventions for every task:
       propagated exception is the original and standard error names the restore failure),
       `test_restore_capability_alone_grants_nothing` (has `restore()`, not `isolated`, still fails
       the gateway equality check and is not subject to the retry refusal), and `test_patch_executor_is_never_restored`.
+- [ ] 4.1b Hand the run id to the executor (D8). `run_autodev` calls `executor.begin_run(attempt_run_id)`
+      once, before the first unit, when the executor has it. Files: `verdict/autodev_run.py`,
+      `tests/test_autodev_opencode_wiring.py`. Verify:
+      `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode_wiring.py::TestRunId`
+      with `test_run_id_and_unit_id_reach_the_opencode_executor` (the stub OpenCode executor receives the
+      receipt's `attempt_run_id` and the unit's id) and `test_patch_executor_gets_no_run_id`.
 - [ ] 4.2 Refuse retries and handle null sampling (D8). With an `isolated` executor and non-empty
       `retry_routes` or a `retry_executor_factory`, raise `AutodevError` before the planner call.
       Make `_executor_lineage` and the attempt-record write accept `None` sampling values,
@@ -238,7 +284,8 @@ Conventions for every task:
       called, and the outcome has tier `refused` with `changed_files` from `_touched_since` (as
       for the other model-tier exits, so a mechanical edit is attributed to the unit); `run_autodev`
       writes no attempt record for it (it does so for tier `model`), `unreported_units` omits it,
-      and `AutodevReport.summary` counts model units by tier `model`. The refusal itself writes
+      and `AutodevReport.summary` and the CLI's model-unit row count model units by tier `model`
+      (`git grep -n '"mechanical"'` finds no other consumer that assumes two tiers). The refusal itself writes
       nothing; the mechanical tier's edit stays. Files: `verdict/autodev_run.py`,
       `tests/test_autodev_opencode_wiring.py`. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode_wiring.py::TestPreflightHook`
@@ -259,14 +306,19 @@ Conventions for every task:
       `verdict/autodev_opencode.py`, called by task 5.2 before `prepare_live_autodev` and
       `prepare_live_autodev_selected`, check the opencode binary (OC1's resolver and version
       probe; extract one shared helper if the doctor's probe is not callable) and serve
-      (`GET /health` is 200 with `"engine": "verdict"`). A failure prints one message and exits 1
+      (`GET /health` is 200 with `"engine": "verdict"`) and the credentials the OpenCode executor signs
+      with (the serve token resolves and the worker signing key is readable; read-only, no value in the
+      message), each through an injectable provider. They run for the flag with `--allow-live` and
+      without `--dry-run`, above the `execution_path_decision is None` branch. A failure prints one message and exits 1
       through `_report_autodev_failure` with a new label argument (default and existing callers
       unchanged). A version other than the pinned one is named and does not fail. One function
       builds the OpenCode executor for the CLI. Files: `verdict/autodev_opencode.py`,
       `verdict/cli.py` (the label argument only), `tests/test_autodev_opencode_wiring.py`. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode_wiring.py::TestReadiness`
       with `test_opencode_binary_missing` (missing, or `--version` failing),
-      `test_serve_not_answering` (refused, timeout, non-200, a non-Verdict body),
+            `test_serve_not_answering` (refused, timeout, non-200, a non-Verdict body),
+      `test_credentials_missing` (no serve token; no key file),
+      `test_readiness_runs_even_when_a_decision_is_supplied`,
       `test_one_message_in_json_mode` and `test_version_differs_from_the_pinned_version`. The
       failure tests assert exit status 1, exactly one error (one JSON object with `--json`) whose
       label names the readiness check, and that `prepare_live_autodev`,
@@ -284,15 +336,18 @@ Conventions for every task:
 
 ## 6. Docs
 
-- [ ] 6.1 Document the flag in `docs/CLI_REFERENCE.md`: opt-in and experimental, the one-message
-      fail-closed behaviour, what is isolated (the spec's byte-identical definition), what is not
-      (an absolute-path write, the mechanical tier, the verification command, ignored files), that
-      an owned file with uncommitted changes, or one hidden from `git status` (assume-unchanged,
-      skip-worktree, a `filter` or `ident` attribute), is refused while an edit the mechanical tier
-      already made stays, what a crash during the executor's writes leaves and how git undoes it (line
-      endings as git writes them), that retries and lineage are not yet supported, and where the
-      attempt tree lives. Describe only what runs.
-      Files: `docs/CLI_REFERENCE.md`. Verify: `uv run --frozen python scripts/check_doc_links.py`.
+- [ ] 6.1 Document the flag in `docs/guides/harnesses.md` (a subsection of "OpenCode as a worker
+      harness", where `--executor opencode` is documented; `docs/CLI_REFERENCE.md` lists no autodev
+      flags) and add the autodev use of `VERDICT_SERVE_URL` to `docs/CONFIGURATION.md`: opt-in and
+      experimental, the one-message fail-closed behaviour (binary, serve, credentials), what is isolated
+      (the spec's byte-identical definition), what is not (an absolute-path write, the mechanical tier,
+      the verification command, ignored files), that an owned file with uncommitted changes, or one hidden
+      from `git status` (assume-unchanged, skip-worktree, a `filter` or `ident` attribute) or ignored, is
+      refused while an edit the mechanical tier already made stays, what a crash during the executor's
+      writes leaves and how git undoes it (line endings as git writes them), that retries and lineage are
+      not yet supported, and where the attempt tree lives. Describe only what runs.
+      Files: `docs/guides/harnesses.md`, `docs/CONFIGURATION.md`. Verify:
+      `uv run --frozen python scripts/check_doc_links.py`.
 
 ## 7. Gates and review
 
@@ -300,8 +355,9 @@ Conventions for every task:
       with every new symbol reachable from `cmd_autodev`. Check the diff against
       `.claude/pipeline-lessons.md`. Get the cross-family review of the local commit and fix every
       valid finding. Run the complete test files, not a selection:
-      `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py tests/test_autodev_opencode_wiring.py tests/test_autodev_wiring.py`
-      (every class named above is in them). Files: none. Verify:
+      `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py tests/test_autodev_opencode_wiring.py tests/test_autodev_wiring.py tests/test_autodev_context.py tests/test_autodev_operational_loop.py tests/test_autodev_operational_routing.py tests/test_autodev_outcome_attempts.py tests/test_autodev_verification.py tests/test_cli_present_autodev.py`
+      (every class named above is in them, and the existing autodev tests pass unmodified:
+      `git diff --stat origin/main -- tests` lists only the two new test files). Files: none. Verify:
       `uv run --frozen ruff check . && uv run --frozen ruff format --check .`,
       `uv run --frozen mypy verdict --strict`,
       `uv run --frozen python scripts/check_reachability.py --ratchet-base origin/main`,
