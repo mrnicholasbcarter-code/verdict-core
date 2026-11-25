@@ -884,6 +884,47 @@ class TestReadiness:
         assert "serve-token-for-the-fake" not in out
         assert forbidden.calls == []
 
+    @pytest.mark.parametrize("state", ["present", "no_token", "no_key"])
+    def test_credential_check_creates_or_modifies_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, serve_factory: Any, state: str
+    ) -> None:
+        """Review finding 1 (Codex on 1470a171), a guard: the credential check reads the serve token
+        (environment, credential store, ``serve.env``) and the signing key file, and nothing under the
+        home directory is created, removed or changed, whether the credentials are there or not."""
+        from verdict.serve_service import env_file_path
+
+        serve = serve_factory("ok")
+        monkeypatch.delenv(
+            "XDG_CONFIG_HOME", raising=False
+        )  # the credential store reads under HOME
+        make_ready(tmp_path, monkeypatch, serve.origin, token=False, key=state == "present")
+        if state != "no_token":  # the token is found in serve.env, the last place it is looked for
+            env_file = env_file_path()
+            env_file.parent.mkdir(parents=True, exist_ok=True)
+            env_file.write_text("LLMGATE_AUTH_TOKEN=serve-token-from-the-file\n")
+
+        def home_state() -> dict[str, Any]:
+            home = Path.home()
+            found: dict[str, Any] = {}
+            for path in [home, *home.rglob("*")]:
+                info = path.lstat()
+                found[str(path.relative_to(home))] = (
+                    stat.S_IFMT(info.st_mode),
+                    stat.S_IMODE(info.st_mode),
+                    info.st_mtime_ns,
+                    path.read_bytes() if stat.S_ISREG(info.st_mode) else b"",
+                )
+            return found
+
+        before = home_state()
+        result = oc.check_opencode_readiness()
+        assert result.ok is (state == "present")
+        assert (
+            result.failed_check
+            == {"present": "", "no_token": "credentials", "no_key": "credentials"}[state]
+        )
+        assert home_state() == before
+
     def test_readiness_runs_even_when_a_decision_is_supplied(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, serve_factory: Any
     ) -> None:

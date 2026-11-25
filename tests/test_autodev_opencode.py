@@ -371,6 +371,70 @@ class TestSeed:
         assert not (tree.path / "pkg").exists()
         assert (tree.path / "a.py").exists()
 
+    @pytest.mark.parametrize("how", ["untracked", "modified"])
+    def test_overlay_bytes_share_one_budget_while_they_are_loaded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str
+    ) -> None:
+        """Review finding 4 (Codex on 1470a171): the overlay keeps every file it reads in memory, so the
+        byte budget is shared by all of them; four files that each fit it are stopped at the budget, not
+        read to the end."""
+        names = [f"big{index}.bin" for index in range(4)]
+        if how == "untracked":
+            repo = make_repo(tmp_path)
+        else:
+            repo = make_repo(tmp_path, {"a.py": "a = 1\n", **{name: b"y" * 3000 for name in names}})
+        for name in names:
+            write(repo, name, b"z" * 3000)  # each below the budget, together four times over it
+        monkeypatch.setattr(oc, "MAX_SEED_BYTES", 4096)
+        monkeypatch.setattr(oc, "_READ_CHUNK", 1024)
+        read = [0]
+        real_read = os.read
+
+        def counting(fd: int, count: int) -> bytes:
+            data = real_read(fd, count)
+            if count == 1024:  # the module's own chunk; a pipe read from git asks for more
+                read[0] += len(data)
+            return data
+
+        monkeypatch.setattr(os, "read", counting)
+        with pytest.raises(oc.AttemptFailedError) as caught:
+            seed(repo, tmp_path)
+        monkeypatch.setattr(os, "read", real_read)
+        assert "limit" in caught.value.reason and "bytes" in caught.value.reason
+        assert read[0] <= 4096 + 1024  # the budget plus the one chunk that crossed it
+
+    def test_overlay_file_count_is_bounded_while_the_files_are_loaded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path)
+        for index in range(5):
+            write(repo, f"extra{index}.txt", "x\n")
+        monkeypatch.setattr(oc, "MAX_SEED_FILES", 3)
+        real = oc._read_user_file
+        loaded: list[str] = []
+
+        def spy(root_fd: int, rel: str, *args: Any, **kwargs: Any) -> Any:
+            loaded.append(rel)
+            return real(root_fd, rel, *args, **kwargs)
+
+        monkeypatch.setattr(oc, "_read_user_file", spy)
+        with pytest.raises(oc.AttemptFailedError) as caught:
+            seed(repo, tmp_path)
+        assert "limit" in caught.value.reason and "files" in caught.value.reason
+        assert len(loaded) <= 3 + 1  # stopped at the file that crossed the limit
+
+    def test_deleted_files_do_not_count_against_the_overlay_limits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A guard: only files and links kept in memory count, so a mass deletion is still seeded."""
+        names = [f"f{index}.py" for index in range(6)]
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", **{name: "x = 1\n" for name in names}})
+        for name in names:
+            (repo / name).unlink()
+        monkeypatch.setattr(oc, "MAX_SEED_FILES", 3)
+        tree = seed(repo, tmp_path)
+        assert sorted(tree.manifest) == ["a.py"]
+
 
 # --------------------------------------------------------------------------------------------
 # 2.2 delta
@@ -768,6 +832,105 @@ class TestTransfer:
         assert (repo / "a.py").read_text() == "user edit after the checks\n"
         assert not [p for p in repo.rglob(".verdict-transfer-*")]
 
+    @pytest.mark.parametrize(
+        ("how", "reason"),
+        [
+            ("edit", "changed since the seed"),
+            ("executable", "executable bit"),
+            ("removed", "removed after the seed"),
+        ],
+    )
+    def test_change_while_the_temporary_file_is_written_is_refused(
+        self, tmp_path: Path, how: str, reason: str
+    ) -> None:
+        """Review finding 2 (Codex on 1470a171): the last look at the target comes after the temporary
+        file is written, so a change made during that write is refused, not renamed over."""
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+
+        def change(path: str) -> None:
+            if how == "edit":
+                write(repo, "a.py", "user edit during the write\n")
+            elif how == "executable":
+                (repo / "a.py").chmod(0o755)
+            else:
+                (repo / "a.py").unlink()
+
+        journal: list[oc.JournalEntry] = []
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            run_transfer(
+                repo, [witem("a.py", "worker\n")], m0, journal, hooks={"after_temp_write": change}
+            )
+        assert reason in caught.value.reason
+        if how == "edit":
+            assert (repo / "a.py").read_text() == "user edit during the write\n"
+        elif how == "executable":
+            assert (repo / "a.py").read_text() == "import os\nx = 1\n"
+            assert (repo / "a.py").stat().st_mode & stat.S_IXUSR
+        else:
+            assert not (repo / "a.py").exists()
+        assert not list(repo.rglob(".verdict-transfer-*"))
+        assert journal == []  # the rename was never made, so nothing is journalled to undo
+
+    def test_file_created_while_the_temporary_file_is_written_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+
+        def create(path: str) -> None:
+            write(repo, "fresh.py", "user file created during the write\n")
+
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            run_transfer(
+                repo, [witem("fresh.py", "worker\n")], m0, hooks={"after_temp_write": create}
+            )
+        assert "appeared after the seed" in caught.value.reason
+        assert (repo / "fresh.py").read_text() == "user file created during the write\n"
+        assert not list(repo.rglob(".verdict-transfer-*"))
+
+    def test_change_while_a_later_temporary_file_is_written_rolls_back(
+        self, tmp_path: Path
+    ) -> None:
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", "b.py": "b = 1\n"})
+        m0 = user_manifest(repo)
+
+        def edit(path: str) -> None:
+            if path == "b.py":
+                write(repo, "b.py", "user edit during the write\n")
+
+        journal: list[oc.JournalEntry] = []
+        with pytest.raises(oc.TransferFailedError) as caught:
+            run_transfer(
+                repo,
+                [witem("a.py", "w\n"), witem("b.py", "w\n")],
+                m0,
+                journal,
+                hooks={"after_temp_write": edit},
+            )
+        assert "b.py" in caught.value.reason and "changed since the seed" in caught.value.reason
+        assert (repo / "a.py").read_text() == "a = 1\n"  # the first path was rolled back
+        assert (repo / "b.py").read_text() == "user edit during the write\n"
+        assert not list(repo.rglob(".verdict-transfer-*"))
+        assert journal == []
+
+    def test_parent_swapped_while_the_temporary_file_is_written(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        m0 = user_manifest(repo)
+
+        def swap(path: str) -> None:
+            (repo / "d").rename(tmp_path / "d-moved")
+            (repo / "d").mkdir()
+            write(repo, "d/inner.py", "a different directory\n")
+
+        with pytest.raises(oc.AttemptRefusedError):
+            run_transfer(
+                repo, [witem("d/inner.py", "worker\n")], m0, hooks={"after_temp_write": swap}
+            )
+        assert (tmp_path / "d-moved" / "inner.py").read_text() == "i = 1\n"  # nothing written there
+        assert (repo / "d" / "inner.py").read_text() == "a different directory\n"
+        assert not list(tmp_path.rglob(".verdict-transfer-*"))
+
     def test_only_the_mode_changed(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path)
         m0 = user_manifest(repo)
@@ -1128,6 +1291,69 @@ class TestRestore:
         result = oc.restore_transfer(journal, repo)
         assert (outside / "inner.py").read_text() == "outside content\n"
         assert [path for path, _ in result.not_restored] == ["d/inner.py"]
+
+    @pytest.mark.parametrize("replacement_holds", ["worker", "prior"])
+    def test_parent_replaced_by_a_real_directory_between_transfer_and_restore(
+        self, tmp_path: Path, replacement_holds: str
+    ) -> None:
+        """Review finding 3 (Codex on 1470a171): a real directory that takes the parent's name is not the
+        directory the transfer wrote through, whatever bytes its file holds; restore names the path and
+        writes nothing there."""
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        journal = transferred(repo, [witem("d/inner.py", "worker\n")])
+        (repo / "d").rename(tmp_path / "d-moved")
+        (repo / "d").mkdir()
+        replacement = "worker\n" if replacement_holds == "worker" else "i = 1\n"
+        write(repo, "d/inner.py", replacement)
+        result = oc.restore_transfer(journal, repo)
+        assert (repo / "d" / "inner.py").read_text() == replacement  # the replacement is untouched
+        assert (
+            tmp_path / "d-moved" / "inner.py"
+        ).read_text() == "worker\n"  # so is the displaced file
+        assert [path for path, _ in result.not_restored] == ["d/inner.py"]
+        assert "replaced" in dict(result.not_restored)["d/inner.py"]
+        assert result.restored == []
+        assert not list(tmp_path.rglob(".verdict-transfer-*"))
+        assert journal == []
+
+    def test_entry_without_recorded_parent_directories_is_named(self, tmp_path: Path) -> None:
+        """Fail closed: an entry whose parent directories were not recorded is not written through."""
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        journal = transferred(repo, [witem("d/inner.py", "worker\n")])
+        journal[0].parents = None
+        result = oc.restore_transfer(journal, repo)
+        assert (repo / "d" / "inner.py").read_text() == "worker\n"
+        assert [path for path, _ in result.not_restored] == ["d/inner.py"]
+        assert "not recorded" in dict(result.not_restored)["d/inner.py"]
+
+    @pytest.mark.parametrize("existing", [True, False])
+    def test_parent_renamed_away_and_not_replaced_is_named(
+        self, tmp_path: Path, existing: bool
+    ) -> None:
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        target = "d/inner.py" if existing else "d/fresh.py"
+        journal = transferred(repo, [witem(target, "worker\n")])
+        (repo / "d").rename(tmp_path / "d-moved")
+        result = oc.restore_transfer(journal, repo)
+        assert [path for path, _ in result.not_restored] == [target]
+        assert "gone" in dict(result.not_restored)[target]
+        assert (tmp_path / "d-moved" / target.split("/")[1]).read_text() == "worker\n"
+
+    def test_change_while_restore_writes_the_prior_bytes_is_kept(self, tmp_path: Path) -> None:
+        """The restore write shares the helper's last look: an edit made while its temporary file is
+        written is named as not restored, not renamed over."""
+        repo = make_repo(tmp_path)
+        journal = transferred(repo, [witem("a.py", "worker\n")])
+
+        def edit(path: str) -> None:
+            write(repo, "a.py", "user edit during the restore\n")
+
+        result = oc.restore_transfer(journal, repo, hooks={"after_temp_write": edit})
+        assert (repo / "a.py").read_text() == "user edit during the restore\n"
+        assert [path for path, _ in result.not_restored] == ["a.py"]
+        assert "changed since the transfer" in dict(result.not_restored)["a.py"]
+        assert not list(repo.rglob(".verdict-transfer-*"))
+        assert journal == []
 
     def test_restore_twice(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path)

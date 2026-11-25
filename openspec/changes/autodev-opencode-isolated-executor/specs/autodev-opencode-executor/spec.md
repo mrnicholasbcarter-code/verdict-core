@@ -32,7 +32,9 @@ decision was supplied, that the opencode binary resolves and runs, that `verdict
 `GET /health` with status 200 and `"engine": "verdict"`, and that the credentials the
 OpenCode executor signs with exist: the serve token resolves and the worker signing key is
 readable. Without them every unit would fail after the probe and the planner call had been paid
-for. The credential check reads and creates nothing and its message never contains a value.
+for. The credential check only reads: the serve token (the environment, the credential store,
+then `serve.env`) and the signing key file. It creates, removes and modifies nothing, whether
+the credentials are there or not, and its message never contains a value.
 When a check fails it SHALL print one message naming the failed check and the remedy, exit with
 status 1, and SHALL NOT fall back to `PatchExecutor`. A version of OpenCode different from
 the pinned one SHALL NOT fail the check and SHALL be named in the output.
@@ -48,6 +50,10 @@ the pinned one SHALL NOT fail the check and SHALL be named in the output.
 #### Scenario: Credentials missing
 - **WHEN** the serve token does not resolve, or the worker signing key file is absent or unreadable, and the binary and serve checks pass
 - **THEN** autodev exits 1 with one message naming the credential check and the remedy, and the route probe, the decomposer, `run_autodev` and `PatchExecutor` are never called
+
+#### Scenario: Credential check changes nothing
+- **WHEN** the credential check runs with the credentials present, with no serve token, and with a token but no signing key
+- **THEN** no path under the home directory is created, removed or changed (kind, mode, modification time and bytes), and the check reports the credentials as present or names the missing one
 
 #### Scenario: Readiness runs even when a decision is supplied
 - **WHEN** an execution-path decision is passed to the command and the binary check fails
@@ -75,6 +81,12 @@ worker starts. The overlay SHALL follow no link in the clone: it opens every anc
 removes or writes from a descriptor for the clone's root without following links, so a symlink committed
 to the repository cannot send a removal or a write outside the clone. A removal below an ancestor that is
 absent, a link or a file has nothing to remove; a write replaces such an ancestor by a directory.
+The files the overlay reads from the user's tree are held in memory until the clone is written, so
+they SHALL share one byte budget (`MAX_SEED_BYTES`) and one file budget (`MAX_SEED_FILES`) while
+they are loaded: each read stops at what is left of the byte budget, the load stops at the file
+that crosses either budget, and the seed is refused with the limit named before the rest are read.
+Only a file or a symlink kept in memory counts; a path the user deleted keeps nothing and counts
+for neither budget. The manifest of the finished clone is still checked against both limits.
 
 The attempt directory SHALL be removed on every exit path. The worker runs as the same user inside it, so
 it can rename the directory or leave a link where it was: the executor SHALL hold the directory by
@@ -109,6 +121,18 @@ descriptor the executor opened for an attempt is closed on every exit path.
 #### Scenario: Seed refused before any worker starts
 - **WHEN** the repository has no HEAD commit, contains a submodule or a nested repository, or exceeds the seed limit
 - **THEN** the attempt is `error` with a reason naming which, no worker starts and no attempt directory remains
+
+#### Scenario: Overlay files share one byte budget
+- **WHEN** several dirty or untracked files each fit the seed's byte limit and together exceed it
+- **THEN** the seed is refused with the limit, and no more than the byte limit plus one read chunk was read from the user's tree
+
+#### Scenario: Overlay file count is bounded while loading
+- **WHEN** the files to copy outnumber the seed's file limit
+- **THEN** the seed is refused with the limit, and no file past the one that crossed the limit was read
+
+#### Scenario: Deleted files do not count against the overlay limits
+- **WHEN** the user deleted more tracked files than the seed's file limit and nothing else is dirty
+- **THEN** the seed succeeds
 
 #### Scenario: Attempt tree removed on every exit path
 - **WHEN** an attempt ends applied, rejected, with a failed or timed-out worker, with an exception, or by cancellation
@@ -368,13 +392,16 @@ out-of-bounds path.
 The executor SHALL resolve every transfer path component by component from a descriptor on
 the repository root without following symlinks, and SHALL compare, for each path, the user's
 current kind, executable bit and bytes with the seed manifest (or absence, when the manifest
-has no entry), both before any write and again immediately before that path's write. If any
+has no entry), before any write, again immediately before that path's write, and a third time
+after that path's temporary file is written and immediately before the rename. If any
 comparison differs the attempt SHALL be `rejected` with the reason and nothing SHALL be written
 for a pre-write difference. The checks before the first write SHALL be read-only and SHALL
 create nothing; directories SHALL be created only during the write phase, each journalled
-before it is created (journal order is in the restore requirement below). The second comparison SHALL also confirm that every held directory
+before it is created (journal order is in the restore requirement below). The second and third comparisons SHALL also confirm that every held directory
 descriptor is still the directory reachable at its name, by device and inode. A refusal found
-by the read-only checks SHALL make the attempt `rejected`. A refusal or failure after the write
+by the read-only checks, or by the third comparison when nothing was written or created before it,
+SHALL make the attempt `rejected`: the third comparison refuses before the rename, so the path's
+journal entry is withdrawn and the temporary file is unlinked. A refusal or failure after the write
 phase has begun SHALL roll back every path and directory already written or created, SHALL make
 the attempt `error`, and its reason SHALL name the refused path and list any path the rollback
 could not restore. Every file the executor writes, in the transfer and in restore, SHALL go
@@ -383,6 +410,20 @@ descriptor, sets its mode, renames it over the target, and unlinks the temporary
 same descriptor on every failure before the rename succeeds. An unlink that itself fails SHALL
 be named in the reason and SHALL NOT replace the original error. The executor SHALL refuse to
 run on a host whose descriptor-relative file operations it needs are unavailable.
+
+**What the third comparison guarantees, and what it does not.** A change to an owned path (its
+kind, executable bit or bytes) or to a held directory that the comparison can see SHALL refuse that
+path, whenever it was made before the comparison read it, including during the temporary file's
+write: nothing is renamed and no temporary file is left. It is a look, not a lock: POSIX has no
+rename that compares the target's content, and `renameat2` with `RENAME_EXCHANGE` was assessed
+and not adopted (design D6). These stay outside the guarantee: a write that lands after the
+comparison has read the file (including while it hashes the bytes) and before the rename returns;
+a write through a descriptor that was open on the target before the rename, which the rename
+detaches from its name; a change that leaves kind, executable bit and bytes equal (the other
+permission bits, timestamps, ownership); and the deletion of an owned file, whose comparison
+immediately precedes the `unlink` and has no later one. An edit that lands in those windows is
+overwritten, and rollback cannot recover it, because the journal holds the seed's bytes and not
+the edit. The executor assumes it is the only writer of an owned file while a unit runs.
 
 #### Scenario: Owned file changed after the seed
 - **WHEN** the user edits an owned file after the seed and before the transfer
@@ -399,6 +440,22 @@ run on a host whose descriptor-relative file operations it needs are unavailable
 #### Scenario: Edit between the checks and the first write
 - **WHEN** the user edits an owned file after the read-only checks and before the first write
 - **THEN** the attempt is `rejected`, nothing was written or created, and the user's edit is intact
+
+#### Scenario: Change while the temporary file is written
+- **WHEN** the user edits an owned file, changes only its executable bit, or removes it after the executor has written the temporary file and before the rename
+- **THEN** the attempt is `rejected` with the reason (changed since the seed, its executable bit, removed after the seed), the user's state is intact, no temporary file is left and nothing is journalled for that path
+
+#### Scenario: File created while the temporary file is written
+- **WHEN** the seed had no file at an owned path and the user creates one after the temporary file is written and before the rename
+- **THEN** the attempt is `rejected` as appeared after the seed, the user's file is intact and no temporary file is left
+
+#### Scenario: Change while a later temporary file is written
+- **WHEN** a transfer of two owned files has written the first and the user edits the second while its temporary file is written
+- **THEN** the first path is restored, the user's edit is intact, no temporary file is left and the attempt is `error` naming the second path
+
+#### Scenario: Parent swapped while the temporary file is written
+- **WHEN** a parent directory is renamed away and another directory takes its name after the temporary file is written and before the rename
+- **THEN** nothing is renamed into the displaced directory or into the replacement, the displaced file is unchanged, no temporary file is left and the attempt is `rejected`
 
 #### Scenario: Only the mode changed
 - **WHEN** the user changes only the executable bit of an owned file after the seed
@@ -474,7 +531,19 @@ it created when they are empty and are still the directory it created. The trans
 the device and inode of each directory it creates as soon as the creation has returned, and
 restore SHALL compare them with the directory now at that name before removing it: a directory
 that was removed and replaced by another one (even an empty one) is left alone and named as not
-restored. A journal entry whose directory identity was never recorded (a `KeyboardInterrupt`
+restored. For every file it writes or deletes the transfer SHALL also record, in the journal entry and
+before that entry is appended, the device and inode of each directory above the path as the transfer
+opened it, and restore SHALL open the same path by descriptor and compare them before it reads the
+file: a directory that is not the one the transfer wrote through (moved away and absent, or
+replaced by a real directory, whatever bytes the replacement's file holds) makes that path not
+restored and named, and nothing is written there. An entry whose recorded directories do not match
+the path's depth is not restored and named. A device and inode pair can be reused once the original
+directory has been deleted; a replacement that reuses the pair of a deleted original is outside this
+guarantee (the file the transfer wrote went with that directory). Restore's own write SHALL take the
+same last look as the transfer's third comparison, immediately before its rename (the held
+directories and the target's state against the state restore read), and a change found there is that
+path's not-restored entry, with the same stated limits; the removal of a file the transfer created has,
+like a deletion, only the comparison immediately before its `unlink`. A journal entry whose directory identity was never recorded (a `KeyboardInterrupt`
 arrived between the creation returning and the identity being read) cannot be compared; restore
 removes that directory only if it exists, is a real directory and is empty. That window is a
 stated limit. A read or write failure on one path during restore (a permission error on reading its
@@ -511,6 +580,22 @@ NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 #### Scenario: Earlier verified unit is not undone
 - **WHEN** unit A is verified and unit B on the same executor is then rejected, errors or raises
 - **THEN** `restore()` for unit B leaves unit A's transferred files as they are
+
+#### Scenario: Parent replaced by a real directory between transfer and restore
+- **WHEN** a transferred file's parent directory is renamed away and a real directory takes its name, holding either the worker's bytes or the file's prior bytes, and restore runs
+- **THEN** restore writes nothing in the replacement or the displaced directory, names the path as not restored (replaced), and the journal is empty
+
+#### Scenario: Parent renamed away and not replaced
+- **WHEN** the directory of a transferred file is renamed away, for an existing owned file and for one the transfer created, and nothing takes its name
+- **THEN** restore names the path as not restored (its directory is gone) and the displaced file is unchanged
+
+#### Scenario: Entry without recorded parent directories
+- **WHEN** a journal entry for a path below a directory has no recorded parent directories
+- **THEN** restore writes nothing for it and names it as not restored (not recorded)
+
+#### Scenario: Change while restore writes the prior bytes
+- **WHEN** the user edits a transferred file after restore has written its temporary file and before the rename
+- **THEN** the edit is intact, the path is named as not restored (changed since the transfer) and no temporary file is left
 
 #### Scenario: Parent swapped between transfer and restore
 - **WHEN** a transferred file's parent directory is replaced by a symlink after the transfer and restore runs

@@ -522,6 +522,16 @@ restore itself fails or is interrupted while an exception is already propagating
 the original exception is the one raised, and what the restore had not reached is put back the way
 **A crash** below describes.
 
+**Your edits while it runs.**  The copy-back refuses a file you changed since the clone was seeded
+(an edit, a mode change, a file you created or removed), and it looks once more after each temporary
+file is written, immediately before the rename (the file, and the directories above it, which must be
+the ones it opened), so an edit you make while Verdict is copying is refused, not overwritten.  Restore takes the same last look, and
+it also names a file as not restored when its directory is no longer the one the copy-back wrote
+through (renamed away, or replaced by another directory), whatever bytes the replacement holds.  POSIX
+has no rename that compares content, so a write that lands between that last look and the rename, or
+through a file you already had open, is still overwritten, and the journal holds the seed's bytes, not
+your edit; keep from editing an owned file while a unit runs.
+
 **A crash.**  If the process is killed while it writes, each owned file holds either its old or its
 new bytes (the copy is a rename), at most one `.verdict-transfer-*` file is left in a directory the
 unit owns, and `git checkout -- <owned files>` plus removing the files and empty directories the
@@ -534,8 +544,8 @@ guarantee.
 ([ADR-053](../adr/ADR-053-opencode-worker-adapter.md) decision 4); the mechanical tier and the
 unit's verification command still run in your repository, as on the default path; the clone has no
 ignored files (`.venv`, caches), so the worker's own test loop may fail or be slow; line-ending and
-encoding conversions are not refused.  Limits: 50,000 files and 512 MiB in the seed, 1 MiB per
-transferred file; POSIX only.
+encoding conversions are not refused.  Limits: 50,000 files and 512 MiB in the seed (the files copied
+from your tree share that budget as they are read), 1 MiB per transferred file; POSIX only.
 
 **Not yet supported.**  A failed unit is not retried on any executor (autodev refuses retry
 routes with this flag), the attempt ledger still labels these units `verdict-autodev-executor`,

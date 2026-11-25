@@ -475,10 +475,13 @@ def walk_manifest(
 # --------------------------------------------------------------------------------------------
 
 
-def _read_user_file(root_fd: int, rel: str) -> tuple[str, Any]:
+def _read_user_file(root_fd: int, rel: str, limit: int) -> tuple[str, Any]:
     """The user's file at ``rel`` for the seed: ``("absent", None)``, ``("file", (bytes, mode))``,
     ``("symlink", target)`` or ``("dir"|"other", None)``.  Directories are opened without
     following links, so a symlinked parent is "absent" for a seed (git never lists below one).
+
+    A file is read at most to ``limit`` bytes, what is left of the seed's one byte budget: the seed
+    keeps every file it reads in memory until the clone is written, so the budget is shared.
     """
     parts = rel.split("/")
     cur = root_fd
@@ -501,9 +504,13 @@ def _read_user_file(root_fd: int, rel: str) -> tuple[str, Any]:
         if not stat.S_ISREG(st.st_mode):
             return "other", None
         try:
-            entry, data = _state_at(cur, parts[-1], keep=True, limit=MAX_SEED_BYTES)
-        except (_RacedError, _OverLimitError) as exc:
-            raise AttemptFailedError(f"{rel} changed or is too large while seeding") from exc
+            entry, data = _state_at(cur, parts[-1], keep=True, limit=limit)
+        except _RacedError as exc:
+            raise AttemptFailedError(f"{rel} changed while seeding") from exc
+        except _OverLimitError as exc:
+            raise AttemptFailedError(
+                f"seed refused: the files to copy hold more than {MAX_SEED_BYTES} bytes (limit)"
+            ) from exc
         if entry is None or entry.kind != "file":
             return "absent", None
         return "file", (data, entry.mode)
@@ -797,8 +804,19 @@ def _seed(repo: Path, tree: Path, owned: tuple[str, ...]) -> AttemptTree:
                 removals.append(record.source)
         copies.extend(owned)
         loaded: dict[str, tuple[str, Any]] = {}
+        budget = MAX_SEED_BYTES  # one byte budget for every file kept in memory, not one per file
+        kept = 0
         for rel in dict.fromkeys(copies + removals):
-            loaded[rel] = _read_user_file(root_fd, rel)
+            kind, payload = _read_user_file(root_fd, rel, budget)
+            if kind in ("file", "symlink"):  # an absent path (a deletion) keeps nothing
+                kept += 1
+                if kept > MAX_SEED_FILES:
+                    raise AttemptFailedError(
+                        f"seed refused: more than {MAX_SEED_FILES} files to copy (limit)"
+                    )
+            if kind == "file":
+                budget -= len(payload[0])
+            loaded[rel] = (kind, payload)
         tree_fd = os.open(str(tree), _DIR_FLAGS)
         try:
             made = os.fstat(tree_fd)
@@ -959,6 +977,9 @@ class JournalEntry:
     prior_data: bytes = b""
     intended: Entry | None = None
     dir_identity: tuple[int, int] | None = None  # (st_dev, st_ino) of a directory we created
+    #: (st_dev, st_ino) of every directory above a written or deleted path, root first: the
+    #: directories the transfer wrote through, so restore can tell them from a replacement.
+    parents: tuple[tuple[int, int], ...] | None = None
 
 
 @dataclass
@@ -996,7 +1017,14 @@ def describe_failure(exc: BaseException) -> str:
 
 
 def replace_file(
-    parent_fd: int, name: str, data: bytes, mode: int, *, hooks: Hooks | None = None, path: str = ""
+    parent_fd: int,
+    name: str,
+    data: bytes,
+    mode: int,
+    *,
+    hooks: Hooks | None = None,
+    path: str = "",
+    before_rename: Callable[[], None] | None = None,
 ) -> None:
     """Write ``data`` to ``name`` under ``parent_fd`` through one unique temporary file.
 
@@ -1004,6 +1032,12 @@ def replace_file(
     ``mode`` and renamed over the target; on any failure before the rename it is unlinked by the
     same descriptor.  An unlink that fails is named on the exception (``leftover_temporary``) and
     never replaces it.
+
+    ``before_rename`` is the caller's last look at the target, made after the temporary file is
+    written and immediately before the rename: it raises to refuse, and the temporary file is then
+    removed like on any other failure.  It narrows the window in which a change to the target is
+    overwritten to the time between that look and the rename; it cannot close it, because POSIX has
+    no rename that compares the target's content.
     """
     temp = f"{_TEMP_PREFIX}{os.getpid()}-{secrets.token_hex(8)}"
     fd = os.open(
@@ -1022,6 +1056,8 @@ def replace_file(
         finally:
             os.close(fd)
         _hook(hooks, "after_temp_write", path)
+        if before_rename is not None:
+            before_rename()
         os.rename(temp, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
     except BaseException as exc:
         try:
@@ -1098,13 +1134,49 @@ def _verify_held(held: Sequence[tuple[int, str, int]], path: str) -> None:
         try:
             at_name = os.stat(name, dir_fd=parent, follow_symlinks=False)
         except OSError as exc:
-            raise _ConflictError(f"{path}: a parent directory moved during the transfer") from exc
+            raise _ConflictError(f"{path}: a parent directory moved while it was in use") from exc
         held_st = os.fstat(fd)
         if not stat.S_ISDIR(at_name.st_mode) or (at_name.st_dev, at_name.st_ino) != (
             held_st.st_dev,
             held_st.st_ino,
         ):
-            raise _ConflictError(f"{path}: a parent directory moved during the transfer")
+            raise _ConflictError(f"{path}: a parent directory moved while it was in use")
+
+
+def _held_chain(
+    root_fd: int, fds: Sequence[int], dirs: Sequence[str]
+) -> list[tuple[int, str, int]]:
+    """``(descriptor, name, parent descriptor)`` for directories opened one below the other from ``root_fd``."""
+    chain: list[tuple[int, str, int]] = []
+    parent = root_fd
+    for fd, name in zip(fds, dirs, strict=True):
+        chain.append((fd, name, parent))
+        parent = fd
+    return chain
+
+
+def _identities(fds: Sequence[int]) -> tuple[tuple[int, int], ...]:
+    """``(st_dev, st_ino)`` of each directory descriptor."""
+    found = []
+    for fd in fds:
+        info = os.fstat(fd)
+        found.append((info.st_dev, info.st_ino))
+    return tuple(found)
+
+
+def _last_look(
+    held: Sequence[tuple[int, str, int]], parent_fd: int, name: str, path: str, limit: int
+) -> Entry | None:
+    """The last look before a commit: the held directories are still where they were, and the
+    state of ``name`` now (``_ConflictError`` when it cannot be read within ``limit``)."""
+    _verify_held(held, path)
+    try:
+        now, _ = _state_at(parent_fd, name, limit=limit)
+    except _OverLimitError as exc:
+        raise _ConflictError(f"{path} is over the transfer limit in the user's tree") from exc
+    except _RacedError as exc:
+        raise _ConflictError(f"{path} changed kind while it was being read") from exc
+    return now
 
 
 def _write_item(
@@ -1177,10 +1249,47 @@ def _write_item(
                 mode = current.mode  # keep the user's exact permission bits
             else:
                 mode = 0o755 if item.executable else 0o644
-            journal.append(JournalEntry("write", item.path, current, prior_data, intended))
-            replace_file(cur, parts[-1], item.data, mode, hooks=hooks, path=item.path)
+            entry = JournalEntry(
+                "write",
+                item.path,
+                current,
+                prior_data,
+                intended,
+                parents=_identities([fd for fd, _name, _parent in held]),
+            )
+            journal.append(entry)
+
+            def final_check() -> None:
+                now = _last_look(held, cur, parts[-1], item.path, MAX_TRANSFER_FILE_BYTES)
+                why = _compare(item.path, now, current)
+                if why is not None:
+                    raise _ConflictError(why)
+
+            try:
+                replace_file(
+                    cur,
+                    parts[-1],
+                    item.data,
+                    mode,
+                    hooks=hooks,
+                    path=item.path,
+                    before_rename=final_check,
+                )
+            except _ConflictError:
+                if journal and journal[-1] is entry:
+                    journal.pop()  # refused before the rename: this path was never changed
+                raise
         else:
-            journal.append(JournalEntry("delete", item.path, current, prior_data, None))
+            journal.append(
+                JournalEntry(
+                    "delete",
+                    item.path,
+                    current,
+                    prior_data,
+                    None,
+                    parents=_identities([fd for fd, _name, _parent in held]),
+                )
+            )
             os.unlink(parts[-1], dir_fd=cur)
         _hook(hooks, "after_item", item.path)
     finally:
@@ -1294,8 +1403,17 @@ def _restore_file(
         return
     try:
         if not complete:
-            if entry.op == "delete":
-                result.not_restored.append((entry.path, "its directory is gone"))
+            # The directory the transfer wrote through is no longer there: the file is wherever that
+            # directory went, and the path cannot be put back from here.
+            result.not_restored.append((entry.path, "its directory is gone"))
+            return
+        # Before the state is read: a replacement directory can hold the very bytes this entry
+        # expects, and would pass for the one the transfer wrote through.
+        if entry.parents is None or len(entry.parents) != len(fds):
+            result.not_restored.append((entry.path, "its parent directories were not recorded"))
+            return
+        if _identities(fds) != entry.parents:
+            result.not_restored.append((entry.path, "a parent directory was replaced"))
             return
         pfd = fds[-1] if fds else root_fd
         name = parts[-1]
@@ -1316,6 +1434,13 @@ def _restore_file(
             if current is not None:
                 result.not_restored.append((entry.path, "changed since the transfer"))
                 return
+        held = _held_chain(root_fd, fds, parts[:-1])
+
+        def final_check() -> None:
+            now = _last_look(held, pfd, name, entry.path, MAX_TRANSFER_FILE_BYTES * 2)
+            if now != current:
+                raise _ConflictError("changed since the transfer")
+
         try:
             if entry.prior is None:
                 os.unlink(name, dir_fd=pfd)
@@ -1327,7 +1452,11 @@ def _restore_file(
                     entry.prior.mode or 0o644,
                     hooks=hooks,
                     path=entry.path,
+                    before_rename=final_check,
                 )
+        except _ConflictError as exc:
+            result.not_restored.append((entry.path, str(exc).split(": ", 1)[-1]))
+            return
         except OSError as exc:
             result.not_restored.append((entry.path, describe_failure(exc)))
             return
@@ -1364,11 +1493,13 @@ def restore_transfer(
 
     For each entry a path holding the intended state is returned to its prior state; a path
     already holding the prior state is left and not reported (the mutation was never made);
-    anything else is left alone and named.  A created directory is removed only when empty and
-    still the directory the transfer created.  A read or write failure on one path is that path's
-    ``not_restored`` entry and the loop goes on.  The journal is emptied, so calling again is a
-    no-op; an interrupt (``KeyboardInterrupt``) leaves the entry in progress and those before it in
-    the journal, and a second call continues from there.
+    anything else is left alone and named, and so is a path whose parent directories are no longer
+    the ones the transfer wrote through (compared by device and inode before the file is read).
+    A created directory is removed only when empty and still the directory the transfer created.
+    A read or write failure on one path is that path's ``not_restored`` entry and the loop goes
+    on.  The journal is emptied, so calling again is a no-op; an interrupt (``KeyboardInterrupt``)
+    leaves the entry in progress and those before it in the journal, and a second call continues
+    from there.
     """
     if not journal:
         return RestoreResult()

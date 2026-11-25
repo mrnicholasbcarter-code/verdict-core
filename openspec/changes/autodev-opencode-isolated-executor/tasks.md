@@ -90,6 +90,19 @@ Conventions for every task:
       Evidence (round 1): the first test failed before the fix in both cases (the outside file and
       directory were gone); the other two passed before and are guards: each failed with its line mutated
       (an ancestor opened following links, a symlink ancestor kept, a directory not emptied).
+      Review round 2, finding 4 (Codex on 1470a171): each overlay file was read against the whole
+      `MAX_SEED_BYTES` and all were kept in memory (`loaded`) before the manifest checked the total, so
+      several large dirty or untracked files could allocate many times the budget. The files the overlay
+      reads now share one byte budget and one file budget while they are loaded (`_read_user_file` takes
+      what is left; only files and symlinks kept in memory count). Tests in `TestSeed`:
+      `test_overlay_bytes_share_one_budget_while_they_are_loaded` (four 3,000-byte files, untracked and
+      modified, against a 4,096-byte budget; at most the budget plus one chunk is read from the user's
+      tree), `test_overlay_file_count_is_bounded_while_the_files_are_loaded` (at most limit + 1 loads) and
+      `test_deleted_files_do_not_count_against_the_overlay_limits` (a guard).
+      Evidence (round 2): the first three failed before the fix (17,086 and 17,060 bytes read against 5,120
+      allowed; 6 loads against 4) and passed after; the guard passed before and failed with the count
+      taken over every loaded path; the per-file byte limit and the missing count check each failed
+      their named test when put back.
 - [x] 2.2 Manifest and delta (D4). `attempt_delta(tree, repo, unit, hooks=None)` (the tree carries M0) builds M1 with a
       descriptor-relative walk (root opened `O_DIRECTORY`; `scandir` on each directory
       descriptor; children opened `O_DIRECTORY | O_NOFOLLOW` relative to their parent; files
@@ -169,6 +182,25 @@ Conventions for every task:
       tests' child (`python -I`, which ignores `PYTHONPATH`) then imported the main checkout's `verdict` and
       failed with `ImportError: cannot import name 'autodev_opencode'` (3 failed). The child now puts the
       package root the test imported first on its `sys.path` (3 passed under that interpreter).
+      Review round 2, finding 2 (Codex on 1470a171): `_write_item` compared the target and then
+      `replace_file` wrote the temporary file, so an edit made during that write was renamed over, and the
+      journal held only the seed's bytes. `replace_file` takes a `before_rename` call, made after the
+      temporary file is written and immediately before the rename; the transfer's call confirms the held
+      directories (device and inode) and that the target's kind, executable bit and bytes still equal what
+      was compared, raises `_ConflictError` otherwise, and the path's journal entry is withdrawn (the rename
+      was not made) so a first-path refusal is `rejected`. Tests in `TestTransfer`:
+      `test_change_while_the_temporary_file_is_written_is_refused` (edit, executable bit, removal; all
+      driven from the `after_temp_write` hook),
+      `test_file_created_while_the_temporary_file_is_written_is_refused`,
+      `test_change_while_a_later_temporary_file_is_written_rolls_back` and
+      `test_parent_swapped_while_the_temporary_file_is_written`. Stated limits (spec, "What the third
+      comparison guarantees"): a write after the look has read the file and before the rename returns, a
+      write through a descriptor open before the rename, a change that leaves kind, executable bit and bytes
+      equal, and the deletion's own comparison are not covered; `renameat2(RENAME_EXCHANGE)` was assessed
+      and not adopted (design D6).
+      Evidence (round 2): all six cases failed before the fix (`DID NOT RAISE AttemptRefusedError` x5, `DID
+      NOT RAISE TransferFailedError`) and passed after; with the look's held-directory check removed the
+      parent test failed, with the journal withdrawal removed the edit case failed.
 - [x] 2.4 Restore (D7). `restore_transfer(journal, repo)` undoes the current attempt's transfer in reverse with task 2.3's
       traversal, re-check and `replace_file` helper. For each entry it compares kind, executable bit
       and SHA-256 with the intended state (undo it), with the prior state (the mutation was never
@@ -207,6 +239,24 @@ Conventions for every task:
       `test_interrupted_restore_keeps_the_unprocessed_entry`.
       Evidence (round 1): all three failed before the fix (`PermissionError` and `OSError` escaped; the journal
       held one entry instead of two) and failed again with the loop's `except` or the pop order reverted.
+      Review round 2, finding 3 (Codex on 1470a171): restore opened a file's directories by name only, so a
+      directory renamed away after the transfer and replaced by a real directory holding the worker's bytes
+      had its file overwritten and reported restored while the transferred file stayed in the displaced
+      directory. The write and delete journal entries now record the device and inode of every directory
+      above the path (`JournalEntry.parents`, taken before the entry is appended), restore compares them
+      before it reads the file, a directory that is gone is named for a write entry as it already was for a
+      delete, an entry whose recorded count does not match the path's depth is named, and restore's write
+      takes the same last look before its rename. Tests in `TestRestore`:
+      `test_parent_replaced_by_a_real_directory_between_transfer_and_restore` (the replacement holds the
+      worker's bytes, and the file's prior bytes),
+      `test_parent_renamed_away_and_not_replaced_is_named` (an existing and a created file),
+      `test_entry_without_recorded_parent_directories_is_named` and
+      `test_change_while_restore_writes_the_prior_bytes_is_kept`. The existing symlink replacement test
+      (`test_parent_swapped_between_transfer_and_restore`) is unchanged.
+      Evidence (round 2): all but the third failed before the fix (the replacement's file went from
+      `worker` to `i = 1`; `[] == ['d/inner.py']`; the user's edit was overwritten) and passed after; the
+      third guards the count check and failed with it removed, as did each of the identity check, the
+      gone-directory report and restore's last look.
 ## 3. The executor
 
 - [x] 3.1 Prompt (D10). `build_opencode_prompt(unit)` names the objective, owned files,
@@ -413,6 +463,12 @@ Conventions for every task:
       label names the readiness check, and that `prepare_live_autodev`,
       `prepare_live_autodev_selected`, the decomposer, `run_autodev` and `PatchExecutor`, each
       patched to raise, are never called.
+      Review round 2, finding 1 (Codex on 1470a171): the spec said the credential check "reads and
+      creates nothing", which its own token resolution and key read contradict; it now says the check only
+      reads and creates, removes and modifies nothing. `test_credential_check_creates_or_modifies_nothing`
+      (present, no token, no key: a snapshot of the home directory before and after) is a guard, not a
+      red-then-green test: it passed before. Each of two mutations (a key read that generates a missing key,
+      a token resolution that creates the config directory) failed it.
       Evidence: `TestReadiness` green (against the tree without the CLI code the readiness and flag classes fail 19 of 19); the readiness checks run against a loopback fake serve, a fake `opencode` script and a temporary home. Skipping the binary, version-exit, serve-engine or serve-status, token or key check, dropping the version note, or failing on a different version fails its named test.
 - [x] 5.2 The flag. Add `--worker-harness` (choices: `opencode`; default none) to the autodev
       parser, pass it through dispatch to `cmd_autodev`, build the isolated executor with task

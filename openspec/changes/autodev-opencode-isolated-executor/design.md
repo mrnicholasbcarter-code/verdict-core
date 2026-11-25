@@ -122,6 +122,11 @@ are always copied from the user's tree, dirty or not: checkout bytes can differ 
 filter) and M0 must hold the user's bytes for every path that could be transferred. The seed fails closed
 with a named reason, before any worker, on no HEAD, a submodule or nested repository, an exceeded limit
 (Open point 3) or a failed copy. M0 records each non-directory path's kind, executable bit and SHA-256.
+The overlay holds every file it reads in memory until the clone is written, so the files it reads share
+one byte budget and one file budget while they are loaded (review round 2, finding 4, Codex on
+`1470a171`): each read stops at what is left of the budget, and the load stops at the file that crosses a
+budget. Only a file or a symlink kept in memory counts, so a mass deletion is not refused. Peak memory is
+the budget plus one read chunk.
 
 ### D4. The delta is a filesystem comparison; no git runs in the tree after launch
 
@@ -200,9 +205,38 @@ repeats the comparison and a device-and-inode check of the held directories befo
 writes through one helper shared with restore: a unique `.verdict-transfer-*` file renamed over the
 target, unlinked on any failure before the rename (a failing unlink is named, never replaces the
 original error). A failure after the first write rolls back through restore and is `error`; a partial
-transfer is never `rejected`. POSIX has no compare-and-swap for content, so a user write between the
-last check and the `rename` is overwritten; autodev assumes it is the only writer of the unit's owned
-files (Open point 5).
+transfer is never `rejected`.
+
+**The last look (review round 2, finding 2, Codex on `1470a171`).** The comparison before a write came
+before the temporary file was written, so an edit made while that file was written (its size is up to 1
+MiB, and a test hook shows the window) was renamed over, and the journal held only the seed's bytes, so
+rollback could not bring it back. `replace_file` therefore takes a `before_rename` callable, called after
+the temporary file is written and immediately before the `rename`; the transfer passes one that confirms
+the held directories are still at their names and that the target's kind, executable bit and bytes still
+equal what was compared a moment ago. A difference raises, the temporary file is unlinked like on any
+failure, the path's journal entry is withdrawn (the rename was not made), and the attempt is `rejected`
+when nothing was written or created before it and `error` otherwise. Restore's write uses the same call.
+Guaranteed: a change the look can see is refused with nothing renamed and no temporary file left. Not
+guaranteed: POSIX has no rename that compares content, so a write that lands after the look has read the
+file and before the rename returns is overwritten; so is a write through a descriptor opened before the
+rename; the look compares kind, executable bit and bytes, so it does not see a change that leaves those
+equal; and a deletion has its comparison immediately before the `unlink` and no later one. Autodev assumes
+it is the only writer of an owned file while a unit runs (Open point 5).
+
+**Assessed, not adopted: `renameat2(RENAME_EXCHANGE)`.** [exp: glibc 2.35 on Linux 6.8, ext4: `ctypes`
+reaches `renameat2` and swapping a temporary file with a target returned 0, the target holding the new
+bytes and the temporary name the old.] Exchanging the two names and then comparing what came out under
+the temporary name with the compared state would remove the window before the commit, and swapping back
+would undo a mismatch. It was left out because (1) the verify-and-undo is not atomic: between the
+exchange and the swap-back the user's file is not at its name and the worker's bytes are, and a second
+change in that interval is swapped with whatever sits there, so the code would need a loop that has to
+stop somewhere; (2) a descriptor already open on the target still writes into the displaced file, as
+with a plain rename; (3) it needs libc, kernel and filesystem support and so two code paths with
+different guarantees by host; and (4) it moves the commit call off `os.rename`, which five existing
+tests pin (`test_temporary_file_removed_after_a_failed_write`, `test_temporary_file_removal_fails_too`,
+`test_restore_write_failure_leaves_no_temporary_file`, `test_interrupt_right_after_a_rename`,
+`test_interrupt_before_the_mutation`), so it is not a small change. `RENAME_NOREPLACE` would close the
+window for a new owned file only and is not built either; it is listed for the operator.
 
 ### D7. After the transfer: restore on every failing exit, and what a crash leaves
 
@@ -245,6 +279,18 @@ interrupt arrives after the `mkdir` call returned and before the identity was re
 unknown: restore then removes the directory only if it exists, is a real directory and is empty, which is
 what "Interrupt right after a directory creation" requires. That window (one statement wide) is a stated
 limit.
+
+**Written files carry the identity of their parents (review round 2, finding 3, Codex on `1470a171`).**
+Restore opens a file's directories by name, so a directory renamed away after the transfer and replaced
+by a real directory holding the same bytes passed for the one the transfer wrote through: restore
+overwrote the replacement, reported success, and the transferred file stayed in the displaced directory.
+The write and delete entries therefore record the device and inode of each directory above the path as
+the transfer opened it, computed before the entry is appended so that none is missing, and restore
+compares them with the directories it opens before it reads the file. A mismatch, a directory that is
+gone, and an entry whose recorded count does not match the path's depth are each that path's
+`not_restored`, named, with nothing written. Restore's write takes the same last look as the transfer.
+A device and inode pair can be reused once the original directory is deleted; a replacement that reuses
+the pair of a deleted original is not told apart (the file the transfer wrote went with that directory).
 
 **Two more stated limits.** (1) The journal is emptied by `execute_unit`'s first statement, so an exception
 raised before that statement (none exists in the real executor; a wrapper that raises first is one) leaves
@@ -296,7 +342,8 @@ redacted error text [U]. `execute_unit` uses `asyncio.run` and returns `error` i
 above that branch, so a supplied decision does not skip it), that the opencode binary resolves (OC1's
 resolver [U]) and runs `--version`, that `GET <serve>/health` is 200 with `"engine": "verdict"`, and that
 the serve token resolves and the worker signing key is readable (`resolve_serve_token`,
-`load_assignment_key`: both read-only, and the message never repeats a value). Without the last two every
+`load_assignment_key`: both only read, and create, remove and change nothing, and the message never
+repeats a value). Without the last two every
 unit would fail after the probe and the planner call were paid for (#1339). A failure prints one message
 and exits 1 through `_report_autodev_failure` with a new label argument (it hard-codes "decomposition
 failed"; the default is unchanged), with one JSON object under `--json`; nothing is probed, planned or
