@@ -373,6 +373,56 @@ class TestRunId:
         assert len(report.failed) == 1
 
 
+class TestRecords:
+    def test_no_served_identity_is_claimed(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        executor = isolated(repo, tmp_path, StubRunner(edit_a))
+        store = ReceiptStore(":memory:")
+        report = run_autodev(
+            "fix it",
+            repo,
+            store=store,
+            decomposer=_decomposer(plan(("u1", "a.py"))),
+            executor=executor,
+            mechanical=False,
+            runner=ScriptedRunner(),
+        )
+        outcome = report.outcomes[0]
+        assert outcome.verified and outcome.model == "cheap/model"
+        assert outcome.served_model is None
+        payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+        assert payload["served_headers"] == {} and payload["served_model"] is None
+        assert payload["model"] == "cheap/model"
+
+    def test_credential_never_appears_in_a_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret = "SECRET-WORKER-KEY-123"
+        monkeypatch.setenv("VERDICT_WORKER_API_KEY", secret)
+        repo = make_repo(tmp_path)
+        stub = StubRunner(ok=False, error="serve refused the route; key [REDACTED]")
+        executor = isolated(repo, tmp_path, stub)
+        store = ReceiptStore(":memory:")
+        report = run_autodev(
+            "fix it",
+            repo,
+            store=store,
+            decomposer=_decomposer(plan(("u1", "a.py"))),
+            executor=executor,
+            mechanical=False,
+            runner=ScriptedRunner(),
+        )
+        assert "[REDACTED]" in report.failed[0].reason  # the redacted text is what is recorded
+        everything = [
+            json.dumps(report.to_dict()),
+            report.summary(),
+            json.dumps(store.query_receipts(scope=AUTODEV_SCOPE)[0].payload, default=str),
+            attempt_records_path(verdict_home()).read_text(),
+            stub.calls[0]["prompt"],
+        ]
+        assert all(secret not in text for text in everything)
+
+
 class TestRetries:
     def test_retry_routes_with_the_isolated_executor(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path)

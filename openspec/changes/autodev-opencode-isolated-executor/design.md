@@ -210,7 +210,14 @@ replacement while the original inode is still held so a reused inode number cann
 interrupt arrives after the `mkdir` call returned and before the identity was recorded, the identity is
 unknown: restore then removes the directory only if it exists, is a real directory and is empty, which is
 what "Interrupt right after a directory creation" requires. That window (one statement wide) is a stated
-limit. It walks the journal in reverse with D6's traversal and helper and
+limit.
+
+**Two more stated limits.** (1) The journal is emptied by `execute_unit`'s first statement, so an exception
+raised before that statement (none exists in the real executor; a wrapper that raises first is one) leaves
+the previous unit's journal in place, and the next `restore()` would undo that earlier verified unit. (2)
+`UnitOutcome.changed_files` is attributed after the transfer and before restore, so a unit that failed
+verification and was restored still lists the files it had changed; that is the attribution of what the
+attempt touched, as on the default path, and the reason names what was restored. It walks the journal in reverse with D6's traversal and helper and
 covers only paths the transfer wrote; a verification command's other files stay, as on main.
 
 A crash (SIGKILL, SIGTERM's default action, an uncaught crash) runs no handler and the journal is lost;
@@ -234,8 +241,8 @@ exists, so it hands the id to an executor that has `begin_run` once, before the 
 executor signs each OpenCode attempt under that run id and the unit's `unit_id` as node id (#1339), the
 same ids the attempt ledger and the receipt hold. For the isolated executor the model-identity check stays; `config.base_url`
 equality is skipped because its transport is serve, whose pinned admission is the authority [U];
-sampling fields are `None` (`_executor_lineage` omits the keys if the attempt record rejects null, task
-4.2); `response_headers` is `{}`, so **no served identity is attested**.
+sampling fields are `None` (`_executor_lineage` leaves an unsent setting out of
+`effective_parameters`, so the attempt record holds it as unknown, task 4.2); `response_headers` is `{}`, so **no served identity is attested**.
 
 Retries are refused, not omitted: an `isolated` executor with `retry_routes` or a
 `retry_executor_factory` makes `run_autodev` raise `AutodevError` before the planner call, because the

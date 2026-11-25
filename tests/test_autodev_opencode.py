@@ -1039,8 +1039,7 @@ class TestRestore:
         assert snapshot(repo) == before
         assert (repo / "b.py").stat().st_mode & stat.S_IXUSR
 
-    @pytest.mark.parametrize("which", ["rename", "unlink", "mkdir"])
-    def test_interrupt_right_after_a_mutation(
+    def interrupt_right_after(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, which: str
     ) -> None:
         repo = make_repo(tmp_path)
@@ -1060,8 +1059,23 @@ class TestRestore:
             run_transfer(repo, items, None, journal)
         monkeypatch.setattr(os, which, real)
         result = oc.restore_transfer(journal, repo)
-        assert snapshot(repo) == before
+        assert snapshot(repo) == before  # bytes, executable bit and the directory set
         assert result.not_restored == []
+
+    def test_interrupt_right_after_a_rename(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self.interrupt_right_after(tmp_path, monkeypatch, "rename")
+
+    def test_interrupt_right_after_a_deletion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self.interrupt_right_after(tmp_path, monkeypatch, "unlink")
+
+    def test_interrupt_right_after_a_directory_creation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self.interrupt_right_after(tmp_path, monkeypatch, "mkdir")
 
     @pytest.mark.parametrize("which", ["rename", "unlink", "mkdir"])
     def test_interrupt_before_the_mutation(
@@ -1434,10 +1448,14 @@ class TestPreflight:
         reason = refused(repo, tmp_path, ("a.py",), "a.py")
         assert "'h'" in reason
 
-    def test_skip_worktree_owned_file_refused(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("state", ["edited", "absent"])
+    def test_skip_worktree_owned_file_refused(self, tmp_path: Path, state: str) -> None:
         repo = make_repo(tmp_path)
         git(repo, "update-index", "--skip-worktree", "a.py")
-        write(repo, "a.py", "x = 99\n")
+        if state == "edited":
+            write(repo, "a.py", "x = 99\n")
+        else:
+            (repo / "a.py").unlink()
         assert git(repo, "status", "--porcelain") == ""
         reason = refused(repo, tmp_path, ("a.py",), "a.py")
         assert "'S'" in reason
@@ -1496,6 +1514,9 @@ class TestPreflight:
         write(repo, "b.py", "dirty = 1\n")
         write(repo, "untracked.py", "u = 1\n")
         assert preflight_executor(repo, tmp_path).preflight(unit("a.py")) is None
+        tree = seed(repo, tmp_path, ("a.py",))  # ... and the dirty unowned files go into the seed
+        assert (tree.path / "b.py").read_text() == "dirty = 1\n"
+        assert (tree.path / "untracked.py").read_text() == "u = 1\n"
 
     @pytest.mark.parametrize("read", ["status", "ls-files", "check-attr", "check-ignore"])
     def test_git_read_fails_closed(self, tmp_path: Path, read: str) -> None:

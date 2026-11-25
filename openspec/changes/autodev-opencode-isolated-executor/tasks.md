@@ -26,6 +26,7 @@ Conventions for every task:
   names. Task 7.1 runs the complete files.
 - Only tasks 1.1, 3.2 and 5.1 import OC1 code. Tasks 2 to 4 otherwise depend on the stub contract only;
   task 3.2 pins that stub's parameters to the real `OpenCodeExecutor.run`.
+- Groups 3 to 5 were built code-first: the new tests were written after the code under test, and their red evidence is the same tests run against the tree without that code (counts in each Evidence line) plus each guard's test failing with the guard removed.
 - Tests of the readiness check and the CLI pin `VERDICT_OPENCODE_BIN`, `VERDICT_SERVE_URL` and the
   serve-token and key providers to fakes: this host has opencode installed and `verdict serve` running,
   and a test that reaches either would pass for the wrong reason.
@@ -78,7 +79,7 @@ Conventions for every task:
       repository is byte-identical after seeding, and a `-z` record for a path containing a
       space parses as one path.
       Evidence: `TestSeed` green; each guard (clone sharing, remote, rename source, owned bytes from the user's tree, deleted files, nested repository, submodule, no HEAD, `.git` component, seed limit) was removed in turn and its named test failed.
-- [x] 2.2 Manifest and delta (D4). `attempt_delta(tree, m0, repo, unit)` builds M1 with a
+- [x] 2.2 Manifest and delta (D4). `attempt_delta(tree, repo, unit, hooks=None)` (the tree carries M0) builds M1 with a
       descriptor-relative walk (root opened `O_DIRECTORY`; `scandir` on each directory
       descriptor; children opened `O_DIRECTORY | O_NOFOLLOW` relative to their parent; files
       `O_NOFOLLOW | O_NONBLOCK` then `fstat`), applies the byproduct rule (new, unowned, ignored paths are dropped) through
@@ -131,8 +132,7 @@ Conventions for every task:
       and after), `test_temporary_file_removal_fails_too`, and the crash tests below.
       **Crash tests** (class `TestCrash`). `test_kill_after_the_temporary_write`,
       `test_kill_after_the_first_of_two_renames` and `test_kill_after_the_last_rename` run the
-      transfer in a child process (`subprocess` with `sys.executable`; a helper beside the test
-      file) over a repository whose owned files are tracked and unmodified. A `hooks` entry
+      transfer in a child process (`subprocess` with `sys.executable -I -c`; the child program is a string in the test file) over a repository whose owned files are tracked and unmodified. A `hooks` entry
       prints a ready line and blocks at the named phase; the test reads it, sends `SIGKILL`,
       then asserts: each owned path equals its prior or its new bytes (never torn), at most one
       `.verdict-transfer-*` file exists, `git status --porcelain` lists nothing but owned paths
