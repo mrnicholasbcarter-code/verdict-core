@@ -112,8 +112,8 @@ receipts show it: serve forwards a provider's own 401 or 403 unchanged, so the w
 nothing, and the attempt is blocked only when the executor, after the worker is gone, reads serve's
 receipt database successfully and finds no request under the attempt's assignment, in a database
 shown to be the serve's it called. The database is found from the orchestrator's own configuration,
-not from that serve, so an empty read proves nothing until an earlier attempt of the run has been
-served in the same database file (a request under its own assignment digest was found there; a
+not from that serve, so an empty read proves nothing until an earlier attempt of the same executor
+(one per run) has been served in the same database file (a request under its own assignment digest was found there; a
 file replaced or a link retargeted at the same path is another database). A request recorded under
 the assignment, receipts that cannot be read, or a database not yet shown to be serve's leave the
 failure the provider's, with the cooldown that implies (the price is that a real refusal is read as

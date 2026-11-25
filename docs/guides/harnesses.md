@@ -396,7 +396,8 @@ not a provider denial.  A provider's own 401 or 403 can carry the same words, so
 receipts hold a request under the assignment, or cannot be read, the failure stays the provider's.
 So does an empty read of a receipt database nothing has tied to the serve at `--serve-url`: the
 database is found from this host's configuration, so with a spare or remote serve it can be
-another serve's.  It counts only after an earlier attempt of the same run was served in it (a
+another serve's.  It counts only after an earlier attempt of the same executor (one per run; a
+node named in `--executor-map` has its own) was served in it (a
 request under that attempt's own assignment was found in that same file, not merely at that path),
 so a signing key serve does not share, refused from the run's first attempt, is not recognised as
 a configuration block.  Run

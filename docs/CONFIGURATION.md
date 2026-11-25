@@ -695,7 +695,8 @@ assignment is refused with 403.
   `--serve-url` writes. The orchestrator finds that database from its own configuration
   (`VERDICT_RECEIPTS_DB`, `serve.env`), never from the serve it called, so with a spare or remote
   serve it can be another serve's or one nothing writes. An empty read therefore counts only after
-  an earlier attempt of the same `verdict orchestrate` run was served in that same database (a
+  an earlier attempt of the same executor (one per `verdict orchestrate` run; a node named in
+  `--executor-map` has its own) was served in that same database (a
   request carrying that attempt's own assignment digest was found there, which only the serve at
   `--serve-url` received) and then only for that file (its device and inode, not just its path:
   a file replaced, or a link retargeted, at the same path is another database) and that address.
