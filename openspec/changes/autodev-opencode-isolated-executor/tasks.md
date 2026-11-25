@@ -353,7 +353,7 @@ Conventions for every task:
       Evidence: `TestFlag` green, and `TestEndToEnd` drives the real `OpenCodeExecutor` with a fake worker under the autodev run id (the signed run id and node id equal the receipt's `attempt_run_id` and the unit id, and the worker's directory holds nothing the executor wrote). Gating readiness on a missing decision or running it under `--dry-run`, passing the retry routes, not building the executor, a hard-coded failure label, a dropped dispatch argument or an unsaid help line fails its named test; the existing autodev tests pass unmodified.
 ## 6. Docs
 
-- [ ] 6.1 Document the flag in `docs/guides/harnesses.md` (a subsection of "OpenCode as a worker
+- [x] 6.1 Document the flag in `docs/guides/harnesses.md` (a subsection of "OpenCode as a worker
       harness", where `--executor opencode` is documented; `docs/CLI_REFERENCE.md` lists no autodev
       flags) and add the autodev use of `VERDICT_SERVE_URL` to `docs/CONFIGURATION.md`: opt-in and
       experimental, the one-message fail-closed behaviour (binary, serve, credentials), what is isolated
@@ -366,6 +366,7 @@ Conventions for every task:
       Files: `docs/guides/harnesses.md`, `docs/CONFIGURATION.md`. Verify:
       `uv run --frozen python scripts/check_doc_links.py`.
 
+      Evidence: `scripts/check_doc_links.py` reports `doc links ok`; the subsection and the `VERDICT_SERVE_URL` row describe only what the code and tests above do (the 600 s attempt, the temporary directory, the refusals and their wording, the limits and the retry refusal were each read from the code).
 ## 7. Gates and review
 
 - [ ] 7.1 Run ruff check and format, mypy strict, the lint gates and the reachability ratchet,

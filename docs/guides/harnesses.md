@@ -460,6 +460,73 @@ model choosing its route, it is not a boundary against a hostile worker.  A work
 offer and cannot pin the assigned route, and pinned execution-path support for workers is not
 built.
 
+### OpenCode for `verdict autodev` (experimental, opt-in)
+
+`verdict autodev --worker-harness opencode` runs each model-tier unit on OpenCode instead of the
+default one-shot gateway patch (`PatchExecutor`), so a unit gets the edit, test and fix loop on
+the route autodev selected.  Without the flag nothing changes: no check runs, no clone is made
+and no OpenCode process starts.  With `--dry-run` the flag has no effect.
+
+```bash
+verdict autodev --allow-live --worker-harness opencode --objective "fix the ruff errors"
+```
+
+**Checked first.**  With the flag and `--allow-live`, before any route probe or planner call
+(whether or not a decision was supplied), autodev checks that the `opencode` binary runs
+`--version`, that `verdict serve` (`VERDICT_SERVE_URL`, default `http://127.0.0.1:8000`) answers
+`GET /health` with 200 and `"engine": "verdict"`, and that the serve token resolves and the worker
+signing key (`~/.config/verdict/worker-assignment.key`) is readable.  A failure prints one message
+naming the check and the remedy and exits 1 (one JSON object with `--json`); nothing falls back to
+the default executor.  An OpenCode version other than the pinned v2.3.2 is named in the output and
+does not stop the run.
+
+**Each attempt runs in a clone, not in your repository.**  Autodev makes an unshared `git clone
+--no-local` of the repository in a new private directory under the system temporary directory
+(`verdict-autodev-oc-*`, mode 0700), copies your modified, deleted, staged, renamed and untracked
+files over it, and runs OpenCode there with a signed assignment bound to the autodev run id (the
+one the attempt ledger uses) and the unit id.  An attempt lasts at most 600 seconds.  When it ends
+Verdict compares the clone with what it seeded, from file contents, without running git in the
+clone (a hook or `core.fsmonitor` the worker plants never runs).  Only changes to the files the
+unit owns, as regular files or deletions, are copied back; any other change (an unowned file, a
+symlink, a commit or staged edit to an unowned file) rejects the attempt and leaves your
+repository byte-identical.  The clone is removed before the copy-back and on every exit path.
+
+**An owned file git cannot recover is refused.**  The copy-back keeps its undo information in
+memory, so before a worker starts git must hold your bytes.  A unit is refused, with the file and
+the remedy ("commit or stash it, or run without --worker-harness opencode"), when an owned file
+has uncommitted changes (modified, staged, deleted, renamed), is untracked or ignored, is hidden
+from `git status` (`assume-unchanged`, `skip-worktree`, a `filter` or `ident` attribute), or does
+not exist yet and an ignore rule matches it.  A refused unit starts no worker and is not counted
+as a model attempt.  If the mechanical tier (`ruff --fix`) had already edited the file when it
+declined the unit, that edit stays, exactly as on the default path.  Unowned dirty files are fine:
+they are seeded into the clone.
+
+**Restore.**  Every exit after the copy-back other than a verified success (a failing
+verification command, an error, Ctrl-C) puts the owned files back.  Restore never overwrites a
+change made since: a file the verification command or you edited is left as it is and named in the
+unit's reason.  A verified unit stays, and a later unit's failure never undoes it.
+
+**A crash.**  If the process is killed while it writes, each owned file holds either its old or its
+new bytes (the copy is a rename), at most one `.verdict-transfer-*` file is left in a directory the
+unit owns, and `git checkout -- <owned files>` plus removing the files and empty directories the
+unit created puts the repository back (line endings as git writes them).  Nothing runs
+automatically after a crash, an interrupted attempt can leave its clone in the temporary
+directory, and power loss is not covered.  What the verification command writes is outside this
+guarantee.
+
+**What this does not isolate.**  A worker's shell can still write an absolute path
+([ADR-053](../adr/ADR-053-opencode-worker-adapter.md) decision 4); the mechanical tier and the
+unit's verification command still run in your repository, as on the default path; the clone has no
+ignored files (`.venv`, caches), so the worker's own test loop may fail or be slow; line-ending and
+encoding conversions are not refused.  Limits: 50,000 files and 512 MiB in the seed, 1 MiB per
+transferred file; POSIX only.
+
+**Not yet supported.**  A failed unit is not retried on any executor (autodev refuses retry
+routes with this flag), the attempt ledger still labels these units `verdict-autodev-executor`,
+and the receipt records the requested route with no served identity.  Retries, lineage and the
+live check are
+[#1314](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1314).
+
 ## Prime Agent
 
 Architect lock: `verdict harness prime discover|enable|disable|status|certify`.
