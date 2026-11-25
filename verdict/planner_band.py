@@ -505,8 +505,11 @@ def select_planner_routes(
     (D39).  Raises :class:`PlannerBandError` with ``no_frontier_or_fallback_planner``
     when no admissible route is in either band.
 
-    ``exclusion_reasons`` maps route ids (non-admitted inventory routes) to the
-    reason they were excluded; used to populate ``unavailable_families``.
+    ``exclusion_reasons`` is optional.  It maps route ids (non-admitted inventory
+    routes) to the reason they were excluded.  Every band family that is not
+    selected is listed in ``unavailable_families`` whether or not the caller
+    passed it: the caller's reason is used when there is one, otherwise the
+    family is recorded as ``no_admitted_route``.
 
     Returns a list of ``(route_id, PlannerBandResult)`` in priority order.
     """
@@ -563,11 +566,13 @@ def select_planner_routes(
         # (len(selected) >= 1 here because the empty check above already raised.)
         all_band_keys = band.frontier_model_keys | band.fallback_model_keys
 
-        # Enumerate all band families from three sources so no family is silently
+        # Enumerate all band families from four sources so no family is silently
         # omitted from unavailable_families:
         # 1. Routes that competed in the main loop (all_candidates_in_order).
         # 2. Admitted routes in the band that _filter_to_band excluded (capacity, e.g. METERED).
         # 3. Non-admitted routes supplied by the caller in exclusion_reasons.
+        # 4. Band models that none of the above names (not admitted, and the caller gave
+        #    no reason): the band itself says which families exist.
         all_band_families: set[str] = {route_family(r) for r, _, _, _ in all_candidates_in_order}
         candidate_route_ids = {r for r, _, _, _ in all_candidates_in_order}
 
@@ -586,6 +591,16 @@ def select_planner_routes(
             for excl_route in exclusion_reasons:
                 if _strip_suffix(excl_route) in all_band_keys:
                     all_band_families.add(route_family(excl_route))
+
+        # Source 4: band models with no route in the admitted set or the caller's map.
+        # A model that a route above already names is skipped, so a suffixed route
+        # (``x/model:free``) is not listed twice, once under its full route id and once
+        # under its stripped band key.
+        named_keys = {_strip_suffix(r) for r in admitted_route_ids}
+        if exclusion_reasons:
+            named_keys.update(_strip_suffix(r) for r in exclusion_reasons)
+        for model_key in all_band_keys - named_keys:
+            all_band_families.add(route_family(model_key))
 
         unavailable_family_set = all_band_families - used_families
 

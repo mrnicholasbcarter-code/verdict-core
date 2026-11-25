@@ -690,6 +690,124 @@ class TestSelectPlannerRoutes:
         assert result.unavailable_families == (("gpt", "metered_excluded"),)
         assert result.to_dict()["unavailable_families"] == {"gpt": "metered_excluded"}
 
+    @pytest.mark.parametrize("exclusion_reasons", [None, {}], ids=["no_map", "empty_map"])
+    def test_single_family_without_reasons_lists_other_band_family(
+        self, exclusion_reasons: dict[str, str] | None
+    ) -> None:
+        """#1317: a band family with no admitted route and no caller reason is still listed.
+
+        The two-family band has claude and gpt in the frontier band. Only claude is
+        admitted, and the caller names no reason for gpt. The receipt must say gpt was
+        unavailable (``no_admitted_route``), not leave ``unavailable_families`` empty.
+        """
+        band, snap = self._two_family_band()
+        admitted = ["cc/claude-3-opus", "cc/claude-3-sonnet"]
+        caps = _caps_map(*admitted)
+        selected = select_planner_routes(
+            admitted, caps, band, snap, None, top_n=2, now=NOW, exclusion_reasons=exclusion_reasons
+        )
+        assert [r for r, _ in selected] == ["cc/claude-3-opus"]
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        assert result.unavailable_families == (("gpt", "no_admitted_route"),)
+        d = result.to_dict()
+        assert d["single_family_planner"] is True
+        assert d["unavailable_families"] == {"gpt": "no_admitted_route"}
+
+    def test_single_family_non_band_reason_is_not_the_band_family_reason(self) -> None:
+        """A caller reason for a route outside the band does not become a band family's reason."""
+        band, snap = self._two_family_band()
+        admitted = ["cc/claude-3-opus"]
+        caps = _caps_map(*admitted)
+        # oa/gpt-3.5 is not in the frontier or fallback band; oa/gpt-4o (the band route) has no reason.
+        selected = select_planner_routes(
+            admitted,
+            caps,
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"oa/gpt-3.5": "quota_low"},
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (("gpt", "no_admitted_route"),)
+
+    def test_single_family_mixes_caller_reasons_and_no_admitted_route(self) -> None:
+        """Caller reasons win; families without one get ``no_admitted_route``; the used family
+        and families outside the band are never listed."""
+        records = [
+            _record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0)),
+            _record("p/c1", ("cc/claude-3-sonnet",), aa_intelligence=_score(80.0)),
+            _record("p/g0", ("oa/gpt-4o",), aa_intelligence=_score(90.0)),
+            _record("p/m0", ("gg/gemini-2-pro",), aa_intelligence=_score(85.0)),
+            # llama is in the inventory but unrated, so it is in neither band.
+            _record("p/l0", ("ml/llama-3",)),
+        ]
+        snap = _snapshot(*records)
+        inventory = [
+            "cc/claude-3-opus",
+            "cc/claude-3-sonnet",
+            "oa/gpt-4o",
+            "gg/gemini-2-pro",
+            "ml/llama-3",
+        ]
+        everything_in_band = PlannerBandConfig(frontier_top=1.0, fallback_top=1.0)
+        band = compute_planner_bands(inventory, snap, None, config=everything_in_band, now=NOW)
+        assert "ml/llama-3" not in band.frontier_model_keys | band.fallback_model_keys
+
+        admitted = ["cc/claude-3-opus"]
+        caps = _caps_map(*admitted)
+        selected = select_planner_routes(
+            admitted,
+            caps,
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={
+                "oa/gpt-4o": "quota_low",  # caller reason for a band family: it wins
+                "cc/claude-3-sonnet": "unhealthy",  # same family as the used route: never listed
+                "ml/llama-3": "unhealthy",  # not a band family: never listed
+            },
+        )
+        assert [r for r, _ in selected] == ["cc/claude-3-opus"]
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        # gemini has no admitted route and no caller reason; gpt keeps the caller's reason.
+        assert result.unavailable_families == (
+            ("gemini", "no_admitted_route"),
+            ("gpt", "quota_low"),
+        )
+
+    def test_single_family_suffixed_route_reason_is_not_listed_twice(self) -> None:
+        """A band model whose route carries a ``:suffix`` and has a caller reason is listed once,
+        under the family of the full route id, with the caller's reason."""
+        records = [
+            _record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0)),
+            _record("p/d0", ("fr/dead",), aa_intelligence=_score(90.0)),
+        ]
+        snap = _snapshot(*records)
+        inventory = ["cc/claude-3-opus", "fr/dead:free"]
+        everything_in_band = PlannerBandConfig(frontier_top=1.0, fallback_top=1.0)
+        band = compute_planner_bands(inventory, snap, None, config=everything_in_band, now=NOW)
+        assert "fr/dead" in band.frontier_model_keys
+
+        admitted = ["cc/claude-3-opus"]
+        selected = select_planner_routes(
+            admitted,
+            _caps_map(*admitted),
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"fr/dead:free": "unhealthy"},
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (("dead:free", "unhealthy"),)
+
     def test_band_result_fields_populated(self) -> None:
         records = [_record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0))]
         snap = _snapshot(*records)
