@@ -24,7 +24,9 @@ import pytest
 import yaml
 
 from scripts.proof import live_acceptance as live
+from scripts.proof.contract import load_contract
 from scripts.proof.live_acceptance import FetchError, diff_node_ids, main
+from scripts.proof.runner import CommandResult, ProofRunner
 
 UTC = timezone.utc
 T0 = datetime(2026, 11, 25, 9, 0, 0, tzinfo=UTC)
@@ -1492,6 +1494,127 @@ def test_an_unsharded_report_with_wrong_typed_gates_is_a_failure_to_check(
 ) -> None:
     assert main(unsharded(_write(tmp_path, _unsharded_report(gates="x")), contract_path)) == 2
     assert main(unsharded(_write(tmp_path, _unsharded_report(gates=["x"])), contract_path)) == 2
+
+
+# The LLM-boundary condition (issue #1324). The report does not record it, so the
+# checker is told it with --llm-boundary and judges the report's gate statuses under it.
+# Each report below is written by the real runner, not typed by hand.
+
+
+def _all_pass(argv: list[str], *, env: dict[str, str], cwd: Path) -> CommandResult:
+    return CommandResult(0, "", "")
+
+
+def _promptfoo_missing(argv: list[str], *, env: dict[str, str], cwd: Path) -> CommandResult:
+    if argv == ["echo", "p"]:
+        raise FileNotFoundError(argv[0])
+    return CommandResult(0, "", "")
+
+
+def _runner_report(
+    contract_file: Path,
+    tmp_path: Path,
+    *,
+    llm_boundary: bool,
+    executor: Callable[..., CommandResult] = _all_pass,
+) -> dict[str, Any]:
+    """The report ``run.py --mode full --no-cache [--llm-boundary]`` writes for this contract."""
+    runner = ProofRunner(load_contract(contract_file), root=tmp_path, executor=executor)
+    return runner.run(mode="full", no_cache=True, llm_boundary=llm_boundary).to_dict()
+
+
+@pytest.fixture
+def covered_contract_path(tmp_path: Path) -> Path:
+    """The fixture contract with its split gate behind the llm_boundary condition.
+
+    ``unit_full`` covers the ``unit_timing`` leader only when the boundary is enabled, so
+    which of the two runs in an unsharded run depends on the condition.
+    """
+    payload = _contract_payload()
+    split = next(g for g in payload["gates"] if g["id"] == "unit_full")
+    split["when"] = "llm_boundary"
+    path = tmp_path / "covered-contract.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    return path
+
+
+def _statuses(report: dict[str, Any]) -> dict[str, str]:
+    return {g["id"]: g["status"] for g in report["gates"]}
+
+
+def unsharded_under(path: Path, contract_file: Path, *, llm_boundary: bool | None) -> list[str]:
+    """``None`` leaves the option out: the checker's default."""
+    flag = ["--llm-boundary"] if llm_boundary else []
+    return [*unsharded(path, contract_file), *flag]
+
+
+def test_the_covered_fixture_runs_a_different_gate_under_each_condition(
+    tmp_path: Path, covered_contract_path: Path
+) -> None:
+    """The fixture is a real case: the condition decides which gate runs the timing tests."""
+    off = _statuses(_runner_report(covered_contract_path, tmp_path, llm_boundary=False))
+    on = _statuses(_runner_report(covered_contract_path, tmp_path, llm_boundary=True))
+    assert (off["unit_full"], off["unit_timing"], off["promptfoo"]) == ("skip", "pass", "skip")
+    assert (on["unit_full"], on["unit_timing"], on["promptfoo"]) == ("pass", "skip", "pass")
+
+
+@pytest.mark.parametrize("llm_boundary", [False, True])
+def test_a_healthy_report_is_accepted_under_the_condition_it_was_made_with(
+    tmp_path: Path,
+    covered_contract_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    llm_boundary: bool,
+) -> None:
+    report = _runner_report(covered_contract_path, tmp_path, llm_boundary=llm_boundary)
+    path = _write(tmp_path, report)
+    code = main(unsharded_under(path, covered_contract_path, llm_boundary=llm_boundary))
+    assert code == 0, capsys.readouterr().out
+
+
+@pytest.mark.parametrize("made_with", [False, True])
+def test_a_report_that_does_not_match_the_stated_condition_is_rejected(
+    tmp_path: Path, covered_contract_path: Path, capsys: pytest.CaptureFixture[str], made_with: bool
+) -> None:
+    """Told the other condition, the checker fails the report: the option accepts nothing more."""
+    report = _runner_report(covered_contract_path, tmp_path, llm_boundary=made_with)
+    path = _write(tmp_path, report)
+    code = main(unsharded_under(path, covered_contract_path, llm_boundary=not made_with))
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "FAIL" in out
+
+
+def test_the_condition_defaults_to_off(tmp_path: Path, covered_contract_path: Path) -> None:
+    """Without the option the checker judges a report made without the boundary, as before."""
+    off = _write(tmp_path, _runner_report(covered_contract_path, tmp_path, llm_boundary=False))
+    assert main(unsharded_under(off, covered_contract_path, llm_boundary=None)) == 0
+    on = _write(tmp_path, _runner_report(covered_contract_path, tmp_path, llm_boundary=True))
+    assert main(unsharded_under(on, covered_contract_path, llm_boundary=None)) == 1
+
+
+@pytest.mark.parametrize("made_with", [False, True])
+def test_an_optional_conditional_gate_is_judged_by_the_stated_condition(
+    tmp_path: Path, contract_path: Path, capsys: pytest.CaptureFixture[str], made_with: bool
+) -> None:
+    """The checked-in contract's only conditional gate is optional, so its status is not
+    implied by ``required``: a skipped promptfoo must not pass for a run made with the boundary."""
+    report = _runner_report(contract_path, tmp_path, llm_boundary=made_with)
+    path = _write(tmp_path, report)
+    assert main(unsharded_under(path, contract_path, llm_boundary=made_with)) == 0
+    code = main(unsharded_under(path, contract_path, llm_boundary=not made_with))
+    assert code == 1, capsys.readouterr().out
+
+
+def test_an_optional_gate_whose_binary_is_missing_is_still_accepted_under_the_boundary(
+    tmp_path: Path, contract_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The runner records a skip with exit code 127 for a missing optional binary; that is a
+    healthy run, unlike the exit-0 skip the plan records for a gate that was not enabled."""
+    report = _runner_report(contract_path, tmp_path, llm_boundary=True, executor=_promptfoo_missing)
+    gate = _gate(report, "promptfoo")
+    assert (gate["status"], gate["exit_code"]) == ("skip", 127)
+    code = main(unsharded_under(_write(tmp_path, report), contract_path, llm_boundary=True))
+    assert code == 0, capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
