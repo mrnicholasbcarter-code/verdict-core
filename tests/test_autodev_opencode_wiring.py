@@ -337,6 +337,57 @@ class TestRestoreWiring:
         assert executor.restore_calls == 1
         assert f"{type(interrupt).__name__}: {interrupt}" in capsys.readouterr().err
 
+    @pytest.mark.parametrize(
+        ("original", "writer_error"),
+        [
+            (PermissionError("the original exception"), OSError("stderr write failed")),
+            (PermissionError("the original exception"), BrokenPipeError("stderr is a closed pipe")),
+            (PermissionError("the original exception"), ValueError("I/O operation on closed file")),
+            (KeyboardInterrupt(), BrokenPipeError("stderr is a closed pipe")),
+        ],
+        ids=["oserror", "broken-pipe", "closed-file", "interrupt-and-broken-pipe"],
+    )
+    def test_the_restore_diagnostic_cannot_replace_the_original(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        original: BaseException,
+        writer_error: BaseException,
+    ) -> None:
+        """Review finding 4 (Codex on 4ee5c0f3): the diagnostic runs while the original exception
+        propagates, so a standard error that is closed or whose write fails cannot replace it."""
+        repo = make_repo(tmp_path)
+
+        class BrokenRestore(SpyExecutor):
+            def restore(self) -> str:
+                self.restore_calls += 1
+                raise RuntimeError("restore itself broke")
+
+        class FailingStderr:
+            writes = 0
+
+            def write(self, _text: str) -> int:
+                FailingStderr.writes += 1
+                raise writer_error
+
+            def flush(self) -> None:
+                raise writer_error
+
+        def explode(_call: int) -> Any:
+            raise original
+
+        executor = isolated(repo, tmp_path, StubRunner(edit_a), cls=BrokenRestore)
+        raised: BaseException | None = None
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, "stderr", FailingStderr())
+            try:  # not pytest.raises: an escaped error must fail this test, not be matched by it
+                go(repo, executor, plan(("u1", "a.py")), verify=explode)
+            except BaseException as exc:
+                raised = exc
+        assert raised is original
+        assert executor.restore_calls == 1
+        assert FailingStderr.writes >= 1  # the diagnostic was attempted
+
     def test_restore_capability_alone_grants_nothing(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path)
 

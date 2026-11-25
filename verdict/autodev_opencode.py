@@ -656,6 +656,13 @@ def _copy_into_tree(tree_fd: int, rel: str, kind: str, payload: Any) -> None:
             os.close(fd)
 
 
+def _close_quietly(fd: int) -> None:
+    """Close ``fd`` in cleanup that runs while another exception propagates (or on every exit): a close
+    that fails is not worth replacing that exception, and the caller's other closes still run."""
+    with contextlib.suppress(OSError):
+        os.close(fd)
+
+
 def remove_tree(path: Path) -> None:
     """Remove a directory Verdict made before any worker could reach it (a failed seed).  Never raises
     an ``Exception``; see :class:`AttemptDirectory` for the one a worker has run in."""
@@ -667,7 +674,7 @@ def remove_tree(path: Path) -> None:
         with contextlib.suppress(Exception):  # best effort; a very deep tree raises RecursionError
             _remove_entry(parent_fd, path.name, strict=False)
     finally:
-        os.close(parent_fd)
+        _close_quietly(parent_fd)
 
 
 class AttemptDirectory:
@@ -698,7 +705,7 @@ class AttemptDirectory:
         except BaseException:
             for fd in (self._fd, self._root_fd):
                 if fd >= 0:
-                    os.close(fd)
+                    _close_quietly(fd)
             self._fd = self._root_fd = -1
             with contextlib.suppress(OSError):
                 os.rmdir(self.path)
@@ -724,8 +731,8 @@ class AttemptDirectory:
                     with contextlib.suppress(OSError):
                         os.rmdir(self.path.name, dir_fd=root_fd)
         finally:
-            os.close(fd)
-            os.close(root_fd)
+            _close_quietly(fd)
+            _close_quietly(root_fd)
 
 
 def seed_attempt_tree(repo: Path, parent_dir: Path, owned_files: Iterable[str]) -> AttemptTree:
@@ -977,9 +984,13 @@ class JournalEntry:
     prior_data: bytes = b""
     intended: Entry | None = None
     dir_identity: tuple[int, int] | None = None  # (st_dev, st_ino) of a directory we created
-    #: (st_dev, st_ino) of every directory above a written or deleted path, root first: the
-    #: directories the transfer wrote through, so restore can tell them from a replacement.
+    #: (st_dev, st_ino) of every directory between the repository root and a written or deleted path
+    #: (the root itself is ``root``, not here), top first: the directories the transfer wrote through,
+    #: so restore can tell them from a replacement.
     parents: tuple[tuple[int, int], ...] | None = None
+    #: (st_dev, st_ino) of the repository root the transfer wrote through, set when the entry is made,
+    #: whatever its op: restore reopens the repository by pathname and acts only if that is this directory.
+    root: tuple[int, int] | None = None
 
 
 @dataclass
@@ -1181,6 +1192,7 @@ def _last_look(
 
 def _write_item(
     root_fd: int,
+    root: tuple[int, int],
     item: DeltaItem,
     m0: Mapping[str, Entry],
     journal: list[JournalEntry],
@@ -1197,7 +1209,7 @@ def _write_item(
             except FileNotFoundError:
                 if item.kind == "delete":
                     raise _ConflictError(f"{item.path} was removed after the seed") from None
-                entry = JournalEntry("mkdir", "/".join(parts[: index + 1]))
+                entry = JournalEntry("mkdir", "/".join(parts[: index + 1]), root=root)
                 journal.append(entry)
                 _hook(hooks, "before_mkdir", entry.path)
                 try:
@@ -1256,6 +1268,7 @@ def _write_item(
                 prior_data,
                 intended,
                 parents=_identities([fd for fd, _name, _parent in held]),
+                root=root,
             )
             journal.append(entry)
 
@@ -1288,6 +1301,7 @@ def _write_item(
                     prior_data,
                     None,
                     parents=_identities([fd for fd, _name, _parent in held]),
+                    root=root,
                 )
             )
             os.unlink(parts[-1], dir_fd=cur)
@@ -1325,6 +1339,7 @@ def transfer(
     except OSError as exc:
         raise AttemptFailedError(f"the repository cannot be opened ({type(exc).__name__})") from exc
     try:
+        root = _identities([root_fd])[0]  # the directory every write below goes through, once
         try:
             for item in delta.items:
                 _check_read_only(root_fd, item, m0)
@@ -1333,7 +1348,7 @@ def transfer(
         _hook(hooks, "after_checks")
         try:
             for item in delta.items:
-                _write_item(root_fd, item, m0, journal, hooks)
+                _write_item(root_fd, root, item, m0, journal, hooks)
         except Exception as exc:
             if not journal:
                 if isinstance(exc, _ConflictError):
@@ -1466,8 +1481,25 @@ def _restore_file(
             os.close(fd)
 
 
+def _root_refusal(root_fd: int, journal: Sequence[JournalEntry]) -> str | None:
+    """Why restore must not touch ``root_fd``'s tree for ``journal``, or ``None`` when it is the
+    directory every entry was written through."""
+    here = _identities([root_fd])[0]
+    if any(entry.root is None for entry in journal):
+        return "the repository directory was not recorded"
+    if any(entry.root != here for entry in journal):
+        return "the repository was replaced: it is not the directory the transfer wrote through"
+    return None
+
+
 def _restore(root_fd: int, journal: list[JournalEntry], *, hooks: Hooks | None) -> RestoreResult:
     result = RestoreResult(touched=bool(journal))
+    refusal = _root_refusal(root_fd, journal)
+    if refusal is not None:
+        # Nothing is read or written: every path is named with the one reason, and the journal is spent.
+        result.not_restored.extend((entry.path, refusal) for entry in journal)
+        journal.clear()
+        return result
     while journal:
         # The entry leaves the journal only once it has been dealt with, so an interrupt in the
         # middle of one leaves it there for a second restore (which finds it done or does it).
@@ -1498,6 +1530,9 @@ def restore_transfer(
     already holding the prior state is left and not reported (the mutation was never made);
     anything else is left alone and named, and so is a path whose parent directories are no longer
     the ones the transfer wrote through (compared by device and inode before the file is read).
+    The repository is reopened by pathname, so its own device and inode are compared first with the
+    one every entry recorded: when it is not that directory (renamed away and replaced), nothing is
+    read or written and every journalled path is named with one reason.
     A created directory is removed only when empty and still the directory the transfer created.
     A read or write failure on one path is that path's ``not_restored`` entry and the loop goes
     on.  The journal is emptied, so calling again is a no-op; an interrupt (``KeyboardInterrupt``)

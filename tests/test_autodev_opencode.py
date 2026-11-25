@@ -13,12 +13,14 @@ import errno
 import hashlib
 import inspect
 import os
+import select
 import shutil
 import signal
 import stat
 import subprocess
 import sys
 import textwrap
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -1155,16 +1157,58 @@ CHILD = textwrap.dedent(
 )
 
 
-def kill_during(repo: Path, phase: str, count: int, items: list[tuple[str, str]]) -> None:
+#: How long a crash test waits for its child to say it has reached the phase it will be killed in.
+HANDSHAKE_SECONDS = 30.0
+
+#: Children for the handshake tests: neither says ``ready``, and each ends by itself after 20 seconds, so
+#: a test that fails to stop one cannot leave it behind for long on a shared host.
+MUTE_CHILD = "import time; time.sleep(20)"
+WRONG_LINE_CHILD = textwrap.dedent(
+    """
+    import time
+
+    print("not ready", flush=True)
+    time.sleep(20)
+    """
+)
+
+
+def read_line(proc: subprocess.Popen[bytes], timeout: float) -> str | None:
+    """The first line ``proc`` prints, or ``None`` when it prints none (or closes its output) within
+    ``timeout`` seconds.  Reads the raw descriptor to a deadline: a partial line cannot block it."""
+    assert proc.stdout is not None
+    fd = proc.stdout.fileno()
+    deadline = time.monotonic() + timeout
+    seen = b""
+    while b"\n" not in seen:
+        left = deadline - time.monotonic()
+        if left <= 0 or not select.select([fd], [], [], left)[0]:
+            return None
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            return None
+        seen += chunk
+    return seen.split(b"\n", 1)[0].decode().strip()
+
+
+def kill_during(
+    repo: Path,
+    phase: str,
+    count: int,
+    items: list[tuple[str, str]],
+    *,
+    child: str = CHILD,
+    handshake_timeout: float = HANDSHAKE_SECONDS,
+    spawned: list[subprocess.Popen[bytes]] | None = None,
+) -> None:
     import json
-    import signal
 
     proc = subprocess.Popen(
         [
             sys.executable,
             "-I",
             "-c",
-            CHILD,
+            child,
             str(repo),
             phase,
             str(count),
@@ -1173,15 +1217,24 @@ def kill_during(repo: Path, phase: str, count: int, items: list[tuple[str, str]]
         ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        text=True,
         env=os.environ,
     )
+    if spawned is not None:
+        spawned.append(proc)
     try:
-        assert proc.stdout is not None
-        assert proc.stdout.readline().strip() == "ready"
+        line = read_line(proc, handshake_timeout)
+        assert line == "ready", (
+            f"the child said {line!r}, not 'ready', within {handshake_timeout:g}s"
+        )
         proc.send_signal(signal.SIGKILL)
     finally:
+        with contextlib.suppress(OSError):
+            proc.kill()  # a child that never reached the kill is not left running
         proc.wait(timeout=30)
+        for pipe in (proc.stdin, proc.stdout):
+            if pipe is not None:
+                with contextlib.suppress(OSError):
+                    pipe.close()
 
 
 class TestCrash:
@@ -1221,6 +1274,38 @@ class TestCrash:
         (repo / "newdir").rmdir()
         assert snapshot(repo) == before
 
+    @pytest.mark.parametrize(
+        "child", [MUTE_CHILD, WRONG_LINE_CHILD], ids=["never-ready", "wrong-line"]
+    )
+    def test_a_child_that_does_not_say_ready_fails_the_test_within_the_bound(
+        self, tmp_path: Path, child: str
+    ) -> None:
+        """Review finding 3 (Codex on 4ee5c0f3): the handshake is bounded, and a child that is still
+        running when the test fails is killed, not waited for."""
+        repo = make_repo(tmp_path)
+        spawned: list[subprocess.Popen[bytes]] = []
+        started = time.monotonic()
+        try:
+            with pytest.raises(AssertionError, match="ready"):
+                kill_during(
+                    repo,
+                    "after_item",
+                    1,
+                    [("a.py", "worker\n")],
+                    child=child,
+                    handshake_timeout=2.0,
+                    spawned=spawned,
+                )
+            elapsed = time.monotonic() - started
+        finally:
+            for proc in spawned:  # this test's own guard: nothing outlives it whatever happens
+                with contextlib.suppress(OSError):
+                    proc.kill()
+                proc.wait(timeout=30)
+        assert elapsed < 10  # the bound, not the child's own 20 seconds
+        assert len(spawned) == 1 and spawned[0].poll() is not None
+        assert (repo / "a.py").read_text() == "import os\nx = 1\n"
+
 
 def transferred(
     repo: Path, items: list[oc.DeltaItem], hooks: Mapping[str, Callable[..., None]] | None = None
@@ -1235,6 +1320,14 @@ def interrupt_case(which: str) -> tuple[list[oc.DeltaItem], Callable[[tuple[Any,
     if which == "unlink":
         return [ditem("a.py")], lambda args: bool(args) and args[0] == "a.py"
     return [witem("newdir/new.py", "created\n")], lambda args: bool(args) and args[0] == "newdir"
+
+
+def listing(root: Path) -> dict[str, bytes | None]:
+    """Every path under ``root`` (a directory maps to ``None``) with its bytes: a directory that is not a repository."""
+    return {
+        str(path.relative_to(root)): path.read_bytes() if path.is_file() else None
+        for path in sorted(root.rglob("*"))
+    }
 
 
 class TestRestore:
@@ -1325,6 +1418,64 @@ class TestRestore:
         assert (repo / "d" / "inner.py").read_text() == "worker\n"
         assert [path for path, _ in result.not_restored] == ["d/inner.py"]
         assert "not recorded" in dict(result.not_restored)["d/inner.py"]
+
+    @pytest.mark.parametrize("case", ["write", "create", "delete"])
+    def test_repository_replaced_between_transfer_and_restore(
+        self, tmp_path: Path, case: str
+    ) -> None:
+        """Review finding 2 (Codex on 4ee5c0f3): the repository root is part of the identity chain.  A
+        directory that takes its name holds, at the top level, exactly what restore would act on (the
+        worker's bytes, the created file, or no file for a deletion); restore writes nothing there or in
+        the displaced repository, and names every journalled path with the one reason."""
+        repo = make_repo(tmp_path)
+        top = {
+            "write": witem("a.py", "worker\n"),
+            "create": witem("top.py", "created\n"),
+            "delete": ditem("b.py"),
+        }[case]
+        journal = transferred(repo, [top, witem("deep/er/new.py", "nested\n")])
+        journalled = sorted(entry.path for entry in journal)
+        assert journalled == sorted([top.path, "deep", "deep/er", "deep/er/new.py"])
+        displaced = tmp_path / "repo-moved"
+        repo.rename(displaced)  # kept alive, so a reused inode number cannot hide the swap
+        repo.mkdir()
+        if case == "write":
+            write(repo, "a.py", "worker\n")
+        elif case == "create":
+            write(repo, "top.py", "created\n")
+        replacement_before, displaced_before = listing(repo), listing(displaced)
+        result = oc.restore_transfer(journal, repo)
+        assert sorted(path for path, _ in result.not_restored) == journalled
+        reasons = {why for _, why in result.not_restored}
+        assert len(reasons) == 1
+        assert "repository" in next(iter(reasons)) and "replaced" in next(iter(reasons))
+        assert result.restored == [] and result.touched
+        assert journal == []
+        assert listing(repo) == replacement_before
+        assert listing(displaced) == displaced_before
+        assert not list(tmp_path.rglob(".verdict-transfer-*"))
+
+    def test_repository_renamed_away_and_back_is_the_same_directory(self, tmp_path: Path) -> None:
+        """The comparison is of the directory, not of its name."""
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        journal = transferred(repo, [witem("a.py", "worker\n")])
+        repo.rename(tmp_path / "elsewhere")
+        (tmp_path / "elsewhere").rename(repo)
+        result = oc.restore_transfer(journal, repo)
+        assert result.restored == ["a.py"] and result.not_restored == []
+        assert snapshot(repo) == before
+
+    def test_entry_without_a_recorded_repository_is_named(self, tmp_path: Path) -> None:
+        """Fail closed: an entry whose repository directory was not recorded is not written through."""
+        repo = make_repo(tmp_path)
+        journal = transferred(repo, [witem("a.py", "worker\n")])
+        journal[0].root = None
+        result = oc.restore_transfer(journal, repo)
+        assert (repo / "a.py").read_text() == "worker\n"
+        assert [path for path, _ in result.not_restored] == ["a.py"]
+        assert "not recorded" in dict(result.not_restored)["a.py"]
+        assert journal == []
 
     @pytest.mark.parametrize("existing", [True, False])
     def test_parent_renamed_away_and_not_replaced_is_named(
@@ -1715,7 +1866,9 @@ class TestExecute:
     @pytest.mark.parametrize(
         "exit_path", ["applied", "rejected", "error", "exception", "interrupt"]
     )
-    def test_attempt_tree_removed_on_every_exit_path(self, tmp_path: Path, exit_path: str) -> None:
+    def test_attempt_tree_removed_on_every_ordinary_exit_path(
+        self, tmp_path: Path, exit_path: str
+    ) -> None:
         repo = make_repo(tmp_path)
         runner = {
             "applied": StubRunner(edit_a),
@@ -1967,6 +2120,74 @@ class TestAttemptDirectory:
         with contextlib.suppress(RuntimeError, KeyboardInterrupt):
             executor.execute_unit(unit("a.py"))
         assert open_descriptors() == before
+
+
+def failing_directory_close(
+    real: Callable[[int], None], closed: list[int] | None = None
+) -> Callable[[int], None]:
+    """An ``os.close`` that closes a directory descriptor and then reports an I/O error for it."""
+
+    def close(fd: int) -> None:
+        is_directory = False
+        with contextlib.suppress(OSError):
+            is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        real(fd)
+        if is_directory:
+            if closed is not None:
+                closed.append(fd)
+            raise OSError(errno.EIO, "Input/output error")
+
+    return close
+
+
+class TestCleanupNeverMasks:
+    """Sweep after review finding 4 (Codex on 4ee5c0f3): cleanup that runs because something failed, or
+    on every exit, never raises, so it cannot replace the exception that is propagating."""
+
+    def test_cleanup_never_raises_when_a_close_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        parent = tmp_path / "attempts"
+        parent.mkdir()
+        attempt_dir = oc.AttemptDirectory(parent)
+        held = {attempt_dir._fd, attempt_dir._root_fd}
+        closed: list[int] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "close", failing_directory_close(os.close, closed))
+            attempt_dir.remove()  # must not raise
+        assert sorted(closed) == sorted(held)  # the first failing close did not skip the second
+        assert list(parent.iterdir()) == []
+
+    def test_a_failed_construction_does_not_replace_its_own_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        parent = tmp_path / "attempts"
+        parent.mkdir()
+
+        def too_many(*_args: Any, **_kwargs: Any) -> int:
+            raise OSError(errno.EMFILE, "Too many open files")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(oc, "_open_dir_at", too_many)
+            patch.setattr(os, "close", failing_directory_close(os.close))
+            with pytest.raises(OSError) as caught:
+                oc.AttemptDirectory(parent)
+        assert caught.value.errno == errno.EMFILE
+        assert list(parent.iterdir()) == []  # the directory made before the failure is removed
+
+    def test_a_refused_seed_keeps_its_own_error_when_cleanup_cannot_close(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")  # no commit: the seed is refused
+        parent = tmp_path / "attempt"
+        parent.mkdir(mode=0o700)
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "close", failing_directory_close(os.close))
+            with pytest.raises(oc.AttemptFailedError) as caught:
+                oc.seed_attempt_tree(repo, parent, ("a.py",))
+        assert "no HEAD commit" in caught.value.reason
 
 
 # --------------------------------------------------------------------------------------------

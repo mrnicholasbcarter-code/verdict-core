@@ -182,6 +182,16 @@ Conventions for every task:
       tests' child (`python -I`, which ignores `PYTHONPATH`) then imported the main checkout's `verdict` and
       failed with `ImportError: cannot import name 'autodev_opencode'` (3 failed). The child now puts the
       package root the test imported first on its `sys.path` (3 passed under that interpreter).
+      Review round 3, finding 3 (Codex on 4ee5c0f3): the child's `ready` line was read with an unbounded
+      `readline()`, so a child that hung before printing it hung the test (`wait(timeout=30)` was never
+      reached), and an assertion before the `SIGKILL` left a live child to be waited for. `kill_during` now reads
+      the raw descriptor to a deadline (`read_line`, 30 s by default; a partial line cannot block it), and
+      its `finally` kills a child that is still running before it waits. Test in `TestCrash`:
+      `test_a_child_that_does_not_say_ready_fails_the_test_within_the_bound` (parametrised: a child that
+      never prints, and one that prints another line and then blocks; each is given a 2 s bound and ends by
+      itself after 20 s, the test asserts the failure came in under 10 s and that the child was reaped).
+      Evidence: with the old unbounded read and no kill in the `finally`, both cases failed
+      (`assert 20.02 < 10` and `assert 20.05 < 10`, the child's own 20 s); with the fix they pass in about 2 s each.
       Review round 2, finding 2 (Codex on 1470a171): `_write_item` compared the target and then
       `replace_file` wrote the temporary file, so an edit made during that write was renamed over, and the
       journal held only the seed's bytes. `replace_file` takes a `before_rename` call, made after the
@@ -257,6 +267,25 @@ Conventions for every task:
       `worker` to `i = 1`; `[] == ['d/inner.py']`; the user's edit was overwritten) and passed after. The
       third was written after the fix and never run red: it guards the count check and failed with that
       check removed, as did each of the identity check, the gone-directory report and restore's last look.
+      Review round 3, finding 2 (Codex on 4ee5c0f3): the identity chain began below the repository root, and
+      restore reopens the repository by pathname, so a repository renamed away and replaced by a directory
+      whose top-level file held what restore would act on had that file overwritten with the prior bytes (a
+      created file deleted, a deleted file written back) while the transferred file stayed in the displaced
+      repository. Every journal entry now carries `JournalEntry.root`, the device and inode of the root the
+      transfer opened (set when the entry is made, so the `mkdir` entry that is journalled before its
+      mutation has it too); `_restore` compares the root it was given with it before reading or writing any
+      path, and a mismatch (or no record) names every journalled path with one reason and empties the
+      journal. Tests in `TestRestore`: `test_repository_replaced_between_transfer_and_restore`
+      (parametrised: an existing file the replacement holds the worker's bytes for, a created file the
+      replacement holds, a deleted file the replacement lacks; a nested created file and its two
+      directories are journalled too, and every journalled path, the replacement and the displaced repository
+      are checked), `test_repository_renamed_away_and_back_is_the_same_directory` and
+      `test_entry_without_a_recorded_repository_is_named`.
+      Evidence: before the fix `test_repository_replaced_between_transfer_and_restore` failed in all three
+      cases (`['deep/er/new.py'] == ['a.py', 'deep', ...]`: only the nested path was refused, by the parent
+      check, and the top-level path was restored over the replacement) and `test_entry_without_a_recorded_repository_is_named`
+      failed (`a.py` was rewritten to `import os\nx = 1\n`); they pass after. The rename-and-back test
+      passed before and after; with a root check that always refuses it fails, as do 19 older `TestRestore` tests.
 ## 3. The executor
 
 - [x] 3.1 Prompt (D10). `build_opencode_prompt(unit)` names the objective, owned files,
@@ -281,8 +310,8 @@ Conventions for every task:
       with `test_a_valid_owned_repair_is_applied` (usage `reported=False` when tokens are null),
       `test_worker_failed` (timeout, stall, serve refusal text, non-zero exit: nothing
       transferred although the tree holds edits), `test_worker_makes_no_change`,
-      `test_attempt_tree_removed_on_every_exit_path` (applied, rejected, error, exception,
-      cancellation), `test_tree_is_removed_before_the_transfer`, `test_running_event_loop_returns_error`,
+      `test_attempt_tree_removed_on_every_ordinary_exit_path` (applied, rejected, error, exception,
+      cancellation; the worker leaves the directory alone, the other cases have their own tests in 3.5), `test_tree_is_removed_before_the_transfer`, `test_running_event_loop_returns_error`,
             `test_journal_is_emptied_at_the_start_of_each_attempt` (an earlier unit's journal is gone before the
       next unit's first action), `test_no_run_id`, `test_attempt_timeout_bounds`,
       `test_stub_matches_the_real_run_signature` (the stub's parameters equal
@@ -343,7 +372,7 @@ Conventions for every task:
       `lstat` of that name still equals the recorded identity; `execute_unit` uses it in place of
       `remove_tree(parent)`, and `remove_tree(path)` remains for a failed seed, before any worker exists.
       Files: `verdict/autodev_opencode.py`, `tests/test_autodev_opencode.py`. Verify:
-      `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py::TestAttemptDirectory`
+      `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py::TestAttemptDirectory tests/test_autodev_opencode.py::TestCleanupNeverMasks`
       with `test_cleanup_does_not_follow_a_replaced_attempt_directory` (the worker renames the attempt
       directory and links an outside directory in its place; the outside modes and files are unchanged and
       the renamed directory is emptied), `test_cleanup_leaves_a_directory_that_replaced_the_attempt_directory`,
@@ -358,6 +387,21 @@ Conventions for every task:
       named line mutated (cleanup by pathname, the identity check on the name, the identity check on the
       tree, a chmod by name that follows links, no `fchmod` of a read-only directory, no chmod by name for an
       unreadable one, a descriptor left open). Pathname calls that remain run before any worker exists.
+      Review round 3, finding 1 (Codex on 4ee5c0f3): the requirement said the attempt directory "SHALL be
+      removed on every exit path" and then listed what it leaves (a moved directory, a replacement entry, a
+      directory it cannot make readable), and its scenario said the same. Both now say what is removed (every
+      exit path in which the worker left the directory where it was and the executor could empty it) and what
+      is left, so no acceptance test demands an unsafe pathname removal; the scenario and its test are
+      "Attempt tree removed on every ordinary exit path" (task 3.2). Design D2 and the user guide say the same.
+      Masking sweep (the controller's question after finding 4): `AttemptDirectory.remove()` is documented
+      never to raise and runs in `execute_unit`'s `finally`, but its two closes were outside the suppression, so
+      a failing first close raised out of it and skipped the second; the constructor's failure handler and
+      `remove_tree` (the failed-seed cleanup) closed unguarded too. All three now close through
+      `_close_quietly`. Tests in `TestCleanupNeverMasks`: `test_cleanup_never_raises_when_a_close_fails`,
+      `test_a_failed_construction_does_not_replace_its_own_error` and
+      `test_a_refused_seed_keeps_its_own_error_when_cleanup_cannot_close`. Evidence: all three failed before
+      the fix (`OSError: [Errno 5]` out of `remove`, `5 == 24` for the construction error, `OSError` replacing
+      the seed refusal) and pass after.
 ## 4. `run_autodev` wiring
 
 - [x] 4.1 Protocol, gateway check and the restore rule (D7, D8). Add the `UnitExecutor`
@@ -399,6 +443,15 @@ Conventions for every task:
       propagated object is the original and standard error names the restore interrupt).
       Evidence (round 1): all four cases failed before the fix (the restore interrupt escaped) and again with
       `Exception` put back.
+      Review round 3, finding 4 (Codex on 4ee5c0f3): the diagnostic itself was an unguarded `print` to
+      standard error, so a closed or broken standard error (`OSError`, `BrokenPipeError`, `ValueError`) raised
+      before the bare `raise` and replaced the original exception. The report is now `_report_restore_failure`,
+      which formats and writes inside `suppress(BaseException)`. Test:
+      `test_the_restore_diagnostic_cannot_replace_the_original` (parametrised over the three writer errors with
+      a `PermissionError` propagating, and `BrokenPipeError` with a `KeyboardInterrupt` propagating; asserts the
+      propagated object `is` the original and the write was attempted).
+      Evidence: all four cases failed before the fix (`assert OSError('stderr write failed') is
+      PermissionError('the original exception')`, and the same shape for the others) and pass after.
 - [x] 4.1b Hand the run id to the executor (D8). `run_autodev` calls `executor.begin_run(attempt_run_id)`
       once, before the first unit, when the executor has it. Files: `verdict/autodev_run.py`,
       `tests/test_autodev_opencode_wiring.py`. Verify:

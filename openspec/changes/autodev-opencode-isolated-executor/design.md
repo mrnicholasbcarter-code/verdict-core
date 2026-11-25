@@ -94,7 +94,7 @@ Option A) would make an environment without `.venv` the judge; it stays rejected
 ### D2. The attempt tree is an unshared clone
 
 In a new `0700` temp directory: `git clone --no-local -c core.hooksPath=/dev/null`, then `remote remove
-origin`. It is removed on every exit path, and before the transfer (D7). After SIGKILL one can remain.
+origin`. It is removed before the transfer (D7), on every exit path in which the worker left the directory where it was and the cleanup could empty it; what the cleanup leaves by design is listed below. After SIGKILL one can remain.
 
 The worker runs as the same user inside that directory, so it can rename it or leave a link in its place;
 a cleanup that walks the pathname (`chmod` then `rmtree`) would then change the modes under, and remove
@@ -103,7 +103,10 @@ files from, whatever the link points at (review finding 4). `AttemptDirectory` t
 the held descriptor with `unlink`/`rmdir`/`fchmod` relative to descriptors and `O_NOFOLLOW` opens, and
 removes the name with `rmdir(name, dir_fd=temp_root_fd)` only when `lstat` of that name still equals the
 device and inode recorded at creation. A moved directory is emptied and left where it was moved; the
-entry the worker left at the old name is not touched. A directory the worker made unreadable (mode 000) is
+entry the worker left at the old name is not touched, and an entry that cannot be removed is left.
+Cleanup is best effort and never raises an `Exception` (a descriptor that will not close is skipped, and the
+others are still closed), because it runs in `execute_unit`'s `finally`, in the seed's failure handler and in
+the constructor's, where an exception is usually already propagating. A directory the worker made unreadable (mode 000) is
 reopened by `chmod(name, 0o700, dir_fd=parent, follow_symlinks=False)` [exp: Python 3.13.18 on Linux 6.8
 changes a directory this way and refuses a symlink; Python raises `NotImplementedError` or `ValueError`
 where the platform cannot]; a refusal leaves that directory (a stated limit). The
@@ -247,7 +250,7 @@ On main `_touched_since` and `_verify` run outside any handler and `_run` catche
 not "restore after a false verify" but "call `restore()` once on every exit after `execute_unit` was
 called other than a verified success" (the spec lists the exits). An exception is re-raised unchanged, and
 a failure inside `restore()` is printed to standard error (Python 3.10 has no `add_note`), never replacing
-it, and that includes a `KeyboardInterrupt` or `SystemExit` raised inside `restore()` (review finding 1: the
+it (the report is itself guarded, finding 4 of round 3: a closed or broken standard error ends the report and not the exception), and that includes a `KeyboardInterrupt` or `SystemExit` raised inside `restore()` (review finding 1: the
 handler catches `BaseException`, reports it and re-raises the original; a Ctrl-C pressed during a rollback
 that an earlier exception already triggered is reported, not obeyed, and what the rollback had not reached
 can still be put back from git, as after a crash). An `Exception` that `execute_unit` itself
@@ -292,6 +295,23 @@ gone, and an entry whose recorded count does not match the path's depth are each
 `not_restored`, named, with nothing written. Restore's write takes the same last look as the transfer.
 A device and inode pair can be reused once the original directory is deleted; a replacement that reuses
 the pair of a deleted original is not told apart (the file the transfer wrote went with that directory).
+
+**The repository root is part of the identity chain (review round 3, finding 2, Codex on `4ee5c0f3`).**
+The recorded chain began below the repository root, and restore reopens the repository by pathname. A
+repository renamed away and replaced by a directory whose top-level file held the worker's bytes (or the
+created file, or no file for a deletion) had that file overwritten, deleted or written back from the prior
+bytes, while the file the transfer wrote stayed in the displaced repository; a top-level path has no parent
+directory below the root to tell the two apart. Every journal entry (a directory creation, a write, a
+deletion) therefore carries `JournalEntry.root`, the device and inode of the root the transfer opened, set
+when the entry is made, and `_restore` compares the root it holds with it before it reads or writes
+anything. A mismatch, or an entry with no record, names every journalled path with one reason and empties
+the journal; the transferred files in the displaced repository are the user's to put back (`git` can). The
+transfer itself opens the repository by pathname once, as the destination of the delta: it is whatever
+directory is at the repository path when the transfer starts, as for verification and attribution on the
+default path, and the journal records which one it was. What the read-only phase compares against M0 does not
+cover a path that is new on both sides, so a repository replaced between the seed and the transfer receives
+the new files of the delta, and a changed or deleted file only when it still holds the seeded bytes; that is a
+stated limit, not reopened here.
 
 **Two more stated limits.** (1) The journal is emptied by `execute_unit`'s first statement, so an exception
 raised before that statement (none exists in the real executor; a wrapper that raises first is one) leaves

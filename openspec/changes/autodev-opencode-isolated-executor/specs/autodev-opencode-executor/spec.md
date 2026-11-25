@@ -88,15 +88,21 @@ that crosses either budget, and the seed is refused with the limit named before 
 Only a file or a symlink kept in memory counts; a path the user deleted keeps nothing and counts
 for neither budget. The manifest of the finished clone is still checked against both limits.
 
-The attempt directory SHALL be removed on every exit path. The worker runs as the same user inside it, so
-it can rename the directory or leave a link where it was: the executor SHALL hold the directory by
-descriptor from the moment it makes it, SHALL empty it through that descriptor, descending by descriptor and
-following no link, and SHALL remove its name only when the entry there still is the directory it made
-(device and inode). A directory the worker moved away is emptied and left where it was moved; whatever the
-worker put at the old name is not touched. A directory the worker made unreadable is opened again by
-changing its mode by name, relative to its parent's descriptor and without following a link, where the host
-supports that; where it does not, that directory and the attempt directory above it are left. Every
-descriptor the executor opened for an attempt is closed on every exit path.
+The attempt directory SHALL be removed on every exit path in which the worker has left it where the
+executor made it and the executor can empty it; on no exit path SHALL the executor remove an entry it did not
+make, so its cleanup is best effort and identity-checked, and it leaves what it cannot safely remove. The
+worker runs as the same user inside it, so it can rename the directory or leave a link where it was: the
+executor SHALL hold the directory by descriptor from the moment it makes it, SHALL empty it through that
+descriptor, descending by descriptor and following no link, and SHALL remove its name only when the entry
+there still is the directory it made (device and inode). What it leaves, by design: a directory the worker
+moved away is emptied and left where it was moved; whatever the worker put at the old name is not touched
+(a replacement entry stays, a link is not followed); a directory the worker made unreadable is opened
+again by changing its mode by name, relative to its parent's descriptor and without following a link,
+where the host supports that, and where it does not, that directory and the attempt directory above it
+are left; an entry that cannot be removed is left with the directory above it. Cleanup SHALL NOT raise an
+`Exception`, so that it cannot replace an exception that is propagating, and a descriptor whose close fails
+SHALL NOT stop the executor closing the others. Every descriptor the executor opened for an attempt is
+closed on every exit path.
 
 #### Scenario: Clone shares nothing with the repository
 - **WHEN** an attempt tree is seeded from a repository that has its own hook, local config value and `info/exclude` entry
@@ -134,8 +140,8 @@ descriptor the executor opened for an attempt is closed on every exit path.
 - **WHEN** the user deleted more tracked files than the seed's file limit and nothing else is dirty
 - **THEN** the seed succeeds
 
-#### Scenario: Attempt tree removed on every exit path
-- **WHEN** an attempt ends applied, rejected, with a failed or timed-out worker, with an exception, or by cancellation
+#### Scenario: Attempt tree removed on every ordinary exit path
+- **WHEN** an attempt ends applied, rejected, with a failed or timed-out worker, with an exception, or by cancellation, and the worker has not moved, replaced or locked the attempt directory or anything in it (the scenarios below cover those cases)
 - **THEN** the attempt directory no longer exists
 
 #### Scenario: Removal does not follow a symlinked ancestor
@@ -169,6 +175,18 @@ descriptor the executor opened for an attempt is closed on every exit path.
 #### Scenario: No descriptor is left open
 - **WHEN** an attempt ends applied, rejected, with a failed worker, with an exception, or by interrupt
 - **THEN** the process has the same number of open descriptors as before the attempt
+
+#### Scenario: Cleanup never raises when a close fails
+- **WHEN** closing the attempt directory's descriptor fails with an I/O error while `remove` runs
+- **THEN** `remove` does not raise, the temporary directory's descriptor is still closed, and the attempt directory is removed
+
+#### Scenario: A failed construction does not replace its own error
+- **WHEN** the attempt directory cannot be opened after it was made, and closing the descriptor already opened also fails
+- **THEN** the error that propagates is the one from the failed open, and the directory that was made is removed
+
+#### Scenario: A refused seed keeps its own error when cleanup cannot close
+- **WHEN** the seed is refused (the repository has no commit) and closing the descriptor the cleanup opened fails
+- **THEN** the refusal propagates and not the close error
 
 ### Requirement: An owned file SHALL be tracked and unmodified, or absent, before a worker starts
 
@@ -511,7 +529,8 @@ main: it becomes an unverified outcome whose reason begins `executor error:`, af
 `restore()` call, and is not re-raised. Every other exception (a `KeyboardInterrupt` from
 anywhere, and any exception from `_touched_since` or `_verify`) SHALL be re-raised unchanged
 after restore. A failure inside `restore()`, including a `KeyboardInterrupt` or `SystemExit` raised in
-it, SHALL be caught and reported on standard error and SHALL NOT replace or hide the original
+it, SHALL be caught and reported on standard error, as far as standard error can be written (a closed or
+failing standard error ends the report, never the original exception), and SHALL NOT replace or hide the original
 exception: an interrupt that arrives while an earlier exception is propagating is reported, not
 obeyed, and the journal entries not yet restored stay journalled (git can put them back, as after a crash). The executor SHALL make the transfer the last step of
 `execute_unit` that can fail: the attempt tree is removed before it. The executor's journal
@@ -531,9 +550,15 @@ it created when they are empty and are still the directory it created. The trans
 the device and inode of each directory it creates as soon as the creation has returned, and
 restore SHALL compare them with the directory now at that name before removing it: a directory
 that was removed and replaced by another one (even an empty one) is left alone and named as not
-restored. For every file it writes or deletes the transfer SHALL also record, in the journal entry and
-before that entry is appended, the device and inode of each directory above the path as the transfer
-opened it, and restore SHALL open the same path by descriptor and compare them before it reads the
+restored. The transfer SHALL record the device and inode of the repository root it wrote through in
+every journal entry (a directory creation, a write and a deletion alike), when the entry is made, and
+restore, which reopens the repository by pathname, SHALL compare the directory it opened with that
+record before it reads or writes any path: when the repository was renamed away and another directory
+took its name, nothing is read or written, every journalled path is named as not restored with one
+reason (the repository was replaced), and the journal is empty; an entry whose root was not recorded
+is named in the same way (not recorded). For every file it writes or deletes the transfer SHALL also record, in the journal entry and
+before that entry is appended, the device and inode of each directory above the path, below the root,
+as the transfer opened it, and restore SHALL open the same path by descriptor and compare them before it reads the
 file: a directory that is not the one the transfer wrote through (moved away and absent, or
 replaced by a real directory, whatever bytes the replacement's file holds) makes that path not
 restored and named, and nothing is written there. An entry whose recorded directories do not match
@@ -580,6 +605,18 @@ NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 #### Scenario: Earlier verified unit is not undone
 - **WHEN** unit A is verified and unit B on the same executor is then rejected, errors or raises
 - **THEN** `restore()` for unit B leaves unit A's transferred files as they are
+
+#### Scenario: Repository replaced between transfer and restore
+- **WHEN** after a transfer that wrote an existing top-level file, created a top-level file, or deleted one (three cases), and also created a nested file in new directories, the repository directory is renamed away and a different directory takes its name, holding at the top level what restore would act on (the worker's bytes, the created file, or no file for the deleted one), and restore runs
+- **THEN** restore writes nothing in the replacement or in the displaced repository, names every journalled path as not restored with the one reason (the repository was replaced), `restored` is empty and the journal is empty
+
+#### Scenario: Repository renamed away and back is the same directory
+- **WHEN** the repository directory is renamed away and renamed back after a transfer, and restore runs
+- **THEN** restore returns the owned file to its prior bytes, and nothing is named as not restored
+
+#### Scenario: Entry without a recorded repository is named
+- **WHEN** a journal entry has no recorded repository directory
+- **THEN** restore writes nothing for it and names it as not restored (not recorded)
 
 #### Scenario: Parent replaced by a real directory between transfer and restore
 - **WHEN** a transferred file's parent directory is renamed away and a real directory takes its name, holding either the worker's bytes or the file's prior bytes, and restore runs
@@ -632,6 +669,10 @@ NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 #### Scenario: Restore fails while an exception propagates
 - **WHEN** `_verify` raises and `restore()` then raises a different exception
 - **THEN** the exception that propagates is the original, and the restore failure is on standard error
+
+#### Scenario: The restore diagnostic cannot replace the original
+- **WHEN** `restore()` fails while an exception propagates and standard error is closed or its write fails (`OSError`, `BrokenPipeError` or `ValueError`)
+- **THEN** the exception that propagates is the original object, and `restore()` was called once
 
 #### Scenario: Restore is interrupted while an exception propagates
 - **WHEN** `_verify` raises (or a `KeyboardInterrupt` is raised) and `restore()` then raises a `KeyboardInterrupt` or a `SystemExit`

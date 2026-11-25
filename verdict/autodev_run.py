@@ -3201,11 +3201,7 @@ def _run_unit_once(
         try:
             restore()
         except BaseException as restore_error:
-            print(
-                f"autodev: restoring the owned files of unit {unit.unit_id} failed: "
-                f"{type(restore_error).__name__}: {restore_error}",
-                file=sys.stderr,
-            )
+            _report_restore_failure(unit.unit_id, restore_error)
         raise
     if not outcome.verified:
         try:
@@ -3215,6 +3211,21 @@ def _run_unit_once(
         if note:
             outcome = replace(outcome, reason=f"{outcome.reason}; {note}")
     return outcome, executor_failed
+
+
+def _report_restore_failure(unit_id: str, restore_error: BaseException) -> None:
+    """Say on standard error that restoring a unit's owned files failed, as far as that can be said.
+
+    It runs while another exception propagates, and nothing it does may replace that one: a standard
+    error that is closed or broken (``ValueError``, ``OSError``, ``BrokenPipeError``), a message that
+    cannot be formatted, or an interrupt during the write ends the report and nothing else.
+    """
+    with suppress(BaseException):
+        print(
+            f"autodev: restoring the owned files of unit {unit_id} failed: "
+            f"{type(restore_error).__name__}: {restore_error}",
+            file=sys.stderr,
+        )
 
 
 def _preflight_refusal(executor: UnitExecutor, unit: WorkUnit) -> str | None:

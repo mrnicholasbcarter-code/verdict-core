@@ -495,7 +495,8 @@ branch, the index) is never read or copied back, so a commit or an index-only ed
 whose working-tree bytes are as seeded is not seen and reaches nothing; and a new file that your own
 ignore rules match (a cache or build output) is dropped as a byproduct unless the unit owns it.
 
-**The clone is removed** before the copy-back and on every exit path.  The worker runs as you inside
+**The clone is removed** before the copy-back, and on every exit path in which the worker left it
+where Verdict made it (the cases where it did not are named next).  The worker runs as you inside
 it, so it could rename it or leave a link where it was; Verdict holds the directory open from the
 moment it makes it, empties it through that handle without following any link, and removes its name
 only if the entry there is still the directory it made.  A directory the worker moved away is emptied
@@ -518,8 +519,8 @@ verification command, an error, Ctrl-C) puts the owned files back.  Restore leav
 since as it is, within the limits under "Your edits while it runs" below: a file the verification
 command or you edited is left as it is and named in the unit's reason, and a file whose state cannot be read during the restore is named too while the
 others are still restored.  A verified unit stays, and a later unit's failure never undoes it.  If the
-restore itself fails or is interrupted while an exception is already propagating, that is printed and
-the original exception is the one raised, and what the restore had not reached is put back the way
+restore itself fails or is interrupted while an exception is already propagating, that is printed (when
+standard error can be written) and the original exception is the one raised, and what the restore had not reached is put back the way
 **A crash** below describes.
 
 **Your edits while it runs.**  The copy-back refuses a file you changed since the clone was seeded
@@ -528,7 +529,8 @@ file is written, immediately before the rename (the file, and the directories ab
 the ones it opened), so an edit you make while Verdict is copying is refused, not overwritten.
 Restore takes the same last look, and it also names a file as not restored when its directory is no
 longer the one the copy-back wrote through (renamed away, or replaced by another directory),
-whatever bytes the replacement holds.  POSIX
+whatever bytes the replacement holds, and when the repository itself was renamed away and another
+directory took its name it restores nothing and names every file it changed.  POSIX
 has no rename that compares content, so a write that lands between that last look and the rename, or
 through a file you already had open, is still overwritten, and the journal holds the seed's bytes, not
 your edit; keep from editing an owned file while a unit runs.
