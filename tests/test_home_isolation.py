@@ -771,8 +771,205 @@ def test_a_worker_that_went_down_fails_closed_even_with_a_clean_report() -> None
     assert home_guard.worker_findings(_wire(), "gw0", errored=True)
 
 
-def test_exported_state_env_is_cleared_and_still_protected(tmp_path: Path) -> None:
-    """The real conftest, with the operator's state env exported, in a child run."""
+# What an exported value must NOT make the guard protect, pinned here independently of
+# ``home_guard.NOT_PROTECTED_ENV`` so loosening the rule is a visible two-sided edit. Every
+# other ``HOST_STATE_ENV`` member whose exported value names a file or directory is protected.
+_UNPROTECTED_STATE_ENV = {
+    "VERDICT_RELAY_ADMISSION_CACHE": "boolean switch",
+    "VERDICT_DECISION_SIGNALS_MODE": "mode name",
+    "VERDICT_GATEWAY": "URL",
+    "VERDICT_SHARED_MEMORY_URL": "URL",
+    "VERDICT_SHARED_MEMORY_TOKEN": "secret",
+    "VERDICT_ACTIVE_CONTROLLER_ROUTE": "route name",
+    "VERDICT_OPENCODE_BIN": "binary resolved on PATH",
+    "VERDICT_SERVE_URL": "URL",
+    "VERDICT_CONTEXT_ROOTS": "comma-separated names relative to the workspace",
+    "VERDICT_MCP_CONTEXT_ROOT": "read-only source-tree selector",
+    "VERDICT_WORKSPACE_ROOT": "read-only source-tree selector",
+}
+_XDG_BASES = ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME")
+_PROTECTED_STATE_ENV = tuple(
+    name
+    for name in home_guard.HOST_STATE_ENV
+    if name not in _UNPROTECTED_STATE_ENV and name not in _XDG_BASES
+)
+
+
+def test_the_state_env_the_guard_protects_is_pinned() -> None:
+    assert {"VERDICT_CLAUDE_OUTBOX_DIR", "VERDICT_CODEX_OUTBOX_DIR"} <= set(_PROTECTED_STATE_ENV)
+    assert set(home_guard.NOT_PROTECTED_ENV) == set(_UNPROTECTED_STATE_ENV)
+    assert set(home_guard.NOT_PROTECTED_ENV) <= set(home_guard.HOST_STATE_ENV), "stale entry"
+    assert all(home_guard.NOT_PROTECTED_ENV.values()), "every skip names its reason"
+    assert home_guard.protected_state_env() == _PROTECTED_STATE_ENV
+
+
+def _environ_exporting(tmp_path: Path) -> dict[str, str]:
+    environ = {
+        name: str(tmp_path / "exported" / name.lower()) for name in home_guard.HOST_STATE_ENV
+    }
+    environ["HOME"] = str(tmp_path / "home")
+    return environ
+
+
+def test_every_exported_location_in_host_state_env_is_a_protected_root(tmp_path: Path) -> None:
+    environ = _environ_exporting(tmp_path)
+    roots = home_guard.real_state_roots(environ)
+    for name in _PROTECTED_STATE_ENV:
+        assert environ[name] in roots, f"{name} names a location and is not protected"
+    for name in _UNPROTECTED_STATE_ENV:
+        assert environ[name] not in roots, f"{name} names no state and must stay writable"
+    for name in _XDG_BASES:  # a shared base is never protected whole: only verdict's own part
+        assert environ[name] not in roots
+        assert os.path.join(environ[name], "verdict") in roots
+    assert str(tmp_path / "home" / ".verdict") in roots
+
+
+def test_a_variable_added_to_host_state_env_is_protected_without_a_second_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        home_guard, "HOST_STATE_ENV", (*home_guard.HOST_STATE_ENV, "VERDICT_NEW_THING_DIR")
+    )
+    assert "VERDICT_NEW_THING_DIR" in home_guard.protected_state_env()
+    where = str(tmp_path / "new-thing")
+    assert where in home_guard.real_state_roots(
+        {"HOME": str(tmp_path), "VERDICT_NEW_THING_DIR": where}
+    )
+
+
+@pytest.mark.parametrize(
+    "value", ["", "   ", ":memory:", "http://127.0.0.1:20128", "redis://cache/0"], ids=repr
+)
+def test_a_value_that_is_not_a_location_adds_no_root(tmp_path: Path, value: str) -> None:
+    base = {"HOME": str(tmp_path)}
+    expected = home_guard.real_state_roots(base)
+    for name in ("VERDICT_EVIDENCE_DB", "VERDICT_CLAUDE_OUTBOX_DIR", "VERDICT_RUNS_DIR"):
+        assert home_guard.real_state_roots({**base, name: value}) == expected, name
+
+
+def test_a_relative_export_is_protected_where_it_points_at_session_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    environ = {"HOME": "/h", "VERDICT_CODEX_OUTBOX_DIR": "outbox/codex"}
+    guard = HomeWriteGuard(home_guard.real_state_roots(environ))
+    assert os.path.join(os.getcwd(), "outbox", "codex") in guard.roots
+    monkeypatch.chdir("/")  # later chdir does not move the protected location
+    with pytest.raises(PermissionError):
+        guard.check("open", (str(tmp_path / "outbox" / "codex" / "x"), "w", _flags("O_WRONLY")))
+
+
+def test_outcome_shadow_roots_are_a_path_list_and_its_sink_is_protected(tmp_path: Path) -> None:
+    first, second = tmp_path / "runs" / "a", tmp_path / "other" / "b"
+    roots = home_guard.real_state_roots(
+        {
+            "HOME": str(tmp_path / "h"),
+            "VERDICT_OUTCOME_SHADOW_ROOTS": os.pathsep.join([str(first), "", str(second)]),
+        }
+    )
+    assert str(first) in roots and str(second) in roots
+    # verdict appends its sink beside the FIRST entry (outcome_shadow_sink_path).
+    assert str(first.parent / "outcome_shadow.jsonl") in roots
+    assert str(second.parent / "outcome_shadow.jsonl") not in roots
+
+
+def test_the_shadow_sink_name_matches_what_verdict_writes() -> None:
+    from verdict.outcome_shadow import SINK_FILENAME
+
+    assert home_guard.OUTCOME_SHADOW_SINK == SINK_FILENAME
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["/", "/tmp", "/tmp/", "//tmp", "/var/tmp", str(REPO_ROOT), str(REPO_ROOT.parent), "."],
+    ids=["root", "tmp", "tmp-slash", "tmp-double-slash", "var-tmp", "repo", "above-repo", "cwd"],
+)
+@pytest.mark.parametrize("name", ["VERDICT_CLAUDE_OUTBOX_DIR", "VERDICT_RUNS_DIR", "CLAUDE_HOME"])
+def test_an_export_that_would_cover_ordinary_writes_is_a_named_usage_problem(
+    name: str, value: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    problems = home_guard.unsafe_state_roots({"HOME": "/h", name: value})
+    assert len(problems) == 1 and problems[0].startswith(f"{name}="), problems
+
+
+@pytest.mark.parametrize("where", ["temp dir", "cwd", "above cwd"])
+def test_the_temp_dir_and_cwd_of_this_run_are_never_protectable(
+    where: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tmpdir = tmp_path / "tmpdir"
+    workdir = tmp_path / "a" / "work"
+    workdir.mkdir(parents=True)
+    monkeypatch.chdir(workdir)
+    value = {"temp dir": tmpdir, "cwd": workdir, "above cwd": workdir.parent}[where]
+    environ = {"HOME": "/h", "TMPDIR": str(tmpdir), "VERDICT_CODEX_OUTBOX_DIR": str(value)}
+    assert home_guard.unsafe_state_roots(environ)
+
+
+def test_a_dedicated_directory_is_not_a_usage_problem(tmp_path: Path) -> None:
+    environ = _environ_exporting(tmp_path)
+    environ.update(VERDICT_CLAUDE_OUTBOX_DIR="/tmp/operator-outbox", VERDICT_EVIDENCE_DB=":memory:")
+    assert home_guard.unsafe_state_roots(environ) == []
+    assert home_guard.STARTUP_PROBLEMS == (), "this run was started with an overbroad export"
+
+
+def _protected_state_probe(exported: Path) -> str:
+    return f"""
+        import os, pathlib
+        import pytest
+        from tests.helpers.home_guard import GUARD, HOST_STATE_ENV
+
+        EXPORTED = pathlib.Path({str(exported)!r})
+        PROTECTED = {list(_PROTECTED_STATE_ENV)!r}
+        UNPROTECTED = {sorted(_UNPROTECTED_STATE_ENV)!r}
+        XDG = {list(_XDG_BASES)!r}
+        # What the operator's shell exported, read at collection time, before any fixture
+        # clears it: the way a module-level constant captures it.
+        CAPTURED = {{n: os.environ[n] for n in HOST_STATE_ENV if n in os.environ}}
+
+        def test_no_exported_state_env_reaches_the_test():
+            assert [n for n in HOST_STATE_ENV if n in os.environ] == []
+
+        def test_default_paths_land_under_the_per_test_home():
+            from verdict.paths import verdict_home
+            assert str(verdict_home()).startswith(os.environ["HOME"])
+
+        @pytest.mark.parametrize("name", PROTECTED)
+        def test_the_exported_location_is_still_refused(name):
+            target = pathlib.Path(CAPTURED[name])
+            assert target.parent == EXPORTED
+            for victim in (target, target / "x.json"):
+                with pytest.raises(PermissionError):
+                    victim.write_text("x")
+                assert GUARD.drain(), "the write was refused but not reported"
+            assert not target.exists()
+
+        @pytest.mark.parametrize("name", UNPROTECTED)
+        def test_a_variable_that_names_no_state_stays_writable(name):
+            target = pathlib.Path(CAPTURED[name])
+            target.mkdir()
+            (target / "x.json").write_text("x")
+
+        @pytest.mark.parametrize("name", XDG)
+        def test_an_exported_xdg_base_refuses_only_verdicts_own_part(name):
+            base = pathlib.Path(CAPTURED[name])
+            (base / "other-tool").mkdir(parents=True)
+            (base / "other-tool" / "c.json").write_text("x")
+            with pytest.raises(PermissionError):
+                (base / "verdict" / "x.json").write_text("x")
+            assert GUARD.drain()
+    """
+
+
+@pytest.mark.parametrize("args", [(), _XDIST_ARGS], ids=["serial", "xdist"])
+def test_exported_state_env_is_cleared_and_still_protected(
+    tmp_path: Path, args: tuple[str, ...]
+) -> None:
+    """The real conftest, with the operator's state env exported, in a child run.
+
+    Every exported location, outbox directories included, stays refused for a test that
+    captured it before the isolation fixtures cleared the variable.
+    """
     fake_home = tmp_path / "fake-real-home"
     fake_home.mkdir()
     exported = tmp_path / "exported-state"
@@ -781,39 +978,50 @@ def test_exported_state_env_is_cleared_and_still_protected(tmp_path: Path) -> No
     work.mkdir()
     shutil.copy(REPO_ROOT / "tests" / "conftest.py", work / "conftest.py")
     polluted = {name: str(exported / name.lower()) for name in home_guard.HOST_STATE_ENV}
-    polluted["VERDICT_HOME"] = str(exported / "verdict-home")
+    result = _child_pytest(
+        work,
+        {"test_probe.py": _protected_state_probe(exported)},
+        home=fake_home,
+        extra_env=polluted,
+        args=args,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    expected = 2 + len(_PROTECTED_STATE_ENV) + len(_UNPROTECTED_STATE_ENV) + len(_XDG_BASES)
+    assert f"{expected} passed" in result.stdout, output
+    for name in _PROTECTED_STATE_ENV:
+        assert not (exported / name.lower()).exists(), f"a write reached {name}"
+
+
+@pytest.mark.parametrize("args", [(), _XDIST_ARGS], ids=["serial", "xdist"])
+def test_an_export_that_would_cover_the_temp_dir_stops_the_run_naming_the_variable(
+    tmp_path: Path, args: tuple[str, ...]
+) -> None:
+    fake_home = tmp_path / "fake-real-home"
+    fake_home.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+    marker = tmp_path / "ran.marker"
     result = _child_pytest(
         work,
         {
-            "test_probe.py": f"""
-                import os, pathlib
-                from tests.helpers.home_guard import GUARD, HOST_STATE_ENV
+            "conftest.py": _GUARD_ONLY_CONFTEST,
+            "test_never_runs.py": f"""
+                import pathlib
 
-                EXPORTED = pathlib.Path({str(exported)!r})
-
-                def test_no_exported_state_env_reaches_the_test():
-                    assert [n for n in HOST_STATE_ENV if n in os.environ] == []
-
-                def test_default_paths_land_under_the_per_test_home():
-                    from verdict.paths import verdict_home
-                    assert str(verdict_home()).startswith(os.environ["HOME"])
-
-                def test_the_exported_location_is_still_refused():
-                    assert str(EXPORTED / "verdict-home") in GUARD.roots
-                    try:
-                        (EXPORTED / "verdict-home" / "x.json").write_text("x")
-                    except PermissionError:
-                        GUARD.drain()
-                    else:
-                        raise AssertionError("write to the exported real location was allowed")
-            """
+                def test_would_write_to_tmp():
+                    pathlib.Path({str(marker)!r}).write_text("ran")
+            """,
         },
         home=fake_home,
-        extra_env=polluted,
+        extra_env={"VERDICT_CLAUDE_OUTBOX_DIR": "/tmp"},
+        args=args,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "3 passed" in result.stdout
-    assert list(exported.iterdir()) == []
+    output = result.stdout + result.stderr
+    assert result.returncode == int(pytest.ExitCode.USAGE_ERROR), output
+    assert "VERDICT_CLAUDE_OUTBOX_DIR=/tmp" in output, output
+    assert "usage" in output.lower() or "ERROR" in output, output
+    assert not marker.exists(), "a test ran although the guard could not start safely"
 
 
 # ---------------------------------------------------------------------------

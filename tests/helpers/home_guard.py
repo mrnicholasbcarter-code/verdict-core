@@ -36,7 +36,17 @@ after the last per-test drain). A worker that finishes without reporting, or
 whose report cannot be read, also fails the run: unknown is never clean.
 
 The real roots are resolved ONCE, when this module is imported (conftest import,
-before any fixture monkeypatches the environment).
+before any fixture monkeypatches the environment). They are the home-relative
+state directories, Verdict's own part of each exported XDG base, and every
+``HOST_STATE_ENV`` variable whose exported value names a file or directory, so a
+path captured before the isolation fixtures cleared the variable (an outbox
+directory outside the home roots, a runs directory) stays refused. Variables
+whose value is not a location (URLs, switches, a binary name, ``:memory:``) are
+skipped by the explicit ``NOT_PROTECTED_ENV`` table and the value rules in
+``_exported_locations``. A location that would cover the system temp dir, this
+repository or the working directory (``/``, ``/tmp``, ``.``) cannot be protected
+without refusing every ordinary write, so the run stops at start with a usage
+error naming the variable (``STARTUP_PROBLEMS``) instead of dropping it.
 
 Escape hatch: there is none. A test that believes it needs the real home does
 not; point ``HOME``/``VERDICT_HOME`` at ``tmp_path`` instead.
@@ -46,12 +56,14 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import sys
 import sysconfig
+import tempfile
 import threading
 import urllib.parse
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,6 +78,12 @@ import pytest
 #: switch. An operator export of any of them would point a test at the real
 #: ``~/.verdict``, ``~/.config`` or ``~/.local/share`` stores, or at the
 #: operator's real harness installs, instead of the per-test home.
+#:
+#: Membership is also what protects the exported location from writes: the guard
+#: reads every name here, except those in ``NOT_PROTECTED_ENV`` and the XDG bases
+#: (``_XDG_STATE_SUBDIRS``), as a file or directory that must never be written
+#: (``protected_state_env``). Add a name here and its export is protected; add it
+#: to ``NOT_PROTECTED_ENV`` only if its value is not a location, with the reason.
 HOST_STATE_ENV: tuple[str, ...] = (
     # Verdict state locations (override the HOME-relative defaults).
     "VERDICT_HOME",
@@ -135,24 +153,38 @@ STATE_RELATIVE: tuple[str, ...] = (
     ".prime",
 )
 
-#: Env vars whose value (a file or directory) is itself a real state location
-#: when exported. Source-tree selectors and XDG bases are deliberately absent:
-#: protecting those would protect the whole workspace or ``~/.config``.
-_STATE_PATH_ENV: tuple[str, ...] = (
-    "VERDICT_HOME",
-    "VERDICT_SESSION_EVIDENCE",
-    "VERDICT_HEALTH_CACHE",
-    "VERDICT_PROVE_AT_REST_STATE",
-    "VERDICT_RUNTIME_STATE_DIR",
-    "VERDICT_CATALOG_CACHE",
-    "VERDICT_RELAY_ADMISSION_CACHE",
-    "VERDICT_EVIDENCE_DB",
-    "VERDICT_MEMORY_DB",
-    "VERDICT_CONNECTIONS_SNAPSHOT",
-    "VERDICT_MEMORY_PLANE_PATH",
-    "VERDICT_OPENROUTER_FREE_SET_CACHE",
-    "LLMGATE_LOG_PATH",
-)
+#: ``HOST_STATE_ENV`` members the guard does NOT protect as a location, each with
+#: the reason. Every other member is protected from its exported value.
+NOT_PROTECTED_ENV: dict[str, str] = {
+    "VERDICT_RELAY_ADMISSION_CACHE": "a boolean switch (true/false), not a location",
+    "VERDICT_DECISION_SIGNALS_MODE": "a mode name (OFF/SHADOW/...), not a location",
+    "VERDICT_GATEWAY": "a URL",
+    "VERDICT_SHARED_MEMORY_URL": "a URL",
+    "VERDICT_SERVE_URL": "a URL",
+    "VERDICT_SHARED_MEMORY_TOKEN": "a secret, not a location",
+    "VERDICT_ACTIVE_CONTROLLER_ROUTE": "a route name, not a location",
+    "VERDICT_OPENCODE_BIN": "a binary name resolved on PATH (or an executable tests run, not state)",
+    "VERDICT_CONTEXT_ROOTS": "comma-separated directory names relative to the workspace",
+    "VERDICT_MCP_CONTEXT_ROOT": (
+        "a read-only source-tree selector; protecting it would protect the operator's checkout"
+    ),
+    "VERDICT_WORKSPACE_ROOT": (
+        "a read-only source-tree selector; protecting it would protect the operator's checkout"
+    ),
+}
+
+#: ``HOST_STATE_ENV`` members that hold several locations, separated by ``os.pathsep``.
+_PATH_LIST_ENV: frozenset[str] = frozenset({"VERDICT_OUTCOME_SHADOW_ROOTS"})
+
+#: ``verdict.outcome_shadow`` appends its sink beside the FIRST shadow root, which is
+#: a write to a path the exported value does not name (pinned by
+#: ``tests/test_home_isolation.py::test_the_shadow_sink_name_matches_what_verdict_writes``).
+OUTCOME_SHADOW_SINK = "outcome_shadow.jsonl"
+
+_URL = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+#: This checkout: tests write caches and bytecode here, so no root may cover it.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 #: Verdict's own subdirectories under an exported XDG base. Never the base
@@ -180,25 +212,98 @@ def _home_directories(environ: Mapping[str, str] | None = None) -> list[Path]:
     return homes
 
 
+def protected_state_env() -> tuple[str, ...]:
+    """The ``HOST_STATE_ENV`` names whose exported value is protected as a location."""
+    return tuple(
+        name
+        for name in HOST_STATE_ENV
+        if name not in NOT_PROTECTED_ENV and name not in _XDG_STATE_SUBDIRS
+    )
+
+
+def _exported_locations(name: str, value: str) -> list[str]:
+    """The locations an exported value names; empty when it names none.
+
+    Not a location: nothing, ``:memory:`` (SQLite) or a URL. A relative value is
+    resolved against the working directory when the guard is built, as the code
+    that reads it would at that moment.
+    """
+    value = value.strip()
+    if not value or value == ":memory:" or _URL.match(value):
+        return []
+    parts = [value]
+    if name in _PATH_LIST_ENV:
+        parts = [chunk.strip() for chunk in value.split(os.pathsep)]
+    found = [os.path.expanduser(part) for part in parts if part]
+    if name == "VERDICT_OUTCOME_SHADOW_ROOTS" and found:
+        first = _normalise(found[0]).rstrip("/")
+        beside = {os.path.dirname(first), os.path.dirname(os.path.realpath(first))}
+        found.extend(sorted(os.path.join(base, OUTCOME_SHADOW_SINK) for base in beside))
+    return found
+
+
+def _state_root_sources(environ: Mapping[str, str] | None = None) -> list[tuple[str, str]]:
+    """(label, root) for every real state location: the label names where it came from."""
+    source: Mapping[str, str] = dict(os.environ) if environ is None else environ
+    found: list[tuple[str, str]] = []
+    for home in _home_directories(source):
+        found.extend((f"HOME={home}", str(home / rel)) for rel in STATE_RELATIVE)
+    for name, subdirs in _XDG_STATE_SUBDIRS.items():
+        base = (source.get(name) or "").strip()
+        if base:
+            found.extend(
+                (f"{name}={base}", os.path.join(os.path.expanduser(base), sub)) for sub in subdirs
+            )
+    for name in protected_state_env():
+        found.extend(
+            (f"{name}={source.get(name, '')}", root)
+            for root in _exported_locations(name, source.get(name) or "")
+        )
+    return found
+
+
 def real_state_roots(environ: Mapping[str, str] | None = None) -> list[str]:
     """The operator's real state locations as this process was started.
 
     Both ``$HOME`` and the passwd home count: a fixture that re-points ``HOME``
-    does not change where a ``pwd``-based lookup lands.
+    does not change where a ``pwd``-based lookup lands. Every exported
+    ``protected_state_env`` location counts too, wherever it points.
+    """
+    return [root for _, root in _state_root_sources(environ)]
+
+
+def _write_locations_of_this_run(source: Mapping[str, str]) -> list[str]:
+    """Places a test run must always be able to write: temp dirs, the repo, the cwd.
+
+    Built without ``tempfile.gettempdir()``, which caches its answer before the
+    fixtures have run.
+    """
+    temp = [source.get(key) or "" for key in ("TMPDIR", "TEMP", "TMP")]
+    places = ["/tmp", "/var/tmp", tempfile.tempdir or "", *temp, str(_REPO_ROOT)]
+    with suppress(OSError):  # a deleted cwd is not a place to write
+        places.append(os.getcwd())
+    return [form for place in places if place for form in HomeWriteGuard._forms(place)]
+
+
+def unsafe_state_roots(environ: Mapping[str, str] | None = None) -> list[str]:
+    """One line per protected root that would cover a place the run must write.
+
+    A root equal to, or an ancestor of, the temp dir, the repository or the working
+    directory (``/``, ``/tmp``, ``.``) would turn every ordinary write into a
+    "real state" violation, so it is a usage error at start, never silently skipped.
     """
     source: Mapping[str, str] = dict(os.environ) if environ is None else environ
-    roots: list[str] = []
-    for home in _home_directories(source):
-        roots.extend(str(home / rel) for rel in STATE_RELATIVE)
-    for name, subdirs in _XDG_STATE_SUBDIRS.items():
-        base = (source.get(name) or "").strip()
-        if base:
-            roots.extend(os.path.join(os.path.expanduser(base), sub) for sub in subdirs)
-    for name in _STATE_PATH_ENV:
-        value = (source.get(name) or "").strip()
-        if value:
-            roots.append(os.path.expanduser(value))
-    return roots
+    places = _write_locations_of_this_run(source)
+    problems: list[str] = []
+    for label, root in _state_root_sources(source):
+        forms = HomeWriteGuard._forms(root)
+        covers = not forms or any(p == f or p.startswith(f + "/") for f in forms for p in places)
+        if covers:  # no forms: the root is "/"
+            problems.append(
+                f"{label}: {root or '/'} is, or contains, the system temp dir, this repository "
+                "or the working directory"
+            )
+    return problems
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +556,9 @@ class HomeWriteGuard:
 #: Resolved at import time: before any fixture touches the environment.
 REAL_HOMES: tuple[str, ...] = tuple(str(h) for h in _home_directories())
 GUARD = HomeWriteGuard(real_state_roots())
+#: Exported state locations that would swallow ordinary writes (``unsafe_state_roots``).
+#: Never silently dropped: ``pytest_configure`` refuses to start the run for them.
+STARTUP_PROBLEMS: tuple[str, ...] = tuple(unsafe_state_roots())
 _hook_installed = False
 
 
@@ -576,6 +684,13 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
 def pytest_configure(config: pytest.Config) -> None:
     install()
+    if STARTUP_PROBLEMS:
+        raise pytest.UsageError(
+            "tests/helpers/home_guard.py cannot start: the exported state location(s) below "
+            "would be protected so broadly that ordinary test writes would count as writes to "
+            "real state. Unset each variable or point it at a dedicated directory, then rerun:\n  "
+            + "\n  ".join(STARTUP_PROBLEMS)
+        )
     plugins = config.pluginmanager
     module = sys.modules[__name__]
     # Already registered when loaded with ``-p tests.helpers.home_guard``.
