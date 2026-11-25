@@ -416,9 +416,13 @@ def test_the_assignment_serve_would_verify_is_what_the_worker_gets(tmp_path: Pat
 #
 # A refusal and a provider's own 401 or 403 can say the same words, because serve forwards an
 # upstream error unchanged.  Serve's receipts tell them apart: serve writes a root for every
-# request it admits and none for one it refuses at the door.  The tests below run the executor
-# against an empty serve database (serve has admitted nothing under the assignment), one with a
-# request recorded, and receipts that cannot be read; the words and the status are the same in all.
+# request it admits and none for one it refuses at the door.  But the receipt database is found
+# from this host's configuration, not from the serve at the address the worker called, so an empty
+# read of it proves nothing until the database has been seen to hold a request of this executor's
+# own assignments (a row carrying a digest only this executor issued, that only the serve at the
+# selected address received).  The tests below run the executor against a database serve has been
+# seen writing and one it has not, one with a request recorded, and receipts that cannot be read;
+# the words and the status are the same in all.
 
 REFUSAL = (FIXTURES / "v2_3_2_error_403_serve_refusal.jsonl").read_text()
 
@@ -444,16 +448,56 @@ def failing_worker(tmp_path: Path, stdout: str) -> str:
     return fake_worker(tmp_path, f"sys.stdout.write({stdout!r})\nsys.exit(1)\n")
 
 
+def admitted_then_failing_worker(tmp_path: Path, db: Path, stdout: str) -> str:
+    """A worker that, on its first run, is served (serve writes a root under its assignment) and
+    succeeds, and on every later run fails with ``stdout`` without serve recording anything."""
+    helper = tmp_path / "seed.py"
+    helper.write_text(
+        textwrap.dedent(
+            f"""
+            import hashlib, os, sys
+            sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+            from tests.test_opencode_signed_assignment import seed_serve_root
+            from pathlib import Path
+            token = os.environ["VERDICT_WORKER_API_KEY"]
+            digest = hashlib.sha256(token.split(".")[1].encode()).hexdigest()
+            seed_serve_root(Path({str(db)!r}), digest, [], 1)
+            """
+        )
+    )
+    ran = tmp_path / "already-ran.txt"
+    return fake_worker(
+        tmp_path,
+        f"import subprocess\n"
+        f"if not os.path.exists({str(ran)!r}):\n"
+        f"    open({str(ran)!r}, 'w').write('1')\n"
+        f"    sys.exit(subprocess.call([{sys.executable!r}, {str(helper)!r}]))\n"
+        f"sys.stdout.write({stdout!r})\n"
+        f"sys.exit(1)\n",
+    )
+
+
+def serve_seen_writing(tmp_path: Path, db: Path, stdout: str) -> OpenCodeExecutor:
+    """An executor that has had one attempt served in ``db``, so it has seen serve write there.
+
+    Its next attempt fails with ``stdout`` and serve records nothing under it.
+    """
+    ex = executor(
+        admitted_then_failing_worker(tmp_path, db, stdout), receipts_db_provider=lambda: db
+    )
+    first = go(ex, workdir(tmp_path))
+    assert first.ok, first
+    assert first.worker_assignment["serve_receipts"]["requests"] == 1  # type: ignore[index]
+    return ex
+
+
 def test_serves_refusal_of_the_assignment_is_a_configuration_block_not_a_provider_denial(
     tmp_path: Path,
 ) -> None:
     """Captured from the real OpenCode 2.3.2 against a loopback stand-in for serve (see the
     fixtures README).  Read as plain 403 it would cool the provider down for an hour."""
     db = empty_serve_database(tmp_path)
-    terminal = go(
-        executor(failing_worker(tmp_path, REFUSAL), receipts_db_provider=lambda: db),
-        workdir(tmp_path),
-    )
+    terminal = go(serve_seen_writing(tmp_path, db, REFUSAL), workdir(tmp_path))
     assert terminal.ok is False
     assert terminal.error.startswith(
         "harness_configuration: verdict serve refused the worker assignment"
@@ -473,10 +517,7 @@ def test_serves_refusal_of_the_assignment_is_a_configuration_block_not_a_provide
 def test_a_401_with_serves_refusal_message_is_the_same_block(tmp_path: Path) -> None:
     db = empty_serve_database(tmp_path)
     line = error_line("Authentication failed.", 401)
-    terminal = go(
-        executor(failing_worker(tmp_path, line + "\n"), receipts_db_provider=lambda: db),
-        workdir(tmp_path),
-    )
+    terminal = go(serve_seen_writing(tmp_path, db, line + "\n"), workdir(tmp_path))
     assert terminal.error.startswith("harness_configuration: verdict serve refused")
     assert terminal.status_code == 401
 
@@ -494,19 +535,101 @@ def test_a_401_with_serves_refusal_message_is_the_same_block(tmp_path: Path) -> 
 def test_other_denials_are_still_read_as_the_providers(
     tmp_path: Path, status: int, message: str
 ) -> None:
-    """With serve's receipts empty (so the receipts alone would say 'refused') a failure that does
-    not have serve's status and words is still the provider's."""
+    """With serve seen writing the database and nothing recorded under the assignment (so the
+    receipts alone would say 'refused') a failure that does not have serve's status and words is
+    still the provider's."""
     db = empty_serve_database(tmp_path)
     line = error_line(message, status)
-    terminal = go(
-        executor(failing_worker(tmp_path, line + "\n"), receipts_db_provider=lambda: db),
-        workdir(tmp_path),
-    )
+    terminal = go(serve_seen_writing(tmp_path, db, line + "\n"), workdir(tmp_path))
     assert terminal.ok is False
     assert not terminal.error.startswith("harness_configuration:")
     assert terminal.status_code == status
     serve = terminal.worker_assignment["serve_receipts"]  # type: ignore[index]
     assert (serve["status"], serve["requests"]) == ("read", 0)
+
+
+def test_serves_words_are_the_providers_while_the_database_is_not_shown_to_be_serves(
+    tmp_path: Path,
+) -> None:
+    """The database is found from this host's configuration: with a spare or remote serve it can
+    be another serve's, or one nothing writes, and then an empty read is not "serve refused".
+    Nothing has shown that this database is the selected serve's (no request of this executor's
+    assignments is in it), so the words stay the provider's, with the cooldown that implies, and
+    the run receipt says the receipts are unavailable rather than that serve recorded nothing."""
+    db = empty_serve_database(tmp_path)
+    terminal = go(
+        executor(failing_worker(tmp_path, REFUSAL), receipts_db_provider=lambda: db),
+        workdir(tmp_path),
+    )
+    assert terminal.ok is False
+    assert not terminal.error.startswith("harness_configuration:")
+    assert terminal.error == "authentication failed"
+    assert terminal.status_code == 403
+    serve = terminal.worker_assignment["serve_receipts"]  # type: ignore[index]
+    assert serve["status"] == "unavailable"
+    assert "not shown to be" in serve["reason"]
+    assert (serve["requests"], serve["requests_waived"], serve["requirement_waivers"]) == (
+        None,
+        None,
+        None,
+    )
+    verdict = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
+    assert verdict.category != "harness_configuration"
+    assert verdict.cooldown_seconds > 0
+
+
+def test_what_was_seen_in_one_database_does_not_vouch_for_another(tmp_path: Path) -> None:
+    """Serve was seen writing the first database.  If the next attempt's database is a different
+    file (a spare serve's, a re-pointed configuration), an empty read of it proves nothing."""
+    seen_db = empty_serve_database(tmp_path)
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    other_db = empty_serve_database(other_dir)
+    current = {"db": seen_db}
+    ex = executor(
+        admitted_then_failing_worker(tmp_path, seen_db, REFUSAL),
+        receipts_db_provider=lambda: current["db"],
+    )
+    assert go(ex, workdir(tmp_path)).ok
+    # still the same database: the refusal is serve's
+    again = go(ex, workdir(tmp_path))
+    assert again.error.startswith("harness_configuration: verdict serve refused")
+    # a different database: nothing is shown about it
+    current["db"] = other_db
+    elsewhere = go(ex, workdir(tmp_path))
+    assert not elsewhere.error.startswith("harness_configuration:")
+    assert elsewhere.error == "authentication failed"
+    assert elsewhere.worker_assignment["serve_receipts"]["status"] == "unavailable"  # type: ignore[index]
+    # and back to the first: it is shown again
+    current["db"] = seen_db
+    back = go(ex, workdir(tmp_path))
+    assert back.error.startswith("harness_configuration: verdict serve refused")
+
+
+def test_an_attempt_that_serve_never_served_does_not_show_the_database_to_be_serves(
+    tmp_path: Path,
+) -> None:
+    """Only a request found under an assignment shows the database: an attempt that succeeded
+    with serve having recorded nothing (the worker never called it) shows nothing."""
+    db = empty_serve_database(tmp_path)
+    ex = executor(
+        fake_worker(
+            tmp_path,
+            f"if not os.path.exists({str(tmp_path / 'ran')!r}):\n"
+            f"    open({str(tmp_path / 'ran')!r}, 'w').write('1')\n"
+            "    sys.exit(0)\n"
+            f"sys.stdout.write({REFUSAL!r})\n"
+            "sys.exit(1)\n",
+        ),
+        receipts_db_provider=lambda: db,
+    )
+    cwd = workdir(tmp_path)
+    first = go(ex, cwd)
+    assert first.ok
+    assert first.worker_assignment["serve_receipts"]["status"] == "unavailable"  # type: ignore[index]
+    second = go(ex, cwd)
+    assert not second.error.startswith("harness_configuration:")
+    assert second.worker_assignment["serve_receipts"]["status"] == "unavailable"  # type: ignore[index]
 
 
 @pytest.mark.parametrize("status", [401, 403])
@@ -680,10 +803,14 @@ def test_a_request_of_an_earlier_attempt_is_not_attributed_to_a_retry_in_the_sam
     )
     binary = fake_worker(
         tmp_path,
-        f"import subprocess\n"
-        f"open({str(credential)!r}, 'w').write(os.environ['VERDICT_WORKER_API_KEY'])\n"
+        f"import subprocess, hashlib\n"
+        f"token = os.environ['VERDICT_WORKER_API_KEY']\n"
+        f"open({str(credential)!r}, 'w').write(token)\n"
         f"if os.path.exists({str(flag)!r}):\n"
         f"    subprocess.call([{sys.executable!r}, {str(helper)!r}, open({str(flag)!r}).read()])\n"
+        f"else:\n"
+        f"    own = hashlib.sha256(token.split('.')[1].encode()).hexdigest()\n"
+        f"    subprocess.call([{sys.executable!r}, {str(helper)!r}, own])\n"
         f"sys.exit(0)\n",
     )
     now = datetime(2026, 11, 25, 12, 0, 0, tzinfo=timezone.utc)
@@ -807,7 +934,7 @@ def test_unreadable_serve_receipts_are_unavailable_with_a_reason_and_the_attempt
 def test_a_reader_that_raises_is_unavailable_never_an_exception(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(mark: Any, digest: str) -> Any:
+    def boom(mark: Any, digest: str, *, association_shown: bool = False) -> Any:
         raise RuntimeError("row detail that must not be recorded")
 
     monkeypatch.setattr(executor_module, "read_assignment_evidence", boom)

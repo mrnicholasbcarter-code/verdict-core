@@ -293,10 +293,16 @@ serve, and recovery SHALL treat it as a block.
 A worker failure with HTTP status 401 or 403 and the message `authentication failed` (serve's
 answer to a refused assignment) SHALL end the attempt as a `harness_configuration:` block, with no
 cooldown for the route's provider, only when serve's receipts, read after the worker's process
-group is gone, were read successfully and hold no request under the attempt's assignment.  Serve
-forwards a provider's own 401 or 403 unchanged, so the status and the words alone do not show
-that serve refused; when serve's receipts hold a request under the assignment, or cannot be read,
-the failure SHALL stay the provider's, exactly as the worker reported it.
+group is gone, were read successfully, hold no request under the attempt's assignment, and are
+shown to be the receipts of the serve the worker called.  Serve forwards a provider's own 401 or
+403 unchanged, so the status and the words alone do not show that serve refused; when serve's
+receipts hold a request under the assignment, or cannot be read, the failure SHALL stay the
+provider's, exactly as the worker reported it.  The receipt database is found from the
+orchestrator's configuration, not from the serve at `--serve-url`, so an empty read proves
+nothing about that serve until the executor has found, in the same database and for the same
+serve address, a request under one of its own earlier assignments (a digest only it issued, which
+only that serve received).  Until then the failure SHALL stay the provider's and the attempt's
+serve receipts SHALL be `unavailable` with a reason, never "zero requests".
 
 Before an attempt writes or launches anything, the executor SHALL also check that the serve token
 resolves, that the `opencode` binary runs and that serve is reachable and accepts the serve token;
@@ -382,20 +388,47 @@ cancellation SHALL complete only after the thread that ran the checks has finish
 #### Scenario: An expired or tampered assignment fails closed with no upstream call
 
 - **WHEN** the worker presents to the real serve an assignment that is expired, altered after
-  signing, signed with a key serve does not hold, or dated ahead of serve's clock
+  signing, signed with a key serve does not hold, or dated ahead of serve's clock, as the first
+  assignment of the run
 - **THEN** serve refuses it with 403, nothing is sent upstream, serve writes no evidence, and the
-  attempt ends `harness_configuration:` (a block with no cooldown), not as the provider denying the
-  account, because the executor read serve's receipts and they hold no request under the
-  assignment (`test_an_expired_assignment_fails_closed_with_no_upstream_call`,
+  attempt fails; nothing yet shows that the database the executor read is the serve's it called,
+  so the attempt is not called a configuration block: it stays the provider's denial and its
+  serve receipts are `unavailable` with a reason
+  (`test_an_expired_assignment_fails_closed_with_no_upstream_call`,
   `test_a_tampered_assignment_fails_closed_with_no_upstream_call`,
   `test_an_assignment_signed_with_a_key_serve_does_not_hold_fails_closed`,
-  `test_an_assignment_dated_ahead_of_serves_clock_fails_closed`,
-  `test_serves_refusal_of_the_assignment_is_a_configuration_block_not_a_provider_denial`)
+  `test_an_assignment_dated_ahead_of_serves_clock_fails_closed`)
+
+#### Scenario: Serve's refusal after serve admitted an earlier assignment of the run is a block
+
+- **WHEN** serve admitted an earlier assignment of this executor in its receipt database, and the
+  worker then presents an assignment that is expired, altered after signing, signed with a key
+  serve does not hold, or dated ahead of serve's clock
+- **THEN** serve refuses it with 403, nothing is sent upstream, serve writes no evidence, and the
+  attempt ends `harness_configuration:` (a block with no cooldown), not as the provider denying the
+  account, because serve's receipts, shown to be the serve's it called, hold no request under the
+  assignment (`test_a_refusal_after_serve_admitted_an_earlier_attempt_is_a_configuration_block`,
+  `test_serves_refusal_of_the_assignment_is_a_configuration_block_not_a_provider_denial`,
+  `test_a_401_with_serves_refusal_message_is_the_same_block`)
+
+#### Scenario: A database not shown to be serve's does not decide who refused
+
+- **WHEN** a worker fails with serve's refusal status and words and the receipt database the
+  executor read is empty for the assignment but nothing has shown it is the one the serve at the
+  worker's address writes (no request under an earlier assignment of the executor was found in
+  it, or the executor's earlier requests were found in a different database)
+- **THEN** the terminal keeps the worker's status and message, recovery sees the provider's denial
+  (with a cooldown), and the terminal carries `serve_receipts` `unavailable` with the reason and
+  `null` figures; what was shown for one database does not vouch for another
+  (`test_serves_words_are_the_providers_while_the_database_is_not_shown_to_be_serves`,
+  `test_what_was_seen_in_one_database_does_not_vouch_for_another`,
+  `test_an_attempt_that_serve_never_served_does_not_show_the_database_to_be_serves`)
 
 #### Scenario: Other 401 and 403 answers are still the provider's
 
 - **WHEN** a worker fails with a 401 or 403 whose message is not serve's refusal, or serve's message
-  with another status, even though serve's receipts hold no request under the assignment
+  with another status, even though serve's receipts, shown to be the serve's it called, hold no
+  request under the assignment
 - **THEN** recovery sees the status as before (`test_other_denials_are_still_read_as_the_providers`)
 
 #### Scenario: Serve's words from a request serve admitted are the provider's
@@ -440,7 +473,10 @@ runtime SHALL record it on the `terminal` event, `receipt.json` SHALL carry it o
 `verdict run-receipt` SHALL mark the attempt.  An attempt served without a waiver SHALL carry none,
 an executor that signs nothing SHALL add nothing to its receipt, and a database that cannot be read
 SHALL be reported as unavailable with its reason and null figures, never as "no waiver", and SHALL
-NOT fail an attempt that worked.  The reader SHALL NOT create, migrate or write the database.
+NOT fail an attempt that worked; the same holds for a database that holds no request under the
+assignment while nothing shows it is the database of the serve the worker called (the path comes
+from the orchestrator's configuration, not from that serve).  The reader SHALL NOT create, migrate
+or write the database.
 
 #### Scenario: An attempt served under the waiver carries it
 
@@ -466,12 +502,16 @@ NOT fail an attempt that worked.  The reader SHALL NOT create, migrate or write 
 #### Scenario: Unreadable serve receipts are unavailable, not clean
 
 - **WHEN** serve's receipt database is unconfigured, in memory, missing, damaged, or holds too many
-  matching rows, or the read runs out of time
+  matching rows, or the read runs out of time, or it holds no request under the assignment and is
+  not shown to be the database of the serve the worker called
 - **THEN** the record is `unavailable` with a reason and `null` counts, the attempt's own result is
   unchanged, and nothing is created on disk
   (`test_unreadable_serve_receipts_are_unavailable_with_a_reason_and_the_attempt_still_ends_ok`,
   `test_a_missing_file_is_mark_zero_and_unavailable_at_read_time_and_is_never_created`,
   `test_too_many_matching_roots_is_unavailable_never_a_short_count`,
+  `test_nothing_recorded_in_a_database_not_shown_to_be_serves_says_nothing_about_serve`,
+  `test_nothing_recorded_is_zero_requests_once_the_database_is_shown_to_be_serves`,
+  `test_a_request_under_the_assignment_is_read_with_or_without_a_shown_association`,
   `test_an_unreadable_serve_receipt_is_null_with_a_reason_never_a_clean_attempt`)
 
 #### Scenario: A waiver from before the attempt is not attributed to it

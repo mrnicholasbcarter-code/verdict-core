@@ -77,9 +77,11 @@
       `harness_configuration:` block before launch, with no request to serve and no fallback to the
       serve token; the serve token is used only for the readiness check; serve's own 403
       `authentication failed` is a configuration block, not a provider denial, but only when
-      serve's receipts (read after the worker is gone) hold no request under the assignment; the
-      same words from a request serve admitted, or with receipts that cannot be read, stay the
-      provider's (a provider's 401 or 403 is forwarded by serve unchanged); the
+      serve's receipts (read after the worker is gone) hold no request under the assignment and
+      are shown to be the receipts of the serve the worker called (an earlier assignment of the
+      same executor was found in the same database); the same words from a request serve
+      admitted, with receipts that cannot be read, or with a database not shown to be serve's, stay
+      the provider's (a provider's 401 or 403 is forwarded by serve unchanged); the
       `X-Verdict-Worker` header is no longer sent. Verify: `tests/test_opencode_signed_assignment.py`,
       `tests/test_opencode_executor.py`
       (`test_the_worker_holds_only_the_signed_assignment_and_never_the_serve_token`,
@@ -98,13 +100,24 @@
       with 401 and 403, and `test_serves_words_are_the_providers_when_serves_receipts_cannot_be_read`
       with four kinds of unreadable receipts) failed with the gate removed (the old behaviour:
       a block on the words alone), and the refusal tests failed with a gate that never blocks
-      (6 failures).
+      (6 failures). After the second pull request review (2026-11-25, round 4) an empty read
+      counts only for a database shown to be the called serve's: the receipt database is found
+      from the orchestrator's configuration, not from the serve at `--serve-url`, so with a spare
+      or remote serve zero rows in it did not show that serve refused and could suppress a
+      provider's cooldown. Written first against the unchanged code, 10 tests failed
+      (`tests/test_serve_evidence.py` 3, `tests/test_opencode_signed_assignment.py` 3 and
+      `tests/test_opencode_assignment_serve_path.py` 4: the first-attempt refusals were blocks);
+      with the association never recorded 13 failed (every block test), and with any database seen
+      vouching for every database `test_what_was_seen_in_one_database_does_not_vouch_for_another`
+      failed. The accepted cost is that a signing key serve does not share, refused from a run's
+      first attempt, is not recognised as a block.
 - [x] 2.17 The executor-to-serve path through the real app (#1325): a loopback server runs the real
       `verdict serve` app with a recording upstream; the real executor signs and a fake worker sends
       one request; the assignment is served on the signed route and serve's evidence names the
       run, the node and the route; an expired, tampered, foreign-key or future-dated assignment
-      gets 403 with no upstream call and no evidence. Verify:
-      `tests/test_opencode_assignment_serve_path.py`.
+      gets 403 with no upstream call and no evidence, as the run's first assignment (the attempt
+      fails, its serve receipts `unavailable`, not a block) and after serve admitted an earlier
+      one (a configuration block). Verify: `tests/test_opencode_assignment_serve_path.py`.
 - [x] 2.18 The streaming waiver serve records is shown in the run receipt (#1325): serve's receipt
       database is read back read-only by digest (`verdict/orchestration/serve_evidence.py`,
       `serve_service.resolve_serve_receipts_db`), the terminal carries `worker_assignment`, the
@@ -253,8 +266,9 @@
       rule or passport was changed). The operator decided on 2026-11-24 to merge the adapter as
       opt-in and to move the serve fix to #1313 (serve honours a worker's assignment before its
       own escalation and tier classification; the capability gate gets metadata on the relay
-      path); this task and 8.1 are expected to fail until #1313 lands, and OpenCode becomes the
-      default only after this smoke passes. An earlier attempt on a free route
+      path); at the time this task and 8.1 were expected to fail until #1313 landed (it has since:
+      serve's side in #1335 and the executor's in #1325, whose branch smoke is 2.19), and OpenCode
+      becomes the default only after this smoke passes on installed main. An earlier attempt on a free route
       (`run-20261124T042116Z`) was also denied, for other admission reasons (`passport_stale`,
       `confirm_budget_exhausted`). Raw output:
       `/tmp/claude-takeover/oc1-smoke/run-20261124T051739Z/` (`smoke-run-transcript.txt`,
@@ -305,8 +319,9 @@
       `429 Client Error: Too Many Requests for url: ...` and
       `503 Server Error: Service Unavailable for url: ...`, so such an error gets no status
       and is not rerouted. The operator accepted it on 2026-11-24 and moved it to #1313,
-      because the adapter is opt-in and cannot complete a request through serve until #1313
-      reworks that path. No review was run on the commit that records this decision.
+      because the adapter was opt-in and, at the time, could not complete a request through
+      serve until #1313 reworked that path (it has since: serve's side in #1335, the executor's
+      in #1325). No review was run on the commit that records this decision.
 - [ ] (post-merge) 8.1 On installed main, run `verdict orchestrate --executor opencode` on a
       task with a coding node (OpenCode is opt-in, so the flag is required); it needed #1313 (serve
       honours the assignment) and #1325 (the executor signs one) and needs the signing key from

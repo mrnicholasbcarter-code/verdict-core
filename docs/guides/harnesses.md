@@ -393,8 +393,13 @@ misconfigured host does not burn a node's attempts.  The same holds when serve l
 assignment (it answers every refused assignment with one 403 `authentication failed`) and its
 receipts show it admitted no request under that assignment: the attempt is a configuration block,
 not a provider denial.  A provider's own 401 or 403 can carry the same words, so when serve's
-receipts hold a request under the assignment, or cannot be read, the failure stays the provider's.  Run `verdict setup --apply --allow
-host.serve` to create the serve token, the signing key and the unit.
+receipts hold a request under the assignment, or cannot be read, the failure stays the provider's.
+So does an empty read of a receipt database nothing has tied to the serve at `--serve-url`: the
+database is found from this host's configuration, so with a spare or remote serve it can be
+another serve's.  It counts only after an earlier attempt of the same run was served in it (a
+request under that attempt's own assignment was found there), so a signing key serve does not
+share, refused from the run's first attempt, is not recognised as a configuration block.  Run
+`verdict setup --apply --allow host.serve` to create the serve token, the signing key and the unit.
 
 **Receipts.** `verdict run-receipt` marks an attempt that serve served with the streaming
 requirement waived (`streaming waived`) and one whose serve receipts could not be read (`serve

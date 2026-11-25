@@ -18,8 +18,16 @@ of it per attempt would not do).  The result is one of three things, never a gue
   when serve saw the assignment and waived nothing, ``requests: 0`` when it recorded nothing
   under it);
 * ``status: "unavailable"`` with a ``reason`` and every figure ``None`` when the database cannot be
-  read, is not configured, is in memory (another process cannot read it) or holds too many rows to
-  count.  Unavailable is never reported as "no waiver".
+  read, is not configured, is in memory (another process cannot read it), holds too many rows to
+  count, or holds no request under the assignment while nothing shows that it is the database of
+  the serve the worker called.  Unavailable is never reported as "no waiver".
+
+The database is found from this host's configuration (``VERDICT_RECEIPTS_DB``, ``serve.env``),
+never from the serve at the address the worker called, so with a spare or remote serve it can be
+another serve's, or one nothing writes to.  A request found under the assignment's digest shows
+the database is serve's (only the serve at that address received the assignment); an empty read
+means "serve recorded nothing" only once the caller has such a sign for the same address and
+database (``association_shown``), and is otherwise unavailable.
 
 Nothing here touches a credential: the digest is the only identifier that goes in, and a reason
 names the problem, never a path's contents or a row.
@@ -34,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-__all__ = ["EvidenceMark", "read_assignment_evidence", "take_mark"]
+__all__ = ["NOT_SHOWN_REASON", "EvidenceMark", "read_assignment_evidence", "take_mark"]
 
 #: A read is cut off after this many seconds of work, whatever the database holds.  It runs after
 #: the worker is gone and inside the settle reserve the runtime leaves an executor (at most 15 s,
@@ -44,6 +52,11 @@ READ_DEADLINE_SECONDS = 2.0
 MAX_MATCHING_ROOTS = 10_000
 #: How long a read waits for a lock another process holds.
 _BUSY_TIMEOUT_SECONDS = 1.0
+#: Why an empty read is not a statement about serve (see the module docstring).
+NOT_SHOWN_REASON = (
+    "no request under the assignment was found, and this host's receipt database is not shown "
+    "to be the one the serve at the worker's address writes"
+)
 #: The SQLite virtual-machine steps between two looks at the deadline.
 _PROGRESS_STEPS = 1000
 
@@ -155,8 +168,15 @@ def _distinct_waivers(kind: str | None, raw: Any) -> list[dict[str, str]] | None
     return found
 
 
-def read_assignment_evidence(mark: EvidenceMark, digest: str) -> dict[str, Any]:
+def read_assignment_evidence(
+    mark: EvidenceMark, digest: str, *, association_shown: bool = False
+) -> dict[str, Any]:
     """What serve recorded under the assignment with ``digest`` since ``mark``.
+
+    ``association_shown`` says the caller has already seen this database hold a request under an
+    assignment it issued for the same serve address.  Without it, a read that finds nothing is
+    unavailable (:data:`NOT_SHOWN_REASON`), not "zero requests": the database may be another
+    serve's.  A read that finds requests never needs it.
 
     Blocking (it reads a file); run it off the event loop.  Never raises.
     """
@@ -185,6 +205,8 @@ def read_assignment_evidence(mark: EvidenceMark, digest: str) -> dict[str, Any]:
         return _unavailable(
             f"serve recorded more than {MAX_MATCHING_ROOTS} requests under one assignment"
         )
+    if not rows and not association_shown:
+        return _unavailable(NOT_SHOWN_REASON)
     distinct: list[dict[str, str]] = []
     waived = 0
     for kind, raw in rows:

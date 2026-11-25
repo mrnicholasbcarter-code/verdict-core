@@ -86,8 +86,9 @@ run on the cheapest qualified route Verdict can admit.
   with 403 `authentication failed`, and forwards a provider's own 401 or 403 unchanged, so the
   words can come from either. The attempt is a configuration block (no cooldown) only when
   serve's receipts, read after the worker is gone, show that serve recorded no request under the
-  assignment; otherwise, or when the receipts cannot be read, recovery sees the provider's denial
-  as before.
+  assignment, in a database shown to be the serve the worker called (a request of an earlier
+  attempt of the run was found in it); otherwise, or when the receipts cannot be read, recovery
+  sees the provider's denial as before, and a run's first refusal is never proven.
 - **`verdict serve` pins each worker request to the route Verdict chose**, from the verified
   signed assignment (serve's side: `serve-worker-assignment`, #1335; the executor signs it:
   #1325). A request whose `model` differs from the signed route is refused before routing.

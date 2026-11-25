@@ -92,8 +92,18 @@ def db(tmp_path: Path) -> Db:
     return Db(tmp_path / "serve-receipts.db")
 
 
-def _read(db: Db, digest: str, *, mark: evidence.EvidenceMark | None = None) -> dict[str, Any]:
-    return evidence.read_assignment_evidence(mark or evidence.EvidenceMark(db.path, 0), digest)
+def _read(
+    db: Db,
+    digest: str,
+    *,
+    mark: evidence.EvidenceMark | None = None,
+    association_shown: bool = False,
+) -> dict[str, Any]:
+    # the default of the reader is "not shown"; only a test that says otherwise passes the keyword
+    shown: dict[str, bool] = {"association_shown": True} if association_shown else {}
+    return evidence.read_assignment_evidence(
+        mark or evidence.EvidenceMark(db.path, 0), digest, **shown
+    )
 
 
 def test_requests_under_the_assignment_are_counted_and_the_waiver_is_named(db: Db) -> None:
@@ -124,11 +134,39 @@ def test_an_attempt_whose_requests_waived_nothing_reports_an_empty_list_not_unav
     assert result["requirement_waivers"] == []
 
 
-def test_nothing_recorded_under_the_assignment_is_zero_requests_and_not_a_waiver(db: Db) -> None:
+def test_nothing_recorded_is_zero_requests_once_the_database_is_shown_to_be_serves(db: Db) -> None:
     db.put(_digest("someone else"), [WAIVER])
-    result = _read(db, _digest("mine"))
+    result = _read(db, _digest("mine"), association_shown=True)
     assert (result["status"], result["requests"], result["requests_waived"]) == ("read", 0, 0)
     assert result["requirement_waivers"] == []
+    assert result["reason"] is None
+
+
+def test_nothing_recorded_in_a_database_not_shown_to_be_serves_says_nothing_about_serve(
+    db: Db,
+) -> None:
+    """The database is found from this host's configuration, not from the serve at the address the
+    worker called, so an empty read of it is not "serve recorded nothing": it is unavailable, and
+    never "no waiver" (the same figures a database that is serve's would give)."""
+    db.put(_digest("someone else"), [WAIVER])
+    result = _read(db, _digest("mine"))
+    assert result["status"] == "unavailable"
+    assert result["requests"] is None
+    assert result["requests_waived"] is None
+    assert result["requirement_waivers"] is None
+    assert "not shown to be" in result["reason"]
+    assert _read(db, _digest("mine"), association_shown=False) == result
+
+
+def test_a_request_under_the_assignment_is_read_with_or_without_a_shown_association(db: Db) -> None:
+    """A row that carries this attempt's own digest was written by whoever received the
+    assignment; that is what shows the association, so it never needs showing first."""
+    mine = _digest("mine")
+    db.put(mine, [WAIVER])
+    unshown = _read(db, mine, association_shown=False)
+    shown = _read(db, mine, association_shown=True)
+    assert unshown == shown
+    assert (unshown["status"], unshown["requests"], unshown["requests_waived"]) == ("read", 1, 1)
 
 
 def test_another_assignments_waiver_is_never_attributed(db: Db) -> None:

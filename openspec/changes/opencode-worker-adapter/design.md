@@ -195,17 +195,38 @@ the real OpenCode 2.3.2, `tests/fixtures/opencode_stdout`) as a candidate only, 
 the worker is gone, from serve's own receipts (read back as below): serve writes a root for every
 request that passes its door and reaches routing, before anything is sent upstream, and none for
 one it refuses at the door. The
-attempt ends `harness_configuration:` (a block, no cooldown) only when the read succeeded and
-serve holds no request under the attempt's assignment. A request recorded under it means serve
-admitted the assignment, so the error is the upstream's; receipts that cannot be read (not
-configured, in memory, missing, unreadable, over the row limit or out of time) leave the origin
-unproven. In both cases the failure stays the provider's and recovery handles it as before, with a
-cooldown for the route's provider. The cost is accepted: when the orchestrator cannot read serve's
-receipts (an orchestrator and a serve that read different `HOME`s, the usual cause of a refused
-assignment, may also read different receipt databases) a real refusal is read as the provider's,
-and a refusal after an earlier request of the same attempt was admitted cannot be told from the
-provider's either. Telling them apart without serve's receipts needs serve to say so in its
-answer, which this story does not change.
+attempt ends `harness_configuration:` (a block, no cooldown) only when the read succeeded, serve
+holds no request under the attempt's assignment, and the database read is shown to be the one the
+serve at the worker's address writes. A request recorded under it means serve admitted the
+assignment, so the error is the upstream's; receipts that cannot be read (not configured, in
+memory, missing, unreadable, over the row limit or out of time) leave the origin unproven. In both
+cases the failure stays the provider's and recovery handles it as before, with a cooldown for the
+route's provider.
+
+*Which database is serve's (review of 2026-11-25, round 4).* The path is found from the
+orchestrator's configuration (`VERDICT_RECEIPTS_DB`, `VERDICT_EVIDENCE_DB`, `serve.env`), never
+from the serve the worker called. With `--serve-url` at a spare or remote serve, the database read
+can be another serve's, or one nothing writes, and zero rows in it would then wrongly read as "the
+serve at that address refused". Serve exposes nothing that names its database (`/health` is
+static, `/v1/guidance/status` carries no path, and only the relay path writes evidence), and this
+story does not change serve, so the only proof available is observation: a row under a digest
+this executor issued, found in this database. Only the serve at the address the worker was
+configured with received that assignment, so such a row shows that this database is that
+serve's. The executor keeps, for the life of one `verdict orchestrate` process
+(`_worker_executor` builds the default executor once per run, so it serves every attempt of the
+run; a node named in `--executor-map` gets its own, which learns for itself), the set of (serve
+address, database) pairs in which it has found a request under its own assignments. An empty read is
+"serve recorded nothing" only for a pair in that set; otherwise the record is `unavailable` with
+the reason that the database is not shown to be the selected serve's, and its figures are `null`.
+A request found under the assignment is read whether or not the pair was known (it is what adds
+the pair). The cost is accepted: a signing key serve does not share, refused from the run's first
+attempt, is not recognised as a configuration block (no attempt of that run is ever served, so
+nothing is shown), and a refusal read from a database nothing has tied to serve stays the
+provider's, with the cooldown that implies. A serve repointed at another database during a run is
+still read as its old one until the process ends, because the executor has no way to ask serve;
+`--resume` and a restarted controller start from nothing shown. Telling a refusal from a provider's
+words without serve's receipts needs serve to say so in its answer or to name its database, which
+this story does not change (a decision for the operator in the pull request).
 
 **What serve recorded, read back into the run receipt (design detail, #1325):** serve writes one
 evidence root per relay request to its receipt database (`VERDICT_RECEIPTS_DB`), naming the
@@ -218,7 +239,8 @@ worker started (the database grows with every request and holds large payloads).
 the terminal as `worker_assignment` (the digest, never the credential, and `serve_receipts`:
 `status` `read` with `requests`, `requests_waived` and the distinct waivers, or `unavailable`
 with a reason and every figure `null` when the database is unconfigured, in memory, missing,
-unreadable, over 10,000 matching roots or out of the 2 s read budget). `unavailable` is never
+unreadable, over 10,000 matching roots, out of the 2 s read budget, or empty for this assignment
+while not shown to be the selected serve's, see above). `unavailable` is never
 reported as "no waiver" and never fails an attempt that worked. The runtime puts it on the
 `terminal` event, `receipt.json` projects it onto the attempt (only when present, so receipts of
 other executors are byte-identical), and `verdict run-receipt` marks an attempt `streaming

@@ -110,10 +110,15 @@ header is no longer sent. Serve's refusal of an assignment (403 `authentication 
 configuration block, not a provider denial that would cool the provider down, but only when serve's
 receipts show it: serve forwards a provider's own 401 or 403 unchanged, so the words alone prove
 nothing, and the attempt is blocked only when the executor, after the worker is gone, reads serve's
-receipt database successfully and finds no request under the attempt's assignment. A request
-recorded under it, or receipts that cannot be read, leave the failure the provider's, with the
-cooldown that implies (the price is that a real refusal is then read as the provider's when the
-orchestrator cannot read serve's receipts). The streaming waiver
+receipt database successfully and finds no request under the attempt's assignment, in a database
+shown to be the serve's it called. The database is found from the orchestrator's own configuration,
+not from that serve, so an empty read proves nothing until an earlier attempt of the run has been
+served in the same database (a request under its own assignment digest was found there). A request
+recorded under the assignment, receipts that cannot be read, or a database not yet shown to be
+serve's leave the failure the provider's, with the cooldown that implies (the price is that a real
+refusal is read as the provider's when the orchestrator cannot read serve's receipts, and that a
+signing key serve does not share, refused from the run's first attempt, is never recognised as a
+configuration block). The streaming waiver
 serve records for an assigned request is read back by digest from serve's receipt database and
 shown on the attempt in the run receipt (`verdict run-receipt`). Planner calls carry no node id and
 get no assignment: `AnswerOnlyExecutor` refuses this executor before any call. The worker still
@@ -130,8 +135,8 @@ serve. It reports the serve origin it really calls (resolved as its serve addres
 the runtime refuses a mismatch, or no bound address, before the permit and the launch. Only a reported
 `WorkerServeOrigin` is compared with that address, and it is never compared with the gateway origin;
 every other executor is checked against the gateway origin exactly as before. Serve's proof that it
-forwards to the permit's gateway and the signed assignment remain #1313. The decision above is
-unchanged.*
+forwards to the permit's gateway remain #1313; the signed assignment has since landed (serve's side
+#1335, the executor's #1325, see the amendment under Decision 1). The decision above is unchanged.*
 
 **2. OpenCode becomes the default orchestrate worker executor, after a live smoke passes; until then it is opt-in.**
 `opencode` is registered and selected with `verdict orchestrate --executor opencode`.

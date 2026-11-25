@@ -686,19 +686,35 @@ assignment is refused with 403.
   process for its one readiness request and is never a fallback. A missing, unreadable or short
   key, a missing run id or node id, or an attempt timeout that is not a positive finite number
   ends the attempt the same way, before anything is launched and with no request to serve.
-  The orchestrator and serve must read the same key, which means the same `HOME`: when serve
-  refuses an assignment (403 `authentication failed`), the attempt ends as a configuration block
-  rather than as a provider denial, provided serve's receipts (read back as below) hold no request
-  under the assignment: a provider's own 401 or 403 can say the same words, so with a request
-  recorded, or with receipts that cannot be read, the failure stays the provider's.
+  The orchestrator and serve must read the same key, which means the same `HOME`. When serve
+  refuses an assignment (403 `authentication failed`) the attempt ends as a configuration block
+  rather than as a provider denial only if the executor can show that serve, and not the route's
+  provider, said it: a provider's own 401 or 403 can carry the same words, which serve forwards
+  unchanged. What shows it is serve's receipts (read back as below) holding no request under the
+  assignment, and that is only evidence when the database read is the one the serve at
+  `--serve-url` writes. The orchestrator finds that database from its own configuration
+  (`VERDICT_RECEIPTS_DB`, `serve.env`), never from the serve it called, so with a spare or remote
+  serve it can be another serve's or one nothing writes. An empty read therefore counts only after
+  an earlier attempt of the same `verdict orchestrate` run was served in that same database (a
+  request carrying that attempt's own assignment digest was found there, which only the serve at
+  `--serve-url` received) and then only for that database and address. In every other case, the
+  failure stays the provider's, with the provider cooldown that implies, and the attempt's receipts
+  say `unavailable`. Plainly: a signing key serve does not share, found on a run's first attempt,
+  is not recognised as a configuration block (every attempt of that run is refused, none is
+  served, nothing is ever shown), and shows as the route's provider answering `authentication
+  failed`. What was shown lasts for that one `verdict orchestrate` process: a serve repointed at
+  another database during the run is still read as serve's old one until the run ends, and
+  `--resume` starts again without it.
 - **Receipts.** The waiver serve records for an assigned request is read back by the assignment's
   digest from serve's receipt database (`VERDICT_RECEIPTS_DB`, then the older `VERDICT_EVIDENCE_DB`,
   then `serve.env`), read-only and only for rows written since the worker started, and shown on the
   attempt in `receipt.json` (`worker_assignment.serve_receipts`: `requests`, `requests_waived`,
   `requirement_waivers`) and in `verdict run-receipt` (`streaming waived`). A database that cannot
-  be read (unconfigured, in memory, missing, damaged, or over 10,000 matching rows) is shown as
-  `unavailable` with its reason and `null` figures; it is never shown as "no waiver" and does not
-  fail an attempt that worked.
+  be read (unconfigured, in memory, missing, damaged, or over 10,000 matching rows), or in which
+  no request was found under the assignment while nothing yet shows it is the database of the
+  serve at `--serve-url` (see Signing), is shown as `unavailable` with its reason and `null`
+  figures; it is never shown as "no waiver" and does not fail an attempt that worked. A request
+  found under the assignment is always read: it is itself what shows the database is serve's.
 
 ### Outcome shadow sink
 

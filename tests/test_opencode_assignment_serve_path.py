@@ -14,8 +14,10 @@ What this proves, with no live call:
 * the waiver serve records for a streaming request is read back onto the attempt's terminal (and
   from there into the run receipt), and an attempt without the waiver does not carry it;
 * an expired, tampered or foreign-key assignment gets serve's refusal, nothing reaches the
-  upstream, no evidence is written, and the attempt ends as a configuration block rather than
-  a provider denial.
+  upstream and no evidence is written; the attempt ends as a configuration block rather than a
+  provider denial once serve's receipt database has been seen to hold a request of this
+  executor's own assignments (an empty read of a database nothing has tied to the selected serve
+  proves nothing, so a first refusal stays the provider's and its receipts are unavailable).
 """
 
 from __future__ import annotations
@@ -88,7 +90,7 @@ if "--version" in sys.argv:
     sys.exit(0)
 sys.stdin.read()
 token = os.environ["VERDICT_WORKER_API_KEY"]
-if {tamper!r}:
+if os.path.exists({tamper_flag!r}):
     head, payload, tag = token.split(".")
     payload = payload[:-1] + ("A" if payload[-1] != "A" else "B")
     token = ".".join((head, payload, tag))
@@ -118,27 +120,35 @@ class Harness:
         self.wired, self.serve, self.origin, self.tmp_path = wired, serve, origin, tmp_path
         self.db = tmp_path / "serve-receipts.db"
         self.out = tmp_path / "worker-out.json"
+        self.tamper_flag = tmp_path / "tamper-the-assignment"
 
-    def worker(self, body: dict[str, Any], *, tamper: bool = False) -> str:
+    def worker(self, body: dict[str, Any]) -> str:
         script = self.tmp_path / "fake-opencode"
         script.write_text(
             "#!/usr/bin/env python3\n"
             + textwrap.dedent(WORKER).format(
-                url=self.origin, body=body, out=str(self.out), tamper=tamper
+                url=self.origin, body=body, out=str(self.out), tamper_flag=str(self.tamper_flag)
             )
         )
         script.chmod(0o755)
         return str(script)
 
-    def run(self, body: dict[str, Any], *, tamper: bool = False, **overrides: Any) -> Any:
-        cwd = self.tmp_path / "work"
-        cwd.mkdir(exist_ok=True)
-        executor = OpenCodeExecutor(
-            opencode_bin=self.worker(body, tamper=tamper),
+    def executor(self, body: dict[str, Any], **overrides: Any) -> OpenCodeExecutor:
+        return OpenCodeExecutor(
+            opencode_bin=self.worker(body),
             serve_base_url=self.origin,
             receipts_db_provider=lambda: self.db,
             **overrides,
         )
+
+    def attempt(self, executor: OpenCodeExecutor, *, tamper: bool = False) -> Any:
+        """One attempt on ``executor`` (reuse one to carry what it has seen of serve's database)."""
+        if tamper:
+            self.tamper_flag.write_text("1")
+        else:
+            self.tamper_flag.unlink(missing_ok=True)
+        cwd = self.tmp_path / "work"
+        cwd.mkdir(exist_ok=True)
         return asyncio.run(
             executor.run(
                 "task",
@@ -149,6 +159,9 @@ class Harness:
                 node_id=NODE_ID,
             )
         )
+
+    def run(self, body: dict[str, Any], *, tamper: bool = False, **overrides: Any) -> Any:
+        return self.attempt(self.executor(body, **overrides), tamper=tamper)
 
     def worker_saw(self) -> dict[str, Any]:
         return json.loads(self.out.read_text())
@@ -304,12 +317,29 @@ def test_an_admitted_request_whose_upstream_says_authentication_failed_is_the_pr
 
 
 def _assert_refused_and_nothing_happened(harness: Harness, terminal: Any) -> None:
+    """What does not depend on whether the executor can say who refused: serve answered 403
+    ``authentication failed`` to the worker, nothing was sent upstream, nothing was recorded."""
     seen = harness.worker_saw()
     assert seen["status"] == 403
     assert json.loads(seen["body"])["error"]["message"] == "authentication failed"
     assert harness.wired.upstream == [], "a refused assignment reached the upstream"
     assert harness.evidence_roots() == [], "serve wrote evidence for a refused assignment"
     assert terminal.ok is False
+    assert terminal.status_code == 403
+
+
+def _assert_provider_denial_for_want_of_proof(terminal: Any) -> None:
+    """No request of this executor's has been seen in serve's database yet, so the empty read
+    does not show that serve refused: the failure stays the provider's, its receipts unavailable."""
+    assert not terminal.error.startswith("harness_configuration:"), terminal.error
+    serve = terminal.worker_assignment["serve_receipts"]
+    assert serve["status"] == "unavailable"
+    assert (serve["requests"], serve["requests_waived"]) == (None, None)
+    verdict = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
+    assert verdict.category != "harness_configuration"
+
+
+def _assert_configuration_block(terminal: Any) -> None:
     assert terminal.error.startswith("harness_configuration: verdict serve refused"), terminal.error
     verdict = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
     assert (verdict.category, verdict.action, verdict.cooldown_seconds) == (
@@ -325,11 +355,13 @@ def test_an_expired_assignment_fails_closed_with_no_upstream_call(harness: Harne
     long_ago = datetime.now(timezone.utc) - timedelta(hours=2)
     terminal = harness.run(body_for(ROUTE, tools=TOOLS, stream=True), clock=lambda: long_ago)
     _assert_refused_and_nothing_happened(harness, terminal)
+    _assert_provider_denial_for_want_of_proof(terminal)
 
 
 def test_a_tampered_assignment_fails_closed_with_no_upstream_call(harness: Harness) -> None:
     terminal = harness.run(body_for(ROUTE, tools=TOOLS, stream=True), tamper=True)
     _assert_refused_and_nothing_happened(harness, terminal)
+    _assert_provider_denial_for_want_of_proof(terminal)
 
 
 def test_an_assignment_signed_with_a_key_serve_does_not_hold_fails_closed(harness: Harness) -> None:
@@ -338,12 +370,50 @@ def test_an_assignment_signed_with_a_key_serve_does_not_hold_fails_closed(harnes
         body_for(ROUTE, tools=TOOLS, stream=True), key_provider=lambda: bytes(range(1, 33))
     )
     _assert_refused_and_nothing_happened(harness, terminal)
+    _assert_provider_denial_for_want_of_proof(terminal)
 
 
 def test_an_assignment_dated_ahead_of_serves_clock_fails_closed(harness: Harness) -> None:
     ahead = datetime.now(timezone.utc) + timedelta(minutes=10)
     terminal = harness.run(body_for(ROUTE, tools=TOOLS, stream=True), clock=lambda: ahead)
     _assert_refused_and_nothing_happened(harness, terminal)
+    _assert_provider_denial_for_want_of_proof(terminal)
+
+
+@pytest.mark.parametrize("fault", ["expired", "tampered", "foreign-key", "dated-ahead"])
+def test_a_refusal_after_serve_admitted_an_earlier_attempt_is_a_configuration_block(
+    harness: Harness, fault: str
+) -> None:
+    """Serve admitted this executor's first assignment, so its receipt database is shown to be the
+    one the selected serve writes.  A later assignment that serve refuses (nothing recorded under
+    it) is then serve's refusal, whatever the reason, and ends the attempt as a block."""
+    state = {"offset": timedelta(0), "key": ASSIGNMENT_KEY}
+    body = body_for(ROUTE, tools=TOOLS, stream=True)
+    ex = harness.executor(
+        body,
+        clock=lambda: datetime.now(timezone.utc) + state["offset"],
+        key_provider=lambda: state["key"],
+    )
+    first = harness.attempt(ex)
+    assert first.ok, first
+    assert first.worker_assignment["serve_receipts"]["requests"] == 1
+    assert len(harness.wired.upstream) == 1
+
+    if fault == "expired":
+        state["offset"] = -timedelta(hours=2)
+    elif fault == "dated-ahead":
+        state["offset"] = timedelta(minutes=10)
+    elif fault == "foreign-key":
+        state["key"] = bytes(range(1, 33))
+        assert state["key"] != ASSIGNMENT_KEY
+    second = harness.attempt(ex, tamper=fault == "tampered")
+
+    assert harness.worker_saw()["status"] == 403
+    assert len(harness.wired.upstream) == 1, "a refused assignment reached the upstream"
+    assert len(harness.evidence_roots()) == 1, "serve wrote evidence for a refused assignment"
+    assert second.ok is False
+    assert second.status_code == 403
+    _assert_configuration_block(second)
 
 
 def test_the_worker_sends_the_assignment_and_not_the_serve_token(harness: Harness) -> None:

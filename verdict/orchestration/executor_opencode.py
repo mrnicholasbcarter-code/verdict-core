@@ -31,7 +31,11 @@ Each attempt:
    (:mod:`verdict.orchestration.serve_evidence`).  The same record decides what a 401 or 403 with
    serve's refusal words means: serve forwards a provider's error unchanged, so it is a
    configuration block only when serve's receipts show it admitted no request under the
-   assignment, and the provider's in every other case.
+   assignment, and the provider's in every other case.  The receipt database is found from this
+   host's configuration, not from the serve the worker called, so an empty read counts only for a
+   database this executor has already seen hold a request under one of its own assignments (for
+   the same serve address); otherwise the receipts are unavailable and the error stays the
+   provider's.  A refusal of the very first assignment of a run is therefore never proven.
 
 **Dispatch origin** — OpenCode workers send through Verdict serve (:8000), not the gateway
 (OmniRoute :20128), so this executor reports the serve origin it really calls (the address it
@@ -44,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import math
 import os
@@ -264,9 +269,11 @@ def _serve_never_admitted(serve_receipts: dict[str, Any]) -> bool:
 
     Serve writes a receipt for every request that passes its door and reaches routing, before
     anything is sent upstream, and none for one it refuses at the door, so an assignment under
-    which serve recorded a request was accepted and an error that came back was the upstream's.  Anything short of a read with
-    no request (receipts that cannot be read, a request recorded) leaves the origin of the error
-    unproven, and an unproven origin stays the provider's.
+    which serve recorded a request was accepted and an error that came back was the upstream's.
+    Anything short of a read with no request (receipts that cannot be read, a request recorded,
+    a database nothing ties to the serve the worker called: the reader reports that one as
+    unavailable) leaves the origin of the error unproven, and an unproven origin stays the
+    provider's.
     """
     return serve_receipts.get("status") == "read" and serve_receipts.get("requests") == 0
 
@@ -962,6 +969,11 @@ class OpenCodeExecutor:
         self._issued: dict[str, datetime] = {}
         self._issued_lock = threading.Lock()
         self._receipts_db_provider = receipts_db_provider
+        # The (serve address, receipt database) pairs in which a request under one of this
+        # executor's assignments has been found: for those, and no others, an empty read means
+        # serve recorded nothing (see ``_serve_evidence``).
+        self._receipts_shown: set[tuple[str, str]] = set()
+        self._receipts_shown_lock = threading.Lock()
         self._binary_checked = False
         self._env = dict(env) if env is not None else None
         self.max_output_bytes: int = (
@@ -1051,15 +1063,17 @@ class OpenCodeExecutor:
     def _serve_refusal(self, terminal: WorkerTerminal, status: int) -> WorkerTerminal:
         """``terminal`` as a configuration block: serve refused the assignment, so no provider did.
 
-        Only when serve's receipts show it admitted nothing under the assignment; otherwise the
-        failure stays as the provider's (:func:`_serve_never_admitted`).  A block is not retried
-        and does not cool the provider down.
+        Only when serve's receipts show it admitted nothing under the assignment, in a database
+        shown to be serve's (:meth:`_serve_evidence`); otherwise the failure stays as the
+        provider's (:func:`_serve_never_admitted`).  A block is not retried and does not cool the
+        provider down.
         """
         return replace(
             terminal,
             error=(
                 f"harness_configuration: verdict serve refused the worker assignment "
-                f"(HTTP {status}, and its receipts hold no request under it); an assignment is "
+                f"(HTTP {status}; serve's receipts, which hold an earlier assignment of this run, "
+                f"hold no request under this one); an assignment is "
                 f"refused when it is expired, tampered, or signed with a key serve does not hold, "
                 f"so check that the orchestrator and serve share the signing key "
                 f"({_CREDENTIAL_HELP}) and the clock"
@@ -1073,9 +1087,22 @@ class OpenCodeExecutor:
 
         Read in a thread (it opens a file) and never raises: any failure is an ``unavailable``
         record with its reason, which the run receipt shows as such.
+
+        The database is the one this host's configuration names, not one found through the serve
+        the worker called, so an empty read of it proves nothing by itself: it is unavailable
+        until a request under one of this executor's own assignments has been found in the same
+        database for the same serve address.  Only the serve at that address received the
+        assignment, so such a row shows the database is the one that serve writes; what is shown
+        is kept for the executor's life (one ``verdict orchestrate`` run) and never carried over
+        to another address or database.
         """
+        where = (self._serve_base_url, os.path.abspath(mark.db_path) if mark.db_path else "")
+        with self._receipts_shown_lock:
+            shown = where in self._receipts_shown
         try:
-            serve_receipts = await _to_thread_joined(read_assignment_evidence, mark, digest)
+            serve_receipts = await _to_thread_joined(
+                functools.partial(read_assignment_evidence, association_shown=shown), mark, digest
+            )
         except Exception as exc:  # the reader does not raise; this is the last line
             serve_receipts = {
                 "status": "unavailable",
@@ -1084,6 +1111,9 @@ class OpenCodeExecutor:
                 "requests_waived": None,
                 "requirement_waivers": None,
             }
+        if serve_receipts.get("status") == "read" and serve_receipts.get("requests"):
+            with self._receipts_shown_lock:
+                self._receipts_shown.add(where)
         return {"assignment_digest": digest, "serve_receipts": serve_receipts}
 
     def _failure(self, route_id: str, started: float, error: str) -> WorkerTerminal:
