@@ -1737,7 +1737,7 @@ def cmd_autodev(
         rows: dict[str, Any] = {
             "objective": report.objective,
             "mechanical (zero tokens)": len(report.mechanical),
-            f"model ({report.executor_model})": len(report.outcomes) - len(report.mechanical),
+            f"model ({report.executor_model})": len(report.model_units),
             "orchestrator tokens": (
                 f"{tokens['orchestrator']['total_tokens']} ({report.orchestrator_model})"
             ),

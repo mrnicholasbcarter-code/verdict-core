@@ -27,6 +27,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -35,7 +36,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from verdict.candidate_pool import LIVE_PROBE_MAX_AGE_SECONDS, CandidatePoolError
 from verdict.context_inject import ContextOutputPolicy
@@ -1084,19 +1085,60 @@ def _classify_repair_first_error(first_error: str) -> str:
     return "spec_violation"
 
 
+class UnitExecutorConfig(Protocol):
+    """What autodev reads from an executor's configuration."""
+
+    @property
+    def model(self) -> str: ...
+
+    @property
+    def base_url(self) -> str: ...
+
+    @property
+    def temperature(self) -> float | None: ...
+
+    @property
+    def max_tokens(self) -> int | None: ...
+
+
+class UnitExecutor(Protocol):
+    """What ``run_autodev`` needs from the executor that runs one unit.
+
+    ``PatchExecutor`` satisfies it. An executor may also offer four optional capabilities, none
+    implying another (OC2a design D8): ``isolated`` (``True``: the gateway base-URL equality check
+    is skipped and retries are refused), ``restore()`` (called on every exit other than a verified
+    success), ``preflight(unit)`` (a reason to refuse the unit before any worker starts) and
+    ``begin_run(run_id)`` (the attempt-ledger run id, given once before the first unit).
+    """
+
+    @property
+    def config(self) -> UnitExecutorConfig: ...
+
+    @property
+    def response_headers(self) -> Mapping[str, str]: ...
+
+    def execute_unit(self, unit: WorkUnit) -> PatchAttempt: ...
+
+
+def _is_isolated(executor: UnitExecutor | None) -> bool:
+    return getattr(executor, "isolated", False) is True
+
+
 def _executor_lineage(
-    run_id: str, decision: Any, executor: PatchExecutor, unit_id: str, attempt: int
+    run_id: str, decision: Any, executor: UnitExecutor, unit_id: str, attempt: int
 ) -> dict[str, Any]:
-    """BOD-437 attempt key and sent settings for one executor turn."""
+    """BOD-437 attempt key and sent settings for one executor turn.
+
+    A setting the executor did not send (``None``) is left out, so it is recorded as unknown and
+    never as a value that was not sent.
+    """
+    sent = {"temperature": executor.config.temperature, "max_tokens": executor.config.max_tokens}
     return {
         "run_id": run_id,
         "decision_id": decision.decision_digest,
         "node_id": unit_id,
         "attempt_id": str(attempt),
-        "effective_parameters": {
-            "temperature": executor.config.temperature,
-            "max_tokens": executor.config.max_tokens,
-        },
+        "effective_parameters": {key: value for key, value in sent.items() if value is not None},
     }
 
 
@@ -1107,7 +1149,7 @@ def _record_executor_attempt(
     story_id: str | None,
     run_id: str,
     decision: Any,
-    executor: PatchExecutor,
+    executor: UnitExecutor,
     first_attempt: int,
 ) -> int:
     """Write BOD-353 attempt record(s) for an autodev executor turn.
@@ -1916,9 +1958,9 @@ def compare_family_runs(
 class UnitOutcome:
     """What happened to one unit, and what it cost.
 
-    ``tier`` is ``mechanical`` (no model) or ``model``.  ``verified`` is true
-    only when the unit's own command exited zero and the change stayed inside
-    its boundary.
+    ``tier`` is ``mechanical`` (no model), ``model``, or ``refused`` (an executor's precondition
+    refused the unit before any worker started; no model attempt was made).  ``verified`` is true
+    only when the unit's own command exited zero and the change stayed inside its boundary.
     """
 
     unit_id: str
@@ -1983,6 +2025,11 @@ class AutodevReport:
         return tuple(o for o in self.outcomes if o.tier == "mechanical")
 
     @property
+    def model_units(self) -> tuple[UnitOutcome, ...]:
+        """Units a model attempted; a unit refused before any worker started is not among them."""
+        return tuple(o for o in self.outcomes if o.tier == "model")
+
+    @property
     def executor_usage(self) -> TokenUsage:
         prompt = sum(o.usage.prompt_tokens for o in self.outcomes)
         completion = sum(o.usage.completion_tokens for o in self.outcomes)
@@ -2039,7 +2086,7 @@ class AutodevReport:
                 f"of {self.units_planned} planned"
             ),
             f"  mechanical (zero tokens): {len(self.mechanical)}",
-            f"  model ({self.executor_model}): {len(self.outcomes) - len(self.mechanical)}",
+            f"  model ({self.executor_model}): {len(self.model_units)}",
             (
                 f"tokens: orchestrator {tokens['orchestrator']['total_tokens']} "
                 f"({self.orchestrator_model}), executor {tokens['executor']['total_tokens']}"
@@ -2716,7 +2763,7 @@ def run_autodev(
     store: ReceiptStore | None = None,
     decomposer: Decomposer | None = None,
     plan: DecompositionResult | None = None,
-    executor: PatchExecutor | None = None,
+    executor: UnitExecutor | None = None,
     evidence: str = "",
     probe_dropped: Sequence[Mapping[str, str]] = (),
     mechanical: bool = True,
@@ -2741,8 +2788,17 @@ def run_autodev(
     base_url = selected_route.gateway
     if executor is not None:
         _assert_exact_model(executor.config.model, selected_route.model, surface="autodev executor")
-        if executor.config.base_url.rstrip("/") != selected_route.gateway.rstrip("/"):
+        # An isolated executor's transport is `verdict serve`, whose own admission is the
+        # authority, so only the base-URL equality is skipped for it; the model check stays.
+        if not _is_isolated(executor) and executor.config.base_url.rstrip("/") != (
+            selected_route.gateway.rstrip("/")
+        ):
             raise AutodevError("autodev: injected executor gateway does not match BOD-104 decision")
+        if _is_isolated(executor) and (retry_routes or retry_executor_factory is not None):
+            raise AutodevError(
+                "autodev: the isolated OpenCode executor does not support retries (the retry "
+                "ladder would build a PatchExecutor); retries on OpenCode are a later story (#1314)"
+            )
     if decomposer is not None:
         _assert_exact_model(
             decomposer.config.model, selected_route.model, surface="autodev orchestrator"
@@ -2780,6 +2836,9 @@ def run_autodev(
     executor = executor or PatchExecutor(
         repo, PatchExecutorConfig(model=executor_model, base_url=base_url, api_key=api_key)
     )
+    begin_run = getattr(executor, "begin_run", None)
+    if callable(begin_run):
+        begin_run(attempt_run_id)
     ledger = store if store is not None else ReceiptStore(repo / ".verdict" / "receipts.db")
 
     # Normalize and validate the retry ladder
@@ -2793,7 +2852,9 @@ def run_autodev(
                 return PatchExecutor(
                     repo,
                     replace(
-                        executor.config, model=str(route["model"]), base_url=str(route["gateway"])
+                        cast(PatchExecutorConfig, executor.config),
+                        model=str(route["model"]),
+                        base_url=str(route["gateway"]),
                     ),
                 )
 
@@ -3078,16 +3139,23 @@ def _select_retry_route(unit: WorkUnit, ladder: Sequence[Mapping[str, Any]], obj
 
 
 def _run_unit_once(
-    unit: WorkUnit, repo: Path, executor: PatchExecutor, *, mechanical: bool, runner: Any
+    unit: WorkUnit, repo: Path, executor: UnitExecutor, *, mechanical: bool, runner: Any
 ) -> tuple[UnitOutcome, bool]:
     """Try one tier and return (outcome, executor_failed).
 
     executor_failed is True if the model tier failed (attempt not applied or exception).
+
+    An executor with ``preflight`` is asked first, before the mechanical tier (``ruff --fix`` may
+    edit an owned file the check would otherwise refuse); the refusal is acted on only if the
+    mechanical tier declines the unit. An executor with ``restore`` has it called once on every
+    exit from the model tier other than a verified success, exceptions and ``KeyboardInterrupt``
+    included.
     """
     started = time.monotonic()
     # Units run in sequence against one tree, so earlier units leave it dirty.
     # Attribution is the delta against this snapshot, not the whole dirty set.
     before = _tree_state(repo, runner=runner)
+    refusal = _preflight_refusal(executor, unit)
 
     if mechanical and _try_mechanical(unit, repo, runner=runner):
         touched = _touched_since(repo, before, runner=runner)
@@ -3105,6 +3173,64 @@ def _run_unit_once(
             False,
         )
 
+    if refusal is not None:
+        # No worker starts and no model attempt is counted. An edit the mechanical tier made
+        # before declining stays on disk and is attributed to this unit, as on the default path.
+        return (
+            UnitOutcome(
+                unit_id=unit.unit_id,
+                tier="refused",
+                model=executor.config.model,
+                verified=False,
+                reason=refusal,
+                changed_files=_touched_since(repo, before, runner=runner),
+                latency_ms=int((time.monotonic() - started) * 1000),
+            ),
+            False,
+        )
+
+    restore = getattr(executor, "restore", None)
+    if not callable(restore):
+        return _run_model_tier(unit, repo, executor, before, runner=runner)
+    try:
+        outcome, executor_failed = _run_model_tier(unit, repo, executor, before, runner=runner)
+    except BaseException:
+        # The original exception propagates unchanged; a failure of restore() never replaces it.
+        try:
+            restore()
+        except Exception as restore_error:
+            print(
+                f"autodev: restoring the owned files of unit {unit.unit_id} failed: "
+                f"{type(restore_error).__name__}: {restore_error}",
+                file=sys.stderr,
+            )
+        raise
+    if not outcome.verified:
+        try:
+            note = str(restore() or "")
+        except Exception as restore_error:
+            note = f"restore failed: {type(restore_error).__name__}: {restore_error}"
+        if note:
+            outcome = replace(outcome, reason=f"{outcome.reason}; {note}")
+    return outcome, executor_failed
+
+
+def _preflight_refusal(executor: UnitExecutor, unit: WorkUnit) -> str | None:
+    """The executor's reason to refuse ``unit`` before any worker starts, or ``None``."""
+    preflight = getattr(executor, "preflight", None)
+    if not callable(preflight):
+        return None
+    try:
+        reason = preflight(unit)
+    except Exception as exc:  # fail closed: a precondition that cannot be read is a refusal
+        return f"precondition check failed: {type(exc).__name__}: {exc}"
+    return str(reason) if reason else None
+
+
+def _run_model_tier(
+    unit: WorkUnit, repo: Path, executor: UnitExecutor, before: dict[str, str], *, runner: Any
+) -> tuple[UnitOutcome, bool]:
+    """Run the executor on ``unit``, then attribute and verify what it changed."""
     # The mechanical tier may have written a partial repair before declining the
     # unit. Those edits are on disk either way, so they belong in this unit's
     # attribution rather than going unreported or landing on a later unit.
@@ -3158,7 +3284,7 @@ def _run_unit_once(
 
 
 def _run_unit(
-    unit: WorkUnit, repo: Path, executor: PatchExecutor, *, mechanical: bool, runner: Any
+    unit: WorkUnit, repo: Path, executor: UnitExecutor, *, mechanical: bool, runner: Any
 ) -> UnitOutcome:
     """Try the cheapest tier that can satisfy ``unit``, then verify mechanically."""
     outcome, _ = _run_unit_once(unit, repo, executor, mechanical=mechanical, runner=runner)
