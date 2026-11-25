@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 import subprocess
 from pathlib import Path
 
@@ -374,6 +376,8 @@ def test_agents_md_where_things_live_byte_cap_with_multibyte_text(tmp_path: Path
         "|---|---|\n" + wide_row + "\n## Another section\n\nSome text.\n"
     )
     (tmp_path / "AGENTS.md").write_text(agents_text, encoding="utf-8")
+    # Precondition: the section really is over the cap, so the cap has to act.
+    assert len(wide_row.encode("utf-8")) > 4096
 
     result = _agents_md_where_things_live(tmp_path)
 
@@ -381,6 +385,15 @@ def test_agents_md_where_things_live_byte_cap_with_multibyte_text(tmp_path: Path
     assert len(encoded) <= 4096, f"byte length {len(encoded)} exceeds 4096"
     # Must decode cleanly — no partial trailing multibyte sequence was kept.
     encoded.decode("utf-8")
+    # The cap truncates; it does not drop the section. An empty result (extractor
+    # failure) or a result cut far below the cap must fail here.
+    assert result.startswith("## Where things live\n"), result[:60]
+    assert "| Path | What |" in result
+    # A 3-byte character cut mid-sequence loses at most 2 bytes, so a correct cap
+    # keeps 4094..4096 bytes and ends on a whole character.
+    assert 4094 <= len(encoded) <= 4096, f"kept {len(encoded)} bytes; cap is 4096"
+    assert result.endswith("\u20ac")
+    assert "Another section" not in result
 
 
 # ---------------------------------------------------------------- hydrate_node_prompt
@@ -485,26 +498,94 @@ async def test_frontier_planner_success_first_try(tmp_path: Path) -> None:
     assert len(executor.calls) == 1
 
 
+class _RecordingEvents:
+    """Event sink that records every ``emit`` as ``{"type": kind, **data}``."""
+
+    def __init__(self) -> None:
+        self.emitted: list[dict] = []
+
+    def emit(self, kind: str, **data: object) -> None:
+        self.emitted.append({"type": kind, **data})
+
+
+def _repo_map_in_prompt(prompt: str) -> str:
+    """The map text a planning prompt carries between ``REPO MAP:`` and ``CONSTRAINTS:``."""
+    found = re.search(r"REPO MAP:\n(.*?)\n\s*CONSTRAINTS:", prompt, re.DOTALL)
+    assert found is not None, "planning prompt has no REPO MAP section"
+    return found.group(1).strip()
+
+
 @pytest.mark.asyncio
 async def test_frontier_planner_emits_plan_context_with_repo_map_sha256(tmp_path: Path) -> None:
-    """plan() emits plan_context with repo_map_sha256 when events are provided."""
-    repo = _init_git_repo(tmp_path)
-    emitted: list[dict] = []
-
-    class _Events:
-        def emit(self, kind: str, **data: object) -> None:
-            emitted.append({"type": kind, **data})
+    """plan() emits plan_context whose digest is the SHA-256 of the map the planner was sent."""
+    repo = _init_git_repo_with_agents_md(tmp_path)
+    events = _RecordingEvents()
 
     executor = _ScriptedExecutor([WorkerTerminal(ok=True, output=_VALID_NODES_JSON)])
     await FrontierPlanner().plan(
-        "test goal", repo=repo, executor=executor, route_id="cc/test", events=_Events()
+        "test goal", repo=repo, executor=executor, route_id="cc/test", events=events
     )
-    plan_ctx = [e for e in emitted if e["type"] == "plan_context"]
+    plan_ctx = [e for e in events.emitted if e["type"] == "plan_context"]
     assert len(plan_ctx) == 1
     sha = plan_ctx[0]["repo_map_sha256"]
     # sha256 is a 64-character hex string
     assert isinstance(sha, str) and len(sha) == 64
     assert all(c in "0123456789abcdef" for c in sha)
+    # It is the hash of the map text inside the prompt the executor actually received,
+    # not just any well-formed digest.
+    sent_map = _repo_map_in_prompt(executor.calls[0])
+    assert sent_map, "the planner prompt carried an empty repo map"
+    assert sha == hashlib.sha256(sent_map.encode()).hexdigest()
+    assert sha != hashlib.sha256(b"").hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_prompt_carries_repo_map_with_agents_section(tmp_path: Path) -> None:
+    """The prompt sent to the planner holds the AGENTS.md section and the ordered file listing."""
+    repo = _init_git_repo_with_agents_md(tmp_path)
+    executor = _ScriptedExecutor([WorkerTerminal(ok=True, output=_VALID_NODES_JSON)])
+    await FrontierPlanner().plan("test goal", repo=repo, executor=executor, route_id="cc/test")
+    assert len(executor.calls) == 1
+    sent_map = _repo_map_in_prompt(executor.calls[0])
+    # The AGENTS.md table reached the planner without any --constraints-file.
+    assert '[AGENTS.md "Where things live"]' in sent_map
+    assert "| `verdict/commands/` | Subcommands |" in sent_map
+    assert "Another section" not in sent_map
+    # The file listing follows it, with verdict/ listed before tests/.
+    assert "[File listing]" in sent_map
+    assert sent_map.index("verdict/mod.py") < sent_map.index("tests/test_mod.py")
+    assert sent_map.index('[AGENTS.md "Where things live"]') < sent_map.index("[File listing]")
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_repair_call_resends_same_map_and_emits_no_second_plan_context(
+    tmp_path: Path,
+) -> None:
+    """One plan_context per plan() call; the validation-repair call carries the same map.
+
+    The spec says exactly this: the repair prompt is the planning prompt plus the
+    validation error, so it holds the same repo map, and no second plan_context
+    event is emitted for it.
+    """
+    repo = _init_git_repo_with_agents_md(tmp_path)
+    events = _RecordingEvents()
+    executor = _ScriptedExecutor(
+        [
+            WorkerTerminal(ok=True, output="not json at all"),
+            WorkerTerminal(ok=True, output=_VALID_NODES_JSON),
+        ]
+    )
+    await FrontierPlanner().plan(
+        "test goal", repo=repo, executor=executor, route_id="cc/test", events=events
+    )
+    assert len(executor.calls) == 2, "the first answer was invalid, so a repair call must follow"
+    first_map = _repo_map_in_prompt(executor.calls[0])
+    repair_map = _repo_map_in_prompt(executor.calls[1])
+    assert first_map and repair_map == first_map
+    assert "Your previous response failed validation" in executor.calls[1]
+    kinds = [e["type"] for e in events.emitted]
+    assert kinds == ["plan_context", "plan_repair_started", "plan_repair_terminal"]
+    assert events.emitted[0]["repo_map_sha256"] == hashlib.sha256(first_map.encode()).hexdigest()
 
 
 @pytest.mark.asyncio

@@ -387,6 +387,11 @@ class TestOperatorOverlay:
         so both lookups are guaranteed to land within the TTL window on slow
         CI runners — without freezing, an expiry between calls would let even
         the broken code produce the correct answer.
+
+        This guards against reintroducing that fast path.  It never enters
+        ``preload_overlay()``; the batch path is covered by
+        ``test_preload_overlay_loads_once_for_repeated_lookups`` and
+        ``test_nested_preload_overlay_restores_outer_overlay``.
         """
         import time
 
@@ -492,6 +497,81 @@ class TestOperatorOverlay:
         )
 
         _cb._overlay_cache = None
+
+    def test_preload_overlay_loads_once_for_repeated_lookups(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Inside preload_overlay() the overlay is loaded once, however many lookups follow.
+
+        This is the point of preload_overlay(): a 7000-route projection must not call
+        _load_overlay() (and so verdict_home()) once per route.  The counter wraps the
+        real loader, so the facts below still come from the real overlay file.
+        """
+        import verdict.connection_billing as _cb
+        from verdict.connection_billing import preload_overlay
+
+        overlay = {
+            "entries": [{"provider": "openai", "billing": "metered", "overage": "meters-to-paid"}]
+        }
+        (tmp_path / "connection_billing_overlay.json").write_text(json.dumps(overlay))
+        monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+        monkeypatch.setattr(_cb, "_overlay_cache", None)
+
+        real_load = _cb._load_overlay
+        loads: list[object] = []
+
+        def counting_load(env: Any = None) -> Any:
+            loads.append(env)
+            return real_load(env)
+
+        monkeypatch.setattr(_cb, "_load_overlay", counting_load)
+
+        with preload_overlay():
+            assert len(loads) == 1, "entering the block loads the overlay exactly once"
+            facts = [lookup("openai", None) for _ in range(25)]
+            assert len(loads) == 1, (
+                f"{len(loads) - 1} lookup(s) inside preload_overlay() reloaded the overlay"
+            )
+
+        assert all(
+            f is not None and f.billing == BILLING_METERED and f.source == SOURCE_OVERLAY
+            for f in facts
+        ), "lookups inside the block must still return the overlay's facts"
+
+        # The counter is live: outside the block each lookup loads the overlay again.
+        assert lookup("openai", None) is not None
+        assert len(loads) == 2
+
+    def test_lookup_with_explicit_env_inside_preload_block_ignores_preloaded_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A caller that passes env= is asking about another home; it must not get the batch."""
+        import verdict.connection_billing as _cb
+        from verdict.connection_billing import preload_overlay
+
+        home_batch = tmp_path / "batch"
+        home_other = tmp_path / "other"
+        home_batch.mkdir()
+        home_other.mkdir()
+        (home_batch / "connection_billing_overlay.json").write_text(
+            json.dumps(
+                {"entries": [{"provider": "prov-x", "billing": "metered", "overage": "unknown"}]}
+            )
+        )
+        (home_other / "connection_billing_overlay.json").write_text(
+            json.dumps(
+                {"entries": [{"provider": "prov-x", "billing": "keyless", "overage": "hard-stop"}]}
+            )
+        )
+        monkeypatch.setenv("VERDICT_HOME", str(home_batch))
+        monkeypatch.setattr(_cb, "_overlay_cache", None)
+
+        with preload_overlay():
+            batch_fact = lookup("prov-x", None)
+            other_fact = lookup("prov-x", None, env={"VERDICT_HOME": str(home_other)})
+
+        assert batch_fact is not None and batch_fact.billing == BILLING_METERED
+        assert other_fact is not None and other_fact.billing == BILLING_KEYLESS
 
 
 # ---------------------------------------------------------------------------

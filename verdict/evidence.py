@@ -58,6 +58,8 @@ _COMPACT_ADMIT_RECEIPT_FIELDS: tuple[str, ...] = (
     "class_reasons",
     "requirements",
     "capability_matches",
+    "requirement_waivers",
+    "worker_assignment",
 )
 _COMPACT_ADMIT_LIST_FIELDS = frozenset(
     {
@@ -68,6 +70,7 @@ _COMPACT_ADMIT_LIST_FIELDS = frozenset(
         "class_reasons",
         "requirements",
         "capability_matches",
+        "requirement_waivers",
     }
 )
 # Snapshot arrays stay off the compact evidence receipt (size / privacy).

@@ -29,6 +29,8 @@ FIXTURE_MEDIA = (
     "chart-paired-fixture.svg",
     "chart-live-savings.svg",
 )
+# Static artwork that is not a recording of any run, so it has no evidence record to point at.
+BRAND_ASSETS = ("readme-banner.svg",)
 ASSETS = ROOT / "docs" / "assets"
 DEMO_RUN = ROOT / "docs" / "proof" / "demo-run"
 MAX_ASSET_BYTES = 2 * 1024 * 1024
@@ -88,6 +90,10 @@ def test_readme_walkthrough_is_visible_and_truthfully_labelled() -> None:
         elif target == "docs/assets/live-cockpit.svg":
             # The live cockpit recording must point at its evidence record next to it.
             assert "docs/proof/live-cockpit-20261119T130739Z/README.md" in text
+            assert local.stat().st_size <= MAX_ASSET_BYTES
+        elif target in {f"docs/assets/{name}" for name in BRAND_ASSETS}:
+            # Brand artwork: allowed by name only, never fixture media, and size-limited.
+            assert target.removeprefix("docs/assets/") not in FIXTURE_MEDIA
             assert local.stat().st_size <= MAX_ASSET_BYTES
         else:
             assert target.startswith("docs/proof/") and "live" in target

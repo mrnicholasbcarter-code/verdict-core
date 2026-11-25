@@ -537,6 +537,22 @@ def _build_single_executor(
     )
 
 
+def _worker_serve_origin(args: argparse.Namespace) -> str | None:
+    """The ``verdict serve`` origin workers call, resolved as the opencode executor resolves it.
+
+    ``--serve-url``, else ``VERDICT_SERVE_URL``, else the serve unit's own address. An address
+    that is not an http(s) origin binds none (None): the opencode executor raises on it when it
+    is built, and an executor that sends through serve is refused when none is bound, so a bad
+    address is never replaced by the default. Runs that never use serve are not affected by it.
+    """
+    from verdict.serve_service import ServeServiceError, resolve_serve_origin
+
+    try:
+        return resolve_serve_origin(getattr(args, "serve_url", None))
+    except ServeServiceError:
+        return None
+
+
 def _parse_executor_map(raw: str) -> dict[str, str]:
     """Parse ``node-1=prime-headless,node-2=direct-gateway`` into a dict.
 
@@ -972,13 +988,16 @@ def _orchestrate(args: argparse.Namespace) -> int:
 
     # BOD-433: every worker send needs a permit proven by a stored, fresh passport.
     # Each worker executor must report this origin (Prime: its launch's models.json
-    # baseUrl; direct-gateway: --gateway), or its send is denied.
+    # baseUrl; direct-gateway: --gateway), or its send is denied. A worker that sends
+    # through verdict serve (opencode) reports its serve origin and is checked against
+    # ``worker_serve_origin`` instead (#1326).
     from verdict.orchestration.runtime import REDACT_GATEWAY_ORIGIN_ENV
 
     dispatch_authority = DispatchAuthority(
         gateway_origin=args.gateway.rstrip("/"),
         confirm=lambda route_ids, now: passport_confirmation(route_ids, now=now),
         record_gateway_origin=os.environ.get(REDACT_GATEWAY_ORIGIN_ENV) != "1",
+        worker_serve_origin=_worker_serve_origin(args),
     )
     events_path = run_dir / "events.jsonl"
     events_path.touch()
@@ -1211,6 +1230,27 @@ def _derive_no_change_nodes(run_dir: Path, receipt: Mapping[str, Any]) -> list[s
     return [str(n) for n in fresh.get("no_change_nodes", []) if str(n).strip()]
 
 
+def _assignment_note(attempt: dict[str, Any]) -> str:
+    """What the attempt's signed assignment adds to its line in ``run-receipt``, or nothing.
+
+    ``, streaming waived`` when serve served at least one request of the attempt with a
+    requirement waived; ``, serve receipts unavailable`` when that could not be read, so a
+    reader never takes an unread record for a clean one.  An attempt that signed nothing, or that
+    serve saw without a waiver, adds nothing.
+    """
+    record = attempt.get("worker_assignment")
+    serve = record.get("serve_receipts") if isinstance(record, dict) else None
+    if not isinstance(serve, dict):
+        return ""
+    if serve.get("status") == "unavailable":
+        return ", serve receipts unavailable"
+    waivers = serve.get("requirement_waivers") or []
+    names = sorted(
+        {str(w["requirement"]) for w in waivers if isinstance(w, dict) and w.get("requirement")}
+    )
+    return f", {', '.join(names)} waived" if names else ""
+
+
 def _receipt(args: argparse.Namespace) -> int:
     from verdict.actions.registry import run_action
 
@@ -1259,6 +1299,7 @@ def _receipt(args: argparse.Namespace) -> int:
                 f"{a.get('route_id') or 'merge'}[{a.get('outcome')}"
                 + (f":{a['failure_category']}" if a.get("failure_category") else "")
                 + ("*" if a.get("fault_injected") else "")
+                + _assignment_note(a)
                 + "]"
                 for a in node.get("attempts", [])
             )

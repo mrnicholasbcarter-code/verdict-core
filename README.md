@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/readme-banner.svg" alt="Verdict banner: the stages of a run, from goal to receipt." width="100%">
+
 # Verdict
 
 **A control plane for coding agents that shows its work.** <!-- claim:C-001 -->
@@ -7,44 +9,98 @@
 Verdict decides which model may run each piece of a coding task, checks the work, has a different model review it, and writes a receipt you can verify.<br>
 Model admission, bounded recovery, a separate review route and receipts you can verify. <!-- claim:C-002 -->
 
-[![CI](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml)
-[![Security](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml/badge.svg)](https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml)
-[![coverage gate 70%](https://img.shields.io/badge/coverage%20gate-70%25-blue.svg)](.github/workflows/ci.yml)
-[![version 1.0.0](https://img.shields.io/badge/version-1.0.0-blue.svg)](pyproject.toml)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
-[![MIT license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[Quick start](#quick-start) | [Features](#features) | [How a run works](#how-a-run-works) | [Verify a receipt](#verify-a-receipt-yourself) | [Docs](#documentation) | [Limits](#limits)
 
-<p align="center"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/live-cockpit-poster.svg"><img src="docs/assets/live-cockpit.svg" alt="Replay of one live verdict orchestrate run (20261119T130739Z, 2026-11-19, main 35c110c1, free capacity) in the Verdict cockpit: workers on cerebras/gpt-oss-120b hit a real HTTP 429 rate limit and a failed test, both nodes are reassigned to nvidia/google/gemma-4-31b-it and pass, open-code-review on a different model family returns PASS, and verdict run-receipt reports integrity OK with exit status 0. Gaps between events capped at 1.5 s." width="860"></picture></p>
-
-*Replay of one live `verdict orchestrate` run on the operator's gateway (2026-11-19, main `35c110c1`, FREE capacity only), not a fixture and not a benchmark. Idle time is capped: gaps between events over 1.5 s are shortened. [asciicast](docs/assets/live-cockpit.cast) | [evidence record](docs/proof/live-cockpit-20261119T130739Z/README.md)*
-
-[Quick start](#quick-start-no-api-keys) | [How a run works](#how-a-run-works) | [Verify a receipt](#verify-a-receipt-yourself) | [Limits](#limits) | [Docs](#documentation)
+<p align="center">
+  <a href="https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/mrnicholasbcarter-code/verdict-core/ci.yml?branch=main&style=for-the-badge&label=CI" alt="CI status"></a>
+  <a href="https://github.com/mrnicholasbcarter-code/verdict-core/actions/workflows/security.yml"><img src="https://img.shields.io/github/actions/workflow/status/mrnicholasbcarter-code/verdict-core/security.yml?branch=main&style=for-the-badge&label=security" alt="Security workflow status"></a>
+  <a href="https://pypi.org/project/verdict-core/"><img src="https://img.shields.io/badge/PyPI-1.0.0-3775A9?style=for-the-badge&logo=pypi&logoColor=white" alt="Version 1.0.0 on PyPI"></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10 or newer"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge" alt="MIT license"></a>
+  <a href="#limits"><img src="https://img.shields.io/badge/status-active%20development-f59e0b?style=for-the-badge" alt="Status: active development"></a>
+</p>
 
 </div>
 
 ---
 
-## The problem
+> **Project status.** Version 1.0.0 is published on PyPI and under active development. The release has not yet passed its certification rehearsal, and Verdict makes no cost or token-saving claims. [Limits](#limits) sets out what is proven today and what is not.
 
-A coding agent can reach many models through one gateway. Some are out of quota. Some are rate-limited. Some cannot call tools. The model list does not tell you which. When the run ends you are told it passed. You are not told which model did the work, which models were refused and why, or whether anyone other than the author looked at the result.
+## What is Verdict?
 
-Give Verdict a goal and a git repository. It plans the work, admits models from live evidence, runs the work in parallel, reassigns a node when a model fails, asks a reviewer on a separate route to approve the result, and writes a receipt you can check afterward. A model that fails
+A coding agent can reach many models through a single gateway. At any moment some are out of quota, some are rate-limited and some cannot call tools, and the model list does not say which. When a run finishes, you learn that it passed. You do not learn which model did the work, which models were refused and why, or whether anyone other than the author reviewed the result.
+
+Verdict closes that gap. Given a goal and a git repository, it plans the work, admits models on live evidence, runs the work in parallel, reassigns a node when its model fails, requires approval from a reviewer on a separate route, and writes a receipt you can verify afterwards. A model that fails
 an admission check cannot be ranked back in.
 
-Verdict does not run models itself. OmniRoute, a local OpenAI-compatible gateway, lists the models and carries the calls. `ocr` (open-code-review) does the review.
+Verdict is a control plane, not a model runtime. OmniRoute, a local OpenAI-compatible gateway, provides the model inventory and carries every call. `ocr` (open-code-review) performs the review.
 
-## What you get
+## Features
 
-| | |
-|---|---|
-| **Models are checked before they are trusted** | Verdict looks at live account, health and quota evidence before it uses a model, and records why it dropped any other. <!-- claim:C-003 --> |
-| **Free and already-paid capacity first** | Eligible free and already-paid capacity is tried before pay-per-call routes. This is a selection policy, not a savings claim. The [retained live run](docs/proof/dogfood-bod-225-live-2026-09-29/README.md) used subscription workers, not free workers; free capacity still needs fresh admission evidence. <!-- claim:C-004 --><!-- claim:C-016 --><!-- claim:C-017 --> |
-| **Recovery with a limit** | A quota limit, rate limit, timeout or failed verification can retry the same work, sometimes on another admitted model, within a bounded number of tries. When the tries are spent or no admitted model is left, the run ends `BLOCKED`. It does not hang. <!-- claim:C-005 --> |
-| **A separate review route** | A reviewer on a route that did not implement the work must approve the result. Another model family is preferred; when none has capacity, review falls back to route-level independence. A skipped or empty review is an error, not a pass. <!-- claim:C-006 --> |
-| **A receipt you can verify** | A completed run's receipt stores a digest of its event log. `verdict run-receipt` checks that log against the receipt and flags any change. <!-- claim:C-007 --> |
-| **A live view** | `verdict watch` shows a run while it happens, and replays a finished one. |
+<table>
+<tr>
+<td width="50%" valign="top">
 
-## Quick start (no API keys)
+**🛂 Models are checked before they are trusted**
+
+Verdict evaluates live account, health and quota evidence before a model is used, and records the reason for every model it excludes. <!-- claim:C-003 -->
+
+</td>
+<td width="50%" valign="top">
+
+**🪙 Free and already-paid capacity first**
+
+Eligible free and already-paid capacity is selected ahead of pay-per-call routes. This is a selection policy, not a savings claim. The [retained live run](docs/proof/dogfood-bod-225-live-2026-09-29/README.md) used subscription workers, not free workers; free capacity still requires fresh admission evidence. <!-- claim:C-004 --><!-- claim:C-016 --><!-- claim:C-017 -->
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**🔁 Recovery with a limit**
+
+A quota limit, rate limit, timeout or failed verification triggers a retry, on another admitted model where needed, within a fixed attempt budget. When the budget is spent or no admitted model remains, the run ends `BLOCKED`. It never hangs. <!-- claim:C-005 -->
+
+</td>
+<td width="50%" valign="top">
+
+**🧑‍⚖️ A separate review route**
+
+A reviewer on a route that did not implement the work must approve the result. Another model family is preferred; when none has capacity, review falls back to route-level independence. A skipped or empty review is an error, not a pass. <!-- claim:C-006 -->
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**🧾 A receipt you can verify**
+
+Every completed run produces a receipt that stores a digest of its event log. `verdict run-receipt` re-checks the log against the receipt and reports any change. <!-- claim:C-007 -->
+
+</td>
+<td width="50%" valign="top">
+
+**📺 A live view**
+
+`verdict watch` shows a run while it happens, and replays a finished one.
+
+</td>
+</tr>
+</table>
+
+## See a real run
+
+<div align="center">
+
+<p align="center"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/live-cockpit-poster.svg"><img src="docs/assets/live-cockpit.svg" alt="Replay of one live verdict orchestrate run (20261119T130739Z, 2026-11-19, main 35c110c1, free capacity) in the Verdict cockpit: workers on cerebras/gpt-oss-120b hit a real HTTP 429 rate limit and a failed test, both nodes are reassigned to nvidia/google/gemma-4-31b-it and pass, open-code-review on a different model family returns PASS, and verdict run-receipt reports integrity OK with exit status 0. Gaps between events capped at 1.5 s." width="860"></picture></p>
+
+*Replay of one live `verdict orchestrate` run on the operator's gateway (2026-11-19, main `35c110c1`, FREE capacity only), not a fixture and not a benchmark. Idle time is capped: gaps between events over 1.5 s are shortened. [asciicast](docs/assets/live-cockpit.cast) | [evidence record](docs/proof/live-cockpit-20261119T130739Z/README.md)*
+
+</div>
+
+## Quick start
+
+### Step 1: Make one routing decision (no API keys)
 
 The fixture makes one deterministic routing decision. It needs no API key, no gateway and no model call:
 
@@ -72,7 +128,7 @@ Status: PASS
 
 Three candidates were refused, and each refusal has a named reason. Source: [`verdict/flagship_demo.py`](verdict/flagship_demo.py). Test: [`tests/test_flagship_demo.py`](tests/test_flagship_demo.py) asserts this block byte for byte. <!-- claim:C-015 -->
 
-### Run the whole loop offline
+### Step 2: Run the whole loop offline
 
 ```bash
 verdict demo
@@ -89,6 +145,17 @@ OFFLINE SCENARIO: scripted workers (1.5 s each), injected faults
 ```
 
 `verdict demo` is an **offline self-test**: scripted workers, fixture routes and injected faults, with no model calls. It runs the real orchestration pipeline (planner, admission, DAG runtime, failure handling, integration barrier, review-route policy, receipt writer) against fixture data. It shows the mechanics. It is not evidence of live behaviour. The full trace and the offline recordings are in the [offline demo guide](docs/guides/offline-demo.md). <!-- claim:C-029 -->
+
+### Step 3: Run it live
+
+A live run needs four things: an OmniRoute gateway at `http://localhost:20128` with at least one provider account, its key exported as `VERDICT_OMNIROUTE_API_KEY`, `ocr` on your PATH, and a git repository to change.
+
+```bash
+verdict doctor                                  # health check, with a repair command for each failure
+verdict orchestrate "your goal, in a sentence" --repo .
+verdict watch <run-id>                          # live view of the run
+verdict run-receipt <run-id>                    # show and verify its receipt
+```
 
 ## How a run works
 
@@ -172,11 +239,31 @@ The first command exits 0. The second exits 1, names the digest mismatch first, 
 
 **The recording at the top.** One `verdict orchestrate` run from main `35c110c1` on 2026-11-19, on free routes only: a real HTTP 429 and a failed test on `cerebras/gpt-oss-120b`, both nodes reassigned to `nvidia/google/gemma-4-31b-it`, review PASS by `ocr` on a route from another model family, receipt integrity OK. Its [evidence record](docs/proof/live-cockpit-20261119T130739Z/README.md) quotes the run's digests and `verdict run-receipt` output. It is an evidence record, not a verifiable bundle: the raw event log is kept privately because it holds host paths. An earlier one-node run has its own [evidence record](docs/proof/live-run-20261119T000727Z/README.md).
 
-**Verdict building Verdict.** Verdict has built one story of its own: BOD-305, merged as [PR #1115](https://github.com/mrnicholasbcarter-code/verdict-core/pull/1115). It took six runs and five of them ended `BLOCKED`. This is not routine yet.
+**Self-hosting.** Verdict has delivered one story on its own codebase: BOD-305, merged as [PR #1115](https://github.com/mrnicholasbcarter-code/verdict-core/pull/1115). It took six runs, five of which ended `BLOCKED`, so self-hosting is an early capability and not yet routine.
+
+## How Verdict differs
+
+Verdict is not a proxy or a model catalog. It sits in front of one and decides what may run. The table summarises the comparison guide's rows for LiteLLM, OpenRouter and Portkey.
+
+| Question | LiteLLM, OpenRouter, Portkey | Verdict |
+|---|---|---|
+| A model's health is unknown. Does it still get the call? | Often yes, through fallback, retry or provider routing; guardrails are optional | No. Unknown is never counted as healthy |
+| Where is the reason a candidate was dropped? | In that tool's logs, usage logs or traces, not in a gate receipt | A named reason on every drop |
+| Can a score put an excluded model back? | Routing configuration, the marketplace or policy can | No |
+
+The full comparison, row by row for each tool, and what Verdict does not claim, is in [How Verdict differs](docs/guides/comparison.md).
+
+## Use it from your tools
+
+`verdict serve` is the HTTP service (install it with `pip install -e '.[server]'`). `POST /v1/route` returns a route decision for a request that carries an `execution_path_request`. `POST /v1/chat/completions` routes a call and relays it upstream. It needs `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB` before it starts; `verdict setup --apply --allow host.serve` sets both. See [first run](docs/CONFIGURATION.md#first-run).
+
+Claude Code, Codex, Cursor, Cline and OpenCode can be pointed at that relay as their model endpoint: `verdict harness <tool> enable`. That makes the tool a client of Verdict. It does not make it a worker: `verdict orchestrate` cannot run a worker on any of them, except OpenCode through the separate opt-in `--executor opencode` (it does not yet work through `verdict serve`, issue #1313). See the [harness guide](docs/guides/harnesses.md).
 
 ## Install
 
-Version 1.0.0 is on PyPI. <!-- claim:C-025 --> It is not certified: the attested certification rehearsal has not passed yet (see #1168 and #1169).
+[![version 1.0.0](https://img.shields.io/badge/version-1.0.0-blue.svg)](pyproject.toml)
+
+Version 1.0.0 is available on PyPI. <!-- claim:C-025 --> The release is not yet certified: the attested certification rehearsal has not passed (see #1168 and #1169).
 
 ```bash
 pip install verdict-core
@@ -187,21 +274,6 @@ pip install verdict-core
 The rest of this README describes 1.0.0.
 
 Python 3.10, 3.11, 3.12 and 3.13, tested in CI on Linux (Ubuntu). macOS and Windows are not tested in CI.
-
-## A live run
-
-A live run needs four things: an OmniRoute gateway at `http://localhost:20128` with at least one provider account, its key exported as `VERDICT_OMNIROUTE_API_KEY`, `ocr` on your PATH, and a git repository to change.
-
-```bash
-verdict doctor                                  # health check, with a repair command for each failure
-verdict orchestrate "your goal, in a sentence" --repo .
-verdict watch <run-id>                          # live view of the run
-verdict run-receipt <run-id>                    # show and verify its receipt
-```
-
-`verdict serve` is the HTTP service (install it with `pip install -e '.[server]'`). `POST /v1/route` returns a route decision for a request that carries an `execution_path_request`. `POST /v1/chat/completions` routes a call and relays it upstream. It needs `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB` before it starts; `verdict setup --apply --allow host.serve` sets both. See [first run](docs/CONFIGURATION.md#first-run).
-
-Claude Code, Codex, Cursor, Cline and OpenCode can be pointed at that relay as their model endpoint: `verdict harness <tool> enable`. That makes the tool a client of Verdict. It does not make it a worker: `verdict orchestrate` cannot run a worker on any of them, except OpenCode through the separate opt-in `--executor opencode` (it does not yet work through `verdict serve`, issue #1313). See the [harness guide](docs/guides/harnesses.md).
 
 ## Architecture
 
@@ -218,10 +290,10 @@ Component map and data flow: [`docs/architecture.md`](docs/architecture.md). The
 
 ## Limits
 
-- **1.0.0 is not released.** The release workflow requires a CERTIFIED evidence bundle (repository variable `VERDICT_REQUIRE_CERTIFIED_BUNDLE` is `true`). None exists, because the certification rehearsal does not pass yet. Until one exists the workflow refuses to publish.
-- **No cost saving is claimed yet.** No token saving is claimed either. The 2026-09-28 live cost check chose the same model in both arms, so it measured no routing saving. One paired usage run on 2026-11-19 did not support a claim: the Verdict arm completed fewer tasks than the baseline, so the bench refused it. Its evidence is not published. See [`docs/benchmarks/README.md`](docs/benchmarks/README.md). <!-- claim:C-018 -->
+- **1.0.0 is published but not certified.** The package is on PyPI. The certified release workflow requires a CERTIFIED evidence bundle (repository variable `VERDICT_REQUIRE_CERTIFIED_BUNDLE` is `true`), and none exists yet because the certification rehearsal has not passed. Until one does, that workflow will not publish.
+- **No cost saving is claimed yet.** No token saving is claimed either. The 2026-09-28 live cost check selected the same model in both arms and therefore measured no routing saving. A paired usage run on 2026-11-19 did not support a claim: the Verdict arm completed fewer tasks than the baseline, and the bench rejected the result. That run's evidence is not published. See [`docs/benchmarks/README.md`](docs/benchmarks/README.md). <!-- claim:C-018 -->
 - **Context packing: one dated live observation, not offline proof.** One recorded paired run, n=1, on a live gateway. See [`docs/benchmarks/context-lift.md`](docs/benchmarks/context-lift.md). A blocked or skipped live run makes no lift claim.
-- **Self-hosting is early.** One story built by Verdict itself, in six runs, five of them `BLOCKED`.
+- **Self-hosting is at an early stage.** Verdict has delivered one story on its own codebase, in six runs, five of which ended `BLOCKED`.
 - **Live orchestration requires a gateway.** OmniRoute must be running at `http://localhost:20128`. The credential-free quickstart and benchmark paths need no gateway. <!-- claim:C-019 -->
 - **Worker model availability is external.** Verdict combines gateway inventory and account evidence with its own runtime health and admission evidence before selection. Quota, rate limits, and provider outages are not under Verdict's control. It recovers from them, but cannot prevent them. <!-- claim:C-020 -->
 - **Workers run on `direct-gateway` by default.** There is an opt-in worker executor for OpenCode (`--executor opencode`) that does not yet work through `verdict serve` (issue #1313); there is none for Claude Code or Codex.
@@ -252,9 +324,9 @@ Component map and data flow: [`docs/architecture.md`](docs/architecture.md). The
 
 ## Roadmap
 
-None of this is done. It is listed so nothing above is read as covering it.
+The items below are planned and not yet implemented. They are listed so that nothing above is read as covering them.
 
-- **Publish 1.0.0.** Waits on a passing certification rehearsal.
+- **Certify the 1.0.0 release.** Waits on a passing certification rehearsal.
 - **OpenCode as the default worker executor.** The executor exists and is opt-in; it becomes the default only after a live smoke passes once serve admits its requests (issue #1313).
 - **Cross-provider fencing on the first worker failure.** Today a failure cools down only the failed route or its own provider.
 - **A single retry authority.** Node recovery, the relay and the reviewer each keep their own bounded retry loop today.
@@ -263,7 +335,7 @@ None of this is done. It is listed so nothing above is read as covering it.
 
 ## Contributing
 
-Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md). Security reports: [`SECURITY.md`](SECURITY.md).
+Contributions are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md), and report security issues through [`SECURITY.md`](SECURITY.md).
 
 ## License
 

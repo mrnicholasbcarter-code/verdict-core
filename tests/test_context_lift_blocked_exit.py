@@ -210,24 +210,42 @@ class TestDoctorTimerRow:
         assert "no_qualified_identity" in row["detail"]
 
     def test_failed_blocked_no_bench_file_is_failed(self) -> None:
-        """Service failed but no bench file (crash before write) -> failed."""
+        """Service failed but no bench file (crash before write) -> failed.
+
+        Every other warning prerequisite holds (exit 2, active timer, matching
+        invocation), so the missing receipt is the only reason for ``failed``.
+        """
         from verdict.doctor_diagnostics import _context_lift_timer_row
 
-        row = _context_lift_timer_row(
-            timer_state=lambda u: {"state": "failed", "result": "exit-code"},
-            bench_result=lambda: None,
+        # Control: the same unit state with a blocked receipt of this run is a warning.
+        control = _context_lift_timer_row(
+            timer_state=lambda u: _warning_ready_state(), bench_result=lambda: _id_receipt(_UNIT_ID)
         )
-        assert row["status"] == "failed"
+        assert control["status"] == "warning", control
+
+        row = _context_lift_timer_row(
+            timer_state=lambda u: _warning_ready_state(), bench_result=lambda: None
+        )
+        assert row["status"] == "failed", row
 
     def test_failed_non_blocked_conclusion_is_failed(self) -> None:
-        """Service exited non-zero but bench shows non-blocked conclusion -> failed."""
+        """Service exited non-zero but bench shows non-blocked conclusion -> failed.
+
+        The receipt is this run's own (matching invocation) and every other warning
+        prerequisite holds, so the non-blocked conclusion is the only reason.
+        """
         from verdict.doctor_diagnostics import _context_lift_timer_row
 
-        row = _context_lift_timer_row(
-            timer_state=lambda u: {"state": "failed", "result": "exit-code"},
-            bench_result=lambda: {"conclusion": "lift"},
+        control = _context_lift_timer_row(
+            timer_state=lambda u: _warning_ready_state(), bench_result=lambda: _id_receipt(_UNIT_ID)
         )
-        assert row["status"] == "failed"
+        assert control["status"] == "warning", control
+
+        row = _context_lift_timer_row(
+            timer_state=lambda u: _warning_ready_state(),
+            bench_result=lambda: _id_receipt(_UNIT_ID, conclusion="lift"),
+        )
+        assert row["status"] == "failed", row
 
     def test_missing_timer_is_failed(self) -> None:
         """Missing timer is failed."""
@@ -364,6 +382,21 @@ def _id_receipt(invocation_id: Any, *, conclusion: str = "blocked") -> dict[str,
         "conclusion": conclusion,
         "block_reason": "no_qualified_identity",
         "invocation_id": invocation_id,
+    }
+
+
+def _warning_ready_state() -> dict[str, Any]:
+    """A failed unit state for which every warning prerequisite holds.
+
+    ExecMainStatus is 2, the unit has an InvocationID and the timer is active; only
+    the receipt decides between ``warning`` and ``failed``.
+    """
+    return {
+        "state": "failed",
+        "result": "exit-code",
+        "exec_main_status": "2",
+        "invocation_id": _UNIT_ID,
+        "timer_active_state": "active",
     }
 
 

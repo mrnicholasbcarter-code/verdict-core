@@ -5,32 +5,51 @@ dispatch (``opencode run --standalone --auto --format json --archived``).
 
 Each attempt:
 
-0. Resolves the serve credential through :func:`_worker_credential` and checks, once and
-   before anything is launched, that the opencode binary runs and that ``verdict serve``
-   is reachable and accepts that credential.  Any failure is one
-   ``harness_configuration:`` message, which recovery treats as a block, not a retry.
+0. Checks the run id, the node id and the attempt timeout, signs a worker assignment for this
+   one attempt (:func:`verdict.worker_assignment.mint_assignment`, key from
+   :func:`~verdict.worker_assignment.load_assignment_key`) and checks, once and before anything
+   is launched, that the opencode binary runs and that ``verdict serve`` is reachable and
+   accepts the *serve* token.  Any failure is one ``harness_configuration:`` message, which
+   recovery treats as a block, not a retry.  The assignment is the worker's only credential for
+   serve: it names the route, the run and the node and expires with the attempt.  The serve token
+   stays in this (the orchestrator's) process, for that readiness check alone; it is never put in
+   the worker's environment, arguments, config or recorded output, and it is never the fallback
+   when an assignment cannot be signed.
 1. Writes a per-attempt ``opencode.json`` to a temp directory, pointed at by
-   ``OPENCODE_CONFIG_DIR``.
-2. Writes ``.verdict-context.md`` to the worktree as ambient instructions.
-3. Launches the opencode binary and collects NDJSON stdout.
-4. Maps the result to :class:`~verdict.orchestration.contracts.WorkerTerminal`.
-5. Deletes the temp directory on exit.
+   ``OPENCODE_CONFIG_DIR``, and the task text beside it as the instructions file
+   :data:`TASK_FILE_NAME`, which that config lists.  OpenCode skips a listed file that is
+   missing without a word, so the file is checked to exist, to be a readable file and not to
+   be empty just before launch, and an attempt without it never starts.
+2. Launches the opencode binary, hands it the one short ask :data:`TASK_PROMPT` on stdin (it
+   reads its message from stdin when it is given none) and ``--title`` (so it makes no second,
+   title-agent request), and collects NDJSON stdout.  The task text reaches the model once, as
+   instructions; nothing is written into the worktree.
+3. Maps the result to :class:`~verdict.orchestration.contracts.WorkerTerminal`.
+4. Deletes the temp directory, and with it the instructions file, on every way out.
+5. Reads back what serve recorded under the assignment (its digest, never the credential) and puts
+   it on the terminal, so the run receipt shows which attempts ran with a requirement waived
+   (:mod:`verdict.orchestration.serve_evidence`).  The same record decides what a 401 or 403 with
+   serve's refusal words means: serve forwards a provider's error unchanged, so it is a
+   configuration block only when serve's receipts show it admitted no request under the
+   assignment, and the provider's in every other case.  The receipt database is found from this
+   host's configuration, not from the serve the worker called, so an empty read counts only for a
+   database file (its device and inode, not just its path) this executor has already seen hold a
+   request under one of its own assignments, for the same serve address; otherwise the receipts
+   are unavailable and the error stays the provider's.  A refusal of the very first assignment
+   of a run is therefore never proven.
 
-**DISPATCH_ORIGIN_CONFLICT** — this executor declares
-:data:`~verdict.orchestration.contracts.LOCAL_EXECUTOR_ORIGIN` as a documented
-stopgap.  OpenCode workers route through Verdict serve (:8000), but
-``DispatchAuthority.gateway_origin`` is set from ``--gateway`` (OmniRoute
-:20128).  Reporting ``http://127.0.0.1:8000`` would fail the dispatch origin
-check in ``runtime.py`` (line ~1772).  Route identity is enforced by serve's
-per-request relay pinning instead (Decision 1, Task 2.4).  Follow-on: add a
-``worker_serve_origin`` field to ``DispatchAuthority`` so OpenCode can declare
-its real origin and the runtime accepts it without using LOCAL_EXECUTOR_ORIGIN.
+**Dispatch origin** — OpenCode workers send through Verdict serve (:8000), not the gateway
+(OmniRoute :20128), so this executor reports the serve origin it really calls (the address it
+resolved, as a :class:`~verdict.orchestration.contracts.WorkerServeOrigin`) and the runtime
+checks it against ``DispatchAuthority.worker_serve_origin`` before any send (#1326).  It never
+claims to send nothing: it sends.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import math
 import os
@@ -45,12 +64,21 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterable
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
-from verdict.orchestration.contracts import LOCAL_EXECUTOR_ORIGIN, AttemptUsage, WorkerTerminal
+from verdict.orchestration.contracts import AttemptUsage, WorkerServeOrigin, WorkerTerminal
 from verdict.orchestration.executors import idle_output_seconds_from_env
+from verdict.orchestration.serve_evidence import EvidenceMark, SeenDatabases, take_mark
+from verdict.worker_assignment import (
+    MAX_LIFETIME_SECONDS,
+    AssignmentError,
+    assignment_digest,
+    load_assignment_key,
+    mint_assignment,
+)
 
 __all__ = ["PINNED_VERSION", "OpenCodeExecutor"]
 
@@ -60,8 +88,31 @@ PINNED_VERSION = "2.3.2"
 OPENCODE_BIN_ENV = "VERDICT_OPENCODE_BIN"
 #: Env var the per-attempt config references for the worker API key.
 WORKER_API_KEY_ENV = "VERDICT_WORKER_API_KEY"
-#: Context file written to the worktree before each attempt (Task 4.1).
-CONTEXT_FILE_NAME = ".verdict-context.md"
+#: The instructions file that carries the task text, written beside ``opencode.json`` in the
+#: per-attempt config directory (never in the worktree) and listed in that config's
+#: ``instructions``.
+TASK_FILE_NAME = "verdict-task.md"
+#: The whole prompt of an attempt, sent on stdin: one short ask that points at the instructions.
+#: It is the same for every task; the task text itself is only in :data:`TASK_FILE_NAME`, so no
+#: text is sent twice and the prompt never nears the 131072-byte limit of one argument.
+TASK_PROMPT = (
+    "Carry out the task described in your instructions (the Verdict task file). "
+    "Make the edits it asks for, run its verification, and stop when verification passes."
+)
+
+#: Seconds a signed assignment stays valid past the attempt's own timeout.  The assignment is
+#: dated just before the pre-dispatch checks (which spend the attempt's budget), so its end falls
+#: this far after the attempt's deadline: room for the worker's last request, the kill grace
+#: (:data:`_TERM_GRACE_SECONDS`) and clock rounding, and nothing more.  It is not a retry window:
+#: an attempt whose timeout plus this margin would exceed the format's maximum lifetime
+#: (:data:`~verdict.worker_assignment.MAX_LIFETIME_SECONDS`, 1,800 s) is refused before launch,
+#: never shortened.
+ASSIGNMENT_MARGIN_SECONDS = 60
+
+#: How many whole seconds a later issue time an assignment may be pushed to keep its identity
+#: unique among this executor's live assignments (see :meth:`OpenCodeExecutor._sign`).  The
+#: verifier accepts an ``iat`` up to 60 s ahead of its clock, so a few seconds is well inside it.
+MAX_IDENTITY_BUMP_SECONDS = 30
 
 _TERM_GRACE_SECONDS = 5.0
 #: Cap on worker output (stdout plus stderr) kept in memory per attempt.  NDJSON is parsed
@@ -93,8 +144,11 @@ _STATUS_PHRASES = (
 #: An HTTP status read from unstructured text: only a 4xx or 5xx number that is marked as one.
 #: Either it follows ``HTTP`` (``HTTP 429``, ``HTTP/1.1 503``, ``HTTP error 500``) or ``status``
 #: (``status 503``, ``status: 504``, ``status code: 401``, ``statusCode=403``, ``"status":429``),
-#: or it is followed by its standard reason phrase (``429 Too Many Requests``).  A bare number is
-#: not a status: ``retrying in 500 ms`` and ``failed after 429 attempts`` carry none.
+#: or it is followed by its standard reason phrase (``429 Too Many Requests``), or by the wording
+#: of the ``requests`` library's ``HTTPError`` (``429 Client Error: Too Many Requests for url:
+#: ...``, ``503 Server Error: Service Unavailable for url: ...``: ``Client`` for a 4xx, ``Server``
+#: for a 5xx, then a colon).  A bare number is not a status: ``retrying in 500 ms`` and
+#: ``failed after 429 attempts`` carry none.
 _STATUS_RE = re.compile(
     r"""(?ix)
     (?: \bhttp(?:/\d(?:\.\d)?)? (?:\s+(?:status|error|code|response))*
@@ -105,6 +159,10 @@ _STATUS_RE = re.compile(
     \b([45]\d\d)\b (?= \s+ (?: """
     + "|".join(r"\s+".join(map(re.escape, phrase.split())) for phrase in _STATUS_PHRASES)
     + r""" ) \b )
+    |
+    \b(4\d\d)\b (?= \s+ Client \s+ Error \s* : )
+    |
+    \b(5\d\d)\b (?= \s+ Server \s+ Error \s* : )
     """
 )
 
@@ -154,7 +212,7 @@ def _parse_status_code(message: str) -> int | None:
     through here.  A number that merely sits in the text (a delay, a count) is not a status.
     """
     match = _STATUS_RE.search(message)
-    return int(match.group(1) or match.group(2)) if match else None
+    return int(next(group for group in match.groups() if group)) if match else None
 
 
 def _status_from_full_text(full: str) -> int | None:
@@ -185,6 +243,40 @@ def _as_float(value: Any) -> float | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return result if math.isfinite(result) else None
+
+
+#: The one message ``verdict serve`` answers any refused worker assignment with (HTTP 403, body
+#: ``{"error": {"message": "authentication failed", ...}}``): expired, tampered, signed with
+#: another key or dated ahead all look alike on purpose.  A provider's own 401 or 403 can say the
+#: same words, because serve forwards an upstream error unchanged, so the message alone never
+#: proves that serve refused the assignment (see :func:`_serve_never_admitted`).
+_SERVE_REFUSAL_MESSAGE = "authentication failed"
+
+
+def _looks_like_serve_refusal(status: int | None, message: str) -> bool:
+    """True when a failed worker's error has the status and the words of serve's refusal.
+
+    Only a candidate: a provider's 401 or 403 may say the same, and recovery reads that as the
+    route's provider denying the account (a cooldown for the provider), which is right for a
+    provider and wrong for a fault that is Verdict's own (a signing key serve does not share, a
+    clock that disagrees).  What decides between the two is serve's own record, read after the
+    worker is gone: :func:`_serve_never_admitted`.
+    """
+    return status in {401, 403} and message.strip().rstrip(".").lower() == _SERVE_REFUSAL_MESSAGE
+
+
+def _serve_never_admitted(serve_receipts: dict[str, Any]) -> bool:
+    """True only when serve's receipts were read and hold no request under this assignment.
+
+    Serve writes a receipt for every request that passes its door and reaches routing, before
+    anything is sent upstream, and none for one it refuses at the door, so an assignment under
+    which serve recorded a request was accepted and an error that came back was the upstream's.
+    Anything short of a read with no request (receipts that cannot be read, a request recorded,
+    a database nothing ties to the serve the worker called: the reader reports that one as
+    unavailable) leaves the origin of the error unproven, and an unproven origin stays the
+    provider's.
+    """
+    return serve_receipts.get("status") == "read" and serve_receipts.get("requests") == 0
 
 
 def _attempt_session_id() -> str:
@@ -220,14 +312,15 @@ def _write_attempt_config(
     The API key value is never written to disk — only the env var reference
     ``{env:<api_key_env>}`` that opencode expands at runtime.
 
-    ``instructions`` reference ``.verdict-context.md`` in the worktree for
-    ambient task context (Task 4.1).  When an ``AGENTS.md`` file is present in
-    ``cwd`` it is also listed, so the worker sees project coding conventions.
+    ``instructions`` lists the task file :data:`TASK_FILE_NAME` in ``config_dir`` itself (an
+    absolute path; :func:`_write_task_file` writes it, and :func:`_task_file_problem` checks it
+    is there before launch, since OpenCode skips a listed file that is missing).  When an
+    ``AGENTS.md`` file is present in ``cwd`` it is also listed, so the worker sees project
+    coding conventions.
 
-    ``headers`` includes ``X-Verdict-Worker: opencode`` so that ``verdict
-    serve``'s relay can identify worker calls and apply per-request route
-    pinning without requiring ``LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE`` to be
-    set globally.
+    No worker header is sent: ``verdict serve`` selects nothing from ``X-Verdict-Worker``.  The
+    route is pinned by the signed assignment the worker presents as its bearer (the value of
+    ``api_key_env``), which names the route, the run and the node.
 
     ``policies`` deny all ``provider.use`` actions except ``verdict`` so the
     worker cannot call openrouter, bedrock, or any other provider directly.
@@ -241,7 +334,7 @@ def _write_attempt_config(
     ``agents.title.model`` is pinned to the same admitted route so the title
     summariser cannot pick its own model and bypass the route decision.
     """
-    instructions: list[str] = [str(cwd / CONTEXT_FILE_NAME)]
+    instructions: list[str] = [str(config_dir / TASK_FILE_NAME)]
     agents_md = cwd / "AGENTS.md"
     if agents_md.is_file():
         instructions.append(str(agents_md))
@@ -255,9 +348,6 @@ def _write_attempt_config(
                     "baseURL": f"{serve_base_url.rstrip('/')}/v1",
                     "apiKey": f"{{env:{api_key_env}}}",
                 },
-                # Worker marker — lets serve relay enable route pinning for
-                # this request without a global env override.
-                "headers": {"X-Verdict-Worker": "opencode"},
                 "models": {route_id: {"name": route_id, "capabilities": {"tools": True}}},
             }
         },
@@ -279,127 +369,34 @@ def _write_attempt_config(
     cfg_file.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
-class _TrackingUnknownError(OSError):
-    """Git could not say whether the context file is tracked; callers fail closed."""
+def _write_task_file(config_dir: Path, task: str) -> None:
+    """Write the task text to ``config_dir / TASK_FILE_NAME``, the instructions file.
 
-
-class _PreparationDeadlineError(OSError):
-    """The attempt's time budget ran out while the context file was being prepared."""
-
-
-def _git(cwd: Path, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess[bytes]:
-    """Run git under the process environment, as the runtime's own git calls do.
-
-    ``LC_ALL=C`` only pins the wording of git's messages so a confirmed
-    non-repository can be told apart from a failure.
+    ``config_dir`` lives in the attempt's own private temp directory, never in the worktree, so
+    nothing here follows a path the repository controls and nothing is left behind in it.
     """
-    env = dict(os.environ)
-    env["LC_ALL"] = "C"
-    return subprocess.run(
-        ["git", "-C", str(cwd), *args], capture_output=True, timeout=timeout, check=False, env=env
-    )
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / TASK_FILE_NAME).write_text("# Task\n\n" + task + "\n", encoding="utf-8")
 
 
-def _probe_timeout(deadline: float | None) -> float:
-    """Timeout for one git probe: 30 s, or what is left of the attempt budget if less."""
-    if deadline is None:
-        return 30.0
-    left = deadline - time.monotonic()
-    if left <= 0:
-        raise _PreparationDeadlineError("attempt deadline reached while preparing the context file")
-    return min(30.0, left)
+def _task_file_problem(config_dir: Path) -> str | None:
+    """Why the instructions file cannot be relied on, or None when it is there and readable.
 
-
-def _context_path_is_tracked(cwd: Path, deadline: float | None = None) -> bool:
-    """True when ``cwd`` is a git worktree whose index tracks the context file.
-
-    Returns False only when that is *known*: git itself reports that ``cwd`` is not
-    inside a repository, or git answered and the path is not in the index.  Git
-    decides (not a look for ``.git`` on disk), because ``GIT_DIR``/``GIT_WORK_TREE``
-    make a worktree with no ``.git`` entry.  Anything indeterminate (git missing,
-    timing out, exiting nonzero for another reason, a bare repository, an unreadable
-    index) raises ``OSError``: treating it as "untracked" could let a tracked entry
-    be replaced and then staged into the node deliverable.
-
-    ``deadline`` (an absolute ``time.monotonic()`` value) bounds the probes: each gets at
-    most what is left of it, and ``_PreparationDeadlineError`` is raised once it passes, so
-    a hung repository cannot hold an attempt past its own budget.
+    OpenCode skips a listed instructions file that does not exist and carries on, so a worker
+    would run without its task and its output would look like a failed attempt.  The adapter
+    asks first: the file must be a regular file (a directory is not), must open and must not be
+    empty.  The reason names the file, never the task text.
     """
-
-    def unknown(why: str) -> _TrackingUnknownError:
-        return _TrackingUnknownError(
-            f"cannot determine whether {CONTEXT_FILE_NAME} is tracked: {why}"
-        )
-
+    path = config_dir / TASK_FILE_NAME
     try:
-        probe = _git(cwd, "rev-parse", "--is-inside-work-tree", timeout=_probe_timeout(deadline))
-        if probe.returncode != 0:
-            if b"not a git repository" in probe.stderr:
-                return False  # confirmed: nothing here can be tracked
-            raise unknown(f"git exited {probe.returncode}")
-        if probe.stdout.strip() != b"true":
-            raise unknown("not inside a git work tree")
-        done = _git(
-            cwd,
-            "ls-files",
-            "--cached",
-            "-z",
-            "--",
-            CONTEXT_FILE_NAME,
-            timeout=_probe_timeout(deadline),
-        )
-    except (_TrackingUnknownError, _PreparationDeadlineError):
-        raise
-    except subprocess.TimeoutExpired as exc:
-        if deadline is not None and time.monotonic() >= deadline - 0.05:
-            raise _PreparationDeadlineError(
-                "attempt deadline reached while preparing the context file"
-            ) from exc
-        raise unknown("TimeoutExpired") from exc
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise unknown(type(exc).__name__) from exc
-    if done.returncode != 0:
-        raise unknown(f"git exited {done.returncode}")
-    return bool(done.stdout)
-
-
-def _write_context_file(cwd: Path, prompt: str, deadline: float | None = None) -> None:
-    """Write ``.verdict-context.md`` to the worktree for OpenCode's instructions.
-
-    The file is listed in ``instructions`` in the per-attempt config so opencode
-    loads it as ambient context.  It is excluded from the ownership diff by the
-    ``.verdict-context.md`` entry in ``BYPRODUCT_EXCLUDES`` (runtime.py), which
-    ``_ensure_local_excludes`` appends to ``.git/info/exclude`` before every
-    ``git add -A``.  Since it is excluded, it is never staged and never appears
-    in the changed-files list that the ownership check compares against
-    ``node.owned_files``.
-    """
-    content = "<!-- Verdict worker context — do not commit -->\n# Task\n\n" + prompt + "\n"
-    # The worktree is repository content and so untrusted: a repo can track
-    # ``.verdict-context.md`` as a symlink to a path outside the worktree.
-    # ``Path.write_text`` would follow it and overwrite that target with the
-    # orchestrator's permissions.  Instead write a new regular file (``mkstemp``
-    # uses O_EXCL, so it never follows a link) and ``os.replace`` it over the
-    # entry: rename replaces the symlink itself and never touches its target.
-    target = cwd / CONTEXT_FILE_NAME
-    if deadline is not None and time.monotonic() >= deadline:
-        raise _PreparationDeadlineError("attempt deadline reached while preparing the context file")
-    if _context_path_is_tracked(cwd, deadline):
-        # ``.git/info/exclude`` only hides *untracked* paths.  Replacing a tracked
-        # entry would be staged by ``git add -A`` into the node deliverable (an
-        # ownership failure, or the task prompt committed if the path were owned).
-        raise OSError(
-            f"{CONTEXT_FILE_NAME} is tracked by git in this worktree; refusing to replace it"
-        )
-    fd, tmp_name = tempfile.mkstemp(dir=cwd, prefix=f"{CONTEXT_FILE_NAME}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
-        os.replace(tmp_name, target)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_name)
-        raise
+        if not path.is_file():
+            return f"the task instructions file {TASK_FILE_NAME} is missing"
+        with path.open("rb") as handle:
+            if not handle.read(1):
+                return f"the task instructions file {TASK_FILE_NAME} is empty"
+    except OSError as exc:
+        return f"the task instructions file {TASK_FILE_NAME} cannot be read ({type(exc).__name__})"
+    return None
 
 
 _T = TypeVar("_T")
@@ -435,33 +432,61 @@ async def _to_thread_joined(
         raise
 
 
-async def _prepare_context(cwd: Path, prompt: str, deadline: float | None = None) -> None:
-    """Write the context file off the event loop, without letting a write outlive a cancel.
+async def _send_prompt(proc: asyncio.subprocess.Process, prompt: str) -> None:
+    """Write ``prompt`` to the worker's stdin and close it (OpenCode's message, when given none).
 
-    The git tracking check can take seconds and the loop is shared by every
-    concurrent worker, so the work runs in a thread.  A thread cannot be
-    interrupted: if this coroutine is cancelled it waits for the thread to finish
-    (the write then either completes or fails) before propagating the cancellation,
-    so a caller that has seen the cancellation complete can clean up or reuse the
-    worktree without a late write racing it.  ``deadline`` (absolute monotonic time) bounds
-    the thread itself, so that wait cannot outlast the attempt's budget by much.
+    A worker that has already exited (or closed its stdin) makes the write a broken pipe.  That
+    is not an error of this call: how the worker ended is read from its exit and its output.
+    The ask is a few hundred bytes, far below a pipe's capacity, so the write never blocks.
     """
-    await _to_thread_joined(_write_context_file, cwd, prompt, deadline)
+    stdin = proc.stdin
+    if stdin is None:
+        return
+    try:
+        stdin.write(prompt.encode("utf-8"))
+        await stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        with contextlib.suppress(OSError):
+            stdin.close()
 
 
-def _worker_credential(route_id: str, attempt_id: str) -> str | None:
-    """The bearer credential this attempt's worker presents to ``verdict serve``.
+def _serve_token() -> str | None:
+    """Serve's own bearer token, for this process's readiness check of serve and nothing else.
 
-    The single place the worker credential is chosen, so it is easy to swap: today it is
-    serve's own bearer token, resolved by Verdict's code (the same sources and order
-    ``verdict setup`` uses: environment, credential store, ``serve.env``).  A per-attempt
-    signed assignment bound to ``route_id`` and ``attempt_id`` is expected to replace it.
-    Never the OmniRoute gateway key.
+    Resolved by Verdict's code (the same sources and order ``verdict setup`` uses: environment,
+    credential store, ``serve.env``).  It is never handed to a worker: the worker's credential is
+    the signed assignment of :meth:`OpenCodeExecutor._sign`.  Never the OmniRoute gateway key.
     """
     from verdict.serve_service import resolve_serve_token
 
     resolved = resolve_serve_token()
     return resolved[0] if resolved else None
+
+
+def _assignment_lifetime(timeout_seconds: float) -> int:
+    """Seconds the attempt's assignment lives: its timeout, rounded up, plus the margin.
+
+    ``ValueError`` (with a reason that names no secret) when the timeout is not a positive, finite
+    number, or when the lifetime would exceed the 1,800 s the format allows.  It is never clamped:
+    a shorter assignment than the attempt would expire under a running worker.
+    """
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise ValueError("the attempt timeout is not a positive, finite number of seconds")
+    lifetime = math.ceil(timeout_seconds) + ASSIGNMENT_MARGIN_SECONDS
+    if lifetime > MAX_LIFETIME_SECONDS:
+        raise ValueError(
+            f"an attempt timeout of {timeout_seconds:g}s needs an assignment lifetime of "
+            f"{lifetime}s ({ASSIGNMENT_MARGIN_SECONDS}s margin included), over the "
+            f"{MAX_LIFETIME_SECONDS}s maximum; lower the attempt timeout"
+        )
+    return lifetime
 
 
 _CREDENTIAL_HELP = "run 'verdict setup --apply --allow host.serve' to create it"
@@ -666,30 +691,39 @@ def _build_child_env(
 def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, Any]:
     """Parse NDJSON output from ``opencode run --format json``.
 
-    OpenCode emits one JSON object per line.  Interesting event types:
+    OpenCode emits one JSON object per line.  The shape is the one OpenCode 2.3.2 really prints
+    (captured in ``tests/fixtures/opencode_stdout``): ``type`` and ``sessionID`` are top-level
+    and everything else about a model step sits under ``part``.  Interesting event types:
 
-    - ``text`` — incremental text delta (not the full assistant output).
-    - ``step_finish`` — end of one model step; carries ``tokens`` for usage
-      and ``reason`` (stop reason).
-    - ``error`` — error message; non-zero exit always takes precedence.
+    - ``text`` — one whole text block in ``part.text`` (not an increment: a reply streamed in
+      many deltas arrives as one event).  A run with tool calls prints one per block, and they
+      are joined in order.
+    - ``step_finish`` — end of one model step; ``part.tokens`` (``input``, ``output``) and
+      ``part.cost`` are that step's own, and ``part.reason`` is its stop reason (``stop`` for
+      the last step, ``tool-calls`` for one that ended in a tool call).
+    - ``error`` — the final failure, ``{"error": {"message", "status", "retryAfterMs", ...}}``;
+      non-zero exit always takes precedence.  OpenCode retries an upstream failure by itself
+      and prints a ``retry`` event for each try before it; those are not errors of the attempt
+      and are not read.
 
-    Every string taken from the stream (error text, assistant text, session id)
-    has ``secrets`` and ``Authorization: Bearer`` values redacted after the JSON
-    is decoded, so JSON escaping cannot hide a secret from the replacement and a
-    secret split across ``text`` deltas is caught once the deltas are joined.
+    Every string taken from the stream (error text, assistant text, session id, stop reason)
+    has ``secrets`` and ``Authorization: Bearer`` values redacted after the JSON is decoded, so
+    JSON escaping cannot hide a secret from the replacement and a secret split across ``text``
+    blocks is caught once the blocks are joined.
 
-    An ``error`` event is ``{"error": {"message", "status", "retryAfterMs", ...}}``: the HTTP
-    status and retry delay are kept so recovery can classify an upstream 429 or 503.
+    The final error's HTTP status and retry delay are kept, so recovery can classify an
+    upstream 429 or 503.
 
     Cost is recorded only when OpenCode reports a real positive figure.  A custom provider
     has no pricing, so OpenCode reports 0 even for a paid route; that is "unknown", not
     "free", so it is ``None`` with a ``cost_note``.  Tokens are still recorded.
 
-    Returns a dict with keys: ``usage``, ``session_id``, ``last_text``,
-    ``error_message``, ``error_status``, ``retry_after_seconds``.
+    Returns a dict with keys: ``usage``, ``session_id``, ``last_text``, ``stop_reason`` (the
+    last step's, or ``None``), ``error_message``, ``error_status``, ``retry_after_seconds``.
     """
     session_id = ""
     text_parts: list[str] = []
+    stop_reason: str | None = None
     error_message = ""
     error_status: int | None = None
     retry_after_seconds: float | None = None
@@ -720,17 +754,24 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
 
         event_type = event.get("type", "")
 
+        part = event.get("part")
+        if not isinstance(part, dict):
+            part = {}
+
         if event_type == "text":
-            part = event.get("text", "")
-            if isinstance(part, str):
-                text_parts.append(part)
+            block = part.get("text", "")
+            if isinstance(block, str):
+                text_parts.append(block)
 
         elif event_type == "step_finish":
-            tokens = event.get("tokens") or {}
+            reason = part.get("reason")
+            if isinstance(reason, str) and reason:
+                stop_reason = reason
+            tokens = part.get("tokens") or {}
             if isinstance(tokens, dict):
                 inp = _as_int(tokens.get("input"))
                 out = _as_int(tokens.get("output"))
-                cost_raw = event.get("cost")
+                cost_raw = part.get("cost")
                 cost_val = (
                     _as_float(cost_raw.get("total"))
                     if isinstance(cost_raw, dict)
@@ -804,6 +845,7 @@ def _parse_ndjson_output(stdout: str, secrets: Iterable[str] = ()) -> dict[str, 
         "usage": usage,
         "session_id": _redact(session_id, secrets),
         "last_text": _redact("".join(text_parts), secrets),
+        "stop_reason": _redact(stop_reason, secrets) if stop_reason is not None else None,
         "error_message": error_message,
         "error_status": error_status,
         "retry_after_seconds": retry_after_seconds,
@@ -851,13 +893,18 @@ def _cleanup_attempt_dir(attempt_tmp: tempfile.TemporaryDirectory[str]) -> None:
 
     This runs in a ``finally`` after the result is known, so an OSError from it (a busy or
     unreadable entry on a failing disk) must not replace that result with an exception.  When
-    the first attempt fails, a forced removal is tried; the directory holds no credential (the
-    key is only ever in the child environment), so a leftover is a disk-space problem, not a leak.
+    the first attempt fails, a forced removal is tried.  The directory holds no credential (the
+    key is only ever in the child environment) but it does hold the task text, in the instructions
+    file, so it is removed on every way out of an attempt and a leftover is worth reporting.
     """
     try:
         attempt_tmp.cleanup()
     except OSError:
         shutil.rmtree(attempt_tmp.name, ignore_errors=True)
+
+
+class _UnsignableError(Exception):
+    """No worker assignment can be signed for this attempt; the message is safe to record."""
 
 
 class _WorkerIOError(OSError):
@@ -868,15 +915,32 @@ class _WorkerIOError(OSError):
 _SERVE_CHECK_TIMEOUT_SECONDS = 5.0
 
 
+@dataclass
+class _Attempt:
+    """What one attempt learned that :meth:`OpenCodeExecutor.run` needs once ``_run`` is done."""
+
+    digest: str = ""  # SHA-256 of the assignment's payload; empty until one is signed
+    mark: EvidenceMark | None = None  # serve's receipt database before the worker started
+    launched: bool = False  # a worker process was started, so serve may hold requests for it
+    # The status of a failure that has serve's refusal's status and words; whether it really was
+    # serve's is decided in ``run`` once serve's receipts are read (``_serve_never_admitted``).
+    refusal_candidate: int | None = None
+
+
 class OpenCodeExecutor:
     """Run one task through OpenCode's non-interactive dispatch.
 
-    See module docstring for the DISPATCH_ORIGIN_CONFLICT note and the
-    per-attempt isolation strategy.
+    See the module docstring for the dispatch origin, the per-attempt isolation strategy and the
+    signed assignment that is the worker's only credential.  ``serve_token_provider`` (the token
+    for the readiness check), ``key_provider`` (the signing key), ``clock`` and
+    ``receipts_db_provider`` (serve's receipt database) default to Verdict's own resolvers and
+    exist so tests need no real home, key or database.
     """
 
-    # See DISPATCH_ORIGIN_CONFLICT note in module docstring.
-    gateway_origin: str = LOCAL_EXECUTOR_ORIGIN
+    @property
+    def gateway_origin(self) -> WorkerServeOrigin:
+        """The serve origin this executor's workers call, reported to the dispatch check."""
+        return WorkerServeOrigin(self._serve_base_url)
 
     def __init__(
         self,
@@ -886,7 +950,10 @@ class OpenCodeExecutor:
         api_key_env: str = WORKER_API_KEY_ENV,
         idle_output_seconds: float | None = None,
         max_output_bytes: int | None = None,
-        credential_provider: Callable[[str, str], str | None] | None = None,
+        serve_token_provider: Callable[[], str | None] | None = None,
+        key_provider: Callable[[], bytes] | None = None,
+        clock: Callable[[], datetime] | None = None,
+        receipts_db_provider: Callable[[], Path | str | None] | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
         from verdict.serve_service import resolve_serve_origin
@@ -895,7 +962,18 @@ class OpenCodeExecutor:
         # The one serve address: the configured origin, else the unit's default.
         self._serve_base_url = resolve_serve_origin(serve_base_url)
         self._api_key_env = api_key_env
-        self._credential_provider = credential_provider
+        self._serve_token_provider = serve_token_provider
+        self._key_provider = key_provider
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        # The digests of the assignments this executor issued that have not expired yet, and when
+        # each expires: the identity serve's receipts are matched by (see ``_sign``).
+        self._issued: dict[str, datetime] = {}
+        self._issued_lock = threading.Lock()
+        self._receipts_db_provider = receipts_db_provider
+        # The receipt databases (files) in which a request under one of this executor's
+        # assignments has been found, for this serve address: for those, and no others, an empty
+        # read means serve recorded nothing (see ``_serve_evidence``).
+        self._seen_databases = SeenDatabases()
         self._binary_checked = False
         self._env = dict(env) if env is not None else None
         self.max_output_bytes: int = (
@@ -915,10 +993,42 @@ class OpenCodeExecutor:
             return self._opencode_bin
         return _opencode_binary(self._base_env())
 
+    def _mark_receipts(self) -> EvidenceMark:
+        """Where serve's receipt database stands before the worker starts.  Blocking; never raises.
+
+        Finding the database reads ``serve.env`` and a custom provider can fail, so both happen
+        here, in a thread, and a failure is a reason the run receipt shows, never a reason to
+        stop an attempt that has not started.
+        """
+        try:
+            return take_mark(self._receipts_db())
+        except Exception as exc:
+            return EvidenceMark(
+                None, 0, f"serve's receipt database cannot be located ({type(exc).__name__})"
+            )
+
+    def _receipts_db(self) -> Path | str | None:
+        """Serve's receipt database: the injected provider, else the environment or serve.env."""
+        if self._receipts_db_provider is not None:
+            return self._receipts_db_provider()
+        from verdict.serve_service import resolve_serve_receipts_db
+
+        return resolve_serve_receipts_db()
+
     async def run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        run_id: str | None = None,
+        node_id: str | None = None,
     ) -> WorkerTerminal:
         """Run one task.  Never raises; always returns a terminal.
+
+        ``run_id`` and ``node_id`` (the runtime passes both) are what the worker's signed
+        assignment is bound to; without them no assignment is signed and nothing is launched.
 
         Cancellation still propagates.  Any other exception from the attempt is one failed
         terminal naming only the exception type: the message of an unforeseen error may carry
@@ -926,15 +1036,81 @@ class OpenCodeExecutor:
         and removed its directory by the time one reaches here.
         """
         started = time.monotonic()
+        attempt = _Attempt()
         try:
             terminal = await self._run(
-                prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+                prompt,
+                route_id=route_id,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                run_id=run_id,
+                node_id=node_id,
+                attempt=attempt,
             )
         except Exception as exc:
             terminal = self._failure(route_id, started, f"worker_error: {type(exc).__name__}")
         if not terminal.harness:
             terminal = replace(terminal, harness="opencode")
+        if attempt.launched and attempt.digest and attempt.mark is not None:
+            record = await self._serve_evidence(attempt.mark, attempt.digest)
+            terminal = replace(terminal, worker_assignment=record)
+            if attempt.refusal_candidate is not None and _serve_never_admitted(
+                record["serve_receipts"]
+            ):
+                terminal = self._serve_refusal(terminal, attempt.refusal_candidate)
         return terminal
+
+    def _serve_refusal(self, terminal: WorkerTerminal, status: int) -> WorkerTerminal:
+        """``terminal`` as a configuration block: serve refused the assignment, so no provider did.
+
+        Only when serve's receipts show it admitted nothing under the assignment, in a database
+        shown to be serve's (:meth:`_serve_evidence`); otherwise the failure stays as the
+        provider's (:func:`_serve_never_admitted`).  A block is not retried and does not cool the
+        provider down.
+        """
+        return replace(
+            terminal,
+            error=(
+                f"harness_configuration: verdict serve refused the worker assignment "
+                f"(HTTP {status}; serve's receipts, which hold an earlier assignment of this run, "
+                f"hold no request under this one); an assignment is "
+                f"refused when it is expired, tampered, or signed with a key serve does not hold, "
+                f"so check that the orchestrator and serve share the signing key "
+                f"({_CREDENTIAL_HELP}) and the clock"
+            ),
+            status_code=status,
+            retry_after_seconds=None,
+        )
+
+    async def _serve_evidence(self, mark: EvidenceMark, digest: str) -> dict[str, Any]:
+        """What serve recorded under this attempt's assignment, once its worker is gone.
+
+        Read in a thread (it opens a file) and never raises: any failure is an ``unavailable``
+        record with its reason, which the run receipt shows as such.
+
+        The database is the one this host's configuration names, not one found through the serve
+        the worker called, so an empty read of it proves nothing by itself: it is unavailable
+        until a request under one of this executor's own assignments has been found in the same
+        file (not just the same path) for the same serve address.  Only the serve at that address
+        received the assignment, so such a row shows the file is the one that serve writes; what
+        is seen is kept for the executor's life (one ``verdict orchestrate`` run) and never
+        carried over to another address or file (:class:`SeenDatabases`).
+        """
+        try:
+            serve_receipts = await _to_thread_joined(
+                functools.partial(self._seen_databases.read, origin=self._serve_base_url),
+                mark,
+                digest,
+            )
+        except Exception as exc:  # the reader does not raise; this is the last line
+            serve_receipts = {
+                "status": "unavailable",
+                "reason": f"reading serve's receipts failed ({type(exc).__name__})",
+                "requests": None,
+                "requests_waived": None,
+                "requirement_waivers": None,
+            }
+        return {"assignment_digest": digest, "serve_receipts": serve_receipts}
 
     def _failure(self, route_id: str, started: float, error: str) -> WorkerTerminal:
         return WorkerTerminal(
@@ -947,9 +1123,12 @@ class OpenCodeExecutor:
         )
 
     def _pre_dispatch_reason(
-        self, credential: str, deadline: float, cancel: threading.Event | None = None
+        self, serve_token: str, deadline: float, cancel: threading.Event | None = None
     ) -> str | None:
         """Why this attempt cannot be launched (binary, then serve), or None.  Blocking.
+
+        ``serve_token`` is serve's own token and is used here only, for the one readiness
+        request; the worker never holds it.
 
         Both checks share the attempt's absolute ``deadline`` (``time.monotonic()``): each gets
         at most what is left, and running out is :data:`_BUDGET_EXHAUSTED`, not a block.  Once
@@ -974,22 +1153,99 @@ class OpenCodeExecutor:
         if left <= 0:
             return _BUDGET_EXHAUSTED
         reason = _check_serve(
-            self._serve_base_url, credential, min(_SERVE_CHECK_TIMEOUT_SECONDS, left)
+            self._serve_base_url, serve_token, min(_SERVE_CHECK_TIMEOUT_SECONDS, left)
         )
         if reason is not None and time.monotonic() >= deadline:
             return _BUDGET_EXHAUSTED  # the check ran into the attempt's own deadline
         return reason
 
+    def _sign(
+        self, route_id: str, run_id: str | None, node_id: str | None, timeout_seconds: float
+    ) -> str:
+        """Sign this attempt's assignment.  Blocking (it reads the key file).
+
+        Raises :class:`_UnsignableError` with a message that names the problem and never the key,
+        the token or an id.  Nothing falls back to the serve token: an attempt that cannot sign
+        is not launched.
+
+        An assignment has no attempt-specific field, only whole seconds, so two attempts of the
+        same node on the same route signed within one second would hold one credential and one
+        digest, and serve's receipts could not tell their requests apart.  Every assignment this
+        executor holds that has not yet expired therefore has its own digest: a later one that
+        would repeat it is dated one second later (the verifier allows an ``iat`` 60 s ahead of
+        its clock), never shortened, and the expiry still follows from that issue time.
+        """
+        if not isinstance(run_id, str) or not run_id:
+            raise _UnsignableError(
+                "no run id was given for this attempt, so no worker assignment can be signed"
+            )
+        if not isinstance(node_id, str) or not node_id:
+            raise _UnsignableError(
+                "no node id was given for this attempt, so no worker assignment can be signed "
+                "(a planner call has none)"
+            )
+        try:
+            lifetime = _assignment_lifetime(timeout_seconds)
+        except ValueError as exc:
+            raise _UnsignableError(str(exc)) from exc
+        try:
+            key = (self._key_provider or load_assignment_key)()
+        except AssignmentError as exc:
+            raise _UnsignableError(
+                f"the worker assignment signing key is unavailable ({exc.reason}); "
+                f"{_CREDENTIAL_HELP}"
+            ) from exc
+        except Exception as exc:  # a custom provider; never let its message through
+            raise _UnsignableError(
+                f"the worker assignment signing key cannot be loaded ({type(exc).__name__}); "
+                f"{_CREDENTIAL_HELP}"
+            ) from exc
+        try:
+            now = self._clock()
+            with self._issued_lock:
+                self._issued = {d: end for d, end in self._issued.items() if end > now}
+                for bump in range(MAX_IDENTITY_BUMP_SECONDS + 1):
+                    issued_at = now + timedelta(seconds=bump)
+                    token = mint_assignment(
+                        key,
+                        route_id=route_id,
+                        run_id=run_id,
+                        node_id=node_id,
+                        lifetime_seconds=lifetime,
+                        now=issued_at,
+                    )
+                    digest = assignment_digest(token)
+                    if digest not in self._issued:
+                        self._issued[digest] = issued_at + timedelta(seconds=lifetime)
+                        return token
+        except ValueError as exc:
+            raise _UnsignableError(f"the worker assignment cannot be signed: {exc}") from exc
+        raise _UnsignableError(
+            "the worker assignment cannot be given a distinct identity: this executor already "
+            f"holds {MAX_IDENTITY_BUMP_SECONDS + 1} live assignments for the same route, run and "
+            "node signed within the same second"
+        )
+
     async def _run(
-        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        run_id: str | None,
+        node_id: str | None,
+        attempt: _Attempt,
     ) -> WorkerTerminal:
         started = time.monotonic()
         session_id = _attempt_session_id()
 
-        # --- pre-dispatch: credential, binary, serve (one message, nothing launched) ---
-        provider = self._credential_provider or _worker_credential
+        # --- pre-dispatch: serve token, signed assignment, binary, serve (one message, nothing
+        # launched).  The serve token is only for the readiness check below; the worker is given
+        # the assignment alone. ---
+        token_source = self._serve_token_provider or _serve_token
         try:
-            credential = provider(route_id, session_id)
+            serve_token = token_source()
         except Exception as exc:  # a malformed store or file must not escape as an exception
             return self._failure(
                 route_id,
@@ -997,15 +1253,14 @@ class OpenCodeExecutor:
                 f"harness_configuration: serve credential lookup failed ({type(exc).__name__}); "
                 f"{_CREDENTIAL_HELP}",
             )
-        if not credential:
+        if not serve_token:
             return self._failure(
                 route_id,
                 started,
                 "harness_configuration: no verdict serve credential found (looked in the "
                 f"environment, the Verdict credential store and serve.env); {_CREDENTIAL_HELP}",
             )
-        secrets = [credential, self._base_env().get(self._api_key_env, "")]
-        if not credential.isprintable():
+        if not serve_token.isprintable():
             # A control character (a newline from a mis-edited env file, say) can never be a
             # bearer token and cannot be sent in a header.  Name the problem, not the value.
             return self._failure(
@@ -1014,13 +1269,28 @@ class OpenCodeExecutor:
                 "harness_configuration: the verdict serve credential contains a control "
                 f"character; {_CREDENTIAL_HELP}",
             )
+        try:
+            assignment = await _to_thread_joined(
+                self._sign, route_id, run_id, node_id, timeout_seconds
+            )
+        except _UnsignableError as exc:
+            return self._failure(route_id, started, f"harness_configuration: {exc}")
+        attempt.digest = assignment_digest(assignment)
+        _, payload_text, tag_text = assignment.split(".")
+        secrets = [
+            serve_token,
+            assignment,
+            tag_text,
+            payload_text,
+            self._base_env().get(self._api_key_env, ""),
+        ]
         # The checks run in a thread (the probe and the request block).  On cancellation the
         # thread is told to stop and is waited for, so no probe process or serve request
-        # outlives the attempt (the same boundary ``_prepare_context`` keeps).
+        # outlives the attempt.
         cancel = threading.Event()
         reason = await _to_thread_joined(
             self._pre_dispatch_reason,
-            credential,
+            serve_token,
             started + timeout_seconds,
             cancel,
             on_cancel=cancel.set,
@@ -1032,18 +1302,8 @@ class OpenCodeExecutor:
                 route_id, started, f"harness_configuration: {_sanitize(reason, secrets=secrets)}"
             )
 
-        # --- write context file to worktree (Task 4.1) ---
-        try:
-            await _prepare_context(cwd, prompt, started + timeout_seconds)
-        except _PreparationDeadlineError:
-            return self._failure(route_id, started, "timeout")
-        except OSError as exc:
-            return self._failure(
-                route_id, started, f"context_write_failed: {_sanitize(str(exc), secrets=secrets)}"
-            )
-
-        # Preparation (two git probes of up to 30 s each) counts against the attempt budget:
-        # the worker gets only what is left, and nothing is spawned when nothing is.
+        # The pre-dispatch checks count against the attempt budget: the worker gets only what
+        # is left, and nothing is spawned when nothing is.
         if timeout_seconds - (time.monotonic() - started) <= 0:
             return self._failure(route_id, started, "timeout")
 
@@ -1064,6 +1324,8 @@ class OpenCodeExecutor:
             data_dir = tmp_path / "data"
             state_dir = tmp_path / "state"
 
+            # The task goes in the instructions file beside the config, once; the worktree is
+            # never written to.  A task that cannot be encoded fails closed like a full disk.
             try:
                 _write_attempt_config(
                     config_dir,
@@ -1072,7 +1334,8 @@ class OpenCodeExecutor:
                     api_key_env=self._api_key_env,
                     cwd=cwd,
                 )
-            except OSError as exc:
+                _write_task_file(config_dir, prompt)
+            except (OSError, UnicodeError) as exc:
                 return self._failure(
                     route_id,
                     started,
@@ -1084,12 +1347,28 @@ class OpenCodeExecutor:
                 data_dir=data_dir,
                 state_dir=state_dir,
                 api_key_env=self._api_key_env,
-                api_key_value=credential,
+                api_key_value=assignment,
                 base_env=self._base_env(),
             )
 
+            # The last thing before launch: OpenCode skips a listed instructions file that is not
+            # there without a word, so a worker would run without its task.
+            problem = _task_file_problem(config_dir)
+            if problem is not None:
+                return self._failure(route_id, started, f"config_write_failed: {problem}")
+
+            # Where serve's receipt database stands before the worker can make a request: only
+            # later rows can be this attempt's (read-only; a database that cannot be read is a
+            # reason the run receipt shows, not a reason to stop the attempt).
+            attempt.mark = await _to_thread_joined(self._mark_receipts)
+            if timeout_seconds - (time.monotonic() - started) <= 0:
+                # The mark can wait on a lock; if it spent the rest of the budget nothing is spawned.
+                return self._failure(route_id, started, "timeout")
+
             # ``--model verdict/<route_id>`` selects provider "verdict" and the
-            # exact route registered in the per-attempt config (Task 2.2/2.3).
+            # exact route registered in the per-attempt config (Task 2.2/2.3).  The message
+            # is not an argument: with none, OpenCode reads it from stdin (:func:`_send_prompt`),
+            # and ``--title`` stops it making a second, title-agent request on the route.
             argv = [
                 self._resolve_bin(),
                 "run",
@@ -1102,14 +1381,14 @@ class OpenCodeExecutor:
                 session_id,
                 "--model",
                 f"verdict/{route_id}",
-                "--",
-                prompt,
+                "--title",
+                f"verdict {session_id}",
             ]
 
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
-                    stdin=asyncio.subprocess.DEVNULL,
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(cwd),
@@ -1121,8 +1400,10 @@ class OpenCodeExecutor:
                     route_id, started, f"spawn_failed: {_sanitize(str(exc), secrets=secrets)}"
                 )
 
+            attempt.launched = True
             try:
                 try:
+                    await _send_prompt(proc, TASK_PROMPT)
                     stdout_b, stderr_b, cut = await self._collect(
                         proc, max(0.0, timeout_seconds - (time.monotonic() - started))
                     )
@@ -1161,6 +1442,7 @@ class OpenCodeExecutor:
                 duration=time.monotonic() - started,
                 session_id=session_id,
                 secrets=secrets,
+                attempt=attempt,
             )
         finally:
             _cleanup_attempt_dir(attempt_tmp)
@@ -1250,12 +1532,16 @@ class OpenCodeExecutor:
         duration: float,
         session_id: str,
         secrets: Iterable[str] = (),
+        attempt: _Attempt | None = None,
     ) -> WorkerTerminal:
         """Map opencode output to WorkerTerminal.
 
         Exit code is authoritative: 0 → ok=True, non-zero → ok=False.
         NDJSON is parsed for usage (``step_finish`` tokens), the session ID and, on a
-        failure, the upstream HTTP status and retry delay it reports.
+        failure, the upstream HTTP status and retry delay it reports.  A failure is always the
+        provider's here; one that has the status and the words of serve's refusal is noted on
+        ``attempt`` and :meth:`run` turns it into a configuration block when serve's receipts
+        show that serve admitted nothing under the assignment.
         """
         secrets = list(secrets)
         parsed = _parse_ndjson_output(stdout, secrets)
@@ -1274,6 +1560,8 @@ class OpenCodeExecutor:
             stderr_full = _sanitize_full(stderr, secrets)
             tail = error_message or stderr_full[-_STDERR_TAIL_CHARS:] or f"exit {returncode}"
             status = parsed["error_status"] or _status_from_full_text(stderr_full)
+            if attempt is not None and _looks_like_serve_refusal(status, error_message):
+                attempt.refusal_candidate = status
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,

@@ -23,8 +23,8 @@ session and sends its model calls through Verdict. None of them makes the tool
 a worker of `verdict orchestrate`. Orchestration workers run on the built-in
 `direct-gateway` executor by default: a one-shot API call per worker. Two harnesses are
 opt-in: `--executor opencode` runs each coding node as a full edit–test–fix loop via
-`opencode run --standalone --auto` (ADR-053; it does not yet work through `verdict serve`,
-see [#1313](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1313)), and
+`opencode run --standalone --auto` (ADR-053; its model calls go through `verdict serve` on a
+signed per-attempt assignment, see [OpenCode as a worker harness](#opencode-as-a-worker-harness)), and
 `--executor prime-headless` (alias `prime`) uses the Prime Agent harness; see
 [OpenCode as a worker harness](#opencode-as-a-worker-harness) and
 [Prime Agent as a worker harness](#prime-agent-as-a-worker-harness). There is no
@@ -344,16 +344,17 @@ Restores the pre-enable backup byte-for-byte.
 
 OpenCode is an **opt-in** worker executor for `verdict orchestrate`, selected with
 `--executor opencode` (ADR-053 Decision 2, amended 2026-11-24).  `direct-gateway` stays the
-default.  **It does not yet work through `verdict serve`:** the live smoke showed serve
-refusing every request of an OpenCode worker before any upstream call (11 of 13 by the
-escalation keyword scanner, 2 by the capability gate, which has no streaming and tools
-metadata on the relay path), so a run that opts in fails its nodes until
-[#1313](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1313) lands.
-OpenCode becomes the default only after a live smoke passes with that fix.  With the flag,
-every coding node runs a full edit–test–fix loop:
+default.  Serve now honours a worker's signed assignment
+([#1313](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1313)) and the executor
+signs one per attempt ([#1325](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1325));
+one live attempt through a spare serve on a pinned route landed an edit on 2026-11-25.  OpenCode
+becomes the default only in its own change.  It needs the signing key that `verdict setup --apply
+--allow host.serve` creates (see [worker assignments](../CONFIGURATION.md#worker-assignments)).
+With the flag, every coding node runs a full edit–test–fix loop:
 
 ```bash
-opencode run --standalone --auto --format json --archived --model verdict/<route>
+opencode run --standalone --auto --format json --archived --session <id> \
+  --model verdict/<route> --title "verdict <id>"      # the ask arrives on stdin
 ```
 
 The harness writes a per-attempt isolated config (`OPENCODE_CONFIG_DIR` → temp
@@ -371,28 +372,90 @@ verdict orchestrate "goal" --executor prime-headless # Prime Agent instead
 differs from the pinned v2.3.2.  The binary must be on `PATH` or at
 `~/.opencode/bin/opencode`; set `VERDICT_OPENCODE_BIN` to override.
 
-**Credential.** The worker authenticates to `verdict serve` with serve's own bearer token,
-which Verdict resolves itself (the environment's `LLMGATE_AUTH_TOKEN`, then the credential
-store, then `~/.config/verdict/serve.env`: the sources `verdict setup` uses).  It is never the
-OmniRoute gateway key, and there is no separate variable to export.  It reaches OpenCode only
-as `VERDICT_WORKER_API_KEY` in the child environment (the per-attempt config holds just the
-`{env:VERDICT_WORKER_API_KEY}` reference), and it is redacted from anything recorded.
+**Credential.** The worker's only credential for `verdict serve` is a signed assignment that the
+executor signs for that one attempt: the route, the run id, the node id, when it was issued and
+when it expires (the attempt's timeout plus 60 seconds, never more than 1,800).  It reaches
+OpenCode only as `VERDICT_WORKER_API_KEY` in the child environment (the per-attempt config holds
+just the `{env:VERDICT_WORKER_API_KEY}` reference), it is redacted from anything recorded, and
+serve uses it to pin the request to that one route.  Serve's own bearer token (resolved from
+`LLMGATE_AUTH_TOKEN`, then the credential store, then `~/.config/verdict/serve.env`) and the
+OmniRoute gateway key are never given to the worker: they are not in its environment, arguments,
+config or recorded output, and the serve token is not the fallback when an assignment cannot be
+signed.  The signing key is `~/.config/verdict/worker-assignment.key`; the orchestrator and serve
+read the same file.
 
-**Pre-dispatch check.** Before an attempt launches anything, Verdict checks once that the
-credential resolves, that the `opencode` binary runs, and that `verdict serve` is reachable and
-accepts the credential.  A failure is a single `harness_configuration:` message and recovery
-treats it as a block, not a retry, so a misconfigured host does not burn a node's attempts.
-Run `verdict setup --apply --allow host.serve` to create the serve token and unit.
+**Pre-dispatch check.** Before an attempt launches anything, Verdict signs the assignment (a
+missing or unreadable signing key, a missing run id or node id, or a timeout whose lifetime would
+exceed 1,800 seconds ends the attempt here), and checks once that the serve token resolves, that the
+`opencode` binary runs, and that `verdict serve` is reachable and accepts the serve token.  A failure
+is a single `harness_configuration:` message and recovery treats it as a block, not a retry, so a
+misconfigured host does not burn a node's attempts.  The same holds when serve later refuses the
+assignment (it answers every refused assignment with one 403 `authentication failed`) and its
+receipts show it admitted no request under that assignment: the attempt is a configuration block,
+not a provider denial.  A provider's own 401 or 403 can carry the same words, so when serve's
+receipts hold a request under the assignment, or cannot be read, the failure stays the provider's.
+So does an empty read of a receipt database nothing has tied to the serve at `--serve-url`: the
+database is found from this host's configuration, so with a spare or remote serve it can be
+another serve's.  It counts only after an earlier attempt of the same executor (one per run; a
+node named in `--executor-map` has its own) was served in it (a
+request under that attempt's own assignment was found in that same file, not merely at that path),
+so a signing key serve does not share, refused from the run's first attempt, is not recognised as
+a configuration block.  Run
+`verdict setup --apply --allow host.serve` to create the serve token, the signing key and the unit.
+
+**Receipts.** `verdict run-receipt` marks an attempt that serve served with the streaming
+requirement waived (`streaming waived`) and one whose serve receipts could not be read (`serve
+receipts unavailable`); `receipt.json` carries the counts under `worker_assignment` on that
+attempt.  See [worker assignments](../CONFIGURATION.md#worker-assignments).
 
 **Serve address.** Workers call `http://127.0.0.1:8000` unless told otherwise: pass
 `--serve-url` to `verdict orchestrate` or set `VERDICT_SERVE_URL` (the flag wins).
 
+**Task delivery.** The task (the context pack and the node's prompt) is sent to the model once,
+as an instructions file: `verdict-task.md` in the per-attempt config directory, beside
+`opencode.json`, which lists it in `instructions` (the worktree's own `AGENTS.md` is listed
+too, when there is one).  OpenCode 2.3.2 puts instructions in the system message, once.
+The prompt is one short ask on stdin, the same for every task ("carry out the task described in
+your instructions ... stop when verification passes"): OpenCode reads its message from stdin
+when it is given none, so no argument-size limit applies to the task.  `--title` is given so
+that OpenCode does not make a second, title-agent request on the assigned route (on 2.3.2 an
+attempt makes two requests without it).  Nothing is written into the worktree: the per-attempt
+directory, and the task text in it, is removed on every way out of an attempt (success,
+failure, timeout, stall, cancellation).
+
+OpenCode skips a listed instructions file that does not exist without a word, so a worker would
+run without its task.  Verdict therefore checks, as the last step before launch, that the file
+is there, is a regular file, opens and is not empty; if not, the attempt ends with a
+`config_write_failed:` message and nothing is launched (the message names the file, never the
+task).  A task text that cannot be written as UTF-8 ends the same way.
+
+**Failure status.** A failed attempt's HTTP status is read from OpenCode's structured error
+first, then from the text.  Besides `HTTP 429`, `status 503` and `429 Too Many Requests`, the
+text form of the `requests` library is recognised (`429 Client Error: Too Many Requests for
+url: ...`, `503 Server Error: Service Unavailable for url: ...`), so recovery reroutes those as a
+rate limit and an upstream outage.  A bare number is still not a status (`retrying in 500 ms`,
+`failed after 429 attempts`).
+
+**Output.** Verdict reads the JSON lines OpenCode 2.3.2 prints (real captures are in
+`tests/fixtures/opencode_stdout`, with a README): `type` and `sessionID` are top-level, and the
+rest sits under `part`.  The worker's output text is the `part.text` of each `text` event, which
+is one whole block, joined in order; the token usage is the sum of `part.tokens` over the
+`step_finish` events (one per model step); the stop reason is the last step's `part.reason`.
+`part.cost` is `0` for a custom provider, and a `0` is recorded as an unknown cost, never as free.
+When the upstream answers 429 or 503, OpenCode retries by itself and prints a `retry` event for
+each try (ten of them, over 85 to 100 seconds in the captures) before the final `error` event
+that carries the HTTP status and the retry delay; only that final event is read, so a status
+appears after the retries, not before.
+
 **What this does not restrict** (ADR-053 decision 4): the worker keeps the operator's home
 directory and an unrestricted shell, so it can read files there and reach the gateway
 directly.  "All model calls go through serve" holds for OpenCode's own provider calls only.
-Until [#1313](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1313) the worker
-holds the serve token and its route is pinned by the worker header: a worker could name
-another *admitted* route, never a non-admitted one.  A worker request that carries
+It can also read `~/.config/verdict/serve.env` and the signing key from disk, so the assignment keeps
+the serve token out of its environment, arguments, config and recorded output but is not a
+sandbox.  A request that uses the executor-issued assignment cannot name another route: its route is
+the signed one, or serve refuses it.  A worker that reads the signing key could still mint an
+assignment for another route (serve's admission checks apply to it as to any); pinning stops a
+model choosing its route, it is not a boundary against a hostile worker.  A worker request that carries
 `execution_path_request` is rejected with 400 before any routing: that flow selects its own
 offer and cannot pin the assigned route, and pinned execution-path support for workers is not
 built.

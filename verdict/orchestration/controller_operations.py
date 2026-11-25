@@ -364,8 +364,14 @@ async def bounded_executor_call(
     phase: str,
     attempt_id: str,
     effort: Any = EFFORT_OMITTED,
+    run_id: str | None = None,
+    node_id: str | None = None,
 ) -> WorkerTerminal:
     """Bound the whole initial/repair call, including direct HTTP multi-phase I/O.
+
+    ``run_id`` and ``node_id`` are handed to an executor that accepts them (see
+    :func:`~verdict.orchestration.contracts.run_executor`); a call that has none, such as a
+    planner call, passes none.
 
     The executor receives a slightly shorter timeout so a cooperating adapter
     times out, cleans up and returns its own attested terminal first. The fixed
@@ -388,6 +394,8 @@ async def bounded_executor_call(
                     cwd=cwd,
                     timeout_seconds=executor_timeout_within(timeout_seconds),
                     effort=effort,
+                    run_id=run_id,
+                    node_id=node_id,
                 ),
                 timeout_seconds,
             )

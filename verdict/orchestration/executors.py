@@ -899,6 +899,8 @@ class FaultInjectingExecutor:
         timeout_seconds: float,
         tools: bool = True,
         effort: Any = EFFORT_OMITTED,
+        run_id: str | None = None,
+        node_id: str | None = None,
     ) -> WorkerTerminal:
         self._state.dispatches += 1
         if self._is_worker_attempt(cwd):
@@ -913,6 +915,8 @@ class FaultInjectingExecutor:
                 timeout_seconds=timeout_seconds,
                 tools=tools,
                 effort=effort,
+                run_id=run_id,
+                node_id=node_id,
             )
         if kind == "hang":
             await asyncio.sleep(timeout_seconds)
@@ -1950,6 +1954,8 @@ class MixedExecutor:
         timeout_seconds: float,
         tools: bool = True,
         effort: Any = EFFORT_OMITTED,
+        run_id: str | None = None,
+        node_id: str | None = None,
     ) -> WorkerTerminal:
         # Delegate entirely.  executor_kind and harness are set by the delegate
         # (PrimeHeadlessExecutor/DirectGatewayExecutor self-stamp harness;
@@ -1964,4 +1970,6 @@ class MixedExecutor:
             timeout_seconds=timeout_seconds,
             tools=tools,
             effort=effort,
+            run_id=run_id,
+            node_id=node_id,
         )
