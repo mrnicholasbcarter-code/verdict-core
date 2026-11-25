@@ -14,6 +14,7 @@ Covers:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -872,6 +873,194 @@ class TestSelectPlannerRoutes:
             ("alpha", "no_admitted_route"),
             ("gpt", "no_admitted_route"),
         )
+
+    def test_single_family_reasoned_alias_of_selected_model_is_not_unavailable(self) -> None:
+        """Round 3 of the #1317 review: a caller reason for one alias of the model that was
+        selected does not make that model unavailable."""
+        band, snap = self._alias_band()
+        admitted = ["cc/beta"]
+        selected = select_planner_routes(
+            admitted,
+            _caps_map(*admitted),
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"cc/alpha": "unhealthy"},
+        )
+        assert [r for r, _ in selected] == ["cc/beta"]
+        _, result = selected[0]
+        assert result.unavailable_families == (
+            ("claude", "no_admitted_route"),
+            ("gpt", "no_admitted_route"),
+        )
+
+    def test_single_family_metered_alias_of_selected_model_is_not_unavailable(self) -> None:
+        """An admitted alias that the capacity filter excluded is not unavailable either when
+        another alias of the same model is the selected route."""
+        band, snap = self._alias_band()
+        admitted = ["cc/beta", "cc/alpha"]
+        caps = {"cc/beta": CapacityClass.FREE, "cc/alpha": CapacityClass.METERED}
+        selected = select_planner_routes(admitted, caps, band, snap, None, top_n=2, now=NOW)
+        assert [r for r, _ in selected] == ["cc/beta"]
+        _, result = selected[0]
+        assert result.unavailable_families == (
+            ("claude", "no_admitted_route"),
+            ("gpt", "no_admitted_route"),
+        )
+
+    def test_single_family_alias_of_unselected_candidate_is_not_unavailable(self) -> None:
+        """A model with an admitted route that lost only because its family was already used
+        is available; a caller reason for another alias of it does not list it."""
+        records = [
+            _record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0)),
+            _record("p/c1", ("cc/claude-3-sonnet", "cc/zeta"), aa_intelligence=_score(90.0)),
+            _record("p/g0", ("oa/gpt-4o",), aa_intelligence=_score(85.0)),
+        ]
+        snap = _snapshot(*records)
+        inventory = ["cc/claude-3-opus", "cc/claude-3-sonnet", "cc/zeta", "oa/gpt-4o"]
+        everything_in_band = PlannerBandConfig(frontier_top=1.0, fallback_top=1.0)
+        band = compute_planner_bands(inventory, snap, None, config=everything_in_band, now=NOW)
+        admitted = ["cc/claude-3-opus", "cc/claude-3-sonnet"]
+        selected = select_planner_routes(
+            admitted,
+            _caps_map(*admitted),
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"cc/zeta": "unhealthy"},
+        )
+        assert [r for r, _ in selected] == ["cc/claude-3-opus"]
+        _, result = selected[0]
+        assert result.unavailable_families == (("gpt", "no_admitted_route"),)
+
+    @pytest.mark.parametrize(
+        ("exclusion_reasons", "expected"),
+        [
+            pytest.param(
+                {"cc/alpha": "unhealthy", "cc/beta": "quota_low"},
+                ("alpha", "unhealthy"),
+                id="caller_order_alpha_first",
+            ),
+            pytest.param(
+                {"cc/beta": "quota_low", "cc/alpha": "unhealthy"},
+                ("beta", "quota_low"),
+                id="caller_order_beta_first",
+            ),
+        ],
+    )
+    def test_single_family_reasoned_aliases_of_one_model_are_listed_once(
+        self, exclusion_reasons: dict[str, str], expected: tuple[str, str]
+    ) -> None:
+        """Round 3 of the #1317 review: two aliases of one unavailable model, each with a
+        caller reason, are one entry.  The first reason in the caller's map wins."""
+        band, snap = self._alias_band()
+        admitted = ["cc/claude-3-opus"]
+        selected = select_planner_routes(
+            admitted,
+            _caps_map(*admitted),
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons=exclusion_reasons,
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (expected, ("gpt", "no_admitted_route"))
+
+    def test_single_family_capacity_reason_beats_caller_reason_across_aliases(self) -> None:
+        """The existing precedence holds across aliases of one model: the reason from the
+        capacity filter (an admitted alias) wins over a caller reason for another alias."""
+        band, snap = self._alias_band()
+        admitted = ["cc/claude-3-opus", "cc/beta"]
+        caps = {"cc/claude-3-opus": CapacityClass.FREE, "cc/beta": CapacityClass.METERED}
+        selected = select_planner_routes(
+            admitted,
+            caps,
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"cc/alpha": "unhealthy"},
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (
+            ("beta", "metered_excluded"),
+            ("gpt", "no_admitted_route"),
+        )
+
+    def test_single_family_without_record_ids_lists_each_alias_as_before(self) -> None:
+        """A band built without record ids (a direct constructor) cannot tell aliases from
+        families, so every alias is listed under its own family, as it always was."""
+        band, snap = self._alias_band()
+        no_ids = replace(band, model_record_ids={})
+        admitted = ["cc/beta"]
+        selected = select_planner_routes(
+            admitted,
+            _caps_map(*admitted),
+            no_ids,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"cc/alpha": "unhealthy"},
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (
+            ("alpha", "unhealthy"),
+            ("claude", "no_admitted_route"),
+            ("gpt", "no_admitted_route"),
+        )
+
+    @pytest.mark.parametrize(
+        ("admitted", "caps", "exclusion_reasons"),
+        [
+            pytest.param(["cc/beta"], {}, {"cc/alpha": "unhealthy"}, id="reasoned_alias"),
+            pytest.param(
+                ["cc/beta", "cc/alpha"],
+                {"cc/alpha": CapacityClass.METERED},
+                None,
+                id="metered_alias",
+            ),
+            pytest.param(
+                ["cc/claude-3-opus"],
+                {},
+                {"cc/alpha": "unhealthy", "cc/beta": "quota_low"},
+                id="two_reasoned_aliases",
+            ),
+            pytest.param(["cc/claude-3-opus"], {}, None, id="unnamed_aliases"),
+        ],
+    )
+    def test_record_ids_never_change_which_routes_are_selected(
+        self,
+        admitted: list[str],
+        caps: dict[str, CapacityClass],
+        exclusion_reasons: dict[str, str] | None,
+    ) -> None:
+        """The record ids only decide what the receipt lists.  The selected routes, their
+        order and every other result field are the same with and without them."""
+        band, snap = self._alias_band()
+        capacity = {r: caps.get(r, CapacityClass.FREE) for r in admitted}
+
+        def run(b: BandComputation) -> list[tuple[str, object]]:
+            selected = select_planner_routes(
+                admitted,
+                capacity,
+                b,
+                snap,
+                None,
+                top_n=2,
+                now=NOW,
+                exclusion_reasons=exclusion_reasons,
+            )
+            return [(r, replace(res, unavailable_families=())) for r, res in selected]
+
+        assert run(band) == run(replace(band, model_record_ids={}))
 
     def test_band_result_fields_populated(self) -> None:
         records = [_record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0))]

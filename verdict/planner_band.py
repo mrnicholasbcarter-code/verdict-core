@@ -517,7 +517,12 @@ def select_planner_routes(
     routes) to the reason they were excluded.  Every band family that is not
     selected is listed in ``unavailable_families`` whether or not the caller
     passed it: the caller's reason is used when there is one, otherwise the
-    family is recorded as ``no_admitted_route``.
+    family is recorded as ``no_admitted_route``.  A model is one metadata record
+    (``band.model_record_ids``): it is listed once however many aliases it has, and
+    never when a route of it competed (the selected route's model included).  When
+    aliases of one unavailable model carry different reasons, a capacity exclusion
+    of an admitted alias wins, then the first reason in ``exclusion_reasons``, then
+    ``no_admitted_route`` under the first alias in sorted order.
 
     Returns a list of ``(route_id, PlannerBandResult)`` in priority order.
     """
@@ -574,74 +579,60 @@ def select_planner_routes(
         # (len(selected) >= 1 here because the empty check above already raised.)
         all_band_keys = band.frontier_model_keys | band.fallback_model_keys
 
-        # Enumerate all band families from four sources so no family is silently
-        # omitted from unavailable_families:
-        # 1. Routes that competed in the main loop (all_candidates_in_order).
-        # 2. Admitted routes in the band that _filter_to_band excluded (capacity, e.g. METERED).
-        # 3. Non-admitted routes supplied by the caller in exclusion_reasons.
-        # 4. Band models that none of the above names (not admitted, and the caller gave
-        #    no reason): the band itself says which families exist.
-        all_band_families: set[str] = {route_family(r) for r, _, _, _ in all_candidates_in_order}
+        # A band model is listed as unavailable when no route of it competed above.  It is
+        # listed once, however many aliases it has: aliases share a metadata record id, so
+        # the record decides.  A record with a competing route (the selected route's record
+        # is one) is available and is never listed.  A key with no record id (a band built
+        # without metadata) is never deduplicated.  The first source below to name a record
+        # gives its family label and its reason; a family label that is already listed, or is
+        # the used family, adds nothing.  Sources, in precedence order:
+        # 1. Admitted routes in the band that _filter_to_band excluded (capacity, e.g. METERED),
+        #    in admitted order: the explicit guard reason takes priority.
+        # 2. Non-admitted routes supplied by the caller in exclusion_reasons, in map order.
+        # 3. Band models that neither names (not admitted, and the caller gave no reason):
+        #    the band itself says which models exist.  Sorted, so the alias that stands for a
+        #    model is the same on every run.
         candidate_route_ids = {r for r, _, _, _ in all_candidates_in_order}
+        claimed_records = {
+            record_id
+            for r in candidate_route_ids
+            if (record_id := band.model_record_ids.get(_strip_suffix(r))) is not None
+        }
+        family_reasons: dict[str, str] = {}
 
-        # Source 2: admitted routes filtered by _filter_to_band due to capacity class.
-        local_cap_reasons: dict[str, str] = {}
+        def _list_unavailable(model_key: str, family: str, reason: str) -> None:
+            record_id = band.model_record_ids.get(model_key)
+            if record_id is not None:
+                if record_id in claimed_records:
+                    return
+                claimed_records.add(record_id)
+            if family not in used_families:
+                family_reasons.setdefault(family, reason)
+
         for route_id in admitted_route_ids:
-            if _strip_suffix(route_id) not in all_band_keys or route_id in candidate_route_ids:
+            model_key = _strip_suffix(route_id)
+            if model_key not in all_band_keys or route_id in candidate_route_ids:
                 continue
             cap = capacity_classes.get(route_id, CapacityClass.UNKNOWN)
             reason = "metered_excluded" if cap not in _NON_METERED else "filtered"
-            all_band_families.add(route_family(route_id))
-            local_cap_reasons[route_id] = reason
+            _list_unavailable(model_key, route_family(route_id), reason)
 
-        # Source 3: non-admitted routes from the caller's exclusion map.
         if exclusion_reasons:
-            for excl_route in exclusion_reasons:
-                if _strip_suffix(excl_route) in all_band_keys:
-                    all_band_families.add(route_family(excl_route))
+            for excl_route, excl_reason in exclusion_reasons.items():
+                model_key = _strip_suffix(excl_route)
+                if model_key in all_band_keys:
+                    _list_unavailable(
+                        model_key, route_family(excl_route), excl_reason or "not_admitted"
+                    )
 
-        # Source 4: band models with no route in the admitted set or the caller's map.
-        # A model that a route above already names is skipped, both by band key (so a
-        # suffixed route ``x/model:free`` is not listed twice, once under its full route id
-        # and once under its stripped band key) and by metadata record (so another alias of
-        # a model that is already accounted for, or of a model listed here, is not reported
-        # as a second family).
+        # A model a route above already names is skipped by band key, so a suffixed route
+        # ``x/model:free`` is not listed twice (once under its full route id and once under
+        # its stripped band key).
         named_keys = {_strip_suffix(r) for r in admitted_route_ids}
         if exclusion_reasons:
             named_keys.update(_strip_suffix(r) for r in exclusion_reasons)
-        seen_records = {band.model_record_ids[k] for k in named_keys if k in band.model_record_ids}
-        # Sorted, so the alias that stands for a model is the same on every run.  A key with
-        # no record id is never deduplicated.
         for model_key in sorted(all_band_keys - named_keys):
-            record_id = band.model_record_ids.get(model_key)
-            if record_id is not None:
-                if record_id in seen_records:
-                    continue
-                seen_records.add(record_id)
-            all_band_families.add(route_family(model_key))
-
-        unavailable_family_set = all_band_families - used_families
-
-        family_reasons: dict[str, str] = {}
-        # Populate from local capacity exclusions first (explicit guard reason takes priority).
-        for excl_route, reason in local_cap_reasons.items():
-            fam = route_family(excl_route)
-            if fam not in unavailable_family_set or fam in family_reasons:
-                continue
-            family_reasons[fam] = reason
-        # Then populate from caller-supplied exclusion reasons.
-        if exclusion_reasons:
-            for excl_route, reason in exclusion_reasons.items():
-                stripped = _strip_suffix(excl_route)
-                if stripped not in all_band_keys:
-                    continue
-                fam = route_family(excl_route)
-                if fam not in unavailable_family_set or fam in family_reasons:
-                    continue
-                family_reasons[fam] = reason or "not_admitted"
-        for fam in unavailable_family_set:
-            if fam not in family_reasons:
-                family_reasons[fam] = "no_admitted_route"
+            _list_unavailable(model_key, route_family(model_key), "no_admitted_route")
 
         unavail = tuple(sorted(family_reasons.items()))
         selected = [
