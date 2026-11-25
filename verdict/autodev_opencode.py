@@ -22,26 +22,40 @@ link, so swapping a directory for a symlink cannot redirect a read or a write. P
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import errno
 import hashlib
 import os
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
+import tempfile
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 
+from verdict.patch_executor import PatchAttempt, TokenUsage
 from verdict.work_unit import WorkUnit
+
+if TYPE_CHECKING:
+    from verdict.orchestration.contracts import WorkerTerminal
 
 #: Seed limits (design Open point 3): files in the attempt tree and total bytes read from it.
 MAX_SEED_FILES = 50_000
 MAX_SEED_BYTES = 512 * 1024 * 1024
 #: The largest single file the executor transfers, in either direction.
 MAX_TRANSFER_FILE_BYTES = 1024 * 1024
+#: One OpenCode attempt. OpenCode retries an upstream 429 or 503 for 85 to 100 s before it prints the
+#: status (#1338), so a timeout below 120 s would lose it; the signed assignment lives ``ceil(timeout)
+#: + 60`` s and is refused above 1,800 s (#1339), which caps the timeout at 1,740 s.
+ATTEMPT_TIMEOUT_SECONDS = 600.0
+MIN_ATTEMPT_TIMEOUT_SECONDS = 120.0
+MAX_ATTEMPT_TIMEOUT_SECONDS = 1740.0
 
 #: Hooks are a test seam: a mapping from a phase name to a callable run at that point.
 Hooks = Mapping[str, Callable[..., None]]
@@ -1159,3 +1173,282 @@ def restore(journal: list[JournalEntry], repo: Path, hooks: Hooks | None = None)
         return _restore(root_fd, journal, hooks=hooks)
     finally:
         os.close(root_fd)
+
+
+# --------------------------------------------------------------------------------------------
+# 3.1 prompt, 3.2 executor, 3.3 preflight
+# --------------------------------------------------------------------------------------------
+
+
+def build_opencode_prompt(unit: WorkUnit) -> str:
+    """The task text the OpenCode executor puts in its instructions file for ``unit`` (D10).
+
+    The objective, the owned files, the unit's verification command and the context pack
+    (unchanged), and the rules: edit only the owned files, run the command, never commit or push.
+    It reads nothing from the environment, so no credential can reach it.
+    """
+    owned = "\n".join(f"- {path}" for path in unit.owned_files)
+    command = shlex.join(unit.verification_command)
+    lines = [
+        "Repair one bounded unit of work in the repository you are in (your current directory).",
+        "",
+        "Objective:",
+        unit.objective,
+        "",
+        "You may edit, create or delete ONLY these files:",
+        owned,
+        "",
+        "Every other file is out of bounds: do not edit, create or delete any other file.",
+        "Do not run `git commit`, `git add`, `git push` or `git checkout`, and do not change git "
+        "configuration; leave your changes in the working tree.",
+        "",
+        "When you are done, run this command from the repository root; it must exit 0:",
+        f"    {command}",
+    ]
+    if unit.context.strip():
+        lines += ["", "Context:", unit.context]
+    return "\n".join(lines) + "\n"
+
+
+class OpenCodeRunner(Protocol):
+    """What the unit executor needs from ``OpenCodeExecutor``: ``run`` never raises."""
+
+    async def run(
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        run_id: str | None = None,
+        node_id: str | None = None,
+    ) -> WorkerTerminal: ...
+
+
+@dataclass(frozen=True)
+class UnitExecutorConfig:
+    """The slice of ``PatchExecutorConfig`` autodev reads: the route and the settings sent.
+
+    Sampling fields are ``None``: OpenCode chooses them, so none is invented (spec: unknown values
+    are recorded as unknown).
+    """
+
+    model: str
+    base_url: str = ""
+    temperature: float | None = None
+    max_tokens: int | None = None
+
+
+_REMEDY = "commit or stash it, or run without --worker-harness opencode"
+
+
+def _status_word(code: str) -> str:
+    if code == "??":
+        return "is untracked"
+    if "R" in code or "C" in code:
+        return "is renamed or copied"
+    if "D" in code:
+        return "is deleted"
+    if code[0] != " " and code[1] == " ":
+        return "has a staged change"
+    return "has uncommitted changes"
+
+
+class OpenCodeUnitExecutor:
+    """Run one work unit on OpenCode in an isolated attempt tree (D1, D8).
+
+    ``execute_unit`` seeds a clone, runs the injected OpenCode executor there, takes the delta and
+    transfers only validated owned-file changes.  ``restore()`` undoes the last transfer, and
+    ``preflight`` refuses a unit whose owned files git cannot recover.  ``isolated`` is true: the
+    gateway base-URL check is skipped for this executor and retries are refused (design D8).
+    """
+
+    isolated = True
+
+    def __init__(
+        self,
+        repo: Path,
+        runner: OpenCodeRunner,
+        *,
+        model: str,
+        base_url: str = "",
+        timeout_seconds: float = ATTEMPT_TIMEOUT_SECONDS,
+        temp_root: Path | None = None,
+        git_runner: Runner = subprocess.run,
+        hooks: Hooks | None = None,
+    ) -> None:
+        if not (MIN_ATTEMPT_TIMEOUT_SECONDS <= timeout_seconds <= MAX_ATTEMPT_TIMEOUT_SECONDS):
+            raise ValueError(
+                f"the attempt timeout must be {MIN_ATTEMPT_TIMEOUT_SECONDS:g} to "
+                f"{MAX_ATTEMPT_TIMEOUT_SECONDS:g} seconds"
+            )
+        self._repo = Path(repo)
+        self._runner = runner
+        self._timeout = float(timeout_seconds)
+        self._temp_root = temp_root
+        self._git = git_runner
+        self._hooks = hooks
+        self._run_id: str | None = None
+        self._journal: list[JournalEntry] = []
+        self.config = UnitExecutorConfig(model=model, base_url=base_url)
+        self.response_headers: dict[str, str] = {}
+
+    def begin_run(self, run_id: str) -> None:
+        """Receive autodev's attempt-ledger run id, the id every OpenCode attempt is signed under."""
+        self._run_id = run_id
+
+    def restore(self) -> str:
+        """Undo the last unit's transfer; ``""`` when nothing was transferred (D7)."""
+        return restore(self._journal, self._repo, self._hooks).summary()
+
+    # -- the attempt ---------------------------------------------------------------------
+
+    def execute_unit(self, unit: WorkUnit) -> PatchAttempt:
+        started = time.monotonic()
+        self._journal.clear()  # this call's journal only: an earlier unit's files are verified
+
+        def finish(
+            outcome: str,
+            reason: str = "",
+            changed: tuple[str, ...] = (),
+            usage: TokenUsage | None = None,
+        ) -> PatchAttempt:
+            return PatchAttempt(
+                unit_id=unit.unit_id,
+                model=self.config.model,
+                outcome=outcome,
+                reason=reason,
+                changed_files=changed,
+                usage=usage or TokenUsage(),
+                latency_ms=int((time.monotonic() - started) * 1000),
+                resolved_model=None,
+            )
+
+        if self._run_id is None:
+            return finish("error", "the isolated executor was not given a run id (begin_run)")
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            return finish("error", "the isolated executor cannot run inside a running event loop")
+        try:
+            require_descriptor_operations()
+        except AttemptFailedError as exc:
+            return finish("error", exc.reason)
+
+        parent = Path(tempfile.mkdtemp(prefix="verdict-autodev-oc-", dir=self._temp_root))
+        try:
+            try:
+                tree = seed_attempt_tree(self._repo, parent, unit.owned_files)
+            except AttemptFailedError as exc:
+                return finish("error", f"seed refused: {exc.reason}")
+            terminal = asyncio.run(
+                self._runner.run(
+                    build_opencode_prompt(unit),
+                    route_id=self.config.model,
+                    cwd=tree.path,
+                    timeout_seconds=self._timeout,
+                    run_id=self._run_id,
+                    node_id=unit.unit_id,
+                )
+            )
+            usage = _usage(terminal)
+            if not terminal.ok:
+                detail = terminal.error or terminal.stop_reason or "no reason given"
+                return finish("error", f"worker failed: {detail}", usage=usage)
+            try:
+                delta = attempt_delta(tree, self._repo, unit)
+            except AttemptRefusedError as exc:
+                return finish("rejected", exc.reason, usage=usage)
+            except AttemptFailedError as exc:
+                return finish("error", exc.reason, usage=usage)
+            remove_tree(parent)  # before the transfer, which is the last fallible step
+            try:
+                transfer(delta, self._repo, tree.manifest, self._journal, self._hooks)
+            except AttemptRefusedError as exc:
+                return finish("rejected", exc.reason, usage=usage)
+            except AttemptFailedError as exc:
+                return finish("error", exc.reason, usage=usage)
+            return finish("applied", changed=delta.paths, usage=usage)
+        finally:
+            remove_tree(parent)
+
+    # -- the precondition ------------------------------------------------------------------
+
+    def preflight(self, unit: WorkUnit) -> str | None:
+        """A reason this unit must not run on OpenCode, or ``None`` (D5).
+
+        An owned file must be tracked and unmodified, or absent: the transfer's undo information
+        lives in memory, so after a crash git must hold the user's bytes.  Read-only; any failing
+        read refuses the unit.
+        """
+        owned = list(unit.owned_files)
+
+        def git(args: Sequence[str], **kwargs: Any) -> Any:
+            return run_git(self._repo, args, runner=self._git, **kwargs)
+
+        status = git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", *owned])
+        if status.returncode != 0:
+            return f"cannot confirm the owned files are clean: git status failed ({_failure_text(status)})"
+        for record in parse_status_z(status.stdout):
+            for path in (record.path, record.source):
+                if path in owned:
+                    return f"owned file {path} {_status_word(record.code)}; {_REMEDY}"
+        listing = git(["ls-files", "-v", "-z", "--", *owned])
+        if listing.returncode != 0:
+            return f"cannot confirm the owned files are clean: git ls-files failed ({_failure_text(listing)})"
+        tags: dict[str, str] = {}
+        for record_bytes in listing.stdout.split(b"\0"):
+            if len(record_bytes) > 2:
+                tags[os.fsdecode(record_bytes[2:])] = record_bytes[:1].decode("ascii", "replace")
+        for path, tag in tags.items():
+            if tag != "H":
+                return (
+                    f"owned file {path} is tagged {tag!r} by git ls-files -v (assume-unchanged or "
+                    f"skip-worktree: git does not read its bytes); {_REMEDY}"
+                )
+        absent: list[str] = []
+        for path in owned:
+            exists = os.path.lexists(self._repo / path)
+            if path not in tags and exists:
+                return f"owned file {path} exists but is untracked or ignored; {_REMEDY}"
+            if not exists and path not in tags:
+                absent.append(path)
+        if tags:
+            attrs = git(["check-attr", "-z", "filter", "ident", "--", *sorted(tags)])
+            if attrs.returncode != 0:
+                return f"cannot confirm the owned files are clean: git check-attr failed ({_failure_text(attrs)})"
+            parts = attrs.stdout.split(b"\0")
+            for index in range(0, len(parts) - 2, 3):
+                path, attr, value = (os.fsdecode(part) for part in parts[index : index + 3])
+                if value not in ("unspecified", "unset"):
+                    return (
+                        f"owned file {path} has the git attribute {attr}={value} (a clean filter or "
+                        f"ident keyword can hide an edit from git status); {_REMEDY}"
+                    )
+        if absent:
+            payload = b"\0".join(os.fsencode(path) for path in absent) + b"\0"
+            ignored = git(["check-ignore", "-z", "--stdin"], stdin=payload, literal=False)
+            if ignored.returncode == 0:
+                matched = sorted(part for part in ignored.stdout.split(b"\0") if part)
+                path = os.fsdecode(matched[0]) if matched else absent[0]
+                return (
+                    f"owned file {path} does not exist and is matched by an ignore rule, so git "
+                    "status would not show the file the unit creates; remove the ignore rule or "
+                    "run without --worker-harness opencode"
+                )
+            if ignored.returncode != 1:
+                return f"cannot confirm the owned files are not ignored: git check-ignore failed ({_failure_text(ignored)})"
+        return None
+
+
+def _usage(terminal: WorkerTerminal) -> TokenUsage:
+    reported = terminal.usage
+    if reported is None or (reported.input_tokens is None and reported.output_tokens is None):
+        return TokenUsage()
+    return TokenUsage(
+        prompt_tokens=reported.input_tokens or 0,
+        completion_tokens=reported.output_tokens or 0,
+        reported=True,
+    )

@@ -7,8 +7,10 @@ system configuration switched off.
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import hashlib
+import inspect
 import os
 import signal
 import stat
@@ -22,6 +24,8 @@ from typing import Any
 import pytest
 
 from verdict import autodev_opencode as oc
+from verdict.orchestration.contracts import AttemptUsage, WorkerTerminal
+from verdict.orchestration.executor_opencode import OpenCodeExecutor
 from verdict.work_unit import WorkUnit
 
 # --------------------------------------------------------------------------------------------
@@ -1080,4 +1084,518 @@ class TestRestore:
         monkeypatch.setattr(os, which, real)
         result = oc.restore(journal, repo)
         assert result.restored == [] and result.not_restored == []
+        assert snapshot(repo) == before
+
+
+# --------------------------------------------------------------------------------------------
+# 3.1 prompt
+# --------------------------------------------------------------------------------------------
+
+
+class TestPrompt:
+    def test_prompt_carries_the_context_pack_unchanged(self) -> None:
+        pack = "## Context\nline one  \n\n  indented `code` \u00e9\n"
+        task = WorkUnit(
+            unit_id="u1",
+            objective="drop the unused import",
+            owned_files=("a.py", "pkg/b.py"),
+            verification_command=("python", "-m", "ruff", "check", "a.py"),
+            context=pack,
+        )
+        prompt = oc.build_opencode_prompt(task)
+        assert pack in prompt
+        assert "drop the unused import" in prompt
+        assert "- a.py" in prompt and "- pkg/b.py" in prompt
+        assert "python -m ruff check a.py" in prompt
+        assert "git commit" in prompt and "git push" in prompt
+
+    def test_prompt_never_contains_the_credential(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VERDICT_WORKER_API_KEY", "SECRET-WORKER-KEY-123")
+        monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "SECRET-SERVE-TOKEN-456")
+        prompt = oc.build_opencode_prompt(unit("a.py"))
+        assert "SECRET-WORKER-KEY-123" not in prompt
+        assert "SECRET-SERVE-TOKEN-456" not in prompt
+
+
+# --------------------------------------------------------------------------------------------
+# 3.2 executor
+# --------------------------------------------------------------------------------------------
+
+
+class StubRunner:
+    """A stand-in for ``OpenCodeExecutor``: ``async run`` with the real signature."""
+
+    def __init__(
+        self,
+        behave: Callable[[Path], None] | None = None,
+        *,
+        ok: bool = True,
+        error: str = "",
+        usage: AttemptUsage | None = None,
+        raises: BaseException | None = None,
+    ) -> None:
+        self.behave = behave
+        self.ok = ok
+        self.error = error
+        self.usage = usage
+        self.raises = raises
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        run_id: str | None = None,
+        node_id: str | None = None,
+    ) -> WorkerTerminal:
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "route_id": route_id,
+                "cwd": Path(cwd),
+                "timeout_seconds": timeout_seconds,
+                "run_id": run_id,
+                "node_id": node_id,
+            }
+        )
+        if self.raises is not None:
+            raise self.raises
+        if self.behave is not None:
+            self.behave(Path(cwd))
+        return WorkerTerminal(
+            ok=self.ok, model=route_id, error=self.error, usage=self.usage, harness="opencode"
+        )
+
+
+def make_executor(
+    repo: Path,
+    tmp_path: Path,
+    runner: StubRunner,
+    *,
+    hooks: Mapping[str, Callable[..., None]] | None = None,
+    run_id: str | None = "autodev-run-1",
+) -> oc.OpenCodeUnitExecutor:
+    temp_root = tmp_path / "attempts"
+    temp_root.mkdir(exist_ok=True)
+    executor = oc.OpenCodeUnitExecutor(
+        repo,
+        runner,
+        model="cheap/model",
+        base_url="http://127.0.0.1:8000",
+        temp_root=temp_root,
+        hooks=hooks,
+    )
+    if run_id is not None:
+        executor.begin_run(run_id)
+    return executor
+
+
+def attempts_left(tmp_path: Path) -> list[Path]:
+    return list((tmp_path / "attempts").iterdir())
+
+
+def edit_a(tree: Path) -> None:
+    write(tree, "a.py", "x = 2\n")
+
+
+class TestExecute:
+    def test_a_valid_owned_repair_is_applied(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        runner = StubRunner(edit_a)
+        executor = make_executor(repo, tmp_path, runner)
+        attempt = executor.execute_unit(unit("a.py"))
+        assert attempt.outcome == "applied" and attempt.applied
+        assert attempt.changed_files == ("a.py",)
+        assert (repo / "a.py").read_text() == "x = 2\n"
+        assert attempt.usage.reported is False
+        call = runner.calls[0]
+        assert call["route_id"] == "cheap/model"
+        assert call["run_id"] == "autodev-run-1" and call["node_id"] == "u1"
+        assert call["timeout_seconds"] == oc.ATTEMPT_TIMEOUT_SECONDS
+        assert str(call["cwd"]).startswith(str(tmp_path / "attempts"))
+
+    def test_usage_is_reported_when_the_worker_counts_tokens(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        runner = StubRunner(edit_a, usage=AttemptUsage(input_tokens=120, output_tokens=30))
+        attempt = make_executor(repo, tmp_path, runner).execute_unit(unit("a.py"))
+        assert attempt.usage.reported is True
+        assert (attempt.usage.prompt_tokens, attempt.usage.completion_tokens) == (120, 30)
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            "timed out after 600s",
+            "stalled: no output for 120s",
+            "authentication failed (serve refused)",
+            "exited 3",
+        ],
+    )
+    def test_worker_failed(self, tmp_path: Path, error: str) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        runner = StubRunner(edit_a, ok=False, error=error)  # the tree holds an owned edit
+        attempt = make_executor(repo, tmp_path, runner).execute_unit(unit("a.py"))
+        assert attempt.outcome == "error"
+        assert error in attempt.reason
+        assert snapshot(repo) == before
+        assert attempts_left(tmp_path) == []
+
+    def test_worker_makes_no_change(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        attempt = make_executor(repo, tmp_path, StubRunner()).execute_unit(unit("a.py"))
+        assert attempt.outcome == "rejected"
+        assert attempt.reason == "worker made no change to the owned files"
+        assert snapshot(repo) == before
+
+    @pytest.mark.parametrize(
+        "exit_path", ["applied", "rejected", "error", "exception", "interrupt"]
+    )
+    def test_attempt_tree_removed_on_every_exit_path(self, tmp_path: Path, exit_path: str) -> None:
+        repo = make_repo(tmp_path)
+        runner = {
+            "applied": StubRunner(edit_a),
+            "rejected": StubRunner(lambda tree: write(tree, "b.py", "evil\n")),
+            "error": StubRunner(edit_a, ok=False, error="exited 1"),
+            "exception": StubRunner(raises=RuntimeError("boom")),
+            "interrupt": StubRunner(raises=KeyboardInterrupt()),
+        }[exit_path]
+        executor = make_executor(repo, tmp_path, runner)
+        if exit_path == "exception":
+            with pytest.raises(RuntimeError):
+                executor.execute_unit(unit("a.py"))
+        elif exit_path == "interrupt":
+            with pytest.raises(KeyboardInterrupt):
+                executor.execute_unit(unit("a.py"))
+        else:
+            assert executor.execute_unit(unit("a.py")).outcome == exit_path
+        assert attempts_left(tmp_path) == []
+
+    def test_attempt_tree_removed_when_the_seed_is_refused(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        (repo / "nested").mkdir()
+        git(repo / "nested", "init", "-q", "-b", "main")
+        write(repo, "nested/n.py", "n = 1\n")
+        runner = StubRunner(edit_a)
+        attempt = make_executor(repo, tmp_path, runner).execute_unit(unit("a.py"))
+        assert attempt.outcome == "error" and "nested repository" in attempt.reason
+        assert runner.calls == []
+        assert attempts_left(tmp_path) == []
+
+    def test_tree_is_removed_before_the_transfer(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        seen: list[list[Path]] = []
+
+        def look() -> None:
+            seen.append(attempts_left(tmp_path))
+
+        executor = make_executor(repo, tmp_path, StubRunner(edit_a), hooks={"after_checks": look})
+        assert executor.execute_unit(unit("a.py")).applied
+        assert seen == [[]]
+
+    def test_running_event_loop_returns_error(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        runner = StubRunner(edit_a)
+        executor = make_executor(repo, tmp_path, runner)
+
+        async def inside() -> Any:
+            return executor.execute_unit(unit("a.py"))
+
+        attempt = asyncio.run(inside())
+        assert attempt.outcome == "error" and "running event loop" in attempt.reason
+        assert runner.calls == [] and attempts_left(tmp_path) == []
+
+    def test_no_run_id(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        runner = StubRunner(edit_a)
+        executor = make_executor(repo, tmp_path, runner, run_id=None)
+        attempt = executor.execute_unit(unit("a.py"))
+        assert attempt.outcome == "error" and "run id" in attempt.reason
+        assert runner.calls == [] and attempts_left(tmp_path) == []
+
+    @pytest.mark.parametrize(
+        ("timeout", "accepted"), [(119.0, False), (120.0, True), (1740.0, True), (1741.0, False)]
+    )
+    def test_attempt_timeout_bounds(self, tmp_path: Path, timeout: float, accepted: bool) -> None:
+        repo = make_repo(tmp_path)
+        if accepted:
+            oc.OpenCodeUnitExecutor(repo, StubRunner(), model="m", timeout_seconds=timeout)
+        else:
+            with pytest.raises(ValueError, match="attempt timeout"):
+                oc.OpenCodeUnitExecutor(repo, StubRunner(), model="m", timeout_seconds=timeout)
+
+    def test_stub_matches_the_real_run_signature(self) -> None:
+        real = inspect.signature(OpenCodeExecutor.run)
+        stub = inspect.signature(StubRunner.run)
+        assert list(stub.parameters) == list(real.parameters)
+        for name, parameter in real.parameters.items():
+            assert stub.parameters[name].kind == parameter.kind
+            assert stub.parameters[name].default == parameter.default
+
+    def test_journal_is_emptied_at_the_start_of_each_attempt(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        runner = StubRunner(edit_a)
+        executor = make_executor(repo, tmp_path, runner)
+        assert executor.execute_unit(unit("a.py")).applied  # unit A, verified by the caller
+        runner.behave = None  # unit B: the worker changes nothing and is rejected
+        assert executor.execute_unit(unit("b.py")).outcome == "rejected"
+        assert executor.restore() == ""  # nothing of unit B to undo ...
+        assert (repo / "a.py").read_text() == "x = 2\n"  # ... and unit A's file stays
+
+    def test_no_served_identity_is_claimed(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        executor = make_executor(repo, tmp_path, StubRunner(edit_a))
+        attempt = executor.execute_unit(unit("a.py"))
+        assert attempt.resolved_model is None
+        assert executor.response_headers == {}
+        assert executor.config.model == "cheap/model"
+        assert executor.config.temperature is None and executor.config.max_tokens is None
+        assert executor.isolated is True
+
+    def test_credential_never_appears_in_a_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VERDICT_WORKER_API_KEY", "SECRET-WORKER-KEY-123")
+        repo = make_repo(tmp_path)
+        runner = StubRunner(ok=False, error="serve refused the route; key [REDACTED]")
+        attempt = make_executor(repo, tmp_path, runner).execute_unit(unit("a.py"))
+        assert "[REDACTED]" in attempt.reason
+        assert "SECRET-WORKER-KEY-123" not in repr(attempt.to_dict())
+        assert "SECRET-WORKER-KEY-123" not in runner.calls[0]["prompt"]
+
+
+# --------------------------------------------------------------------------------------------
+# 3.3 preflight
+# --------------------------------------------------------------------------------------------
+
+
+def preflight_executor(
+    repo: Path, tmp_path: Path, git_runner: Callable[..., Any] | None = None
+) -> oc.OpenCodeUnitExecutor:
+    kwargs: dict[str, Any] = {} if git_runner is None else {"git_runner": git_runner}
+    temp_root = tmp_path / "attempts"
+    temp_root.mkdir(exist_ok=True)
+    return oc.OpenCodeUnitExecutor(
+        repo, StubRunner(), model="cheap/model", temp_root=temp_root, **kwargs
+    )
+
+
+def refused(repo: Path, tmp_path: Path, owned: tuple[str, ...], path: str) -> str:
+    before = snapshot(repo)
+    reason = preflight_executor(repo, tmp_path).preflight(unit(*owned))
+    assert reason is not None
+    assert path in reason
+    assert "commit or stash" in reason or "ignore rule" in reason
+    assert snapshot(repo) == before
+    assert attempts_left(tmp_path) == []
+    return reason
+
+
+class TestPreflight:
+    def test_tracked_and_unmodified_owned_file(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        assert preflight_executor(repo, tmp_path).preflight(unit("a.py", "b.py")) is None
+
+    def test_modified_owned_file_refused(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        write(repo, "a.py", "x = 99\n")
+        refused(repo, tmp_path, ("a.py",), "a.py")
+
+    @pytest.mark.parametrize("how", ["staged", "deleted"])
+    def test_staged_or_deleted_owned_file_refused(self, tmp_path: Path, how: str) -> None:
+        repo = make_repo(tmp_path)
+        if how == "staged":
+            write(repo, "a.py", "x = 99\n")
+            git(repo, "add", "a.py")  # staged, and the working tree equals the index
+        else:
+            (repo / "a.py").unlink()
+        refused(repo, tmp_path, ("a.py",), "a.py")
+
+    @pytest.mark.parametrize("how", ["untracked", "ignored"])
+    def test_untracked_or_ignored_owned_file_refused(self, tmp_path: Path, how: str) -> None:
+        repo = make_repo(tmp_path)
+        if how == "untracked":
+            write(repo, "fresh.py", "f = 1\n")
+        else:
+            write(repo, ".gitignore", "fresh.py\n")
+            git(repo, "add", ".gitignore")
+            git(repo, "commit", "-qm", "ignore")
+            write(repo, "fresh.py", "f = 1\n")
+        refused(repo, tmp_path, ("fresh.py",), "fresh.py")
+
+    def test_assume_unchanged_owned_file_refused(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        git(repo, "update-index", "--assume-unchanged", "a.py")
+        write(repo, "a.py", "x = 99\n")
+        assert git(repo, "status", "--porcelain") == ""  # the edit is invisible to git status
+        reason = refused(repo, tmp_path, ("a.py",), "a.py")
+        assert "'h'" in reason
+
+    def test_skip_worktree_owned_file_refused(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        git(repo, "update-index", "--skip-worktree", "a.py")
+        write(repo, "a.py", "x = 99\n")
+        assert git(repo, "status", "--porcelain") == ""
+        reason = refused(repo, tmp_path, ("a.py",), "a.py")
+        assert "'S'" in reason
+
+    @pytest.mark.parametrize("attribute", ["filter", "ident"])
+    def test_owned_file_with_a_filter_or_ident_attribute_refused(
+        self, tmp_path: Path, attribute: str
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        if attribute == "filter":
+            git(repo, "config", "filter.strip.clean", "sed 's/  # note.*//'")
+            write(repo, ".gitattributes", "a.txt filter=strip\n")
+            write(repo, "a.txt", "x = 1  # note A\n")
+            edited = "x = 1  # note B\n"
+        else:
+            write(repo, ".gitattributes", "a.txt ident\n")
+            write(repo, "a.txt", "$Id: " + "1" * 40 + " $\n")
+            edited = "$Id: " + "2" * 40 + " $\n"
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "init")
+        write(repo, "a.txt", edited)
+        assert git(repo, "status", "--porcelain") == ""  # same-size edit the attribute hides
+        reason = refused(repo, tmp_path, ("a.txt",), "a.txt")
+        assert attribute in reason
+
+    @pytest.mark.parametrize("with_attribute", [False, True])
+    def test_absent_owned_file_accepted(self, tmp_path: Path, with_attribute: bool) -> None:
+        repo = make_repo(tmp_path)
+        if with_attribute:
+            write(repo, ".gitattributes", "new_file.py filter=anything\n")
+            git(repo, "add", ".gitattributes")
+            git(repo, "commit", "-qm", "attr")
+        assert preflight_executor(repo, tmp_path).preflight(unit("new_file.py")) is None
+
+    def test_ignored_absent_owned_file_refused(self, tmp_path: Path) -> None:
+        """Carried finding 1: a unit that would create an ignored file is refused."""
+        repo = make_repo(tmp_path, {"a.py": "x = 1\n", ".gitignore": "generated_*.py\n"})
+        reason = refused(repo, tmp_path, ("generated_out.py",), "generated_out.py")
+        assert "ignore rule" in reason
+
+    def test_ignored_and_plain_absent_owned_files_refused(self, tmp_path: Path) -> None:
+        """Carried finding 1, mixed: the whole unit is refused, so nothing is half-transferred."""
+        repo = make_repo(tmp_path, {"a.py": "x = 1\n", ".gitignore": "generated_*.py\n"})
+        before = snapshot(repo)
+        reason = preflight_executor(repo, tmp_path).preflight(
+            unit("generated_out.py", "plain_out.py")
+        )
+        assert reason is not None and "generated_out.py" in reason
+        assert snapshot(repo) == before
+        assert not (repo / "plain_out.py").exists()
+
+    def test_unowned_dirty_file_does_not_refuse(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        write(repo, "b.py", "dirty = 1\n")
+        write(repo, "untracked.py", "u = 1\n")
+        assert preflight_executor(repo, tmp_path).preflight(unit("a.py")) is None
+
+    @pytest.mark.parametrize("read", ["status", "ls-files", "check-attr", "check-ignore"])
+    def test_git_read_fails_closed(self, tmp_path: Path, read: str) -> None:
+        repo = make_repo(tmp_path)
+        owned = ("a.py", "gen.py") if read == "check-ignore" else ("a.py",)
+
+        def failing(argv: list[str], **kwargs: Any) -> Any:
+            if read in argv:
+                # check-ignore exits 1 for "nothing ignored"; any status other than 0 and 1 is a failure
+                return subprocess.CompletedProcess(argv, 128, b"", b"fatal: simulated")
+            return subprocess.run(argv, **kwargs)
+
+        before = snapshot(repo)
+        reason = preflight_executor(repo, tmp_path, failing).preflight(unit(*owned))
+        assert reason is not None and read.replace("-", " ") in reason.replace("-", " ")
+        assert "simulated" in reason
+        assert snapshot(repo) == before
+
+    def test_check_ignore_exit_one_is_not_a_failure(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+
+        def clean(argv: list[str], **kwargs: Any) -> Any:
+            if "check-ignore" in argv:
+                return subprocess.CompletedProcess(argv, 1, b"", b"")
+            return subprocess.run(argv, **kwargs)
+
+        assert preflight_executor(repo, tmp_path, clean).preflight(unit("gen.py")) is None
+
+
+# --------------------------------------------------------------------------------------------
+# 3.4 isolation matrix
+# --------------------------------------------------------------------------------------------
+
+
+class TestMatrix:
+    @pytest.mark.parametrize(
+        "variant",
+        ["plain", "staged", "commit", "unowned_new_file", "symlink_swap", "push", "planted_config"],
+    )
+    def test_out_of_bounds_edits_are_rejected(self, tmp_path: Path, variant: str) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        marker = tmp_path / "marker"
+
+        def hostile(tree: Path) -> None:
+            if variant == "plain":
+                write(tree, "b.py", "evil\n")
+            elif variant == "staged":
+                write(tree, "b.py", "evil\n")
+                git(tree, "add", "b.py")
+            elif variant == "commit":
+                write(tree, "b.py", "evil\n")
+                git(tree, "add", "b.py")
+                git(tree, "commit", "-qm", "evil", "--no-verify")
+            elif variant == "unowned_new_file":
+                write(tree, "newfile.py", "evil\n")
+            elif variant == "symlink_swap":
+                (tree / "a.py").unlink()
+                (tree / "a.py").symlink_to(repo / "b.py")
+            elif variant == "push":
+                write(tree, "b.py", "evil\n")
+                done = subprocess.run(
+                    ["git", "push", "origin"], cwd=tree, capture_output=True, text=True, check=False
+                )
+                assert done.returncode != 0  # the clone has no origin to push to
+            else:
+                script = tmp_path / "plant.sh"
+                script.write_text(f"#!/bin/sh\ntouch {marker}\n")
+                script.chmod(0o755)
+                with (tree / ".git" / "config").open("a") as handle:
+                    handle.write(f"[core]\n\tfsmonitor = {script}\n")
+                hook = tree / ".git" / "hooks" / "pre-commit"
+                hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+                hook.chmod(0o755)
+                write(tree, "b.py", "evil\n")
+
+        executor = make_executor(repo, tmp_path, StubRunner(hostile))
+        attempt = executor.execute_unit(unit("a.py"))
+        assert attempt.outcome == "rejected"
+        assert snapshot(repo) == before
+        assert attempts_left(tmp_path) == []
+        assert not marker.exists()
+
+    def test_no_context_file_at_all(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        attempt = make_executor(repo, tmp_path, StubRunner(edit_a)).execute_unit(unit("a.py"))
+        assert attempt.outcome == "applied" and attempt.changed_files == ("a.py",)
+        assert git(repo, "status", "--porcelain", "--untracked-files=all") == " M a.py\n"
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="ADR-053 Decision 4: a worker shell can write an absolute path in the user's tree",
+    )
+    def test_absolute_path_write_is_an_accepted_risk(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+
+        def absolute(tree: Path) -> None:
+            edit_a(tree)
+            (repo / "written-by-absolute-path.txt").write_text("a shell can do this\n")
+
+        make_executor(repo, tmp_path, StubRunner(absolute)).execute_unit(unit("a.py"))
         assert snapshot(repo) == before
