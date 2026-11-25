@@ -11,4 +11,7 @@
 - [x] 1.7 Existing unknown-tier tests (`zz/unknown-tier`, `q/zzqx-blob`) keep their original assertions: `skipped_unknown_tier`, never probed
 - [x] 1.8 Update the `screen_models` docstring: a no-tier route passes only when its model is in the planner band on fresh ratings
 - [x] 1.9 Failing test: a no-tier route with stale ratings keeps `skipped_unknown_tier` and is not probed
+- [x] 1.10 Failing test (#1316): an inventory route listed in `cooled_models` is not screened and not probed, in and out of the live pool
+- [x] 1.11 Failing test (#1316): an inventory route whose row marks it non-chat (type or capability), with a neutral id, is not screened or probed
+- [x] 1.12 Fix extra_ratings loop (#1316): skip `cooled_models` routes and apply the row-aware `is_non_chat_route(rid, row)` in addition to the id-only test, so the screened set only narrows; a regression test keeps an id-marked route with an explicit chat row excluded
 - [ ] (post-merge) `verdict identify --screen` probes `cc/claude-opus-5-5` and records a tool-proof entry on a live install with a CC subscription connection

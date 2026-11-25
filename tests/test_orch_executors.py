@@ -536,7 +536,10 @@ def test_cli_parser_exposes_planner_executor_role() -> None:
 
 
 def test_default_executor_builds_direct_gateway_not_prime() -> None:
-    """Fails if a no-value or missing --executor silently falls back to Prime."""
+    """Fails if a no-value or missing --executor silently falls back to Prime or OpenCode.
+
+    ADR-053 Decision 2, amended 2026-11-24: OpenCode is opt-in; direct-gateway stays the default.
+    """
     import argparse
 
     from verdict.orchestration.cli import _worker_executor, add_parsers
@@ -550,6 +553,102 @@ def test_default_executor_builds_direct_gateway_not_prime() -> None:
     assert isinstance(_worker_executor(bare), DirectGatewayExecutor)
     empty = argparse.Namespace(executor="", executor_map="", gateway="http://gateway.invalid")
     assert isinstance(_worker_executor(empty), DirectGatewayExecutor)
+
+
+def test_opencode_executor_is_built_only_when_named() -> None:
+    """``--executor opencode`` selects OpenCode, and so does a per-node map entry; nothing else."""
+    import argparse
+
+    from verdict.orchestration.cli import _worker_executor, add_parsers
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
+    from verdict.orchestration.executors import DirectGatewayExecutor, MixedExecutor
+
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    named = parser.parse_args(
+        ["orchestrate", "ship", "--executor", "opencode", "--gateway", "http://gateway.invalid"]
+    )
+    assert isinstance(_worker_executor(named), OpenCodeExecutor)
+
+    mapped = parser.parse_args(
+        [
+            "orchestrate",
+            "ship",
+            "--executor-map",
+            "node-1=opencode",
+            "--gateway",
+            "http://gateway.invalid",
+        ]
+    )
+    mixed = _worker_executor(mapped)
+    assert isinstance(mixed, MixedExecutor)
+    assert isinstance(mixed._map["node-1"], OpenCodeExecutor)
+    assert isinstance(mixed._default, DirectGatewayExecutor)
+
+
+def test_orchestrate_help_says_opencode_is_opt_in(capsys: pytest.CaptureFixture[str]) -> None:
+    """The ``--executor`` help names direct-gateway as the default and OpenCode as opt-in."""
+    import argparse
+
+    from verdict.orchestration.cli import add_parsers
+
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    with pytest.raises(SystemExit):
+        parser.parse_args(["orchestrate", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert "(default: direct-gateway)" in text
+    assert "opt-in" in text and "--executor opencode" in text
+    assert "default: opencode" not in text
+
+
+def test_serve_url_flag_reaches_the_opencode_executor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review item 11: the serve address is configuration, not a constant in the executor."""
+    import argparse
+
+    from verdict.orchestration.cli import _worker_executor, add_parsers
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
+
+    monkeypatch.delenv("VERDICT_SERVE_URL", raising=False)
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    flagged = parser.parse_args(
+        [
+            "orchestrate",
+            "ship",
+            "--executor",
+            "opencode",
+            "--gateway",
+            "http://gateway.invalid",
+            "--serve-url",
+            "http://127.0.0.1:9321",
+        ]
+    )
+    executor = _worker_executor(flagged)
+    assert isinstance(executor, OpenCodeExecutor)
+    assert executor._serve_base_url == "http://127.0.0.1:9321"
+    # No flag: the variable, then the unit's default.
+    plain = parser.parse_args(
+        ["orchestrate", "ship", "--executor", "opencode", "--gateway", "http://gateway.invalid"]
+    )
+    assert plain.serve_url is None
+    assert _worker_executor(plain)._serve_base_url == "http://127.0.0.1:8000"  # type: ignore[attr-defined]
+    monkeypatch.setenv("VERDICT_SERVE_URL", "http://127.0.0.1:9444")
+    assert _worker_executor(plain)._serve_base_url == "http://127.0.0.1:9444"  # type: ignore[attr-defined]
+
+
+def test_serve_url_is_not_forced_on_adapters_that_do_not_take_it() -> None:
+    """Only adapters whose worker_executor accepts ``serve_url`` receive it."""
+    from verdict.orchestration.cli import _build_single_executor
+    from verdict.orchestration.executors import DirectGatewayExecutor
+
+    executor = _build_single_executor(
+        "direct-gateway",
+        gateway="http://gateway.invalid",
+        api_key="",
+        serve_url="http://127.0.0.1:9",
+    )
+    assert isinstance(executor, DirectGatewayExecutor)
 
 
 @pytest.mark.parametrize("name", ["prime", "prime-headless"])

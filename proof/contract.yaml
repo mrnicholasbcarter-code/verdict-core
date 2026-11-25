@@ -25,12 +25,16 @@ modes:
       - schema
       - unit_targeted
       - unit_full
+      - unit_timing
       - security
       - secrets
       - structural
       - build
       - acceptance
       - adversarial
+    # Number of legs the full proof is split into in CI (issue #1307). The workflow
+    # matrix lists 1..shards. Reduce it only on measured queueing evidence.
+    shards: 3
 
 gates:
   - id: format
@@ -68,6 +72,20 @@ gates:
     phase: unit_full
     classify: test
     command: ["pytest", "tests/", "-q", "--tb=short"]
+    # Divided across the legs when run.py is given --shard K (without the timing
+    # tests); an unsharded run executes this command unchanged.
+    shard: split
+
+  - id: unit_timing
+    phase: unit_timing
+    classify: test
+    # The wall-clock tests ("timing" marker) run serially, once, in leg 1 only. An
+    # unsharded run skips this gate because unit_full runs those tests there.
+    command: ["pytest", "tests/", "-q", "--tb=short", "-m", "timing", "-p", "no:xdist"]
+    shard: leader
+    # The runner launches this gate without these variables, so a workflow's
+    # PYTEST_ADDOPTS="-p xdist -n auto" cannot reach the serial tests.
+    env_clear: [PYTEST_ADDOPTS]
 
   - id: security_bandit
     phase: security

@@ -493,7 +493,9 @@ jobs:
     # Skipped on docs-only PRs (no source changed; wheel contents untouched).
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, test, test-shard, coverage, lint, security, type-check, install-smoke, typescript-contract-parity, client-package-smoke]
+    # Needs only `changes`: it uses no other job's output, and no workflow downloads
+    # `dist`. ci-ok still waits for it (tests/test_ci_workflow.py).
+    needs: [changes]
     if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@v7

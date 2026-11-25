@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from verdict.admit_prove_confirm import gate_admit_prove_confirm
+from verdict.availability import is_opaque_route_id
 from verdict.candidate_pool import (
     HEALTH_OK,
     CandidatePoolError,
@@ -43,6 +44,8 @@ from verdict.free_tier_admit import (
     DEFAULT_CHEAP_PATH_TOKEN_BUDGET,
     FAIL_CLOSED_REASON,
     NO_ELIGIBLE_TARGET,
+    REASON_OPAQUE_ROUTE_DISALLOWED,
+    REASON_REQUIRED_UNKNOWN,
     FreeTierAdmitReceipt,
     LiveAdmitError,
     NamedDrop,
@@ -65,7 +68,13 @@ from verdict.metadata.store import (
     lookup_omniroute_id,
 )
 from verdict.model_passports import ModelPassport
-from verdict.models import AdmissionProof, ModelInfo, ProviderConfig, RoutingDecision
+from verdict.models import (
+    CONTEXT_WORKER_ASSIGNMENT,
+    AdmissionProof,
+    ModelInfo,
+    ProviderConfig,
+    RoutingDecision,
+)
 from verdict.outcome_shadow import (
     attach_outcome_shadow,
     load_verified_outcome_observations,
@@ -76,6 +85,7 @@ from verdict.planner import StructuredPlanner
 from verdict.probes import ProbeTransport, openai_probe_transport
 from verdict.router import select_best_eligible_model, select_best_model
 from verdict.task_profile import TaskProfile, TaskProfileError, profile_task
+from verdict.worker_assignment import VerifiedWorkerAssignment
 from verdict.worthiness import classify_worthiness
 
 _LOG = logging.getLogger(__name__)
@@ -228,10 +238,108 @@ class IntelligenceRanking:
     profile: str
 
 
+#: The task family of every request on the assigned lane.  A worker is an agent with tools, and
+#: ``agentic`` carries the largest context-plan allowance, so the size gate errs toward failing
+#: closed.  It is a constant: neither the text nor a ``task_family`` field in the body selects it.
+ASSIGNED_TASK_FAMILY = "agentic"
+#: The tier the lane records: the one ``evidence._TIER_TO_POLICY_FLOOR`` maps to ``best_effort``,
+#: so evidence never claims a floor the lane did not compute.
+ASSIGNED_TIER = 3
+LANE_FLAG = "worker_assigned_lane"
+LANE_STREAMING_WAIVED_FLAG = "worker_assignment_streaming_waived"
+LANE_PROTECTED_FLAG = "worker_assignment_protected_denied"
+#: The lane never classifies a request from its text, and its receipts say so.
+LANE_TASK_CLASS = "unclassified"
+LANE_CLASS_REASON = "worker_assignment:text_classification_skipped"
+LANE_WAIVER_REASON = "verified_worker_assignment"
+REASON_ROUTE_NOT_IN_INVENTORY = "route_not_in_inventory"
+LANE_PROTECTED_REASON = "protected work is never offloaded to an assigned route"
+#: Codes in a denial's receipt id for a route no named check dropped, and for a receipt that held
+#: a route other than the signed one (the defence-in-depth refusal in ``_assigned_decision``).
+LANE_NO_NAMED_DROP_CODE = "no_named_drop"
+LANE_NOT_ONLY_ROUTE_CODE = "not_the_only_admitted_route"
+#: Requirements a verified assignment waives for the capability gate.  ``streaming`` only: no
+#: route in the real metadata store carries a streaming fact, and a route that cannot stream
+#: fails upstream and recovery reroutes it.  ``tools`` is never waived.
+_LANE_WAIVABLE_REQUIREMENTS = ("streaming",)
+
+
+def _lane_receipt_id(seed: Sequence[str]) -> str:
+    """``vrct_`` plus 24 hex of a SHA-256 over one compact JSON array of strings.
+
+    The ids are free text (they may hold ``|`` or quotes), so the seed is a JSON array of
+    strings, never a delimiter join: two seeds that differ in any element can not encode alike.
+    """
+    encoded = json.dumps(list(seed), separators=(",", ":"), ensure_ascii=True)
+    return "vrct_" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+
+
+def assigned_receipt_id(
+    route_id: str, profile_digest: str, assignment: VerifiedWorkerAssignment
+) -> str:
+    """The lane's receipt id for an admitted decision, from an injective encoding of its ids.
+
+    The id is also the persisted routing attempt id, so a collision would merge two nodes'
+    routing attribution.
+    """
+    return _lane_receipt_id(
+        ["worker-assignment/v1", route_id, profile_digest, assignment.run_id, assignment.node_id]
+    )
+
+
+def assigned_denial_receipt_id(
+    profile_digest: str, assignment: VerifiedWorkerAssignment, reason_code: str
+) -> str:
+    """The lane's receipt id for a denied decision: the assignment's own identity, never a constant.
+
+    A denied receipt has no chosen route, so without an id the persisted routing attempt id falls
+    back to a hash of the task class, which is the same on the lane for every denial, and the
+    store keeps only the first denial's root.  The seed holds the pinned route, the request's
+    profile digest, the run and node ids, the payload digest (so a new attempt's assignment gets
+    its own root) and the code of the check that dropped the route (so a second, different denial
+    of one assignment is not hidden behind the first).  Its tag differs from an admitted
+    decision's, so a denial and an admission of one assignment never share a root.
+    """
+    return _lane_receipt_id(
+        [
+            "worker-assignment-denied/v1",
+            assignment.route_id,
+            profile_digest,
+            assignment.run_id,
+            assignment.node_id,
+            assignment.assignment_digest,
+            reason_code,
+        ]
+    )
+
+
+def _assignment_record(assignment: VerifiedWorkerAssignment) -> dict[str, Any]:
+    """What serve's receipts say about the assignment: ids, expiry and a payload digest."""
+    return {
+        "route_id": assignment.route_id,
+        "run_id": assignment.run_id,
+        "node_id": assignment.node_id,
+        "expires_at": assignment.expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "assignment_digest": assignment.assignment_digest,
+    }
+
+
 def prepared_task_profile(
-    task: str, context: dict[str, Any], *, planner: StructuredPlanner | None = None
+    task: str,
+    context: dict[str, Any],
+    *,
+    planner: StructuredPlanner | None = None,
+    assigned: bool = False,
 ) -> tuple[TaskRequirements, TaskProfile]:
-    """Normalize request floors once for both admission and relay proof scope."""
+    """Normalize request floors once for both admission and relay proof scope.
+
+    ``assigned`` is the mode for a verified worker assignment.  The planner is not consulted (no
+    capability is inferred from the text), the requirements come from request fields only, and
+    the family is :data:`ASSIGNED_TASK_FAMILY`.  ``streaming`` stays in the requirements and so
+    in the digest: a waiver, where one applies, is made on the gate's copy of the profile, never
+    here.  The assigned lane and the relay both call this with the same text and context, so the
+    proof the lane mints scopes the digest the relay recomputes.
+    """
     from verdict.execution_path import ExecutionPathRequest
 
     context = dict(context)
@@ -271,12 +379,15 @@ def prepared_task_profile(
             context["task_family"] = nested["task_family"]
 
     planner_caps: tuple[str, ...] = ()
-    try:
-        planned = (planner or StructuredPlanner()).plan(task, context=context).task_spec
-        planner_caps = tuple(planned.required_capabilities)
-    except Exception:
-        planner_caps = ()
+    if not assigned:
+        try:
+            planned = (planner or StructuredPlanner()).plan(task, context=context).task_spec
+            planner_caps = tuple(planned.required_capabilities)
+        except Exception:
+            planner_caps = ()
     requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
+    if assigned:
+        context = {**context, "task_family": ASSIGNED_TASK_FAMILY}
     return requirements, profile_task(task, context=context, requirements=requirements)
 
 
@@ -633,6 +744,19 @@ class IntelligenceService:
         )
 
         trace_stages: dict[str, Any] | None = None
+        if (
+            isinstance(context, dict)
+            and "execution_path_request" in context
+            and isinstance(context.get(CONTEXT_WORKER_ASSIGNMENT), VerifiedWorkerAssignment)
+        ):
+            # The execution-path flow below selects its own offer and never reaches
+            # ``_decision_from_admit``, where a worker's assigned route is pinned.  Pinned
+            # execution-path support for workers is not built (operator decision, 2026-11-24):
+            # the relay rejects the combination with 400 first, and this refuses it for any
+            # other caller rather than let a worker request select another route.
+            raise ExecutionPathError(
+                "a worker request with an assigned route must not carry execution_path_request"
+            )
         if isinstance(context, dict) and "execution_path_request" in context:
             context = dict(context)
             context["execution_path_request"], trace_stages = (
@@ -794,6 +918,21 @@ class IntelligenceService:
 
         # Legacy feed path (explicit migration / non-production only).
         legacy_safety = [LEGACY_NON_AUTHORITY_FLAG]
+
+        # A verified worker assignment takes its own lane: the pinned route, every per-route
+        # gate, and none of the text-based second guesses below.  It sits after the authority
+        # raise (production never reaches it) and never falls through to the legacy path.
+        assignment = context.get(CONTEXT_WORKER_ASSIGNMENT) if isinstance(context, dict) else None
+        if isinstance(assignment, VerifiedWorkerAssignment) and isinstance(context, dict):
+            return self._route_assigned(
+                task_str,
+                criticality,
+                context,
+                assignment,
+                request_id=request_id,
+                started=start_t,
+                safety=legacy_safety,
+            )
 
         # Fallback to strict heuristic scan
         eff_tier, heuristic_reason = scan(task_str)
@@ -1609,6 +1748,161 @@ class IntelligenceService:
             )
         return prepared
 
+    @staticmethod
+    def _explicitly_protected(criticality: Any, context: dict[str, Any]) -> bool:
+        """``protected: true`` or criticality critical, as a request field or the argument."""
+
+        def critical(value: Any) -> bool:
+            return isinstance(value, str) and value.strip().lower() == "critical"
+
+        return (
+            context.get("protected") is True
+            or critical(criticality)
+            or critical(context.get("criticality"))
+        )
+
+    def _assigned_denial(
+        self, reason: str, *, flags: Sequence[str], protected: bool = False
+    ) -> RoutingDecision:
+        """A denied lane decision that carries no route, no proof and no alternatives."""
+        return RoutingDecision(
+            model=NO_ELIGIBLE_TARGET,
+            provider="none",
+            tier=ASSIGNED_TIER,
+            reason=reason,
+            escalated=False,
+            escalation_reason=None,
+            policy_version=self._policy_version,
+            degraded_mode=False,
+            managed_backend_status=self.managed_backend_status,
+            protected=protected,
+            task_class=LANE_TASK_CLASS,
+            decision="denied",
+            transport_outcome="not_sent",
+            quality_outcome="unknown",
+            candidate_states=[],
+            safety_flags=list(flags),
+        )
+
+    def _route_assigned(
+        self,
+        task: str,
+        criticality: Any,
+        context: dict[str, Any],
+        assignment: VerifiedWorkerAssignment,
+        *,
+        request_id: str | None,
+        started: float,
+        safety: Sequence[str],
+    ) -> RoutingDecision:
+        """Route a verified worker assignment: the pinned route or a denial, never another route.
+
+        Explicit protection is honoured first and never lowered (a pin cannot carry it).  The
+        one ladder runs with the assignment as a parameter; a result that cannot be produced
+        (no live admission, an unusable profile) is a denial, and the legacy path, with its
+        keyword scanner, is not reached.
+        """
+        if self._explicitly_protected(criticality, context):
+            decision = self._assigned_denial(
+                LANE_PROTECTED_REASON, flags=[LANE_FLAG, LANE_PROTECTED_FLAG], protected=True
+            )
+        elif self.allow_offline:
+            # The legacy path never admits for an offline service (no discovery, no probes), and
+            # the lane sits above that check, so it denies here instead of loading a snapshot.
+            decision = self._assigned_denial(
+                "fail_closed — an offline service has no live admission for the assigned route",
+                flags=[LANE_FLAG, "worker_assignment_admission_unavailable"],
+            )
+        else:
+            try:
+                offload = self._offload_free_tier(
+                    task, ASSIGNED_TIER, False, "", context=context, assignment=assignment
+                )
+            except TaskProfileError as exc:
+                offload = self._assigned_denial(
+                    f"fail_closed — the assigned request cannot be profiled: {exc}",
+                    flags=[LANE_FLAG, "worker_assignment_profile_error"],
+                )
+            decision = offload or self._assigned_denial(
+                "fail_closed — live admission is unavailable for the assigned route",
+                flags=[LANE_FLAG, "worker_assignment_admission_unavailable"],
+            )
+        flags = list(decision.safety_flags or [])
+        flags.extend(flag for flag in safety if flag not in flags)
+        decision = replace(
+            decision,
+            safety_flags=flags,
+            latency_ms=(time.time() - started) * 1000,
+            logged=bool(self.log_path),
+            request_id=request_id or decision.request_id,
+        )
+        if self.log_path:
+            log_decision(self.log_path, task, ASSIGNED_TIER, decision, self.log_full_task)
+        return decision
+
+    @staticmethod
+    def _narrow_to_assignment(
+        receipt: FreeTierAdmitReceipt,
+        assignment: VerifiedWorkerAssignment,
+        requirement_names: Sequence[str],
+    ) -> FreeTierAdmitReceipt:
+        """Keep only the pinned route, or empty the set naming the check that dropped it.
+
+        Runs right after the active and cooling steps, so it can only remove: a route those
+        steps dropped is never brought back, and every other route is dropped silently (the
+        receipt names the assignment instead).  An opaque route is refused before the inventory
+        is consulted, and a route the catalog does not list gets its own named reason.
+        """
+        pinned = assignment.route_id
+        waivers = tuple(
+            {
+                "requirement": name,
+                "reason": LANE_WAIVER_REASON,
+                "run_id": assignment.run_id,
+                "node_id": assignment.node_id,
+            }
+            for name in _LANE_WAIVABLE_REQUIREMENTS
+            if name in requirement_names
+        )
+        receipt = replace(
+            receipt,
+            requirement_waivers=waivers,
+            worker_assignment=_assignment_record(assignment),
+            selected_because=None,
+        )
+        if pinned in receipt.admitted:
+            return replace(
+                receipt,
+                admitted=(pinned,),
+                chosen=pinned,
+                empty_intersection=False,
+                free_admitted=tuple(item for item in receipt.free_admitted if item == pinned),
+                paid_admitted=tuple(item for item in receipt.paid_admitted if item == pinned),
+            )
+        existing = next((drop for drop in receipt.exclusions if drop.model_id == pinned), None)
+        added: tuple[NamedDrop, ...] = ()
+        if existing is None:
+            if is_opaque_route_id(pinned):
+                drop = NamedDrop(
+                    pinned, REASON_OPAQUE_ROUTE_DISALLOWED, "opaque route is not auditable"
+                )
+            else:
+                drop = NamedDrop(
+                    pinned,
+                    REASON_ROUTE_NOT_IN_INVENTORY,
+                    "the assigned route is not in the OmniRoute catalog",
+                )
+            added = (drop,)
+        return replace(
+            receipt,
+            admitted=(),
+            chosen=None,
+            empty_intersection=True,
+            free_admitted=(),
+            paid_admitted=(),
+            exclusions=receipt.exclusions + added,
+        )
+
     def _offload_free_tier(
         self,
         task: str,
@@ -1618,6 +1912,7 @@ class IntelligenceService:
         context: dict[str, Any] | None = None,
         *,
         attempts: tuple[dict[str, Any], ...] = (),
+        assignment: VerifiedWorkerAssignment | None = None,
     ) -> RoutingDecision | None:
         """Admit active-provider identities for offloadable work.
 
@@ -1723,26 +2018,43 @@ class IntelligenceService:
                 )
             # Compatibility-only offline callers may use the historical path.
             return None
-        classification = classify_worthiness(
-            task,
-            criticality=(
-                str(context.get("criticality"))
-                if isinstance(context, dict) and isinstance(context.get("criticality"), str)
-                else "medium"
-            ),
-            context=context,
-        )
-        planner_caps: tuple[str, ...] = ()
-        try:
-            planned = self.planner.plan(task, context=context).task_spec
-            planner_caps = tuple(planned.required_capabilities)
-        except Exception:
-            planner_caps = ()
-        requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
-        # BOD-S1: one deterministic profile before admission; the digest and
-        # explicit spend policy ride the receipt so economic decisions are
-        # replayable and never inferred from model names.
-        profile = profile_task(task, context=context, requirements=requirements)
+        task_class: str
+        class_reasons: tuple[str, ...]
+        ranker_class: str
+        if assignment is None:
+            classification = classify_worthiness(
+                task,
+                criticality=(
+                    str(context.get("criticality"))
+                    if isinstance(context, dict) and isinstance(context.get("criticality"), str)
+                    else "medium"
+                ),
+                context=context,
+            )
+            task_class = classification.task_class
+            class_reasons = classification.class_reasons
+            ranker_class = classification.protected_ranker_class
+            planner_caps: tuple[str, ...] = ()
+            try:
+                planned = self.planner.plan(task, context=context).task_spec
+                planner_caps = tuple(planned.required_capabilities)
+            except Exception:
+                planner_caps = ()
+            requirements = derive_requirements(task, context, planner_capabilities=planner_caps)
+            # BOD-S1: one deterministic profile before admission; the digest and
+            # explicit spend policy ride the receipt so economic decisions are
+            # replayable and never inferred from model names.
+            profile = profile_task(task, context=context, requirements=requirements)
+        else:
+            # The assigned lane classifies nothing from the text: no worthiness class, no planner
+            # capabilities.  The profile comes from the one shared helper, in assigned mode, so
+            # the relay recomputes exactly this digest.
+            task_class = LANE_TASK_CLASS
+            class_reasons = (LANE_CLASS_REASON,)
+            ranker_class = ""  # the lane ranks nothing: one route
+            requirements, profile = prepared_task_profile(
+                task, context if isinstance(context, dict) else {}, assigned=True
+            )
         receipt = admit_free_tier_active(snapshot)
         from verdict.orchestration.health_cache import HealthCache, default_cache_path
 
@@ -1765,11 +2077,33 @@ class IntelligenceService:
                 for route in sorted(cooled)
             ),
         )
+        if assignment is not None:
+            receipt = self._narrow_to_assignment(receipt, assignment, requirements.names)
+            if receipt.empty_intersection:
+                receipt = replace(
+                    receipt,
+                    task_class=task_class,
+                    class_reasons=class_reasons,
+                    task_profile_digest=profile.digest,
+                )
+                return self._decision_from_admit(
+                    task,
+                    final_tier,
+                    escalated,
+                    esc_reason,
+                    receipt,
+                    receipt.as_eligibility_result(snapshot),
+                    endpoint=endpoint,
+                    live=live,
+                    task_class=task_class,
+                    context=context,
+                    assignment=assignment,
+                )
         receipt = expand_admit_for_worthiness(
             receipt,
             snapshot,
-            task_class=classification.task_class,
-            class_reasons=classification.class_reasons,
+            task_class=task_class,
+            class_reasons=class_reasons,
             frontier_allowlist=self.frontier_allowlist,
             spend_policy=profile.spend_policy,
             task_profile_digest=profile.digest,
@@ -1788,30 +2122,77 @@ class IntelligenceService:
         # Compatibility callers without execution-path authority retain the legacy
         # admit path. Production/authority mode must use the default Core store
         # as the live shortlist source when it is available.
-        use_candidate_pool = explicit_metadata or self.require_execution_path_authority is True
+        # The lane always reads the real metadata: tools is required for a worker, the pool's
+        # unmapped check needs it, and the context-plan estimate falls back to a 16K window
+        # without it.  (The default ladder withholds it on the relay path.)
+        use_candidate_pool = (
+            explicit_metadata
+            or self.require_execution_path_authority is True
+            or assignment is not None
+        )
         metadata_for_gate = metadata_snapshot if use_candidate_pool else None
         policy_admitted = receipt.admitted
-        receipt = gate_capability(
-            receipt,
-            requirements,
-            snapshot=metadata_for_gate,
-            identity_map=identity_map if use_candidate_pool else None,
-            now=self._now,
-        )
-        if metadata_for_gate is not None:
-            receipt, _pool = self._apply_candidate_pool(
-                receipt,
-                profile=profile,
-                metadata=metadata_for_gate,
-                identity_map=identity_map,
-                candidate_universe=policy_admitted,
-                capacity=(
-                    self._route_capacity(snapshot, policy_admitted)
-                    if classification.task_class != "worthy"
-                    else None
+        # The gate's copy of the requirements and profile: the assignment's waivers removed.  The
+        # digest is never touched (a frozen copy keeps it), so the proof scope still binds it.
+        gate_requirements, gate_profile = requirements, profile
+        waived = {item["requirement"] for item in receipt.requirement_waivers}
+        if waived:
+            gate_requirements = TaskRequirements(
+                names=tuple(name for name in requirements.names if name not in waived),
+                min_context=requirements.min_context,
+                reasons=tuple(
+                    r for r in requirements.reasons if r.removeprefix("request.") not in waived
                 ),
-                policy_allowed=policy_admitted,
             )
+            gate_profile = replace(
+                profile,
+                required_capabilities=tuple(
+                    name for name in profile.required_capabilities if name not in waived
+                ),
+                requirements_reasons=tuple(
+                    r
+                    for r in profile.requirements_reasons
+                    if r.removeprefix("request.") not in waived
+                ),
+            )
+        if assignment is not None and metadata_snapshot is None:
+            # Fail closed: a worker's route is admitted only on real metadata.
+            receipt = replace(
+                receipt,
+                admitted=(),
+                chosen=None,
+                empty_intersection=True,
+                free_admitted=(),
+                paid_admitted=(),
+                requirements=tuple(gate_requirements.names),
+                exclusions=receipt.exclusions
+                + tuple(
+                    NamedDrop(item, REASON_REQUIRED_UNKNOWN, "Core metadata store unavailable")
+                    for item in receipt.admitted
+                ),
+            )
+        else:
+            receipt = gate_capability(
+                receipt,
+                gate_requirements,
+                snapshot=metadata_for_gate,
+                identity_map=identity_map if use_candidate_pool else None,
+                now=self._now,
+            )
+            if metadata_for_gate is not None:
+                receipt, _pool = self._apply_candidate_pool(
+                    receipt,
+                    profile=gate_profile,
+                    metadata=metadata_for_gate,
+                    identity_map=identity_map,
+                    candidate_universe=policy_admitted,
+                    capacity=(
+                        self._route_capacity(snapshot, policy_admitted)
+                        if task_class != "worthy"
+                        else None
+                    ),
+                    policy_allowed=policy_admitted,
+                )
         confirm_transport = self._resolve_confirm_transport(endpoint)
         # Live OmniRoute confirm requires consent; fixture/injected transports do not.
         confirm_live = bool(
@@ -1883,10 +2264,8 @@ class IntelligenceService:
                 empty_intersection=chosen is None,
             )
             eligibility = gated
-        if receipt.admitted:
-            receipt = apply_best_of_admitted(
-                receipt, now=self._now, task_class=classification.protected_ranker_class
-            )
+        if receipt.admitted and assignment is None:
+            receipt = apply_best_of_admitted(receipt, now=self._now, task_class=ranker_class)
         # Advisory reordering is NOT applied on the live-admit path because
         # the admitted set here contains string IDs, not ModelInfo objects, and the
         # ranker would have no pricing/tier data to sort on.  Record this explicitly
@@ -1908,8 +2287,9 @@ class IntelligenceService:
             eligibility,
             endpoint=endpoint,
             live=live,
-            task_class=classification.task_class,
+            task_class=task_class,
             context=context,
+            assignment=assignment,
         )
         result_receipt = _admit_dec.admit_receipt or {}
         all_attempts = tuple(result_receipt.get("execution_attempts", ()))
@@ -1941,7 +2321,13 @@ class IntelligenceService:
             cache.merge_and_save(record_failure)
             if len(all_attempts) < 2:
                 return self._offload_free_tier(
-                    task, final_tier, escalated, esc_reason, context, attempts=all_attempts
+                    task,
+                    final_tier,
+                    escalated,
+                    esc_reason,
+                    context,
+                    attempts=all_attempts,
+                    assignment=assignment,
                 )
             _admit_dec = replace(
                 _admit_dec,
@@ -2046,7 +2432,18 @@ class IntelligenceService:
                 work_unit_id=task_class,
                 attempt_id=attempt_id,
                 state="in_progress",
-                extensions={"routing_decision": decision, "preview_len": len(preview or "")},
+                extensions={
+                    "routing_decision": decision,
+                    "preview_len": len(preview or ""),
+                    **(
+                        {
+                            "worker_assignment": dict(receipt.worker_assignment),
+                            "requirement_waivers": [dict(w) for w in receipt.requirement_waivers],
+                        }
+                        if receipt.worker_assignment is not None
+                        else {}
+                    ),
+                },
             )
             scope = attempt_scope(
                 story_id=routing.story_id,
@@ -2082,9 +2479,16 @@ class IntelligenceService:
         live: bool,
         task_class: str = "ordinary",
         context: dict[str, Any] | None = None,
+        assignment: VerifiedWorkerAssignment | None = None,
     ) -> RoutingDecision:
         eligibility_record = eligibility.to_dict() if eligibility is not None else {}
         if receipt.empty_intersection or not receipt.chosen:
+            if assignment is not None:
+                # Before persisting: the attempt id is the receipt id when one is set, and a
+                # denial with none shares one fallback id with every other lane denial.
+                receipt = self._with_assigned_denial_id(
+                    receipt, assignment, self._assigned_denial_code(receipt, assignment)
+                )
             self._persist_routing_receipt_from_admit(
                 receipt, task_class=task_class, decision="denied", transport_outcome="not_sent"
             )
@@ -2092,7 +2496,11 @@ class IntelligenceService:
                 model=NO_ELIGIBLE_TARGET,
                 provider="none",
                 tier=final_tier,
-                reason=FAIL_CLOSED_REASON,
+                reason=(
+                    FAIL_CLOSED_REASON
+                    if assignment is None
+                    else self._assigned_denial_reason(receipt, assignment)
+                ),
                 escalated=escalated,
                 escalation_reason=esc_reason or None,
                 policy_version=self._policy_version,
@@ -2104,15 +2512,28 @@ class IntelligenceService:
                 transport_outcome="not_sent",
                 quality_outcome="unknown",
                 candidate_states=eligibility_record.get("records", []),
-                safety_flags=["fail_closed_empty_free_active_intersection"],
+                safety_flags=(
+                    ["fail_closed_empty_free_active_intersection"]
+                    if assignment is None
+                    else [LANE_FLAG, "worker_assignment_route_denied"]
+                ),
                 admit_receipt=receipt.to_dict(),
             )
+        if assignment is not None:
+            return self._assigned_decision(
+                receipt,
+                eligibility,
+                assignment,
+                final_tier=final_tier,
+                task_class=task_class,
+                context=context if isinstance(context, dict) else {},
+            )
         chosen = receipt.chosen
+        contract = context if isinstance(context, dict) else {}
         provider = next(
             (model.provider for model in eligibility.admitted if model.id == chosen),
             chosen.split("/", 1)[0] if "/" in chosen else "omniroute",
         )
-        contract = context if isinstance(context, dict) else {}
         acceptance_criteria = tuple(
             str(item) for item in contract.get("acceptance_criteria", ()) if str(item).strip()
         )
@@ -2295,6 +2716,144 @@ class IntelligenceService:
             admit_receipt=receipt.to_dict(),
             execute_preview=preview,
             context_pack_prompt=packed_task,
+        )
+
+    @staticmethod
+    def _pinned_drop(
+        receipt: FreeTierAdmitReceipt, assignment: VerifiedWorkerAssignment
+    ) -> NamedDrop | None:
+        """The named drop of the pinned route: the first check that removed it."""
+        pinned = assignment.route_id
+        return next((item for item in receipt.exclusions if item.model_id == pinned), None)
+
+    @classmethod
+    def _assigned_denial_code(
+        cls, receipt: FreeTierAdmitReceipt, assignment: VerifiedWorkerAssignment
+    ) -> str:
+        """The reason code of the check that dropped the pinned route (never free text)."""
+        drop = cls._pinned_drop(receipt, assignment)
+        return drop.reason if drop is not None else LANE_NO_NAMED_DROP_CODE
+
+    @staticmethod
+    def _with_assigned_denial_id(
+        receipt: FreeTierAdmitReceipt, assignment: VerifiedWorkerAssignment, reason_code: str
+    ) -> FreeTierAdmitReceipt:
+        """The denied receipt with its own id, set before the routing receipt is persisted.
+
+        The receipt also names the assignment.  The narrowing already did on every path a request
+        can take; the defence-in-depth refusal is the one that can hold a receipt it did not see.
+        """
+        return replace(
+            receipt,
+            receipt_id=assigned_denial_receipt_id(
+                receipt.task_profile_digest or "", assignment, reason_code
+            ),
+            worker_assignment=_assignment_record(assignment),
+        )
+
+    @classmethod
+    def _assigned_denial_reason(
+        cls, receipt: FreeTierAdmitReceipt, assignment: VerifiedWorkerAssignment
+    ) -> str:
+        """Name the check that dropped the pinned route, from its own named drop."""
+        pinned = assignment.route_id
+        drop = cls._pinned_drop(receipt, assignment)
+        if drop is None:
+            return f"assigned route {pinned!r} was not admitted for this request"
+        detail = f" ({drop.detail})" if drop.detail else ""
+        return f"assigned route {pinned!r} denied: {drop.reason}{detail}"
+
+    def _assigned_decision(
+        self,
+        receipt: FreeTierAdmitReceipt,
+        eligibility: Any,
+        assignment: VerifiedWorkerAssignment,
+        *,
+        final_tier: int,
+        task_class: str,
+        context: dict[str, Any],
+    ) -> RoutingDecision:
+        """The selected decision for a verified assignment: no pack, no execution, one route.
+
+        The request is forwarded verbatim by the relay, so no cheap-path pack is built (it would
+        cap the request and prepend a message) and the decision never carries the pack flag.
+        The receipt id is set before the routing receipt is persisted, because that receipt's
+        attempt id is the receipt id: without it every node on a route would share one id.
+        """
+        chosen = receipt.chosen
+        pinned = assignment.route_id
+        if chosen != pinned or receipt.admitted != (pinned,):
+            # Defence in depth: the lane never serves a route other than the signed one.
+            denied = self._with_assigned_denial_id(
+                replace(
+                    receipt,
+                    admitted=(),
+                    chosen=None,
+                    empty_intersection=True,
+                    free_admitted=(),
+                    paid_admitted=(),
+                ),
+                assignment,
+                LANE_NOT_ONLY_ROUTE_CODE,
+            )
+            self._persist_routing_receipt_from_admit(
+                denied, task_class=task_class, decision="denied", transport_outcome="not_sent"
+            )
+            return self._assigned_denial(
+                f"assigned route {pinned!r} was not the only admitted route",
+                flags=[LANE_FLAG, "worker_assignment_route_denied"],
+            )
+        eligibility_record = eligibility.to_dict() if eligibility is not None else {}
+        provider = next(
+            (model.provider for model in eligibility.admitted if model.id == chosen),
+            chosen.split("/", 1)[0] if "/" in chosen else "omniroute",
+        )
+        verification = {"status": "unknown", "reason": "no verification strategy executed"}
+        attempt = {
+            "attempt": len(receipt.execution_attempts) + 1,
+            "selected_model": chosen,
+            "executed_model": None,
+            "transport_outcome": "not_sent",
+        }
+        receipt = replace(
+            receipt,
+            execution_attempts=(*receipt.execution_attempts, attempt),
+            verification=verification,
+            receipt_id=assigned_receipt_id(chosen, receipt.task_profile_digest or "", assignment),
+        )
+        flags = ["free_tier_active_admit", "prove_confirm_admit"]
+        if receipt.requirements:
+            flags.append("capability_hard_gate")
+        flags.append(LANE_FLAG)
+        if receipt.requirement_waivers:
+            flags.append(LANE_STREAMING_WAIVED_FLAG)
+        self._persist_routing_receipt_from_admit(
+            receipt,
+            task_class=task_class,
+            decision="selected",
+            transport_outcome="not_sent",
+            verification=verification,
+        )
+        return RoutingDecision(
+            model=chosen,
+            provider=provider,
+            tier=final_tier,
+            reason=f"assigned route {chosen} admitted: active ∩ fresh-passport ∩ confirmed",
+            admission_proofs=_chosen_route_proof(receipt, chosen, provider, context),
+            alternatives=[],
+            escalated=False,
+            escalation_reason=None,
+            policy_version=self._policy_version,
+            degraded_mode=False,
+            managed_backend_status=self.managed_backend_status,
+            protected=False,
+            task_class=task_class,
+            decision="selected",
+            transport_outcome="not_sent",
+            quality_outcome="unknown",
+            candidate_states=eligibility_record.get("records", []),
+            safety_flags=flags,
+            admit_receipt=receipt.to_dict(),
         )
 
     def _resolve_confirm_transport(

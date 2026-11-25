@@ -889,6 +889,12 @@ class FreeTierAdmitReceipt:
     spend_policy: str | None = None
     candidate_pool: dict[str, Any] | None = None
     context_plans: tuple[ContextPlan, ...] = ()
+    #: Requirements a verified worker assignment waived for the capability gate (never for the
+    #: profile digest): ``{requirement, reason, run_id, node_id}`` rows.  Empty off the lane.
+    requirement_waivers: tuple[dict[str, Any], ...] = ()
+    #: The verified assignment this receipt was admitted for (route, run, node, expiry and the
+    #: payload digest; never the token).  ``None`` off the lane.
+    worker_assignment: dict[str, Any] | None = None
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
@@ -939,6 +945,10 @@ class FreeTierAdmitReceipt:
             "spend_policy": self.spend_policy,
             "candidate_pool": None if self.candidate_pool is None else dict(self.candidate_pool),
             "context_plans": [plan.to_dict() for plan in self.context_plans],
+            "requirement_waivers": [dict(item) for item in self.requirement_waivers],
+            "worker_assignment": (
+                None if self.worker_assignment is None else dict(self.worker_assignment)
+            ),
         }
 
     def as_eligibility_result(self, snapshot: OmniRouteAdmitSnapshot) -> EligibilityResult:

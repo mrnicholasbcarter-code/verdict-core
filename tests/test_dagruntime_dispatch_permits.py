@@ -11,10 +11,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from tests.test_orch_runtime import NOW, Classifier, Events, Executor, Reviewer, Selector, node
 from tests.test_orch_runtime import repo as repo
 from verdict.admit_prove_confirm import passport_confirmation
 from verdict.model_passports import ModelPassport
+from verdict.orchestration import contracts
 from verdict.orchestration.contracts import (
     LOCAL_EXECUTOR_ORIGIN,
     NodeState,
@@ -22,6 +25,8 @@ from verdict.orchestration.contracts import (
     WorkerTerminal,
     WorkGraph,
 )
+from verdict.orchestration.executor_opencode import OpenCodeExecutor
+from verdict.orchestration.executors import FaultInjectingExecutor, MixedExecutor
 from verdict.orchestration.health_cache import (
     PERMIT_STATE_MAYBE_SENT,
     DispatchScope,
@@ -52,11 +57,11 @@ def _passport(route: str, *, qualified: datetime = NOW, ttl: int = 300) -> Model
     )
 
 
-def _authority(passports: dict[str, ModelPassport]) -> DispatchAuthority:
+def _authority(passports: dict[str, ModelPassport], **extra: Any) -> DispatchAuthority:
     def confirm(route_ids: Sequence[str], now: datetime) -> dict[str, Any]:
         return passport_confirmation(route_ids, now=now, passports=passports)
 
-    return DispatchAuthority(gateway_origin=ORIGIN, confirm=confirm)
+    return DispatchAuthority(gateway_origin=ORIGIN, confirm=confirm, **extra)
 
 
 def _scope(route: str, nid: str = "a") -> DispatchScope:
@@ -495,3 +500,256 @@ async def test_permit_commit_reads_the_clock_at_commit_time(repo: Path, monkeypa
     assert ex.calls == []
     assert ev.of("failure", "a")[0]["category"] == "permit_denied"
     assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is None
+
+
+# ------------------------------------------- dispatch origin: OpenCode serve (#1326)
+
+SERVE = "http://127.0.0.1:8000"
+OTHER_SERVE = "http://127.0.0.1:9999"
+
+
+class OpenCodeSpy(OpenCodeExecutor):
+    """The real OpenCodeExecutor (real origin report) with its launch replaced by a spy."""
+
+    def __init__(self, serve_url: str = SERVE) -> None:
+        super().__init__(serve_base_url=serve_url)
+        self.sends: list[str] = []
+        self._owner = Executor({}, delay=0)
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        self.sends.append(route_id)
+        return await self._owner.run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+
+
+def _serve_authority(**extra: Any) -> DispatchAuthority:
+    return _authority({"cc/s": _passport("cc/s")}, **extra)
+
+
+async def test_opencode_on_the_bound_worker_serve_origin_is_sent(repo: Path) -> None:
+    ex = OpenCodeSpy()
+    rt, _ = _make(repo, ex, ["cc/s"], _serve_authority(worker_serve_origin=SERVE))
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert ex.sends == ["cc/s"]
+    assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is not None
+
+
+async def test_opencode_origin_is_compared_normalised(repo: Path) -> None:
+    ex = OpenCodeSpy("http://LOCALHOST:8000/v1/")
+    rt, _ = _make(repo, ex, ["cc/s"], _serve_authority(worker_serve_origin="http://localhost:8000"))
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert ex.sends == ["cc/s"]
+
+
+@pytest.mark.parametrize("gateway_origin", [ORIGIN, SERVE])
+async def test_opencode_on_another_serve_than_the_authority_binds_is_refused(
+    repo: Path, gateway_origin: str
+) -> None:
+    """Even when the gateway origin equals the executor's serve origin: they are not compared."""
+    from dataclasses import replace
+
+    ex = OpenCodeSpy(SERVE)
+    authority = replace(
+        _serve_authority(worker_serve_origin=OTHER_SERVE), gateway_origin=gateway_origin
+    )
+    rt, ev = _make(repo, ex, ["cc/s", "cx/g"], authority)
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert ex.sends == []
+    assert result.nodes["a"].state is NodeState.BLOCKED
+    assert "executor origin mismatch" in result.nodes["a"].reason
+    assert [f["category"] for f in ev.of("failure", "a")] == ["dispatch_denied"]
+    assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is None
+
+
+async def test_opencode_with_no_worker_serve_origin_bound_is_refused(repo: Path) -> None:
+    ex = OpenCodeSpy()
+    rt, ev = _make(repo, ex, ["cc/s"], _serve_authority())
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert ex.sends == []
+    reason = result.nodes["a"].reason
+    assert "executor origin mismatch" in reason and "no worker serve origin is bound" in reason
+    assert [f["category"] for f in ev.of("failure", "a")] == ["dispatch_denied"]
+    assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is None
+
+
+async def test_a_serve_origin_is_never_checked_against_the_gateway_origin(repo: Path) -> None:
+    """The gateway and the worker serve address are two bindings: one cannot stand in for the other."""
+    from dataclasses import replace
+
+    ex = OpenCodeSpy(SERVE)
+    authority = replace(_serve_authority(), gateway_origin=SERVE)
+    rt, _ = _make(repo, ex, ["cc/s"], authority)
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert ex.sends == []
+    assert "executor origin mismatch" in result.nodes["a"].reason
+
+
+class SameAddressSpy(PermitSpy):
+    """An executor that is not the OpenCode one but reports a plain URL equal to the serve address."""
+
+    gateway_origin = SERVE
+
+
+async def test_another_executor_cannot_claim_the_worker_serve_origin(repo: Path) -> None:
+    ex = SameAddressSpy()
+    assert not isinstance(
+        contracts.executor_gateway_origin(ex, "a", route_id="cc/s", cwd=Path("x")),
+        contracts.WorkerServeOrigin,
+    )
+    rt, _ = _make(repo, ex, ["cc/s"], _serve_authority(worker_serve_origin=SERVE))
+    result = await rt.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    assert ex.calls == []
+    assert "executor origin mismatch" in result.nodes["a"].reason
+    assert _cache().permit_for_attempt(_id(repo.parent / "run1")) is None
+
+
+async def test_another_executor_on_the_gateway_origin_is_unchanged_by_a_serve_origin(
+    repo: Path,
+) -> None:
+    ex = SameAddressSpy()
+    ex.gateway_origin = ORIGIN
+    rt, _ = _make(repo, ex, ["cc/s"], _serve_authority(worker_serve_origin=OTHER_SERVE))
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert ex.calls == [("a", "cc/s")]
+
+
+@pytest.mark.parametrize("worker_serve_origin", [None, SERVE, OTHER_SERVE])
+async def test_an_executor_that_sends_nothing_is_allowed_whatever_serve_origin_is_bound(
+    repo: Path, worker_serve_origin: str | None
+) -> None:
+    ex = PermitSpy()
+    rt, _ = _make(repo, ex, ["cc/s"], _serve_authority(worker_serve_origin=worker_serve_origin))
+    result = await rt.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert ex.calls == [("a", "cc/s")]
+
+
+def _plain(ex: OpenCodeSpy) -> Any:
+    return ex
+
+
+def _fault_injecting(ex: OpenCodeSpy) -> Any:
+    return FaultInjectingExecutor(ex, {})
+
+
+def _mixed(ex: OpenCodeSpy) -> Any:
+    return MixedExecutor(node_map={"a": ex}, default=PermitSpy())
+
+
+@pytest.mark.parametrize("wrap", [_plain, _fault_injecting, _mixed])
+@pytest.mark.parametrize(("bound", "sent"), [(SERVE, True), (OTHER_SERVE, False), (None, False)])
+async def test_the_serve_origin_check_holds_through_the_executor_wrappers(
+    repo: Path, wrap: Any, bound: str | None, sent: bool
+) -> None:
+    inner = OpenCodeSpy()
+    rt, _ = _make(repo, wrap(inner), ["cc/s"], _serve_authority(worker_serve_origin=bound))
+    result = await rt.run()
+    assert inner.sends == (["cc/s"] if sent else [])
+    assert (result.outcome is RunOutcome.COMPLETE) is sent, result.reason
+    assert (_cache().permit_for_attempt(_id(repo.parent / "run1")) is not None) is sent
+
+
+def test_dispatch_origin_problem_table() -> None:
+    serve = contracts.WorkerServeOrigin
+    problem = contracts.dispatch_origin_problem
+    gw, sv = ORIGIN, SERVE
+    # An executor that reports nothing is unknown, whatever is bound.
+    assert problem(None, gateway_origin=gw, worker_serve_origin=sv) == "executor origin unknown"
+    # A plain origin is compared with the gateway only (unchanged).
+    assert problem(ORIGIN + "/v1", gateway_origin=gw, worker_serve_origin=sv) is None
+    assert problem(SERVE, gateway_origin=gw, worker_serve_origin=sv) == "executor origin mismatch"
+    assert problem(LOCAL_EXECUTOR_ORIGIN, gateway_origin=gw, worker_serve_origin=None) is None
+    # A serve origin is compared with the worker serve origin only.
+    assert problem(serve(SERVE), gateway_origin=gw, worker_serve_origin=sv + "/") is None
+    assert problem(serve(SERVE), gateway_origin=SERVE, worker_serve_origin=OTHER_SERVE) == (
+        "executor origin mismatch"
+    )
+    unbound = problem(serve(SERVE), gateway_origin=SERVE, worker_serve_origin=None)
+    assert unbound == "executor origin mismatch: no worker serve origin is bound"
+    # Neither side can be the local sentinel or an unparseable value.
+    for bad in (LOCAL_EXECUTOR_ORIGIN, "127.0.0.1:8000", "http://[::1", ""):
+        assert problem(serve(bad), gateway_origin=gw, worker_serve_origin=bad) is not None
+        assert problem(serve(bad), gateway_origin=gw, worker_serve_origin=sv) is not None
+    assert problem(serve(SERVE), gateway_origin=gw, worker_serve_origin="local:") is not None
+
+
+def _run_orchestrate(tmp_path: Path, monkeypatch: Any, *extra: str) -> DispatchAuthority:
+    from verdict.orchestration import cli, run
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "fixture-only")
+    monkeypatch.setattr(cli, "build_selector", lambda *a, **k: object())
+    monkeypatch.setattr(cli, "_executor", lambda args: object())
+    monkeypatch.setattr(cli, "_planner_executor", lambda args: object())
+
+    async def fake_run(goal: str, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        receipt = tmp_path / "receipt.json"
+        receipt.write_text("{}")
+        return run.GoldenRunResult(tmp_path, "BLOCKED", "fixture", receipt)
+
+    monkeypatch.setattr(run, "run_golden_path", fake_run)
+    cli._orchestrate(_orchestrate_args(tmp_path, "--gateway", "http://gw.test:20128/", *extra))
+    authority = seen["dispatch_authority"]
+    assert isinstance(authority, DispatchAuthority)
+    return authority
+
+
+@pytest.mark.parametrize(
+    ("flag", "variable", "expected"),
+    [
+        (None, None, "http://127.0.0.1:8000"),
+        (None, "http://127.0.0.1:9444/v1", "http://127.0.0.1:9444"),
+        ("http://127.0.0.1:9321", "http://127.0.0.1:9444", "http://127.0.0.1:9321"),
+        ("http://LOCALHOST:9321/v1/", None, "http://localhost:9321"),
+        # An address that is not an http(s) origin binds nothing; it is never replaced by the default.
+        ("not a url", None, None),
+        (None, "ftp://127.0.0.1:8000", None),
+    ],
+)
+def test_orchestrate_authority_carries_the_worker_serve_origin(
+    tmp_path: Path, monkeypatch: Any, flag: str | None, variable: str | None, expected: str | None
+) -> None:
+    monkeypatch.delenv("VERDICT_SERVE_URL", raising=False)
+    if variable is not None:
+        monkeypatch.setenv("VERDICT_SERVE_URL", variable)
+    extra = ("--serve-url", flag) if flag is not None else ()
+    authority = _run_orchestrate(tmp_path, monkeypatch, *extra)
+    assert authority.worker_serve_origin == expected
+    assert authority.gateway_origin == "http://gw.test:20128"
+
+
+@pytest.mark.parametrize("map_node", [False, True])
+def test_the_authority_and_the_opencode_executor_built_from_the_same_arguments_agree(
+    tmp_path: Path, monkeypatch: Any, map_node: bool
+) -> None:
+    from verdict.orchestration import cli
+
+    monkeypatch.setenv("VERDICT_SERVE_URL", "http://127.0.0.1:9444")
+    extra = ("--serve-url", "http://127.0.0.1:9321")
+    authority = _run_orchestrate(tmp_path, monkeypatch, *extra)
+    selection = ("--executor-map", "a=opencode") if map_node else ("--executor", "opencode")
+    args = _orchestrate_args(tmp_path, "--gateway", "http://gw.test:20128/", *extra, *selection)
+    executor = cli._worker_executor(args)
+    reported = contracts.executor_gateway_origin(
+        executor, "a", route_id="cc/s", cwd=tmp_path / "worktrees" / "a-a1"
+    )
+    assert reported == "http://127.0.0.1:9321"
+    assert (
+        contracts.dispatch_origin_problem(
+            reported,
+            gateway_origin=authority.gateway_origin,
+            worker_serve_origin=authority.worker_serve_origin,
+        )
+        is None
+    )

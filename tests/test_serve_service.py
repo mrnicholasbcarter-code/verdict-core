@@ -222,6 +222,8 @@ def test_install_problems_name_missing_parts_without_token_values(
     assert serve_service.install_problems(unit_dir=unit_dir, home=home) == [
         f"{unit_dir / serve_service.SERVICE} is missing",
         f"{env_file} is missing",
+        # The worker-assignment signing key is checked beside serve.env (serve-worker-assignment).
+        f"{env_file.parent / 'worker-assignment.key'} is missing",
     ]
     env_file.parent.mkdir(parents=True)
     env_file.write_text("VERDICT_RECEIPTS_DB=/elsewhere.db\n")

@@ -21,7 +21,8 @@ Goals:
 - `verdict/` files always appear in the repo map before `tests/` files;
 - AGENTS.md "Where things live" section appears in the planner prompt
   automatically, without any `--constraints-file`;
-- the receipt records which repo map the planner received (sha256);
+- the receipt records the SHA-256 of the repo map text the planner received
+  (the map itself is not stored);
 - no network or model call is added to the planning path.
 
 Non-goals:
@@ -32,17 +33,27 @@ Non-goals:
 ## Decisions
 
 1. **Include-order sorting.** Files are grouped by prefix in include-tuple order
-   then sorted within each group, then capped. `by_prefix[p].extend(sorted(...))`
+   then sorted within each group, then capped. `tracked.extend(sorted(by_prefix[p]))`
    for each `p in include` before the `[:max_files]` slice.
 
 2. **AGENTS.md section.** `_agents_md_where_things_live(root)` reads
    `root/AGENTS.md`, extracts the "## Where things live" block up to the next
-   same-level heading or end-of-file, caps at 4 096 bytes, and returns `""` on
-   any error. `repo_map()` prepends it with a labelled header when non-empty.
+   same-level heading or end-of-file, caps at 4 096 bytes of UTF-8 (cut on a
+   character boundary), and returns `""` when the file cannot be read (`OSError`)
+   or has no such section. `repo_map()` prepends it with a labelled header when
+   non-empty. The file is read with `Path.read_text()`, which follows symlinks
+   (see Security / trust implications).
 
 3. **plan_context event.** `FrontierPlanner.plan()` emits `plan_context` with
    `repo_map_sha256` right after `repo_map_text = repo_map(repo)`, when
-   `events is not None`. The pattern follows `plan_repair_started`.
+   `events is not None`. The pattern follows `plan_repair_started`. This is one
+   event per `plan()` call, before its first model call. It is not one per model
+   call: the validation-repair call inside the same `plan()` call re-sends the
+   same prompt (`build_repair_prompt` is the planning prompt plus the validation
+   error), so it carries the same repo map and emits no `plan_context` of its own.
+   The map is not rebuilt for the repair call, so there is no new digest to
+   record. The next planning attempt in `run.py` is a new `plan()` call: it
+   rebuilds the map and records its own digest.
 
 4. **Event registration.** `plan_context` is added to `EVENT_TYPES` in
    `contracts.py`. It is added to the `planner_attempts` filter in `receipt.py`
@@ -64,11 +75,30 @@ Non-goals:
 
 ## Security / trust implications
 
-`AGENTS.md` is a checked-in file in the repository under operator control.
-Its content is not untrusted input. It is read with `errors="replace"` and
-capped at 4 096 bytes, so malformed UTF-8 and very large files cannot cause
-prompt injection beyond that cap. No path traversal: `root / "AGENTS.md"` is
-always a child of the repo root.
+Trust assumption: the repository passed to `orchestrate` is the operator's own
+checkout, so its `AGENTS.md` is as trusted as the rest of the tree the planner
+and workers read. The code does not enforce that assumption:
+
+- **The byte cap is a size bound, not injection protection.** The 4 096-byte cap
+  limits how much text the section adds to the prompt. A few kilobytes are
+  enough to carry instructions, and the section reaches the planning model
+  verbatim inside the `REPO MAP:` block. Reading with `errors="replace"` only
+  stops malformed UTF-8 from raising; it does not neutralise the text.
+- **A symlinked `AGENTS.md` is followed.** `root / "AGENTS.md"` is a child of the
+  repo root by name only. `Path.read_text()` follows symlinks, and the code does
+  not resolve the path or check that it stays inside the repository. If
+  `AGENTS.md` is a symlink to a file outside the repository, that file is read.
+  Only its `## Where things live` block is kept (nothing is added when it has no
+  such heading), and that block is sent to the planning route, which may be an
+  external provider. Checked: a symlink to an outside file with that heading
+  yields the outside file's section.
+- **What does limit the effect.** The planner's answer is only proposed work:
+  `parse_plan` validates it into a `WorkGraph`, and the runtime still applies
+  per-node admission and verification. That limits what an injected instruction
+  can change. It does not stop one reaching the model.
+
+Refusing a symlinked `AGENTS.md`, or requiring its resolved path to stay inside
+the repository, would close the second point. It is not part of this change.
 
 ## Routing / context / memory implications
 

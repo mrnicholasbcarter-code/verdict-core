@@ -449,10 +449,12 @@ weakened test. Reversible.
 * **Process:** agreed over three rounds of researched options.
 * **Record:** [ADR-052](../adr/ADR-052-github-issue-to-ready-pr.md), `openspec/changes/verdict-deliver/`. Not implemented yet.
 
-## D38: OpenCode becomes the default worker executor; autodev adds it as the model-tier coding rung (operator, 2026-11-23; ADR-053, accepted)
+## D38: OpenCode worker executor (opt-in until a live smoke passes); autodev adds it as the model-tier coding rung (operator, 2026-11-23, amended 2026-11-24; ADR-053, accepted)
 
-* **Decision:** OpenCode (v2.3.2) becomes the DEFAULT worker executor for `verdict orchestrate`
-  as soon as the adapter merges. Workers' model calls go through `verdict serve` (:8000), never
+* **Decision:** OpenCode (v2.3.2) is added as a worker executor for `verdict orchestrate`, opt-in
+  with `--executor opencode`; `direct-gateway` stays the default until a live smoke passes after
+  #1313 (agreed 2026-11-23 as the default as soon as the adapter merged; deferred on 2026-11-24,
+  see the amendment below). Workers' model calls go through `verdict serve` (:8000), never
   direct to OmniRoute; the relay pins the chosen route and records the attempt. OpenCode is added
   as the coding executor for model-tier units in `verdict autodev`; PatchExecutor is kept for
   mechanical units. Workers run with per-attempt isolated config (`OPENCODE_CONFIG` pointing at a
@@ -463,9 +465,23 @@ weakened test. Reversible.
   Existing bounds apply (900 s timeout, idle-output stall kill, 4-attempt-per-node budget); no
   new token cap. Build order: adapter first, then #1269 (deliver), then #1276 and #1274.
 * **Process:** agreed over two rounds of researched options.
-* **Amends:** ADR-041 default worker executor.
+* **Amendment (2026-11-24, operator, "do recommended for all"):** the default is deferred. The live
+  smoke of the adapter (#1299, task 2.8) showed `verdict serve` refusing every OpenCode worker
+  request before any upstream call (11 of 13 by the escalation keyword scanner, 2 by the capability
+  gate without streaming and tools metadata on the relay path). The adapter merges opt-in; the
+  serve fix goes into #1313 with the signed per-attempt assignment; OpenCode becomes the default
+  only after a live smoke passes with it.
+* **Amendment (2026-11-24, #1313 story 1):** the route pin comes from a signed per-attempt worker
+  assignment, not from the `X-Verdict-Worker` header. `verdict serve` verifies the assignment
+  (HMAC-SHA256, a separate generated key, a lifetime of at most 1,800 s), pins the request to the
+  signed route on an assigned lane that still runs every per-route gate, and refuses the bare
+  header. The executor that mints the assignment is #1325; until then serve denies the opt-in
+  executor by design. Record: `openspec/changes/serve-worker-assignment/`, ADR-053 decision 1.
+* **Amends:** nothing yet: ADR-041's default worker executor (`direct-gateway`) is unchanged until
+  the default is switched.
 * **Record:** [ADR-053](../adr/ADR-053-opencode-worker-adapter.md),
-  `openspec/changes/opencode-worker-adapter/`. Not implemented yet.
+  `openspec/changes/opencode-worker-adapter/`, `openspec/changes/serve-worker-assignment/`.
+  Adapter in #1299 (opt-in); serve fix in #1313.
 
 ## D39: Single-family planner proceeds instead of failing closed (operator, 2026-11-23; ADR-051 amendment)
 

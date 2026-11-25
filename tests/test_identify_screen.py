@@ -1335,3 +1335,127 @@ def test_screen_opaque_inventory_route_never_screened(tmp_path: Path) -> None:
     rows = {r["route_id"]: r for r in report["routes"]}
     assert opaque_rid not in rows, "Opaque route must never appear in screen report"
     assert calls == [], "No requests must be sent for opaque routes"
+
+
+# ---------------------------------------------------------------------------
+# Issue #1316: the inventory-only path applies the roster path's exclusions
+# ---------------------------------------------------------------------------
+
+_CHAT_ROW = {"type": "chat", "context_length": 200_000, "capabilities": {"tool_calling": True}}
+
+
+def _inventory_only_evidence(
+    rows: dict[str, dict[str, object]],
+    *,
+    cooled: frozenset[str] = frozenset(),
+    live: frozenset[str] = frozenset(),
+) -> OmniRouteEvidence:
+    """Routes that are in the inventory with no traffic proof, on one usable provider.
+
+    ``live`` routes are also in the auto-combo pool (reachable); the others are
+    subscription-style routes that only the inventory lists.
+    """
+    ids = frozenset(rows)
+    return OmniRouteEvidence(
+        fetched_at=NOW,
+        connections=(),
+        usable_providers=frozenset({"cc"}),
+        proven_by_traffic={},
+        cooled_models=cooled,
+        source_errors=(),
+        route_identities={r: ("anthropic", r.split("/", 1)[1]) for r in ids},
+        route_capacities=dict.fromkeys(ids, "subscription"),
+        inventory_route_ids=ids,
+        inventory_rows={r: {"id": r, **row} for r, row in rows.items()},
+        live_candidates={
+            r: LiveCandidate(route_id=r, provider="cc", connection_ids=("conn1",), reachable=True)
+            for r in live
+        },
+    )
+
+
+def _screen_inventory_only(tmp_path: Path, calls: list[object], ev: OmniRouteEvidence) -> dict:
+    return identify.screen_models(
+        ev,
+        metadata=None,
+        cache=HealthCache(tmp_path / "health.json"),
+        transport=passing(calls),
+        allow_live_probe=True,
+        max_per_provider=4,
+        max_routes=4,
+        clock=lambda: NOW,
+        capacities=("subscription",),
+    )
+
+
+@pytest.mark.parametrize("in_live_pool", [False, True], ids=["inventory_only", "live_pool"])
+def test_screen_inventory_route_cooling_down_is_never_screened_or_probed(
+    tmp_path: Path, in_live_pool: bool
+) -> None:
+    """A route the gateway reports as cooling down is not screened and costs no probe.
+
+    The roster path already requires ``route not in cooled_models``; the
+    inventory-only loop must too, whether or not the route is in the live pool.
+    The control route proves the screen still runs for a route that is not cooled.
+    """
+    cooled, control = "cc/claude-opus-5-5", "cc/claude-sonnet-5-5"
+    ev = _inventory_only_evidence(
+        {cooled: _CHAT_ROW, control: _CHAT_ROW},
+        cooled=frozenset({cooled}),
+        live=frozenset({cooled, control}) if in_live_pool else frozenset(),
+    )
+    calls: list[object] = []
+    report = _screen_inventory_only(tmp_path, calls, ev)
+    rows = {r["route_id"] for r in report["routes"]}
+    assert cooled not in rows, f"cooling-down route was screened: {report['routes']}"
+    assert cooled not in probed(calls), "cooling-down route was probed"
+    assert control in rows and control in probed(calls), "the control route must still be screened"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"type": "embedding"},
+        {"type": "image"},
+        {"type": "rerank"},
+        {"capabilities": {"embedding": True}},
+    ],
+    ids=["type_embedding", "type_image", "type_rerank", "capability_embedding"],
+)
+@pytest.mark.parametrize("in_live_pool", [False, True], ids=["inventory_only", "live_pool"])
+def test_screen_inventory_row_marked_non_chat_with_neutral_id_is_never_screened(
+    tmp_path: Path, row: dict[str, object], in_live_pool: bool
+) -> None:
+    """An inventory row that marks a route non-chat excludes it even when its id looks neutral.
+
+    The id has no marker such as ``embed``, so only the row can exclude it; the
+    roster path passes the row, the inventory-only loop must too.
+    """
+    non_chat, control = "cc/atlas-7", "cc/atlas-8"
+    ev = _inventory_only_evidence(
+        {non_chat: row, control: _CHAT_ROW},
+        live=frozenset({non_chat, control}) if in_live_pool else frozenset(),
+    )
+    calls: list[object] = []
+    report = _screen_inventory_only(tmp_path, calls, ev)
+    rows = {r["route_id"] for r in report["routes"]}
+    assert non_chat not in rows, f"non-chat route was screened: {report['routes']}"
+    assert non_chat not in probed(calls), "non-chat route was probed"
+    assert control in rows and control in probed(calls), "the control route must still be screened"
+
+
+def test_screen_inventory_id_marker_still_excludes_when_the_row_says_chat(tmp_path: Path) -> None:
+    """Passing the row only ever narrows the screened set.
+
+    Before the row was passed, an id marker alone excluded a route.  An explicit
+    chat row would clear that marker in ``is_non_chat_route(rid, row)``; the
+    screen must still skip the route, so nothing is probed that was not before.
+    """
+    marked, control = "cc/embed-chat-9", "cc/atlas-8"
+    ev = _inventory_only_evidence({marked: _CHAT_ROW, control: _CHAT_ROW})
+    calls: list[object] = []
+    report = _screen_inventory_only(tmp_path, calls, ev)
+    rows = {r["route_id"] for r in report["routes"]}
+    assert marked not in rows, f"id-marked route was screened: {report['routes']}"
+    assert marked not in probed(calls)
+    assert control in rows and control in probed(calls)

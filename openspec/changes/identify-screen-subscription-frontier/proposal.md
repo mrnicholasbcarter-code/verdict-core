@@ -25,8 +25,10 @@ as `cc/claude-opus-5-5` for three reasons:
 ## What Changes
 
 - **extra_ratings loop** (`identify.py`):
-  - Add `is_opaque(rid) or is_non_chat_route(rid)` guard so opaque routes
-    (`auto/*`, `combo/*`) are never added.
+  - Add a guard so opaque routes (`auto/*`, `combo/*`), non-chat routes (by id
+    or by inventory row) and routes in `cooled_models` are never added.  The
+    non-chat and cooling-down checks were missing from the first version of
+    this guard and were added by issue #1316; they only narrow the set.
   - When `live is not None`: use `live.provider` (connection namespace) instead
     of `route_identities` (inventory namespace).
   - When `live is None` (subscription frontier routes): use
@@ -65,7 +67,8 @@ as `cc/claude-opus-5-5` for three reasons:
 - `verdict/identify.py` (extra_ratings loop, tier filter with a read-only
   planner-band lookup, docstring)
 - `tests/test_identify_screen.py` (5 tests added; the existing unknown-tier
-  tests keep their assertions)
+  tests keep their assertions; issue #1316 adds tests for the cooling-down,
+  non-chat-row and id-marker exclusions)
 - No change to `verdict/planner_band.py`, admission invariants, ranking,
   review, or dispatch.
 
@@ -80,6 +83,13 @@ the 5 new tests fail; the opaque-route test passes on both and is a regression
 guard.  Run against the earlier version of this change that let every no-tier
 route through, the two existing unknown-tier tests and the stale-ratings test
 fail.
+
+KNOWN (issue #1316): `tests/test_identify_screen.py` gains 3 tests, 11 cases.
+Run against `origin/main`'s `identify.py`, the cooling-down test (2 cases) and
+the non-chat-row test (8 cases) fail; the id-marker test passes on both and
+fails against a version that passes the row alone, so it is the guard that the
+screened set only narrows.  No probe is sent in these tests: a fake transport
+records calls and the excluded routes have none.
 
 NOT AVAILABLE: live screen confirming `cc/claude-opus-5-5` is probed and
 records a tool-proof entry — tracked as a post-merge task.
@@ -97,4 +107,7 @@ records a tool-proof entry — tracked as a post-merge task.
   (`cc/claude-opus-5-5`) when the `cc` provider has a usable connection and
   the route is in the inventory.
 - Opaque routes (`auto/*`, `combo/*`) are never screened.
+- Routes in `cooled_models`, and routes whose inventory row marks them non-chat,
+  are never screened or probed on the inventory-only path, as on the roster
+  path (issue #1316).
 - Each behaviour above has a test; the Evidence boundary says which fail without the fix.

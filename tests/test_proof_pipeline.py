@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -396,3 +398,862 @@ def test_targeted_mode_without_targets_still_runs_tests(tmp_path: Path) -> None:
     runner.run(mode="targeted")
 
     assert "targeted" in ran
+
+
+# ---------------------------------------------------------------------------
+# Sharded full proof (issue #1307): contract parsing, expansion, selection ids
+# ---------------------------------------------------------------------------
+
+UNIT_FULL_COMMAND = ["pytest", "tests/", "-q", "--tb=short"]
+UNIT_TIMING_COMMAND = ["pytest", "tests/", "-q", "--tb=short", "-m", "timing", "-p", "no:xdist"]
+
+
+def _sharded_payload(*, shards: object = 3) -> dict[str, object]:
+    """A small full-mode contract with the sharded gates, as the checked-in one has them."""
+    full_phases = ["format", "unit_targeted", "unit_full", "unit_timing", "security", "adversarial"]
+    full_mode: dict[str, object] = {"phases": full_phases}
+    if shards is not _MISSING:
+        full_mode["shards"] = shards
+    return {
+        "schema_version": 1,
+        "name": "fixture-repo",
+        "runner": "native",
+        "modes": {"targeted": {"phases": ["format", "unit_targeted"]}, "full": full_mode},
+        "gates": [
+            {
+                "id": "format",
+                "phase": "format",
+                "classify": "format",
+                "command": ["echo", "format-ok"],
+            },
+            {
+                "id": "unit_targeted",
+                "phase": "unit_targeted",
+                "classify": "test",
+                "command": ["pytest", "{targets}", "-q", "--tb=short"],
+                "targets_placeholder": "{targets}",
+            },
+            {
+                "id": "unit_full",
+                "phase": "unit_full",
+                "classify": "test",
+                "command": list(UNIT_FULL_COMMAND),
+                "shard": "split",
+            },
+            {
+                "id": "unit_timing",
+                "phase": "unit_timing",
+                "classify": "test",
+                "command": list(UNIT_TIMING_COMMAND),
+                "shard": "leader",
+                "env_clear": ["PYTEST_ADDOPTS"],
+            },
+            {
+                "id": "security_semgrep",
+                "phase": "security",
+                "classify": "security",
+                "command": ["echo", "semgrep-ok"],
+            },
+            {
+                "id": "promptfoo",
+                "phase": "adversarial",
+                "classify": "adversarial",
+                "command": ["echo", "promptfoo"],
+                "when": "llm_boundary",
+                "required": False,
+            },
+        ],
+    }
+
+
+_MISSING = object()
+
+
+def _write_payload(path: Path, payload: dict[str, object]) -> Path:
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    return path
+
+
+def _sharded_contract_path(tmp_path: Path, *, shards: object = 3) -> Path:
+    return _write_payload(tmp_path / "contract.yaml", _sharded_payload(shards=shards))
+
+
+def _gate_payload(payload: dict[str, object], gate_id: str) -> dict[str, object]:
+    gates = payload["gates"]
+    assert isinstance(gates, list)
+    for gate in gates:
+        if gate["id"] == gate_id:
+            return gate  # type: ignore[no-any-return]
+    raise AssertionError(gate_id)
+
+
+def test_contract_exposes_the_declared_shard_count(tmp_path: Path) -> None:
+    contract = load_contract(_sharded_contract_path(tmp_path, shards=3))
+    assert contract.shards == 3
+    unit_full = next(g for g in contract.gates if g.id == "unit_full")
+    unit_timing = next(g for g in contract.gates if g.id == "unit_timing")
+    assert unit_full.shard == "split"
+    assert unit_full.env_clear == ()
+    assert unit_timing.shard == "leader"
+    assert unit_timing.env_clear == ("PYTEST_ADDOPTS",)
+
+
+def test_contract_without_shards_declares_none(tmp_path: Path) -> None:
+    contract = load_contract(_sharded_contract_path(tmp_path, shards=_MISSING))
+    assert contract.shards is None
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, False, "3", 2.5, None, [3]])
+def test_contract_refuses_a_bad_shards_value(tmp_path: Path, bad: object) -> None:
+    from scripts.proof.contract import ContractError
+
+    path = _sharded_contract_path(tmp_path, shards=bad)
+    with pytest.raises(ContractError, match="shards"):
+        load_contract(path)
+
+
+def test_contract_refuses_shards_on_a_mode_that_is_not_full(tmp_path: Path) -> None:
+    from scripts.proof.contract import ContractError
+
+    payload = _sharded_payload()
+    modes = payload["modes"]
+    assert isinstance(modes, dict)
+    modes["targeted"]["shards"] = 2
+    with pytest.raises(ContractError, match="shards"):
+        load_contract(_write_payload(tmp_path / "contract.yaml", payload))
+
+
+@pytest.mark.parametrize("bad", ["every", "SPLIT", "", True, 3, ["split"]])
+def test_contract_refuses_an_unknown_gate_shard_word(tmp_path: Path, bad: object) -> None:
+    from scripts.proof.contract import ContractError
+
+    payload = _sharded_payload()
+    _gate_payload(payload, "unit_full")["shard"] = bad
+    with pytest.raises(ContractError, match="shard"):
+        load_contract(_write_payload(tmp_path / "contract.yaml", payload))
+
+
+@pytest.mark.parametrize("bad", ["PYTEST_ADDOPTS", 7, {"PYTEST_ADDOPTS": 1}, [1], [""], [["A"]]])
+def test_contract_refuses_a_bad_env_clear(tmp_path: Path, bad: object) -> None:
+    from scripts.proof.contract import ContractError
+
+    payload = _sharded_payload()
+    _gate_payload(payload, "unit_timing")["env_clear"] = bad
+    with pytest.raises(ContractError, match="env_clear"):
+        load_contract(_write_payload(tmp_path / "contract.yaml", payload))
+
+
+class _Call:
+    def __init__(self, argv: list[str], env: dict[str, str], cwd: Path) -> None:
+        self.argv = argv
+        self.env = env
+        self.cwd = cwd
+
+    @property
+    def is_collector(self) -> bool:
+        return len(self.argv) > 1 and Path(self.argv[1]).name == "ci_shard_union.py"
+
+
+class _Recorder:
+    """A stub executor that records every launch and plays the selection collector."""
+
+    def __init__(
+        self, *, collector_exit: int = 0, ids: list[str] | None = None, write_ids: bool = True
+    ) -> None:
+        self.calls: list[_Call] = []
+        self.collector_exit = collector_exit
+        self.ids = ids if ids is not None else ["tests/test_x.py::test_a"]
+        self.write_ids = write_ids
+
+    def __call__(self, argv: list[str], *, env: dict[str, str], cwd: Path) -> CommandResult:
+        call = _Call(list(argv), dict(env), cwd)
+        self.calls.append(call)
+        if call.is_collector:
+            if self.collector_exit != 0:
+                return CommandResult(self.collector_exit, "", "collector broke")
+            if self.write_ids:
+                target = Path(argv[argv.index("--emit-ids") + 1])
+                target.parent.mkdir(parents=True, exist_ok=True)
+                payload = {"schema_version": 1, "ids": self.ids}
+                target.write_text(json.dumps(payload), encoding="utf-8")
+        return CommandResult(0, "", "")
+
+    def gate_argvs(self) -> list[list[str]]:
+        return [c.argv for c in self.calls if not c.is_collector]
+
+    def collector_calls(self) -> list[_Call]:
+        return [c for c in self.calls if c.is_collector]
+
+
+def _leg_unit_full(shards: int, leg: int) -> list[str]:
+    return [
+        *UNIT_FULL_COMMAND,
+        "-m",
+        "not timing",
+        "--splits",
+        str(shards),
+        "--group",
+        str(leg),
+        "--splitting-algorithm",
+        "least_duration",
+        f"--junitxml=proof-shard-{leg}/junit-unit_full.xml",
+    ]
+
+
+def _run_proof(
+    tmp_path: Path,
+    *,
+    shard: int | None,
+    shards: int = 3,
+    targets: list[str] | None = None,
+    recorder: _Recorder | None = None,
+) -> tuple[_Recorder, object]:
+    contract = load_contract(_sharded_contract_path(tmp_path, shards=shards))
+    rec = recorder or _Recorder()
+    runner = ProofRunner(contract, root=tmp_path, executor=rec)
+    report = runner.run(mode="full", targets=targets, no_cache=True, otel=True, shard=shard)  # type: ignore[call-arg]
+    return rec, report
+
+
+def test_unsharded_full_run_keeps_todays_argv_and_adds_no_launch(tmp_path: Path) -> None:
+    rec, report = _run_proof(tmp_path, shard=None)
+    argvs = rec.gate_argvs()
+    assert UNIT_FULL_COMMAND in argvs
+    assert not rec.collector_calls()
+    assert len(rec.calls) == len(rec.gate_argvs())
+    assert not any(arg.startswith("--junitxml") for argv in argvs for arg in argv)
+    assert not any("--splits" in argv or "-m" in argv for argv in argvs)
+    timing = next(g for g in report.gates if g.id == "unit_timing")  # type: ignore[attr-defined]
+    assert timing.status == "skip"
+    assert timing.exit_code == 0
+    assert "timing" in timing.log_slice
+    assert not (tmp_path / "proof-shard-1").exists()
+
+
+@pytest.mark.parametrize(("shards", "leg"), [(n, k) for n in range(1, 6) for k in range(1, n + 1)])
+def test_leg_argv_for_every_count_and_index(tmp_path: Path, shards: int, leg: int) -> None:
+    rec, report = _run_proof(tmp_path, shard=leg, shards=shards)
+    argvs = rec.gate_argvs()
+    assert _leg_unit_full(shards, leg) in argvs
+    assert UNIT_FULL_COMMAND not in argvs
+    timing_argv = [*UNIT_TIMING_COMMAND, f"--junitxml=proof-shard-{leg}/junit-unit_timing.xml"]
+    timing = next(g for g in report.gates if g.id == "unit_timing")  # type: ignore[attr-defined]
+    if leg == 1:
+        assert timing_argv in argvs
+        assert timing.status == "pass"
+        assert timing.command == timing_argv
+    else:
+        assert not any("timing" in argv for argv in argvs)
+        assert timing.status == "skip"
+        assert timing.exit_code == 0
+        assert timing.required is True
+
+
+def test_every_other_gate_runs_in_every_leg_with_the_contracts_command(tmp_path: Path) -> None:
+    rec, _ = _run_proof(tmp_path, shard=2, targets=["tests/test_x.py"])
+    argvs = rec.gate_argvs()
+    assert ["echo", "format-ok"] in argvs
+    assert ["echo", "semgrep-ok"] in argvs
+    assert ["pytest", "tests/test_x.py", "-q", "--tb=short"] in argvs
+    assert ["echo", "promptfoo"] not in argvs
+
+
+def test_report_records_the_leg_and_the_targets(tmp_path: Path) -> None:
+    _, unsharded = _run_proof(tmp_path, shard=None)
+    assert unsharded.to_dict()["shard"] is None  # type: ignore[attr-defined]
+    assert unsharded.to_dict()["targets"] == []  # type: ignore[attr-defined]
+    _, leg = _run_proof(tmp_path, shard=2, targets=["tests/test_a.py", "tests/test_b.py"])
+    payload = leg.to_dict()  # type: ignore[attr-defined]
+    assert payload["shard"] == {"index": 2, "count": 3}
+    assert payload["targets"] == ["tests/test_a.py", "tests/test_b.py"]
+
+
+@pytest.mark.parametrize("leg", [0, -1, 4, 99])
+def test_a_leg_index_outside_the_declared_count_runs_no_gate(tmp_path: Path, leg: int) -> None:
+    from scripts.proof.runner import ShardError
+
+    rec = _Recorder()
+    with pytest.raises(ShardError):
+        _run_proof(tmp_path, shard=leg, shards=3, recorder=rec)
+    assert rec.calls == []
+
+
+def test_a_contract_without_shards_refuses_a_leg_index(tmp_path: Path) -> None:
+    from scripts.proof.runner import ShardError
+
+    rec = _Recorder()
+    contract = load_contract(_sharded_contract_path(tmp_path, shards=_MISSING))
+    with pytest.raises(ShardError):
+        ProofRunner(contract, root=tmp_path, executor=rec).run(mode="full", shard=1)  # type: ignore[call-arg]
+    assert rec.calls == []
+
+
+def test_a_leg_index_is_refused_in_targeted_mode(tmp_path: Path) -> None:
+    from scripts.proof.runner import ShardError
+
+    rec = _Recorder()
+    contract = load_contract(_sharded_contract_path(tmp_path))
+    with pytest.raises(ShardError):
+        ProofRunner(contract, root=tmp_path, executor=rec).run(mode="targeted", shard=1)  # type: ignore[call-arg]
+    assert rec.calls == []
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param(["--shard", "0"], id="below-range"),
+        pytest.param(["--shard", "4"], id="above-range"),
+        pytest.param(["--mode", "targeted", "--shard", "1"], id="targeted-mode"),
+    ],
+)
+def test_cli_exits_two_before_any_gate_on_a_bad_leg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: list[str]
+) -> None:
+    from scripts.proof import run as run_mod
+
+    rec = _inject_executor(monkeypatch, _Recorder())
+    contract_path = _sharded_contract_path(tmp_path)
+    argv = ["--contract", str(contract_path), "--root", str(tmp_path), "--mode", "full", *extra]
+    assert run_mod.main(argv) == 2
+    assert rec.calls == []
+
+
+def test_cli_exits_two_when_the_contract_declares_no_shards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.proof import run as run_mod
+
+    rec = _inject_executor(monkeypatch, _Recorder())
+    contract_path = _sharded_contract_path(tmp_path, shards=_MISSING)
+    argv = ["--contract", str(contract_path), "--root", str(tmp_path), "--mode", "full"]
+    assert run_mod.main([*argv, "--shard", "1"]) == 2
+    assert rec.calls == []
+
+
+def test_cli_leg_run_writes_a_report_with_the_leg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.proof import run as run_mod
+
+    rec = _inject_executor(monkeypatch, _Recorder())
+    contract_path = _sharded_contract_path(tmp_path)
+    report_path = tmp_path / "proof-shard-2" / "proof-report-full.json"
+    code = run_mod.main(
+        [
+            "--contract",
+            str(contract_path),
+            "--root",
+            str(tmp_path),
+            "--mode",
+            "full",
+            "--shard",
+            "2",
+            "--targets",
+            "tests/test_x.py",
+            "--report",
+            str(report_path),
+        ]
+    )
+    assert code == 0
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["shard"] == {"index": 2, "count": 3}
+    assert payload["targets"] == ["tests/test_x.py"]
+    assert _leg_unit_full(3, 2) in rec.gate_argvs()
+
+
+def _inject_executor(monkeypatch: pytest.MonkeyPatch, executor: _Recorder) -> _Recorder:
+    from scripts.proof.runner import ProofRunner as RealRunner
+
+    original_init = RealRunner.__init__
+
+    def patched_init(self: RealRunner, *args: object, **kwargs: object) -> None:
+        kwargs = dict(kwargs)
+        kwargs["executor"] = executor
+        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(RealRunner, "__init__", patched_init)
+    return executor
+
+
+def test_timing_gate_is_launched_without_pytest_addopts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-p xdist -n auto")
+    monkeypatch.setenv("PROOF_FIXTURE_MARKER", "kept")
+    rec, _ = _run_proof(tmp_path, shard=1)
+    timing = next(c for c in rec.calls if "timing" in c.argv and not c.is_collector)
+    full = next(c for c in rec.calls if _leg_unit_full(3, 1) == c.argv)
+    other = next(c for c in rec.calls if c.argv == ["echo", "format-ok"])
+    assert "PYTEST_ADDOPTS" not in timing.env
+    assert full.env["PYTEST_ADDOPTS"] == "-p xdist -n auto"
+    assert other.env["PYTEST_ADDOPTS"] == "-p xdist -n auto"
+    for call in (timing, full, other):
+        assert call.env["PATH"] == os.environ["PATH"]
+        assert call.env["PROOF_FIXTURE_MARKER"] == "kept"
+        assert call.env["PROOF_NO_CACHE"] == "1"
+    assert "-p" in timing.argv
+    assert "no:xdist" in timing.argv
+
+
+def test_unit_timing_failures_are_classified_as_test() -> None:
+    assert classify_failure("unit_timing", "") == "test"
+
+
+def test_checked_in_unit_full_command_is_todays_unsharded_argv() -> None:
+    from scripts.proof.runner import plan_gates
+
+    contract = load_contract(CONTRACT_PATH)
+    plan = {p.gate.id: p for p in plan_gates(contract, mode="full", targets=[], shard=None)}
+    assert list(plan["unit_full"].command) == UNIT_FULL_COMMAND
+    for planned in plan.values():
+        if planned.skip_reason is None:
+            assert list(planned.command) == list(planned.gate.command)
+
+
+TOY_SUITE = """
+import pytest
+
+def test_one():
+    assert True
+
+def test_two():
+    assert True
+
+def test_three():
+    assert True
+
+@pytest.mark.timing
+def test_timed():
+    assert True
+"""
+
+
+def test_leg_records_each_sharded_gates_selection_before_it_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.proof.runner import COLLECTOR_PATH
+
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-p xdist -n auto")
+    rec, _ = _run_proof(tmp_path, shard=1)
+    collectors = rec.collector_calls()
+    assert [c.argv for c in collectors] == [
+        [
+            sys.executable,
+            str(COLLECTOR_PATH),
+            "--emit-ids",
+            str(tmp_path / "proof-shard-1" / "ids-unit_full.json"),
+            "--",
+            *_leg_unit_full(3, 1)[1:-1],
+        ],
+        [
+            sys.executable,
+            str(COLLECTOR_PATH),
+            "--emit-ids",
+            str(tmp_path / "proof-shard-1" / "ids-unit_timing.json"),
+            "--",
+            *UNIT_TIMING_COMMAND[1:],
+        ],
+    ]
+    for call in collectors:
+        assert "PYTEST_ADDOPTS" not in call.env
+        assert call.cwd == tmp_path
+    order = [c.argv for c in rec.calls]
+    unit_full_gate = _leg_unit_full(3, 1)
+    timing_gate = [*UNIT_TIMING_COMMAND, "--junitxml=proof-shard-1/junit-unit_timing.xml"]
+    assert order.index(collectors[0].argv) + 1 == order.index(unit_full_gate)
+    assert order.index(collectors[1].argv) + 1 == order.index(timing_gate)
+    assert (tmp_path / "proof-shard-1" / "ids-unit_full.json").is_file()
+    assert (tmp_path / "proof-shard-1" / "ids-unit_timing.json").is_file()
+
+
+def test_a_later_leg_collects_only_its_own_unit_full_selection(tmp_path: Path) -> None:
+    rec, _ = _run_proof(tmp_path, shard=2)
+    ids_files = [Path(c.argv[c.argv.index("--emit-ids") + 1]) for c in rec.collector_calls()]
+    assert ids_files == [tmp_path / "proof-shard-2" / "ids-unit_full.json"]
+
+
+def test_a_failed_selection_collection_stops_the_gate_and_fails_the_proof(tmp_path: Path) -> None:
+    rec, report = _run_proof(tmp_path, shard=2, recorder=_Recorder(collector_exit=3))
+    unit_full = next(g for g in report.gates if g.id == "unit_full")  # type: ignore[attr-defined]
+    assert unit_full.status == "fail"
+    assert unit_full.exit_code == 3
+    assert "collector broke" in unit_full.log_slice
+    assert "unit_full did not run" in unit_full.log_slice
+    assert _leg_unit_full(3, 2) not in rec.gate_argvs()
+    assert report.ok is False  # type: ignore[attr-defined]
+    assert [f["gate"] for f in report.failures] == ["unit_full"]  # type: ignore[attr-defined]
+
+
+def test_a_collector_that_writes_no_ids_file_fails_the_gate(tmp_path: Path) -> None:
+    rec, report = _run_proof(tmp_path, shard=2, recorder=_Recorder(write_ids=False))
+    unit_full = next(g for g in report.gates if g.id == "unit_full")  # type: ignore[attr-defined]
+    assert unit_full.status == "fail"
+    assert "wrote no ids file" in unit_full.log_slice
+    assert _leg_unit_full(3, 2) not in rec.gate_argvs()
+
+
+def test_a_stale_ids_file_is_not_accepted_as_a_new_selection(tmp_path: Path) -> None:
+    stale = tmp_path / "proof-shard-2" / "ids-unit_full.json"
+    stale.parent.mkdir()
+    stale.write_text('{"ids": ["tests/test_old.py::test_old"]}', encoding="utf-8")
+    _, report = _run_proof(tmp_path, shard=2, recorder=_Recorder(write_ids=False))
+    assert next(g for g in report.gates if g.id == "unit_full").status == "fail"  # type: ignore[attr-defined]
+    assert not stale.exists()
+
+
+def test_the_real_collector_records_a_partition_of_a_toy_suite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No stub plays the collector here: each leg launches the real script on a toy suite."""
+    from scripts.proof.runner import default_executor
+
+    for name in ("PYTEST_XDIST_WORKER", "PYTEST_XDIST_WORKER_COUNT", "PYTEST_CURRENT_TEST"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-k test_one")  # would hide two tests if it leaked
+    root = tmp_path / "toy-root"
+    (root / "tests").mkdir(parents=True)
+    (root / "tests" / "test_toy.py").write_text(TOY_SUITE, encoding="utf-8")
+    contract = load_contract(_sharded_contract_path(tmp_path, shards=3))
+
+    class RealCollectorOnly:
+        def __call__(self, argv: list[str], *, env: dict[str, str], cwd: Path) -> CommandResult:
+            if Path(argv[1]).name == "ci_shard_union.py":
+                return default_executor(argv, env, cwd)
+            return CommandResult(0, "", "")
+
+    legs: list[list[str]] = []
+    for leg in (1, 2, 3):
+        report = ProofRunner(contract, root=root, executor=RealCollectorOnly()).run(
+            mode="full", shard=leg
+        )
+        unit_full = next(g for g in report.gates if g.id == "unit_full")
+        assert unit_full.status == "pass", unit_full.log_slice
+        payload = json.loads(
+            (root / f"proof-shard-{leg}" / "ids-unit_full.json").read_text(encoding="utf-8")
+        )
+        legs.append(payload["ids"])
+    from scripts.ci_shard_union import check_union
+
+    expected = {f"tests/test_toy.py::{n}" for n in ("test_one", "test_two", "test_three")}
+    assert check_union(expected, [set(ids) for ids in legs]) == (set(), set(), set())
+    assert sorted(i for ids in legs for i in ids) == sorted(expected)
+    timing = json.loads(
+        (root / "proof-shard-1" / "ids-unit_timing.json").read_text(encoding="utf-8")
+    )
+    assert timing["ids"] == ["tests/test_toy.py::test_timed"]
+    assert not (root / "proof-shard-2" / "ids-unit_timing.json").exists()
+
+
+# Every gate of origin/main (34c10464) other than the two this change touches:
+# id -> (command, required). Listed here so that a sharding change cannot loosen them.
+MAIN_GATES: dict[str, tuple[list[str], bool]] = {
+    "format": (["ruff", "format", "--check", "."], True),
+    "lint": (["ruff", "check", "."], True),
+    "type": (["mypy", "verdict", "--strict"], True),
+    "schema": (["python", "scripts/validate_contract_schema.py"], True),
+    "proof_matrix": (["python", "scripts/verify_proof_matrix.py"], True),
+    "unit_targeted": (["pytest", "{targets}", "-q", "--tb=short"], True),
+    "security_bandit": (["bandit", "-r", "verdict", "-ll"], False),
+    "security_semgrep": (
+        ["semgrep", "--config", "proof/semgrep.yml", "--error", "--quiet", "verdict"],
+        True,
+    ),
+    "secrets": (["python", "scripts/proof/secrets_scan.py"], True),
+    "structural_risk": (["python", "scripts/check_structural_risk.py"], False),
+    "obsolete_architecture": (["python", "scripts/check_no_obsolete_architecture.py"], True),
+    "ast_grep": (["ast-grep", "scan", "-r", "proof/ast-grep/", "verdict"], False),
+    "build": (["python", "-m", "build", "--wheel"], True),
+    "acceptance": (["python", "scripts/proof/acceptance_smoke.py"], True),
+    "promptfoo": (
+        ["promptfoo", "eval", "-c", "proof/promptfoo/promptfooconfig.yaml", "--no-cache"],
+        False,
+    ),
+}
+MAIN_FULL_PHASES = [
+    "format",
+    "lint",
+    "type",
+    "schema",
+    "unit_targeted",
+    "unit_full",
+    "security",
+    "secrets",
+    "structural",
+    "build",
+    "acceptance",
+    "adversarial",
+]
+MAIN_TARGETED_PHASES = ["format", "lint", "type", "schema", "unit_targeted", "structural"]
+
+
+def test_checked_in_contract_declares_the_sharded_gates_and_changes_nothing_else() -> None:
+    contract = load_contract(CONTRACT_PATH)
+    assert contract.shards == 3
+    ids = [g.id for g in contract.gates]
+    assert ids.index("unit_timing") == ids.index("unit_full") + 1
+    assert len(ids) == len(MAIN_GATES) + 2 and len(set(ids)) == len(ids)
+
+    by_id = {g.id: g for g in contract.gates}
+    unit_full = by_id["unit_full"]
+    assert list(unit_full.command) == UNIT_FULL_COMMAND
+    assert unit_full.required is True
+    assert unit_full.shard == "split"
+    assert unit_full.phase == "unit_full"
+    assert unit_full.env_clear == ()
+
+    unit_timing = by_id["unit_timing"]
+    assert unit_timing.phase == "unit_timing"
+    assert unit_timing.classify == "test"
+    assert list(unit_timing.command) == UNIT_TIMING_COMMAND
+    assert unit_timing.shard == "leader"
+    assert unit_timing.env_clear == ("PYTEST_ADDOPTS",)
+    assert unit_timing.required is True
+    assert unit_timing.when is None
+
+    for gate_id, (command, required) in MAIN_GATES.items():
+        gate = by_id[gate_id]
+        assert list(gate.command) == command, gate_id
+        assert gate.required is required, gate_id
+        assert gate.shard is None and gate.env_clear == (), gate_id
+
+    full_phases = contract.modes["full"]["phases"]
+    assert full_phases == [*MAIN_FULL_PHASES[:6], "unit_timing", *MAIN_FULL_PHASES[6:]]
+    assert contract.modes["targeted"]["phases"] == MAIN_TARGETED_PHASES
+    assert "unit_timing" in {g.id for g in contract.gates_for_mode("full")}
+    assert "unit_timing" not in {g.id for g in contract.gates_for_mode("targeted")}
+
+
+def test_a_leader_gate_must_be_a_narrower_run_of_a_split_gate(tmp_path: Path) -> None:
+    """``leader`` skips a gate in an unsharded run because unit_full runs its tests there."""
+    from scripts.proof.contract import ContractError
+
+    def build(edit: object) -> Path:
+        payload = _sharded_payload()
+        edit(payload)  # type: ignore[operator]
+        return _write_payload(tmp_path / "contract.yaml", payload)
+
+    load_contract(build(lambda p: None))  # the checked shape is accepted
+    bad = {
+        "an independent required gate": lambda p: _gate_payload(p, "security_semgrep").update(
+            shard="leader"
+        ),
+        "a command that does not extend the split gate's": lambda p: _gate_payload(
+            p, "unit_timing"
+        ).update(command=["pytest", "other/", "-m", "timing"]),
+        "a command shorter than the split gate's": lambda p: _gate_payload(p, "unit_timing").update(
+            command=["pytest", "tests/"]
+        ),
+        "no split gate at all": lambda p: _gate_payload(p, "unit_full").pop("shard"),
+        "a non-test gate marked split": lambda p: _gate_payload(p, "format").update(shard="split"),
+        "a non-test gate marked leader": lambda p: _gate_payload(p, "format").update(
+            shard="leader"
+        ),
+    }
+    for label, edit in bad.items():
+        with pytest.raises(ContractError, match=r"shard|leader|split"):
+            load_contract(build(edit))
+        assert label
+
+
+# ---------------------------------------------------------------------------
+# An unsharded run skips a leader gate only when a covering split gate runs it
+# ---------------------------------------------------------------------------
+
+LEADER_SKIPPED_UNSHARDED = "skipped: unsharded run, so unit_full runs the tests of unit_timing"
+
+
+def _full_mode(payload: dict[str, object]) -> dict[str, object]:
+    modes = payload["modes"]
+    assert isinstance(modes, dict)
+    return modes["full"]  # type: ignore[no-any-return]
+
+
+def _unsharded_plan(
+    tmp_path: Path, payload: dict[str, object], *, llm_boundary: bool = False
+) -> dict[str, object]:
+    from scripts.proof.runner import plan_gates
+
+    contract = load_contract(_write_payload(tmp_path / "contract.yaml", payload))
+    planned = plan_gates(contract, mode="full", targets=[], shard=None, llm_boundary=llm_boundary)
+    return {item.gate.id: item for item in planned}
+
+
+def _run_payload(
+    tmp_path: Path, payload: dict[str, object], *, llm_boundary: bool = False
+) -> tuple[_Recorder, object]:
+    contract = load_contract(_write_payload(tmp_path / "contract.yaml", payload))
+    rec = _Recorder()
+    report = ProofRunner(contract, root=tmp_path, executor=rec).run(
+        mode="full", no_cache=True, llm_boundary=llm_boundary
+    )
+    return rec, report
+
+
+def test_unsharded_run_runs_the_leader_when_its_mode_has_no_split_gate(tmp_path: Path) -> None:
+    """A mode that selects only the leader gate must execute the leader's tests."""
+    payload = _sharded_payload()
+    full = _full_mode(payload)
+    full["phases"] = [p for p in full["phases"] if p != "unit_full"]  # type: ignore[attr-defined]
+    rec, report = _run_payload(tmp_path, payload)
+    assert UNIT_TIMING_COMMAND in rec.gate_argvs()
+    assert "unit_full" not in {g.id for g in report.gates}  # type: ignore[attr-defined]
+    timing = next(g for g in report.gates if g.id == "unit_timing")  # type: ignore[attr-defined]
+    assert timing.status == "pass"
+    assert timing.command == UNIT_TIMING_COMMAND
+
+
+# Each case: how the fixture contract is edited, whether llm_boundary is enabled, and which of
+# the two test gates then runs. Whatever the case, the timing tests must be run by one of them.
+_LEADER_COVERAGE_CASES = {
+    "split gate is unconditional (the checked-in shape)": (lambda p: None, False, {"unit_full"}),
+    "split gate is conditional and the condition is not met": (
+        lambda p: _gate_payload(p, "unit_full").update(when="llm_boundary"),
+        False,
+        {"unit_timing"},
+    ),
+    "split gate is conditional and the condition is met": (
+        lambda p: _gate_payload(p, "unit_full").update(when="llm_boundary"),
+        True,
+        {"unit_full"},
+    ),
+    "leader is conditional and the condition is not met": (
+        lambda p: _gate_payload(p, "unit_timing").update(when="llm_boundary"),
+        False,
+        {"unit_full"},
+    ),
+    "leader is conditional and the condition is met": (
+        lambda p: _gate_payload(p, "unit_timing").update(when="llm_boundary"),
+        True,
+        {"unit_full"},
+    ),
+    "split gate is optional, so its failure would not fail the proof": (
+        lambda p: _gate_payload(p, "unit_full").update(required=False),
+        False,
+        {"unit_full", "unit_timing"},
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_LEADER_COVERAGE_CASES))
+def test_unsharded_leader_is_skipped_only_when_a_covering_split_gate_runs(
+    tmp_path: Path, case: str
+) -> None:
+    edit, llm_boundary, expected = _LEADER_COVERAGE_CASES[case]
+    payload = _sharded_payload()
+    edit(payload)
+    plan = _unsharded_plan(tmp_path, payload, llm_boundary=llm_boundary)
+    ran = {gid for gid in ("unit_full", "unit_timing") if plan[gid].skip_reason is None}  # type: ignore[attr-defined]
+    assert ran == expected
+    assert ran, "no gate would run the timing tests"
+
+
+def test_unsharded_run_launches_the_leader_when_the_covering_gate_is_conditional(
+    tmp_path: Path,
+) -> None:
+    """The recorded report and the launched argv agree: the leader's tests do run."""
+    payload = _sharded_payload()
+    _gate_payload(payload, "unit_full").update(when="llm_boundary")
+    rec, report = _run_payload(tmp_path, payload, llm_boundary=False)
+    assert UNIT_TIMING_COMMAND in rec.gate_argvs()
+    by_id = {g.id: g for g in report.gates}  # type: ignore[attr-defined]
+    assert by_id["unit_timing"].status == "pass"
+    assert by_id["unit_full"].status == "skip"
+    assert "llm_boundary" in by_id["unit_full"].log_slice
+
+
+def test_the_leader_is_not_skipped_for_a_split_gate_that_the_targets_rule_skips() -> None:
+    """A split gate skipped for want of --targets runs nothing, so it cannot stand in for the leader."""
+    import dataclasses
+
+    from scripts.proof.runner import plan_gates
+
+    contract = load_contract(CONTRACT_PATH)
+    gates = tuple(
+        dataclasses.replace(g, targets_placeholder="{targets}") if g.id == "unit_full" else g
+        for g in contract.gates
+    )
+    built_by_hand = dataclasses.replace(contract, gates=gates)
+    plan = {p.gate.id: p for p in plan_gates(built_by_hand, mode="full", targets=[], shard=None)}
+    assert plan["unit_full"].skip_reason is not None
+    assert plan["unit_timing"].skip_reason is None
+
+
+def test_a_sharded_gate_cannot_take_the_targets_placeholder(tmp_path: Path) -> None:
+    """The targets rule would skip a sharded gate in a way no leg or aggregate accounts for."""
+    from scripts.proof.contract import ContractError
+
+    for gate_id in ("unit_full", "unit_timing"):
+        payload = _sharded_payload()
+        _gate_payload(payload, gate_id)["targets_placeholder"] = "{targets}"
+        with pytest.raises(ContractError, match="targets"):
+            load_contract(_write_payload(tmp_path / "contract.yaml", payload))
+
+
+def test_checked_in_contract_plans_unsharded_and_sharded_runs_exactly_as_before() -> None:
+    """The fix changes no plan for the contract we ship: same skips, same commands."""
+    from scripts.proof.runner import ShardPosition, plan_gates
+
+    contract = load_contract(CONTRACT_PATH)
+    no_targets = "skipped: no --targets; unit_full runs the same suite"
+    off = "skipped: llm_boundary not enabled"
+    unsharded = {p.gate.id: p for p in plan_gates(contract, mode="full", targets=[], shard=None)}
+    assert {gid: p.skip_reason for gid, p in unsharded.items() if p.skip_reason} == {
+        "unit_targeted": no_targets,
+        "unit_timing": LEADER_SKIPPED_UNSHARDED,
+        "promptfoo": off,
+    }
+    assert list(unsharded["unit_full"].command) == UNIT_FULL_COMMAND
+    assert unsharded["unit_full"].skip_reason is None
+    assert list(unsharded["unit_timing"].command) == UNIT_TIMING_COMMAND
+    for planned in unsharded.values():
+        if planned.skip_reason is None:
+            assert list(planned.command) == list(planned.gate.command)
+
+    with_targets = plan_gates(contract, mode="full", targets=["tests/x.py"], shard=None)
+    assert {p.gate.id: p.skip_reason for p in with_targets if p.skip_reason} == {
+        "unit_timing": LEADER_SKIPPED_UNSHARDED,
+        "promptfoo": off,
+    }
+    enabled = plan_gates(contract, mode="full", targets=[], shard=None, llm_boundary=True)
+    assert {p.gate.id: p.skip_reason for p in enabled if p.skip_reason} == {
+        "unit_targeted": no_targets,
+        "unit_timing": LEADER_SKIPPED_UNSHARDED,
+    }
+
+    for leg in (1, 2, 3):
+        planned_leg = plan_gates(contract, mode="full", targets=[], shard=ShardPosition(leg, 3))
+        timing_skip = next(p.skip_reason for p in planned_leg if p.gate.id == "unit_timing")
+        assert (timing_skip is None) == (leg == 1)
+        if leg != 1:
+            assert timing_skip == "skipped: only leg 1 runs unit_timing"
+
+
+def test_checked_in_contract_unsharded_run_launches_unit_full_unchanged_and_skips_timing(
+    tmp_path: Path,
+) -> None:
+    contract = load_contract(CONTRACT_PATH)
+    rec = _Recorder()
+    report = ProofRunner(contract, root=tmp_path, executor=rec).run(mode="full", no_cache=True)
+    argvs = rec.gate_argvs()
+    assert argvs.count(UNIT_FULL_COMMAND) == 1
+    assert UNIT_TIMING_COMMAND not in argvs
+    assert not rec.collector_calls()
+    by_id = {g.id: g for g in report.gates}
+    assert by_id["unit_full"].command == UNIT_FULL_COMMAND
+    assert by_id["unit_full"].status == "pass"
+    assert by_id["unit_timing"].status == "skip"
+    assert by_id["unit_timing"].log_slice == LEADER_SKIPPED_UNSHARDED
+
+
+def test_a_sharded_run_plans_the_leader_by_leg_whatever_the_split_gate_does(tmp_path: Path) -> None:
+    """The coverage rule is for unsharded runs: a leg's plan, which the aggregate re-derives, is by index."""
+    from scripts.proof.runner import ShardPosition, plan_gates
+
+    for edit in (lambda p: None, lambda p: _gate_payload(p, "unit_full").update(required=False)):
+        payload = _sharded_payload()
+        edit(payload)
+        contract = load_contract(_write_payload(tmp_path / "contract.yaml", payload))
+        for leg in (1, 2, 3):
+            planned = plan_gates(contract, mode="full", targets=[], shard=ShardPosition(leg, 3))
+            timing = next(p for p in planned if p.gate.id == "unit_timing")
+            assert (timing.skip_reason is None) == (leg == 1)

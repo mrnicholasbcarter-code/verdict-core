@@ -618,8 +618,9 @@ def _install_serve(env: HostEnvironment) -> dict[str, Any]:
     keep = ("plan", "env_file", "env_file_plan", "env_keys", "token_source", "token_stored")
     facts = {key: result[key] for key in keep}
     restarted = False
-    if not result["changed"] and not _probe_serve(env)[0]:
-        # Unchanged files mean the installer started nothing new: restart it.
+    if not result["service_changed"] and not _probe_serve(env)[0]:
+        # An unchanged unit and env file mean the installer restarted nothing: restart it. A new
+        # signing key alone (``changed`` but not ``service_changed``) restarts nothing either.
         env.systemctl(["systemctl", "--user", "restart", service])
         restarted = True
     if not _wait_for_serve(env):

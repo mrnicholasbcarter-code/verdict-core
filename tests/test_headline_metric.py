@@ -7,6 +7,9 @@ Covers:
 - compute_headline_report: via monkeypatched load_receipts_since.
 - _action_headline_metric: via run_action.
 - format_headline_report: smoke test.
+- Issue #1315: first-attempt pass counts only validated work, ``verdict metrics
+  <dir>`` reads ``<dir>``, a missing runs directory is an empty report, and the
+  receipt bytes that are verified are the bytes that are aggregated.
 
 All receipts used here are in-memory or from tests/fixtures/metrics/; no live
 provider calls are made.  Fixture runs are labelled as fixtures per AGENTS.md.
@@ -14,14 +17,25 @@ provider calls are made.  Fixture runs are labelled as fixtures per AGENTS.md.
 
 from __future__ import annotations
 
+import argparse
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from verdict.orchestration.contracts import NodeKind
-from verdict.orchestration.receipt import compute_run_metrics, extend_run_metrics
+from tests.test_orch_runtime import NOW, Executor, Reviewer, Selector, node
+from tests.test_orch_runtime import repo as repo
+from verdict.orchestration.contracts import NodeKind, WorkGraph
+from verdict.orchestration.receipt import (
+    EventLog,
+    build_run_receipt,
+    compute_run_metrics,
+    extend_run_metrics,
+)
+from verdict.orchestration.recovery import FailureIntelligence
+from verdict.orchestration.runtime import DagRuntime, RuntimePolicy, subprocess_runner
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "metrics"
 
@@ -91,6 +105,25 @@ def _node(
         "attempts": attempts or [_attempt()],
         "validated_by": [{"command": "pytest", "exit_code": 0, "seq": 1}],
     }
+
+
+def _build_live_run(run_dir: Path, run_id: str) -> None:
+    """Copy the complete-run fixture into *run_dir*, patching run_id throughout."""
+    import hashlib
+    import json as _json
+    import shutil
+
+    shutil.copytree(FIXTURES_DIR / "complete-run", run_dir)
+    receipt_path = run_dir / "receipt.json"
+    receipt = _json.loads(receipt_path.read_text())
+    receipt["run_id"] = run_id
+    events_path = run_dir / "events.jsonl"
+    events_text = events_path.read_text()
+    events_text = events_text.replace('"test-complete"', f'"{run_id}"')
+    events_path.write_text(events_text)
+    digest = "sha256:" + hashlib.sha256(events_path.read_bytes()).hexdigest()
+    receipt["events_digest"] = digest
+    receipt_path.write_text(_json.dumps(receipt))
 
 
 # ---------------------------------------------------------------------------
@@ -448,22 +481,7 @@ class TestFixtureExclusion:
         assert skipped_live == 0
 
     def _build_live_run(self, run_dir: Path, run_id: str) -> None:
-        """Copy the complete-run fixture into *run_dir*, patching run_id throughout."""
-        import hashlib
-        import json as _json
-        import shutil
-
-        shutil.copytree(FIXTURES_DIR / "complete-run", run_dir)
-        receipt_path = run_dir / "receipt.json"
-        receipt = _json.loads(receipt_path.read_text())
-        receipt["run_id"] = run_id
-        events_path = run_dir / "events.jsonl"
-        events_text = events_path.read_text()
-        events_text = events_text.replace('"test-complete"', f'"{run_id}"')
-        events_path.write_text(events_text)
-        digest = "sha256:" + hashlib.sha256(events_path.read_bytes()).hexdigest()
-        receipt["events_digest"] = digest
-        receipt_path.write_text(_json.dumps(receipt))
+        _build_live_run(run_dir, run_id)
 
     def test_load_receipts_since_includes_live_run(self, tmp_path: Path) -> None:
         """A verifiable live run is returned with zero skips and zero fixture counts."""
@@ -758,13 +776,6 @@ class TestActionHeadlineMetric:
         assert result.ok
         assert result.data["fixture_runs_excluded"] >= 4  # 4 fixture runs in metrics/
         assert result.data["runs_processed"] == 0
-
-    def test_action_missing_runs_dir(self) -> None:
-        from verdict.actions.registry import run_action
-
-        result = run_action("headline.metric", {"runs_dir": "/tmp/does-not-exist-verdict-headline"})
-        assert not result.ok
-        assert "not found" in result.data.get("error", "")
 
     def test_action_invalid_since_date(self) -> None:
         from verdict.actions.registry import run_action
@@ -1167,3 +1178,408 @@ class TestMissingNumbersAreNull:
             rows["run-free"]["headline_accepted_per_paid_share_note"]
             == "no paid model attempts in selected period"
         )
+
+
+# ---------------------------------------------------------------------------
+# #1315 finding 1: a first attempt counts as a pass only when it was validated
+# ---------------------------------------------------------------------------
+
+
+async def _real_run_receipt(
+    repo: Path,
+    tmp_path: Path,
+    behaviour: dict[tuple[str, str], str],
+    routes: list[str],
+    *,
+    explode_on_verify: bool = False,
+) -> dict[str, Any]:
+    """Drive the real DagRuntime (fake executor, real EventLog) and build its receipt."""
+    graph = WorkGraph("g", (node("a"),))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "graph.json").write_text(json.dumps(graph.to_dict()))
+
+    async def runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        # The node's verification command is the only one that greps for FAIL;
+        # git and every other command go through the real runner.
+        if explode_on_verify and any("grep -q FAIL" in part for part in argv):
+            raise RuntimeError("verifier exploded before it could report")
+        return await subprocess_runner(argv, cwd, timeout)
+
+    runtime = DagRuntime(
+        repo=repo,
+        run_dir=run_dir,
+        graph=graph,
+        selector=Selector(routes),
+        executor=Executor(behaviour, delay=0),
+        classifier=FailureIntelligence(),
+        events=EventLog(run_dir / "events.jsonl"),
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(),
+        now=lambda: NOW,
+        runner=runner,
+    )
+    await runtime.run()
+    return build_run_receipt(run_dir)
+
+
+class TestFirstAttemptCountsOnlyValidatedWork:
+    async def test_worker_success_then_failed_validation_is_not_a_pass(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """Finding 1 as reported: the worker returns ok, validation then fails.
+
+        Traced, not a defect: the runtime emits a ``failure`` event for the same
+        attempt after ``_validate`` rejects it, and the receipt turns that into
+        ``outcome == "failure"``.  This pins the whole chain (runtime events ->
+        receipt attempt row -> metric) so the trace cannot silently stop holding.
+        """
+        receipt = await _real_run_receipt(
+            repo, tmp_path, {("a", "cc/s"): "badcode"}, ["cc/s", "cx/g"]
+        )
+        node_row = receipt["nodes"][0]
+        first = node_row["attempts"][0]
+        assert first["route_id"] == "cc/s"
+        assert first["failure_category"] == "verification_failed"
+        assert first["outcome"] == "failure"
+        # The node did get there in the end, so this is not a "never finished" case.
+        assert node_row["final_state"] == "VALIDATED"
+        counts = extend_run_metrics(receipt)["first_attempt_pass_counts"]
+        assert counts["by_role"]["implement"] == {"success": 0, "eligible": 1}
+
+    async def test_worker_success_then_validation_never_finishes_is_not_a_pass(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """The worker returns ok and the validation step dies: no failure event exists.
+
+        The runtime blocks the node ("driver crash"); the attempt row keeps
+        ``outcome == "success"`` because nothing ever rejected it.  Work that was
+        never validated is not accepted work.
+        """
+        receipt = await _real_run_receipt(
+            repo, tmp_path, {}, ["cc/s", "cx/g"], explode_on_verify=True
+        )
+        node_row = receipt["nodes"][0]
+        first = node_row["attempts"][0]
+        # Precondition: the receipt really does carry a success-looking attempt on
+        # a node that never validated (otherwise this test would prove nothing).
+        assert first["outcome"] == "success"
+        assert node_row["final_state"] != "VALIDATED"
+        assert node_row["validated_by"] == []
+        counts = extend_run_metrics(receipt)["first_attempt_pass_counts"]
+        assert counts["by_role"]["implement"] == {"success": 0, "eligible": 1}
+
+    @pytest.mark.parametrize("state", ["BLOCKED", "TERMINAL_SUCCESS", "REJECTED", "RUNNING"])
+    def test_success_attempt_on_unvalidated_node_is_not_a_pass(self, state: str) -> None:
+        receipt = _make_receipt(
+            nodes=[
+                _node(
+                    "n1",
+                    "implement",
+                    final_state=state,
+                    attempts=[_attempt("sub/x", "subscription")],
+                )
+            ]
+        )
+        counts = extend_run_metrics(receipt)["first_attempt_pass_counts"]
+        assert counts["by_role"]["implement"] == {"success": 0, "eligible": 1}
+        assert counts["by_cost"]["subscription"] == {"success": 0, "eligible": 1}
+
+    def test_success_attempt_on_validated_node_still_passes(self) -> None:
+        receipt = _make_receipt(
+            nodes=[_node("n1", "implement", attempts=[_attempt("sub/x", "subscription")])]
+        )
+        counts = extend_run_metrics(receipt)["first_attempt_pass_counts"]
+        assert counts["by_role"]["implement"] == {"success": 1, "eligible": 1}
+
+
+# ---------------------------------------------------------------------------
+# #1315 finding 2: `verdict metrics <path>` reads <path>
+# ---------------------------------------------------------------------------
+
+
+def _parse_metrics(*argv: str) -> argparse.Namespace:
+    from verdict.orchestration.cli import add_parsers
+
+    parser = argparse.ArgumentParser(prog="verdict")
+    add_parsers(parser.add_subparsers(dest="command"))
+    return parser.parse_args(["metrics", *argv])
+
+
+def _run_metrics_cli(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
+    from verdict.orchestration.cli import _metrics
+
+    capsys.readouterr()
+    rc = _metrics(_parse_metrics(*argv))
+    captured = capsys.readouterr()
+    return rc, captured.out, captured.err
+
+
+def _two_run_dirs(tmp_path: Path) -> tuple[Path, Path]:
+    dir_a, dir_b = tmp_path / "runs-a", tmp_path / "runs-b"
+    _build_live_run(dir_a / "run-a", "run-a")
+    _build_live_run(dir_b / "run-b", "run-b")
+    return dir_a, dir_b
+
+
+def _reported_run_ids(stdout: str) -> list[str]:
+    return sorted(row["run_id"] for row in json.loads(stdout)["per_run"])
+
+
+class TestMetricsPathArgument:
+    def test_positional_dir_is_read_not_runs_dir(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dir_a, dir_b = _two_run_dirs(tmp_path)
+        rc, out, _ = _run_metrics_cli(
+            capsys, str(dir_a), "--since", "2026-01-01", "--runs-dir", str(dir_b), "--json"
+        )
+        assert rc == 0
+        assert _reported_run_ids(out) == ["run-a"]
+        # And the other way round, so the answer cannot come from a fixed default.
+        rc, out, _ = _run_metrics_cli(
+            capsys, str(dir_b), "--since", "2026-01-01", "--runs-dir", str(dir_a), "--json"
+        )
+        assert rc == 0
+        assert _reported_run_ids(out) == ["run-b"]
+
+    def test_positional_dir_is_read_with_daily(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dir_a, dir_b = _two_run_dirs(tmp_path)
+        rc, out, _ = _run_metrics_cli(
+            capsys, str(dir_a), "--daily", "--runs-dir", str(dir_b), "--json"
+        )
+        assert rc == 0
+        assert _reported_run_ids(out) == ["run-a"]
+
+    def test_positional_run_id_resolves_under_runs_dir(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dir_a, _ = _two_run_dirs(tmp_path)
+        _build_live_run(dir_a / "run-a2", "run-a2")
+        rc, out, _ = _run_metrics_cli(
+            capsys, "run-a2", "--since", "2026-01-01", "--runs-dir", str(dir_a), "--json"
+        )
+        assert rc == 0
+        assert _reported_run_ids(out) == ["run-a2"]
+
+    def test_no_positional_uses_runs_dir(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dir_a, dir_b = _two_run_dirs(tmp_path)
+        rc, out, _ = _run_metrics_cli(capsys, "--daily", "--runs-dir", str(dir_b), "--json")
+        assert rc == 0
+        assert _reported_run_ids(out) == ["run-b"]
+        assert dir_a.exists()
+
+    def test_positional_path_that_is_not_a_directory_is_rejected(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dir_a, _ = _two_run_dirs(tmp_path)
+        missing = tmp_path / "typo-runs"
+        rc, out, err = _run_metrics_cli(
+            capsys, str(missing), "--since", "2026-01-01", "--runs-dir", str(dir_a), "--json"
+        )
+        assert rc == 2
+        assert out == ""
+        assert str(missing) in err
+        assert "not a directory" in err
+
+
+# ---------------------------------------------------------------------------
+# #1315 finding 3: no runs directory is an empty report, exit 0
+# ---------------------------------------------------------------------------
+
+
+class TestFreshInstallIsAnEmptyReport:
+    def test_action_missing_runs_dir_is_an_empty_report(self, tmp_path: Path) -> None:
+        from verdict.actions.registry import run_action
+
+        result = run_action("headline.metric", {"runs_dir": str(tmp_path / "no-such-runs")})
+        assert result.ok
+        assert result.exit_code == 0
+        assert result.data["runs_processed"] == 0
+        assert result.data["accepted_tasks"] == 0
+        assert result.data["headline_accepted_per_paid_share"] is None
+        assert result.data["headline_accepted_per_paid_share_note"] == "no runs in selected period"
+        assert result.data["runs_dir_found"] is False
+
+    def test_cli_daily_text_exits_zero_and_says_zero_runs(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        missing = tmp_path / "fresh-install" / "runs"
+        rc, out, err = _run_metrics_cli(capsys, "--daily", "--runs-dir", str(missing))
+        assert rc == 0
+        assert err == ""
+        assert "Runs processed:   0" in out
+        assert "directory not found" in out
+        assert str(missing) in out
+
+    def test_cli_since_json_exits_zero_with_null_headline(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        missing = tmp_path / "fresh-install" / "runs"
+        rc, out, _ = _run_metrics_cli(
+            capsys, "--since", "2026-01-01", "--runs-dir", str(missing), "--json"
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["runs_processed"] == 0
+        assert data["headline_accepted_per_paid_share"] is None
+        assert data["runs_dir"] == str(missing)
+        assert data["runs_dir_found"] is False
+
+    def test_existing_empty_runs_dir_is_found(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        empty = tmp_path / "runs"
+        empty.mkdir()
+        rc, out, _ = _run_metrics_cli(capsys, "--daily", "--runs-dir", str(empty), "--json")
+        assert rc == 0
+        data = json.loads(out)
+        assert data["runs_dir_found"] is True
+        assert data["runs_processed"] == 0
+        assert "directory not found" not in json.dumps(data)
+
+    def test_runs_dir_that_is_a_file_is_an_empty_report_not_a_crash(self, tmp_path: Path) -> None:
+        from verdict.headline_metric import compute_headline_report
+
+        not_a_dir = tmp_path / "runs.txt"
+        not_a_dir.write_text("x")
+        data = compute_headline_report(not_a_dir)
+        assert data["runs_processed"] == 0
+        assert data["runs_dir_found"] is False
+
+
+# ---------------------------------------------------------------------------
+# #1315 finding 4: the receipt bytes that are verified are the bytes aggregated
+# ---------------------------------------------------------------------------
+
+
+class TestVerifiedBytesAreAggregatedBytes:
+    def test_receipt_changed_between_reads_is_never_aggregated_unverified(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Disk holds a tampered receipt at the first read and a valid one afterwards.
+
+        Two reads (aggregate, then verify) would aggregate the tampered dict
+        while verifying the valid file.  One read means the tampered bytes are
+        the ones verified, so the run is skipped.
+        """
+        from verdict.headline_metric import load_receipts_since
+        from verdict.orchestration import receipt as receipt_mod
+
+        run_dir = tmp_path / "run-race-001"
+        _build_live_run(run_dir, "run-race-001")
+        receipt_path = run_dir / "receipt.json"
+        valid_bytes = receipt_path.read_bytes()
+        tampered = json.loads(valid_bytes)
+        tampered["goal"] = "a goal the events never recorded"
+        receipt_path.write_text(json.dumps(tampered))
+
+        reads: list[str] = []
+
+        def _after_first_read() -> None:
+            if not reads:
+                receipt_path.write_bytes(valid_bytes)
+
+        orig_read_text = Path.read_text
+        orig_nofollow = receipt_mod._read_bytes_nofollow
+
+        def read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+            text = orig_read_text(self, *args, **kwargs)
+            if self == receipt_path:
+                _after_first_read()
+                reads.append("read_text")
+            return text
+
+        def read_nofollow(path: Path) -> bytes:
+            raw = orig_nofollow(path)
+            if Path(path) == receipt_path:
+                _after_first_read()
+                reads.append("nofollow")
+            return raw
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+        monkeypatch.setattr(receipt_mod, "_read_bytes_nofollow", read_nofollow)
+
+        receipts, skipped_live, fixture_skipped = load_receipts_since(tmp_path)
+
+        assert reads, "the hook never saw a read of receipt.json: this test proves nothing"
+        assert receipts == [], "a receipt that was never verified was aggregated"
+        assert skipped_live == 1
+        assert fixture_skipped == 0
+
+    def test_receipt_json_is_read_once_per_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from verdict.headline_metric import load_receipts_since
+        from verdict.orchestration import receipt as receipt_mod
+
+        run_dir = tmp_path / "run-once-001"
+        _build_live_run(run_dir, "run-once-001")
+        receipt_path = run_dir / "receipt.json"
+        reads: list[str] = []
+        orig_read_text = Path.read_text
+        orig_nofollow = receipt_mod._read_bytes_nofollow
+
+        def read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+            if self == receipt_path:
+                reads.append("read_text")
+            return orig_read_text(self, *args, **kwargs)
+
+        def read_nofollow(path: Path) -> bytes:
+            if Path(path) == receipt_path:
+                reads.append("nofollow")
+            return orig_nofollow(path)
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+        monkeypatch.setattr(receipt_mod, "_read_bytes_nofollow", read_nofollow)
+
+        receipts, skipped_live, _ = load_receipts_since(tmp_path)
+        assert len(receipts) == 1
+        assert skipped_live == 0
+        assert len(reads) == 1, f"receipt.json was read {len(reads)} times: {reads}"
+
+    def test_receipt_symlink_is_skipped_not_followed(self, tmp_path: Path) -> None:
+        """Same O_NOFOLLOW rule as the runs API: a symlinked receipt is never trusted."""
+        from verdict.headline_metric import load_receipts_since
+
+        real = tmp_path / "elsewhere"
+        _build_live_run(real, "run-link-001")
+        runs = tmp_path / "runs"
+        (runs / "run-link-001").mkdir(parents=True)
+        for name in ("events.jsonl", "graph.json", "review.json"):
+            (runs / "run-link-001" / name).write_bytes((real / name).read_bytes())
+        (runs / "run-link-001" / "receipt.json").symlink_to(real / "receipt.json")
+
+        receipts, skipped_live, _ = load_receipts_since(runs)
+        assert receipts == []
+        assert skipped_live == 1
+
+    def test_unreadable_events_log_skips_the_run_instead_of_aborting_the_report(
+        self, tmp_path: Path
+    ) -> None:
+        """events.jsonl that opens but cannot be read (a directory) is one skipped run."""
+        from verdict.headline_metric import load_receipts_since
+
+        broken = tmp_path / "run-broken-events"
+        _build_live_run(broken, "run-broken-events")
+        (broken / "events.jsonl").unlink()
+        (broken / "events.jsonl").mkdir()
+        good = tmp_path / "run-good"
+        _build_live_run(good, "run-good")
+
+        receipts, skipped_live, _ = load_receipts_since(tmp_path)
+        assert [path.name for path, _ in receipts] == ["run-good"]
+        assert skipped_live == 1
+
+    def test_receipt_json_that_is_a_directory_is_skipped(self, tmp_path: Path) -> None:
+        from verdict.headline_metric import load_receipts_since
+
+        (tmp_path / "run-dir-receipt" / "receipt.json").mkdir(parents=True)
+        receipts, skipped_live, _ = load_receipts_since(tmp_path)
+        assert receipts == []
+        assert skipped_live == 1

@@ -57,23 +57,33 @@ def load_receipts_since(
     - ``skipped_live`` is the number of live runs skipped due to verification failures.
     - ``fixture_skipped`` is the number of fixture runs excluded.
 
-    ``repair=False`` is used throughout so this read-only report never modifies
-    evidence on disk (e.g. truncating a torn events.jsonl tail).
+    A *runs_dir* that is not a directory (a fresh install has none) yields an
+    empty result, not an error.
+
+    Each run's ``receipt.json`` and ``events.jsonl`` are read once, without
+    following symlinks, and those same bytes are both verified and aggregated:
+    the returned dict is parsed from the bytes ``verify_run_receipt_from_bytes``
+    checked, never from a second read of the file.  ``graph.json`` and
+    ``review.json`` are read by the verifier's rebuild, exactly as the runs API
+    does.  Nothing is ever written, so a torn ``events.jsonl`` tail is skipped
+    and left as it is.
     """
-    from verdict.orchestration.receipt import verify_run_receipt
+    from verdict.orchestration.contracts import OrchestrationError
+    from verdict.orchestration.receipt import _read_bytes_nofollow, verify_run_receipt_from_bytes
 
     receipts: list[tuple[Path, dict[str, Any]]] = []
     skipped_live = 0
     fixture_skipped = 0
 
-    if not runs_dir.exists():
+    if not runs_dir.is_dir():
         return receipts, skipped_live, fixture_skipped
 
     for receipt_path in sorted(runs_dir.rglob("receipt.json")):
         run_dir = receipt_path.parent
         try:
-            raw = json.loads(receipt_path.read_text())
-        except (OSError, ValueError):
+            receipt_bytes = _read_bytes_nofollow(receipt_path)
+            raw = json.loads(receipt_bytes)
+        except (OrchestrationError, OSError, ValueError):
             skipped_live += 1
             continue
 
@@ -98,9 +108,16 @@ def load_receipts_since(
                 except ValueError:
                     pass  # fall through — include if we can't parse
 
-        # repair=False: never modify evidence on disk.
-        problems = verify_run_receipt(run_dir, repair=False)
-        if problems:
+        # Verify the bytes already in hand.  A missing or unreadable
+        # events.jsonl is reported by the verifier as a problem.
+        events_bytes: bytes | None
+        try:
+            events_bytes = _read_bytes_nofollow(run_dir / "events.jsonl")
+        except (OrchestrationError, OSError):
+            # _read_bytes_nofollow wraps only the open; a file that opens but
+            # cannot be read (a directory) raises a bare OSError.
+            events_bytes = None
+        if verify_run_receipt_from_bytes(receipt_bytes, events_bytes, run_dir):
             skipped_live += 1
             continue
 
@@ -355,6 +372,8 @@ def compute_headline_report(runs_dir: Path, since: date | None = None) -> dict[s
     - ``fixture_runs_excluded``: count of fixture runs excluded
     - ``live_runs_skipped``: count of live runs with verification problems
     - ``since``: the date filter applied (ISO string or null)
+    - ``runs_dir`` / ``runs_dir_found``: the directory read and whether it is a
+      directory; a missing one is an empty report, not an error
     - ``headline_accepted_per_paid_share``: float when computable, else null
     - ``headline_accepted_per_paid_share_note``: null when computable,
       else a string explaining why the value is unavailable
@@ -372,6 +391,10 @@ def compute_headline_report(runs_dir: Path, since: date | None = None) -> dict[s
         "fixture_runs_excluded": fixture_skipped,
         "live_runs_skipped": skipped_live,
         "since": since.isoformat() if since else None,
+        # Which directory was read, and whether it exists: a missing directory
+        # is an empty report (fresh install), so the report must say so.
+        "runs_dir": str(runs_dir),
+        "runs_dir_found": runs_dir.is_dir(),
         "headline_accepted_per_paid_share": headline_value,
         "headline_accepted_per_paid_share_note": headline_note,
     }
@@ -387,6 +410,8 @@ def format_headline_report(data: dict[str, Any]) -> str:
         lines.append("M0 Headline Metric Report  (all runs)")
     lines.append("=" * 60)
 
+    if data.get("runs_dir_found") is False:
+        lines.append(f"Runs directory not found: {data.get('runs_dir')}  (empty report)")
     runs = data.get("runs_processed", 0)
     skipped = data.get("live_runs_skipped", 0)
     fixtures = data.get("fixture_runs_excluded", 0)
