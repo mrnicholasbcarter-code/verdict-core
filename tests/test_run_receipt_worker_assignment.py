@@ -128,10 +128,44 @@ def test_an_unreadable_serve_receipt_is_null_with_a_reason_never_a_clean_attempt
     assert serve["requirement_waivers"] is None
 
 
+def _with_status(status: Any) -> dict[str, Any]:
+    record = assignment_record()
+    record["serve_receipts"]["status"] = status
+    return record
+
+
 @pytest.mark.parametrize(
     "bad",
-    ["a string", ["a", "list"], 7, None, {}, {"serve_receipts": "x"}],
-    ids=["str", "list", "int", "none", "empty", "serve-not-a-mapping"],
+    [
+        "a string",
+        ["a", "list"],
+        7,
+        None,
+        {},
+        {"serve_receipts": "x"},
+        _with_status([]),
+        _with_status({}),
+        _with_status(7),
+        _with_status(None),
+        _with_status("unknown"),
+        {"assignment_digest": [], "serve_receipts": assignment_record()["serve_receipts"]},
+        {"assignment_digest": {}, "serve_receipts": assignment_record()["serve_receipts"]},
+    ],
+    ids=[
+        "str",
+        "list",
+        "int",
+        "none",
+        "empty",
+        "serve-not-a-mapping",
+        "status-list",
+        "status-dict",
+        "status-int",
+        "status-none",
+        "status-unknown",
+        "digest-list",
+        "digest-dict",
+    ],
 )
 def test_a_malformed_record_is_not_projected_as_evidence(tmp_path: Path, bad: Any) -> None:
     (attempt,) = attempts_of(run_with(tmp_path, [{"worker_assignment": bad}]))

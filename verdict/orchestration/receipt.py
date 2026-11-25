@@ -353,7 +353,12 @@ def _worker_assignment_row(raw: Any) -> dict[str, Any] | None:
     digest, serve = raw.get("assignment_digest"), raw.get("serve_receipts")
     if not isinstance(digest, str) or not _SHA256_HEX.fullmatch(digest):
         return None
-    if not isinstance(serve, Mapping) or serve.get("status") not in _SERVE_RECEIPT_STATUSES:
+    if not isinstance(serve, Mapping):
+        return None
+    status = serve.get("status")
+    # A string first: an unhashable value (a list, a dict) must be dropped like any malformed
+    # record, not raise out of the set membership test and abort the receipt.
+    if not isinstance(status, str) or status not in _SERVE_RECEIPT_STATUSES:
         return None
     waivers: list[dict[str, str]] | None = None
     raw_waivers = serve.get("requirement_waivers")
@@ -373,7 +378,7 @@ def _worker_assignment_row(raw: Any) -> dict[str, Any] | None:
     return {
         "assignment_digest": digest,
         "serve_receipts": {
-            "status": serve["status"],
+            "status": status,
             "reason": scrub_secrets(reason)[:_MAX_REASON_CHARS]
             if isinstance(reason, str)
             else None,

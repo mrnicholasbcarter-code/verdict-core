@@ -30,11 +30,17 @@ def _digest(name: str) -> str:
     return hashlib.sha256(name.encode()).hexdigest()
 
 
+#: A waiver field that is present and JSON ``null`` (``None`` leaves the field out).
+JSON_NULL = object()
+
+
 def _root(digest: str | None, waivers: Any = None) -> dict[str, Any]:
     receipt: dict[str, Any] = {}
     if digest is not None:
         receipt["worker_assignment"] = {"assignment_digest": digest, "route_id": "r/m"}
-    if waivers is not None:
+    if waivers is JSON_NULL:
+        receipt["requirement_waivers"] = None
+    elif waivers is not None:
         receipt["requirement_waivers"] = waivers
     return {"routing_decision": {"receipt": receipt}}
 
@@ -162,15 +168,42 @@ def test_a_damaged_row_does_not_hide_the_good_ones(db: Db) -> None:
 
 @pytest.mark.parametrize(
     "bad",
-    ['"streaming"', '{"requirement": "streaming"}', "[1]", '[{"requirement": 3, "reason": "x"}]'],
+    [
+        "streaming",
+        "[]",  # the JSON string "[]", not an array: json_extract returns the same text for both
+        "null",
+        "",
+        7,
+        0,
+        True,
+        False,
+        {"requirement": "streaming"},
+        [1],
+        [{"requirement": 3, "reason": "x"}],
+        [{"requirement": "streaming"}],
+        [["streaming", "x"]],
+    ],
+    ids=[
+        "string",
+        "string-empty-array-text",
+        "string-null-text",
+        "empty-string",
+        "int",
+        "zero",
+        "true",
+        "false",
+        "object",
+        "array-of-int",
+        "array-wrong-types",
+        "array-missing-reason",
+        "array-of-array",
+    ],
 )
 def test_a_waiver_record_that_is_not_a_list_of_waivers_makes_the_read_unavailable(
-    db: Db, bad: str
+    db: Db, bad: Any
 ) -> None:
-    import json
-
     mine = _digest("mine")
-    db.put(mine, json.loads(bad))
+    db.put(mine, bad)
     result = _read(db, mine)
     assert result["status"] == "unavailable"
     assert result["requests"] is None and result["requirement_waivers"] is None
@@ -285,3 +318,13 @@ def test_the_digest_and_the_mark_are_the_only_inputs_and_no_row_is_returned(db: 
     result = _read(db, mine)
     assert set(result) == {"status", "reason", "requests", "requests_waived", "requirement_waivers"}
     assert "run_id" not in str(result) and "node_id" not in str(result)
+
+
+def test_a_waiver_field_that_is_missing_or_json_null_is_no_waiver_not_unavailable(db: Db) -> None:
+    mine = _digest("mine")
+    db.put(mine)  # no field
+    db.put(mine, JSON_NULL)  # the field, null
+    db.put(mine, [])  # the field, an empty array
+    result = _read(db, mine)
+    assert (result["status"], result["requests"], result["requests_waived"]) == ("read", 3, 0)
+    assert result["requirement_waivers"] == []

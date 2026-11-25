@@ -49,7 +49,8 @@ _PROGRESS_STEPS = 1000
 
 #: Constant text, no value is ever formatted into it: the digest, the mark and the limit are bound.
 _MATCHING_ROOTS_SQL = """
-    SELECT json_extract(payload_json, '$.routing_decision.receipt.requirement_waivers')
+    SELECT json_type(payload_json, '$.routing_decision.receipt.requirement_waivers'),
+           json_extract(payload_json, '$.routing_decision.receipt.requirement_waivers')
     FROM receipts
     WHERE rowid > ? AND receipt_type = 'decision' AND parent_receipt_id IS NULL
       AND CASE WHEN json_valid(payload_json)
@@ -125,16 +126,22 @@ def _unavailable(reason: str) -> dict[str, Any]:
     }
 
 
-def _distinct_waivers(raw: str | None) -> list[dict[str, str]] | None:
-    """The waivers one root records, or ``None`` when the record is not a list of waivers."""
-    if raw is None:
+def _distinct_waivers(kind: str | None, raw: Any) -> list[dict[str, str]] | None:
+    """The waivers one root records, or ``None`` when the record is not a list of waivers.
+
+    ``kind`` is SQLite's ``json_type`` of the stored value: ``json_extract`` hands back a JSON
+    string, number or boolean as plain SQL text or a number, so the text of the string ``"[]"``
+    would read as an empty list, and a number would not be text at all.  Only a stored array is
+    read; a missing field or a JSON null is no waiver; every other type is malformed.
+    """
+    if kind is None or kind == "null":
         return []
+    if kind != "array" or not isinstance(raw, str):
+        return None
     try:
         decoded = json.loads(raw)
     except ValueError:
         return None
-    if decoded is None:
-        return []
     if not isinstance(decoded, list):
         return None
     found: list[dict[str, str]] = []
@@ -180,8 +187,8 @@ def read_assignment_evidence(mark: EvidenceMark, digest: str) -> dict[str, Any]:
         )
     distinct: list[dict[str, str]] = []
     waived = 0
-    for (raw,) in rows:
-        waivers = _distinct_waivers(raw)
+    for kind, raw in rows:
+        waivers = _distinct_waivers(kind, raw)
         if waivers is None:
             return _unavailable(
                 "a serve receipt holds a waiver record that is not a list of waivers"

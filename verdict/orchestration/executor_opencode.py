@@ -950,6 +950,20 @@ class OpenCodeExecutor:
             return self._opencode_bin
         return _opencode_binary(self._base_env())
 
+    def _mark_receipts(self) -> EvidenceMark:
+        """Where serve's receipt database stands before the worker starts.  Blocking; never raises.
+
+        Finding the database reads ``serve.env`` and a custom provider can fail, so both happen
+        here, in a thread, and a failure is a reason the run receipt shows, never a reason to
+        stop an attempt that has not started.
+        """
+        try:
+            return take_mark(self._receipts_db())
+        except Exception as exc:
+            return EvidenceMark(
+                None, 0, f"serve's receipt database cannot be located ({type(exc).__name__})"
+            )
+
     def _receipts_db(self) -> Path | str | None:
         """Serve's receipt database: the injected provider, else the environment or serve.env."""
         if self._receipts_db_provider is not None:
@@ -1244,7 +1258,10 @@ class OpenCodeExecutor:
             # Where serve's receipt database stands before the worker can make a request: only
             # later rows can be this attempt's (read-only; a database that cannot be read is a
             # reason the run receipt shows, not a reason to stop the attempt).
-            attempt.mark = await _to_thread_joined(take_mark, self._receipts_db())
+            attempt.mark = await _to_thread_joined(self._mark_receipts)
+            if timeout_seconds - (time.monotonic() - started) <= 0:
+                # The mark can wait on a lock; if it spent the rest of the budget nothing is spawned.
+                return self._failure(route_id, started, "timeout")
 
             # ``--model verdict/<route_id>`` selects provider "verdict" and the
             # exact route registered in the per-attempt config (Task 2.2/2.3).  The message

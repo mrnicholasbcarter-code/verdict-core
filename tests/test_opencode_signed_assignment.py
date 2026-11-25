@@ -620,3 +620,36 @@ def test_an_attempt_that_never_launched_a_worker_has_no_assignment_record(tmp_pa
         executor_module._check_serve = executor_module_check
     assert terminal.error.startswith("harness_configuration:")
     assert not ran.exists() and terminal.worker_assignment is None
+
+
+def test_a_receipt_database_resolver_that_raises_does_not_stop_the_attempt(tmp_path: Path) -> None:
+    def boom() -> Path:
+        raise RuntimeError(f"detail {SERVE_TOKEN}")
+
+    binary, seen = recording_worker(tmp_path)
+    terminal = go(executor(binary, receipts_db_provider=boom), workdir(tmp_path))
+    assert terminal.ok, terminal  # the worker ran and its edit would have counted
+    assert seen.read_text().startswith("vwa1.")
+    serve = terminal.worker_assignment["serve_receipts"]  # type: ignore[index]
+    assert serve["status"] == "unavailable" and "RuntimeError" in serve["reason"]
+    assert serve["requests"] is None and SERVE_TOKEN not in json.dumps(terminal.worker_assignment)
+
+
+def test_a_mark_that_uses_up_the_budget_launches_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mark can wait on a lock for a second; an attempt it has run out of time does not start."""
+    import time
+
+    def slow_mark(path: Any) -> Any:
+        time.sleep(1.2)
+        return executor_module.EvidenceMark(None, 0, "slow")
+
+    monkeypatch.setattr(executor_module, "take_mark", slow_mark)
+    binary, ran = marker_worker(tmp_path)
+    cwd = workdir(tmp_path)
+    terminal = go(executor(binary), cwd, timeout=1.0)
+    assert terminal.ok is False and terminal.error == "timeout"
+    assert not ran.exists(), "the worker was launched after the budget was spent"
+    assert terminal.worker_assignment is None
+    assert list(cwd.iterdir()) == []
