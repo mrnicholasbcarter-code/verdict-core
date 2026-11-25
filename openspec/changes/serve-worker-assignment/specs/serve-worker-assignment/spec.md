@@ -500,7 +500,12 @@ content: message content a client sends is forwarded verbatim. The lane's receip
 the persisted routing attempt id for an admitted decision, SHALL be derived from an unambiguous
 (injective) encoding of the route id, the profile digest, the run id and the node id, so that
 assignments whose ids differ, including ids that contain a delimiter character such as `|`, never
-produce the same hash input.
+produce the same hash input. A denied lane decision that persists a routing receipt SHALL carry a
+receipt id of its own, set before it is persisted, derived from the same kind of encoding of the
+signed route, run and node ids, the profile digest, the assignment's payload digest and the code of
+the check that dropped the route, with a tag that differs from an admitted decision's: denials of
+different runs, nodes, routes or attempts never share a persisted root, and a denial and an
+admission of one assignment never do.
 
 #### Scenario: Receipts name the run and node
 
@@ -513,6 +518,16 @@ produce the same hash input.
   node ids (`a|b`, `c`) and (`a`, `b|c`), and again with (`a","b`, `c`) and (`a`, `b","c`)
 - **THEN** the lane's receipt ids differ within each pair, the persisted routing attempt ids
   differ with them, and the same assignment sent twice gets the same receipt id both times
+
+#### Scenario: Denied assignments keep their own persisted roots
+
+- **WHEN** two assignments that differ in the node id (or the run id, the route, or the signing
+  of a new attempt) are each denied, whether by the narrowing, the capability gate, the
+  eligibility gate or the defence-in-depth refusal, and again for one assignment denied by two
+  different checks
+- **THEN** each denial persists its own routing root, each root names its own assignment, the
+  denied decision's receipt id is that root's attempt id, and no upstream call is made; the same
+  assignment denied the same way twice keeps one root
 
 #### Scenario: A secret never appears
 

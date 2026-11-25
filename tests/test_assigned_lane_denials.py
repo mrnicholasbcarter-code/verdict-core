@@ -8,6 +8,7 @@ fail the test if they run: a lane denial must not reach the legacy path.
 
 from __future__ import annotations
 
+import dataclasses
 import random
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -542,3 +543,243 @@ def test_a_decision_is_denied_when_the_receipt_holds_more_than_the_signed_route(
     assert decision.decision == "denied"
     assert decision.model == NO_ELIGIBLE_TARGET and decision.admission_proofs == {}
     assert decision.alternatives == []
+
+
+# --- a denial persists its own routing root: one per assignment, never one per route ------------
+#
+# The routing receipt's attempt id is the receipt id when one is set.  A denial used to persist
+# with none, so every assigned denial fell back to a hash of the constant task class and shared
+# one scope and one idempotency key: ``persist_routing_receipt`` returned the first root, and
+# every later denied node lost its own evidence and attribution.
+
+
+def persisted_roots(store: ReceiptStore) -> list[Any]:  # noqa: F811
+    return [
+        row
+        for row in store.query_receipts(receipt_type="decision", limit=1000)
+        if not row.parent_receipt_id
+    ]
+
+
+def attempt_ids(store: ReceiptStore) -> list[str]:  # noqa: F811
+    return sorted(row.payload["attempt_id"] for row in persisted_roots(store))
+
+
+#: (pinned route, build_service options): each drops the route at a different step of the lane,
+#: so every point that reaches the denied branch of ``_decision_from_admit`` is covered.
+DENIAL_POINTS: list[Any] = [
+    pytest.param("ghost/not-in-the-catalog", {}, id="narrowing-route-not-in-inventory"),
+    pytest.param(ROUTES[0], {"metadata": False}, id="no-metadata-store"),
+    pytest.param(
+        ROUTES[2],
+        {"metadata": metadata_for(ROUTES, missing=(ROUTES[2],))},
+        id="capability-gate-unmapped",
+    ),
+    pytest.param(
+        ROUTES[0],
+        {"gate": EligibilityGate(availability_source=lambda model_id: None)},
+        id="eligibility-gate-runtime-truth-absent",
+    ),
+]
+
+
+@pytest.mark.parametrize(("pinned", "options"), DENIAL_POINTS)
+def test_two_denied_nodes_persist_two_roots_each_with_its_own_assignment(
+    now: datetime,  # noqa: F811
+    store: ReceiptStore,  # noqa: F811
+    pinned: str,
+    options: dict[str, Any],
+) -> None:
+    service = build_service(now, store, **options)
+    first = route_direct(service, body_for(pinned), verified(pinned, node_id="node-a"))
+    second = route_direct(service, body_for(pinned), verified(pinned, node_id="node-b"))
+    assert first.decision == second.decision == "denied"
+    roots = persisted_roots(store)
+    assert len(roots) == 2, attempt_ids(store)
+    attempts = attempt_ids(store)
+    assert len(set(attempts)) == 2
+    assert not any(a.startswith("admit-") for a in attempts)  # the per-task fallback
+    # The id on each denied decision is the persisted attempt id, so evidence and root link up.
+    assert attempts == sorted(d.admit_receipt["receipt_id"] for d in (first, second))  # type: ignore[index]
+    # Each root names its own assignment, not the first one's.
+    named = {row.payload["extensions"]["worker_assignment"]["node_id"] for row in roots}
+    assert named == {"node-a", "node-b"}
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        pytest.param({"node_id": "n1"}, {"node_id": "n2"}, id="same-run-different-node"),
+        pytest.param({"run_id": "r1"}, {"run_id": "r2"}, id="same-node-different-run"),
+        pytest.param(
+            {"run_id": "a|b", "node_id": "c"},
+            {"run_id": "a", "node_id": "b|c"},
+            id="ids-holding-the-delimiter",
+        ),
+        pytest.param(
+            {"pinned": "ghost/one"}, {"pinned": "ghost/two"}, id="same-node-different-route"
+        ),
+        pytest.param({"ttl": 600}, {"ttl": 601}, id="same-node-a-new-assignment-for-a-new-attempt"),
+    ],
+)
+def test_a_denial_root_differs_when_any_part_of_the_assignment_differs(
+    now: datetime,  # noqa: F811
+    store: ReceiptStore,  # noqa: F811
+    first: dict[str, Any],
+    second: dict[str, Any],
+) -> None:
+    service = build_service(now, store)
+    decisions = []
+    for parts in (first, second):
+        pinned = parts.get("pinned", "ghost/one")
+        ids = {key: value for key, value in parts.items() if key != "pinned"}
+        decisions.append(route_direct(service, body_for(pinned), verified(pinned, **ids)))
+    assert [d.decision for d in decisions] == ["denied", "denied"]
+    assert len(set(attempt_ids(store))) == 2 == len(persisted_roots(store))
+
+
+def test_every_part_of_the_denial_seed_changes_the_id_and_the_encoding_is_injective() -> None:
+    """The payload digest already covers the ids, so each part is varied with the digest held.
+
+    ``replace`` keeps the digest and the seal, so one field moves at a time.  The pair at the end
+    differs only where a ``|`` join would run its two fields together.
+    """
+    base = verified("ghost/one", run_id="run-x", node_id="node-x")
+    reference = intelligence.assigned_denial_receipt_id("digest-1", base, "code-1")
+    variants = {
+        "route": intelligence.assigned_denial_receipt_id(
+            "digest-1", dataclasses.replace(base, route_id="ghost/two"), "code-1"
+        ),
+        "run": intelligence.assigned_denial_receipt_id(
+            "digest-1", dataclasses.replace(base, run_id="run-y"), "code-1"
+        ),
+        "node": intelligence.assigned_denial_receipt_id(
+            "digest-1", dataclasses.replace(base, node_id="node-y"), "code-1"
+        ),
+        "assignment digest": intelligence.assigned_denial_receipt_id(
+            "digest-1", dataclasses.replace(base, assignment_digest="f" * 64), "code-1"
+        ),
+        "profile digest": intelligence.assigned_denial_receipt_id("digest-2", base, "code-1"),
+        "reason code": intelligence.assigned_denial_receipt_id("digest-1", base, "code-2"),
+    }
+    for part, value in variants.items():
+        assert value != reference, part
+    assert len({reference, *variants.values()}) == len(variants) + 1
+    assert reference.startswith("vrct_") and len(reference) == 5 + 24
+    # An admitted decision's id for the same assignment and request is another id.
+    assert reference != intelligence.assigned_receipt_id("ghost/one", "digest-1", base)
+    # Adjacent seed fields (route and profile digest, run and node) that differ only where a
+    # delimiter join would run them together.
+    for left, right in (("a|b", "c"), ("a", "b|c")), (('a","b', "c"), ("a", 'b","c')):
+        pairs = [
+            intelligence.assigned_denial_receipt_id(
+                profile, dataclasses.replace(base, route_id=route), "code-1"
+            )
+            for route, profile in (left, right)
+        ]
+        assert pairs[0] != pairs[1], (left, right)
+        pairs = [
+            intelligence.assigned_denial_receipt_id(
+                "digest-1", dataclasses.replace(base, run_id=run, node_id=node), "code-1"
+            )
+            for run, node in (left, right)
+        ]
+        assert pairs[0] != pairs[1], (left, right)
+
+
+def test_the_same_assignment_denied_twice_keeps_one_root(
+    now: datetime,  # noqa: F811
+    store: ReceiptStore,  # noqa: F811
+) -> None:
+    """A repeated identical denial is idempotent, as a repeated identical admission is."""
+    service = build_service(now, store)
+    assignment = verified("ghost/one")
+    one = route_direct(service, body_for("ghost/one"), assignment)
+    two = route_direct(service, body_for("ghost/one"), assignment)
+    assert one.admit_receipt["receipt_id"] == two.admit_receipt["receipt_id"]  # type: ignore[index]
+    assert len(persisted_roots(store)) == 1
+
+
+def test_one_assignment_denied_by_two_different_checks_keeps_both_roots(
+    now: datetime,  # noqa: F811
+    store: ReceiptStore,  # noqa: F811
+) -> None:
+    """The check that dropped the route is part of the denial's identity, so the second
+    denial's evidence is not lost behind the first."""
+    pinned = "dormant/model-d"
+    assignment = verified(pinned)
+    absent = build_service(now, store)
+    inactive = build_service(now, store, extra_catalog=(pinned,), inactive=("dormant",))
+    one = route_direct(absent, body_for(pinned), assignment)
+    two = route_direct(inactive, body_for(pinned), assignment)
+    assert exclusion_codes(one, pinned) == ["route_not_in_inventory"]
+    assert exclusion_codes(two, pinned) == ["provider_inactive"]
+    # Same assignment, same request: only the dropping check differs.
+    assert one.admit_receipt["task_profile_digest"] == two.admit_receipt["task_profile_digest"]  # type: ignore[index]
+    assert len(set(attempt_ids(store))) == 2 == len(persisted_roots(store))
+
+
+def test_a_denial_and_an_admission_of_one_assignment_never_share_a_root(
+    now: datetime,  # noqa: F811
+    store: ReceiptStore,  # noqa: F811
+) -> None:
+    assignment = verified(ROUTES[0])
+    admitted = route_direct(build_service(now, store), body_for(ROUTES[0]), assignment)
+    denied = route_direct(
+        build_service(now, store, inactive=(ROUTES[0].split("/")[0],)),
+        body_for(ROUTES[0]),
+        assignment,
+    )
+    assert (admitted.decision, denied.decision) == ("selected", "denied")
+    assert len(set(attempt_ids(store))) == 2 == len(persisted_roots(store))
+
+
+def test_the_defence_in_depth_denial_persists_its_own_root_per_assignment(
+    now: datetime,  # noqa: F811
+    store: ReceiptStore,  # noqa: F811
+) -> None:
+    """The receipt holds more than the signed route: refused, and still attributed."""
+    service = build_service(now, store)
+    snapshot = service.admit_snapshot
+    receipt = admit_free_tier_active(snapshot)
+    assert len(receipt.admitted) > 1
+    decisions = [
+        service._decision_from_admit(
+            "do the work",
+            3,
+            False,
+            "",
+            receipt,
+            receipt.as_eligibility_result(snapshot),
+            endpoint=None,
+            live=False,
+            task_class="unclassified",
+            context={},
+            assignment=verified(ROUTES[0], node_id=node),
+        )
+        for node in ("node-a", "node-b")
+    ]
+    assert [d.decision for d in decisions] == ["denied", "denied"]
+    roots = persisted_roots(store)
+    assert len(roots) == 2, attempt_ids(store)
+    assert len(set(attempt_ids(store))) == 2
+    assert not any(a.startswith("admit-") for a in attempt_ids(store))
+    named = {row.payload["extensions"]["worker_assignment"]["node_id"] for row in roots}
+    assert named == {"node-a", "node-b"}
+
+
+def test_denied_nodes_through_the_relay_keep_their_roots_and_never_reach_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    now: datetime,  # noqa: F811
+    store: ReceiptStore,  # noqa: F811
+) -> None:
+    service = build_service(now, store)
+    wired = Wired(monkeypatch, tmp_path, service)
+    pinned = "ghost/not-in-the-catalog"
+    for node in ("node-a", "node-b", "node-c"):
+        response = wired.post(body_for(pinned), assigned=pinned, node_id=node)
+        assert response.status_code == 503, response.text
+    assert wired.upstream == []
+    assert all(proofs == {} for proofs in wired.minted)
+    assert len(set(attempt_ids(store))) == 3 == len(persisted_roots(store))

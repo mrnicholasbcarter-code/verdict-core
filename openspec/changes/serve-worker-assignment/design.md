@@ -335,9 +335,30 @@ Details the table leaves out:
   **Where the id must be set.** `_persist_routing_receipt_from_admit` falls back to a hash of the
   chosen route alone (`admit-` plus 16 hex characters) when `receipt.receipt_id` is empty, which is
   the same for every assignment to that route. The lane therefore sets the receipt id on the
-  admitted path before that helper is called. Denied decisions persist before any id is set, as
-  every denied decision does today, and keep that fallback; this story does not change that, so the
-  "persisted attempt id" guarantee is for admitted lane decisions.
+  admitted path before that helper is called.
+  **Denials get their own id too.** A denied lane decision persists a routing receipt as well, and
+  with no chosen route the fallback hashes the task class, which on the lane is the constant
+  `unclassified`: every denied assignment, whatever its run, node or route, would share one scope
+  and one idempotency key, `persist_routing_receipt` would return the first root for all of them,
+  and every later denial would lose its own evidence and attribution (found in review of the
+  build). The lane therefore sets a denial's receipt id before persisting, on both paths that
+  persist a lane denial: the denied branch of `_decision_from_admit` (a route dropped by the
+  narrowing or by any later step of the ladder) and the defence-in-depth refusal in
+  `_assigned_decision`. The id is `vrct_` plus the first 24 hex characters of the SHA-256 of the
+  compact JSON array `["worker-assignment-denied/v1", route_id, profile_digest, run_id, node_id,
+  assignment_digest, reason_code]` (the same encoding as the admitted id). `assignment_digest`
+  (SHA-256 of the signed payload, which holds `iat` and `exp`) gives a new assignment for a new
+  attempt of the same node its own root; `reason_code` is the code of the first named drop of the
+  pinned route (`no_named_drop` when none, `not_the_only_admitted_route` for the defence-in-depth
+  refusal), so a second, different denial of one assignment is not hidden behind the first; the
+  tag differs from the admitted tag, so a denial and an admission of one assignment never share a
+  root. The same assignment denied the same way twice gets the same id, and so one root, as a
+  repeated identical admission does. The denied receipt also names the assignment
+  (`worker_assignment`), which the narrowing already set on every path a request can take. The
+  denials that persist nothing (explicit protection, an offline service, a request that cannot be
+  profiled, no live admission) are built by `_assigned_denial` and need no id. Unpinned denials
+  keep the fallback, unchanged. So the "persisted attempt id" guarantee covers every lane decision
+  that persists a routing receipt.
 - **Recorded tier.** The decision records no computed escalation (`escalated` false, no reason,
   `protected` false) and the tier that `evidence._TIER_TO_POLICY_FLOOR` maps to `best_effort` (3),
   so evidence does not claim a floor the lane never computed.

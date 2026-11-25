@@ -254,25 +254,63 @@ LANE_CLASS_REASON = "worker_assignment:text_classification_skipped"
 LANE_WAIVER_REASON = "verified_worker_assignment"
 REASON_ROUTE_NOT_IN_INVENTORY = "route_not_in_inventory"
 LANE_PROTECTED_REASON = "protected work is never offloaded to an assigned route"
+#: Codes in a denial's receipt id for a route no named check dropped, and for a receipt that held
+#: a route other than the signed one (the defence-in-depth refusal in ``_assigned_decision``).
+LANE_NO_NAMED_DROP_CODE = "no_named_drop"
+LANE_NOT_ONLY_ROUTE_CODE = "not_the_only_admitted_route"
 #: Requirements a verified assignment waives for the capability gate.  ``streaming`` only: no
 #: route in the real metadata store carries a streaming fact, and a route that cannot stream
 #: fails upstream and recovery reroutes it.  ``tools`` is never waived.
 _LANE_WAIVABLE_REQUIREMENTS = ("streaming",)
 
 
+def _lane_receipt_id(seed: Sequence[str]) -> str:
+    """``vrct_`` plus 24 hex of a SHA-256 over one compact JSON array of strings.
+
+    The ids are free text (they may hold ``|`` or quotes), so the seed is a JSON array of
+    strings, never a delimiter join: two seeds that differ in any element can not encode alike.
+    """
+    encoded = json.dumps(list(seed), separators=(",", ":"), ensure_ascii=True)
+    return "vrct_" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+
+
 def assigned_receipt_id(
     route_id: str, profile_digest: str, assignment: VerifiedWorkerAssignment
 ) -> str:
-    """The lane's receipt id: ``vrct_`` plus 24 hex of a SHA-256 over an injective encoding.
+    """The lane's receipt id for an admitted decision, from an injective encoding of its ids.
 
-    The ids are free text (they may hold ``|`` or quotes), so the seed is one compact JSON array
-    of strings, never a delimiter join: two assignments that differ in any id can not share a
-    seed.  The id is also the persisted routing attempt id, so a collision would merge two nodes'
+    The id is also the persisted routing attempt id, so a collision would merge two nodes'
     routing attribution.
     """
-    seed = ["worker-assignment/v1", route_id, profile_digest, assignment.run_id, assignment.node_id]
-    encoded = json.dumps(seed, separators=(",", ":"), ensure_ascii=True)
-    return "vrct_" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+    return _lane_receipt_id(
+        ["worker-assignment/v1", route_id, profile_digest, assignment.run_id, assignment.node_id]
+    )
+
+
+def assigned_denial_receipt_id(
+    profile_digest: str, assignment: VerifiedWorkerAssignment, reason_code: str
+) -> str:
+    """The lane's receipt id for a denied decision: the assignment's own identity, never a constant.
+
+    A denied receipt has no chosen route, so without an id the persisted routing attempt id falls
+    back to a hash of the task class, which is the same on the lane for every denial, and the
+    store keeps only the first denial's root.  The seed holds the pinned route, the request's
+    profile digest, the run and node ids, the payload digest (so a new attempt's assignment gets
+    its own root) and the code of the check that dropped the route (so a second, different denial
+    of one assignment is not hidden behind the first).  Its tag differs from an admitted
+    decision's, so a denial and an admission of one assignment never share a root.
+    """
+    return _lane_receipt_id(
+        [
+            "worker-assignment-denied/v1",
+            assignment.route_id,
+            profile_digest,
+            assignment.run_id,
+            assignment.node_id,
+            assignment.assignment_digest,
+            reason_code,
+        ]
+    )
 
 
 def _assignment_record(assignment: VerifiedWorkerAssignment) -> dict[str, Any]:
@@ -2445,6 +2483,12 @@ class IntelligenceService:
     ) -> RoutingDecision:
         eligibility_record = eligibility.to_dict() if eligibility is not None else {}
         if receipt.empty_intersection or not receipt.chosen:
+            if assignment is not None:
+                # Before persisting: the attempt id is the receipt id when one is set, and a
+                # denial with none shares one fallback id with every other lane denial.
+                receipt = self._with_assigned_denial_id(
+                    receipt, assignment, self._assigned_denial_code(receipt, assignment)
+                )
             self._persist_routing_receipt_from_admit(
                 receipt, task_class=task_class, decision="denied", transport_outcome="not_sent"
             )
@@ -2675,12 +2719,45 @@ class IntelligenceService:
         )
 
     @staticmethod
-    def _assigned_denial_reason(
+    def _pinned_drop(
         receipt: FreeTierAdmitReceipt, assignment: VerifiedWorkerAssignment
+    ) -> NamedDrop | None:
+        """The named drop of the pinned route: the first check that removed it."""
+        pinned = assignment.route_id
+        return next((item for item in receipt.exclusions if item.model_id == pinned), None)
+
+    @classmethod
+    def _assigned_denial_code(
+        cls, receipt: FreeTierAdmitReceipt, assignment: VerifiedWorkerAssignment
+    ) -> str:
+        """The reason code of the check that dropped the pinned route (never free text)."""
+        drop = cls._pinned_drop(receipt, assignment)
+        return drop.reason if drop is not None else LANE_NO_NAMED_DROP_CODE
+
+    @staticmethod
+    def _with_assigned_denial_id(
+        receipt: FreeTierAdmitReceipt, assignment: VerifiedWorkerAssignment, reason_code: str
+    ) -> FreeTierAdmitReceipt:
+        """The denied receipt with its own id, set before the routing receipt is persisted.
+
+        The receipt also names the assignment.  The narrowing already did on every path a request
+        can take; the defence-in-depth refusal is the one that can hold a receipt it did not see.
+        """
+        return replace(
+            receipt,
+            receipt_id=assigned_denial_receipt_id(
+                receipt.task_profile_digest or "", assignment, reason_code
+            ),
+            worker_assignment=_assignment_record(assignment),
+        )
+
+    @classmethod
+    def _assigned_denial_reason(
+        cls, receipt: FreeTierAdmitReceipt, assignment: VerifiedWorkerAssignment
     ) -> str:
         """Name the check that dropped the pinned route, from its own named drop."""
         pinned = assignment.route_id
-        drop = next((item for item in receipt.exclusions if item.model_id == pinned), None)
+        drop = cls._pinned_drop(receipt, assignment)
         if drop is None:
             return f"assigned route {pinned!r} was not admitted for this request"
         detail = f" ({drop.detail})" if drop.detail else ""
@@ -2707,13 +2784,17 @@ class IntelligenceService:
         pinned = assignment.route_id
         if chosen != pinned or receipt.admitted != (pinned,):
             # Defence in depth: the lane never serves a route other than the signed one.
-            denied = replace(
-                receipt,
-                admitted=(),
-                chosen=None,
-                empty_intersection=True,
-                free_admitted=(),
-                paid_admitted=(),
+            denied = self._with_assigned_denial_id(
+                replace(
+                    receipt,
+                    admitted=(),
+                    chosen=None,
+                    empty_intersection=True,
+                    free_admitted=(),
+                    paid_admitted=(),
+                ),
+                assignment,
+                LANE_NOT_ONLY_ROUTE_CODE,
             )
             self._persist_routing_receipt_from_admit(
                 denied, task_class=task_class, decision="denied", transport_outcome="not_sent"
