@@ -1415,9 +1415,11 @@ def test_the_worker_holds_only_the_signed_assignment_and_never_the_serve_token(
         assert _SERVE_TOKEN not in json.dumps(data[surface]), f"serve token leaked into {surface}"
     assert TASK_FILE_NAME in data["config"], "the instructions file was not among the files"
 
-    holders = [name for name, value in data["env"].items() if value.startswith("vwa1.")]
-    assert holders == ["VERDICT_WORKER_API_KEY"], holders
-    token = data["env"]["VERDICT_WORKER_API_KEY"]
+    # The worker's one credential is found by what it is (an assignment-shaped value) and its
+    # name is asserted: exactly one variable holds one, and it is the one the config refers to.
+    holders = {name: value for name, value in data["env"].items() if value.startswith("vwa1.")}
+    assert list(holders) == ["VERDICT_WORKER_API_KEY"], list(holders)
+    (token,) = holders.values()
     for surface in ("argv", "config", "stdin"):
         assert token not in json.dumps(data[surface]), f"the assignment leaked into {surface}"
     assert "{env:VERDICT_WORKER_API_KEY}" in json.dumps(data["config"])

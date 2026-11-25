@@ -699,9 +699,8 @@ assignment is refused with 403.
   request carrying that attempt's own assignment digest was found there, which only the serve at
   `--serve-url` received) and then only for that file (its device and inode, not just its path:
   a file replaced, or a link retargeted, at the same path is another database) and that address.
-  In every other case, the
-  failure stays the provider's, with the provider cooldown that implies, and the attempt's receipts
-  say `unavailable`. Plainly: a signing key serve does not share, found on a run's first attempt,
+  In every other case the failure stays the provider's, with the provider cooldown that implies,
+  and the attempt's receipts say `unavailable`. Plainly: a signing key serve does not share, found on a run's first attempt,
   is not recognised as a configuration block (every attempt of that run is refused, none is
   served, nothing is ever shown), and shows as the route's provider answering `authentication
   failed`. What was shown lasts for that one `verdict orchestrate` process, and `--resume` starts
