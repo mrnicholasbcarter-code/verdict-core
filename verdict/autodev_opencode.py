@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import errno
 import hashlib
+import json
 import os
 import secrets
 import shlex
@@ -34,6 +35,8 @@ import stat
 import subprocess
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1451,4 +1454,150 @@ def _usage(terminal: WorkerTerminal) -> TokenUsage:
         prompt_tokens=reported.input_tokens or 0,
         completion_tokens=reported.output_tokens or 0,
         reported=True,
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# 5.1 readiness and the executor the CLI builds
+# --------------------------------------------------------------------------------------------
+
+#: How long the readiness check waits for ``verdict serve`` and for ``opencode --version``.
+SERVE_HEALTH_TIMEOUT_SECONDS = 5.0
+BINARY_PROBE_TIMEOUT_SECONDS = 15.0
+_SETUP_REMEDY = "run 'verdict setup --apply --allow host.serve' to create it"
+_VERSION_ECHO_CHARS = 40
+
+
+@dataclass(frozen=True)
+class Readiness:
+    """The result of the readiness check: ready, or the one check that failed and why."""
+
+    ok: bool
+    failed_check: str = ""  # "binary" | "serve" | "credentials"
+    message: str = ""
+    installed_version: str = ""
+    pinned_version: str = ""
+
+    @property
+    def version_note(self) -> str:
+        """A line naming both versions when the installed one is not the pinned one, else ``""``."""
+        if self.ok and self.installed_version and self.installed_version != self.pinned_version:
+            return (
+                f"OpenCode {self.installed_version} is installed; this build is pinned to "
+                f"{self.pinned_version}. Continuing; re-run the adapter's live check after an upgrade."
+            )
+        return ""
+
+
+def _not_ready(check: str, why: str, remedy: str) -> Readiness:
+    return Readiness(False, check, f"opencode {check} check failed: {why}; {remedy}")
+
+
+def _installed_version(text: str) -> str:
+    first = (text.strip().splitlines() or [""])[0].strip()
+    first = "".join(ch for ch in first if ch.isprintable())
+    if first[:1] in ("v", "V") and first[1:2].isdigit():
+        first = first[1:]
+    return first.split()[0][:_VERSION_ECHO_CHARS] if first else ""
+
+
+def check_opencode_readiness(
+    *,
+    env: Mapping[str, str] | None = None,
+    serve_token_provider: Callable[[], str | None] | None = None,
+    key_provider: Callable[[], bytes] | None = None,
+) -> Readiness:
+    """Check, before any probe or model call, what an OpenCode unit needs (design D9).
+
+    In order: the opencode binary resolves and runs ``--version``; ``verdict serve`` answers
+    ``GET /health`` with 200 and ``"engine": "verdict"``; the serve token resolves and the worker
+    signing key is readable (each read-only; no value is read into a message).  The first failure
+    is returned with one message naming the check and the remedy.  A version other than the pinned
+    one does not fail the check: it is carried in the result.
+    """
+    from verdict.http_safety import open_no_redirect
+    from verdict.orchestration.executor_opencode import PINNED_VERSION, _opencode_binary, _probe_env
+    from verdict.serve_service import ServeServiceError, resolve_serve_origin, resolve_serve_token
+    from verdict.worker_assignment import load_assignment_key
+
+    base_env = dict(os.environ if env is None else env)
+
+    binary = _opencode_binary(base_env)
+    resolved = shutil.which(binary) if os.sep not in binary else binary
+    install = "install opencode or set VERDICT_OPENCODE_BIN to its path"
+    if not resolved or not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
+        return _not_ready("binary", f"not found or not executable at {binary!r}", install)
+    try:
+        done = subprocess.run(
+            [resolved, "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=BINARY_PROBE_TIMEOUT_SECONDS,
+            env=_probe_env(base_env),
+            check=False,
+            start_new_session=True,
+        )
+    except subprocess.TimeoutExpired:
+        return _not_ready("binary", "`--version` timed out", install)
+    except OSError as exc:
+        return _not_ready("binary", f"not runnable ({type(exc).__name__})", install)
+    if done.returncode != 0:
+        return _not_ready("binary", f"`--version` exited {done.returncode}", install)
+    version = _installed_version(done.stdout or done.stderr or "")
+
+    start = "start it with 'verdict serve' (or run 'verdict setup') and set VERDICT_SERVE_URL if it is elsewhere"
+    try:
+        origin = resolve_serve_origin(None, base_env)
+    except ServeServiceError as exc:
+        return _not_ready("serve", str(exc), "fix the address")
+    try:
+        request = urllib.request.Request(
+            f"{origin}/health", headers={"Accept": "application/json"}, method="GET"
+        )
+        with open_no_redirect(request, timeout=SERVE_HEALTH_TIMEOUT_SECONDS) as response:
+            status = response.status
+            body = response.read(65536)
+    except urllib.error.HTTPError as exc:
+        return _not_ready("serve", f"{origin} answered HTTP {exc.code} to GET /health", start)
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+        return _not_ready("serve", f"{origin} is unreachable ({type(exc).__name__})", start)
+    try:
+        engine = json.loads(body).get("engine") if status == 200 else None
+    except (ValueError, AttributeError):
+        engine = None
+    if status != 200 or engine != "verdict":
+        return _not_ready(
+            "serve",
+            f"{origin} did not answer GET /health as Verdict serve (HTTP {status}, engine "
+            f"{str(engine)[:40]!r})",
+            start,
+        )
+
+    resolve_token = serve_token_provider or (
+        lambda: (resolve_serve_token(base_env) or ("", ""))[0] or None
+    )
+    if not resolve_token():
+        return _not_ready("credentials", "the serve token does not resolve", _SETUP_REMEDY)
+    try:
+        (key_provider or load_assignment_key)()
+    except Exception:
+        return _not_ready(
+            "credentials", "the worker signing key is missing or unreadable", _SETUP_REMEDY
+        )
+    return Readiness(True, installed_version=version, pinned_version=PINNED_VERSION)
+
+
+def build_opencode_unit_executor(repo: Path, *, model: str) -> OpenCodeUnitExecutor:
+    """The one place the CLI builds an OpenCode unit executor (design D10).
+
+    The OpenCode executor resolves its own credentials (the signing key and the serve token for
+    its readiness check); this module never reads, stores or records them, so #1313 changes only
+    this function.
+    """
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
+    from verdict.serve_service import resolve_serve_origin
+
+    return OpenCodeUnitExecutor(
+        repo, OpenCodeExecutor(), model=model, base_url=resolve_serve_origin()
     )

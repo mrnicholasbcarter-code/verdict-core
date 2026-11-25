@@ -8,10 +8,15 @@ runner, and every test runs in a temporary home: nothing here calls a model, a p
 
 from __future__ import annotations
 
+import http.server
 import json
 import os
+import stat
 import subprocess
 import sys
+import textwrap
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -567,3 +572,490 @@ class TestPreflightHook:
         )
         assert [o.tier for o in report.outcomes] == ["model"]
         assert report.outcomes[0].verified, report.summary()
+
+
+# ------------------------------------------------------------------------------------------
+# 5. the CLI: the readiness check and the flag
+# ------------------------------------------------------------------------------------------
+
+GATEWAY = "http://127.0.0.1:20128/v1"
+
+
+class FakeServe:
+    """A loopback stand-in for ``verdict serve`` that records every request it receives."""
+
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+        self.requests: list[str] = []
+        self.release = threading.Event()
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                outer.requests.append(f"GET {self.path}")
+                if outer.mode == "hang":
+                    outer.release.wait(10)
+                    return
+                status, body = {
+                    "ok": (200, b'{"status": "healthy", "engine": "verdict"}'),
+                    "not_verdict": (200, b'{"status": "healthy", "engine": "something-else"}'),
+                    "not_json": (200, b"hello"),
+                    "unavailable": (503, b'{"engine": "verdict"}'),
+                }[outer.mode]
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args: Any) -> None:
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.origin = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self) -> None:
+        self.release.set()
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture
+def serve_factory() -> Iterator[Any]:
+    started: list[FakeServe] = []
+
+    def make(mode: str = "ok") -> FakeServe:
+        fake = FakeServe(mode)
+        started.append(fake)
+        return fake
+
+    yield make
+    for fake in started:
+        fake.close()
+
+
+def fake_binary(tmp_path: Path, *, version: str = "2.3.2", exit_code: int = 0) -> str:
+    script = tmp_path / "fake-opencode"
+    script.write_text(f"#!/bin/sh\necho {version}\nexit {exit_code}\n")
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    return str(script)
+
+
+def make_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    serve_origin: str,
+    *,
+    binary: str | None = None,
+    token: bool = True,
+    key: bool = True,
+) -> None:
+    """The environment of a host where opencode, serve and its credentials are all in place."""
+    monkeypatch.setenv("VERDICT_OPENCODE_BIN", binary or fake_binary(tmp_path))
+    monkeypatch.setenv("VERDICT_SERVE_URL", serve_origin)
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+    if token:
+        monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "serve-token-for-the-fake")
+    if key:
+        from verdict import worker_assignment as wa
+
+        path = wa.assignment_key_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(wa.generate_assignment_key())
+
+
+class Forbidden:
+    """Patched over the things a failed readiness check must never reach."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import verdict.autodev_run as autodev
+        import verdict.decomposer as decomposer
+
+        self.calls: list[str] = []
+
+        def forbid(name: str) -> Any:
+            def raiser(*_a: Any, **_k: Any) -> Any:
+                self.calls.append(name)
+                raise AssertionError(f"{name} was called")
+
+            return raiser
+
+        monkeypatch.setattr(autodev, "prepare_live_autodev", forbid("prepare_live_autodev"))
+        monkeypatch.setattr(
+            autodev, "prepare_live_autodev_selected", forbid("prepare_live_autodev_selected")
+        )
+        monkeypatch.setattr(autodev, "run_autodev", forbid("run_autodev"))
+        monkeypatch.setattr(autodev, "PatchExecutor", forbid("PatchExecutor"))
+        monkeypatch.setattr(decomposer.Decomposer, "decompose", forbid("decompose"))
+
+
+def call_cli(repo: Path, **kwargs: Any) -> None:
+    import verdict.cli as cli
+
+    defaults: dict[str, Any] = {
+        "orchestrator_model": None,
+        "executor_model": None,
+        "base_url": None,
+        "allow_live": True,
+        "worker_harness": "opencode",
+    }
+    defaults.update(kwargs)
+    cli.cmd_autodev("fix it", str(repo), **defaults)
+
+
+def a_decision() -> Any:
+    from tests.test_worker_launch_authority import _decision
+    from verdict.session_economics import ConcreteRoute
+
+    return _decision(
+        ConcreteRoute("cheap/model", GATEWAY, "fixture-provider", "cheap/model", "fixture", 1, True)
+    )
+
+
+class TestReadiness:
+    @pytest.mark.parametrize("how", ["missing", "version_fails"])
+    def test_opencode_binary_missing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        serve_factory: Any,
+        capsys: pytest.CaptureFixture[str],
+        how: str,
+    ) -> None:
+        serve = serve_factory("ok")
+        binary = "/nonexistent/opencode" if how == "missing" else fake_binary(tmp_path, exit_code=3)
+        make_ready(tmp_path, monkeypatch, serve.origin, binary=binary)
+        forbidden = Forbidden(monkeypatch)
+        repo = make_repo(tmp_path)
+        with pytest.raises(SystemExit) as caught:
+            call_cli(repo)
+        assert caught.value.code == 1
+        out = capsys.readouterr().out
+        assert "binary check failed" in out and "opencode readiness failed" in out
+        assert forbidden.calls == []
+        assert serve.requests == []  # the binary is checked first
+
+    @pytest.mark.parametrize("mode", ["refused", "hang", "unavailable", "not_verdict", "not_json"])
+    def test_serve_not_answering(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        serve_factory: Any,
+        capsys: pytest.CaptureFixture[str],
+        mode: str,
+    ) -> None:
+        import verdict.autodev_opencode as oc_module
+
+        if mode == "refused":
+            fake = serve_factory("ok")
+            origin = fake.origin
+            fake.close()  # nothing listens on that port any more
+            requests: list[str] = []
+        else:
+            fake = serve_factory(mode)
+            origin, requests = fake.origin, fake.requests
+        monkeypatch.setattr(oc_module, "SERVE_HEALTH_TIMEOUT_SECONDS", 0.5)
+        make_ready(tmp_path, monkeypatch, origin)
+        forbidden = Forbidden(monkeypatch)
+        with pytest.raises(SystemExit) as caught:
+            call_cli(make_repo(tmp_path))
+        assert caught.value.code == 1
+        out = capsys.readouterr().out
+        assert "serve check failed" in out
+        assert forbidden.calls == []
+        assert set(requests) <= {"GET /health"}  # no upstream request beyond the health request
+
+    @pytest.mark.parametrize("missing", ["token", "key"])
+    def test_credentials_missing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        serve_factory: Any,
+        capsys: pytest.CaptureFixture[str],
+        missing: str,
+    ) -> None:
+        serve = serve_factory("ok")
+        make_ready(
+            tmp_path, monkeypatch, serve.origin, token=missing != "token", key=missing != "key"
+        )
+        forbidden = Forbidden(monkeypatch)
+        with pytest.raises(SystemExit) as caught:
+            call_cli(make_repo(tmp_path))
+        assert caught.value.code == 1
+        out = capsys.readouterr().out
+        assert "credentials check failed" in out and "verdict setup" in out
+        assert "serve-token-for-the-fake" not in out
+        assert forbidden.calls == []
+
+    def test_readiness_runs_even_when_a_decision_is_supplied(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, serve_factory: Any
+    ) -> None:
+        make_ready(
+            tmp_path, monkeypatch, serve_factory("ok").origin, binary="/nonexistent/opencode"
+        )
+        forbidden = Forbidden(monkeypatch)
+        with pytest.raises(SystemExit) as caught:
+            call_cli(make_repo(tmp_path), execution_path_decision=a_decision())
+        assert caught.value.code == 1
+        assert forbidden.calls == []
+
+    def test_one_message_in_json_mode(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        serve_factory: Any,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        make_ready(
+            tmp_path, monkeypatch, serve_factory("ok").origin, binary="/nonexistent/opencode"
+        )
+        forbidden = Forbidden(monkeypatch)
+        with pytest.raises(SystemExit) as caught:
+            call_cli(make_repo(tmp_path), output_json=True)
+        assert caught.value.code == 1
+        lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+        assert len(lines) == 1
+        payload = json.loads(lines[0])
+        assert payload["error"] == "opencode readiness failed"
+        assert "binary" in payload["reason"] and "decomposition" not in json.dumps(payload)
+        assert forbidden.calls == []
+
+    @pytest.mark.parametrize("output_json", [False, True])
+    def test_version_differs_from_the_pinned_version(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        serve_factory: Any,
+        capsys: pytest.CaptureFixture[str],
+        output_json: bool,
+    ) -> None:
+        import verdict.autodev_run as autodev
+        from verdict.autodev_run import AutodevReport
+        from verdict.orchestration.executor_opencode import PINNED_VERSION
+        from verdict.patch_executor import TokenUsage
+
+        make_ready(
+            tmp_path,
+            monkeypatch,
+            serve_factory("ok").origin,
+            binary=fake_binary(tmp_path, version="9.9.9"),
+        )
+        seen: dict[str, Any] = {}
+
+        def fake_run(objective: str, repo_path: Path, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            return AutodevReport(
+                objective=objective,
+                repo_path=str(repo_path),
+                orchestrator_model="cheap/model",
+                executor_model="cheap/model",
+                units_planned=0,
+                outcomes=(),
+                orchestrator_usage=TokenUsage(),
+            )
+
+        monkeypatch.setattr(autodev, "run_autodev", fake_run)
+        call_cli(make_repo(tmp_path), execution_path_decision=a_decision(), output_json=output_json)
+        out = capsys.readouterr().out
+        assert "9.9.9" in out and PINNED_VERSION in out
+        assert "executor" in seen  # the run continued
+
+
+class TestFlag:
+    def test_flag_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import verdict.autodev_opencode as oc_module
+        import verdict.autodev_run as autodev
+        from verdict.autodev_run import AutodevReport
+        from verdict.patch_executor import TokenUsage
+
+        def forbid(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("an OpenCode step ran without the flag")
+
+        monkeypatch.setattr(oc_module, "check_opencode_readiness", forbid)
+        monkeypatch.setattr(oc_module, "build_opencode_unit_executor", forbid)
+        monkeypatch.setattr(oc_module, "seed_attempt_tree", forbid)
+        seen: dict[str, Any] = {}
+
+        def fake_run(objective: str, repo_path: Path, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            return AutodevReport(
+                objective=objective,
+                repo_path=str(repo_path),
+                orchestrator_model="cheap/model",
+                executor_model="cheap/model",
+                units_planned=0,
+                outcomes=(),
+                orchestrator_usage=TokenUsage(),
+            )
+
+        monkeypatch.setattr(autodev, "run_autodev", fake_run)
+        call_cli(make_repo(tmp_path), execution_path_decision=a_decision(), worker_harness=None)
+        assert "executor" not in seen  # run_autodev builds its own PatchExecutor, as before
+        assert seen["retry_routes"] == ()
+
+    def test_flag_with_dry_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import verdict.autodev_opencode as oc_module
+        import verdict.autodev_run as autodev
+        from tests.test_autodev_wiring import PLAN
+        from verdict.orchestration.contracts import CapacityClass
+        from verdict.orchestration.eligibility import EligibilityStage
+
+        def forbid(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("dry-run with the flag ran an OpenCode step")
+
+        monkeypatch.setattr(oc_module, "check_opencode_readiness", forbid)
+        monkeypatch.setattr(oc_module, "build_opencode_unit_executor", forbid)
+        monkeypatch.setattr(autodev, "run_autodev", forbid)
+        planner = _decomposer(PLAN)
+        monkeypatch.setattr("verdict.decomposer.Decomposer", lambda config: planner)
+
+        class Verdict:
+            route_id = "cheap/model"
+            capacity_class = CapacityClass.FREE
+            reached = EligibilityStage.SELECTED
+
+        class Selector:
+            def select(self, req: Any, *, now: Any) -> Any:
+                return None, (Verdict(),)
+
+            def capacity_fact(self, route_id: str) -> Any:
+                return CapacityClass.FREE, ""
+
+        monkeypatch.setattr(
+            "verdict.orchestration.eligibility_report.build_selector",
+            lambda gateway, **kwargs: Selector(),
+        )
+        call_cli(
+            make_repo(tmp_path),
+            orchestrator_model="cheap/model",
+            base_url=GATEWAY,
+            dry_run=True,
+            output_json=True,
+        )
+        assert json.loads(capsys.readouterr().out)["unit_count"] == 2
+
+    def test_flag_passes_the_isolated_executor_and_no_retry_routes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, serve_factory: Any
+    ) -> None:
+        import verdict.autodev_run as autodev
+        from verdict.autodev_run import AutodevReport
+        from verdict.patch_executor import TokenUsage
+
+        make_ready(tmp_path, monkeypatch, serve_factory("ok").origin)
+        monkeypatch.setattr("verdict.credentials_store.resolve_api_key", lambda: "fake-key")
+        candidates = (
+            {"route_id": "cheap/model", "gateway": GATEWAY, "model": "cheap/model"},
+            {"route_id": "free/other", "gateway": GATEWAY, "model": "free/other"},
+        )  # the selection probed two routes, so the default path would get a retry ladder
+        monkeypatch.setattr(
+            autodev,
+            "prepare_live_autodev_selected",
+            lambda *a, **k: (a_decision(), None, {}, candidates, ()),
+        )
+        seen: dict[str, Any] = {}
+
+        def fake_run(objective: str, repo_path: Path, **kwargs: Any) -> Any:
+            seen.update(kwargs)
+            return AutodevReport(
+                objective=objective,
+                repo_path=str(repo_path),
+                orchestrator_model="cheap/model",
+                executor_model="cheap/model",
+                units_planned=0,
+                outcomes=(),
+                orchestrator_usage=TokenUsage(),
+            )
+
+        monkeypatch.setattr(autodev, "run_autodev", fake_run)
+        call_cli(make_repo(tmp_path))
+        executor = seen["executor"]
+        assert isinstance(executor, oc.OpenCodeUnitExecutor)
+        assert executor.isolated is True and executor.config.model == "cheap/model"
+        assert seen["retry_routes"] == ()
+
+    def test_help_says_retries_and_lineage_are_not_yet_supported(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import verdict.cli as cli
+
+        monkeypatch.setattr(sys, "argv", ["verdict", "autodev", "--help"])
+        with pytest.raises(SystemExit) as caught:
+            cli.main()
+        assert caught.value.code == 0
+        text = " ".join(capsys.readouterr().out.split())
+        assert "--worker-harness {opencode}" in text
+        assert "Retries and lineage are not yet supported" in text
+
+    @pytest.mark.parametrize("flag", [[], ["--worker-harness", "opencode"]])
+    def test_dispatch_passes_the_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: list[str]
+    ) -> None:
+        import verdict.cli as cli
+
+        captured: dict[str, Any] = {}
+        monkeypatch.setattr(cli, "cmd_autodev", lambda *a, **k: captured.update(k))
+        monkeypatch.setattr(
+            sys, "argv", ["verdict", "autodev", "--objective", "x", "--repo", str(tmp_path), *flag]
+        )
+        cli.main()
+        assert captured["worker_harness"] == ("opencode" if flag else None)
+
+
+class TestEndToEnd:
+    def test_the_real_opencode_executor_runs_under_the_autodev_run_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real ``OpenCodeExecutor`` and a fake worker: the signed ids, and a clean tree."""
+        import verdict.orchestration.executor_opencode as exec_module
+        from tests import worker_assignment_helpers as sign
+        from verdict.orchestration.executor_opencode import OpenCodeExecutor
+
+        monkeypatch.setattr(exec_module, "_check_binary", lambda *a, **k: None)
+        monkeypatch.setattr(exec_module, "_check_serve", lambda *a, **k: None)
+        seen = tmp_path / "assignment.txt"
+        listing = tmp_path / "cwd-listing.txt"
+        script = tmp_path / "fake-opencode"
+        script.write_text(
+            "#!/usr/bin/env python3\nimport os\n"
+            + textwrap.dedent(
+                f"""
+                open({str(seen)!r}, "w").write(os.environ.get("VERDICT_WORKER_API_KEY", ""))
+                open({str(listing)!r}, "w").write("\\n".join(sorted(os.listdir("."))))
+                open("a.py", "w").write("x = 2\\n")
+                """
+            )
+        )
+        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+        real = OpenCodeExecutor(
+            opencode_bin=str(script),
+            serve_token_provider=lambda: "serve-token",
+            key_provider=lambda: bytes(range(32)),
+            receipts_db_provider=lambda: None,
+        )
+        repo = make_repo(tmp_path)
+        executor = isolated(repo, tmp_path, real)  # type: ignore[arg-type]
+        store = ReceiptStore(":memory:")
+        report = run_autodev(
+            "fix it",
+            repo,
+            store=store,
+            decomposer=_decomposer(plan(("u1", "a.py"))),
+            executor=executor,
+            mechanical=False,
+            runner=ScriptedRunner(),
+        )
+        assert len(report.verified) == 1, report.summary()
+        fields = sign.decode_payload(seen.read_text())
+        payload = store.query_receipts(scope=AUTODEV_SCOPE)[0].payload
+        assert fields["run_id"] == payload["attempt_run_id"]
+        assert fields["node_id"] == "u1" and fields["route_id"] == "cheap/model"
+        # The OpenCode executor wrote nothing of its own into the worker's working directory.
+        assert listing.read_text().split("\n") == [".git", "a.py", "b.py"]
+        assert git(repo, "status", "--porcelain", "--untracked-files=all") == " M a.py\n"
+        assert (repo / "a.py").read_text() == "x = 2\n"
