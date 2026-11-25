@@ -43,7 +43,7 @@ Conventions for every task:
       Evidence: the log lists `b0010c10` (OC1) and `44be580c` (#1339), the import exits 0 and prints
       `2.3.2`; design.md "Drift after #1299" records #1336, #1338 and #1339 and the adjustments to
       tasks 3 and 5 are made in this commit.
-- [ ] 1.2 Carried review finding 1, ignored owned new files (Codex on #1319). Spec scenarios
+- [x] 1.2 Carried review finding 1, ignored owned new files (Codex on #1319). Spec scenarios
       "Ignored owned new file", "Ignored and plain owned new files", "Ignored absent owned file
       refused" and "Ignored and plain absent owned files refused". Both remedies the finding offers are
       built: `preflight` refuses an owned absent path that an ignore rule matches (the policy: `git
@@ -51,6 +51,7 @@ Conventions for every task:
       a byproduct (the fail-safe). Ticked when the tests named in tasks 2.2 and 3.3 pass and each fails
       with its guard removed. Files: none of its own. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 "tests/test_autodev_opencode.py::TestDelta::test_ignored_owned_new_file" "tests/test_autodev_opencode.py::TestDelta::test_ignored_and_plain_owned_new_files" "tests/test_autodev_opencode.py::TestPreflight::test_ignored_absent_owned_file_refused" "tests/test_autodev_opencode.py::TestPreflight::test_ignored_and_plain_absent_owned_files_refused"`.
+      Evidence: `TestDelta::test_ignored_owned_new_file`, `TestDelta::test_ignored_and_plain_owned_new_files`, `TestPreflight::test_ignored_absent_owned_file_refused` and `TestPreflight::test_ignored_and_plain_absent_owned_files_refused` pass; with the owned-path precedence removed (`delta-owned-precedence-off`) or the ignored-absent refusal removed (`pre-absent-ignored-off`) they fail.
 - [x] 1.3 Carried review finding 2, created-directory identity on rollback (Codex on #1319). Spec scenario
       "Created directory replaced" and the identity rule in the restore requirement. The transfer records
       device and inode of each directory it creates; restore checks them before removing it and treats a
@@ -168,13 +169,14 @@ Conventions for every task:
       Evidence: `TestRestore` green; moving the journal append after the mutation (rename, deletion), removing the directory identity check, restoring over a user edit, reporting an unmade mutation, not removing directories, not emptying the journal and leaving a temporary file each failed their named test. `test_journal_is_emptied_at_the_start_of_each_attempt` moved to task 3.2 (it needs the executor).
 ## 3. The executor
 
-- [ ] 3.1 Prompt (D10). `build_opencode_prompt(unit)` names the objective, owned files,
+- [x] 3.1 Prompt (D10). `build_opencode_prompt(unit)` names the objective, owned files,
       verification command and context pack, and the rules (edit only owned files, run the
       command, no commit or push). Files: `verdict/autodev_opencode.py`,
       `tests/test_autodev_opencode.py`. Verify: `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py::TestPrompt`
       with `test_prompt_carries_the_context_pack_unchanged` and
       `test_prompt_never_contains_the_credential` (a credential value placed in the environment).
-- [ ] 3.2 `OpenCodeUnitExecutor.execute_unit` and the `PatchAttempt` mapping (D8). Seed, run the
+      Evidence: `TestPrompt` green; dropping the context from the prompt, or putting the credential in it, fails its named test.
+- [x] 3.2 `OpenCodeUnitExecutor.execute_unit` and the `PatchAttempt` mapping (D8). Seed, run the
       injected OpenCode executor with `route_id=config.model` and `cwd=<tree>`, take the delta,
       read it once, remove the tree, transfer (the last fallible step), and map to `applied`,
       `rejected` or `error` with the real reason; the tree is also removed in a `finally`.
@@ -199,7 +201,8 @@ Conventions for every task:
       terminal whose error text is already redacted while the credential sits in the
       environment; reason, outcome, attempt record and receipt payload contain the redacted text
       and never the credential).
-- [ ] 3.3 Owned-file precondition (D5). `OpenCodeUnitExecutor.preflight(unit)` reads
+      Evidence: `TestExecute` green (against the group 2 module the new tests all fail: 53 failed); removing the run id, the timeout bounds, the tree removal before the transfer, the journal clear, the not-ok guard, the loop check, the run-id check, the `finally` or the reported-usage rule fails its named test.
+- [x] 3.3 Owned-file precondition (D5). `OpenCodeUnitExecutor.preflight(unit)` reads
       `git status --porcelain=v1 -z --untracked-files=all`, `git ls-files -v -z -- <owned>`,
       `git check-attr -z filter ident -- <owned>` and `git check-ignore -z --stdin` in the user's repository
       (read-only: `GIT_OPTIONAL_LOCKS=0`, literal pathspecs) and returns a reason
@@ -225,7 +228,8 @@ Conventions for every task:
       the four reads: a runner whose command exits non-zero, or for `check-ignore` with a status other
       than 0 and 1, must not read as clean). Each refusal
       case asserts the repository is byte-identical and no attempt directory exists.
-- [ ] 3.4 Isolation matrix against a hostile stub worker. Each `rejected` variant compares the
+      Evidence: `TestPreflight` green; removing the status, tag, untracked, attribute, ignored-absent or fail-closed checks, or checking attributes of an absent file, fails its named test.
+- [x] 3.4 Isolation matrix against a hostile stub worker. Each `rejected` variant compares the
       user's repository before and after with the spec's byte-identical definition. Files:
       `tests/test_autodev_opencode.py`. Verify: `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py::TestMatrix`
       with `test_out_of_bounds_edits_are_rejected` (parametrised: a plain edit, a staged edit, a
@@ -238,6 +242,7 @@ Conventions for every task:
       `test_absolute_path_write_is_an_accepted_risk` is `xfail(strict=True)` on "the user's
       repository is unchanged", so closing the limit turns it red until the mark is removed.
 
+      Evidence: `TestMatrix` green (seven hostile variants, `test_no_context_file_at_all`, and the strict xfail); running git in the attempt tree, or walking `.git`, fails the planted-configuration tests.
 ## 4. `run_autodev` wiring
 
 - [ ] 4.1 Protocol, gateway check and the restore rule (D7, D8). Add the `UnitExecutor`
