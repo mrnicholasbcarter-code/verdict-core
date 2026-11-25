@@ -224,7 +224,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,server,dashboard]"
       - name: Download coverage artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: coverage-shard-*
           merge-multiple: true

@@ -183,7 +183,7 @@ jobs:
     if: always()
     timeout-minutes: 10
     steps: [checkout fetch-depth 0, python 3.13, uv, uv sync (same extras),
-            download-artifact@v7 pattern proof-shard-* (continue-on-error),
+            download-artifact@v8 pattern proof-shard-* (continue-on-error),
             uv run python scripts/proof/aggregate.py --reports . --leg-result "${{ needs.proof-shard.result }}"
                          --expected-sha "$GITHUB_SHA" --report proof-report-full.json --json,
             upload-artifact proof-report-full (if: always())]

@@ -141,7 +141,7 @@ jobs:
       - name: Download leg files
         # None, one or all legs may have uploaded; the aggregate names what is missing.
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: proof-shard-*
           # A directory of its own, so that the aggregate never scans the checkout and
