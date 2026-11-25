@@ -646,6 +646,14 @@ _SERVE_MODEL_CHECK_BODY = {
     }
 }
 _SETUP_COMMAND = "verdict setup --apply --allow host.serve"
+#: The most probe helper threads outstanding at once in this process.  A helper that is stuck (in
+#: a host-name lookup, or connecting) outlives the probe that started it, so without a bound every
+#: later attempt would add a thread until none could be started.  The attempts run at most a few
+#: at a time and a probe's helper normally ends in milliseconds, so this is never reached unless
+#: helpers are stuck; a probe that finds every place taken is unproven, which is what an
+#: unanswered probe is anyway.
+_PROBE_HELPER_LIMIT = 8
+_probe_helper_places = threading.BoundedSemaphore(_PROBE_HELPER_LIMIT)
 
 
 @dataclass(frozen=True)
@@ -775,19 +783,31 @@ def _probe_assignment(origin: str, assignment: str, timeout: float) -> _Assignme
     byte received, and does not cover looking a host name up): the request runs on a helper
     thread, this call stops waiting for it at the deadline, shuts its socket down and sets
     ``expired`` so a lookup that returns late sends nothing.  The abandoned thread ends on its
-    own (the shutdown fails its read, or the lookup returns).  Never raises: a timeout, a refused
-    connection, a cut-off answer, anything unforeseen is unproven.
+    own (the shutdown fails its read, or the lookup returns).  At most :data:`_PROBE_HELPER_LIMIT`
+    helpers are outstanding at once, so abandoned ones cannot pile up with the attempts: a probe
+    that finds every place taken, or that cannot start its helper, is unproven without a request.
+    Never raises: a timeout, a refused connection, a cut-off answer, anything unforeseen is
+    unproven.
     """
     outcome: list[tuple[int, Any]] = []
     expired = threading.Event()
     sockets: list[socket.socket] = []
 
     def work() -> None:
-        with contextlib.suppress(Exception):  # best effort: anything unforeseen proves nothing
-            outcome.append(_post_probe(origin, assignment, timeout, expired, sockets))
+        try:
+            with contextlib.suppress(Exception):  # best effort: anything unforeseen proves nothing
+                outcome.append(_post_probe(origin, assignment, timeout, expired, sockets))
+        finally:
+            _probe_helper_places.release()  # the place comes back when the helper ends, not before
 
-    helper = threading.Thread(target=work, name="verdict-assignment-probe", daemon=True)
-    helper.start()
+    if not _probe_helper_places.acquire(blocking=False):
+        return _AssignmentProbe("unproven")  # every place is held by a helper that has not ended
+    try:
+        helper = threading.Thread(target=work, name="verdict-assignment-probe", daemon=True)
+        helper.start()
+    except Exception:  # no thread could be started (a RuntimeError): the probe is best effort
+        _probe_helper_places.release()
+        return _AssignmentProbe("unproven")
     helper.join(timeout)
     if not outcome:
         expired.set()

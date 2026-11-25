@@ -392,6 +392,17 @@ cancellation SHALL complete only after the thread that ran the checks has finish
   `test_a_resolver_that_never_answers_cannot_hold_the_probe_past_its_deadline`,
   `test_a_probe_whose_connection_used_up_its_time_sends_nothing_more`)
 
+#### Scenario: Probe helpers that cannot end do not pile up
+
+- **WHEN** the probe's helper thread is stuck (a host-name lookup that never returns) and later
+  attempts probe, or a helper thread cannot be started
+- **THEN** at most a fixed number of probe helpers (8) are outstanding in the process at once; a
+  probe that finds every place taken, or whose helper cannot be started, is unproven at once
+  without sending anything, the attempt goes on exactly as before and no exception reaches it, and
+  a place comes back when its helper ends
+  (`test_repeated_probes_behind_a_stuck_lookup_leave_a_bounded_number_of_helpers`,
+  `test_a_helper_that_cannot_be_started_is_unproven_and_frees_its_place`)
+
 #### Scenario: The probe counts against the attempt's budget
 
 - **WHEN** the readiness check fails, uses up the budget, or the probe runs into the deadline, or

@@ -265,7 +265,10 @@ and, unlike a bare socket timeout, by that time as a whole: the request runs on 
 that the probe stops waiting for at the deadline (it then shuts the helper's socket down, and a
 host-name lookup that returns late sends nothing), so neither a server that sends its answer a
 byte at a time nor a resolver that never answers can hold the attempt or a cancellation (the
-readiness check, unchanged here, keeps its per-operation socket timeout), and a cancelled attempt does not start it. The block message lists what the
+readiness check, unchanged here, keeps its per-operation socket timeout). A helper stuck in a
+lookup outlives its probe, so at most 8 helpers are outstanding at once in the process: a probe
+that finds every place taken, or whose helper cannot be started, is unproven without sending
+anything, so stuck helpers cannot pile up with the attempts. A cancelled attempt does not start it. The block message lists what the
 probe cannot tell apart (different `worker-assignment.key` files or homes, clocks more than 60 s
 apart, a serve older than the signed-assignment change or anonymous) and the fix. The receipts'
 classification of a refusal mid-run is unchanged; the probe does not replace it, because a key

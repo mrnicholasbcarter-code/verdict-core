@@ -1508,6 +1508,90 @@ def test_a_resolver_that_never_answers_cannot_hold_the_probe_past_its_deadline(
     assert serve.seen == [], "the assignment was sent after the probe's time had run out"
 
 
+def probe_helper_count() -> int:
+    return sum(
+        1
+        for thread in threading.enumerate()
+        if thread.name == "verdict-assignment-probe" and thread.is_alive()
+    )
+
+
+def test_repeated_probes_behind_a_stuck_lookup_leave_a_bounded_number_of_helpers(
+    scripted: Callable[..., ScriptedServe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lookup that never returns outlives the probe that started it, so a helper per probe would
+    pile up with every attempt until no thread could be started.  Once the outstanding helpers
+    fill their places, a probe starts none and is unproven at once; the places come back as the
+    helpers end."""
+    import socket
+
+    serve = scripted(Reply(403, SERVE_REFUSAL))
+    port = serve.server.server_address[1]
+    released = threading.Event()
+    real_getaddrinfo = socket.getaddrinfo
+
+    def stuck_getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if host == "serve.resolver-test.invalid":
+            assert released.wait(timeout=30), "the test never released the resolver"
+            return real_getaddrinfo("127.0.0.1", *args, **kwargs)
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", stuck_getaddrinfo)
+    limit = executor_module._PROBE_HELPER_LIMIT
+    stuck_origin = f"http://serve.resolver-test.invalid:{port}"
+    started = time.monotonic()
+    try:
+        for _ in range(limit * 3):
+            probe = executor_module._probe_assignment(stuck_origin, an_assignment(), 0.05)
+            assert (probe.outcome, probe.reason) == ("unproven", None)
+            assert probe_helper_count() <= limit, "a probe left another helper behind"
+        assert probe_helper_count() == limit, "the places were not what held the helpers back"
+        # with every place taken a probe is unproven at once, whatever its time and its server
+        refused_at = time.monotonic()
+        full = executor_module._probe_assignment(serve.origin, an_assignment(), 30.0)
+        assert (full.outcome, full.reason) == ("unproven", None)
+        assert time.monotonic() - refused_at < 2.0
+        assert serve.seen == [], "a probe sent its request although every place was taken"
+    finally:
+        released.set()
+    assert probe_threads_gone(), "the helpers did not end once the lookup returned"
+    assert serve.seen == [], "a request was sent after its probe's time had run out"
+    assert time.monotonic() - started < 20.0
+    again = executor_module._probe_assignment(serve.origin, an_assignment(), 5.0)
+    assert again.outcome == "refused", "the places did not come back as the helpers ended"
+
+
+def test_a_helper_that_cannot_be_started_is_unproven_and_frees_its_place(
+    tmp_path: Path,
+    scripted: Callable[..., ScriptedServe],
+    real_checks: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Starting a thread can fail (the process is out of them).  The probe is best effort: that is
+    unproven, never an exception out of the attempt, and the failure leaks no place."""
+    serve = scripted(Reply(403, SERVE_REFUSAL))
+    real_start = threading.Thread.start
+
+    def cannot_start(self: threading.Thread) -> None:
+        if self.name == "verdict-assignment-probe":
+            raise RuntimeError("can't start new thread")
+        real_start(self)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(threading.Thread, "start", cannot_start)
+        for _ in range(executor_module._PROBE_HELPER_LIMIT + 2):
+            probe = executor_module._probe_assignment(serve.origin, an_assignment(), 5.0)
+            assert (probe.outcome, probe.status, probe.reason) == ("unproven", None, None)
+        binary, seen = recording_worker(tmp_path)
+        terminal = go(executor(binary, serve_base_url=serve.origin), workdir(tmp_path))
+        assert terminal.ok, terminal  # the attempt goes on as before
+        assert seen.read_text().startswith("vwa1.")
+    posted = [request for request in serve.seen if request.method == "POST"]
+    assert posted == [], "a probe was sent although its helper never started"
+    probe = executor_module._probe_assignment(serve.origin, an_assignment(), 5.0)
+    assert probe.outcome == "refused", "a failed start kept its place"
+
+
 def test_a_probe_whose_connection_used_up_its_time_sends_nothing_more(
     scripted: Callable[..., ScriptedServe], monkeypatch: pytest.MonkeyPatch
 ) -> None:

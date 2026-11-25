@@ -223,6 +223,17 @@
       earlier redirect check (301, 302 and 303 of
       `test_a_redirect_is_never_followed_so_the_assignment_goes_nowhere_else` failed when the probe
       used `urllib`'s default opener) still guards the contract, and `http.client` follows none.
+      The review of head `44ba9d01` (2026-11-25, cross-family) found that the deadline bounds the
+      caller but not the helpers: a helper stuck in a host-name lookup outlives its probe, so
+      every later attempt added a thread, and `helper.start()` could finally raise into the
+      attempt. At most 8 helpers are now outstanding in the process (a bounded semaphore: a place
+      is taken before the helper starts and given back when it ends); a probe that finds every
+      place taken, or whose helper cannot be started, is unproven without a request. Red first:
+      `test_repeated_probes_behind_a_stuck_lookup_leave_a_bounded_number_of_helpers` failed with 9
+      helpers left against a limit of 8, and `test_a_helper_that_cannot_be_started_is_unproven_and_frees_its_place`
+      with the `RuntimeError` from `start()`; both pass after the change. With a place not given
+      back after a failed start the second fails, and with one not given back when a helper ends
+      both fail.
 - [ ] (post-merge) 2.22 On installed main, after `verdict setup --apply --allow host.serve`: the
       installed serve answers `_probe_assignment` for an assignment signed with its own key 400
       (accepted), and for one signed with another key 403 (refused), with no model call and no
