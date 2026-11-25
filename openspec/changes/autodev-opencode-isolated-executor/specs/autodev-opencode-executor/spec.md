@@ -52,12 +52,15 @@ the pinned one SHALL NOT fail the check and SHALL be named in the output.
 
 For each attempt the executor SHALL create a new directory outside the repository and make
 an unshared git clone of the user's repository there, with no alternates, no hardlinked
-objects and no remote. It SHALL overlay the user's modified, deleted, staged and untracked
-non-ignored files onto the clone by copying files, and SHALL NOT write any git object, ref,
-config or hook into the user's repository. It SHALL record a manifest of the seeded tree
-before the worker starts. The attempt directory SHALL be removed on every exit path.
+objects and no remote. It SHALL overlay the user's modified, deleted, staged, renamed and
+untracked non-ignored files onto the clone by copying files, and SHALL NOT write any git
+object, ref, config or hook into the user's repository. A rename or copy reported by
+`git status -z` is two records, destination then source; the executor SHALL consume both,
+copy the destination's current working-tree bytes, and remove the source from the clone when
+the user's tree no longer has it. It SHALL record a manifest of the seeded tree before the
+worker starts. The attempt directory SHALL be removed on every exit path.
 
-#### Scenario: The clone shares nothing with the user's repository
+#### Scenario: Clone shares nothing with the repository
 - **WHEN** an attempt tree is seeded from a repository that has its own hook, local config value and `info/exclude` entry
 - **THEN** the tree has no `objects/info/alternates`, no object file with a link count above one and no remote, and contains none of the user's hook, config value or exclude entry
 
@@ -65,7 +68,15 @@ before the worker starts. The attempt directory SHALL be removed on every exit p
 - **WHEN** the user's tree has a modified tracked file, a deleted tracked file, a staged file, an untracked file and an ignored file
 - **THEN** the attempt tree holds the modified, staged and untracked contents, lacks the deleted file and lacks the ignored file, and the user's repository is byte-identical after seeding
 
-#### Scenario: Owned files hold the user's bytes
+#### Scenario: Staged rename
+- **WHEN** the user ran `git mv old.py new.py` and nothing else
+- **THEN** the attempt tree holds `new.py` with the user's bytes and no `old.py`, no record is misread as a path, and the user's repository is byte-identical after seeding
+
+#### Scenario: Staged rename whose destination was then modified
+- **WHEN** the user ran `git mv old.py new.py` and then edited `new.py`
+- **THEN** the attempt tree holds `new.py` with the edited working-tree bytes and no `old.py`, and the user's repository is byte-identical after seeding
+
+#### Scenario: Owned files hold working-tree bytes
 - **WHEN** an owned file is unmodified in the user's tree but its checkout bytes differ from the working-tree bytes (for example through an `eol` attribute)
 - **THEN** the attempt tree holds the user's working-tree bytes for that file, and the transfer check compares against those bytes
 
@@ -76,6 +87,61 @@ before the worker starts. The attempt directory SHALL be removed on every exit p
 #### Scenario: Attempt tree removed on every exit path
 - **WHEN** an attempt ends applied, rejected, with a failed or timed-out worker, with an exception, or by cancellation
 - **THEN** the attempt directory no longer exists
+
+### Requirement: An owned file SHALL be tracked and unmodified, or absent, before a worker starts
+
+The executor's transfer keeps its undo information in memory, so a process that dies after a
+file was replaced cannot undo it. To make that loss harmless, the executor SHALL refuse a unit
+when any of its owned paths is reported by `git status` (modified, staged, deleted, renamed or
+untracked) or exists and is not tracked (an ignored file), or when either of the two git reads
+(`git status` and `git ls-files`) fails. An owned path that does not exist and that git does not
+report SHALL NOT be refused, and no other file is checked. The reads are made at the
+start of the unit, before the mechanical tier; a refusal is acted on only if the mechanical tier
+then declines the unit, so an edit the mechanical tier makes to an owned file does not cause
+one. A refused unit SHALL fail with a reason that names the path and the remedy, start no
+worker, create no attempt tree, write nothing to the repository and be recorded as no model
+attempt (no attempt-ledger row, no unreported-usage entry). The default path
+(`PatchExecutor`) SHALL keep running on a modified owned file.
+
+#### Scenario: Tracked and unmodified owned file
+- **WHEN** every owned file is tracked and unmodified
+- **THEN** the unit is not refused and the worker starts
+
+#### Scenario: Modified owned file refused
+- **WHEN** an owned file has an uncommitted change in the working tree
+- **THEN** the unit fails with a reason naming the file and saying to commit or stash it, no worker starts, no attempt record is written, and the repository is byte-identical
+
+#### Scenario: Staged or deleted owned file refused
+- **WHEN** an owned file has a staged change and an unchanged working tree, or was deleted in the working tree
+- **THEN** the unit is refused as above
+
+#### Scenario: Untracked or ignored owned file refused
+- **WHEN** an owned file exists and is untracked, or exists and is ignored
+- **THEN** the unit is refused as above
+
+#### Scenario: Absent owned file accepted
+- **WHEN** an owned path does not exist and the unit is to create it
+- **THEN** the unit is not refused
+
+#### Scenario: Unowned dirty file does not refuse
+- **WHEN** a file the unit does not own has uncommitted changes
+- **THEN** the unit is not refused and the file is carried into the seed
+
+#### Scenario: Git read fails closed
+- **WHEN** `git status` or `git ls-files` exits non-zero
+- **THEN** the unit is refused with the git failure as the reason, and is not treated as clean
+
+#### Scenario: Mechanical edit does not refuse
+- **WHEN** the mechanical tier edits an owned file with `ruff --fix` and then declines the unit
+- **THEN** the unit is not refused and the worker starts on the edited file
+
+#### Scenario: Mechanical tier fixes a modified owned file
+- **WHEN** an owned file has an uncommitted change and the mechanical tier fixes and verifies the unit
+- **THEN** the unit is verified by the mechanical tier as it is today and the refusal is never acted on
+
+#### Scenario: Default path unaffected
+- **WHEN** `PatchExecutor` runs a unit whose owned file has an uncommitted change
+- **THEN** the unit runs as today, with no refusal
 
 ### Requirement: Verdict SHALL NOT run git in an attempt tree after the worker has started
 
@@ -133,7 +199,7 @@ swapping an ancestor directory for a symlink cannot redirect a read.
 - **WHEN** a worker changes only an owned file
 - **THEN** the attempt is `applied`, `changed_files` lists exactly the owned paths, and the user's tree holds the new content
 
-#### Scenario: No change
+#### Scenario: Worker makes no change
 - **WHEN** the worker ends successfully without changing any owned file
 - **THEN** the attempt is `rejected` with the reason "worker made no change to the owned files"
 
@@ -181,10 +247,14 @@ create nothing; directories SHALL be created only during the write phase, each r
 rollback as it is created. The second comparison SHALL also confirm that every held directory
 descriptor is still the directory reachable at its name, by device and inode. A refusal found
 by the read-only checks SHALL make the attempt `rejected`. A refusal or failure after the write
-phase has begun SHALL roll back every path and directory already written or created, SHALL make the attempt `error`, and its
-reason SHALL name the refused path and list any path the rollback could not restore. The
-executor SHALL refuse to run on a host whose descriptor-relative file operations it needs are
-unavailable.
+phase has begun SHALL roll back every path and directory already written or created, SHALL make
+the attempt `error`, and its reason SHALL name the refused path and list any path the rollback
+could not restore. Every file the executor writes, in the transfer and in restore, SHALL go
+through one helper that creates a uniquely named temporary file in the target directory by
+descriptor, sets its mode, renames it over the target, and unlinks the temporary file by the
+same descriptor on every failure before the rename succeeds. An unlink that itself fails SHALL
+be named in the reason and SHALL NOT replace the original error. The executor SHALL refuse to
+run on a host whose descriptor-relative file operations it needs are unavailable.
 
 #### Scenario: Owned file changed after the seed
 - **WHEN** the user edits an owned file after the seed and before the transfer
@@ -222,39 +292,116 @@ unavailable.
 - **WHEN** a transfer of three owned files fails on the second
 - **THEN** all three paths hold their prior content and the attempt is `error`
 
-### Requirement: A failed verification after a transfer SHALL restore the owned files, and restore SHALL NOT overwrite content it did not write
+#### Scenario: Temporary file removed after a failed write
+- **WHEN** the temporary-file write, the mode change or the rename fails (for example with `ENOSPC`) for an existing owned file, or for a new owned file in a directory the transfer created
+- **THEN** the attempt is `error`, and the complete user tree (every path with kind, mode and bytes) and the set of directories equal what they were before the attempt, with no temporary file and no directory left behind
 
-When `_verify` fails for an applied attempt of an executor that has a `restore` method,
-`_run_unit_once` SHALL call `restore()` and SHALL record its real result in the outcome
-reason. Restore SHALL return each transferred path to its prior bytes, mode or absence, using
-the same no-follow traversal and at-the-moment comparison as the transfer, remove directories
-it created when empty, and SHALL leave alone and name any path whose kind, executable bit or
-bytes are no longer what the transfer wrote. Restore SHALL cover only paths the transfer wrote.
-A verified unit SHALL NOT be restored. The `PatchExecutor` path SHALL be unchanged.
+#### Scenario: Temporary file removal fails too
+- **WHEN** a failed write is followed by a failing unlink of its temporary file
+- **THEN** the reason names the original failure first and the leftover temporary file second
+
+### Requirement: Every exit after a transfer other than a verified success SHALL restore the owned files, and restore SHALL NOT overwrite content it did not write
+
+For an executor that has a `restore` method, every exit from `_run_unit_once` after
+`execute_unit` was called, other than a verified success, SHALL call `restore()` exactly once
+and SHALL NOT skip it for the exit being an exception. The exits are a false `_verify` result;
+an exception from `execute_unit`, including one raised after its transfer; an exception from
+`_touched_since` or `_verify`, including any error the command runner raises that `_run` does
+not catch (for example `PermissionError`); and `KeyboardInterrupt`. `restore()` is a no-op
+when nothing was transferred. For a false result `_run_unit_once` SHALL record the real
+restore result in the outcome reason. For an exception it SHALL re-raise the original
+exception unchanged after restore; a failure inside `restore()` SHALL be caught and reported
+on standard error and SHALL NOT replace or hide the original exception. A second interrupt
+during `restore()` is not covered. The executor SHALL make the transfer the last step of
+`execute_unit` that can fail: the attempt tree is removed before it. Restore SHALL return each
+transferred path to its prior bytes, mode or absence, using the same no-follow traversal and
+at-the-moment comparison as the transfer, remove directories it created when empty, and SHALL
+leave alone and name any path whose kind, executable bit or bytes are no longer what the
+transfer wrote. Restore SHALL cover only paths the transfer wrote. A verified unit SHALL NOT
+be restored. The `PatchExecutor` path SHALL be unchanged.
 
 #### Scenario: Verification fails after an applied attempt
 - **WHEN** an owned-file change is transferred and the unit's verification command, which writes nothing to the repository, exits non-zero
 - **THEN** the repository is byte-identical to before the attempt, a pre-existing dirty unowned file is untouched, and the reason says the owned files were restored
 
-#### Scenario: The verification command writes to the repository
+#### Scenario: Verification command writes to the repository
 - **WHEN** the verification command rewrites a transferred file or creates a new file and then exits non-zero
 - **THEN** restore leaves the rewritten file as it is and names it as not restored, the new file is not removed, and the reason lists which owned paths were and were not restored
 
-#### Scenario: The user edits after the transfer
+#### Scenario: User edit after the transfer is kept
 - **WHEN** the user changes a transferred file after the transfer and verification then fails
 - **THEN** restore leaves that file as the user left it and the reason names it as not restored
 
-#### Scenario: The user changes only the mode after the transfer
+#### Scenario: User mode change after the transfer is kept
 - **WHEN** the user changes only the executable bit of a transferred file and verification then fails
 - **THEN** restore leaves that mode as the user left it and the reason names the file as not restored
 
-#### Scenario: Created files are removed
+#### Scenario: Created files and directories are removed
 - **WHEN** the transferred change created an owned file in a new directory and verification fails
 - **THEN** the file and the directory restore created are gone
 
-#### Scenario: Verified unit
+#### Scenario: Parent swapped between transfer and restore
+- **WHEN** a transferred file's parent directory is replaced by a symlink after the transfer and restore runs
+- **THEN** nothing is written through the link and the path is named as not restored
+
+#### Scenario: Restore twice
+- **WHEN** `restore()` is called a second time after a complete restore
+- **THEN** it changes nothing and reports nothing as restored
+
+#### Scenario: Verified unit is not restored
 - **WHEN** verification passes
 - **THEN** restore is not called and the change stays
+
+#### Scenario: Verification raises
+- **WHEN** an owned-file change is transferred and the command runner raises `PermissionError` during `_verify`
+- **THEN** `restore()` is called once, the repository is byte-identical to before the attempt, and the `PermissionError` propagates unchanged
+
+#### Scenario: Attribution raises
+- **WHEN** `_touched_since` raises after a transfer
+- **THEN** `restore()` is called once and the original exception propagates
+
+#### Scenario: Interrupt after the transfer
+- **WHEN** a `KeyboardInterrupt` arrives during `_verify` after a transfer
+- **THEN** `restore()` is called once, the repository is byte-identical to before the attempt, and the `KeyboardInterrupt` propagates
+
+#### Scenario: Executor raises after its transfer
+- **WHEN** `execute_unit` raises after the transfer was written
+- **THEN** `restore()` is called once and the owned files hold their prior content
+
+#### Scenario: Restore fails while an exception propagates
+- **WHEN** `_verify` raises and `restore()` then raises a different exception
+- **THEN** the exception that propagates is the original, and the restore failure is on standard error
+
+#### Scenario: Restore without a transfer
+- **WHEN** the executor's attempt was rejected or errored, so nothing was transferred, and a later step raises
+- **THEN** `restore()` changes nothing
+
+#### Scenario: Restore write failure leaves no temporary file
+- **WHEN** a restore write fails for one path
+- **THEN** that path is named as not restored, no temporary file remains and the other paths are restored
+
+### Requirement: After a process crash every owned path SHALL hold its old or its new bytes, and git SHALL be able to undo it
+
+For a unit the executor accepted, a process that dies at any point from the first temporary
+file to the end of verification (SIGKILL, SIGTERM or an uncaught crash; power loss is not
+claimed) SHALL leave every owned path holding either its complete prior bytes or the
+worker's complete bytes. The only other residue SHALL be files the transfer created, empty
+directories it created and at most one temporary file named `.verdict-transfer-*`, all in the
+owned files' own paths and directories. No other path SHALL change. Every pre-existing owned
+path was tracked and unmodified when the unit started, so `git checkout -- <path>` restores
+it. No automatic recovery runs after a crash.
+
+#### Scenario: Kill after the temporary write
+- **WHEN** the process is killed after the temporary file of the first path is written and before its rename
+- **THEN** every owned path holds its prior bytes, at most one `.verdict-transfer-*` file remains, and `git status` lists nothing else
+
+#### Scenario: Kill after the first of two renames
+- **WHEN** the process is killed after the first of two owned files was renamed into place
+- **THEN** the first holds the worker's bytes, the second its prior bytes, neither is torn, and `git checkout -- <owned paths>` followed by removing the created files and empty directories leaves the repository byte-identical to before the attempt
+
+#### Scenario: Kill after the last rename
+- **WHEN** the process is killed after the last rename and before verification
+- **THEN** every owned path holds the worker's bytes and the same two steps leave the repository byte-identical to before the attempt
 
 ### Requirement: Retries SHALL be refused for the isolated executor, and PatchExecutor SHALL never run in its place
 
@@ -273,7 +420,7 @@ to be constructed. With the flag the CLI SHALL pass no retry routes.
 - **WHEN** an executor has a `restore` method but is not marked `isolated` and its base URL differs from the decision's gateway
 - **THEN** `run_autodev` refuses it through the existing gateway equality check, as it does today
 
-#### Scenario: Failed unit
+#### Scenario: Failed unit is not retried
 - **WHEN** a unit's attempt is rejected or errors on the isolated executor
 - **THEN** the unit is reported unverified once, no second attempt runs, and `PatchExecutor` patched to raise is never constructed
 
@@ -289,6 +436,6 @@ worker credential or add it to any reason, event or receipt.
 - **WHEN** an isolated unit completes
 - **THEN** its outcome has `served_model` null and the receipt's served headers are empty, and the model recorded is the selected route
 
-#### Scenario: The credential never appears in a record
+#### Scenario: Credential never appears in a record
 - **WHEN** the process environment holds a worker credential value and the stub OpenCode executor returns a failed terminal whose error text is already redacted
 - **THEN** the attempt reason, the outcome, the attempt record and the receipt payload contain the redacted text and do not contain the credential value
