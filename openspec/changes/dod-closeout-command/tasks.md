@@ -19,7 +19,7 @@ Conventions for every task:
   the fake main (`check_dod_argv` is a parameter; production uses installed main's interpreter and script).
   The shared fixture is `tests/helpers/closeout_fixture.py`.
 - A Verify command names a file or a class, never `-k`, so it runs exactly the tests the task names.
-- Modules are `verdict/closeout/{allowlist,declaration,identity,execute,ledger,cycle,draft,cli}.py`.
+- Modules are `verdict/closeout/{allowlist,declaration,identity,execute,ledger,cycle,onmain,draft,cli}.py`.
 
 ## 1. Preconditions
 
@@ -116,7 +116,9 @@ Conventions for every task:
 ## 6. Spawn, scrub and judge (D4, D6)
 
 - [ ] 6.1 The one spawn function. Kind plus argument list, `shell=False`, new session, closed stdin, timeout,
-      process-group kill on every exit, the environment rule, and the interpreter `<root>/.venv/bin/python`
+      process-group kill on every exit (the direct child's own exit included: the group is killed when the child
+      exits, and the pipes are then read for at most 2 s, a parameter of the function with production value 2, after
+      which a pipe still open fails the step with `pipe_held_open`), the environment rule, and the interpreter `<root>/.venv/bin/python`
       passed unresolved after the virtualenv and package checks of D4 (`.venv` inside the root with a
       `pyvenv.cfg`, executable `bin/python` whose target may be anywhere, `verdict/__main__.py` inside the
       root); the environment strips `PYTHONHOME`, `PYTHONPATH` and `PYTHONSAFEPATH` as well. Output is drained from both
@@ -133,6 +135,17 @@ Conventions for every task:
       `test_package_outside_installed_main_is_refused` (missing, symlinked out),
       `test_child_environment_carries_no_consent_switch_or_python_path_override`, `test_timeout_kills_the_process_group` (real stub
       script that forks a sleeping child; assert no survivor),
+      `test_normal_exit_leaves_no_descendant_and_ends_capture_within_the_bound` (real child; it forks a `sleep 60`
+      that stays in the child's process group, then prints its expected text and exits 0; parametrised over the
+      sleeper holding stdout and stderr, holding stderr only, and with both redirected to `/dev/null`; the sleeper's
+      pid is written to a file by the child; asserts the step passed and returned within 2 s plus a margin of 3 s, the
+      text is stored, and the pid is gone (poll up to 2 s; a zombie counts as gone). It fails against a capture that
+      reads to EOF without killing the group, which returns only when the sleeper ends and trips the test's 10 s
+      limit, and against one that kills the group only on a timeout or the cap, which leaves the sleeper alive),
+      `test_descendant_outside_the_group_cannot_hold_capture_open` (real child; `setsid sleep 60` holding stdout, a
+      complete line printed, exit 0; asserts the step fails with `pipe_held_open` within 2 s plus the margin and the
+      stored text ends at the complete line; the test kills the stray pid in a `finally`; it fails against a capture
+      that waits for EOF),
       `test_large_output_on_both_streams_does_not_block_the_child` (real child, stderr first, 10 s timeout; it
       fails against a read-stdout-then-stderr capture), `test_oversized_output_fails_the_step`
       (parametrised: stdout, stderr, stderr then stdout; the child prints without end under a 10 s timeout and
@@ -144,7 +157,7 @@ Conventions for every task:
       (the secret is searched for in the output file, the ledger, the report and the captured log),
       `test_home_path_is_rewritten`, `test_stored_output_is_stable_under_redaction`,
       `test_expected_text_is_judged_after_scrubbing`.
-- [ ] 6.3 Cut streams (D6). When a step ended by the cap or by its timeout, each retained stream is cut back to its
+- [ ] 6.3 Cut streams (D6). When a step ended by the cap, by its timeout or by `pipe_held_open`, each retained stream is cut back to its
       last newline (bytes, before decoding) and then scrubbed; a non-empty stream with no newline becomes the
       constant `[output cut: no complete line kept]`; a stream that ended with the child is kept whole. The cap is a
       parameter of the spawn function (production value 1 MiB) so a test can place it inside a credential.
@@ -178,14 +191,13 @@ Conventions for every task:
 
 - [ ] 8.1 One cycle. Steps in the spec's order (each item in declaration order, `doctor`, then `on_main`
       while no run of it has passed), every step runs, records from what executed: acceptance and `doctor`
-      entries carry installed `HEAD`, the `on_main` entry the merge commit. Files:
+      entries carry installed `HEAD`, the `on_main` entry the merge commit (its checks are task 8.5). Files:
       `verdict/closeout/cycle.py`, `tests/test_closeout_cycle.py`. Verify: `$TESTENV uv run
       --frozen python -m pytest -q -n 2 tests/test_closeout_cycle.py::TestCycle` with
       `test_installed_sha_is_recorded_for_runs_and_the_merge_sha_for_on_main`,
       `test_first_run_records_the_installed_sha_time_exit_code_and_output_digest`,
       `test_failing_command_keeps_its_output_and_yields_no_draft`, `test_spawn_failure_records_no_run`,
-      `test_red_doctor_fails_the_cycle`, `test_unusable_on_main_fails_the_cycle` (exit 8 pending, a
-      failing exit, and exit 0 without a run URL),
+      `test_red_doctor_fails_the_cycle`,
       `test_cycle_runs_its_steps_in_order_and_repeats_on_main_until_it_passes` (the spec scenario: a failed
       `on_main`, its retry, then a fresh cycle; asserts the whole recorded spawn sequence, and fails if
       `on_main` runs first or is not retried), `test_corrupt_ledger_stops_only_its_story`.
@@ -217,6 +229,47 @@ Conventions for every task:
       `test_declaration_fields_outside_the_fingerprint_do_not_void_the_first_run`,
       `test_changed_declaration_restarts_the_failed_cycle_count`.
 
+- [ ] 8.5 `on_main` attests the merge commit (D3). Two `gh api` GETs with fixed argument lists, `{owner}/{repo}`
+      left for `gh` to fill from the installed root: the required checks of `main`
+      (`repos/{owner}/{repo}/branches/main/protection/required_status_checks`), then
+      `--paginate repos/{owner}/{repo}/commits/<M>/check-runs?per_page=100` with a fixed `--jq` that prints one object
+      per run with `id`, `name`, `status`, `conclusion`, `head_sha`, `details_url` and `app_id` (both read-only calls
+      were run against merged main `44ad2d95` on 2026-11-25: 45 runs, `ci-ok` and `osv-security / osv-scan` among them, and
+      `--paginate` is needed because the default page holds 30). `<M>` must be 40-hex before it reaches argv. Select
+      by `name`, `head_sha` equal to M and the app id, take the greatest `id`, and decide `passed`, `failed`
+      (`on_main_not_green`), `pending` (`on_main_pending`) or `required_checks_unknown` as the spec says; the wait
+      rule (24 hours, constant, `on_main_wait_exceeded`) is derived by replay in `cycle.py` with the injected clock,
+      and `status` shows `waiting_checks`. The fake `gh` is a function of the argument list: a table from the exact
+      endpoint to a canned answer, and any argument list not in the table (`gh pr checks`, a read of the pull
+      request head H) raises, so an implementation that reads H or runs `gh pr checks` fails every test below.
+      Files: `verdict/closeout/onmain.py`, `verdict/closeout/cycle.py`, `tests/test_closeout_onmain.py`. Verify:
+      `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_closeout_onmain.py::TestOnMain` with
+      `test_pull_request_head_checks_never_decide_on_main` (H all green with M's `ci-ok` failed, then the reverse;
+      asserts the outcome, that every argument list names M, none names H and none is `gh pr checks`, and that the
+      recorded `gh api` argument lists carry `--paginate` and no write flag),
+      `test_check_run_for_another_commit_or_app_does_not_count` (wrong `head_sha`, wrong `app_id`, a name that is
+      not required),
+      `test_required_checks_are_read_from_branch_protection` (a protection answer of only `custom-check` passes
+      without any `ci-ok` run, so no name is a constant; one more name with no run is pending),
+      `test_unreadable_required_checks_fail_the_step` (parametrised: non-zero exit, not JSON, no `checks`, empty
+      list; the second read is not spawned),
+      `test_failed_required_check_fails_the_cycle` (parametrised over `failure`, `cancelled`, `timed_out`, `skipped`,
+      `neutral`, `action_required`, `stale`; the other required check still running),
+      `test_running_required_check_waits_without_failing_the_cycle` (`queued` and `in_progress`; the failed count is
+      unchanged, `status` shows `waiting_checks`, the exit status is 0, and the next invocation passes once the run
+      completes), `test_unreported_required_check_waits_and_then_needs_a_person` (clock at the start, 23 hours,
+      24 hours and two later invocations: two pending, three failed, `needs_person`, no draft; it fails against an
+      implementation that waits without a bound or counts a pending cycle as failed),
+      and `::TestWorkflowAssumption` with `test_both_required_workflows_run_on_every_push_to_main` (reads
+      `.github/workflows/ci.yml` and `security.yml` with `yaml.safe_load`; fails when a path filter is added to a
+      push trigger, which would make a missing check on a docs-only merge normal).
+- [ ] 8.6 Say what `on_main` is in the evidence schema. The `on_main` description in `proof/dod.schema.json` says
+      `gh pr checks <pr> --required` "on the merged head"; replace it with: the required checks of `merged_sha`
+      itself (the check runs of that commit; `gh pr checks` reports the pull request head and is not it). No
+      checker change, and the existing evidence files are not edited. Files: `proof/dod.schema.json`. Verify:
+      `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_check_dod.py` and
+      `$TESTENV uv run --frozen python scripts/check_dod.py --all` unchanged.
+
 ## 9. The draft (D9)
 
 - [ ] 9.1 Builder and report. Assemble the JSON from verified entries only, copy outputs byte for byte,
@@ -232,7 +285,12 @@ Conventions for every task:
       `check_dod.py` on the draft, with and without a stub confirmation),
       `test_too_early_fresh_run_fails_the_draft_check` (hand-built draft),
       `test_no_draft_for_a_run_that_did_not_happen` (first cycle only; corrupt ledger; `spawn_error`),
-      `test_failed_runs_are_listed_in_the_report_and_not_in_the_evidence` (also a voided cycle).
+      `test_failed_runs_are_listed_in_the_report_and_not_in_the_evidence` (also a voided cycle),
+      `test_passing_on_main_records_the_merge_commit_and_the_run_url` (full cycle with the fake `gh` of task 8.5, the
+      pull request head H unlike M: the entry's `sha` and command hold M, its stored output holds the first required
+      run's `details_url`, that URL is the marker, the protection read's output is kept as `required_output`, the
+      draft's `on_main.command` names M and its output's `head_sha` values are M, `report.md` lists the required
+      names, and no later cycle runs `on_main`; it fails against a `gh pr checks` implementation).
 - [ ] 9.2 Withdrawal (D8). On a `run`, after the identity checks and before any spawn for the story: when the
       latest `draft` entry is offered (no `withdraw` entry after it) and its fingerprint differs from the
       declaration's, move `draft/` to `withdrawn/<draft seq>/` through the write helper, then append the
@@ -257,15 +315,16 @@ Conventions for every task:
       --frozen python -m pytest -q -n 2 tests/test_closeout_cli.py::TestCli` with
       `test_status_shows_an_empty_ledger_as_not_started`, `test_status_spawns_nothing_and_writes_nothing`,
       `test_second_invocation_exits_busy`, `test_waiting_exits_zero_and_any_other_skip_exits_one` (the seven
-      skips of the scenario), `test_status_does_not_offer_a_draft_under_a_changed_declaration` (offered draft,
+      skips of the scenario and a story whose `on_main` is pending), `test_status_does_not_offer_a_draft_under_a_changed_declaration` (offered draft,
       one field changed, `status` before any `run`: `needs_first` with `draft: stale`, nothing spawned,
       `draft/` untouched; it fails against a `status` that reads only the `draft` entry).
 - [ ] 10.2 Boundary proofs. Files: `tests/test_closeout_cli.py`. Verify: same file `::TestBoundary` with
       `test_a_full_cycle_writes_only_under_the_closeout_home` (both trees diffed, index identical, and no file
       under the closeout home holds the home path or `/home/`),
-      `test_only_the_five_process_kinds_are_spawned` (every recorded call classified; none is a GitHub write
-      or a git write verb), `test_real_home_is_refused_by_the_test_guard` (task 1.1's stand-in). Show each
-      failing when the code writes outside the home or spawns a sixth kind.
+      `test_only_the_five_process_kinds_are_spawned` (every recorded call classified; none is a GitHub write,
+      a `gh api` with a method, field or input flag, `gh pr checks`, or a git write verb),
+      `test_real_home_is_refused_by_the_test_guard` (task 1.1's stand-in). Show each failing when the code writes
+      outside the home or spawns a sixth kind.
 - [ ] 10.3 Pilot declaration. Add `proof/closeout/<story>.yaml` for one story already merged whose acceptance
       command is on the allowlist and that has no evidence file; the controller names the story in the PR. If
       none qualifies, stop and report it as blocked rather than inventing one. This is the source of the
@@ -294,7 +353,9 @@ Each task below is its own verification: the output it names is the proof, recor
       output in the PR.
 - [ ] (post-merge) 12.2 Run `verdict closeout run` from installed main: the identity check passes (exit not 2),
       the `first` entries of the items and `doctor` hold a `sha` equal to `git -C <installed main> rev-parse
-      HEAD` and the `on_main` entry holds the merge commit,
+      HEAD` and the `on_main` entry holds the merge commit and a command naming it (compare
+      `gh pr view <N> --json headRefOid,mergeCommit`: the pull request head differs, and the run URL in the output
+      is a run of the merge commit),
       `grep -r /home/` over the story's directory finds nothing, and a second `run` inside the window spawns
       nothing.
 - [ ] (post-merge) 12.3 After one window, `verdict closeout run` records the fresh run and a draft;
