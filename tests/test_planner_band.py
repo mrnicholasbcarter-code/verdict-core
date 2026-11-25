@@ -859,6 +859,20 @@ class TestSelectPlannerRoutes:
         _, result = selected[0]
         assert result.unavailable_families == (("alpha", "unhealthy"), ("gpt", "no_admitted_route"))
 
+    def test_single_family_unnamed_aliases_of_one_model_are_listed_once(self) -> None:
+        """Round 2 of the #1317 review: two aliases of one unavailable model are one family
+        entry, under the alphabetically first alias, not one entry per alias."""
+        band, snap = self._alias_band()
+        admitted = ["cc/claude-3-opus"]
+        selected = select_planner_routes(
+            admitted, _caps_map(*admitted), band, snap, None, top_n=2, now=NOW
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (
+            ("alpha", "no_admitted_route"),
+            ("gpt", "no_admitted_route"),
+        )
+
     def test_band_result_fields_populated(self) -> None:
         records = [_record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0))]
         snap = _snapshot(*records)

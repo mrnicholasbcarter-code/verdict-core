@@ -604,14 +604,20 @@ def select_planner_routes(
         # A model that a route above already names is skipped, both by band key (so a
         # suffixed route ``x/model:free`` is not listed twice, once under its full route id
         # and once under its stripped band key) and by metadata record (so another alias of
-        # a model that is already accounted for is not reported as a second family).
+        # a model that is already accounted for, or of a model listed here, is not reported
+        # as a second family).
         named_keys = {_strip_suffix(r) for r in admitted_route_ids}
         if exclusion_reasons:
             named_keys.update(_strip_suffix(r) for r in exclusion_reasons)
-        named_records = {band.model_record_ids[k] for k in named_keys if k in band.model_record_ids}
-        for model_key in all_band_keys - named_keys:
-            if band.model_record_ids.get(model_key) in named_records:
-                continue
+        seen_records = {band.model_record_ids[k] for k in named_keys if k in band.model_record_ids}
+        # Sorted, so the alias that stands for a model is the same on every run.  A key with
+        # no record id is never deduplicated.
+        for model_key in sorted(all_band_keys - named_keys):
+            record_id = band.model_record_ids.get(model_key)
+            if record_id is not None:
+                if record_id in seen_records:
+                    continue
+                seen_records.add(record_id)
             all_band_families.add(route_family(model_key))
 
         unavailable_family_set = all_band_families - used_families
