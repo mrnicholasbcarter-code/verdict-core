@@ -7,7 +7,7 @@ signals and the release gate.
 
 ## Who it is for
 
-- You supervise coding-agent work (Verdict's built-in direct-gateway worker by default, or the optional Prime Agent harness; Claude Code, Codex and other agents can also point at Verdict as clients) and want each model choice and refusal on record.
+- You supervise coding-agent work (OpenCode workers by default, the built-in direct-gateway worker with `--executor direct-gateway`, or the optional Prime Agent harness; Claude Code, Codex and other agents can also point at Verdict as clients) and want each model choice and refusal on record.
 - You use the free and paid capacity behind an OmniRoute gateway and want it used in a fixed, explainable order.
 - You need an audit trail of every model that was used or refused, with a receipt you can verify.
 
@@ -43,7 +43,7 @@ This repository is the control plane: planning, admission, assignment, recovery 
 tools do the execution, and Verdict only calls them:
 
 - **OmniRoute** is a local OpenAI-compatible gateway. It supplies the model inventory and runs model calls ([`verdict/omniroute.py`](../verdict/omniroute.py)).
-- **Workers** run on the built-in `direct-gateway` executor by default: each worker request goes straight to the gateway, so no agent harness is needed. **Prime Agent** is an optional headless coding-agent CLI; select it with `--executor prime-headless` and it runs each worker process (`prime-agent -p --model <exact route>`). Neither selects models.
+- **Workers** run on OpenCode by default: each coding node is an edit-test-fix loop whose model calls go through `verdict serve`. With `--executor direct-gateway` each worker request goes straight to the gateway, so no agent harness is needed. **Prime Agent** is an optional headless coding-agent CLI; select it with `--executor prime-headless` and it runs each worker process (`prime-agent -p --model <exact route>`). Neither selects models.
 - **`ocr`** (open-code-review) is the reviewer CLI ([`verdict/orchestration/review.py`](../verdict/orchestration/review.py)).
 
 Three-role split:
@@ -51,7 +51,7 @@ Three-role split:
 | Role | Responsibility |
 |---|---|
 | **Verdict** | plans, selects models, recovers from faults, verifies, writes receipts |
-| **Worker executor** | `direct-gateway` by default (gateway call per worker); optional Prime Agent harness with `--executor prime-headless` (`prime-agent -p --model <exact route>`); never selects models |
+| **Worker executor** | OpenCode by default (an edit-test-fix loop per node through `verdict serve`); `--executor direct-gateway` (gateway call per worker); optional Prime Agent harness with `--executor prime-headless` (`prime-agent -p --model <exact route>`); never selects models |
 | **OmniRoute transport** | provides `/v1/models` inventory and `/v1/chat/completions` execution; is not a metadata source of truth |
 
 The following boundaries apply to the stated paths (not every routing entry point):

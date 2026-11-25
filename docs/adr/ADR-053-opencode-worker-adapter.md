@@ -1,9 +1,9 @@
 # ADR-053: OpenCode worker adapter
 
-**Status:** Accepted — every decision agreed with the operator (2026-11-23, two rounds); Decision 2 amended 2026-11-24 (OpenCode is opt-in; the default is deferred until a live smoke passes after #1313)
+**Status:** Accepted — every decision agreed with the operator (2026-11-23, two rounds); Decision 2 amended 2026-11-24 (OpenCode merged opt-in; the default was deferred until a live smoke passes after #1313) and 2026-11-25 (#1328: OpenCode is the default; that change merges only after the smoke passes on installed main)
 **Date:** 2026-11-23
 **Deciders:** Operator
-**Amends:** nothing yet. [ADR-041](ADR-041-generic-harness-contracts.md)'s default worker executor (`direct-gateway`) is unchanged until the default is switched (Decision 2, amended 2026-11-24); this ADR adds an opt-in `opencode` worker executor
+**Amends:** [ADR-041](ADR-041-generic-harness-contracts.md)'s default worker executor: `opencode` replaces `direct-gateway` as the default (Decision 2, amended 2026-11-25, #1328; effective when that pull request merges), and `direct-gateway` stays registered and selectable
 **Relates to:**
 [ADR-036](ADR-036-goal-to-receipt-orchestration.md) (goal-to-receipt orchestration),
 [ADR-041](ADR-041-generic-harness-contracts.md) (generic harness contracts),
@@ -16,7 +16,8 @@
 `HarnessRegistry` contract introduced in ADR-041. ADR-041 set `prime-headless`
 as the initial default; the `default-executor-direct-gateway` OpenSpec change
 later moved the code default to `direct-gateway` (confirmed: `harness.py`
-registers `DirectGatewayAdapter(default=True)`). The `prime-headless` and
+registered `DirectGatewayAdapter(default=True)` until Decision 2, amended 2026-11-25, moved
+`default=True` to the OpenCode adapter). The `prime-headless` and
 `direct-gateway` adapters are both answer-only: they dispatch a single
 API call to OmniRoute and return. They cannot run tests, linters or repo gates
 after editing files. This is why `verdict deliver` runs (#1269) were BLOCKED:
@@ -138,18 +139,34 @@ every other executor is checked against the gateway origin exactly as before. Se
 forwards to the permit's gateway remain #1313; the signed assignment has since landed (serve's side
 #1335, the executor's #1325, see the amendment under Decision 1). The decision above is unchanged.*
 
-**2. OpenCode becomes the default orchestrate worker executor, after a live smoke passes; until then it is opt-in.**
-`opencode` is registered and selected with `verdict orchestrate --executor opencode`.
-`direct-gateway` stays the DEFAULT worker executor until a live smoke passes after #1313 (one
-worker attempt through serve on a pinned route, the edit lands, the receipt shows the pinned
-route); the default then changes in its own change. The planner executor is unchanged:
-`--planner-executor`, answer-only, `direct-gateway`. `direct-gateway` and `prime-headless` stay
-registered. This leaves ADR-041's default (`direct-gateway`) as it is; the amendment of that
-default is deferred with the change.
+**2. OpenCode is the default orchestrate worker executor.**
+`opencode` is registered and is the DEFAULT worker executor of `verdict orchestrate`;
+`--executor direct-gateway` selects the previous default and `--executor prime-headless` Prime.
+The planner executor is unchanged: `--planner-executor`, answer-only, `direct-gateway`. A machine
+without the `opencode` binary, the worker signing key, a running `verdict serve` or serve's
+credential ends in one `harness_configuration:` block that names the failed check, what the default
+needs and `--executor direct-gateway`; nothing falls back silently to another executor. This
+amends ADR-041's default (`direct-gateway`), which stays registered and selectable.
 
-*Amendment (2026-11-24, operator, "do recommended for all"): as agreed on 2026-11-23, this
-decision made `opencode` the default as soon as the adapter merged; the operator deferred that
-default until a live smoke passes after #1313. The live smoke of #1299 (task 2.8) showed that
+*Amendment (2026-11-25, operator, #1328): the default is switched in its own change. The operator's
+condition of 2026-11-24 was a live smoke that passes after #1313: one worker attempt through serve
+on a pinned route, the edit lands, the receipt shows the pinned route. Serve's side landed in #1335
+and the executor's in #1325 (#1339); the evidence is task 2.19 of
+`openspec/changes/opencode-worker-adapter` (2026-11-25, head `538cf004`): one attempt through a
+spare `verdict serve` built from that branch (own signing key and state, not the installed serve)
+on `cc/claude-haiku-5-5`, an admitted, already-paid subscription route; the terminal was ok, the
+edit landed and its verification passed, and serve's receipts show three requests on the pinned
+route (`resolved_route` `cc/claude-haiku-5-5`) under one signed assignment. The operator decided
+that the pull request that makes OpenCode the default is built and reviewed now and merged only
+after the same smoke passes on installed main (task 2.20): until it merges the installed default
+stays `direct-gateway`, and the run of `verdict orchestrate` with no `--executor` flag on installed
+main is the post-merge check (task 8.1). The way out is named by the executor the registry builds
+(`OpenCodeWorkerExecutor`, `verdict/orchestration/harness.py`), which adds one note to a
+`harness_configuration:` block and changes nothing else in `OpenCodeExecutor`.*
+
+*Amendment (2026-11-24, operator, "do recommended for all"; superseded by the amendment above once
+its condition was met): as agreed on 2026-11-23, this decision made `opencode` the default as soon
+as the adapter merged; the operator deferred that default until a live smoke passes after #1313. The live smoke of #1299 (task 2.8) showed that
 `verdict serve` refuses every OpenCode worker request before any upstream call: 11 of 13 by the
 escalation keyword scanner (its branch of `route()` returns before the route pin is applied) and
 2 by the capability gate, which had no metadata for streaming and tools on the relay path. A
@@ -195,8 +212,8 @@ The existing per-attempt timeout (default and maximum 900 s, confirmed:
 No new token cap is added.
 
 **7. Build order.**
-The adapter comes first. Next, re-run #1269 (deliver) on OpenCode workers (selected with
-`--executor opencode` while it is opt-in, after #1313). Then #1276 (gate environment) and #1274
+The adapter comes first. Next, re-run #1269 (deliver) on OpenCode workers (after #1313; the
+default, so no flag, once #1328 has merged). Then #1276 (gate environment) and #1274
 (repo map).
 
 **8. Builder and review.**

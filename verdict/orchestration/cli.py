@@ -182,11 +182,15 @@ def add_parsers(subparsers: Any) -> None:
         choices=tuple(DEFAULT_REGISTRY.names()),
         default=DEFAULT_REGISTRY.default_name(),
         help=f"Worker executor backend (default: {DEFAULT_REGISTRY.default_name()}). "
-        "Backends are the registered HarnessAdapter names. Prime Agent is an "
-        "optional harness: select it with --executor prime-headless (the legacy "
-        "alias 'prime' resolves to prime-headless). OpenCode is opt-in: select it "
-        "with --executor opencode (it needs a running 'verdict serve'; it does not "
-        "yet work through serve, see issue #1313).",
+        "Backends are the registered HarnessAdapter names. OpenCode, the default, runs each "
+        "coding node as a full edit-test-fix loop through 'verdict serve'; it needs the "
+        "pinned opencode binary, a running 'verdict serve' and the worker signing key "
+        "('verdict setup --apply --allow host.serve' creates it). A machine without them "
+        "ends the run in a harness_configuration block that says so; it never falls back "
+        "to another executor. --executor direct-gateway selects the previous default (one "
+        "gateway call per node, no agent harness). Prime Agent is an optional harness: "
+        "select it with --executor prime-headless (the legacy alias 'prime' resolves to "
+        "prime-headless).",
     )
     orch.add_argument(
         "--planner-executor",

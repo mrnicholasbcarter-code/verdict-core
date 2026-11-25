@@ -42,9 +42,10 @@ plans a validated work graph, runs ready nodes up to `--max-parallel`, verifies
 nodes and integration, performs review unless `--no-review` is supplied, and
 writes run artifacts. `--no-review` deliberately leaves the run blocked.
 
-The orchestration executor launches one exact, selected route: through the
-built-in `direct-gateway` executor by default, or through the Prime headless CLI
-when the optional Prime harness is selected (`--executor prime-headless`). It
+The orchestration executor launches one exact, selected route: through OpenCode by default (an
+edit-test-fix loop that calls `verdict serve`), through the built-in `direct-gateway` executor
+(`--executor direct-gateway`), or through the Prime headless CLI when the optional Prime harness
+is selected (`--executor prime-headless`). It
 does not let a worker choose a replacement model.
 `verdict.subagent_selection` and `verdict.worker_runtime` provide the
 lower-level Prime/RLM dispatch boundary: they intersect OmniRoute inventory

@@ -85,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.executable, "-m", "verdict.cli", "orchestrate",
         "--repo", str(repo), "--graph", str(graph_path), "--runs-dir", str(runs),
         "--scope", args.scope, "--max-parallel", "1",
+        "--executor", "direct-gateway",  # this smoke predates OpenCode, the default since #1328
         "--attempt-timeout", str(args.attempt_timeout),
         "--state-file", str(state),
         "--inject", "@smoke=server",

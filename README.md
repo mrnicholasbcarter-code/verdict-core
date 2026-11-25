@@ -161,7 +161,7 @@ verdict run-receipt <run-id>                    # show and verify its receipt
 
 1. **Plan.** A planner model splits the goal into a small graph of work items, called nodes. Each node owns its files and has a command that checks the work.
 2. **Admit.** Verdict builds one list of models that may be used now, from live gateway evidence: inventory, accounts, health, cooldowns and quota. Every dropped model gets a named reason. A model with no runtime evidence stays `unknown`. It is never counted as healthy.
-3. **Run.** Each node runs as its own worker, in parallel where the graph allows. By default workers use the built-in `direct-gateway` executor: each worker request goes straight to the gateway, so no agent has to be installed.
+3. **Run.** Each node runs as its own worker, in parallel where the graph allows. By default workers run on OpenCode, an edit-test-fix loop per node that calls `verdict serve`; `--executor direct-gateway` selects the built-in gateway executor, where each worker request goes straight to the gateway and no agent has to be installed.
 4. **Recover.** A quota limit, rate limit, timeout or empty answer cools down the route or its provider, and the node goes to another admitted model. When none is left, or the attempt budget is spent, the node stops with a named `FAIL_CLOSED` and the run ends `BLOCKED`.
 5. **Check and review.** Each node must pass its own check. The merged result must pass an integration check. Then `ocr` reviews the diff on a route that no final implementer used.
 6. **Receipt.** The run writes a receipt that holds a SHA-256 digest of its event log.
@@ -257,7 +257,7 @@ The full comparison, row by row for each tool, and what Verdict does not claim, 
 
 `verdict serve` is the HTTP service (install it with `pip install -e '.[server]'`). `POST /v1/route` returns a route decision for a request that carries an `execution_path_request`. `POST /v1/chat/completions` routes a call and relays it upstream. It needs `LLMGATE_AUTH_TOKEN` and `VERDICT_RECEIPTS_DB` before it starts; `verdict setup --apply --allow host.serve` sets both. See [first run](docs/CONFIGURATION.md#first-run).
 
-Claude Code, Codex, Cursor, Cline and OpenCode can be pointed at that relay as their model endpoint: `verdict harness <tool> enable`. That makes the tool a client of Verdict. It does not make it a worker: `verdict orchestrate` cannot run a worker on any of them, except OpenCode through the separate opt-in `--executor opencode` (it does not yet work through `verdict serve`, issue #1313). See the [harness guide](docs/guides/harnesses.md).
+Claude Code, Codex, Cursor, Cline and OpenCode can be pointed at that relay as their model endpoint: `verdict harness <tool> enable`. That makes the tool a client of Verdict. It does not make it a worker: `verdict orchestrate` cannot run a worker on any of them, except OpenCode, which is the default worker executor (`--executor opencode`; it calls `verdict serve` on a signed per-attempt assignment). See the [harness guide](docs/guides/harnesses.md).
 
 ## Install
 
@@ -283,7 +283,7 @@ Verdict is the control plane. Other tools do the execution, and Verdict only cal
 |---|---|
 | **Verdict** | Plans, admits and selects models, recovers from failures, verifies, writes receipts. Never runs a model itself. |
 | **OmniRoute** | The gateway: lists the models (`/v1/models`) and carries every model call (`/v1/chat/completions`). |
-| **Worker executor** | Runs one node. `direct-gateway` by default. It never selects a model: Verdict passes it the exact admitted route. |
+| **Worker executor** | Runs one node. OpenCode by default (`--executor direct-gateway` for the previous default). It never selects a model: Verdict passes it the exact admitted route. |
 | **`ocr`** | The reviewer CLI (open-code-review). Runs on a route no implementer used. |
 
 Component map and data flow: [`docs/architecture.md`](docs/architecture.md). The design decision behind the loop: [ADR-036](docs/adr/ADR-036-goal-to-receipt-orchestration.md).
@@ -296,7 +296,7 @@ Component map and data flow: [`docs/architecture.md`](docs/architecture.md). The
 - **Self-hosting is at an early stage.** Verdict has delivered one story on its own codebase, in six runs, five of which ended `BLOCKED`.
 - **Live orchestration requires a gateway.** OmniRoute must be running at `http://localhost:20128`. The credential-free quickstart and benchmark paths need no gateway. <!-- claim:C-019 -->
 - **Worker model availability is external.** Verdict combines gateway inventory and account evidence with its own runtime health and admission evidence before selection. Quota, rate limits, and provider outages are not under Verdict's control. It recovers from them, but cannot prevent them. <!-- claim:C-020 -->
-- **Workers run on `direct-gateway` by default.** There is an opt-in worker executor for OpenCode (`--executor opencode`) that does not yet work through `verdict serve` (issue #1313); there is none for Claude Code or Codex.
+- **Workers run on OpenCode by default.** A host without the `opencode` binary, a running `verdict serve` or the worker signing key ends the node in a `harness_configuration:` block that names the fix and `--executor direct-gateway`; there is no worker executor for Claude Code or Codex.
 - **Independent review requires `ocr` on PATH.** `open-code-review` is a separate binary. `--no-review` skips it and ends the run `BLOCKED`. <!-- claim:C-021 -->
 - **Receipt integrity covers event logs, not LLM or OCR output.** Verification detects event-log changes against the retained receipt. Recorded reviewer PASS alone can lack semantic coverage. Neither the receipt nor the log is signed or externally anchored against replacing both files. <!-- claim:C-022 -->
 - **No static fallback chains (retries stay inside the admitted set); OpenTelemetry is optional (`verdict-core[tracing]`).** See [How Verdict differs](docs/guides/comparison.md#how-verdict-differs). <!-- claim:C-023 -->

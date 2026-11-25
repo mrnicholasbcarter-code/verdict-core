@@ -30,17 +30,23 @@ On a new install, before anything is set up:
 
 ## Worker executor and optional harnesses
 
-`verdict orchestrate` runs workers with the `direct-gateway` executor by
-default: each worker request goes straight to the gateway, so no agent harness
-has to be installed. Prime Agent is an optional harness. Select it with
-`--executor prime-headless` (alias `prime`), or per node with
-`--executor-map node-1=prime-headless`. OpenCode is opt-in too: `--executor opencode`
-(see [the harnesses guide](guides/harnesses.md#opencode-as-a-worker-harness); its workers
-call `verdict serve` with a signed per-attempt assignment, see
-[worker assignments](#worker-assignments)).
+`verdict orchestrate` runs workers with the OpenCode executor by default
+(ADR-053 Decision 2, amended 2026-11-25): each coding node is a full edit-test-fix loop,
+and its workers call `verdict serve` with a signed per-attempt assignment (see
+[the harnesses guide](guides/harnesses.md#opencode-as-a-worker-harness) and
+[worker assignments](#worker-assignments)). It needs the pinned `opencode` binary, a running
+`verdict serve` with its credential, and the signing key that
+`verdict setup --apply --allow host.serve` creates. A host without them does not fall back to
+another executor: the node ends in one `harness_configuration:` block that names what is
+missing and the way out. `--executor direct-gateway` selects the previous default: each worker
+request goes straight to the gateway, so no agent harness has to be installed. Prime Agent is an
+optional harness. Select it with `--executor prime-headless` (alias `prime`), or per node with
+`--executor-map node-1=prime-headless`; unmapped nodes use `--executor`, which is OpenCode when it
+is not given. The planner is its own role (`--planner-executor`, answer-only,
+`direct-gateway`) and is not affected by `--executor`.
 
 - Route visibility follows the executor. Plain `verdict eligibility` and the
-  default run read the live gateway catalog; Prime's model registry
+  default run (OpenCode, like the direct gateway) read the live gateway catalog; Prime's model registry
   (`models.json`) is read only when Prime is selected or with
   `verdict eligibility --sync-visibility`.
 - On a host without the Prime Agent binary, `verdict setup` plans no Prime
@@ -676,7 +682,8 @@ assignment is refused with 403.
   minting one (an accepted risk, ADR-053 decision 4). An assignment is a bearer credential: anyone
   who holds an unexpired one can call its one route until it expires.
 
-- **Signing.** `verdict orchestrate --executor opencode` signs one assignment per attempt
+- **Signing.** `verdict orchestrate` (OpenCode, the default executor, or `--executor opencode`)
+  signs one assignment per attempt
   (`verdict.worker_assignment.mint_assignment`) with that key: the route, the run id (the run
   directory's name, which `receipt.json` shows as `run_id`), the node id, `iat` (now) and `exp`
   (the attempt's timeout rounded up, plus 60 seconds). The format allows at most 1,800 seconds,

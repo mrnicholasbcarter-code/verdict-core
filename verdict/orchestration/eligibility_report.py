@@ -311,8 +311,8 @@ def build_selector(
     from verdict.orchestration.harness import DEFAULT_REGISTRY
 
     # Visibility follows the worker executor; unset means the registry default
-    # (direct-gateway: the live catalog), so Prime's registry file is read only
-    # when a caller selects the Prime harness.
+    # (opencode, like direct-gateway: the live catalog), so Prime's registry file is
+    # read only when a caller selects the Prime harness.
     harness_visible = DEFAULT_REGISTRY.resolve(
         visibility_executor or DEFAULT_REGISTRY.default_name()
     ).harness_visibility(catalog_rows=catalog_rows, sync_visibility=sync_visibility)
