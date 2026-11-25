@@ -17,8 +17,11 @@ autouse fixtures in ``tests/conftest.py`` re-point ``HOME`` at a per-test temp
 directory, so a clean test leaves the throwaway home untouched; every path the
 report lists was written by something that bypassed the fixtures (import-time or
 wider-scope fixture code, a hardcoded path, a subprocess with its own env). The
-plugin snapshots around each test, so run serially (no ``-n``): under xdist the
-workers share the root and attribution is ambiguous.
+plugin snapshots around each test, so it runs serially only: under pytest-xdist
+every worker would snapshot the same root (a clean test would be blamed for
+another worker's writes) and the workers and the controller would overwrite one
+JSON report. ``-n`` / ``--dist`` / ``--tx`` together with ``--home-leak-root`` is
+a usage error at session start; drop them, or pass ``-n 0``.
 
 Use a throwaway root, never the operator's real home: the real home is changed
 by other processes (installed services) and would blame tests for their writes.
@@ -243,10 +246,36 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+PARALLEL_REFUSAL = (
+    "the home leak detector (--home-leak-root) attributes writes by snapshotting one shared "
+    "directory around each test, so it cannot run under pytest-xdist: workers would blame "
+    "each other's writes and overwrite one report. Run it serially: drop -n/--dist/--tx, "
+    "or pass -n 0."
+)
+
+
+def _is_parallel(config: pytest.Config) -> bool:
+    """True for an xdist controller (``-n``, ``--dist``, ``--tx``) or an xdist worker.
+
+    Deliberately wider than xdist's own rule, so an odd combination of options
+    is refused rather than run with ambiguous attribution. ``-n 0`` is serial.
+    """
+    if hasattr(config, "workerinput"):  # this process IS a worker
+        return True
+    option = config.option
+    return bool(
+        getattr(option, "numprocesses", None)
+        or getattr(option, "tx", None)
+        or getattr(option, "dist", "no") not in ("no", None)
+    )
+
+
 def pytest_configure(config: pytest.Config) -> None:
     root = config.getoption("--home-leak-root")
     if not root:
         return
+    if _is_parallel(config):
+        raise pytest.UsageError(PARALLEL_REFUSAL)
     json_path = config.getoption("--home-leak-json")
     config.pluginmanager.register(
         HomeLeakDetector(Path(root), Path(json_path) if json_path else None), "home-leak-detector"

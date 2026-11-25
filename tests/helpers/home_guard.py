@@ -28,10 +28,12 @@ audited entry points. For those, run the suite with the real state directories
 masked by empty mounts, or under a throwaway ``HOME`` with
 ``tests/helpers/home_snapshot.py``. It loads from ``tests/conftest.py``, so it
 does not exist in a run that skips that conftest (``--noconftest``); load it
-there with ``-p tests.helpers.home_guard``. Under pytest-xdist a worker's
-session-finish status does not reach the controller, so a refused write during
-SESSION TEARDOWN does not fail an ``-n`` run; refused writes during a test, or
-before the first test, still fail through the per-test fixture.
+there with ``-p tests.helpers.home_guard``. Under pytest-xdist a worker's own
+exit status never reaches the controller, so each worker hands its refused
+writes to the controller through ``workeroutput`` when it finishes, and the
+controller fails the run for them (a refused write during session teardown, or
+after the last per-test drain). A worker that finishes without reporting, or
+whose report cannot be read, also fails the run: unknown is never clean.
 
 The real roots are resolved ONCE, when this module is imported (conftest import,
 before any fixture monkeypatches the environment).
@@ -99,6 +101,10 @@ HOST_STATE_ENV: tuple[str, ...] = (
     "CLINE_DATA_DIR",
     "HERMES_HOME",
     "OPENCODE_CONFIG",
+    # The OpenCode executor copies this through its child-env allowlist before it
+    # overrides it with the per-attempt config directory; an operator export must
+    # never be what a test sees.
+    "OPENCODE_CONFIG_DIR",
     # XDG bases are the HOME-relative defaults' overrides.
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
@@ -110,6 +116,10 @@ HOST_STATE_ENV: tuple[str, ...] = (
     "VERDICT_SHARED_MEMORY_URL",
     "VERDICT_SHARED_MEMORY_TOKEN",
     "VERDICT_ACTIVE_CONTROLLER_ROUTE",
+    # Selectors of the operator's live installs (not state): an export would point a
+    # test at the real opencode binary or the live ``verdict serve``.
+    "VERDICT_OPENCODE_BIN",
+    "VERDICT_SERVE_URL",
 )
 
 # ---------------------------------------------------------------------------
@@ -481,13 +491,82 @@ def _real_home_write_guard(request: pytest.FixtureRequest) -> Iterator[None]:
         pytest.fail(render_violations(found), pytrace=False)
 
 
+#: The key under which an xdist worker reports its refused writes (always
+#: present, an empty list when clean) in ``config.workeroutput``.
+WORKER_STATUS_KEY = "verdict_home_guard_violations"
+
+#: What the controller collected from its workers (rendered lines).
+_WORKER_FINDINGS = pytest.StashKey[list[str]]()
+
+
+def worker_status(found: list[Violation]) -> list[dict[str, Any]]:
+    """The wire form of a worker's violations (plain types only: execnet carries them)."""
+    return [
+        {"phase": v.phase, "event": v.event, "path": v.path, "where": list(v.where)} for v in found
+    ]
+
+
+def worker_findings(output: object, worker: str, errored: bool = False) -> list[str]:
+    """What a finished xdist worker tells the controller; empty only when it reported clean.
+
+    Anything the controller cannot positively read as "no refused writes" is a
+    finding: no output, no status key, a status of the wrong shape.
+    """
+    if errored:
+        return [f"worker {worker} went down before it reported its write-guard status"]
+    if not isinstance(output, dict) or WORKER_STATUS_KEY not in output:
+        return [f"worker {worker} finished without reporting its write-guard status"]
+    status = output[WORKER_STATUS_KEY]
+    if not isinstance(status, list):
+        return [f"worker {worker} reported an unreadable write-guard status"]
+    findings: list[str] = []
+    for item in status:
+        try:
+            violation = Violation(
+                str(item["phase"]),
+                str(item["event"]),
+                str(item["path"]),
+                tuple(str(frame) for frame in item["where"]),
+            )
+        except (TypeError, KeyError):
+            findings.append(f"worker {worker} reported an unreadable write-guard entry")
+            continue
+        findings.append(f"worker {worker}:\n{violation.render()}")
+    return findings
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: Any, error: object) -> None:
+    """xdist controller: collect what a worker's guard saw (hook exists only with xdist)."""
+    worker = str(getattr(getattr(node, "gateway", None), "id", "?"))
+    output = getattr(node, "workeroutput", None)
+    findings = worker_findings(output, worker, errored=error is not None)
+    node.config.stash.setdefault(_WORKER_FINDINGS, []).extend(findings)
+
+
+@pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Fail the run for refused writes made outside any test (import time)."""
+    """Fail the run for refused writes the per-test fixture did not report.
+
+    In a worker (``config.workeroutput`` exists) the status is handed to the
+    controller, which owns the run's exit status; elsewhere it fails the run here.
+    """
     found = GUARD.drain()
-    if not found:
+    output = getattr(session.config, "workeroutput", None)
+    if output is not None:
+        output[WORKER_STATUS_KEY] = worker_status(found)
         return
+    findings = session.config.stash.get(_WORKER_FINDINGS, [])
+    if not found and not findings:
+        return
+    parts = [render_violations(found)] if found else []
+    if findings:
+        parts.append(
+            f"{len(findings)} xdist worker write-guard finding(s) "
+            "(nothing was written to real state):\n" + "\n".join(findings)
+        )
+    message = "\n".join(parts)
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
-    message = render_violations(found)
     if reporter is not None:
         reporter.write_line(message, red=True)
     else:

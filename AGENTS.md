@@ -192,7 +192,7 @@ archived change, only when `scripts/check_dod.py <file>` passes; CI runs
   in-process writes to the real state roots (not child processes or deliberate
   alias chains); `tests/test_home_isolation.py` pins both. To list which tests
   write into a throwaway home, run pytest with `-p tests.helpers.home_snapshot
-  --home-leak-root=<dir>` (see that module's docstring).
+  --home-leak-root=<dir>` (serial only: `-n` is refused; see that module's docstring).
 - No secrets in code, fixtures, logs or docs. No `/home/...` host paths in
   `tests/fixtures/`, `docs/assets/` or `docs/proof/` (vgate host-path guard).
 - No silent installs. Do not add dependencies or install tools without saying

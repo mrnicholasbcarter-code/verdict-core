@@ -158,6 +158,25 @@ def _path_like_env_names_read_by_verdict() -> set[str]:
     return names
 
 
+# Selectors of the operator's LIVE installs that the name tripwire above cannot see (their
+# last token is BIN or URL, not a location word). An export would point a test at the real
+# opencode binary or the live ``verdict serve``; they are cleared like VERDICT_GATEWAY.
+_LIVE_INSTALL_SELECTORS = ("VERDICT_OPENCODE_BIN", "VERDICT_SERVE_URL")
+
+
+@pytest.mark.parametrize("name", _LIVE_INSTALL_SELECTORS)
+def test_live_install_selectors_verdict_reads_are_cleared(name: str) -> None:
+    package = Path(verdict.__file__).resolve().parent
+    read = {
+        found
+        for source in package.rglob("*.py")
+        if "openspec_vendor" not in source.parts
+        for found in _ENV_NAME.findall(source.read_text(encoding="utf-8", errors="ignore"))
+    }
+    assert name in read, f"verdict/ no longer reads {name}: drop it from _LIVE_INSTALL_SELECTORS"
+    assert name in home_guard.HOST_STATE_ENV, f"{name} is read by verdict/ but not cleared"
+
+
 def test_every_path_env_var_verdict_reads_is_cleared_or_explained() -> None:
     names = _path_like_env_names_read_by_verdict()
     cleared = set(home_guard.HOST_STATE_ENV)
@@ -593,7 +612,10 @@ def _child_pytest(
     )
 
 
-def test_a_leaking_test_fails_the_run_and_names_the_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize("args", [(), ("-n", "2")], ids=["serial", "xdist"])
+def test_a_leaking_test_fails_the_run_and_names_the_file(
+    tmp_path: Path, args: tuple[str, ...]
+) -> None:
     fake_home = tmp_path / "fake-real-home"
     fake_home.mkdir()
     work = tmp_path / "work"
@@ -630,6 +652,7 @@ def test_a_leaking_test_fails_the_run_and_names_the_file(tmp_path: Path) -> None
             """,
         },
         home=fake_home,
+        args=args,
     )
     output = result.stdout + result.stderr
     assert result.returncode != 0, output
@@ -642,7 +665,8 @@ def test_a_leaking_test_fails_the_run_and_names_the_file(tmp_path: Path) -> None
     assert not (fake_home / ".verdict").exists(), "the guard let a write through"
 
 
-def test_a_clean_run_passes_with_the_guard_loaded(tmp_path: Path) -> None:
+@pytest.mark.parametrize("args", [(), ("-n", "2")], ids=["serial", "xdist"])
+def test_a_clean_run_passes_with_the_guard_loaded(tmp_path: Path, args: tuple[str, ...]) -> None:
     fake_home = tmp_path / "fake-real-home"
     fake_home.mkdir()
     work = tmp_path / "work"
@@ -662,11 +686,18 @@ def test_a_clean_run_passes_with_the_guard_loaded(tmp_path: Path) -> None:
             """,
         },
         home=fake_home,
+        args=args,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_a_write_after_the_last_test_still_fails_the_run(tmp_path: Path) -> None:
+_XDIST_ARGS = ("-n", "2")
+
+
+@pytest.mark.parametrize("args", [(), _XDIST_ARGS], ids=["serial", "xdist"])
+def test_a_write_after_the_last_test_still_fails_the_run(
+    tmp_path: Path, args: tuple[str, ...]
+) -> None:
     fake_home = tmp_path / "fake-real-home"
     fake_home.mkdir()
     work = tmp_path / "work"
@@ -692,11 +723,52 @@ def test_a_write_after_the_last_test_still_fails_the_run(tmp_path: Path) -> None
             """,
         },
         home=fake_home,
+        args=args,
     )
     output = result.stdout + result.stderr
     assert result.returncode != 0, output
     assert "late.json" in output
     assert not (fake_home / ".verdict").exists()
+
+
+def _wire(*found: home_guard.Violation) -> dict[str, object]:
+    return {home_guard.WORKER_STATUS_KEY: home_guard.worker_status(list(found))}
+
+
+def test_a_worker_that_reported_clean_has_no_findings() -> None:
+    assert home_guard.worker_findings(_wire(), "gw0") == []
+
+
+def test_a_worker_violation_survives_the_wire_and_names_worker_and_file() -> None:
+    violation = home_guard.Violation(
+        "OUTSIDE", "open", "/real/.verdict/late.json", ("a.py:1 in f",)
+    )
+    findings = home_guard.worker_findings(_wire(violation), "gw1")
+    assert len(findings) == 1
+    assert "gw1" in findings[0] and "/real/.verdict/late.json" in findings[0]
+    assert "a.py:1 in f" in findings[0]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        None,
+        {},
+        {"exitstatus": 0},
+        "clean",
+        {home_guard.WORKER_STATUS_KEY: None},
+        {home_guard.WORKER_STATUS_KEY: "none"},
+        {home_guard.WORKER_STATUS_KEY: [{"phase": "p"}]},
+        {home_guard.WORKER_STATUS_KEY: [None]},
+    ],
+    ids=["none", "empty", "no-key", "not-a-dict", "null", "str", "missing-fields", "null-entry"],
+)
+def test_a_worker_status_the_controller_cannot_read_fails_closed(output: object) -> None:
+    assert home_guard.worker_findings(output, "gw0")
+
+
+def test_a_worker_that_went_down_fails_closed_even_with_a_clean_report() -> None:
+    assert home_guard.worker_findings(_wire(), "gw0", errored=True)
 
 
 def test_exported_state_env_is_cleared_and_still_protected(tmp_path: Path) -> None:
@@ -828,3 +900,89 @@ def test_detector_plugin_names_the_leaking_test_and_not_the_clean_one(tmp_path: 
     assert leaked["created"] == [".verdict/prove-at-rest", ".verdict/prove-at-rest/state.json"]
     assert "test_probe.py::test_leaks" in result.stdout
     assert "prove-at-rest/state.json" in result.stdout
+
+
+def _detector_probe(sentinel: Path, marker: Path) -> dict[str, str]:
+    return {
+        "test_probe.py": f"""
+            import pathlib
+
+            SENTINEL = pathlib.Path({str(sentinel)!r})
+
+            def test_leaks():
+                pathlib.Path({str(marker)!r}).write_text("ran")
+                (SENTINEL / ".verdict" / "state.json").write_text("{{}}")
+        """
+    }
+
+
+@pytest.mark.parametrize(
+    "parallel",
+    [("-n", "2"), ("-n", "auto"), ("--dist", "load", "--tx", "popen//popen")],
+    ids=["n2", "n-auto", "dist-tx"],
+)
+def test_the_leak_detector_refuses_to_run_under_xdist(
+    tmp_path: Path, parallel: tuple[str, ...]
+) -> None:
+    sentinel = tmp_path / "sentinel-home"
+    (sentinel / ".verdict").mkdir(parents=True)
+    work = tmp_path / "work"
+    work.mkdir()
+    marker = tmp_path / "ran.marker"
+    report = tmp_path / "leaks.json"
+    result = _child_pytest(
+        work,
+        _detector_probe(sentinel, marker),
+        home=tmp_path,
+        args=(
+            "-p",
+            "tests.helpers.home_snapshot",
+            f"--home-leak-root={sentinel}",
+            f"--home-leak-json={report}",
+            *parallel,
+        ),
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == int(pytest.ExitCode.USAGE_ERROR), output
+    assert "home leak detector" in output and "serially" in output and "-n 0" in output, output
+    assert not marker.exists(), "a test ran although the detector refused the run"
+    assert not (sentinel / ".verdict" / "state.json").exists()
+    assert not report.exists(), "a refused run wrote a report"
+
+
+def test_the_leak_detector_still_runs_with_xdist_switched_off(tmp_path: Path) -> None:
+    sentinel = tmp_path / "sentinel-home"
+    (sentinel / ".verdict").mkdir(parents=True)
+    work = tmp_path / "work"
+    work.mkdir()
+    marker = tmp_path / "ran.marker"
+    report = tmp_path / "leaks.json"
+    result = _child_pytest(
+        work,
+        _detector_probe(sentinel, marker),
+        home=tmp_path,
+        args=(
+            "-p",
+            "tests.helpers.home_snapshot",
+            f"--home-leak-root={sentinel}",
+            f"--home-leak-json={report}",
+            "-n",
+            "0",
+        ),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert marker.exists()
+    data = json.loads(report.read_text())
+    assert list(data["leaking_tests"]) == ["test_probe.py::test_leaks"]
+
+
+def test_xdist_without_the_leak_detector_is_not_refused(tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    result = _child_pytest(
+        work,
+        {"test_ok.py": "def test_ok():\n    pass\n"},
+        home=tmp_path,
+        args=("-p", "tests.helpers.home_snapshot", "-n", "2"),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
