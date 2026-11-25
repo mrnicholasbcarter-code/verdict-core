@@ -18,6 +18,8 @@ import argparse
 import asyncio
 import json
 import os
+import socket
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -815,12 +817,16 @@ _ONE_NODE_GRAPH = WorkGraph(
 )
 
 
-def _closed_loopback_port() -> int:
-    import socket
+@pytest.fixture
+def closed_loopback_port() -> Iterator[int]:
+    """A loopback port that nothing listens on, held for the whole test.
 
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
+    The socket stays bound (and never listens) until the test ends, so no other process can take
+    the port and a connection to it is refused.
+    """
+    with socket.socket() as holder:
+        holder.bind(("127.0.0.1", 0))
+        yield int(holder.getsockname()[1])
 
 
 @pytest.mark.parametrize(
@@ -833,7 +839,11 @@ def _closed_loopback_port() -> int:
     ],
 )
 def test_default_executor_without_opencode_ends_in_one_clear_block_never_a_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str, reason: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    closed_loopback_port: int,
+    missing: str,
+    reason: str,
 ) -> None:
     """With no ``--executor`` the worker is OpenCode.  A machine without the binary, the signing
     key, serve or serve's credential ends the node in ONE ``harness_configuration:`` block that
@@ -870,7 +880,7 @@ def test_default_executor_without_opencode_ends_in_one_clear_block_never_a_fallb
 
     monkeypatch.setattr(DirectGatewayExecutor, "run", never_a_fallback)
 
-    args = _parse_orchestrate("--serve-url", f"http://127.0.0.1:{_closed_loopback_port()}")
+    args = _parse_orchestrate("--serve-url", f"http://127.0.0.1:{closed_loopback_port}")
     assert args.executor == "opencode"  # no --executor flag was given
     executor = _worker_executor(args)
 
