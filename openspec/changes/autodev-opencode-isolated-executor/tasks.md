@@ -76,7 +76,7 @@ Conventions for every task:
       directory left). The rename tests and the dirty-state test also assert the user's
       repository is byte-identical after seeding, and a `-z` record for a path containing a
       space parses as one path.
-      Evidence: `TestSeed` 14 cases green; each guard (clone sharing, remote, rename source, owned bytes from the user's tree, deleted files, nested repository, submodule, no HEAD, `.git` component, seed limit) was removed in turn and its named test failed.
+      Evidence: `TestSeed` green; each guard (clone sharing, remote, rename source, owned bytes from the user's tree, deleted files, nested repository, submodule, no HEAD, `.git` component, seed limit) was removed in turn and its named test failed.
 - [x] 2.2 Manifest and delta (D4). `attempt_delta(tree, m0, repo, unit)` builds M1 with a
       descriptor-relative walk (root opened `O_DIRECTORY`; `scandir` on each directory
       descriptor; children opened `O_DIRECTORY | O_NOFOLLOW` relative to their parent; files
@@ -98,7 +98,7 @@ Conventions for every task:
       `test_mode_only_change_is_in_the_delta`, `test_symlink_in_an_owned_path_is_rejected`,
       `test_delta_hash_mismatch_is_error`, `test_file_over_the_limit_is_a_named_refusal` and
       `test_tree_over_the_limit_is_a_named_refusal`.
-      Evidence: `TestDelta` 19 cases green; removing the `.git` skip, the ownership check, the ignore filter, the owned-path precedence, the worker-tree ignore read, the special-file rule, the empty rule, `O_NONBLOCK`, `O_NOFOLLOW`, the hash recheck or the file limit each failed its named test.
+      Evidence: `TestDelta` green; removing the `.git` skip, the ownership check, the ignore filter, the owned-path precedence, the worker-tree ignore read, the special-file rule, the empty rule, `O_NONBLOCK`, `O_NOFOLLOW`, the hash recheck or the file limit each failed its named test.
 - [x] 2.3 Transfer (D6). `transfer(delta, user_repo, m0, journal, hooks=None)`: the read-only phase
       (each path resolved from a root descriptor with `O_DIRECTORY | O_NOFOLLOW`; the user's file
       opened relative to its parent with `O_NOFOLLOW | O_NONBLOCK` and checked by `fstat` before it
