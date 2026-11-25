@@ -7,10 +7,9 @@ Behaviour is in the spec deltas; names, seams and test lists are in tasks.md. Th
 ## Context
 
 Issue #1308 (size L) asks for a scheduled job that does the post-merge half of the Definition of Done. Its
-research is `/tmp/claude-takeover/research/issue-1308.md` (2026-11-24, kept by the controller); the operator
-decided ten points in the issue comments. The controller adopted the research's split: **story 1 (this change)
-is the closeout command**; story 2 is the timer, setup step, doctor row and reinstall; story 3 is GitHub status
-and the evidence pull request.
+research is `/tmp/claude-takeover/research/issue-1308.md` (2026-11-24); the operator decided ten points in the
+issue comments. The controller adopted the research's split: **story 1 (this change) is the closeout command**;
+story 2 is the timer, setup step, doctor row and reinstall; story 3 GitHub status and the evidence pull request.
 
 Two hand-run closeouts recorded wrong evidence: the merge SHA where installed main's SHA belongs, and a doctor
 run from the development checkout. This command runs unattended on the operator's real setup, so what it may
@@ -46,7 +45,6 @@ confirmation and the evidence pull request (story 3). Live commands. Backfill. R
 | 7, 8, 9 | Declaration home; retry and window rules; one-hour minimum | Here (D1, D8, schema) |
 | 10 | `--draft` mode; the job opens the evidence PR | `--draft`: here (D9). The PR and its guards: story 3 |
 | open | Backfill for #1289 rows; drafts kept until the evidence PR merges | Backfill: unassigned (one small PR per story proposed). Keeping drafts: here, nothing is pruned; deleting: story 3 |
-| research | Timer slot, skip while a lock is held, `_RUNTIME_UNITS` | Story 2 |
 
 ## Decisions
 
@@ -114,25 +112,30 @@ Live commands (decision 1, second half) are refused, not designed: `live: true`,
 
 ### D6. A run is recorded from what executed, after scrubbing
 
-Spawn, drain stdout and stderr concurrently while the child runs (reading one to the end first can deadlock on a
-full pipe), retain at most 1 MiB of both and kill the group past it (`output_too_large`; the prefix is kept, as for
-a timeout), join stderr after a `--- stderr ---` line when non-empty, scrub, judge, write, append. Truncating after
-capture was rejected: a command may print without limit inside its timeout. Scrub: `redact_text`, then `$HOME` to
-`~`, then `/home/<name>` to `/operator`. `expect` and the marker are looked up in the scrubbed text (one the scrub
-would rewrite is refused at load). Only scrubbed text is stored or hashed, and the unscrubbed text is never logged
-(lesson 11; the research's extra raw-output hash is dropped for that). `at` is the spawn time from an injected
-clock, UTC with offset (lesson 9). A failure's reason names the check that rejected the run (lesson 8).
+Spawn, drain stdout and stderr concurrently while the child runs (reading one to the end first can deadlock on a full
+pipe), retain at most 1 MiB of both and kill the group past it (`output_too_large`), cut each stream back to its last
+newline when the cap or a timeout ended the step, join stderr after a `--- stderr ---` line when non-empty, scrub,
+judge, write, append. Truncating after capture was rejected: a command may print without limit inside its timeout.
+The cut exists because `redact_text` matches by shape and length (`AKIA` plus 16 characters, `oma_live_` plus 43): a
+cut inside a key left a fragment at every offset measured, and none once the partial last line was dropped (an
+unterminated PEM block is redacted to the end). A non-empty stream with no newline becomes a fixed marker. The
+guarantee is exactly this: a credential within one complete line is redacted as in uncut output; one longer than a
+line, or split by the producer's own breaks, is beyond `redact_text` here as everywhere. Scrub: `redact_text`, then
+`$HOME` to `~`, then `/home/<name>` to `/operator`. `expect` and the marker are looked up in the scrubbed text (one
+the scrub would rewrite is refused at load). Only scrubbed text is stored or hashed, and the unscrubbed text is never
+logged (lesson 11; the research's raw-output hash is dropped). `at` is the spawn time from an injected clock, UTC
+with offset (lesson 9). A failure's reason names the check that rejected the run (lesson 8).
 
 ### D7. The ledger is a chain verified on every read
 
-`<home>/<story>/ledger.jsonl`: `seq`, `prev`, `kind` (`merge`, `first`, `fresh`, `skip`, `reset`, `draft`), step
-fields, the declaration's fingerprint on every step entry (a `merge` entry carries its `pr` instead) and `sha256`
-over the entry's canonical JSON. Output files are `runs/<seq>-<step>.txt`, written and flushed before the entry that
-cites them; the append is the commit point, so a crash leaves an orphan file, never a recorded run without output.
-State is derived by replay; there is no second state file to disagree with it. The chain catches accidents and a
-careless agent's edits. It does not stop an actor with the operator's rights who rewrites the whole chain, and a
-removed tail is undetectable (the effect is a repeated run). A non-blocking `flock` on `<home>/.lock` keeps two
-invocations apart.
+`<home>/<story>/ledger.jsonl`: `seq`, `prev`, `kind` (`merge`, `first`, `fresh`, `skip`, `reset`, `draft`,
+`withdraw`), step fields, the declaration's fingerprint on every step and `draft` entry (a `merge` entry carries its
+`pr` instead) and `sha256` over the entry's canonical JSON. Output files are `runs/<seq>-<step>.txt`, written and
+flushed before the entry that cites them; the append is the commit point, so a crash leaves an orphan file, never a
+recorded run without output. State is derived by replay; there is no second state file to disagree with it. The
+chain catches accidents and a careless agent's edits. It does not stop an actor with the operator's rights who
+rewrites the whole chain, and a removed tail is undetectable (the effect is a repeated run). A non-blocking `flock`
+on `<home>/.lock` keeps two invocations apart.
 
 ### D8. The state machine
 
@@ -146,12 +149,13 @@ ends at `max(first.at) + hours`, so each item meets `fresh.at - first.at >= wind
 all, then `needs_person` until `verdict closeout reset <story>` (an entry, not an erase). Only entries whose
 fingerprint equals the declaration's count: a change to `pr`, the window or an item's criterion, command,
 expectation, exit code or marker voids the earlier cycles (they stay in the ledger and the report), so a fresh run
-repeats the first run's contract, and the failed count restarts. The fingerprint is a consistency control, not a
+repeats the first run's contract, and the failed count restarts. An offered draft under another fingerprint is
+withdrawn by the next `run` (`draft/` moves to `withdrawn/<seq>/`, then a `withdraw` entry and the report say so);
+until then `status` shows `needs_first` with `draft: stale`. The fingerprint is a consistency control, not a
 signature (D1: review of the declaration is the anchor). Commands: `run [--story S]`, `status [--json]`
 (declarations and ledgers only: no lock, no spawn, no identity check; an empty ledger shows `not_started`), `reset
-<story>`. Exit status: 0 when every story progressed or waits (PR not merged, commit not installed, window open); 1
-when any failed, was refused, was skipped for another reason (lookup failure, virtualenv, spawn) or needs a person;
-2 for a refused identity or bad usage; 3 when the lock is held.
+<story>`. Exit status: 0 when every story progressed or waits, 1 when any failed, was refused, was skipped for another
+reason or needs a person, 2 for a refused identity or bad usage, 3 when the lock is held (the spec lists the cases).
 
 ### D9. The draft and `check_dod.py --draft` (decision 10, first half)
 
@@ -162,22 +166,21 @@ confirmation and archive blocks are skipped, a present confirmation and the `not
 (4) `main` printing `DONE`: a draft prints `DRAFT OK (pending: ...)` or `DRAFT FAILED`. A scratch worktree was
 rejected: it writes the development repository's metadata. The draft lives in
 `<home>/<story>/draft/docs/proof/dod/`, the layout its JSON paths already use, so story 3 or a person copies
-the tree into a PR unchanged. Fields: `merged_sha`, `pr`, `on_main` and each run from the ledger (`operator-host`;
-run `sha` is installed `HEAD`, `on_main` `sha` is the merge SHA); `author`, `kind`, window, `stays_true_job`,
-`openspec` from the declaration; `setup_doctor` from the fresh cycle's doctor run. The schema has no place for
-failed runs (decision 8 wants them listed), so they go in `report.md` beside the draft.
+the tree into a PR unchanged. Fields come from the ledger and the declaration as the spec lists them; run `sha` is
+installed `HEAD`, `on_main` `sha` the merge SHA. The schema has no place for failed runs (decision 8 wants them
+listed), so they go in `report.md` beside the draft.
 
 ### D10. The write boundary and its proof
 
 One helper writes every file: it joins onto `verdict_home() / "closeout"`, resolves, and refuses an absolute
 path, `..` or a symlink out. Proof in layers. (a) A full first and fresh cycle runs in a temporary
 `HOME`/`VERDICT_HOME` with a fake installed main (a temporary git repository with a stub `.venv/bin/python`, a
-`pyvenv.cfg` and a `verdict/__main__.py` for the story commands); both trees are diffed: only `.verdict/closeout/**` is new, the fake main has no
-changed file and an identical index. The draft check is the repository's real `scripts/check_dod.py`, run by
-the test interpreter with `--root` the fake main, so ancestry and hashes are really checked. (b) The helper is tested with each bad path. (c) The shared
-home guard of #1311 [U] (an audit hook, autouse in `tests/conftest.py`) refuses writes to the real roots; one
-test aims the home at its stand-in for the real home and the write fails by name. The guard sees only this
-process, so none of these covers the child commands' own writes (Risks).
+`pyvenv.cfg` and a `verdict/__main__.py` for the story commands); both trees are diffed: only `.verdict/closeout/**`
+is new, the fake main has no changed file and an identical index. The draft check is the repository's real
+`scripts/check_dod.py`, run by the test interpreter with `--root` the fake main, so ancestry and hashes are really
+checked. (b) The helper is tested with each bad path. (c) The shared home guard of #1311 [U] (an autouse audit hook)
+refuses writes to the real roots; one test aims the home at its stand-in for the real home and the write fails by
+name. The guard sees only this process, so none of these covers the child commands' own writes (Risks).
 
 ## Risks / Trade-offs
 
@@ -185,18 +188,18 @@ process, so none of these covers the child commands' own writes (Risks).
   it to history installed main contains. Review of the declaration PR is the check.
 - **Child writes are bounded by allowlist review.** The per-entry temporary-home test shows an entry wrote nothing
   there, not that it writes nothing on the real home.
-- **A stream cut by the cap or a timeout may end inside a secret** `redact_text` cannot recognise; the prefix
-  is scrubbed like any output. **A declaration change restarts its story,** and a waiting story costs one
-  `gh pr view` and one ledger skip per invocation.
+- **`redact_text` is shape-based** (D6): a secret longer than a line or split by the producer's own breaks is
+  stored. **A declaration change restarts its story,** and a waiting story costs one `gh pr view` and one ledger
+  skip per invocation.
 - **The ledger is not a signature.** Part 7, a non-author's own run, is the real control.
 - **A red `doctor` row blocks every product closeout** until fixed (DoD part 3); the output is kept.
 - **Nothing schedules it until story 2.** The post-merge tasks run it by hand.
 
 ## Open points
 
-None blocks the build. (1) Live runs (decision 6) have no story; reading a run's routes and cost class back is
-not established by the research, so the controller decides whether to file one. (2) The initial allowlist
-(task 1.2). (3) Whether story 2's unit is a second installed-main anchor. (4) Schema room for failed runs.
+None blocks the build. (1) Live runs (decision 6) have no story (reading a run's routes and cost class back is
+not established); the controller decides whether to file one. (2) The initial allowlist (task 1.2). (3) Whether
+story 2's unit is a second installed-main anchor. (4) Schema room for failed runs.
 
 ## Migration / rollback
 
@@ -207,10 +210,10 @@ deleting `verdict/closeout/`, the schema, the parser and the option; `$VERDICT_H
 
 It runs code with the operator's credentials, unattended. What it may execute is a closed table in code,
 matched as an argument list under installed main's interpreter; a declaration cannot name a binary, working
-directory or environment. It writes only under its home. Output is scrubbed before it is judged, stored or
-hashed. Its `gh` calls are reads with a validated number. It writes no confirmation, no GitHub state and
-nothing in any repository. Declarations, `gh` output and command output are data, never instructions. No new
-dependency (`PyYAML` and `jsonschema` are declared).
+directory or environment. It writes only under its home. Output is scrubbed before it is judged, stored or hashed.
+Its `gh` calls are reads with a validated number. It writes no confirmation, no GitHub state and nothing in any
+repository. Declarations, `gh` output and command output are data, never instructions. No new dependency
+(`PyYAML` and `jsonschema` are declared).
 
 ## Routing / context / memory implications
 

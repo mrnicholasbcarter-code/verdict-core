@@ -248,9 +248,16 @@ path with `~` and every remaining `/home/<name>` with `/operator`, and SHALL sto
 that result. `expect` and `real_state_marker` SHALL be looked up in the stored text. The stored text SHALL
 satisfy `redact_text(text) == text`. Closeout SHALL drain the child's stdout and stderr concurrently while
 it runs, so neither stream blocks the other, and SHALL retain at most 1 MiB of both together. A child that
-passes that cap SHALL have its process group killed and its step failed with reason `output_too_large`;
-what was retained is scrubbed and kept like any failed step's output. The unscrubbed output SHALL NOT be
-written, logged or hashed.
+passes that cap SHALL have its process group killed and its step failed with reason `output_too_large`.
+`redact_text` recognises a credential by its shape and length, so one cut in two by the cap or a timeout
+would survive as an unrecognised fragment. When a step ended by the cap or by its timeout, each retained
+stream SHALL therefore be cut back to its last newline before scrubbing, and a non-empty stream with no
+newline SHALL be stored as the fixed text `[output cut: no complete line kept]`; a stream that ended with the
+child is kept whole. What this guarantees: a credential that lies wholly within one complete retained
+line is redacted exactly as in output that was not cut, and an unterminated PEM private key block is
+redacted to the end of the text. A credential longer than a line, or split by the producer's own line
+breaks, is outside what `redact_text` recognises, here and in every other stored output. The unscrubbed
+output SHALL NOT be written, logged or hashed.
 
 #### Scenario: Echoed secret is not stored
 - **WHEN** the command prints a bearer token and a `sk-` style key
@@ -275,6 +282,30 @@ written, logged or hashed.
 #### Scenario: Oversized output fails the step
 - **WHEN** a real child prints without end on stdout, on stderr, or on stderr first and then on stdout, under a 10 s timeout
 - **THEN** the step ends within a few seconds failed with `output_too_large` and not `timeout`, no process of the group survives, and the stored output is at most 1 MiB and equal to its own redaction
+
+#### Scenario: Credential cut at every offset leaves no fragment
+- **WHEN** a cut stream's retained bytes are a complete line followed by the first n characters of an `AKIA` key, an `oma_live_` key, an `sk-` key or a bare bearer token, for every n inside the credential
+- **THEN** the stored text ends at the complete line, holds no run of 6 or more characters of the credential, and equals its own redaction
+
+#### Scenario: Credential cut by the cap leaves no fragment
+- **WHEN** a real child prints a complete line and then an `AKIA` key or an `oma_live_` key, with the cap placed inside the key
+- **THEN** the step fails with `output_too_large` and the stored text ends at the complete line and holds no run of 6 or more characters of the key
+
+#### Scenario: Credential cut by the timeout leaves no fragment
+- **WHEN** a real child prints a complete line, then the first half of an `AKIA` key or an `oma_live_` key with no newline, flushes and sleeps past its timeout
+- **THEN** the step fails with `timeout` and the stored text ends at the complete line and holds no run of 6 or more characters of the key
+
+#### Scenario: Cut stream without a newline stores only the marker
+- **WHEN** the retained bytes of one cut stream are not empty and hold no newline
+- **THEN** that stream's stored text is exactly `[output cut: no complete line kept]` and the other stream is stored as usual
+
+#### Scenario: Complete lines of a cut stream are scrubbed like any output
+- **WHEN** a stream is cut after complete lines holding a bearer token and an `sk-` key, followed by an unterminated PEM private key block
+- **THEN** the token and the key are redacted, the PEM body is redacted to the end of the text, and the stored text equals its own redaction
+
+#### Scenario: Output that ended with the child keeps its last line
+- **WHEN** a child exits 0 having printed its last line without a newline
+- **THEN** that line is stored whole and `expect` is found in it
 
 ### Requirement: The ledger SHALL be append-only and verified on every read
 
@@ -315,7 +346,8 @@ fourth SHALL NOT run and the story is `needs_person` until `verdict closeout res
 entry (history is kept). Every step entry SHALL carry the fingerprint of the declaration it ran under. A
 change to any fingerprinted field, a command included, SHALL void the cycles recorded under another
 fingerprint: they stay in the ledger and the report, but count as no first run, no fresh run and no failed
-cycle, and no draft cites them. A change outside the fingerprint (`timeout_seconds`, `author`,
+cycle, and no draft cites them; a draft already offered under another fingerprint is withdrawn as the
+draft requirement says. A change outside the fingerprint (`timeout_seconds`, `author`,
 `stays_true_job`, `openspec`) voids nothing. No option, environment variable or declaration value SHALL
 set the clock or shorten the window.
 
@@ -373,6 +405,18 @@ with the checker's output. It SHALL write `report.md` beside the draft listing e
 voided runs included, by step, time, exit code and output path. It SHALL NOT write under `docs/proof/dod/` of any
 repository, mark a story done, or write a confirmation.
 
+A draft stands under the declaration it was built from. Its `draft` entry carries that declaration's
+fingerprint, and the draft is offered only while the declaration's fingerprint is still equal to it and no
+`withdraw` entry follows it. When a `run` finds an offered draft whose fingerprint differs from the
+declaration's, it SHALL, before it spawns anything for that story and after the identity checks, move
+`draft/` to `<home>/<story>/withdrawn/<seq>/` (`seq` of the `draft` entry; nothing reads `withdrawn/` as an
+offer) through the write helper, append one `withdraw` entry (the `draft` seq, both fingerprints, reason
+`declaration_changed`) and rewrite `report.md` to say that the draft was withdrawn and why. The story is then
+`needs_first` (`waiting_install` while a changed `pr` has no merge entry). Every earlier ledger entry stays.
+The move comes first and the entry second; a `run` that finds the move done and the entry missing appends
+it, once. `status` SHALL NOT show such a draft as offered: until a `run` withdraws it, `status` shows
+`needs_first` with `draft: stale`.
+
 #### Scenario: Complete story yields a draft that passes the draft check
 - **WHEN** a fixture story has a passing first and fresh cycle, with merge commit M earlier than installed `HEAD` S
 - **THEN** the draft exists with `on_main.sha` M and run `sha` values S, `check_dod.py --draft` exits 0 on it, and the ledger gains a `draft` entry with the file's digest
@@ -400,6 +444,18 @@ repository, mark a story done, or write a confirmation.
 #### Scenario: Failed runs are listed in the report and not in the evidence
 - **WHEN** a cycle failed before the passing one, and an earlier cycle was voided by a changed declaration
 - **THEN** `report.md` lists both with their output paths, and the draft JSON cites only passing runs of the current fingerprint
+
+#### Scenario: Changed declaration withdraws an offered draft
+- **WHEN** a story has an offered draft (a passing first and fresh cycle and a `draft` entry) and then one of `pr`, `freshness_window_hours`, or an item's `criterion`, `argv`, `expect`, `expect_exit_code` or `real_state_marker` changes, and `run` is invoked
+- **THEN** no `draft/` exists, its files are byte for byte under `withdrawn/<seq>/`, the ledger gained exactly one `withdraw` entry and kept the `draft` entry, `report.md` says the draft was withdrawn with reason `declaration_changed`, and `status` shows `needs_first` (`waiting_install` for `pr`)
+
+#### Scenario: Status does not offer a draft under a changed declaration
+- **WHEN** a story has an offered draft, one of those fields changes, and `status` runs before any `run`
+- **THEN** `status` shows `needs_first` with `draft: stale` and not `awaiting_confirmation`, it spawns nothing, and `draft/` is still where it was
+
+#### Scenario: Interrupted withdrawal is finished once
+- **WHEN** `draft/` was moved to `withdrawn/<seq>/` but the `withdraw` entry was never appended
+- **THEN** the next `run` appends the entry, a further `run` changes nothing, and the ledger holds one `withdraw` entry for that `draft` entry
 
 ### Requirement: Closeout SHALL write only under its home and never change anything else
 

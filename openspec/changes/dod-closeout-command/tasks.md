@@ -144,6 +144,22 @@ Conventions for every task:
       (the secret is searched for in the output file, the ledger, the report and the captured log),
       `test_home_path_is_rewritten`, `test_stored_output_is_stable_under_redaction`,
       `test_expected_text_is_judged_after_scrubbing`.
+- [ ] 6.3 Cut streams (D6). When a step ended by the cap or by its timeout, each retained stream is cut back to its
+      last newline (bytes, before decoding) and then scrubbed; a non-empty stream with no newline becomes the
+      constant `[output cut: no complete line kept]`; a stream that ended with the child is kept whole. The cap is a
+      parameter of the spawn function (production value 1 MiB) so a test can place it inside a credential.
+      Files: `verdict/closeout/execute.py`, `tests/test_closeout_execute.py`. Verify: same file
+      `::TestCutOutput` with `test_credential_cut_at_every_offset_leaves_no_fragment` (the pure scrub function;
+      each of an `AKIA` key, an `oma_live_` key, an `sk-` key and a bare bearer token, cut after every
+      character; asserts no run of 6 or more characters of the credential in the stored text; it carries a
+      control that `redact_text` alone leaves a fragment at the same cuts, and it fails against a scrub that
+      does not cut back to the last newline), `test_credential_cut_by_the_cap_leaves_no_fragment` and
+      `test_credential_cut_by_the_timeout_leaves_no_fragment` (real child; parametrised `AKIA` key and
+      `oma_live_` key; the cap, or the timeout, falls inside the key; each fails against a scrub that keeps the
+      partial line), `test_cut_stream_without_a_newline_stores_only_the_marker` (asserts the marker equals its
+      own redaction), `test_complete_lines_of_a_cut_stream_are_scrubbed_like_any_output` (bearer token, `sk-`
+      key, then an unterminated PEM block), `test_output_that_ended_with_the_child_keeps_its_last_line` (fails
+      against a scrub that always cuts back to the last newline).
 
 ## 7. The ledger and the write helper (D7, D10)
 
@@ -205,7 +221,7 @@ Conventions for every task:
 
 - [ ] 9.1 Builder and report. Assemble the JSON from verified entries only, copy outputs byte for byte,
       write `report.md`, run `check_dod.py --draft --root <installed> --evidence-root <draft>` of installed
-      main, move a rejected candidate to `rejected/`, append the `draft` entry. Files:
+      main, move a rejected candidate to `rejected/`, append the `draft` entry (it carries the fingerprint). Files:
       `verdict/closeout/draft.py`, `tests/test_closeout_draft.py`. Verify: `$TESTENV uv run --frozen python
       -m pytest -q -n 2 tests/test_closeout_draft.py::TestDraft` with
       `test_complete_story_yields_a_draft_that_passes_the_draft_check` (merge commit M earlier than
@@ -217,6 +233,21 @@ Conventions for every task:
       `test_too_early_fresh_run_fails_the_draft_check` (hand-built draft),
       `test_no_draft_for_a_run_that_did_not_happen` (first cycle only; corrupt ledger; `spawn_error`),
       `test_failed_runs_are_listed_in_the_report_and_not_in_the_evidence` (also a voided cycle).
+- [ ] 9.2 Withdrawal (D8). On a `run`, after the identity checks and before any spawn for the story: when the
+      latest `draft` entry is offered (no `withdraw` entry after it) and its fingerprint differs from the
+      declaration's, move `draft/` to `withdrawn/<draft seq>/` through the write helper, then append the
+      `withdraw` entry, then rewrite `report.md`; a missing `draft/` with a missing entry appends the entry
+      only. `status` derives `draft: stale` from the same comparison and writes nothing. Files:
+      `verdict/closeout/draft.py`, `verdict/closeout/cycle.py`, `tests/test_closeout_draft.py`. Verify:
+      `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_closeout_draft.py::TestWithdrawal` with
+      `test_changed_declaration_withdraws_an_offered_draft` (starts from a completed draft built by real first
+      and fresh cycles, then changes one field per case: `pr`, the window longer and shorter, `criterion`,
+      `argv`, `expect`, `expect_exit_code`, `real_state_marker`; asserts no `draft/`, the moved files byte for
+      byte, one `withdraw` entry beside the kept `draft` entry, the report text and the state; it fails against
+      an implementation that only voids the cycles and leaves `draft/`, which is what task 8.4's tests allow)
+      and `test_interrupted_withdrawal_is_finished_once` (the entry append is made to fail after the move; the
+      next `run` appends one entry and a third changes nothing). The status case is
+      `test_status_does_not_offer_a_draft_under_a_changed_declaration` in task 10.1.
 
 ## 10. The command and its boundary (D8, D10)
 
@@ -226,7 +257,9 @@ Conventions for every task:
       --frozen python -m pytest -q -n 2 tests/test_closeout_cli.py::TestCli` with
       `test_status_shows_an_empty_ledger_as_not_started`, `test_status_spawns_nothing_and_writes_nothing`,
       `test_second_invocation_exits_busy`, `test_waiting_exits_zero_and_any_other_skip_exits_one` (the seven
-      skips of the scenario).
+      skips of the scenario), `test_status_does_not_offer_a_draft_under_a_changed_declaration` (offered draft,
+      one field changed, `status` before any `run`: `needs_first` with `draft: stale`, nothing spawned,
+      `draft/` untouched; it fails against a `status` that reads only the `draft` entry).
 - [ ] 10.2 Boundary proofs. Files: `tests/test_closeout_cli.py`. Verify: same file `::TestBoundary` with
       `test_a_full_cycle_writes_only_under_the_closeout_home` (both trees diffed, index identical, and no file
       under the closeout home holds the home path or `/home/`),
