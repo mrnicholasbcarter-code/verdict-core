@@ -118,19 +118,16 @@ a key cannot survive as a fragment.
 > directory form is what the binary expects when running `--standalone`. This
 > deviation is intentional and correct.
 
-**Worker identity (design detail):** A request carrying the `X-Verdict-Worker` header must name
-its assigned route in a non-empty string `model`. The relay hands that route to admission as a
-typed input (`WorkerAssignedRoute`, set only by the relay and only when the header is present;
-client JSON cannot supply it). `_decision_from_admit` selects it within the admitted set, only
-when that exact route id is in `receipt.admitted` for this request, and mints its route-bound
-proof with the same `_chosen_route_proof` call as for a chosen route; the provider, context pack
-and receipt follow the pinned route and there are no fallback routes. A route outside the
-admitted set is denied with no proof minted. The relay only verifies that outcome and never
-rewrites a worker's decision. A missing, empty, null or non-string `model` is denied, and no
-denial contacts upstream; a worker request never falls through to automatic selection.
-An accepted worker decision comes only from this admission pinning, so a worker request has
-no fallback attempts; the relay also clears the alternatives of any accepted worker decision
-(defence in depth).
+**Worker identity (design detail):** Superseded by the change `serve-worker-assignment`
+(2026-11-24). The worker header no longer selects a route and `WorkerAssignedRoute` is removed.
+A worker's route comes from a verified signed assignment (its bearer); the request's `model` must
+equal the signed route, or the request is refused 400 before routing. The relay hands the verified
+assignment to admission as a typed server-set input; the assigned lane narrows to the signed route
+right after the active and cooling steps, runs every per-route gate on it, and mints its
+route-bound proof with the same `_chosen_route_proof` call as for a chosen route; there are no
+fallback routes. A route the gates drop is denied with no proof minted, naming the check that
+dropped it. The relay only verifies that outcome and never rewrites a worker's decision, and it
+clears the alternatives of any accepted worker decision (defence in depth).
 
 **Execution-path requests are rejected (operator decision, 2026-11-24):** a worker request that
 carries `execution_path_request` is refused with 400 before any routing, because the
@@ -140,9 +137,11 @@ the value, on both relay surfaces); `IntelligenceService.route` also refuses a w
 route combined with `execution_path_request`, so no other caller can select a worker's route
 through that flow. This rejection is the contract, not a gap.
 
-2026-11-24: the worker holds the serve token and the route is pinned by the worker header until #1313; a worker could name another admitted route, never a non-admitted one. (#1313, OC1b, carries the signed per-attempt assignment and a prompt-only task delivery; the real dispatch-origin check is done, see "Dispatch origin" below (#1326); `.verdict-context.md` stays until then.)
+2026-11-24: the worker held the serve token and the route was pinned by the worker header until #1313 story 1; that is superseded (`serve-worker-assignment`): serve now accepts only a signed assignment from a worker and refuses the bare header, so the opt-in executor, which still sends the serve token, is refused by design until #1325. (#1313, OC1b, carries the signed per-attempt assignment and a prompt-only task delivery; the real dispatch-origin check is done, see "Dispatch origin" below (#1326); `.verdict-context.md` stays until then.)
 
-**Worker credential and pre-dispatch check (design detail):** The credential is serve's own
+**Worker credential and pre-dispatch check (design detail):** (The serve side is superseded by
+`serve-worker-assignment`: serve refuses the serve token from a worker and accepts only a signed
+assignment; the executor side changes in #1325.) The credential is, until then, serve's own
 bearer token, resolved by Verdict (`serve_service.resolve_serve_token`: the environment's
 `LLMGATE_AUTH_TOKEN`, the credential store, then `serve.env`, in the order `verdict setup` uses),
 never an operator-exported worker variable and never the OmniRoute gateway key. It is chosen in

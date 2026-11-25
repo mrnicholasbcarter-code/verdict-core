@@ -9,17 +9,25 @@ lists which of that change's scenarios this one supersedes.
 ### Requirement: A signed assignment carries the route, the run, the node and an expiry
 
 A worker assignment SHALL be an opaque bearer string `vwa1.<payload>.<tag>`, where `payload` is the
-base64url of a JSON object with exactly the fields `route_id`, `run_id`, `node_id` (each a
-non-empty string of at most 128 characters without control characters) and `exp` (an integer of
-seconds since the Unix epoch, UTC, from 0 through 253402300799, which is 9999-12-31T23:59:59Z, the
-last second a UTC `datetime` can hold), and `tag` is the base64url of
-`HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + payload)`. A token over 2 KiB, a token that
-does not split into exactly three parts, a payload that is not that object, an `exp` that is not an
-integer (including a boolean or a float), and an `exp` outside that range SHALL be refused. The
-verifier SHALL turn `exp` into a UTC time with an explicit offset as part of verification, and any
-`OverflowError`, `ValueError` or `OSError` raised by that conversion SHALL be refused as
-`malformed`, never raised to the caller. A correctly signed assignment whose `exp` cannot be
-represented therefore ends as the generic authentication refusal, never as an error response.
+unpadded base64url of a JSON object with exactly the fields `route_id`, `run_id`, `node_id` (each a
+non-empty string of at most 128 characters without control characters or lone surrogates), `iat` (issued at) and `exp`
+(expiry), each of the last two an integer of seconds since the Unix epoch, UTC, from 0 through
+253402300799 (9999-12-31T23:59:59Z, the last second a UTC `datetime` can hold), and `tag` is the
+unpadded base64url of `HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + payload)`, with
+`payload` taken as the received text. Base64url here is the URL-safe alphabet without `=` padding,
+decoded strictly: any other character, an impossible length or non-canonical trailing bits SHALL be
+refused. The lifetime `exp - iat` SHALL be from 0 through 1,800 seconds (twice the 900 s attempt
+ceiling); a longer or negative lifetime SHALL be refused. `iat` SHALL NOT be more than 60 seconds
+ahead of the verifier's clock, so the usable window of any accepted assignment is at most 1,860
+seconds from now whatever its dates say (without this a token dated years ahead with a one-second
+lifetime would be usable for years); a later `iat` SHALL be refused as `malformed`.
+A token over 2 KiB, a token that does not split into exactly three parts, a payload that is not
+that object, an `exp` or `iat` that is not an integer (including a boolean or a float), and an
+`exp` or `iat` outside that range SHALL be refused. The verifier SHALL check the ranges before it
+does arithmetic on them, SHALL turn `exp` into a UTC time with an explicit offset as part of
+verification, and any `OverflowError`, `ValueError` or `OSError` raised by that conversion SHALL be
+refused as `malformed`, never raised to the caller. A correctly signed assignment whose `exp` cannot
+be represented therefore ends as the generic authentication refusal, never as an error response.
 
 #### Scenario: A well-formed, unexpired assignment verifies
 
@@ -28,9 +36,10 @@ represented therefore ends as the generic authentication refusal, never as an er
 
 #### Scenario: Malformed assignments are refused
 
-- **WHEN** the token has two parts, four parts, a tag of the wrong length, a payload that is not
-  base64url, a payload that is not a JSON object, an extra field, a missing field, an empty
-  `route_id`, or an `exp` that is a string, a float, a boolean or negative
+- **WHEN** the token has two parts, four parts, a tag of the wrong length or with non-canonical
+  trailing bits, a payload that is not base64url, a payload that is not a JSON object, a payload
+  with a repeated key, an extra field, a missing field (`iat` included), an empty `route_id`, or an
+  `exp` or `iat` that is a string, a float, a boolean or negative
 - **THEN** verification is refused and the request is denied with no upstream call
 
 #### Scenario: An exp that cannot be a timestamp is refused as malformed
@@ -43,13 +52,39 @@ represented therefore ends as the generic authentication refusal, never as an er
 
 #### Scenario: The largest representable exp verifies
 
-- **WHEN** an assignment is signed with `exp` 253402300799 and verified with a clock before it
+- **WHEN** an assignment is signed with `exp` 253402300799 and an `iat` within 1,800 s of it, and
+  verified with a clock inside that lifetime (for example 9999-12-31T23:50:00Z)
 - **THEN** verification succeeds and its expiry is `9999-12-31T23:59:59Z`
+
+#### Scenario: A token dated ahead of the clock is refused
+
+- **WHEN** an assignment is signed with a correct tag, a lifetime of one second and an `iat` more
+  than 60 seconds ahead of the verifier's clock (including `iat` 253402300798, `exp` 253402300799)
+- **THEN** verification is refused with the reason `malformed`, and a request that presents it is
+  denied 403 with the generic body, with no upstream call; an `iat` up to 60 seconds ahead is
+  accepted
 
 #### Scenario: An exp of zero is well-formed and expired
 
-- **WHEN** an assignment is signed with `exp` 0
+- **WHEN** an assignment is signed with `exp` 0 and `iat` 0
 - **THEN** verification is refused with the reason `expired`, not `malformed`
+
+#### Scenario: A lifetime over 1,800 seconds is refused
+
+- **WHEN** an assignment is signed with a correct tag, `exp - iat` of 1801 (or more), whether or not
+  `exp` is still in the future
+- **THEN** verification is refused with the reason `malformed`, and a request that presents it is
+  denied 403 with the generic body, with no upstream call
+
+#### Scenario: A lifetime of 1,800 seconds or less is accepted
+
+- **WHEN** an assignment is signed with `exp - iat` of 0, 900 or 1800 and an unexpired `exp`
+- **THEN** verification succeeds
+
+#### Scenario: A negative lifetime is refused
+
+- **WHEN** an assignment is signed with `iat` after `exp`, or with a negative `iat`
+- **THEN** verification is refused with the reason `malformed`
 
 #### Scenario: An oversized token is refused before it is decoded
 
@@ -72,8 +107,8 @@ failed; serve SHALL log the reason code only, never the token.
 
 #### Scenario: Each signed field is covered by the tag
 
-- **WHEN** the payload of a valid assignment is changed in `route_id`, `run_id`, `node_id` or `exp`
-  and the tag is kept
+- **WHEN** the payload of a valid assignment is changed in `route_id`, `run_id`, `node_id`, `iat`
+  or `exp` and the tag is kept
 - **THEN** each change is denied 403 with no upstream call
 
 #### Scenario: An expired assignment is denied
@@ -97,11 +132,13 @@ failed; serve SHALL log the reason code only, never the token.
 ### Requirement: The assignment key is a separate generated key that fails closed
 
 The signing key SHALL be a separate secret of at least 32 random bytes, never the serve bearer
-token. `verdict setup --apply --allow host.serve` SHALL generate it when absent, keep an existing
-valid key, and write nothing on a dry run. It SHALL be stored only in
+token. `verdict setup --apply --allow host.serve` SHALL generate it when absent or unusable, keep
+an existing valid key (repairing only a mode other than 0600, never regenerating for it), refuse a
+key path that is not a file, and write nothing on a dry run. It SHALL be stored only in
 `~/.config/verdict/worker-assignment.key` (mode 0600, written atomically), SHALL be read from that
-file on every assignment verification and never cached across requests, and SHALL NOT be placed in
-any process environment, the credentials store, `serve.env` or a worker's configuration. When the
+file on every assignment verification and never cached across requests (the read SHALL NOT run on
+the serve event loop, so a slow home filesystem stalls only the request that waits on it), and
+SHALL NOT be placed in any process environment, the credentials store, `serve.env` or a worker's configuration. When the
 file is missing, unreadable or invalid, serve SHALL answer 503 to an assignment request and admit
 nothing; requests that do not present an assignment SHALL be unaffected. `verdict doctor` SHALL
 report a missing, short or wrongly-moded key file. Rotation SHALL be removing the file and running
@@ -118,10 +155,24 @@ setup again; assignments signed with the old key SHALL stop verifying at once.
 - **WHEN** setup runs as a dry run with no key file
 - **THEN** no file is written
 
+#### Scenario: A key-only change is reported and restarts nothing
+
+- **WHEN** setup creates, replaces or repairs the mode of the key file while the unit and the env
+  file are unchanged
+- **THEN** its result reports `changed` true, `service_changed` false and no `try-restart` or
+  `daemon-reload` (serve reads the key on each request), and the host step still restarts serve
+  when it is unhealthy exactly as before
+
+#### Scenario: An unusable key is replaced and a loose mode is only repaired
+
+- **WHEN** setup runs and the key file is empty, shorter than 32 bytes or undecodable
+- **THEN** it is replaced by a fresh key; but a valid key whose mode is not 0600 keeps its bytes
+  and only has its mode set to 0600
+
 #### Scenario: A missing key fails closed
 
 - **WHEN** an assignment request arrives and the key file is missing, empty, shorter than 32 bytes
-  or not decodable
+  or not decodable, or the read itself raises
 - **THEN** serve answers 503 and no upstream call is made, while a request with the serve token and
   no assignment is served as before
 
@@ -146,7 +197,7 @@ setup again; assignments signed with the old key SHALL stop verifying at once.
 ### Requirement: An assignment is honoured only on the OpenAI relay surfaces
 
 Serve SHALL accept an assignment, as the `Authorization: Bearer` value, only on
-`POST /v1/chat/completions` and `POST /v1/responses`. On every other path or method, on
+`POST /v1/chat/completions` and `POST /v1/responses`. On every other authenticated path or method, on
 `POST /v1/messages`, and in `x-api-key`, an assignment SHALL be refused with 403. The only
 exceptions are `/health` and the OmniRoute webhook path, which skip caller authentication for every
 credential, never read a bearer, and select and authorise nothing. A request whose bearer equals
@@ -210,6 +261,12 @@ header is present.
 
 - **WHEN** a request carries the worker header and no valid authentication
 - **THEN** it is refused as any unauthenticated request is refused
+
+#### Scenario: A non-ASCII assignment credential is refused, not an error
+
+- **WHEN** a bearer or an `x-api-key` value with the `vwa1.` prefix holds a non-ASCII character,
+  alone or beside another credential
+- **THEN** it is refused 403 with the generic body and no upstream call, never a server error
 
 #### Scenario: A verified assignment needs no header
 
@@ -313,6 +370,14 @@ offloaded and a pin SHALL NOT lower that floor.
   field or as the argument to `route()`)
 - **THEN** it is denied before any ladder step with `protected` true, the safety flag
   `worker_assignment_protected_denied`, no proof and no upstream call, and no route is selected
+
+#### Scenario: A lane that cannot obtain live admission denies
+
+- **WHEN** a verified assignment is routed by a service with no live admission (an offline
+  service, or none configured), or its request profile cannot be built (for example an unknown
+  `spend_policy`)
+- **THEN** the request is denied with no proof and no upstream call, the legacy path and its
+  scanner are not reached, and no other route is selected
 
 #### Scenario: Production profile still fails closed
 
@@ -435,7 +500,12 @@ content: message content a client sends is forwarded verbatim. The lane's receip
 the persisted routing attempt id for an admitted decision, SHALL be derived from an unambiguous
 (injective) encoding of the route id, the profile digest, the run id and the node id, so that
 assignments whose ids differ, including ids that contain a delimiter character such as `|`, never
-produce the same hash input.
+produce the same hash input. A denied lane decision that persists a routing receipt SHALL carry a
+receipt id of its own, set before it is persisted, derived from the same kind of encoding of the
+signed route, run and node ids, the profile digest, the assignment's payload digest and the code of
+the check that dropped the route, with a tag that differs from an admitted decision's: denials of
+different runs, nodes, routes or attempts never share a persisted root, and a denial and an
+admission of one assignment never do.
 
 #### Scenario: Receipts name the run and node
 
@@ -448,6 +518,16 @@ produce the same hash input.
   node ids (`a|b`, `c`) and (`a`, `b|c`), and again with (`a","b`, `c`) and (`a`, `b","c`)
 - **THEN** the lane's receipt ids differ within each pair, the persisted routing attempt ids
   differ with them, and the same assignment sent twice gets the same receipt id both times
+
+#### Scenario: Denied assignments keep their own persisted roots
+
+- **WHEN** two assignments that differ in the node id (or the run id, the route, or the signing
+  of a new attempt) are each denied, whether by the narrowing, the capability gate, the
+  eligibility gate or the defence-in-depth refusal, and again for one assignment denied by two
+  different checks
+- **THEN** each denial persists its own routing root, each root names its own assignment, the
+  denied decision's receipt id is that root's attempt id, and no upstream call is made; the same
+  assignment denied the same way twice keeps one root
 
 #### Scenario: A secret never appears
 

@@ -471,10 +471,17 @@ weakened test. Reversible.
   gate without streaming and tools metadata on the relay path). The adapter merges opt-in; the
   serve fix goes into #1313 with the signed per-attempt assignment; OpenCode becomes the default
   only after a live smoke passes with it.
+* **Amendment (2026-11-24, #1313 story 1):** the route pin comes from a signed per-attempt worker
+  assignment, not from the `X-Verdict-Worker` header. `verdict serve` verifies the assignment
+  (HMAC-SHA256, a separate generated key, a lifetime of at most 1,800 s), pins the request to the
+  signed route on an assigned lane that still runs every per-route gate, and refuses the bare
+  header. The executor that mints the assignment is #1325; until then serve denies the opt-in
+  executor by design. Record: `openspec/changes/serve-worker-assignment/`, ADR-053 decision 1.
 * **Amends:** nothing yet: ADR-041's default worker executor (`direct-gateway`) is unchanged until
   the default is switched.
 * **Record:** [ADR-053](../adr/ADR-053-opencode-worker-adapter.md),
-  `openspec/changes/opencode-worker-adapter/`. Adapter in #1299 (opt-in); serve fix in #1313.
+  `openspec/changes/opencode-worker-adapter/`, `openspec/changes/serve-worker-assignment/`.
+  Adapter in #1299 (opt-in); serve fix in #1313.
 
 ## D39: Single-family planner proceeds instead of failing closed (operator, 2026-11-23; ADR-051 amendment)
 

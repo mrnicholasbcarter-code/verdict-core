@@ -628,6 +628,56 @@ verdict serve --host 127.0.0.1 --port 8000
 For local development only, `LLMGATE_ALLOW_ANONYMOUS=1` starts without a token
 on a loopback host and keeps receipts in memory (lost on restart).
 
+#### Worker assignments
+
+An OpenCode worker does not hold the serve token. Its only credential is a signed assignment from
+the orchestrator, sent as `Authorization: Bearer vwa1.<payload>.<tag>`:
+
+- `payload` is unpadded base64url of a JSON object with `route_id`, `run_id`, `node_id`, `iat`
+  (issued at) and `exp` (expiry; integer seconds since the Unix epoch, UTC). The lifetime
+  `exp - iat` is at most 1,800 seconds, and `iat` may be at most 60 seconds ahead of serve's clock,
+  so an accepted assignment is usable for at most 1,860 seconds from now.
+- `tag` is unpadded base64url of `HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + payload)`.
+
+`verdict serve` verifies it in constant time and honours it only on `POST /v1/chat/completions`
+and `POST /v1/responses`. On every other authenticated path, on `POST /v1/messages` and in
+`x-api-key` it is refused with 403, and in anonymous mode it is refused on every path without
+reading the key. (`/health` and the OmniRoute webhook path never read a bearer, so an assignment
+there is ignored.) The
+request's `model` must equal the signed route (a different, missing or malformed `model` is refused
+with 400 before routing). The assignment pins the request to that one route on an assigned lane
+that still runs every per-route gate: an inactive, cooled, opaque, unmapped, unhealthy or
+incapable route is denied and nothing else is selected. The assigned lane does not run the keyword
+scanner, the worthiness class, the planner's capability inference, the Top-K shortlist or the
+cheap-path pack, so the body is forwarded as sent; `streaming` is waived for a verified assignment
+and recorded in the receipts (`requirement_waivers`, `worker_assignment`). Explicitly protected
+work (`protected: true`, criticality `critical`) is never offloaded to an assigned route. The
+production profile and `VERDICT_REQUIRE_EXECUTION_PATH` do not support workers: they answer 400.
+The `X-Verdict-Worker` header selects nothing; a request that carries it without a verified
+assignment is refused with 403.
+
+- **Key.** The signing key is a separate generated secret of at least 32 bytes. `verdict setup
+  --apply --allow host.serve` generates it when absent or unusable, keeps a valid one (fixing only a
+  mode other than 0600) and writes nothing on a dry run. It lives in `~/.config/verdict/worker-assignment.key` (mode 0600, written atomically),
+  next to `serve.env` but not in it, not in the credentials store and not in any process
+  environment. Serve and the orchestrator read the file on every use (serve in a worker thread,
+  never on its event loop), so a rotation needs no restart: setup reports a new, replaced or
+  mode-repaired key as `changed` and restarts serve only when the unit or env file changed. `verdict doctor` names a missing, short or wrongly moded key file and never prints its
+  value.
+- **Rotation.** Remove the file and run `verdict setup --apply --allow host.serve` again. An
+  assignment signed with the old key stops verifying at once, so rotate when no run is active.
+- **Responses.** `403` with the same body as a wrong bearer for a forged, expired, tampered,
+  truncated, over-long or otherwise unverifiable assignment (the reason is logged by code only,
+  never the token); `503` when the key file is missing or unusable (requests without an
+  assignment are unaffected).
+- **Residual risk.** A worker runs as the same Unix user, so a hostile shell in it can read the
+  key file. The assignment stops a model from choosing its route; it does not stop a shell from
+  minting one (an accepted risk, ADR-053 decision 4). An assignment is a bearer credential: anyone
+  who holds an unexpired one can call its one route until it expires.
+
+The executor that signs assignments is a later story (#1325), so until it lands `verdict
+orchestrate --executor opencode` still sends the serve token and is refused by serve.
+
 ### Outcome shadow sink
 
 The candidate pool attaches a shadow-only `outcome_shadow` block to every

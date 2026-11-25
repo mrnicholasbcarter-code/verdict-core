@@ -76,17 +76,33 @@ mismatch"); it injects the compiled pack into the forwarded body when the decisi
 
 ```
 vwa1.<payload>.<tag>
-payload = base64url(JSON {"exp": <int>, "node_id": <str>, "route_id": <str>, "run_id": <str>})
+payload = base64url(JSON {"exp": <int>, "iat": <int>, "node_id": <str>, "route_id": <str>, "run_id": <str>})
 tag     = base64url(HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + payload))
 ```
 
-`vwa1` is the format version. `exp` is integer seconds since the Unix epoch, UTC (an integer
-cannot be a naive local time; a boolean, float, negative or non-integer is refused), and it has an
-upper bound: `0 <= exp <= 253402300799`, which is 9999-12-31T23:59:59Z, the last second a UTC
-`datetime` holds. The bound is needed because the verified result carries `expires_at` as a UTC
-time and every receipt writes it in ISO form; a larger integer, such as 253402300800 (a
-`ValueError`, year 10000) or 2^63 and above (an `OverflowError`), carries a valid tag and still
-cannot become that value. The domain
+Base64url is the URL-safe alphabet **without `=` padding** (`vwa1.e30.e30` is a well-formed shape,
+not a valid assignment), decoded strictly: another character, an impossible length or non-canonical
+trailing bits is refused. `payload` in the MAC is the received text, not a re-encoding.
+
+`vwa1` is the format version. `exp` (expiry) and `iat` (issued at) are integer seconds since the
+Unix epoch, UTC (an integer cannot be a naive local time; a boolean, float, negative or
+non-integer is refused), and each has an upper bound: `0 <= exp <= 253402300799` (and the same for `iat`), which is
+9999-12-31T23:59:59Z, the last second a UTC `datetime` holds. The bound is needed because the
+verified result carries `expires_at` as a UTC time and every receipt writes it in ISO form; a larger
+integer, such as 253402300800 (a `ValueError`, year 10000) or 2^63 and above (an `OverflowError`),
+carries a valid tag and still cannot become that value.
+
+**Lifetime cap** (accepted by the operator, 2026-11-24, after this design merged): `0 <= exp - iat
+<= 1800`, twice the 900 s attempt ceiling in `orchestration/runtime.py`, so a mis-signed long-lived
+assignment cannot exist. A longer or negative lifetime is `malformed` (no new reason code), and the
+cap is checked before expiry: a long lifetime in the past is `malformed`, not `expired`. The
+ranges of `exp` and `iat` are checked before the subtraction. **`iat` is also compared with the
+clock** (added after review): an `iat` more than 60 s ahead of serve's clock is `malformed`
+(`MAX_CLOCK_SKEW_SECONDS`). Without it the cap bounds only the declared lifetime: a token with
+`iat = 253402300798` and `exp = 253402300799` has a one-second lifetime and is usable from now until
+year 9999. With it, `exp <= iat + 1800 <= now + 1860`, so the usable window of any accepted
+assignment is at most 1,860 s whatever its dates say, and a signer whose clock runs a little ahead
+of serve's is still accepted. `iat` is not carried into the verified result or the receipts. The domain
 tag keeps a tag made for this purpose from being valid for any other HMAC use of the key.
 `route_id`, `run_id` and `node_id` are non-empty strings of at most 128 characters with no control
 characters (they are written to logs and receipts). Unknown or missing fields are refused. A
@@ -95,7 +111,8 @@ token over 2 KiB is refused before decoding.
 **Verification** (`verdict/worker_assignment.py`, new; pure, no I/O except loading the key):
 split on `.` into exactly three parts; decode the tag; recompute the HMAC over the received payload
 text; compare with `hmac.compare_digest`; only after the compare succeeds decode and validate the
-payload (shape, field limits and the `exp` range above); convert `exp` to the UTC `expires_at`
+payload (shape, no repeated key, field limits, the ranges of `exp` and `iat` and the lifetime cap
+above); convert `exp` to the UTC `expires_at`
 inside a guard that maps `OverflowError`, `ValueError` and `OSError` to `malformed`, so no value
 that is not a timestamp passes the verifier and none raises out of it; then check `exp > now`
 (strict, UTC, injected clock). A correctly signed `exp` of 0 is well-formed and ends `expired`; one
@@ -202,14 +219,22 @@ A separate key, never the serve token.
 
 - **Generated** by `verdict setup --apply --allow host.serve` (`serve_service.manage_service`),
   the same action that writes `serve.env`: `secrets.token_bytes(32)`, stored as URL-safe base64
-  text. Idempotent: an existing valid key is kept, never regenerated. A dry run writes nothing.
+  text. Idempotent: an existing valid key is kept, never regenerated. A key that cannot be used
+  (empty, under 32 bytes, undecodable, over 4 KiB) is replaced; a valid key whose mode is not 0600
+  is kept and only its mode is repaired; a key path that is not a regular file is refused, never
+  overwritten. A dry run writes nothing and reports the step (`create`, `keep`, `repair-mode` or
+  `replace`). Any step other than `keep` makes the result's `changed` true, so the operator sees a
+  new, replaced or mode-repaired key; the result's `service_changed` (the unit or env file
+  changed) alone decides `daemon-reload`, `try-restart` and the host step's restart of an
+  unhealthy serve, so a key-only change restarts nothing, as before.
 - **Stored** in its own file, `~/.config/verdict/worker-assignment.key`, beside `serve.env`, mode
   0600 in a 0700 directory, written atomically (the existing `_write_private`). **Not** in
   `serve.env` (the unit's `EnvironmentFile` would put it in serve's process environment and
   `/proc/<pid>/environ`), **not** in the credentials store (`load_into_env` injects values into
   `os.environ`), and no code path sets it in any process environment.
 - **Read** by serve on each assignment verification (assignment requests only; the serve-token
-  path never touches it), and by the orchestrator when it signs (#1325), through the same loader.
+  path never touches it), through `asyncio.to_thread` so the file read never blocks the event loop
+  (a failure, of any kind the loader raises, still ends in the 503 below), and by the orchestrator when it signs (#1325), through the same loader.
   A loader result is never cached across requests, so a rotation takes effect on the next request
   with no restart. The loader decodes the text and requires at least 32 bytes; anything else is
   `key_unavailable`.
@@ -310,9 +335,30 @@ Details the table leaves out:
   **Where the id must be set.** `_persist_routing_receipt_from_admit` falls back to a hash of the
   chosen route alone (`admit-` plus 16 hex characters) when `receipt.receipt_id` is empty, which is
   the same for every assignment to that route. The lane therefore sets the receipt id on the
-  admitted path before that helper is called. Denied decisions persist before any id is set, as
-  every denied decision does today, and keep that fallback; this story does not change that, so the
-  "persisted attempt id" guarantee is for admitted lane decisions.
+  admitted path before that helper is called.
+  **Denials get their own id too.** A denied lane decision persists a routing receipt as well, and
+  with no chosen route the fallback hashes the task class, which on the lane is the constant
+  `unclassified`: every denied assignment, whatever its run, node or route, would share one scope
+  and one idempotency key, `persist_routing_receipt` would return the first root for all of them,
+  and every later denial would lose its own evidence and attribution (found in review of the
+  build). The lane therefore sets a denial's receipt id before persisting, on both paths that
+  persist a lane denial: the denied branch of `_decision_from_admit` (a route dropped by the
+  narrowing or by any later step of the ladder) and the defence-in-depth refusal in
+  `_assigned_decision`. The id is `vrct_` plus the first 24 hex characters of the SHA-256 of the
+  compact JSON array `["worker-assignment-denied/v1", route_id, profile_digest, run_id, node_id,
+  assignment_digest, reason_code]` (the same encoding as the admitted id). `assignment_digest`
+  (SHA-256 of the signed payload, which holds `iat` and `exp`) gives a new assignment for a new
+  attempt of the same node its own root; `reason_code` is the code of the first named drop of the
+  pinned route (`no_named_drop` when none, `not_the_only_admitted_route` for the defence-in-depth
+  refusal), so a second, different denial of one assignment is not hidden behind the first; the
+  tag differs from the admitted tag, so a denial and an admission of one assignment never share a
+  root. The same assignment denied the same way twice gets the same id, and so one root, as a
+  repeated identical admission does. The denied receipt also names the assignment
+  (`worker_assignment`), which the narrowing already set on every path a request can take. The
+  denials that persist nothing (explicit protection, an offline service, a request that cannot be
+  profiled, no live admission) are built by `_assigned_denial` and need no id. Unpinned denials
+  keep the fallback, unchanged. So the "persisted attempt id" guarantee covers every lane decision
+  that persists a routing receipt.
 - **Recorded tier.** The decision records no computed escalation (`escalated` false, no reason,
   `protected` false) and the tier that `evidence._TIER_TO_POLICY_FLOOR` maps to `best_effort` (3),
   so evidence does not claim a floor the lane never computed.
@@ -390,8 +436,9 @@ be denied "proof scope or observation mismatch". So:
 - **Class not computed.** The lane never classifies the request, so it emits no `worthiness_*`
   safety flag; the receipt's `task_class` says it was not computed (reason
   `worker_assignment:text_classification_skipped`). The build traces every consumer of
-  `task_class` (the routing receipt reads it) and picks a value none rejects; no consumer on the
-  lane branches on `ordinary` or `worthy`.
+  `task_class`: the routing receipt uses it as its work unit id, evidence and the decision log copy
+  it, and nothing on the lane branches on `ordinary` or `worthy`. The build uses `unclassified`,
+  with the class reason `worker_assignment:text_classification_skipped`.
 - A route that does not actually stream fails upstream and recovery reroutes it (research option
   S1). Stream evidence (ADR-013 probes, ADR-012 consent) is a later story.
 - **Boundary:** serve's receipts are the receipts this change can write. The run-level
@@ -438,6 +485,52 @@ copied into any serve output (responses serve itself writes, evidence, receipts,
 upstream request's headers; the proxy builds those from its own gateway key). Message content a
 client chooses to send is forwarded verbatim, as every relay request is, and what an upstream echoes
 back is outside this guarantee; no test puts the token in message content and expects redaction.
+
+## Build-time choices (the build made these; the operator may change any)
+
+Each is a detail the merged design left open or did not foresee. None loosens a stated check.
+
+- **Reason code for a bad lifetime.** A correctly signed assignment whose lifetime `exp - iat` is
+  negative or over 1,800 s is refused `malformed`, not a new reason code (the code set stays
+  `malformed`, `bad_signature`, `expired`, `key_unavailable`).
+- **`iat` against the clock.** The lifetime cap is made true of the usable window by refusing an
+  `iat` more than 60 s ahead of serve's clock (`malformed`). This goes beyond the operator's
+  accepted addition (a lifetime cap) and only tightens it; the 60 s allowance is a constant.
+- **Stricter id and JSON rules.** `route_id`, `run_id` and `node_id` may not hold a control
+  character or a lone surrogate (Unicode categories `Cc` and `Cs`: a surrogate would crash a
+  receipt write later), and a payload with a repeated key is refused. Deeply nested JSON, which on
+  some Python versions raises `RecursionError`, is `malformed`.
+- **Strict base64url.** Padding, other characters, an impossible length and non-canonical trailing
+  bits are refused, for the tag as well as the payload, so a tag has one spelling.
+- **Non-ASCII credentials.** A `vwa1.` value with a non-ASCII character, in the bearer or in
+  `x-api-key` (alone or beside another credential), is refused 403 by the middleware before any
+  constant-time compare (which raises on non-ASCII text), never a 500.
+- **The worker-mark guard covers the shared relay.** `_relay_completion` also serves `POST
+  /v1/messages`, so a worker header or an assignment bearer without a verified assignment is
+  refused 403 there too.
+- **Named drops the lane adds.** A pinned route absent from the catalog is dropped
+  `route_not_in_inventory`; an opaque route (`auto/*`, `combo/*`) is dropped
+  `opaque_route_disallowed` before the inventory is consulted, whether or not the catalog lists it.
+- **Lane denials that are not ladder drops.** An unusable request profile (for example an unknown
+  `spend_policy`) is a denial (`worker_assignment_profile_error`), not a server error; an offline
+  service (`allow_offline`) has no live admission, so the lane denies
+  (`worker_assignment_admission_unavailable`) instead of loading a snapshot, because the legacy
+  path skips admission for an offline service and the lane sits above that check.
+- **One-route safeguard.** `_assigned_decision` refuses a receipt that holds more than the signed
+  route, or a chosen route other than it (`worker_assignment_route_denied`). The narrowing leaves
+  one route, so no request reaches this state; it is there so a later change to the ladder cannot
+  silently serve another route.
+- **The lane keeps the legacy non-authority flag.** Its decisions carry
+  `legacy_non_authority_selector` like every decision that does not come from an
+  `ExecutionPathDecision`, besides the lane's own flags.
+- **Receipt shape.** `requirement_waivers` and `worker_assignment` are in every
+  `FreeTierAdmitReceipt.to_dict()` (empty and `null` off the lane), and the compact evidence
+  receipt allowlists both.
+- **Setup output.** `manage_service` reports `assignment_key_file` (the path),
+  `assignment_key_plan`, `changed` (anything, the key included) and `service_changed` (the unit or
+  env file only; the host step restarts an unhealthy serve on this one); the setup row's `keep`
+  list is unchanged, so they appear in the
+  `manage_service` result, not in the row.
 
 ## Supersedes
 
@@ -554,13 +647,11 @@ pin. After this story these statements are false and the build edits that change
 
 ## Proposed additions (beyond the eight decisions; the operator may drop any)
 
-1. **`iat` and a maximum lifetime.** Add `iat` to the payload and refuse an assignment whose
-   `exp - iat` exceeds 1,800 s (twice the 900 s attempt ceiling in `orchestration/runtime.py`), so a mis-signed
-   long-lived assignment cannot exist. Not in the spec; if accepted, one field and one check. (The
-   fixed bound on `exp` in D1 is a different thing: it only keeps `exp` representable as a
-   timestamp and is part of the format here.)
-2. **Rotation flag.** `verdict setup ... --rotate-assignment-key` instead of delete-and-rerun. Not
+1. **Rotation flag.** `verdict setup ... --rotate-assignment-key` instead of delete-and-rerun. Not
    proposed: more surface for no new capability.
+
+(The earlier first addition, `iat` and a 1,800 s lifetime cap, was accepted by the operator on
+2026-11-24 after this design merged and is now part of D1.)
 
 ## Open points for the operator
 

@@ -709,6 +709,29 @@ def test_active_but_unhealthy_serve_is_planned_and_restarted(host: FakeHost) -> 
     assert ["systemctl", "--user", "restart", "verdict-serve.service"] in host.systemctl_calls
 
 
+def test_a_key_only_update_still_restarts_an_unhealthy_serve(host: FakeHost) -> None:
+    """A recreated signing key needs no restart, but an unhealthy serve still gets one.
+
+    ``manage_service`` reports the new key as ``changed``; the restart-if-unhealthy decision
+    in the host step follows the unit and env file alone, as it did before the key existed.
+    """
+    from verdict.worker_assignment import assignment_key_path
+
+    _install_serve(host)
+    key = assignment_key_path(host.home)
+    key.unlink()
+    host.serve_up = False
+    host.systemctl_calls.clear()
+    result = _results(host.apply(allowlist=["host.serve"]))["bootstrap:host:serve"]
+    assert key.is_file()  # setup wrote a new key
+    assert result["status"] == "applied" and "restarted" in result["note"]
+    assert result["restarted"] is True
+    assert ["systemctl", "--user", "restart", "verdict-serve.service"] in host.systemctl_calls
+    assert ["systemctl", "--user", "try-restart", "verdict-serve.service"] not in (
+        host.systemctl_calls
+    )
+
+
 def test_a_health_probe_exception_is_never_healthy(host: FakeHost) -> None:
     _install_serve(host)
     host.serve_up = ConnectionResetError("probe crashed")

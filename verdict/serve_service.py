@@ -11,6 +11,11 @@ The token is reused when one exists (exported, credential store, then the
 current env file) and generated with ``secrets.token_urlsafe`` otherwise; a
 generated or env-file-only token is saved to the credential store. Token values
 never appear in the returned payload, in errors or in logs.
+
+The same action generates the worker-assignment signing key
+(``~/.config/verdict/worker-assignment.key``, mode 0600) when it is absent or unusable and keeps a
+valid one.  The key is a separate secret from the token: it is never written to ``serve.env``,
+the credential store or any process environment, and the payload names its path, never its value.
 """
 
 from __future__ import annotations
@@ -25,6 +30,12 @@ from pathlib import Path
 from typing import Any
 
 from verdict.prove_at_rest_service import _quote, _systemctl, plan_units, save_rollback
+from verdict.worker_assignment import (
+    AssignmentError,
+    assignment_key_path,
+    generate_assignment_key,
+    load_assignment_key,
+)
 
 SERVICE = "verdict-serve.service"
 HOST = "127.0.0.1"
@@ -200,6 +211,41 @@ def _write_private(path: Path, text: str) -> None:
     staged.replace(path)
 
 
+def _assignment_key_step(key_file: Path, home: Path) -> str:
+    """What setup does with the signing key, decided by reading only.
+
+    ``create`` (absent), ``keep`` (valid, mode 0600), ``repair-mode`` (valid, another mode: the
+    same key is kept and only its mode is fixed) or ``replace`` (present but unusable).  A path
+    that is not a file is refused rather than overwritten.
+    """
+    if not key_file.exists() and not key_file.is_symlink():
+        return "create"
+    if not key_file.is_file():
+        raise ServeServiceError(f"{key_file} is not a file; refusing to overwrite it")
+    try:
+        load_assignment_key(home)
+    except AssignmentError:
+        return "replace"
+    return "keep" if _mode(key_file) == 0o600 else "repair-mode"
+
+
+def _assignment_key_problems(key_file: Path, home: Path) -> list[str]:
+    """What is wrong with the signing key, read-only.  Names the file, never the value."""
+    if not key_file.exists():
+        return [f"{key_file} is missing"]
+    problems = []
+    try:
+        load_assignment_key(home)
+    except AssignmentError:
+        problems.append(
+            f"{key_file} is not a usable worker assignment key "
+            "(it must hold at least 32 bytes as URL-safe base64 text)"
+        )
+    if key_file.is_file() and _mode(key_file) != 0o600:
+        problems.append(f"{key_file} has mode {_mode(key_file):04o}, not 0600")
+    return problems
+
+
 def manage_service(
     *,
     unit_dir: Path | None = None,
@@ -209,8 +255,13 @@ def manage_service(
     run: Callable[[list[str]], None] = _systemctl,
     environ: Mapping[str, str] | None = None,
     generate: Callable[[int], str] = secrets.token_urlsafe,
+    generate_key: Callable[[], str] = generate_assignment_key,
 ) -> dict[str, Any]:
-    """Render or apply the serve unit and its env file. Dry-run never writes or runs systemctl."""
+    """Render or apply the serve unit, its env file and the signing key.
+
+    Dry-run never writes or runs systemctl.  The key is a separate generated secret kept in its
+    own file; it needs no restart (serve reads it on every assignment request).
+    """
     from verdict.credentials_store import CredentialsStore
     from verdict.paths import verdict_home
 
@@ -219,11 +270,14 @@ def manage_service(
         Path(os.environ.get("XDG_CONFIG_HOME", str(user_home / ".config"))) / "systemd" / "user"
     )
     env_file = env_file_path(user_home)
+    key_file = assignment_key_path(user_home)
     source = os.environ if environ is None else environ
     if uninstall:
         plan = plan_units(directory, {SERVICE: ""}, uninstall=True)
         env_step = "remove" if env_file.exists() else "absent"
-        changed = plan[SERVICE] == "remove" or env_step == "remove"
+        key_step = "remove" if key_file.exists() else "absent"
+        service_changed = plan[SERVICE] == "remove" or env_step == "remove"
+        changed = service_changed or key_step == "remove"
         commands = [["systemctl", "--user", "disable", "--now", SERVICE]] if changed else []
         rollback = env_rollback = None
         if not dry_run:
@@ -233,6 +287,7 @@ def manage_service(
                 run(args)
             (directory / SERVICE).unlink(missing_ok=True)
             env_file.unlink(missing_ok=True)
+            key_file.unlink(missing_ok=True)
             if changed:
                 run(["systemctl", "--user", "daemon-reload"])
         return {
@@ -242,7 +297,10 @@ def manage_service(
             "env_file": str(env_file),
             "env_file_plan": env_step,
             "env_keys": [],
+            "assignment_key_file": str(key_file),
+            "assignment_key_plan": key_step,
             "changed": changed,
+            "service_changed": service_changed,
             "dry_run": dry_run,
             "uninstall": True,
             "commands": commands,
@@ -273,9 +331,14 @@ def manage_service(
             if current == rendered_env and private
             else "replace"
         )
-    changed = plan[SERVICE] != "keep" or env_step != "keep"
+    key_step = _assignment_key_step(key_file, user_home)  # validates before any write
+    # Two questions, kept apart: did the unit or env file change (serve must be restarted and
+    # systemd reloaded), and did anything change at all (the signing key included, which serve
+    # re-reads per request and so never needs a restart).
+    service_changed = plan[SERVICE] != "keep" or env_step != "keep"
+    changed = service_changed or key_step != "keep"
     commands = [["systemctl", "--user", "enable", "--now", SERVICE]]
-    if changed:
+    if service_changed:
         commands.append(["systemctl", "--user", "try-restart", SERVICE])
     store_token = token is not None and not stored.get(TOKEN_ENV, "").strip()
     rollback = env_rollback = None
@@ -287,9 +350,14 @@ def manage_service(
             (directory / SERVICE).write_text(unit)
         if env_step != "keep":
             _write_private(env_file, rendered_env)
+        if key_step in {"create", "replace"}:
+            # A separate secret from the token; written atomically, never into serve.env.
+            _write_private(key_file, generate_key() + "\n")
+        elif key_step == "repair-mode":
+            os.chmod(key_file, 0o600)  # the same key: only its mode was wrong
         if store_token:
             store.set(TOKEN_ENV, token)
-        if changed:
+        if service_changed:
             run(["systemctl", "--user", "daemon-reload"])
         for args in commands:
             run(args)
@@ -300,9 +368,12 @@ def manage_service(
         "env_file": str(env_file),
         "env_file_plan": env_step,
         "env_keys": [TOKEN_ENV, RECEIPTS_ENV],
+        "assignment_key_file": str(key_file),
+        "assignment_key_plan": key_step,
         "token_source": token_source,
         "token_stored": bool(store_token and not dry_run),
         "changed": changed,
+        "service_changed": service_changed,
         "dry_run": dry_run,
         "uninstall": False,
         "commands": commands,
@@ -329,8 +400,9 @@ def install_problems(*, unit_dir: Path | None = None, home: Path | None = None) 
         word = "missing" if unit_step == "create" else "not the rendered unit"
         problems.append(f"{directory / SERVICE} is {word}")
     env_file = env_file_path(user_home)
+    key_problems = _assignment_key_problems(assignment_key_path(user_home), user_home)
     if not env_file.is_file():
-        return [*problems, f"{env_file} is missing"]
+        return [*problems, f"{env_file} is missing", *key_problems]
     values = _read_env_file(env_file)
     if not values.get(TOKEN_ENV, "").strip():
         problems.append(f"{env_file} has no {TOKEN_ENV}")
@@ -339,7 +411,7 @@ def install_problems(*, unit_dir: Path | None = None, home: Path | None = None) 
         problems.append(f"{env_file} {RECEIPTS_ENV} is not {receipts_db}")
     if _mode(env_file) != 0o600:
         problems.append(f"{env_file} has mode {_mode(env_file):04o}, not 0600")
-    return problems
+    return [*problems, *key_problems]
 
 
 def healthy(*, probe: Callable[..., bool] | None = None) -> bool:

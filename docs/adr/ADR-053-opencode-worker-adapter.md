@@ -56,9 +56,9 @@ OmniRoute (:20128). Each request must use exactly the route Verdict chose; the
 relay pins it and records the attempt, and admission and cost rules still apply.
 If serve cannot pin a route per request today, adding that is part of the build.
 
-*Implementation note (2026-11-24): pinning is done inside admission, not by the relay. The relay
-passes the worker's assigned route to admission as a typed input (`WorkerAssignedRoute`, set only
-when the `X-Verdict-Worker` header is present). Admission selects that route only when that exact
+*Implementation note (2026-11-24, superseded the same day by the amendment below): pinning is done
+inside admission, not by the relay. The relay passes the worker's assigned route to admission as a
+typed input (`WorkerAssignedRoute`, set only when the `X-Verdict-Worker` header is present). Admission selects that route only when that exact
 id is in the request's admitted set, mints its route-bound proof exactly as for a chosen route
 (ADR-035), and otherwise denies without minting a proof. The relay only verifies the outcome. The
 decision above is unchanged.*
@@ -73,7 +73,25 @@ token, resolved by Verdict (`verdict.serve_service.resolve_serve_token`), passed
 as `VERDICT_WORKER_API_KEY`, and checked once before launch together with the binary and serve's
 reachability. Until issue #1313 (OC1b) the route is pinned by the worker header: a worker could
 name another admitted route, never a non-admitted one. #1313 replaces the credential with a signed
-per-attempt assignment.*
+per-attempt assignment (see the amendment below).*
+
+*Amendment (2026-11-24, #1313 story 1, `openspec/changes/serve-worker-assignment`): the route pin
+comes from a signed worker assignment, not from a header. A worker's only credential is
+`Authorization: Bearer vwa1.<payload>.<tag>`, an HMAC-SHA256 token over its route, run id, node id,
+issued-at and expiry (a lifetime of at most 1,800 s), signed with a separate generated key kept in
+`~/.config/verdict/worker-assignment.key` and never placed in any process environment. `verdict
+serve` verifies it in constant time and accepts it only on `POST /v1/chat/completions` and `POST
+/v1/responses`; a bad, expired or missing assignment is denied with no upstream call. The
+`X-Verdict-Worker` header selects nothing: a request that carries it without a verified assignment
+is refused 403. The request's `model` must equal the signed route or the request is refused 400
+before routing. A verified assignment takes an assigned lane that narrows to the signed route right
+after the active and cooling steps and then runs every per-route gate on it (nothing is
+re-admitted, unknown health is never healthy), skipping only serve's text-based second guesses
+(keyword scanner, worthiness class, planner capabilities, Top-K shortlist, cheap-path pack);
+`streaming` is waived for a verified assignment and recorded in the receipts. `WorkerAssignedRoute`
+is removed. The executor that signs the assignment is #1325: until it lands, the opt-in OpenCode
+executor still sends the serve token and the bare header, which serve now refuses by design. The
+decision above is unchanged.*
 
 *Implementation note (2026-11-24, #1326): the dispatch-origin stopgap is gone. The executor no longer
 declares `LOCAL_EXECUTOR_ORIGIN` (which matched any bound origin) while its workers send through

@@ -42,7 +42,8 @@
       `test_two_concurrent_attempts_never_share_config_data_or_state`) and when the temp
       filesystem fails (`test_a_full_temp_filesystem_is_a_failed_terminal_not_an_exception`).
       The live run with the real OpenCode binary is task 2.8; it is not ticked here.
-- [x] 2.5 Worker credential and pre-dispatch check: resolve serve's bearer token with
+- [x] 2.5 (serve side superseded 2026-11-24 by `serve-worker-assignment`; the executor side
+      changes in #1325) Worker credential and pre-dispatch check: resolve serve's bearer token with
       Verdict's own code, set it in the child env only under the key name, redact it, and check
       once before launch that the credential resolves, the binary runs and serve accepts it
       (one `harness_configuration:` message, treated as a block). Verify: tests in
@@ -52,7 +53,8 @@
       `tests/test_serve_service_resolvers.py`.
 - [x] 2.7 Keep the upstream HTTP status of a structured error; never record a cost of 0.
       Verify: `tests/test_opencode_executor.py`.
-- [x] 2.4 Route enforcement: verify that every model call from an OpenCode worker
+- [x] 2.4 (the header pin is superseded 2026-11-24 by the signed assignment of
+      `serve-worker-assignment`) Route enforcement: verify that every model call from an OpenCode worker
       reaches `verdict serve` (:8000). If per-request route pinning is absent from
       the relay, add it so that each request uses exactly the route Verdict chose
       and the receipt attests that model identity. Verify: a test or live check
