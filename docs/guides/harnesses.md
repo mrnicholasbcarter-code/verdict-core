@@ -530,7 +530,10 @@ the ones it opened), so an edit you make while Verdict is copying is refused, no
 Restore takes the same last look, and it also names a file as not restored when its directory is no
 longer the one the copy-back wrote through (renamed away, or replaced by another directory),
 whatever bytes the replacement holds, and when the repository itself was renamed away and another
-directory took its name it restores nothing and names every file it changed.  POSIX
+directory took its name it restores nothing and names every file it changed.  The copy-back
+likewise refuses the whole attempt, before it writes anything, when the repository was renamed away
+and another directory took its name after the clone was seeded: it writes only into the directory
+the seed read.  POSIX
 has no rename that compares content, so a write that lands between that last look and the rename, or
 through a file you already had open, is still overwritten, and the journal holds the seed's bytes, not
 your edit; keep from editing an owned file while a unit runs.

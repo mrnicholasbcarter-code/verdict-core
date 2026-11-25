@@ -412,6 +412,16 @@ out-of-bounds path.
 
 ### Requirement: Transfer SHALL be all-or-nothing and SHALL NOT overwrite a file it sees changed after the seed
 
+The seed SHALL record the device and inode of the repository directory it opens to read the
+user's files, and the transfer SHALL be given that record. The transfer reopens the repository by
+pathname; when the directory it opened is not the recorded one (the repository was renamed away
+and another directory took its name since the seed) the executor SHALL refuse the whole attempt,
+`rejected` with one reason (the repository was replaced since the seed), before it compares or
+writes any path: nothing is created, nothing is written and nothing is journalled, whatever the
+delta holds (a new file, which is absent on both sides of the comparison below, a changed file or a
+deleted file) and whatever the replacement holds. A directory renamed away and renamed back is
+the same directory and is not refused.
+
 The executor SHALL resolve every transfer path component by component from a descriptor on
 the repository root without following symlinks, and SHALL compare, for each path, the user's
 current kind, executable bit and bytes with the seed manifest (or absence, when the manifest
@@ -492,6 +502,14 @@ the edit. The executor assumes it is the only writer of an owned file while a un
 - **WHEN** a parent directory is replaced by a symlink after the first comparison and before the write
 - **THEN** nothing is written through the link
 
+#### Scenario: Repository replaced between the seed and the transfer
+- **WHEN** the repository directory is renamed away after the seed and another directory takes its name, either a copy of the repository (so a changed or a deleted file holds the seeded bytes there) or an empty directory, and the delta is only a new file, a new file in new directories, a changed file or a deleted file (eight cases), and also when the replacement happens while the worker runs
+- **THEN** the attempt is `rejected` with the one reason (the repository was replaced since the seed), the journal is empty, the replacement and the displaced repository are byte-identical to what they held, and no temporary file exists
+
+#### Scenario: Repository renamed away and back is transferred into
+- **WHEN** the repository directory is renamed away and renamed back after the seed and the transfer runs
+- **THEN** the transfer writes into it and every journal entry's root is the seed's record
+
 #### Scenario: Parent directory renamed away during the transfer
 - **WHEN** a parent directory is renamed and a symlink or another directory is put at its old name after the first comparison and before the write
 - **THEN** the second comparison finds the held descriptor is no longer the directory at that name, nothing is written into the displaced directory, and the attempt is `rejected` if no write had happened and `error` otherwise
@@ -555,7 +573,8 @@ it created when they are empty and are still the directory it created. The trans
 the device and inode of each directory it creates as soon as the creation has returned, and
 restore SHALL compare them with the directory now at that name before removing it: a directory
 that was removed and replaced by another one (even an empty one) is left alone and named as not
-restored. The transfer SHALL record the device and inode of the repository root it wrote through in
+restored. The transfer SHALL record the device and inode of the repository root it wrote through (the
+directory the seed read: the transfer refuses any other) in
 every journal entry (a directory creation, a write and a deletion alike), when the entry is made, and
 restore, which reopens the repository by pathname, SHALL compare the directory it opened with that
 record before it reads or writes any path: when the repository was renamed away and another directory

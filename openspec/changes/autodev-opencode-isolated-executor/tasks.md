@@ -140,7 +140,7 @@ Conventions for every task:
       Evidence (round 1): the byte-budget tests failed before the fix (1,048,588, 6,012 and 1,048,743 bytes
       read against a limit of 4,096 plus 1,024); the git-only test passed before and is a guard that fails
       when the top-level `.git` is walked.
-- [x] 2.3 Transfer (D6). `transfer(delta, user_repo, m0, journal, hooks=None)`: the read-only phase
+- [x] 2.3 Transfer (D6). `transfer(delta, user_repo, m0, journal, hooks=None, *, root_identity)`: the read-only phase
       (each path resolved from a root descriptor with `O_DIRECTORY | O_NOFOLLOW`; the user's file
       opened relative to its parent with `O_NOFOLLOW | O_NONBLOCK` and checked by `fstat` before it
       is read; kind, mode and SHA-256, or absence, compared with M0; limits), then the write phase (each
@@ -211,6 +211,30 @@ Conventions for every task:
       Evidence (round 2): all six cases failed before the fix (`DID NOT RAISE AttemptRefusedError` x5, `DID
       NOT RAISE TransferFailedError`) and passed after; with the look's held-directory check removed the
       parent test failed, with the journal withdrawal removed the edit case failed.
+      Controller request after `fe1f5b02` (the repository replaced between the seed and the transfer, which
+      design D7 had stated as a limit): the transfer reopened the repository by pathname without comparing
+      it with the directory the seed read, so a delta of only new files (absent on both sides of the
+      comparison with M0) landed in a directory that had taken the repository's name, and a changed or
+      deleted file landed there when it held the seeded bytes. The seed now records the device and inode of
+      the repository directory it opens (`AttemptTree.root_identity`), `transfer` takes it as the required
+      keyword `root_identity` (`execute_unit` passes the seed's record) and refuses the whole attempt with
+      `AttemptRefusedError` before it reads any path when the directory it reopened is not that one; the
+      journal's `root` is the same recorded value. Tests: `TestTransfer::test_repository_replaced_between_seed_and_transfer`
+      (parametrised: a new file, a nested new file, a changed file, a deleted file, each with a copy of the
+      repository and an empty directory as the replacement; refused with the one reason, nothing journalled,
+      the replacement and the displaced repository byte-identical, no temporary file),
+      `TestTransfer::test_repository_renamed_away_and_back_is_transferred_into` (the same directory is
+      transferred into and the entries carry the seed's record),
+      `TestSeed::test_the_seed_records_the_identity_of_the_repository_root` and
+      `TestExecute::test_a_repository_replaced_while_the_worker_runs_is_rejected` (the executor hands the
+      transfer the seed's record: the worker's valid edit is `rejected` when the repository is replaced while
+      it runs). Verify: `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py::TestTransfer tests/test_autodev_opencode.py::TestSeed tests/test_autodev_opencode.py::TestExecute`.
+      Evidence: with the record plumbed and the comparison removed, the eight replacement cases failed (six
+      `DID NOT RAISE AttemptRefusedError`: the new and nested-new files into both replacements, the changed and
+      deleted files into the copy; two were refused only by the old comparison, with `a.py was removed after the
+      seed`, not the identity) and the executor test failed (`'applied' == 'rejected'`); with the comparison they
+      pass. With the executor passing the identity of the path at transfer time instead of the seed's record, the
+      executor test failed.
 - [x] 2.4 Restore (D7). `restore_transfer(journal, repo)` undoes the current attempt's transfer in reverse with task 2.3's
       traversal, re-check and `replace_file` helper. For each entry it compares kind, executable bit
       and SHA-256 with the intended state (undo it), with the prior state (the mutation was never

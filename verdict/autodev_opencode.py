@@ -174,12 +174,15 @@ class AttemptTree:
     """A seeded attempt tree, its manifest M0 and its device and inode.
 
     The worker can rename the directories above the tree and put a link where one was, so a read
-    opens the tree by path once and accepts only the directory with this identity.
+    opens the tree by path once and accepts only the directory with this identity.  ``root_identity``
+    is the device and inode of the user's repository directory the seed opened to read the user's
+    files: the transfer and restore reopen the repository by pathname and act only on that directory.
     """
 
     path: Path
     manifest: dict[str, Entry]
     identity: tuple[int, int]
+    root_identity: tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -803,6 +806,8 @@ def _seed(repo: Path, tree: Path, owned: tuple[str, ...]) -> AttemptTree:
 
     root_fd = os.open(str(repo), _DIR_FLAGS)
     try:
+        # The one directory the seed reads the user's files from; the transfer and restore act on it only.
+        root_identity = _identities([root_fd])[0]
         removals: list[str] = []
         copies: list[str] = []
         for record in records:
@@ -846,7 +851,7 @@ def _seed(repo: Path, tree: Path, owned: tuple[str, ...]) -> AttemptTree:
             os.close(tree_fd)
     finally:
         os.close(root_fd)
-    return AttemptTree(tree, manifest, (made.st_dev, made.st_ino))
+    return AttemptTree(tree, manifest, (made.st_dev, made.st_ino), root_identity)
 
 
 def _seed_step(step: Callable[..., None], tree_fd: int, rel: str, *args: Any) -> None:
@@ -1317,8 +1322,15 @@ def transfer(
     m0: Mapping[str, Entry],
     journal: list[JournalEntry],
     hooks: Hooks | None = None,
+    *,
+    root_identity: tuple[int, int],
 ) -> None:
     """Copy a validated delta into the user's tree, all or nothing (D6).
+
+    The repository is reopened by pathname, and ``root_identity`` is the device and inode of the
+    directory the seed read (:attr:`AttemptTree.root_identity`): when the directory reopened is not
+    that one (renamed away and replaced since the seed) the whole attempt is
+    :class:`AttemptRefusedError` before the first read of a path, and nothing is written or journalled.
 
     A read-only phase compares the user's kind, mode and bytes with M0 for every path (a
     difference is :class:`AttemptRefusedError` and nothing was created).  The write phase journals each
@@ -1339,7 +1351,12 @@ def transfer(
     except OSError as exc:
         raise AttemptFailedError(f"the repository cannot be opened ({type(exc).__name__})") from exc
     try:
-        root = _identities([root_fd])[0]  # the directory every write below goes through, once
+        if _identities([root_fd])[0] != root_identity:
+            raise AttemptRefusedError(
+                "the repository was replaced since the seed: the directory at its path is not "
+                "the one the attempt was seeded from"
+            )
+        root = root_identity  # the directory every write below goes through: the one the seed read
         try:
             for item in delta.items:
                 _check_read_only(root_fd, item, m0)
@@ -1748,7 +1765,14 @@ class OpenCodeUnitExecutor:
                 return finish("error", exc.reason, usage=usage)
             attempt_dir.remove()  # before the transfer, which is the last fallible step
             try:
-                transfer(delta, self._repo, tree.manifest, self._journal, self._hooks)
+                transfer(
+                    delta,
+                    self._repo,
+                    tree.manifest,
+                    self._journal,
+                    self._hooks,
+                    root_identity=tree.root_identity,
+                )
             except AttemptRefusedError as exc:
                 return finish("rejected", exc.reason, usage=usage)
             except AttemptFailedError as exc:

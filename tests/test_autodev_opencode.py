@@ -157,6 +157,13 @@ def seed(
 
 
 class TestSeed:
+    def test_the_seed_records_the_identity_of_the_repository_root(self, tmp_path: Path) -> None:
+        """The directory the seed opened to read the user's files, not the clone and not a name."""
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        assert tree.root_identity == identity_of(repo)
+        assert tree.root_identity != tree.identity == identity_of(tree.path)
+
     def test_clone_shares_nothing_with_the_repository(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path)
         hook = repo / ".git" / "hooks" / "pre-commit"
@@ -773,16 +780,29 @@ def user_manifest(repo: Path) -> dict[str, oc.Entry]:
     return oc.walk_manifest(repo, limit_error=lambda reason: AssertionError(reason))
 
 
+def identity_of(path: Path) -> tuple[int, int]:
+    """The device and inode of the directory at ``path`` now."""
+    info = path.stat()
+    return (info.st_dev, info.st_ino)
+
+
 def run_transfer(
     repo: Path,
     items: list[oc.DeltaItem],
     m0: Mapping[str, oc.Entry] | None = None,
     journal: list[oc.JournalEntry] | None = None,
     hooks: Mapping[str, Callable[..., None]] | None = None,
+    root_identity: tuple[int, int] | None = None,
 ) -> list[oc.JournalEntry]:
+    """Transfer into ``repo``; the directory the seed read is the one at ``repo`` now unless given."""
     journal = [] if journal is None else journal
     oc.transfer(
-        oc.Delta(tuple(items)), repo, user_manifest(repo) if m0 is None else m0, journal, hooks
+        oc.Delta(tuple(items)),
+        repo,
+        user_manifest(repo) if m0 is None else m0,
+        journal,
+        hooks,
+        root_identity=identity_of(repo) if root_identity is None else root_identity,
     )
     return journal
 
@@ -1128,6 +1148,53 @@ class TestTransfer:
         assert reason.index("No space left") < reason.index(".verdict-transfer-")
         assert "could not be removed" in reason
 
+    @pytest.mark.parametrize("replacement", ["copy", "empty"])
+    @pytest.mark.parametrize("case", ["new", "new_nested", "changed", "deleted"])
+    def test_repository_replaced_between_seed_and_transfer(
+        self, tmp_path: Path, case: str, replacement: str
+    ) -> None:
+        """The seed read one directory; a different one now has the repository's name.  The read-only
+        phase compares paths with the seed's manifest, and a new path is absent on both sides, so only
+        the directory's own identity can tell the replacement from the repository.  The replacement is a
+        copy of it (a changed or deleted file holds the seeded bytes there, so the comparison passes) or
+        an empty directory; the whole attempt is refused before anything is written or journalled."""
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        item = {
+            "new": witem("new.py", "worker\n"),
+            "new_nested": witem("deep/er/new.py", "worker\n"),
+            "changed": witem("a.py", "worker\n"),
+            "deleted": ditem("b.py"),
+        }[case]
+        displaced = tmp_path / "repo-moved"
+        repo.rename(displaced)  # kept alive, so a reused inode number cannot hide the swap
+        if replacement == "copy":
+            shutil.copytree(displaced, repo, symlinks=True)
+        else:
+            repo.mkdir()
+        replacement_before, displaced_before = listing(repo), listing(displaced)
+        journal: list[oc.JournalEntry] = []
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            run_transfer(repo, [item], tree.manifest, journal, root_identity=tree.root_identity)
+        reason = caught.value.reason
+        assert "repository" in reason and "replaced" in reason and "seed" in reason
+        assert journal == []
+        assert listing(repo) == replacement_before
+        assert listing(displaced) == displaced_before
+        assert not list(tmp_path.rglob(".verdict-transfer-*"))
+
+    def test_repository_renamed_away_and_back_is_transferred_into(self, tmp_path: Path) -> None:
+        """The comparison is of the directory, not of its name."""
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        repo.rename(tmp_path / "elsewhere")
+        (tmp_path / "elsewhere").rename(repo)
+        journal = run_transfer(
+            repo, [witem("a.py", "worker\n")], tree.manifest, root_identity=tree.root_identity
+        )
+        assert (repo / "a.py").read_text() == "worker\n"
+        assert {entry.root for entry in journal} == {tree.root_identity}
+
 
 CHILD = textwrap.dedent(
     """
@@ -1152,7 +1219,10 @@ CHILD = textwrap.dedent(
             print("ready", flush=True)
             sys.stdin.readline()  # blocks until the test kills this process
 
-    oc.transfer(oc.Delta(tuple(items)), repo, m0, [], {phase: block})
+    root = repo.stat()
+    oc.transfer(
+        oc.Delta(tuple(items)), repo, m0, [], {phase: block}, root_identity=(root.st_dev, root.st_ino)
+    )
     """
 )
 
@@ -1911,6 +1981,28 @@ class TestExecute:
         executor = make_executor(repo, tmp_path, StubRunner(edit_a), hooks={"after_checks": look})
         assert executor.execute_unit(unit("a.py")).applied
         assert seen == [[]]
+
+    def test_a_repository_replaced_while_the_worker_runs_is_rejected(self, tmp_path: Path) -> None:
+        """The executor hands the transfer the identity the seed recorded: the worker's edit is a
+        valid owned repair, and the replacement (a copy of the repository) holds the seeded bytes."""
+        repo = make_repo(tmp_path)
+        displaced = tmp_path / "repo-moved"
+        before: dict[str, dict[str, bytes | None]] = {}
+
+        def edit_and_replace(tree: Path) -> None:
+            edit_a(tree)
+            repo.rename(displaced)
+            shutil.copytree(displaced, repo, symlinks=True)
+            before["replacement"], before["displaced"] = listing(repo), listing(displaced)
+
+        executor = make_executor(repo, tmp_path, StubRunner(edit_and_replace))
+        attempt = executor.execute_unit(unit("a.py"))
+        assert before, "the worker stub did not run"
+        assert attempt.outcome == "rejected" and not attempt.applied
+        assert "repository" in attempt.reason and "replaced" in attempt.reason
+        assert listing(repo) == before["replacement"]
+        assert listing(displaced) == before["displaced"]
+        assert attempts_left(tmp_path) == []
 
     def test_running_event_loop_returns_error(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path)

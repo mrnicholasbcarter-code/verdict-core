@@ -306,12 +306,19 @@ deletion) therefore carries `JournalEntry.root`, the device and inode of the roo
 when the entry is made, and `_restore` compares the root it holds with it before it reads or writes
 anything. A mismatch, or an entry with no record, names every journalled path with one reason and empties
 the journal; the transferred files in the displaced repository are the user's to put back (`git` can). The
-transfer itself opens the repository by pathname once, as the destination of the delta: it is whatever
-directory is at the repository path when the transfer starts, as for verification and attribution on the
-default path, and the journal records which one it was. What the read-only phase compares against M0 does not
-cover a path that is new on both sides, so a repository replaced between the seed and the transfer receives
-the new files of the delta, and a changed or deleted file only when it still holds the seeded bytes; that is a
-stated limit, not reopened here.
+seed opens the repository once, by pathname, to read the user's files, and records the device and inode of
+that directory (`AttemptTree.root_identity`); the transfer is given the record. It reopens the repository by
+pathname and compares what it opened with the record before it reads or writes any path (added after `fe1f5b02`: the transfer
+had taken whatever directory was at the path). A mismatch is
+`AttemptRefusedError`, so the attempt is `rejected` with one reason (the repository was replaced since the
+seed) and nothing is created, written or journalled. The comparison with M0 cannot do this: a path that is
+new on both sides is absent in both, so a delta of only new files passed it into a directory that had taken
+the repository's name, and a changed or deleted file passed it into a copy that held the seeded bytes. The
+journal's `root` is that same recorded value, so seed, transfer and restore act on one directory or on none.
+A directory renamed away and renamed back is the same directory and is transferred into. What is
+guaranteed is that directory, the one the seed opened. The git commands that list the user's changes and
+make the clone run before that open and name the repository by path, so a replacement in that window is the
+seed reading two directories and is outside the guarantee (a stated limit).
 
 **Two more stated limits.** (1) The journal is emptied by `execute_unit`'s first statement, so an exception
 raised before that statement (none exists in the real executor; a wrapper that raises first is one) leaves
