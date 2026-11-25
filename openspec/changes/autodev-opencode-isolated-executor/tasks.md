@@ -380,11 +380,12 @@ Conventions for every task:
       `uv run --frozen mypy verdict --strict`,
       `uv run --frozen python scripts/check_reachability.py --ratchet-base origin/main`,
       `uv run --frozen python scripts/check_lint_gates.py` and `git diff --check` all exit 0.
-- [ ] 7.2 Validate this change with both validators and tick the tasks that have evidence.
+- [x] 7.2 Validate this change with both validators and tick the tasks that have evidence.
       Files: `openspec/changes/autodev-opencode-isolated-executor/`. Verify:
       `uv run --frozen python verdict/openspec_vendor/validate_openspec_change.py openspec/changes/autodev-opencode-isolated-executor`
       and `npx -y @fission-ai/openspec@1.13.2 validate autodev-opencode-isolated-executor --strict`.
 
+      Evidence: `validate_openspec_change.py` prints `Valid verdict-change-v1 change` and `npx -y @fission-ai/openspec@1.13.2 validate autodev-opencode-isolated-executor --strict` prints `Change ... is valid`, both on the head that carries this tick.
 ## 8. After merge
 
 - [ ] (post-merge) 8.1 On installed main, run `VERDICT_OPENCODE_BIN=/nonexistent verdict autodev

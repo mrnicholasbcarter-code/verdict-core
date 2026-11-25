@@ -1713,8 +1713,11 @@ def cmd_autodev(
     if worker_harness == "opencode":
         from verdict.autodev_opencode import build_opencode_unit_executor
 
-        assert executor_model is not None  # set from the launch decision above
-        run_extras["executor"] = build_opencode_unit_executor(repo_path, model=executor_model)
+        if decision is None:  # a live run always has one (`_require_launch_decision`)
+            raise AutodevError("autodev: the OpenCode executor needs a launch decision")
+        run_extras["executor"] = build_opencode_unit_executor(
+            repo_path, model=decision.selected_route.model
+        )
         retry_routes = ()  # retries on OpenCode are a later story (#1314); none run on another executor
     try:
         report = run_autodev(
