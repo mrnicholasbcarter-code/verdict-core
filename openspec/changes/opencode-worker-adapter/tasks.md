@@ -118,6 +118,18 @@
       `requirement_waivers` `streaming` on all three, and the executor's terminal read the same back
       (`requests: 3`, `requests_waived: 3`). No second attempt was made. The real `~/.verdict` and
       `~/.config/verdict` were not written. Raw output is in the pull request.
+      **Gateway traffic, read back afterwards from OmniRoute's call log (a read-only GET on its
+      management API) for `claude-haiku-5-5` between 11:31:14Z and 11:31:28Z:** four POSTs, not
+      three. The first, at 11:31:20.97Z, is 40 input and 1 output token (444 ms); the other three, at
+      11:31:23Z, 11:31:25Z and 11:31:28Z, are OpenCode's own (about 8.4 thousand input tokens each,
+      most of them cache reads). The 1-token request was sent by nothing this story wrote; it is
+      consistent with serve's own budgeted confirm of the pinned route (the route's stored passport
+      was older than the 10-minute permit-proof window, and the dry run of 11:29, which had no live
+      confirm transport, denied the same route `passport_stale`), but the temp state that would
+      show it was removed, so this is read from the gateway log alone and the cause is not
+      established. Before the attempt, the dry runs called the gateway's management API (reads,
+      no model call) and two loopback rehearsals ran the real OpenCode binary against a local
+      stand-in for serve (no gateway, no model).
 - [ ] (post-merge) 2.20 The same one-attempt smoke on installed main, after `verdict setup --apply
       --allow host.serve` has created the signing key and restarted serve: an `OpenCodeExecutor`
       attempt on an admitted route lands an edit in a scratch repository and the installed serve's
