@@ -331,3 +331,138 @@ def test_least_duration_groups_are_disjoint_and_cover_the_input(splits: int, see
     assert len(groups) == splits
     assert sum(len(group.selected) for group in groups) == count
     assert check_union(set(nodeids), selections) == (set(), set(), set())
+
+
+# ---------------------------------------------------------------------------
+# run_check: the check CI runs (collects the full set and each shard)
+# ---------------------------------------------------------------------------
+
+
+def _fake_collection(
+    monkeypatch: pytest.MonkeyPatch, full: set[str], shards: list[set[str]]
+) -> list[list[str]]:
+    """Make ``collect_nodeids`` answer with ``full`` first, then each shard; return its calls."""
+    import scripts.ci_shard_union as union
+
+    answers = iter([full, *shards])
+    calls: list[list[str]] = []
+
+    def fake(args: list[str]) -> list[str]:
+        calls.append(list(args))
+        return sorted(next(answers))
+
+    monkeypatch.setattr(union, "collect_nodeids", fake)
+    return calls
+
+
+def test_the_exact_set_passes_and_the_logged_counts_add_up(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import platform
+
+    import scripts.ci_shard_union as union
+
+    full = {f"t{i}" for i in range(7)}
+    _fake_collection(monkeypatch, full, [{"t0", "t1", "t2"}, {"t3", "t4"}, {"t5", "t6"}])
+    assert union.run_check(3, "not timing", "tests/") is True
+    out = capsys.readouterr().out
+    assert "Shard union check PASSED: 7 tests = 3 + 2 + 2 across 3 shards" in out
+    assert f"Python {platform.python_version()}" in out
+    for forbidden in ("MISSING", "EXTRA", "DUPLICATES", "FAILED"):
+        assert forbidden not in out
+
+
+@pytest.mark.parametrize(
+    ("shards", "heading", "marked"),
+    [
+        pytest.param([{"a"}, {"b"}], "MISSING", "< c", id="missing"),
+        pytest.param([{"a", "b"}, {"b", "c"}], "DUPLICATES", "~ b", id="duplicated"),
+        pytest.param([{"a", "z"}, {"b", "c"}], "EXTRA", "> z", id="extra"),
+    ],
+)
+def test_a_missing_duplicated_or_extra_id_fails_the_check_and_is_named(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    shards: list[set[str]],
+    heading: str,
+    marked: str,
+) -> None:
+    import scripts.ci_shard_union as union
+
+    _fake_collection(monkeypatch, {"a", "b", "c"}, shards)
+    assert union.run_check(2, "not timing", "tests/") is False
+    out = capsys.readouterr().out
+    assert heading in out
+    assert marked in out
+    assert "PASSED" not in out
+    assert "Shard union check FAILED" in out
+
+
+def test_all_three_problems_at_once_are_all_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import scripts.ci_shard_union as union
+
+    _fake_collection(monkeypatch, {"a", "b", "c"}, [{"a", "b"}, {"b", "z"}])
+    assert union.run_check(2, "not timing", "tests/") is False
+    out = capsys.readouterr().out
+    assert "< c" in out and "> z" in out and "~ b" in out
+    assert (
+        "Shard union check FAILED: 3 tests, shards hold 4 (missing 1, extra 1, duplicated 1)" in out
+    )
+
+
+@pytest.mark.parametrize(
+    ("shards", "code"),
+    [
+        pytest.param([{"a", "b"}, {"c"}], 0, id="exact"),
+        pytest.param([{"a", "b"}, set()], 1, id="missing"),
+        pytest.param([{"a", "b"}, {"b", "c"}], 1, id="duplicated"),
+        pytest.param([{"a", "b"}, {"c", "z"}], 1, id="extra"),
+    ],
+)
+def test_the_command_exits_non_zero_exactly_when_the_check_fails(
+    monkeypatch: pytest.MonkeyPatch, shards: list[set[str]], code: int
+) -> None:
+    import scripts.ci_shard_union as union
+
+    _fake_collection(monkeypatch, {"a", "b", "c"}, shards)
+    assert union.main(["--splits", "2"]) == code
+
+
+def test_the_shards_are_collected_with_the_marker_and_split_flags_of_the_full_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.ci_shard_union as union
+
+    calls = _fake_collection(monkeypatch, {"a", "b", "c"}, [{"a"}, {"b"}, {"c"}])
+    assert union.main(["--splits", "3", "--marker", "not slow", "--test-dir", "x/"]) == 0
+    base = ["x/", "-m", "not slow"]
+    assert calls == [
+        base,
+        [*base, "--splits=3", "--group=1"],
+        [*base, "--splits=3", "--group=2"],
+        [*base, "--splits=3", "--group=3"],
+    ]
+
+
+def test_the_command_checks_a_real_pytest_split_and_logs_counts_that_add_up(tmp_path: Path) -> None:
+    import platform
+    import re
+
+    toy = _toy_tree(tmp_path)
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT), "--splits", "2", "--marker", "not timing"],
+        cwd=toy,
+        env=_clean_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    found = re.search(r"PASSED: (\d+) tests = (\d+) \+ (\d+) across 2 shards", done.stdout)
+    assert found, done.stdout
+    total, first, second = map(int, found.groups())
+    assert total == first + second == 3
+    assert f"Python {platform.python_version()}" in done.stdout
