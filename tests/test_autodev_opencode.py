@@ -966,7 +966,10 @@ class TestTransfer:
 
 CHILD = textwrap.dedent(
     """
-    import hashlib, json, sys
+    import sys
+
+    sys.path.insert(0, sys.argv[5])  # -I ignores PYTHONPATH: import the module the test imported
+    import hashlib, json
     from pathlib import Path
     from verdict import autodev_opencode as oc
 
@@ -994,7 +997,17 @@ def kill_during(repo: Path, phase: str, count: int, items: list[tuple[str, str]]
     import signal
 
     proc = subprocess.Popen(
-        [sys.executable, "-I", "-c", CHILD, str(repo), phase, str(count), json.dumps(items)],
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            CHILD,
+            str(repo),
+            phase,
+            str(count),
+            json.dumps(items),
+            str(Path(oc.__file__).resolve().parent.parent),
+        ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         text=True,

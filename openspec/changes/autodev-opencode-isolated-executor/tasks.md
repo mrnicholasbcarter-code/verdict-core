@@ -165,6 +165,10 @@ Conventions for every task:
       and that file, and `git checkout -- <owned paths>` plus removing the created files and
       empty directories leaves the repository byte-identical to its state when the unit started.
       Evidence: `TestTransfer` and `TestCrash` green (the crash tests SIGKILL a child process at the named phase); removing phase one, the pre-write recheck, the mode comparison, the non-regular rule, the unsafe-path rule, the held-directory check, no-follow plus the held check, the rollback, the size limit, the temporary-file cleanup or its naming each failed its named test.
+      Push gate (round 1): the push gate runs pytest with the main checkout's interpreter, and the crash
+      tests' child (`python -I`, which ignores `PYTHONPATH`) then imported the main checkout's `verdict` and
+      failed with `ImportError: cannot import name 'autodev_opencode'` (3 failed). The child now puts the
+      package root the test imported first on its `sys.path` (3 passed under that interpreter).
 - [x] 2.4 Restore (D7). `restore_transfer(journal, repo)` undoes the current attempt's transfer in reverse with task 2.3's
       traversal, re-check and `replace_file` helper. For each entry it compares kind, executable bit
       and SHA-256 with the intended state (undo it), with the prior state (the mutation was never
