@@ -1467,15 +1467,17 @@ class TestRestore:
         assert snapshot(repo) == before
 
     def test_entry_without_a_recorded_repository_is_named(self, tmp_path: Path) -> None:
-        """Fail closed: an entry whose repository directory was not recorded is not written through."""
+        """Fail closed: one entry whose repository directory was not recorded keeps the whole journal
+        from being written through, and every path in it is named."""
         repo = make_repo(tmp_path)
-        journal = transferred(repo, [witem("a.py", "worker\n")])
+        journal = transferred(repo, [witem("a.py", "worker one\n"), witem("b.py", "worker two\n")])
         journal[0].root = None
         result = oc.restore_transfer(journal, repo)
-        assert (repo / "a.py").read_text() == "worker\n"
-        assert [path for path, _ in result.not_restored] == ["a.py"]
-        assert "not recorded" in dict(result.not_restored)["a.py"]
-        assert journal == []
+        assert (repo / "a.py").read_text() == "worker one\n"
+        assert (repo / "b.py").read_text() == "worker two\n"
+        assert sorted(path for path, _ in result.not_restored) == ["a.py", "b.py"]
+        assert all("not recorded" in why for _, why in result.not_restored)
+        assert result.restored == [] and journal == []
 
     @pytest.mark.parametrize("existing", [True, False])
     def test_parent_renamed_away_and_not_replaced_is_named(
@@ -2174,6 +2176,20 @@ class TestCleanupNeverMasks:
                 oc.AttemptDirectory(parent)
         assert caught.value.errno == errno.EMFILE
         assert list(parent.iterdir()) == []  # the directory made before the failure is removed
+
+    def test_a_parent_that_is_a_file_is_still_a_conflict_when_a_close_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path, {"d/blocker": "a file, not a directory\n", "a.py": "a = 1\n"})
+        root_fd = os.open(str(repo), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(os, "close", failing_directory_close(os.close))
+                with pytest.raises(oc._ConflictError) as caught:
+                    oc._descend_existing(root_fd, ["d", "blocker"], "d/blocker/x.py")
+        finally:
+            os.close(root_fd)
+        assert "not a real directory" in str(caught.value)
 
     def test_a_refused_seed_keeps_its_own_error_when_cleanup_cannot_close(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

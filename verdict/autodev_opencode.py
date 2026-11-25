@@ -1110,7 +1110,7 @@ def _descend_existing(root_fd: int, dirs: Sequence[str], path: str) -> tuple[lis
             return fds, False
         except OSError as exc:
             for fd in fds:
-                os.close(fd)
+                _close_quietly(fd)
             raise _ConflictError(f"{path}: a parent directory is not a real directory") from exc
         fds.append(cur)
     return fds, True

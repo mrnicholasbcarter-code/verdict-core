@@ -280,7 +280,8 @@ Conventions for every task:
       replacement holds, a deleted file the replacement lacks; a nested created file and its two
       directories are journalled too, and every journalled path, the replacement and the displaced repository
       are checked), `test_repository_renamed_away_and_back_is_the_same_directory` and
-      `test_entry_without_a_recorded_repository_is_named`.
+      `test_entry_without_a_recorded_repository_is_named` (two entries, one without the record: both are
+      named).
       Evidence: before the fix `test_repository_replaced_between_transfer_and_restore` failed in all three
       cases (`['deep/er/new.py'] == ['a.py', 'deep', ...]`: only the nested path was refused, by the parent
       check, and the top-level path was restored over the replacement) and `test_entry_without_a_recorded_repository_is_named`
@@ -396,12 +397,17 @@ Conventions for every task:
       Masking sweep (the controller's question after finding 4): `AttemptDirectory.remove()` is documented
       never to raise and runs in `execute_unit`'s `finally`, but its two closes were outside the suppression, so
       a failing first close raised out of it and skipped the second; the constructor's failure handler and
-      `remove_tree` (the failed-seed cleanup) closed unguarded too. All three now close through
-      `_close_quietly`. Tests in `TestCleanupNeverMasks`: `test_cleanup_never_raises_when_a_close_fails`,
-      `test_a_failed_construction_does_not_replace_its_own_error` and
-      `test_a_refused_seed_keeps_its_own_error_when_cleanup_cannot_close`. Evidence: all three failed before
+      `remove_tree` (the failed-seed cleanup) closed unguarded too, as did the error handler of
+      `_descend_existing`, which closes the directories it had opened and then raises the conflict for a parent
+      that is a file. All four now close through `_close_quietly`. Tests in `TestCleanupNeverMasks`:
+      `test_cleanup_never_raises_when_a_close_fails`,
+      `test_a_failed_construction_does_not_replace_its_own_error`,
+      `test_a_refused_seed_keeps_its_own_error_when_cleanup_cannot_close` and
+      `test_a_parent_that_is_a_file_is_still_a_conflict_when_a_close_fails`. Evidence: all four failed before
       the fix (`OSError: [Errno 5]` out of `remove`, `5 == 24` for the construction error, `OSError` replacing
-      the seed refusal) and pass after.
+      the seed refusal and replacing the conflict) and pass after. The other `os.close` calls in the module
+      are listed in the pull request: directory and read-only descriptors, which `close(2)` cannot fail on, and
+      the two descriptors of files the module wrote, whose close error is the write's own failure.
 ## 4. `run_autodev` wiring
 
 - [x] 4.1 Protocol, gateway check and the restore rule (D7, D8). Add the `UnitExecutor`

@@ -101,8 +101,9 @@ again by changing its mode by name, relative to its parent's descriptor and with
 where the host supports that, and where it does not, that directory and the attempt directory above it
 are left; an entry that cannot be removed is left with the directory above it. Cleanup SHALL NOT raise an
 `Exception`, so that it cannot replace an exception that is propagating, and a descriptor whose close fails
-SHALL NOT stop the executor closing the others. Every descriptor the executor opened for an attempt is
-closed on every exit path.
+SHALL NOT stop the executor closing the others. A close that fails while a path's directories are being
+opened and one of them is not a real directory SHALL NOT replace that refusal. Every descriptor the executor
+opened for an attempt is closed on every exit path.
 
 #### Scenario: Clone shares nothing with the repository
 - **WHEN** an attempt tree is seeded from a repository that has its own hook, local config value and `info/exclude` entry
@@ -183,6 +184,10 @@ closed on every exit path.
 #### Scenario: A failed construction does not replace its own error
 - **WHEN** the attempt directory cannot be opened after it was made, and closing the descriptor already opened also fails
 - **THEN** the error that propagates is the one from the failed open, and the directory that was made is removed
+
+#### Scenario: A parent that is a file is still a conflict when a close fails
+- **WHEN** a component of a path's parent directories is a file, and closing the directory descriptors already opened for the path fails
+- **THEN** the path is reported as a conflict (a parent directory is not a real directory), not as an I/O error
 
 #### Scenario: A refused seed keeps its own error when cleanup cannot close
 - **WHEN** the seed is refused (the repository has no commit) and closing the descriptor the cleanup opened fails
@@ -555,8 +560,8 @@ every journal entry (a directory creation, a write and a deletion alike), when t
 restore, which reopens the repository by pathname, SHALL compare the directory it opened with that
 record before it reads or writes any path: when the repository was renamed away and another directory
 took its name, nothing is read or written, every journalled path is named as not restored with one
-reason (the repository was replaced), and the journal is empty; an entry whose root was not recorded
-is named in the same way (not recorded). For every file it writes or deletes the transfer SHALL also record, in the journal entry and
+reason (the repository was replaced), and the journal is empty; when any entry's root was not recorded,
+nothing is read or written either and every journalled path is named as not restored (not recorded). For every file it writes or deletes the transfer SHALL also record, in the journal entry and
 before that entry is appended, the device and inode of each directory above the path, below the root,
 as the transfer opened it, and restore SHALL open the same path by descriptor and compare them before it reads the
 file: a directory that is not the one the transfer wrote through (moved away and absent, or
@@ -615,8 +620,8 @@ NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 - **THEN** restore returns the owned file to its prior bytes, and nothing is named as not restored
 
 #### Scenario: Entry without a recorded repository is named
-- **WHEN** a journal entry has no recorded repository directory
-- **THEN** restore writes nothing for it and names it as not restored (not recorded)
+- **WHEN** one entry of a journal of two has no recorded repository directory
+- **THEN** restore writes nothing for either and names both as not restored (not recorded)
 
 #### Scenario: Parent replaced by a real directory between transfer and restore
 - **WHEN** a transferred file's parent directory is renamed away and a real directory takes its name, holding either the worker's bytes or the file's prior bytes, and restore runs
