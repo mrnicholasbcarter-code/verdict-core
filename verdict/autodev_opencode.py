@@ -1151,7 +1151,9 @@ def _restore(root_fd: int, journal: list[JournalEntry], *, hooks: Hooks | None) 
     return result
 
 
-def restore(journal: list[JournalEntry], repo: Path, hooks: Hooks | None = None) -> RestoreResult:
+def restore_transfer(
+    journal: list[JournalEntry], repo: Path, hooks: Hooks | None = None
+) -> RestoreResult:
     """Undo the journalled mutations in reverse, never overwriting content the transfer did not write.
 
     For each entry a path holding the intended state is returned to its prior state; a path
@@ -1302,7 +1304,7 @@ class OpenCodeUnitExecutor:
 
     def restore(self) -> str:
         """Undo the last unit's transfer; ``""`` when nothing was transferred (D7)."""
-        return restore(self._journal, self._repo, self._hooks).summary()
+        return restore_transfer(self._journal, self._repo, self._hooks).summary()
 
     # -- the attempt ---------------------------------------------------------------------
 

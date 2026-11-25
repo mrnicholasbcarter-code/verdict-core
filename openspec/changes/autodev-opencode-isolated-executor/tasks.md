@@ -139,7 +139,7 @@ Conventions for every task:
       and that file, and `git checkout -- <owned paths>` plus removing the created files and
       empty directories leaves the repository byte-identical to its state when the unit started.
       Evidence: `TestTransfer` and `TestCrash` green (the crash tests SIGKILL a child process at the named phase); removing phase one, the pre-write recheck, the mode comparison, the non-regular rule, the unsafe-path rule, the held-directory check, no-follow plus the held check, the rollback, the size limit, the temporary-file cleanup or its naming each failed its named test.
-- [x] 2.4 Restore (D7). `restore(journal)` undoes the current attempt's transfer in reverse with task 2.3's
+- [x] 2.4 Restore (D7). `restore_transfer(journal, repo)` undoes the current attempt's transfer in reverse with task 2.3's
       traversal, re-check and `replace_file` helper. For each entry it compares kind, executable bit
       and SHA-256 with the intended state (undo it), with the prior state (the mutation was never
       made: change nothing, report nothing) and otherwise leaves the path alone and reports it; it removes a created directory only when it is empty and its device and inode still equal the recorded
@@ -159,7 +159,7 @@ Conventions for every task:
       `test_interrupt_right_after_a_rename`, `test_interrupt_right_after_a_deletion` and
       `test_interrupt_right_after_a_directory_creation` (each patches `rename`, `unlink` or `mkdir` to
       perform the real call and then raise `KeyboardInterrupt`, runs `transfer` with a `journal`,
-      calls `restore(journal)`, and asserts the tree is byte-identical to before and that the
+      calls `restore_transfer(journal, repo)`, and asserts the tree is byte-identical to before and that the
       exception that left the transfer is the `KeyboardInterrupt`), plus
       `test_interrupt_before_the_mutation` (the patched call raises without performing the
       operation: restore changes and reports nothing). The first three fail if the journal append

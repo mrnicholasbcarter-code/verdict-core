@@ -939,7 +939,7 @@ class TestRestore:
         before = snapshot(repo)
         journal = transferred(repo, [witem("deep/er/new.py", "created\n")])
         assert (repo / "deep" / "er" / "new.py").exists()
-        result = oc.restore(journal, repo)
+        result = oc.restore_transfer(journal, repo)
         assert not (repo / "deep").exists()
         assert result.not_restored == []
         assert snapshot(repo) == before
@@ -955,7 +955,7 @@ class TestRestore:
         directory.mkdir()
         (repo / "newdir-original" / "new.py").unlink()
         (repo / "newdir-original").rmdir()
-        result = oc.restore(journal, repo)
+        result = oc.restore_transfer(journal, repo)
         assert directory.is_dir() and list(directory.iterdir()) == []
         assert ("newdir", "replaced by another directory") in result.not_restored
         assert "newdir" in result.summary()
@@ -964,7 +964,7 @@ class TestRestore:
         repo = make_repo(tmp_path)
         journal = transferred(repo, [witem("a.py", "worker\n")])
         write(repo, "a.py", "user edit after the transfer\n")
-        result = oc.restore(journal, repo)
+        result = oc.restore_transfer(journal, repo)
         assert (repo / "a.py").read_text() == "user edit after the transfer\n"
         assert result.not_restored == [("a.py", "changed since the transfer")]
 
@@ -972,7 +972,7 @@ class TestRestore:
         repo = make_repo(tmp_path)
         journal = transferred(repo, [witem("a.py", "worker\n")])
         (repo / "a.py").chmod(0o755)
-        result = oc.restore(journal, repo)
+        result = oc.restore_transfer(journal, repo)
         assert (repo / "a.py").stat().st_mode & stat.S_IXUSR
         assert [path for path, _ in result.not_restored] == ["a.py"]
 
@@ -984,7 +984,7 @@ class TestRestore:
         (outside / "inner.py").write_text("outside content\n")
         (repo / "d").rename(tmp_path / "d-moved")
         (repo / "d").symlink_to(outside)
-        result = oc.restore(journal, repo)
+        result = oc.restore_transfer(journal, repo)
         assert (outside / "inner.py").read_text() == "outside content\n"
         assert [path for path, _ in result.not_restored] == ["d/inner.py"]
 
@@ -992,8 +992,8 @@ class TestRestore:
         repo = make_repo(tmp_path)
         before = snapshot(repo)
         journal = transferred(repo, [witem("a.py", "worker\n")])
-        first = oc.restore(journal, repo)
-        second = oc.restore(journal, repo)
+        first = oc.restore_transfer(journal, repo)
+        second = oc.restore_transfer(journal, repo)
         assert first.restored == ["a.py"]
         assert second.restored == [] and second.not_restored == [] and second.summary() == ""
         assert snapshot(repo) == before
@@ -1001,7 +1001,7 @@ class TestRestore:
     def test_restore_without_a_transfer(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path)
         before = snapshot(repo)
-        result = oc.restore([], repo)
+        result = oc.restore_transfer([], repo)
         assert result.summary() == "" and result.restored == []
         assert snapshot(repo) == before
 
@@ -1018,7 +1018,7 @@ class TestRestore:
             real_rename(src, dst, *args, **kwargs)
 
         monkeypatch.setattr(os, "rename", flaky)
-        result = oc.restore(journal, repo)
+        result = oc.restore_transfer(journal, repo)
         monkeypatch.setattr(os, "rename", real_rename)
         assert [path for path, _ in result.not_restored] == ["b.py"]
         assert result.restored == ["a.py"]
@@ -1034,7 +1034,7 @@ class TestRestore:
         before = snapshot(repo)
         journal = transferred(repo, [witem("a.py", "worker\n"), ditem("b.py")])
         assert not (repo / "b.py").exists()
-        result = oc.restore(journal, repo)
+        result = oc.restore_transfer(journal, repo)
         assert sorted(result.restored) == ["a.py", "b.py"]
         assert snapshot(repo) == before
         assert (repo / "b.py").stat().st_mode & stat.S_IXUSR
@@ -1059,7 +1059,7 @@ class TestRestore:
         with pytest.raises(KeyboardInterrupt):
             run_transfer(repo, items, None, journal)
         monkeypatch.setattr(os, which, real)
-        result = oc.restore(journal, repo)
+        result = oc.restore_transfer(journal, repo)
         assert snapshot(repo) == before
         assert result.not_restored == []
 
@@ -1082,7 +1082,7 @@ class TestRestore:
         with pytest.raises(KeyboardInterrupt):
             run_transfer(repo, items, None, journal)
         monkeypatch.setattr(os, which, real)
-        result = oc.restore(journal, repo)
+        result = oc.restore_transfer(journal, repo)
         assert result.restored == [] and result.not_restored == []
         assert snapshot(repo) == before
 
