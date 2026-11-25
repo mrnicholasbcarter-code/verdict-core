@@ -514,9 +514,9 @@ declined the unit, that edit stays, exactly as on the default path.  Unowned dir
 they are seeded into the clone.
 
 **Restore.**  Every exit after the copy-back other than a verified success (a failing
-verification command, an error, Ctrl-C) puts the owned files back.  Restore never overwrites a
-change made since: a file the verification command or you edited is left as it is and named in the
-unit's reason, and a file whose state cannot be read during the restore is named too while the
+verification command, an error, Ctrl-C) puts the owned files back.  Restore leaves a change made
+since as it is, within the limits under "Your edits while it runs" below: a file the verification
+command or you edited is left as it is and named in the unit's reason, and a file whose state cannot be read during the restore is named too while the
 others are still restored.  A verified unit stays, and a later unit's failure never undoes it.  If the
 restore itself fails or is interrupted while an exception is already propagating, that is printed and
 the original exception is the one raised, and what the restore had not reached is put back the way
@@ -525,9 +525,10 @@ the original exception is the one raised, and what the restore had not reached i
 **Your edits while it runs.**  The copy-back refuses a file you changed since the clone was seeded
 (an edit, a mode change, a file you created or removed), and it looks once more after each temporary
 file is written, immediately before the rename (the file, and the directories above it, which must be
-the ones it opened), so an edit you make while Verdict is copying is refused, not overwritten.  Restore takes the same last look, and
-it also names a file as not restored when its directory is no longer the one the copy-back wrote
-through (renamed away, or replaced by another directory), whatever bytes the replacement holds.  POSIX
+the ones it opened), so an edit you make while Verdict is copying is refused, not overwritten.
+Restore takes the same last look, and it also names a file as not restored when its directory is no
+longer the one the copy-back wrote through (renamed away, or replaced by another directory),
+whatever bytes the replacement holds.  POSIX
 has no rename that compares content, so a write that lands between that last look and the rename, or
 through a file you already had open, is still overwritten, and the journal holds the seed's bytes, not
 your edit; keep from editing an owned file while a unit runs.

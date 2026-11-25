@@ -1489,7 +1489,10 @@ def _restore(root_fd: int, journal: list[JournalEntry], *, hooks: Hooks | None) 
 def restore_transfer(
     journal: list[JournalEntry], repo: Path, hooks: Hooks | None = None
 ) -> RestoreResult:
-    """Undo the journalled mutations in reverse, never overwriting content the transfer did not write.
+    """Undo the journalled mutations in reverse, leaving alone content the transfer did not write.
+
+    "Leaving alone" is what a last look before each write can see; a change that lands after it and
+    before the rename is overwritten (the stated limit in the change's spec and design D6).
 
     For each entry a path holding the intended state is returned to its prior state; a path
     already holding the prior state is left and not reported (the mutation was never made);

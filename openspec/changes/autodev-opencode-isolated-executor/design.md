@@ -125,8 +125,9 @@ with a named reason, before any worker, on no HEAD, a submodule or nested reposi
 The overlay holds every file it reads in memory until the clone is written, so the files it reads share
 one byte budget and one file budget while they are loaded (review round 2, finding 4, Codex on
 `1470a171`): each read stops at what is left of the budget, and the load stops at the file that crosses a
-budget. Only a file or a symlink kept in memory counts, so a mass deletion is not refused. Peak memory is
-the budget plus one read chunk.
+budget. Only a file or a symlink kept in memory counts, so a mass deletion is not refused. What is read
+from the user's tree, and what is kept, is bounded by the budget plus one read chunk (the tests count
+bytes read; they do not measure memory).
 
 ### D4. The delta is a filesystem comparison; no git runs in the tree after launch
 
@@ -195,7 +196,7 @@ the unit]; it stays, as on the default path. Refusing before the mechanical tier
 dirty ruff unit it could still fix. On the default path autodev patches an owned file with uncommitted
 changes; with the flag it does not.
 
-### D6. Transfer is all-or-nothing and never overwrites what changed since the seed
+### D6. Transfer is all-or-nothing and does not overwrite what it sees changed since the seed
 
 The user's tree can change while the transfer runs, so it works on directory descriptors (POSIX only;
 task 2.3) and re-checks at the moment of each write. A read-only phase compares the user's current kind,
@@ -266,8 +267,8 @@ cannot undo an earlier unit's verified files (`run_autodev` reuses one executor)
 journalled before it is made, with the path's prior and intended state; appending after the call returns
 would let a `KeyboardInterrupt` between the two leave a change restore cannot see. Restore therefore
 accepts either state for an entry (the intended one is undone; the prior one means the mutation was never
-made and is not reported) and leaves alone and reports any other (a user edit or `chmod`), so it never
-overwrites content it did not write.
+made and is not reported) and leaves alone and reports any other (a user edit or `chmod`), so it does not
+overwrite content it can see it did not write (D6 lists what its last look cannot see).
 
 **Created directories carry their identity.** The device and inode of a directory exist only after
 `mkdir` returns, so the journal entry is appended first (write-ahead) and its identity is filled in right

@@ -254,9 +254,9 @@ Conventions for every task:
       `test_change_while_restore_writes_the_prior_bytes_is_kept`. The existing symlink replacement test
       (`test_parent_swapped_between_transfer_and_restore`) is unchanged.
       Evidence (round 2): all but the third failed before the fix (the replacement's file went from
-      `worker` to `i = 1`; `[] == ['d/inner.py']`; the user's edit was overwritten) and passed after; the
-      third guards the count check and failed with it removed, as did each of the identity check, the
-      gone-directory report and restore's last look.
+      `worker` to `i = 1`; `[] == ['d/inner.py']`; the user's edit was overwritten) and passed after. The
+      third was written after the fix and never run red: it guards the count check and failed with that
+      check removed, as did each of the identity check, the gone-directory report and restore's last look.
 ## 3. The executor
 
 - [x] 3.1 Prompt (D10). `build_opencode_prompt(unit)` names the objective, owned files,

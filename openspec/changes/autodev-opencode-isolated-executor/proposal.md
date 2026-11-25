@@ -57,7 +57,8 @@ design.md "Drift after #1299" records what changed since this was written.
   repair is accepted and nothing but the owned change reaches the repository.
 - Every exit after a transfer except a verified success restores the owned files, including a runner
   `PermissionError` and a `KeyboardInterrupt` right after any mutation, without hiding the original error
-  or overwriting a later user edit. A failed write leaves no temporary file or directory.
+  or overwriting a later user edit that a last look before each rename can see (design D6 lists what
+  it cannot). A failed write leaves no temporary file or directory.
 - After `SIGKILL` during a transfer each owned file holds its old or new bytes and git restores it
   (conversions as git writes them); an owned file git cannot restore is refused; staged renames seed.
 - With opencode, serve or its credentials unavailable autodev stops with one message before any probe;

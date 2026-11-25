@@ -51,7 +51,7 @@ the pinned one SHALL NOT fail the check and SHALL be named in the output.
 - **WHEN** the serve token does not resolve, or the worker signing key file is absent or unreadable, and the binary and serve checks pass
 - **THEN** autodev exits 1 with one message naming the credential check and the remedy, and the route probe, the decomposer, `run_autodev` and `PatchExecutor` are never called
 
-#### Scenario: Credential check changes nothing
+#### Scenario: Credential check creates or modifies nothing
 - **WHEN** the credential check runs with the credentials present, with no serve token, and with a token but no signing key
 - **THEN** no path under the home directory is created, removed or changed (kind, mode, modification time and bytes), and the check reports the credentials as present or names the missing one
 
@@ -122,11 +122,11 @@ descriptor the executor opened for an attempt is closed on every exit path.
 - **WHEN** the repository has no HEAD commit, contains a submodule or a nested repository, or exceeds the seed limit
 - **THEN** the attempt is `error` with a reason naming which, no worker starts and no attempt directory remains
 
-#### Scenario: Overlay files share one byte budget
+#### Scenario: Overlay bytes share one budget while they are loaded
 - **WHEN** several dirty or untracked files each fit the seed's byte limit and together exceed it
 - **THEN** the seed is refused with the limit, and no more than the byte limit plus one read chunk was read from the user's tree
 
-#### Scenario: Overlay file count is bounded while loading
+#### Scenario: Overlay file count is bounded while the files are loaded
 - **WHEN** the files to copy outnumber the seed's file limit
 - **THEN** the seed is refused with the limit, and no file past the one that crossed the limit was read
 
@@ -387,7 +387,7 @@ out-of-bounds path.
 - **WHEN** a worker adds a new unowned file and rewrites `.gitignore` in the attempt tree to ignore it
 - **THEN** the attempt is `rejected` for the unowned file and for `.gitignore`
 
-### Requirement: Transfer SHALL be all-or-nothing and SHALL NOT overwrite a file that changed after the seed
+### Requirement: Transfer SHALL be all-or-nothing and SHALL NOT overwrite a file it sees changed after the seed
 
 The executor SHALL resolve every transfer path component by component from a descriptor on
 the repository root without following symlinks, and SHALL compare, for each path, the user's
@@ -441,15 +441,15 @@ the edit. The executor assumes it is the only writer of an owned file while a un
 - **WHEN** the user edits an owned file after the read-only checks and before the first write
 - **THEN** the attempt is `rejected`, nothing was written or created, and the user's edit is intact
 
-#### Scenario: Change while the temporary file is written
+#### Scenario: Change while the temporary file is written is refused
 - **WHEN** the user edits an owned file, changes only its executable bit, or removes it after the executor has written the temporary file and before the rename
 - **THEN** the attempt is `rejected` with the reason (changed since the seed, its executable bit, removed after the seed), the user's state is intact, no temporary file is left and nothing is journalled for that path
 
-#### Scenario: File created while the temporary file is written
+#### Scenario: File created while the temporary file is written is refused
 - **WHEN** the seed had no file at an owned path and the user creates one after the temporary file is written and before the rename
 - **THEN** the attempt is `rejected` as appeared after the seed, the user's file is intact and no temporary file is left
 
-#### Scenario: Change while a later temporary file is written
+#### Scenario: Change while a later temporary file is written rolls back
 - **WHEN** a transfer of two owned files has written the first and the user edits the second while its temporary file is written
 - **THEN** the first path is restored, the user's edit is intact, no temporary file is left and the attempt is `error` naming the second path
 
@@ -497,7 +497,7 @@ the edit. The executor assumes it is the only writer of an owned file while a un
 - **WHEN** a failed write is followed by a failing unlink of its temporary file
 - **THEN** the reason names the original failure first and the leftover temporary file second
 
-### Requirement: Every exit after a transfer other than a verified success SHALL restore the owned files, and restore SHALL NOT overwrite content it did not write
+### Requirement: Every exit after a transfer other than a verified success SHALL restore the owned files, and restore SHALL NOT overwrite content it sees the transfer did not write
 
 For an executor that has a `restore` method, every exit from `_run_unit_once` after
 `execute_unit` was called, other than a verified success, SHALL call `restore()` exactly once
@@ -585,15 +585,15 @@ NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 - **WHEN** a transferred file's parent directory is renamed away and a real directory takes its name, holding either the worker's bytes or the file's prior bytes, and restore runs
 - **THEN** restore writes nothing in the replacement or the displaced directory, names the path as not restored (replaced), and the journal is empty
 
-#### Scenario: Parent renamed away and not replaced
+#### Scenario: Parent renamed away and not replaced is named
 - **WHEN** the directory of a transferred file is renamed away, for an existing owned file and for one the transfer created, and nothing takes its name
 - **THEN** restore names the path as not restored (its directory is gone) and the displaced file is unchanged
 
-#### Scenario: Entry without recorded parent directories
+#### Scenario: Entry without recorded parent directories is named
 - **WHEN** a journal entry for a path below a directory has no recorded parent directories
 - **THEN** restore writes nothing for it and names it as not restored (not recorded)
 
-#### Scenario: Change while restore writes the prior bytes
+#### Scenario: Change while restore writes the prior bytes is kept
 - **WHEN** the user edits a transferred file after restore has written its temporary file and before the rename
 - **THEN** the edit is intact, the path is named as not restored (changed since the transfer) and no temporary file is left
 
