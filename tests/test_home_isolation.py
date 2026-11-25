@@ -264,6 +264,18 @@ def _flags(*names: str) -> int:
         ("sqlite3.connect", ("file:{o}/receipts.db",), False),
         ("sqlite3.connect", ("file:{o}/x?cache=shared",), False),
         ("sqlite3.connect", ("file::memory:?cache=shared",), False),
+        ("sqlite3.connect", ("",), False),  # a private temporary database
+        ("sqlite3.connect", ("{r}/:memory:",), True),  # a real file that is named ':memory:'
+        ("sqlite3.connect", ("{r}/x:memory:y",), True),
+        # SQLite applies the LAST mode parameter: only a final ro/memory touches no file.
+        ("sqlite3.connect", ("file:{r}/d.db?mode=memory&mode=rwc",), True),
+        ("sqlite3.connect", ("file:{r}/d.db?mode=ro&mode=rwc",), True),
+        ("sqlite3.connect", ("file:{r}/d.db?mode=rwc&mode=memory",), False),
+        ("sqlite3.connect", ("file:{r}/d.db?mode=rwc&mode=ro",), False),
+        # The audit event carries -1 for a dir_fd that was not given.
+        ("os.mkdir", ("{r}/dir", 0o777, -1), True),
+        ("os.remove", ("{r}/state.json", -1), True),
+        ("os.rename", ("{o}/a", "{r}/b", -1, -1), True),
         ("os.listdir", ("{r}",), False),
         ("socket.connect", (None, ("127.0.0.1", 1)), False),
     ],
@@ -422,6 +434,191 @@ def test_absolute_sqlite_uris_are_fine_when_cwd_is_inside_a_protected_root(
         with pytest.raises(PermissionError):
             sqlite3.connect(f"file:{root}/uri.db", uri=True)
         assert len(GUARD.drain()) == 2
+    assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [":memory:", "", b":memory:", Path(":memory:")],
+    ids=["memory", "empty-string-private-temp-db", "memory-bytes", "memory-pathlike"],
+)
+def test_sqlite_memory_and_private_temp_databases_are_not_files_in_a_protected_cwd(
+    name: str | bytes | Path, fake_real_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``:memory:`` and ``''`` name no file, whatever the working directory is."""
+    root = fake_real_home / ".verdict"
+    monkeypatch.chdir(root)
+    with GUARD.protect(root):
+        connection = sqlite3.connect(name)
+        connection.execute("create table t (x)")
+        connection.close()
+        assert not GUARD.violations
+    assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "receipts.db",  # a real database in the working directory
+        "./:memory:",  # SQLite's own spelling for a FILE named ':memory:'
+        ":memory: ",  # not the special name: a file with a trailing space
+        "x:memory:",
+        ":memory:x",
+        ":memory:?cache=shared",  # no file: prefix, so no URI reading
+        "file:receipts.db",  # without uri=True this is a literal file in cwd
+        "file::memory:",  # likewise: uri=False makes it a literal file in cwd
+    ],
+)
+def test_sqlite_names_that_are_files_stay_guarded_when_cwd_is_a_protected_root(
+    name: str, fake_real_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = fake_real_home / ".verdict"
+    monkeypatch.chdir(root)
+    with GUARD.protect(root):
+        with pytest.raises(PermissionError):
+            sqlite3.connect(name)
+        assert len(GUARD.drain()) == 1
+    assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
+
+
+def test_a_real_sqlite_database_path_under_a_protected_root_still_raises(
+    fake_real_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = fake_real_home / ".verdict"
+    monkeypatch.chdir(root)
+    with GUARD.protect(root):
+        for name in (str(root / "receipts.db"), "receipts.db", Path("receipts.db")):
+            with pytest.raises(PermissionError):
+                sqlite3.connect(name)
+        assert len(GUARD.drain()) == 3
+    assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
+
+
+def test_sqlite_uri_reading_of_the_memory_name_is_not_a_file_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit event does not say ``uri=``, so a ``file:`` string has two readings.
+
+    As a URI ``file::memory:`` is the in-memory database and names no file. As a
+    plain filename (``uri=False``) it is a file in cwd, which SQLite really
+    creates: only that reading stays a target.
+    """
+    monkeypatch.chdir(tmp_path)
+    targets = home_guard._sqlite_file_targets
+    assert targets("file::memory:") == ["file::memory:"]
+    assert targets("file::memory:?cache=shared") == ["file::memory:?cache=shared"]
+    assert targets("file:%3Amemory%3A") == ["file:%3Amemory%3A"]
+    # A path that merely ends in the name is a file: the decoded URI path stays a target.
+    assert "/x/:memory:" in targets("file:/x/:memory:")
+    assert targets(":memory:") == [] and targets("") == []
+    assert targets("./:memory:") == ["./:memory:"]
+
+
+def test_the_last_sqlite_mode_parameter_decides_whether_a_uri_touches_a_file(
+    fake_real_home: Path,
+) -> None:
+    """``mode=memory&mode=rwc`` creates the file (SQLite applies the last ``mode``)."""
+    root = fake_real_home / ".verdict"
+    with GUARD.protect(root):
+        with pytest.raises(PermissionError):
+            sqlite3.connect(f"file:{root}/dup.db?mode=memory&mode=rwc", uri=True)
+        GUARD.drain()
+        scratch = sqlite3.connect(f"file:{root}/dup2.db?mode=rwc&mode=memory", uri=True)
+        scratch.execute("create table t (x)")
+        scratch.close()
+        assert not GUARD.violations
+    assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
+
+
+needs_proc_fd = pytest.mark.skipif(
+    not os.path.isdir("/proc/self/fd"), reason="a dir_fd names its directory through /proc/self/fd"
+)
+
+
+@needs_proc_fd
+def test_names_relative_to_a_dir_fd_are_not_resolved_against_the_cwd(
+    fake_real_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``shutil.rmtree`` removes each entry by a bare name relative to an open directory."""
+    root = fake_real_home / ".verdict"
+    tree = tmp_path / "tree"
+    (tree / "sub").mkdir(parents=True)
+    (tree / "sub" / "x.txt").write_text("x")
+    (tree / "y.txt").write_text("y")
+    monkeypatch.chdir(root)  # a cwd reading would put 'x.txt' and 'y.txt' inside the root
+    with GUARD.protect(root):
+        shutil.rmtree(tree)
+        assert not GUARD.violations
+    assert not tree.exists()
+    assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
+
+
+@needs_proc_fd
+def test_dir_fd_calls_are_checked_against_the_directory_the_descriptor_names(
+    fake_real_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = fake_real_home / ".verdict"
+    (root / "keep").mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "src.txt").write_text("s")
+    monkeypatch.chdir(elsewhere)  # a cwd reading would allow every attempt below
+    root_fd = os.open(root, os.O_RDONLY)  # opening a directory to read it is not a write
+    other_fd = os.open(elsewhere, os.O_RDONLY)
+    attempts = {
+        "mkdir": lambda: os.mkdir("made", dir_fd=root_fd),
+        "remove": lambda: os.remove("model-metadata.json", dir_fd=root_fd),
+        "rmdir": lambda: os.rmdir("keep", dir_fd=root_fd),
+        "rename into": lambda: os.rename(
+            "src.txt", "moved.txt", src_dir_fd=other_fd, dst_dir_fd=root_fd
+        ),
+        "rename out of": lambda: os.rename(
+            "model-metadata.json", "out.txt", src_dir_fd=root_fd, dst_dir_fd=other_fd
+        ),
+        "link": lambda: os.link("src.txt", "linked", src_dir_fd=other_fd, dst_dir_fd=root_fd),
+        "symlink": lambda: os.symlink("target", "alias", dir_fd=root_fd),
+        "chmod": lambda: os.chmod("model-metadata.json", 0o600, dir_fd=root_fd),
+        "utime": lambda: os.utime("model-metadata.json", None, dir_fd=root_fd),
+    }
+    if sys.version_info >= (3, 11):  # shutil.rmtree has no dir_fd before 3.11
+        attempts["rmtree"] = lambda: shutil.rmtree("keep", dir_fd=root_fd)
+    try:
+        with GUARD.protect(root):
+            for label, attempt in attempts.items():
+                with pytest.raises(PermissionError):
+                    attempt()
+                assert GUARD.violations, f"{label} was not reported"
+                GUARD.drain()
+            # The same calls relative to a directory outside the root are fine, and an
+            # absolute path ignores the descriptor.
+            os.mkdir("fine", dir_fd=other_fd)
+            os.rename("src.txt", "dst.txt", src_dir_fd=other_fd, dst_dir_fd=other_fd)
+            os.symlink("dst.txt", "alias", dir_fd=other_fd)
+            os.remove("alias", dir_fd=other_fd)
+            os.mkdir(str(elsewhere / "abs"), dir_fd=root_fd)
+            assert not GUARD.violations
+    finally:
+        os.close(root_fd)
+        os.close(other_fd)
+    assert sorted(p.name for p in root.iterdir()) == ["keep", "model-metadata.json"]
+    assert (root / "model-metadata.json").read_text() == '{"ratings": 1}'
+    assert (elsewhere / "abs").is_dir() and (elsewhere / "dst.txt").is_file()
+
+
+@needs_proc_fd
+def test_a_dir_fd_that_names_no_directory_checks_nothing_and_writes_nothing(
+    fake_real_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An fd that cannot be resolved is not guessed at: the OS refuses the call itself."""
+    root = fake_real_home / ".verdict"
+    monkeypatch.chdir(root)
+    closed_fd = os.open(tmp_path, os.O_RDONLY)
+    os.close(closed_fd)
+    with GUARD.protect(root):
+        with pytest.raises(OSError) as raised:
+            os.mkdir("made", dir_fd=closed_fd)
+        assert raised.value.errno == errno.EBADF
+        assert not GUARD.violations
     assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
 
 

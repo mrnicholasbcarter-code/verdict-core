@@ -22,13 +22,26 @@ links and SQLite opens whose arguments NAME a protected root, a path beneath it,
 or (for tree moves, links and symlinks) an ancestor of it, spelled however
 (relative, ``..``, ``//``, ``file:`` URIs). It is lexical: it does not resolve
 symlinks. It does not defend against a test that deliberately builds an alias
-chain, nor against child processes (they inherit the isolated env), fd-relative
-calls (``dir_fd``), links that already existed, or C-level I/O that bypasses the
-audited entry points. For those, run the suite with the real state directories
-masked by empty mounts, or under a throwaway ``HOME`` with
-``tests/helpers/home_snapshot.py``. It loads from ``tests/conftest.py``, so it
-does not exist in a run that skips that conftest (``--noconftest``); load it
-there with ``-p tests.helpers.home_guard``. Under pytest-xdist a worker's own
+chain, nor against child processes (they inherit the isolated env), links that
+already existed, or C-level I/O that bypasses the audited entry points. For
+those, run the suite with the real state directories masked by empty mounts, or
+under a throwaway ``HOME`` with ``tests/helpers/home_snapshot.py``.
+
+A name is read against the directory it is relative to. A relative name given
+with a ``dir_fd`` (``os.mkdir``, ``os.remove``, ``os.rename``, ``shutil.rmtree``
+and the like) is read against the directory the descriptor names
+(``/proc/self/fd``, Linux), never the working directory; where that cannot be
+read it is not checked. ``os.open(..., dir_fd=)`` is the exception: its audit
+event does not carry the descriptor, so its relative name is read against the
+working directory. A ``sqlite3.connect`` argument that names no file (``:memory:``
+and the empty private temporary database) is never a write target. The audit event
+does not say ``uri=``, so a ``file:`` string is read both ways: as a URI (decoded;
+a last ``mode`` of ``ro`` or ``memory`` touches no file) and as a literal filename
+in the working directory, which SQLite does create.
+
+The guard loads from ``tests/conftest.py``, so it does not exist in a run that
+skips that conftest (``--noconftest``); load it there with
+``-p tests.helpers.home_guard``. Under pytest-xdist a worker's own
 exit status never reaches the controller, so each worker hands its refused
 writes to the controller through ``workeroutput`` when it finishes, and the
 controller fails the run for them (a refused write during session teardown, or
@@ -340,6 +353,26 @@ _MUTATED_ARGS: dict[str, tuple[int, ...]] = {
     "sqlite3.connect": (0,),
 }
 
+#: audit event -> {index of a path argument: index of the ``dir_fd`` it is relative to}.
+#: The event carries ``-1`` (or ``None``) for a ``dir_fd`` that was not given.
+#: ``open`` is absent: its audit event has no descriptor argument.
+_DIR_FD_ARGS: dict[str, dict[int, int]] = {
+    "os.rename": {0: 2, 1: 3},
+    "os.link": {0: 2, 1: 3},
+    "os.symlink": {1: 2},  # the link; its target is relative to the link's directory
+    "os.remove": {0: 1},
+    "os.rmdir": {0: 1},
+    "os.mkdir": {0: 2},
+    "os.chmod": {0: 2},
+    "os.chown": {0: 3},
+    "os.utime": {0: 3},
+    "shutil.rmtree": {0: 1},
+}
+
+#: Names SQLite opens without touching a file, whatever ``uri=`` says: ``:memory:``
+#: and the empty name (a private temporary database, deleted on close).
+_SQLITE_NO_FILE_NAMES = frozenset({"", ":memory:"})
+
 #: Events that move or delete a whole tree: either end may be an ANCESTOR of a
 #: protected root. A SOURCE ancestor relocates the protected tree
 #: (``os.rename(home / ".config", ...)``, ``shutil.rmtree(home)``); a DESTINATION
@@ -383,25 +416,65 @@ def _as_path(value: object) -> str | None:
 def _sqlite_file_targets(value: str) -> list[str]:
     """Filesystem targets of a ``sqlite3.connect`` argument.
 
+    ``:memory:`` and the empty name open no file under any setting, so they have
+    no target; every other name that does not start with ``file:`` is a path.
+    Only those two exact strings are exempt: ``./:memory:``, ``x:memory:`` and
+    ``:memory:?cache=shared`` are ordinary file names.
+
     The audit event carries the raw string and not ``uri=``, so a ``file:``
     string is read both ways. As a URI it is decoded (``file:/p?mode=rwc``,
-    ``file:///p``, percent escapes); ``mode=ro`` and ``mode=memory`` URIs touch
-    no file, so their decoded target is skipped. As a plain filename it is a
-    literal name in the cwd (``file:state.db?mode=ro`` is a writable file
-    there), but a literal can only be created when its directory exists, so
-    ``file:/abs/p`` (needs a directory named ``file:``) is not a literal target.
+    ``file:///p``, percent escapes). It touches no file when its LAST ``mode``
+    is ``ro`` (a read-only open creates nothing, and nothing is written) or
+    ``memory`` (SQLite applies the last ``mode``: ``mode=memory&mode=rwc`` does
+    create the file), or when the decoded path is ``:memory:`` or empty. As a
+    plain filename it is a literal name in the cwd (``file:state.db?mode=ro`` and
+    ``file::memory:`` are writable files there, and SQLite does create them), but
+    a literal can only be created when its directory exists, so ``file:/abs/p``
+    (needs a directory named ``file:``) is not a literal target.
     """
+    if value in _SQLITE_NO_FILE_NAMES:
+        return []
     if not value.startswith("file:"):
         return [value]
     targets = [value] if os.path.isdir(os.path.dirname(_normalise(value))) else []
     split = urllib.parse.urlsplit(value)
-    if {"ro", "memory"} & set(urllib.parse.parse_qs(split.query).get("mode", [])):
+    modes = urllib.parse.parse_qs(split.query).get("mode", [])
+    if modes and modes[-1] in ("ro", "memory"):
         return targets
     if split.netloc in ("", "localhost"):
         decoded = urllib.parse.unquote(split.path)
-        if decoded:
+        if decoded not in _SQLITE_NO_FILE_NAMES:
             targets.append(decoded)
     return targets
+
+
+def _fd_directory(fd: int) -> str | None:
+    """The directory an open descriptor names (Linux ``/proc/self/fd``); None if unknown."""
+    try:
+        target = os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:  # not open, or no /proc
+        return None
+    return target if target.startswith("/") else None
+
+
+def _event_path(event: str, args: tuple[Any, ...], index: int) -> str | None:
+    """Path argument ``index`` of an audit event, absolute when a ``dir_fd`` anchors it.
+
+    A relative name given with a ``dir_fd`` is relative to that directory, not to
+    the working directory, so reading it against the cwd would refuse harmless
+    calls (``shutil.rmtree`` of a tree elsewhere, with the cwd inside a root) and
+    allow others. The event carries the descriptor (``-1`` or None when it was not
+    given). When its directory cannot be read the name is not checkable: None.
+    """
+    path = _as_path(args[index]) if index < len(args) else None
+    if not path or path.startswith("/"):
+        return path
+    fd_index = _DIR_FD_ARGS.get(event, {}).get(index)
+    dir_fd = args[fd_index] if fd_index is not None and fd_index < len(args) else None
+    if not isinstance(dir_fd, int) or isinstance(dir_fd, bool) or dir_fd < 0:
+        return path
+    base = _fd_directory(dir_fd)
+    return os.path.join(base, path) if base else None
 
 
 def _normalise(path: str) -> str:
@@ -434,20 +507,24 @@ def _callers(limit: int = 4) -> tuple[str, ...]:
 def _symlink_ends(args: tuple[Any, ...]) -> tuple[str | None, str | None]:
     """(link path, resolved target) of an ``os.symlink`` event.
 
-    A relative target resolves against the link's directory, not the cwd.
+    A relative target resolves against the link's directory, not the cwd. The
+    link is read against its ``dir_fd`` when it has one (``_event_path``); a
+    relative target of a link whose directory is unknown is not checkable.
     """
     target = _as_path(args[0]) if args else None
-    link = _as_path(args[1]) if len(args) > 1 else None
-    if target and link and not target.startswith("/"):
-        target = os.path.join(os.path.dirname(_normalise(link)), target)
+    link = _event_path("os.symlink", args, 1)
+    if target and not target.startswith("/"):
+        target = os.path.join(os.path.dirname(_normalise(link)), target) if link else None
     return link, target
 
 
 class HomeWriteGuard:
     """Refuses and records writes under ``roots``.
 
-    ``check`` is the audit-hook body; it is pure with respect to the filesystem
-    (no reads, no writes), so it cannot recurse into itself.
+    ``check`` is the audit-hook body. It never writes. It reads only to place a
+    name (a ``stat`` for a ``file:`` SQLite name, a ``readlink`` of
+    ``/proc/self/fd/N`` for a ``dir_fd``); neither raises an audit event, and the
+    ``_busy`` flag stops it recursing into itself.
     """
 
     def __init__(self, roots: Iterable[str | os.PathLike[str]]) -> None:
@@ -512,7 +589,7 @@ class HomeWriteGuard:
             indexes: tuple[int, ...] = (0,)
         else:
             indexes = _MUTATED_ARGS.get(event, ())
-        paths = [p for p in (_as_path(args[i]) for i in indexes if i < len(args)) if p]
+        paths = [p for p in (_event_path(event, args, i) for i in indexes) if p]
         if event == "sqlite3.connect":
             return [target for p in paths for target in _sqlite_file_targets(p)]
         return paths
@@ -528,7 +605,7 @@ class HomeWriteGuard:
                 if self.protected_root(path):
                     self._deny(event, path)
             for index in _TREE_ENDS.get(event, ()):
-                source = _as_path(args[index]) if index < len(args) else None
+                source = _event_path(event, args, index)
                 if source and self.contained_root(source):
                     self._deny(event, source)
             if event == "os.symlink":
