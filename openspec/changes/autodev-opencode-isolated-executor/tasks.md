@@ -51,16 +51,17 @@ Conventions for every task:
       a byproduct (the fail-safe). Ticked when the tests named in tasks 2.2 and 3.3 pass and each fails
       with its guard removed. Files: none of its own. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 "tests/test_autodev_opencode.py::TestDelta::test_ignored_owned_new_file" "tests/test_autodev_opencode.py::TestDelta::test_ignored_and_plain_owned_new_files" "tests/test_autodev_opencode.py::TestPreflight::test_ignored_absent_owned_file_refused" "tests/test_autodev_opencode.py::TestPreflight::test_ignored_and_plain_absent_owned_files_refused"`.
-- [ ] 1.3 Carried review finding 2, created-directory identity on rollback (Codex on #1319). Spec scenario
+- [x] 1.3 Carried review finding 2, created-directory identity on rollback (Codex on #1319). Spec scenario
       "Created directory replaced" and the identity rule in the restore requirement. The transfer records
       device and inode of each directory it creates; restore checks them before removing it and treats a
       replacement as not restored. Ticked when the test named in task 2.4 passes and fails with the
       identity check removed. Files: none of its own. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 "tests/test_autodev_opencode.py::TestRestore::test_created_directory_replaced"`.
 
+      Evidence: `TestRestore::test_created_directory_replaced` passes; with the identity comparison removed it fails (mutation `restore-dir-identity-off`).
 ## 2. The attempt tree (no OpenCode needed)
 
-- [ ] 2.1 Seed (D2, D3). `seed_attempt_tree(repo, parent_dir, owned_files)`: `--no-local` clone,
+- [x] 2.1 Seed (D2, D3). `seed_attempt_tree(repo, parent_dir, owned_files)`: `--no-local` clone,
       remove `origin`, overlay from `git status --porcelain=v1 -z --untracked-files=all`
       (a status with `R` or `C` consumes the following source record: copy the destination's
       working-tree bytes, remove the source when the user's tree lacks it), take M0, refuse by
@@ -75,7 +76,8 @@ Conventions for every task:
       directory left). The rename tests and the dirty-state test also assert the user's
       repository is byte-identical after seeding, and a `-z` record for a path containing a
       space parses as one path.
-- [ ] 2.2 Manifest and delta (D4). `attempt_delta(tree, m0, repo, unit)` builds M1 with a
+      Evidence: `TestSeed` 14 cases green; each guard (clone sharing, remote, rename source, owned bytes from the user's tree, deleted files, nested repository, submodule, no HEAD, `.git` component, seed limit) was removed in turn and its named test failed.
+- [x] 2.2 Manifest and delta (D4). `attempt_delta(tree, m0, repo, unit)` builds M1 with a
       descriptor-relative walk (root opened `O_DIRECTORY`; `scandir` on each directory
       descriptor; children opened `O_DIRECTORY | O_NOFOLLOW` relative to their parent; files
       `O_NOFOLLOW | O_NONBLOCK` then `fstat`), applies the byproduct rule (new, unowned, ignored paths are dropped) through
@@ -96,7 +98,8 @@ Conventions for every task:
       `test_mode_only_change_is_in_the_delta`, `test_symlink_in_an_owned_path_is_rejected`,
       `test_delta_hash_mismatch_is_error`, `test_file_over_the_limit_is_a_named_refusal` and
       `test_tree_over_the_limit_is_a_named_refusal`.
-- [ ] 2.3 Transfer (D6). `transfer(delta, user_repo, m0, journal, hooks=None)`: the read-only phase
+      Evidence: `TestDelta` 19 cases green; removing the `.git` skip, the ownership check, the ignore filter, the owned-path precedence, the worker-tree ignore read, the special-file rule, the empty rule, `O_NONBLOCK`, `O_NOFOLLOW`, the hash recheck or the file limit each failed its named test.
+- [x] 2.3 Transfer (D6). `transfer(delta, user_repo, m0, journal, hooks=None)`: the read-only phase
       (each path resolved from a root descriptor with `O_DIRECTORY | O_NOFOLLOW`; the user's file
       opened relative to its parent with `O_NOFOLLOW | O_NONBLOCK` and checked by `fstat` before it
       is read; kind, mode and SHA-256, or absence, compared with M0; limits), then the write phase (each
@@ -134,7 +137,8 @@ Conventions for every task:
       `.verdict-transfer-*` file exists, `git status --porcelain` lists nothing but owned paths
       and that file, and `git checkout -- <owned paths>` plus removing the created files and
       empty directories leaves the repository byte-identical to its state when the unit started.
-- [ ] 2.4 Restore (D7). `restore(journal)` undoes the current attempt's transfer in reverse with task 2.3's
+      Evidence: `TestTransfer` and `TestCrash` green (the crash tests SIGKILL a child process at the named phase); removing phase one, the pre-write recheck, the mode comparison, the non-regular rule, the unsafe-path rule, the held-directory check, no-follow plus the held check, the rollback, the size limit, the temporary-file cleanup or its naming each failed its named test.
+- [x] 2.4 Restore (D7). `restore(journal)` undoes the current attempt's transfer in reverse with task 2.3's
       traversal, re-check and `replace_file` helper. For each entry it compares kind, executable bit
       and SHA-256 with the intended state (undo it), with the prior state (the mutation was never
       made: change nothing, report nothing) and otherwise leaves the path alone and reports it; it removes a created directory only when it is empty and its device and inode still equal the recorded
@@ -149,7 +153,7 @@ Conventions for every task:
       directory takes its name, then the original is removed, so a reused inode number cannot hide the
       swap; restore leaves the replacement and names it),
       `test_parent_swapped_between_transfer_and_restore`, `test_restore_twice`,
-      `test_restore_without_a_transfer`, `test_journal_is_emptied_at_the_start_of_each_attempt`, `test_restore_write_failure_leaves_no_temporary_file`,
+      `test_restore_without_a_transfer`, `test_restore_write_failure_leaves_no_temporary_file`,
       `test_restore_of_a_modified_file_and_of_a_deleted_file` and the write-ahead tests
       `test_interrupt_right_after_a_rename`, `test_interrupt_right_after_a_deletion` and
       `test_interrupt_right_after_a_directory_creation` (each patches `rename`, `unlink` or `mkdir` to
@@ -161,6 +165,7 @@ Conventions for every task:
       is moved after the mutation; the fourth fails if restore reports a path that still holds its
       prior state.
 
+      Evidence: `TestRestore` green; moving the journal append after the mutation (rename, deletion), removing the directory identity check, restoring over a user edit, reporting an unmade mutation, not removing directories, not emptying the journal and leaving a temporary file each failed their named test. `test_journal_is_emptied_at_the_start_of_each_attempt` moved to task 3.2 (it needs the executor).
 ## 3. The executor
 
 - [ ] 3.1 Prompt (D10). `build_opencode_prompt(unit)` names the objective, owned files,
@@ -186,7 +191,8 @@ Conventions for every task:
       transferred although the tree holds edits), `test_worker_makes_no_change`,
       `test_attempt_tree_removed_on_every_exit_path` (applied, rejected, error, exception,
       cancellation), `test_tree_is_removed_before_the_transfer`, `test_running_event_loop_returns_error`,
-            `test_no_run_id`, `test_attempt_timeout_bounds`,
+            `test_journal_is_emptied_at_the_start_of_each_attempt` (an earlier unit's journal is gone before the
+      next unit's first action), `test_no_run_id`, `test_attempt_timeout_bounds`,
       `test_stub_matches_the_real_run_signature` (the stub's parameters equal
       `inspect.signature(OpenCodeExecutor.run)` and the stub records `run_id` and `node_id`),
       `test_no_served_identity_is_claimed` and `test_credential_never_appears_in_a_record` (a stub

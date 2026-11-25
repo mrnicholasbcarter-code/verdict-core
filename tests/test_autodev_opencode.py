@@ -217,17 +217,22 @@ class TestSeed:
         assert snapshot(repo) == before
 
     def test_owned_files_hold_working_tree_bytes(self, tmp_path: Path) -> None:
-        repo = make_repo(
-            tmp_path, {"crlf.txt": "a\nb\n", ".gitattributes": "crlf.txt text eol=lf\n"}
-        )
-        # The checkout bytes (LF) differ from the user's working-tree bytes (CRLF) while git
-        # status stays clean: the attribute says the file is LF in the working tree, git only
-        # notices on a refresh.
-        (repo / "crlf.txt").write_bytes(b"a\r\nb\r\n")
-        tree = seed(repo, tmp_path, ("crlf.txt",))
-        assert (tree.path / "crlf.txt").read_bytes() == b"a\r\nb\r\n"
-        digest = hashlib.sha256(b"a\r\nb\r\n").hexdigest()
-        assert tree.manifest["crlf.txt"].digest == digest
+        # A clean filter drops the trailing note, so a same-size edit of the note leaves git status
+        # clean while the working-tree bytes differ from the blob (and from what a clone checks out).
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "config", "filter.strip.clean", "sed 's/  # note.*//'")
+        write(repo, ".gitattributes", "a.txt filter=strip\n")
+        write(repo, "a.txt", "x = 1  # note A\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "init")
+        write(repo, "a.txt", "x = 1  # note B\n")
+        assert git(repo, "status", "--porcelain") == ""  # so it cannot pass for the wrong reason
+        assert git(repo, "cat-file", "-p", "HEAD:a.txt") == "x = 1\n"
+        tree = seed(repo, tmp_path, ("a.txt",))
+        assert (tree.path / "a.txt").read_bytes() == b"x = 1  # note B\n"
+        assert tree.manifest["a.txt"].digest == hashlib.sha256(b"x = 1  # note B\n").hexdigest()
 
     def test_status_record_with_a_space_is_one_path(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path, {"with space.py": "w = 1\n", "keep.py": "k = 1\n"})
@@ -398,8 +403,11 @@ class TestDelta:
                 (tree.path / "a.py").unlink()
                 os.mkfifo(tree.path / "a.py")
 
+        class Hang(BaseException):  # not an OSError, so no handler under test can swallow it
+            pass
+
         def hang_guard(_signum: int, _frame: Any) -> None:
-            raise TimeoutError("the executor blocked opening a FIFO")
+            raise Hang("the executor blocked opening a FIFO")
 
         previous = signal.signal(signal.SIGALRM, hang_guard)
         signal.alarm(15)
@@ -417,7 +425,8 @@ class TestDelta:
         write(tree.path, "d/inner.py", "i = 2\n")
         outside = tmp_path / "outside"
         outside.mkdir()
-        (outside / "inner.py").write_text("SECRET OUTSIDE\n")
+        # Identical bytes, so only refusing to follow the link (not a digest mismatch) catches it.
+        (outside / "inner.py").write_text("i = 2\n")
         calls: list[str] = []
 
         def swap(path: str) -> None:
