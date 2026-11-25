@@ -219,8 +219,10 @@ address, database file) pairs in which it has found a request under its own assi
 (`serve_evidence.SeenDatabases`). The file is its device and inode (`os.stat`, following links),
 not its path: a path can be replaced by, or a link retargeted at, another valid receipt database
 that serve never wrote, and what was seen of the old file then vouches for nothing. The file
-must also be the one the attempt's mark was taken of (so a swap during the attempt is not
-trusted), and one replaced while it is read makes the read `unavailable`. An empty read is
+must also be the one the attempt's mark was taken of: the mark's row watermark counts that
+file's rows, so a file replaced after the mark makes the read `unavailable` (nothing counted,
+nothing seen), and so does one replaced while it is read. A database first created after the mark
+has no file to compare (identity `None`) and is read from its first row. An empty read is
 "serve recorded nothing" only for a pair in that set; otherwise the record is `unavailable` with
 the reason that the database is not shown to be the selected serve's, and its figures are `null`.
 A request found under the assignment is read whether or not the pair was known (it is what adds
@@ -247,8 +249,8 @@ worker started (the database grows with every request and holds large payloads).
 the terminal as `worker_assignment` (the digest, never the credential, and `serve_receipts`:
 `status` `read` with `requests`, `requests_waived` and the distinct waivers, or `unavailable`
 with a reason and every figure `null` when the database is unconfigured, in memory, missing,
-unreadable, over 10,000 matching roots, out of the 2 s read budget, or empty for this assignment
-while not shown to be the selected serve's, see above). `unavailable` is never
+unreadable, over 10,000 matching roots, out of the 2 s read budget, replaced since the mark was
+taken, or empty for this assignment while not shown to be the selected serve's, see above). `unavailable` is never
 reported as "no waiver" and never fails an attempt that worked. The runtime puts it on the
 `terminal` event, `receipt.json` projects it onto the attempt (only when present, so receipts of
 other executors are byte-identical), and `verdict run-receipt` marks an attempt `streaming

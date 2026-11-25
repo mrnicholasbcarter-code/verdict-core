@@ -19,8 +19,10 @@ of it per attempt would not do).  The result is one of three things, never a gue
   under it);
 * ``status: "unavailable"`` with a ``reason`` and every figure ``None`` when the database cannot be
   read, is not configured, is in memory (another process cannot read it), holds too many rows to
-  count, or holds no request under the assignment while nothing shows that it is the database of
-  the serve the worker called.  Unavailable is never reported as "no waiver".
+  count, is no longer the file the mark was taken of (a mark's row watermark means nothing for
+  another file; a database first created after the mark has no identity to compare), or holds no
+  request under the assignment while nothing shows that it is the database of the serve the
+  worker called.  Unavailable is never reported as "no waiver".
 
 The database is found from this host's configuration (``VERDICT_RECEIPTS_DB``, ``serve.env``),
 never from the serve at the address the worker called, so with a spare or remote serve it can be
@@ -217,6 +219,13 @@ def read_assignment_evidence(
         return _unavailable("serve's receipt database is not configured (VERDICT_RECEIPTS_DB)")
     if not mark.db_path.exists():
         return _unavailable("serve's receipt database does not exist")
+    if mark.identity is not None and database_identity(mark.db_path) != mark.identity:
+        # The mark's row watermark counts the rows of the file it was taken of; applied to another
+        # file it would hide requests at or below it and still read as authoritative above it.
+        return _unavailable(
+            "serve's receipt database is not the file the attempt's mark was taken of "
+            "(it was replaced, or a link retargeted)"
+        )
     deadline = time.monotonic() + READ_DEADLINE_SECONDS
     try:
         conn = _connect(mark.db_path, deadline)

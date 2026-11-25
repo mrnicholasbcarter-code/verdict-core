@@ -120,6 +120,15 @@
       check, tests failed. The accepted cost is that a signing key serve does not share, refused
       from a run's first attempt, is not recognised as a block; a serve restarted on another
       database while the orchestrator's configuration names the old file cannot be told apart.
+      A third review found the mark's file compared only to decide whether an empty read was
+      authoritative, so a database replaced after the mark had the old file's row watermark
+      applied to it: the old code read 1 request, none waived, from a file that held 4 under the
+      assignment (3 waived), and associated that file with serve. A read of a file that is not the
+      one the mark was taken of is now `unavailable` before the watermark is used (a database
+      first created after the mark has no identity and is still read from its first row); written
+      first, 3 tests failed (`test_a_file_replaced_after_the_mark_is_unavailable_with_rows_either_side_of_its_watermark`
+      for the reader and for `SeenDatabases`, and
+      `test_a_file_replaced_after_the_mark_is_not_associated_with_the_serve_it_was_read_for`).
 - [x] 2.17 The executor-to-serve path through the real app (#1325): a loopback server runs the real
       `verdict serve` app with a recording upstream; the real executor signs and a fake worker sends
       one request; the assignment is served on the signed route and serve's evidence names the

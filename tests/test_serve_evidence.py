@@ -495,3 +495,87 @@ def test_a_file_replaced_while_it_is_read_is_unavailable(
     assert result["status"] == "unavailable"
     assert "replaced while" in result["reason"]
     assert result["requests"] is None
+
+
+# --- a file replaced after the mark is another file, whatever rows it holds -----------------
+#
+# The mark's row watermark counts the rows of the file the mark was taken of.  Applied to another
+# file it would hide the requests at or below it (the ones that may hold a waiver) and still give
+# a "read" answer from the rows above it, so a mark of one file is never applied to another.
+
+
+def _replaced_after_the_mark(tmp_path: Path) -> tuple[Db, evidence.EvidenceMark]:
+    """A mark taken of one file (watermark 3), then another file moved into the path.
+
+    The other file holds a waived request under ``mine`` at or below the old watermark (rows 1-3)
+    and an unwaived one above it (row 4): applying the old watermark counts one request, waived
+    nothing, and reads as authoritative.
+    """
+    mine = _digest("mine")
+    first = Db(tmp_path / "first.db")
+    for _ in range(3):
+        first.put(_digest("an earlier attempt"), [])
+    mark = evidence.take_mark(first.path)
+    assert mark.rowid == 3 and mark.identity is not None
+
+    spare = Db(tmp_path / "spare.db")
+    for _ in range(3):
+        spare.put(mine, [WAIVER])
+    spare.put(mine, [])
+    assert evidence.take_mark(spare.path).rowid == 4
+    os.replace(spare.path, first.path)
+    assert evidence.database_identity(first.path) != mark.identity
+    return first, mark
+
+
+@pytest.mark.parametrize("reader", ["the reader", "SeenDatabases"])
+def test_a_file_replaced_after_the_mark_is_unavailable_with_rows_either_side_of_its_watermark(
+    tmp_path: Path, reader: str
+) -> None:
+    replaced, mark = _replaced_after_the_mark(tmp_path)
+    if reader == "the reader":
+        result = evidence.read_assignment_evidence(mark, _digest("mine"))
+    else:
+        result = evidence.SeenDatabases().read(mark, _digest("mine"), origin=ORIGIN)
+    assert result["status"] == "unavailable"
+    assert "replaced" in result["reason"]
+    assert result["requests"] is None
+    assert result["requests_waived"] is None
+    assert result["requirement_waivers"] is None
+    assert replaced.path.exists()
+
+
+def test_a_file_replaced_after_the_mark_is_not_associated_with_the_serve_it_was_read_for(
+    tmp_path: Path,
+) -> None:
+    """The request found above the old watermark is in a file the attempt never marked, so it
+    cannot show that file is the database of the serve the worker called: a later empty read of
+    it is still not "serve recorded nothing"."""
+    replaced, mark = _replaced_after_the_mark(tmp_path)
+    seen = evidence.SeenDatabases()
+    assert seen.read(mark, _digest("mine"), origin=ORIGIN)["status"] == "unavailable"
+    later = _seen_read(seen, replaced, _digest("a later attempt"))
+    assert later["status"] == "unavailable"
+    assert "not shown to be" in later["reason"]
+
+
+def test_a_database_first_created_after_the_mark_is_read_from_its_first_row(tmp_path: Path) -> None:
+    """Serve creates its database when it starts: the mark of a path with no file is watermark 0
+    with no identity, and every row the file holds later is the attempt's."""
+    path = tmp_path / "serve-receipts.db"
+    mark = evidence.take_mark(path)
+    assert (mark.rowid, mark.identity) == (0, None)
+    db = Db(path)
+    mine = _digest("mine")
+    db.put(mine, [WAIVER])
+    db.put(mine, [])
+
+    direct = evidence.read_assignment_evidence(mark, mine)
+    assert (direct["status"], direct["requests"], direct["requests_waived"]) == ("read", 2, 1)
+
+    seen = evidence.SeenDatabases()
+    found = seen.read(mark, mine, origin=ORIGIN)
+    assert found == direct
+    # the request found shows the file is serve's: a later attempt's empty read is then zero
+    later = _seen_read(seen, db, _digest("a later attempt"))
+    assert (later["status"], later["requests"]) == ("read", 0)

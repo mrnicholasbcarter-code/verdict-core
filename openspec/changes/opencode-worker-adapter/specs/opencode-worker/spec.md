@@ -482,8 +482,9 @@ an executor that signs nothing SHALL add nothing to its receipt, and a database 
 SHALL be reported as unavailable with its reason and null figures, never as "no waiver", and SHALL
 NOT fail an attempt that worked; the same holds for a database that holds no request under the
 assignment while nothing shows it is the database of the serve the worker called (the path comes
-from the orchestrator's configuration, not from that serve).  The reader SHALL NOT create, migrate
-or write the database.
+from the orchestrator's configuration, not from that serve), and for a file that is no longer the
+one the mark was taken of (the mark's row watermark counts that file's rows, so it SHALL NOT be
+applied to another).  The reader SHALL NOT create, migrate or write the database.
 
 #### Scenario: An attempt served under the waiver carries it
 
@@ -510,7 +511,8 @@ or write the database.
 
 - **WHEN** serve's receipt database is unconfigured, in memory, missing, damaged, or holds too many
   matching rows, or the read runs out of time, or it holds no request under the assignment and is
-  not shown to be the database of the serve the worker called
+  not shown to be the database of the serve the worker called, or the file at the path was
+  replaced (or a link retargeted) after the attempt's mark was taken, whatever rows it holds
 - **THEN** the record is `unavailable` with a reason and `null` counts, the attempt's own result is
   unchanged, and nothing is created on disk
   (`test_unreadable_serve_receipts_are_unavailable_with_a_reason_and_the_attempt_still_ends_ok`,
@@ -519,6 +521,9 @@ or write the database.
   `test_nothing_recorded_in_a_database_not_shown_to_be_serves_says_nothing_about_serve`,
   `test_nothing_recorded_is_zero_requests_once_the_database_is_shown_to_be_serves`,
   `test_a_request_under_the_assignment_is_read_with_or_without_a_shown_association`,
+  `test_a_file_replaced_after_the_mark_is_unavailable_with_rows_either_side_of_its_watermark`,
+  `test_a_file_replaced_after_the_mark_is_not_associated_with_the_serve_it_was_read_for`,
+  `test_a_database_first_created_after_the_mark_is_read_from_its_first_row`,
   `test_an_unreadable_serve_receipt_is_null_with_a_reason_never_a_clean_attempt`)
 
 #### Scenario: A waiver from before the attempt is not attributed to it

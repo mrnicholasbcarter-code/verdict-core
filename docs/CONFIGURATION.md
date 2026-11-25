@@ -713,7 +713,8 @@ assignment is refused with 403.
   then `serve.env`), read-only and only for rows written since the worker started, and shown on the
   attempt in `receipt.json` (`worker_assignment.serve_receipts`: `requests`, `requests_waived`,
   `requirement_waivers`) and in `verdict run-receipt` (`streaming waived`). A database that cannot
-  be read (unconfigured, in memory, missing, damaged, or over 10,000 matching rows), or in which
+  be read (unconfigured, in memory, missing, damaged, replaced since the worker started, or over
+  10,000 matching rows), or in which
   no request was found under the assignment while nothing yet shows it is the database of the
   serve at `--serve-url` (see Signing), is shown as `unavailable` with its reason and `null`
   figures; it is never shown as "no waiver" and does not fail an attempt that worked. A request
