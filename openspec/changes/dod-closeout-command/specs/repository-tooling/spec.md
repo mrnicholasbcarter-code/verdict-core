@@ -60,6 +60,10 @@ before, and CI SHALL NOT use `--draft`.
 - **WHEN** `--draft` is given with `--all`, without `--evidence-root`, or with an evidence root inside `--root`
 - **THEN** the call exits 2 naming the rule and checks nothing
 
+#### Scenario: CI does not use draft mode
+- **WHEN** `.github/workflows/ci.yml` and `scripts/check_lint_gates.py` are read
+- **THEN** neither contains `--draft`
+
 #### Scenario: Strict mode is unchanged
 - **WHEN** the same file lacking `parent_confirmation` is checked without `--draft`, and `--evidence-root` is given without `--draft`
 - **THEN** the first fails on the missing field with the exit and text of today, and the second exits 2

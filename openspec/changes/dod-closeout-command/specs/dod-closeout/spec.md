@@ -3,7 +3,8 @@
 Terms. The **closeout home** is `$VERDICT_HOME/closeout` (`verdict.paths.verdict_home()`); a story's
 directory in it is `<home>/<story>/`. **Installed main** is the git checkout the installed services run
 from. A **cycle** is one pass over a story's steps: each acceptance item in declaration order, then
-`doctor`, and in a story's first cycle also the `on_main` check. The **canonical command** of an argument
+`verdict doctor --json` (timeout 180 s), and `on_main` (`gh pr checks <N> --required`, timeout 60 s) in every
+cycle until one run of it has passed. The **canonical command** of an argument
 list `argv` is `verdict ` followed by `shlex.join(argv)`; it never holds an interpreter path or a host
 path. Every scenario below has one test, named `test_` plus the scenario title in snake case.
 
@@ -41,7 +42,7 @@ refused. A refused declaration SHALL stop only its own story, and its reason SHA
 - **THEN** the story is refused naming `story`
 
 #### Scenario: Live declaration is refused
-- **WHEN** `live` is `true`, or an item's `argv` names a live or mutating command
+- **WHEN** `live` is `true`
 - **THEN** the story is refused naming `live` (live runs are not part of this change) and nothing runs
 
 #### Scenario: Host path or secret in the expectation is refused
@@ -87,8 +88,8 @@ Every run record SHALL carry this `HEAD` as the run's `sha`, never the story's m
 
 ### Requirement: The merge commit SHALL come from the declared PR and be an ancestor of installed main
 
-For each story closeout SHALL ask `gh pr view <N> --json state,mergeCommit` once and keep the answer in
-the story's ledger. It SHALL proceed only when `state` is `MERGED`, `mergeCommit.oid` is a 40-hex string,
+For each story closeout SHALL ask `gh pr view <N> --json state,mergeCommit` (timeout 30 s) once, keep the
+answer in the story's ledger and use it for every later cycle. It SHALL proceed only when `state` is `MERGED`, `mergeCommit.oid` is a 40-hex string,
 that commit exists in installed main and `git merge-base --is-ancestor <merge> <installed HEAD>` succeeds.
 Anything else (a missing key, null, a wrong type, a command failure or a timeout) SHALL refuse the story
 before any acceptance command spawns, with the reason written to the ledger as a skip, not as a run.
@@ -108,6 +109,10 @@ before any acceptance command spawns, with the reason written to the ledger as a
 #### Scenario: Merge commit that is not an ancestor is refused
 - **WHEN** the commit exists in installed main but is not an ancestor of its `HEAD`
 - **THEN** the story is skipped with reason `merge_commit_not_ancestor` and nothing runs
+
+#### Scenario: Merge lookup is asked once per story
+- **WHEN** a story runs a first and a fresh cycle
+- **THEN** `gh pr view` is spawned once and the second cycle reads the merge commit from the ledger
 
 #### Scenario: Malformed lookup result is refused
 - **WHEN** the `gh` output is not JSON, lacks `state` or `mergeCommit`, has `mergeCommit: null`, a wrong type or a non-hex `oid`, or the call times out
@@ -182,6 +187,14 @@ built from it.
 - **WHEN** the command exits 1 or prints without `expect`
 - **THEN** the entry is failed with the matching reason (`exit_code_mismatch`, `expect_missing` or `marker_missing`), its output file exists, and no draft is written
 
+#### Scenario: Red doctor fails the cycle
+- **WHEN** every item passes and `verdict doctor --json` exits 1
+- **THEN** the cycle is failed with reason `doctor_not_green`, its output is kept and no draft follows
+
+#### Scenario: Unusable on_main fails the first cycle
+- **WHEN** `gh pr checks <N> --required` exits non-zero (pending or failing), or exits 0 with no Actions run URL in its output
+- **THEN** the cycle is failed with reason `on_main_not_green` or `on_main_marker_missing`, and later cycles repeat `on_main` until it passes
+
 #### Scenario: Timeout kills the process group
 - **WHEN** a command (fake interpreter script) spawns a child and sleeps past `timeout_seconds`
 - **THEN** no process of the group survives, the entry is failed with reason `timeout`, and the cycle ends within the limit plus a bounded grace
@@ -238,6 +251,10 @@ its only effect is a repeated run, never a recorded run that did not happen.
 #### Scenario: Removed or reordered middle entry is refused
 - **WHEN** an entry before the last is deleted or two entries are swapped
 - **THEN** the chain check fails naming the first bad `seq`
+
+#### Scenario: Orphan output without an entry is ignored
+- **WHEN** the entry append fails after the output file was written
+- **THEN** no run is counted for that step, the file is not cited by any draft, and the next invocation runs the step again
 
 #### Scenario: Corrupt ledger stops only its story
 - **WHEN** one of two stories has a corrupt ledger
@@ -303,6 +320,10 @@ repository, mark a story done, or write a confirmation.
 - **WHEN** a fixture story has a passing first and fresh cycle
 - **THEN** the draft exists, `check_dod.py --draft` exits 0 on it, and the ledger gains a `draft` entry with the file's digest
 
+#### Scenario: Rejected candidate is moved aside and not offered
+- **WHEN** `check_dod.py --draft` exits 1 on a candidate
+- **THEN** the candidate and the checker's output are under `rejected/`, no `draft/` directory and no `draft` entry exist, and `status` shows the story as `draft_invalid`
+
 #### Scenario: Draft carries no confirmation
 - **WHEN** a draft is written
 - **THEN** its JSON has no `parent_confirmation` key, and `report.md` says confirmation is pending
@@ -334,11 +355,15 @@ nothing and exits 3. `verdict closeout status` SHALL spawn nothing and write not
 
 #### Scenario: A full cycle writes only under the closeout home
 - **WHEN** a story runs first and fresh cycles against a temporary home and a fake installed main
-- **THEN** a before and after snapshot of the temporary home differs only under `.verdict/closeout/`, and the fake installed main has no changed, added or removed file and an identical index
+- **THEN** a before and after snapshot of the temporary home differs only under `.verdict/closeout/`, the fake installed main has no changed, added or removed file and an identical index, and no file under the closeout home holds the home path or `/home/`
 
 #### Scenario: Escaping path is refused
 - **WHEN** the write helper is given an absolute path, `..` or a story directory that is a symlink out of the home
 - **THEN** it raises a named error and nothing is written outside
+
+#### Scenario: Status shows an empty ledger as not started
+- **WHEN** a declared story has no ledger entry
+- **THEN** `verdict closeout status` shows it as `not_started`, with no process spawned
 
 #### Scenario: Status spawns nothing and writes nothing
 - **WHEN** `verdict closeout status --json` runs with spawns recorded and a snapshot taken

@@ -123,14 +123,14 @@ run). A non-blocking `flock` on `<home>/.lock` keeps two invocations apart.
 
 `waiting_install` (PR not merged, or its merge commit not yet in installed main; no spawn, no failure counted)
 → `needs_first` → `waiting_window` → `needs_fresh` → `awaiting_confirmation` (draft written and checked); side
-states `needs_person`, `refused` (bad declaration, merge commit not an ancestor) and `ledger_corrupt`. A cycle
-runs every step even when one fails, so one tick leaves every output. The first cycle passes when `on_main`,
-every item and `doctor` pass; a fresh cycle needs the items and `doctor`. The window ends at `max(first.at) +
-hours`, so each item meets `fresh.at - first.at >= window`. At most three failed cycles in all, then
+states `needs_person`, `refused` (bad declaration, merge commit not an ancestor), `draft_invalid`,
+`ledger_corrupt`. A cycle runs every step even when one fails, so one tick leaves every output. A cycle
+passes when its items and `doctor` pass and `on_main` has passed once (it repeats until then). The window ends
+at `max(first.at) + hours`, so each item meets `fresh.at - first.at >= window`. At most three failed cycles in all, then
 `needs_person` until `verdict closeout reset <story>` (an entry, not an erase). A first run is void when the
 declaration's canonical commands change, because the fresh run must repeat the command. Commands: `run
-[--story S]`, `status [--json]` (declarations and ledgers only: no lock, no spawn, no identity check; an empty ledger shows `not_started`), `reset <story>`. Exit status: 0 when every story
-progressed or waits; 1 when any failed, was refused or needs a person; 2 for a refused identity or bad usage;
+[--story S]`, `status [--json]` (declarations and ledgers only: no lock, no spawn, no identity check; an empty
+ledger shows `not_started`), `reset <story>`. Exit status: 0 when every story progressed or waits; 1 when any failed, was refused or needs a person; 2 for a refused identity or bad usage;
 3 when the lock is held. Nothing exposes the clock.
 
 ### D9. The draft and `check_dod.py --draft` (decision 10, first half)
@@ -152,8 +152,9 @@ failed runs (decision 8 wants them listed), so they go in `report.md` beside the
 One helper writes every file: it joins onto `verdict_home() / "closeout"`, resolves, and refuses an absolute
 path, `..` or a symlink out. Proof in layers. (a) A full first and fresh cycle runs in a temporary
 `HOME`/`VERDICT_HOME` with a fake installed main (a temporary git repository with a stub `.venv/bin/python`
-and a copy of `scripts/check_dod.py`); both trees are diffed: only `.verdict/closeout/**` is new, and the fake
-main has no changed file and an identical index. (b) The helper is tested with each bad path. (c) The shared
+for the story commands); both trees are diffed: only `.verdict/closeout/**` is new, the fake main has no
+changed file and an identical index. The draft check is the repository's real `scripts/check_dod.py`, run by
+the test interpreter with `--root` the fake main, so ancestry and hashes are really checked. (b) The helper is tested with each bad path. (c) The shared
 home guard of #1311 [U] (an audit hook, autouse in `tests/conftest.py`) refuses writes to the real roots; one
 test aims the home at its stand-in for the real home and the write fails by name. The guard sees only this
 process, so none of these covers the child commands' own writes (Risks).

@@ -12,8 +12,11 @@ Conventions for every task:
   removed, then passing. Put the output in the PR.
 - No live or paid call and no real `gh` or `git push` in a test: every spawn goes through one function
   (task 6.1) that tests replace with a fake, except the tests that name a real child. The fake installed main
-  is a temporary git repository with a stub `.venv/bin/python` that prints canned output per argument list; the
-  clock, `gh` and `check_dod` path are parameters. The shared fixture is `tests/helpers/closeout_fixture.py`.
+  is a temporary git repository (a merge commit M and a later commit S) with a stub `.venv/bin/python` that
+  prints canned output per argument list; the clock and `gh` are parameters. The draft-check tests do not stub
+  the checker: they run the repository's real `scripts/check_dod.py` under the test interpreter with `--root`
+  the fake main (`check_dod_argv` is a parameter; production uses installed main's interpreter and script).
+  The shared fixture is `tests/helpers/closeout_fixture.py`.
 - A Verify command names a file or a class, never `-k`, so it runs exactly the tests the task names.
 - Modules are `verdict/closeout/{allowlist,declaration,identity,execute,ledger,cycle,draft,cli}.py`.
 
@@ -27,7 +30,8 @@ Conventions for every task:
 - [ ] 1.2 Fix the initial allowlist. Read `cmd_doctor` and the `eligibility` handler: confirm that
       `doctor --json` and `eligibility --no-refresh` with `--json --no-pager --verified --frontier --reasoning`
       write nothing, that each flag exists, and what exit code means green (doctor exits 1 while an issue
-      remains). Drop any flag that fails. Record handler names in design.md D5. Files: design.md. Verify:
+      remains). Drop any flag that fails. Name the setting or variable that points both at the gateway (task
+      3.2 needs it; do not guess it). Record handler names in design.md D5. Files: design.md. Verify:
       `$TESTENV uv run --frozen python -m verdict doctor --help` and the same for `eligibility`, and the
       handler lines cited in design.md.
 
@@ -50,7 +54,8 @@ Conventions for every task:
       `--root`; refuse `--evidence-root` without `--draft`. Files: `scripts/check_dod.py`,
       `tests/test_check_dod.py`. Verify: same command with `::TestDraftRoots`:
       `test_draft_reads_outputs_from_the_evidence_root_and_git_from_the_repository_root`,
-      `test_draft_is_refused_in_the_wrong_shapes`, `test_strict_mode_is_unchanged`. Also run
+      `test_draft_is_refused_in_the_wrong_shapes`, `test_ci_does_not_use_draft_mode`,
+      `test_strict_mode_is_unchanged`. Also run
       `$TESTENV uv run --frozen python scripts/check_dod.py --all` and attach the unchanged result.
 
 ## 3. The allowlist (D5)
@@ -64,8 +69,9 @@ Conventions for every task:
       `test_missing_required_flag_is_refused`, `test_live_and_mutating_commands_are_refused`. Each test also
       asserts the refusal names the token.
 - [ ] 3.2 Read-only proof per entry. Parametrised over the table: run `python -m verdict <entry>` as a real
-      child with `HOME` and `VERDICT_HOME` in a temporary directory, snapshot before and after (task 1.1's
-      helper). Files: `tests/test_closeout_allowlist.py`. Verify: same file `::TestEntriesReadOnly` with
+      child with `HOME` and `VERDICT_HOME` in a temporary directory, the gateway setting from task 1.2 pinned to
+      an unreachable address and the run bounded by a timeout (the home guard does not cover a child that reaches
+      the local gateway), snapshot before and after (task 1.1's helper). Files: `tests/test_closeout_allowlist.py`. Verify: same file `::TestEntriesReadOnly` with
       `test_each_allowlist_entry_leaves_a_temporary_home_unchanged`; show it failing against a temporary
       entry that writes a file.
 
@@ -127,7 +133,8 @@ Conventions for every task:
       Files: `verdict/closeout/ledger.py`, `tests/test_closeout_ledger.py`. Verify: `$TESTENV uv run --frozen
       python -m pytest -q -n 2 tests/test_closeout_ledger.py::TestLedger` with
       `test_edited_exit_code_is_refused`, `test_edited_output_file_is_refused`,
-      `test_removed_or_reordered_middle_entry_is_refused`; each names the first bad `seq`.
+      `test_removed_or_reordered_middle_entry_is_refused`; each names the first bad `seq`. Also
+      `test_orphan_output_without_an_entry_is_ignored` (the append is made to fail after the output is written).
 - [ ] 7.2 Write helper. Join onto the closeout home, refuse absolute, `..` and symlink escape; every module
       writes through it and nowhere else. Files: `verdict/closeout/ledger.py`,
       `tests/test_closeout_ledger.py`. Verify: same file `::TestWriteHelper` with
@@ -141,12 +148,13 @@ Conventions for every task:
       `test_installed_sha_is_recorded_not_the_merge_sha`,
       `test_first_run_records_the_installed_sha_time_exit_code_and_output_digest`,
       `test_failing_command_keeps_its_output_and_yields_no_draft`, `test_spawn_failure_records_no_run`,
-      `test_corrupt_ledger_stops_only_its_story`.
+      `test_red_doctor_fails_the_cycle`, `test_unusable_on_main_fails_the_first_cycle` (exit 8 pending, a
+      failing exit, and exit 0 without a run URL), `test_corrupt_ledger_stops_only_its_story`.
 - [ ] 8.2 Window. Derived from the ledger by replay; injected clock; no option sets it. Files:
       `verdict/closeout/cycle.py`, `tests/test_closeout_cycle.py`. Verify: same file `::TestWindow` with
       `test_run_before_the_window_spawns_nothing` (59 minutes against 1 hour; the fake spawn counts zero),
       `test_run_after_the_window_records_a_fresh_run`, `test_window_counts_from_the_passing_first_run`,
-      `test_changed_declaration_voids_the_first_run`.
+      `test_changed_declaration_voids_the_first_run`, `test_merge_lookup_is_asked_once_per_story`.
 - [ ] 8.3 Retries and reset. At most three failed cycles in all, `needs_person`, `reset` as a ledger entry.
       Files: `verdict/closeout/cycle.py`, `tests/test_closeout_cycle.py`. Verify: same file `::TestRetries`
       with `test_failed_cycle_is_retried_on_the_next_invocation`,
@@ -162,6 +170,7 @@ Conventions for every task:
       `verdict/closeout/draft.py`, `tests/test_closeout_draft.py`. Verify: `$TESTENV uv run --frozen python
       -m pytest -q -n 2 tests/test_closeout_draft.py::TestDraft` with
       `test_complete_story_yields_a_draft_that_passes_the_draft_check`,
+      `test_rejected_candidate_is_moved_aside_and_not_offered` (a candidate the real checker rejects),
       `test_draft_carries_no_confirmation`,
       `test_strict_check_fails_on_the_draft_for_confirmation_and_archive_only` (runs the plain
       `check_dod.py` on the draft, with and without a stub confirmation),
@@ -175,9 +184,11 @@ Conventions for every task:
       with no spawn and no write. Files: `verdict/closeout/cli.py`, `verdict/commands/parsers_closeout.py`,
       `verdict/commands/dispatch.py`, `verdict/cli.py`, `tests/test_closeout_cli.py`. Verify: `$TESTENV uv run
       --frozen python -m pytest -q -n 2 tests/test_closeout_cli.py::TestCli` with
-      `test_status_spawns_nothing_and_writes_nothing`, `test_second_invocation_exits_busy`.
+      `test_status_shows_an_empty_ledger_as_not_started`, `test_status_spawns_nothing_and_writes_nothing`,
+      `test_second_invocation_exits_busy`.
 - [ ] 10.2 Boundary proofs. Files: `tests/test_closeout_cli.py`. Verify: same file `::TestBoundary` with
-      `test_a_full_cycle_writes_only_under_the_closeout_home` (both trees diffed, index identical),
+      `test_a_full_cycle_writes_only_under_the_closeout_home` (both trees diffed, index identical, and no file
+      under the closeout home holds the home path or `/home/`),
       `test_only_the_five_process_kinds_are_spawned` (every recorded call classified; none is a GitHub write
       or a git write verb), `test_real_home_is_refused_by_the_test_guard` (task 1.1's stand-in). Show each
       failing when the code writes outside the home or spawns a sixth kind.
