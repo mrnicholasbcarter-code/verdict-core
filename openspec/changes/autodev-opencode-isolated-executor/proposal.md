@@ -51,9 +51,10 @@ design.md "Drift after #1299" records what changed since this was written.
 
 ## Acceptance criteria
 
-- Out-of-bounds edits (plain, staged, committed, new unowned file, symlink swap) leave the repository
-  byte-identical to before the attempt; an owned repair is accepted and nothing but the owned change reaches
-  the repository.
+- Out-of-bounds edits (an unowned file whose bytes change, whether or not the worker also staged or
+  committed it; a new unowned file; a symlink swap) leave the repository byte-identical to before the
+  attempt (git-only state that leaves the bytes as seeded is not seen, and reaches nothing); an owned
+  repair is accepted and nothing but the owned change reaches the repository.
 - Every exit after a transfer except a verified success restores the owned files, including a runner
   `PermissionError` and a `KeyboardInterrupt` right after any mutation, without hiding the original error
   or overwriting a later user edit. A failed write leaves no temporary file or directory.

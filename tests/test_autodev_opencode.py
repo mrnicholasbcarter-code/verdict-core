@@ -8,10 +8,12 @@ system configuration switched off.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import hashlib
 import inspect
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -313,6 +315,62 @@ class TestSeed:
         if before is not None:
             assert snapshot(repo) == before
 
+    @pytest.mark.parametrize("victim", ["file", "directory"])
+    def test_removal_does_not_follow_a_symlinked_ancestor(
+        self, tmp_path: Path, victim: str
+    ) -> None:
+        """Review finding 3: the clone holds a committed symlink ``d``; the user replaced it by a real
+        directory and the unit owns the absent ``d/victim``. The removal pass must not unlink the
+        outside ``victim`` that ``d`` points at."""
+        external = tmp_path / "external"
+        external.mkdir()
+        if victim == "file":
+            (external / "victim").write_text("keep me\n")
+        else:
+            (external / "victim").mkdir()
+            (external / "victim" / "inner.txt").write_text("keep me\n")
+        repo = make_repo(tmp_path)
+        (repo / "d").symlink_to(external)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "commit d as a symlink")
+        (repo / "d").unlink()
+        write(
+            repo, "d/keep.txt", "the user's file\n"
+        )  # d is now a real directory in the user's tree
+        before = snapshot(repo)
+        tree = seed(repo, tmp_path, ("d/victim",))
+        survivor = external / "victim" if victim == "file" else external / "victim" / "inner.txt"
+        assert survivor.read_text() == "keep me\n"
+        assert snapshot(repo) == before
+        assert (tree.path / "d").is_dir() and not (tree.path / "d").is_symlink()
+        assert (tree.path / "d" / "keep.txt").read_text() == "the user's file\n"
+        assert not (tree.path / "d" / "victim").exists()
+
+    def test_copy_does_not_write_through_a_symlinked_ancestor(self, tmp_path: Path) -> None:
+        """The overlay of ``d/new.txt`` replaces the clone's committed symlink ``d`` by a directory."""
+        external = tmp_path / "external"
+        external.mkdir()
+        repo = make_repo(tmp_path)
+        (repo / "d").symlink_to(external)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "commit d as a symlink")
+        (repo / "d").unlink()
+        write(repo, "d/new.txt", "the user's file\n")
+        tree = seed(repo, tmp_path)
+        assert list(external.iterdir()) == []
+        assert (tree.path / "d" / "new.txt").read_text() == "the user's file\n"
+        assert not (tree.path / "d").is_symlink()
+
+    def test_removal_of_a_directory(self, tmp_path: Path) -> None:
+        """A path the unit owns that is a directory in the clone and absent in the user's tree goes."""
+        repo = make_repo(
+            tmp_path, {"a.py": "a = 1\n", "pkg/x.py": "x = 1\n", "pkg/sub/y.py": "y = 1\n"}
+        )
+        shutil.rmtree(repo / "pkg")
+        tree = seed(repo, tmp_path, ("pkg",))
+        assert not (tree.path / "pkg").exists()
+        assert (tree.path / "a.py").exists()
+
 
 # --------------------------------------------------------------------------------------------
 # 2.2 delta
@@ -559,6 +617,76 @@ class TestDelta:
         with pytest.raises(oc.AttemptRefusedError) as caught:
             delta(tree, repo)
         assert "limit" in caught.value.reason
+
+    @pytest.mark.parametrize(
+        "sizes",
+        [
+            pytest.param([1024 * 1024], id="one-huge-file"),
+            pytest.param([3000, 3000, 3000], id="sum"),
+        ],
+    )
+    def test_manifest_hashing_stops_at_the_byte_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sizes: list[int]
+    ) -> None:
+        """Review finding 6: a worker-made file must not be read past the tree's byte budget."""
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        write(tree.path, "a.py", "x = 2\n")
+        for index, size in enumerate(sizes):
+            write(tree.path, f"big{index}.bin", b"x" * size)
+        monkeypatch.setattr(oc, "MAX_SEED_BYTES", 4096)
+        monkeypatch.setattr(oc, "_READ_CHUNK", 1024)
+        read = [0]
+        real_read = os.read
+
+        def counting(fd: int, count: int) -> bytes:
+            data = real_read(fd, count)
+            read[0] += len(data)
+            return data
+
+        monkeypatch.setattr(os, "read", counting)
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            delta(tree, repo)
+        monkeypatch.setattr(os, "read", real_read)
+        assert "limit" in caught.value.reason and "bytes" in caught.value.reason
+        assert read[0] <= 4096 + 1024  # the budget plus the one chunk that crossed it
+
+    def test_seed_walk_stops_at_the_byte_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same bound holds for the manifest taken at the end of the seed."""
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", "huge.bin": b"x" * (1024 * 1024)})
+        monkeypatch.setattr(oc, "MAX_SEED_BYTES", 4096)
+        monkeypatch.setattr(oc, "_READ_CHUNK", 1024)
+        read = [0]
+        real_read = os.read
+
+        def counting(fd: int, count: int) -> bytes:
+            data = real_read(fd, count)
+            read[0] += len(data)
+            return data
+
+        monkeypatch.setattr(os, "read", counting)
+        with pytest.raises(oc.AttemptFailedError) as caught:
+            seed(repo, tmp_path)
+        monkeypatch.setattr(os, "read", real_read)
+        assert "limit" in caught.value.reason and "bytes" in caught.value.reason
+        assert read[0] <= 4096 + 1024
+
+    def test_git_only_changes_to_unowned_files_are_not_a_change(self, tmp_path: Path) -> None:
+        """Review finding 2 (documented limit): the delta compares working-tree contents, so a commit or
+        an index-only edit that leaves an unowned file's bytes as seeded is not seen, and reaches nothing."""
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        write(tree.path, "a.py", "x = 2\n")  # the owned edit
+        git(tree.path, "commit", "-q", "--allow-empty", "-m", "empty worker commit", "--no-verify")
+        write(tree.path, "b.py", "staged only\n")
+        git(tree.path, "add", "b.py")  # an index-only edit to an unowned file ...
+        write(tree.path, "b.py", "y = 2\n")  # ... with the working tree put back
+        git(
+            tree.path, "commit", "-q", "-m", "unowned edit, committed", "--no-verify"
+        )  # HEAD: "staged only"
+        assert [item.path for item in delta(tree, repo).items] == ["a.py"]
 
 
 # --------------------------------------------------------------------------------------------
@@ -1026,6 +1154,86 @@ class TestRestore:
         assert (repo / "b.py").read_text() == "worker two\n"
         assert not list(repo.glob(".verdict-transfer-*"))
 
+    def test_restore_continues_after_a_state_read_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review finding 5: a read failure on one path is that path's ``not_restored``, not the loop's end."""
+        repo = make_repo(tmp_path)
+        journal = transferred(repo, [witem("a.py", "worker one\n"), witem("b.py", "worker two\n")])
+        real = oc._state_at
+
+        def flaky(parent_fd: int, name: str, **kwargs: Any) -> Any:
+            if name == "b.py":  # the last journal entry, so it is the first one restored
+                raise PermissionError(errno.EACCES, "Permission denied")
+            return real(parent_fd, name, **kwargs)
+
+        monkeypatch.setattr(oc, "_state_at", flaky)
+        result = oc.restore_transfer(journal, repo)
+        monkeypatch.setattr(oc, "_state_at", real)
+        assert result.restored == ["a.py"]
+        assert [path for path, _ in result.not_restored] == ["b.py"]
+        assert "PermissionError" in dict(result.not_restored)["b.py"]
+        assert (repo / "a.py").read_text() == "import os\nx = 1\n"
+        assert (repo / "b.py").read_text() == "worker two\n"  # named, not silently left
+        assert journal == []
+        assert "b.py" in result.summary()
+
+    def test_rollback_continues_after_a_state_read_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review finding 5, inside ``transfer``'s own rollback: nothing is left transferred unreported."""
+        repo = make_repo(tmp_path)
+        armed: list[bool] = []
+
+        def fail_the_third(path: str) -> None:
+            if path == "c.py":
+                armed.append(True)
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        real = oc._state_at
+
+        def flaky(parent_fd: int, name: str, **kwargs: Any) -> Any:
+            if armed and name == "b.py":
+                raise PermissionError(errno.EACCES, "Permission denied")
+            return real(parent_fd, name, **kwargs)
+
+        monkeypatch.setattr(oc, "_state_at", flaky)
+        journal: list[oc.JournalEntry] = []
+        items = [
+            witem("a.py", "worker one\n"),
+            witem("b.py", "worker two\n"),
+            witem("c.py", "new\n"),
+        ]
+        with pytest.raises(oc.TransferFailedError) as caught:
+            run_transfer(repo, items, None, journal, {"before_item": fail_the_third})
+        monkeypatch.setattr(oc, "_state_at", real)
+        assert "b.py" in caught.value.reason and "not restored" in caught.value.reason
+        assert (repo / "a.py").read_text() == "import os\nx = 1\n"  # restored although b.py was not
+        assert not (repo / "c.py").exists()
+        assert journal == []
+
+    def test_interrupted_restore_keeps_the_unprocessed_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review finding 5: an interrupt mid-entry leaves that entry journalled, so a second restore covers it."""
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        journal = transferred(repo, [witem("a.py", "worker one\n"), witem("b.py", "worker two\n")])
+        real = oc._state_at
+
+        def interrupted(parent_fd: int, name: str, **kwargs: Any) -> Any:
+            if name == "b.py":
+                raise KeyboardInterrupt
+            return real(parent_fd, name, **kwargs)
+
+        monkeypatch.setattr(oc, "_state_at", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            oc.restore_transfer(journal, repo)
+        monkeypatch.setattr(oc, "_state_at", real)
+        assert [entry.path for entry in journal] == ["a.py", "b.py"]
+        oc.restore_transfer(journal, repo)
+        assert snapshot(repo) == before
+
     def test_restore_of_a_modified_file_and_of_a_deleted_file(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path)
         (repo / "b.py").chmod(0o755)
@@ -1379,6 +1587,147 @@ class TestExecute:
         assert "[REDACTED]" in attempt.reason
         assert "SECRET-WORKER-KEY-123" not in repr(attempt.to_dict())
         assert "SECRET-WORKER-KEY-123" not in runner.calls[0]["prompt"]
+
+
+def no_follow_chmod_works(tmp_path: Path) -> bool:
+    """Whether this Python and kernel can chmod a directory by name relative to a descriptor, no-follow."""
+    probe = tmp_path / "chmod-probe"
+    (probe / "child").mkdir(parents=True)
+    fd = os.open(probe, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.chmod("child", 0o700, dir_fd=fd, follow_symlinks=False)
+        return True
+    except (OSError, NotImplementedError, ValueError):
+        return False
+    finally:
+        os.close(fd)
+
+
+def open_descriptors() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+class TestAttemptDirectory:
+    """Review finding 4: the attempt directory is worker-controlled, so its cleanup follows no path."""
+
+    def test_cleanup_does_not_follow_a_replaced_attempt_directory(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        external = tmp_path / "external"
+        (external / "sub").mkdir(parents=True)
+        (external / "sub" / "f.txt").write_text("outside\n")
+        external.chmod(0o755)
+        (external / "sub").chmod(0o755)
+        moved = tmp_path / "moved"
+
+        def hostile(tree: Path) -> None:
+            edit_a(tree)
+            attempt_dir = tree.parent
+            attempt_dir.rename(moved)  # the worker moves its own attempt directory ...
+            attempt_dir.symlink_to(
+                external
+            )  # ... and leaves a link to an outside directory in its place
+
+        attempt = make_executor(repo, tmp_path, StubRunner(hostile)).execute_unit(unit("a.py"))
+        assert attempt.outcome == "error"
+        assert stat.S_IMODE(external.stat().st_mode) == 0o755
+        assert stat.S_IMODE((external / "sub").stat().st_mode) == 0o755
+        assert (external / "sub" / "f.txt").read_text() == "outside\n"
+        assert list(moved.iterdir()) == []  # the directory Verdict made was still emptied
+
+    def test_cleanup_leaves_a_directory_that_replaced_the_attempt_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """Only the entry that still is the directory Verdict made is removed by name."""
+        repo = make_repo(tmp_path)
+        moved = tmp_path / "moved"
+        replaced: list[Path] = []
+
+        def hostile(tree: Path) -> None:
+            edit_a(tree)
+            tree.parent.rename(moved)
+            tree.parent.mkdir()  # an empty directory of the worker's, at the name Verdict made
+            replaced.append(tree.parent)
+
+        attempt = make_executor(repo, tmp_path, StubRunner(hostile)).execute_unit(unit("a.py"))
+        assert attempt.outcome == "error"
+        assert replaced[0].is_dir() and list(replaced[0].iterdir()) == []
+        assert list(moved.iterdir()) == []  # the original was emptied through its descriptor
+
+    def test_a_tree_reached_through_a_replaced_attempt_directory_is_not_read(
+        self, tmp_path: Path
+    ) -> None:
+        """The walk and the reads open the tree once and accept only the directory that was seeded."""
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        forged = tmp_path / "forged"
+        forged.mkdir()
+
+        def hostile(tree: Path) -> None:
+            shutil.copytree(tree, forged / "tree", symlinks=True)  # a complete copy ...
+            write(forged / "tree", "a.py", "x = 2\n")  # ... holding an owned edit
+            tree.parent.rename(tmp_path / "moved")
+            tree.parent.symlink_to(forged)  # the executor's path to the tree now leads here
+
+        attempt = make_executor(repo, tmp_path, StubRunner(hostile)).execute_unit(unit("a.py"))
+        assert attempt.outcome == "error"
+        assert "changed during validation" in attempt.reason
+        assert snapshot(repo) == before
+
+    def test_cleanup_does_not_follow_a_link_inside_the_tree(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", ".gitignore": "cache/\n"})
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / "f.txt").write_text("outside\n")
+        external.chmod(0o755)
+
+        def hostile(tree: Path) -> None:
+            edit_a(tree)
+            (tree / "cache").mkdir()  # ignored, so a byproduct
+            (tree / "cache" / "link").symlink_to(external)
+            (tree / "cache").chmod(0o500)
+
+        attempt = make_executor(repo, tmp_path, StubRunner(hostile)).execute_unit(unit("a.py"))
+        assert attempt.outcome == "applied"
+        assert attempts_left(tmp_path) == []
+        assert stat.S_IMODE(external.stat().st_mode) == 0o755
+        assert (external / "f.txt").read_text() == "outside\n"
+
+    @pytest.mark.parametrize(("mode", "outcome"), [(0o555, "applied"), (0o000, "error")])
+    def test_cleanup_removes_directories_the_worker_made_unusable(
+        self, tmp_path: Path, mode: int, outcome: str
+    ) -> None:
+        if mode == 0 and not no_follow_chmod_works(tmp_path):
+            pytest.skip("this host cannot chmod a directory by name without following links")
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", ".gitignore": "cache/\n"})
+
+        def hostile(tree: Path) -> None:
+            edit_a(tree)
+            write(tree, "cache/deep/f.txt", "x\n")  # ignored, so the 0o555 case is applied
+            (tree / "cache" / "deep").chmod(mode)
+            (tree / "cache").chmod(mode)
+
+        attempt = make_executor(repo, tmp_path, StubRunner(hostile)).execute_unit(unit("a.py"))
+        assert attempt.outcome == outcome
+        assert attempts_left(tmp_path) == []
+
+    @pytest.mark.skipif(not os.path.isdir("/proc/self/fd"), reason="needs /proc/self/fd")
+    @pytest.mark.parametrize(
+        "exit_path", ["applied", "rejected", "error", "exception", "interrupt"]
+    )
+    def test_no_descriptor_is_left_open(self, tmp_path: Path, exit_path: str) -> None:
+        repo = make_repo(tmp_path)
+        runner = {
+            "applied": StubRunner(edit_a),
+            "rejected": StubRunner(lambda tree: write(tree, "b.py", "evil\n")),
+            "error": StubRunner(edit_a, ok=False, error="exited 1"),
+            "exception": StubRunner(raises=RuntimeError("boom")),
+            "interrupt": StubRunner(raises=KeyboardInterrupt()),
+        }[exit_path]
+        executor = make_executor(repo, tmp_path, runner)
+        before = open_descriptors()
+        with contextlib.suppress(RuntimeError, KeyboardInterrupt):
+            executor.execute_unit(unit("a.py"))
+        assert open_descriptors() == before
 
 
 # --------------------------------------------------------------------------------------------

@@ -79,6 +79,17 @@ Conventions for every task:
       repository is byte-identical after seeding, and a `-z` record for a path containing a
       space parses as one path.
       Evidence: `TestSeed` green; each guard (clone sharing, remote, rename source, owned bytes from the user's tree, deleted files, nested repository, submodule, no HEAD, `.git` component, seed limit) was removed in turn and its named test failed.
+      Review finding 3 (Codex on 0501d65e): the removal pass followed the clone's committed symlink `d` and
+      unlinked an outside `victim`. Removal and copy now open every ancestor `O_NOFOLLOW` from one descriptor
+      for the clone's root (`_remove_in_tree`, `_copy_into_tree`, one `_remove_entry` primitive built from
+      `unlink`, `rmdir` and `fchmod` relative to descriptors; `os.symlink` joins the required `dir_fd`
+      operations), and a seed failure is an `AttemptFailedError`. Tests in `TestSeed`:
+      `test_removal_does_not_follow_a_symlinked_ancestor` (parametrised file and directory: a committed
+      symlink `d`, a real directory in its place in the user's tree, an owned absent `d/victim`),
+      `test_copy_does_not_write_through_a_symlinked_ancestor` and `test_removal_of_a_directory`.
+      Evidence (round 1): the first test failed before the fix in both cases (the outside file and
+      directory were gone); the other two passed before and are guards: each failed with its line mutated
+      (an ancestor opened following links, a symlink ancestor kept, a directory not emptied).
 - [x] 2.2 Manifest and delta (D4). `attempt_delta(tree, repo, unit, hooks=None)` (the tree carries M0) builds M1 with a
       descriptor-relative walk (root opened `O_DIRECTORY`; `scandir` on each directory
       descriptor; children opened `O_DIRECTORY | O_NOFOLLOW` relative to their parent; files
@@ -101,6 +112,21 @@ Conventions for every task:
       `test_delta_hash_mismatch_is_error`, `test_file_over_the_limit_is_a_named_refusal` and
       `test_tree_over_the_limit_is_a_named_refusal`.
       Evidence: `TestDelta` green; removing the `.git` skip, the ownership check, the ignore filter, the owned-path precedence, the worker-tree ignore read, the special-file rule, the empty rule, `O_NONBLOCK`, `O_NOFOLLOW`, the hash recheck or the file limit each failed its named test.
+      Review findings 6 and 2 (Codex on 0501d65e), and the tree-root open: the walk hashed each file with no
+      read limit, so a huge or growing worker file was read to its end before the byte budget was checked;
+      it now hashes with what is left of the budget and stops there (`_OverLimitError` goes through
+      `limit_error`). `attempt_delta` opened the tree by path twice with the worker able to replace the
+      directories above it; it now opens it once, accepts only the device and inode recorded at seed
+      (`AttemptTree.identity`) and uses that descriptor for the walk and every read. Tests in `TestDelta`:
+      `test_manifest_hashing_stops_at_the_byte_budget` (parametrised: one huge file; three files that
+      together exceed the budget; counts the bytes `os.read` returns, at most the budget plus one chunk),
+      `test_seed_walk_stops_at_the_byte_budget`, and `test_git_only_changes_to_unowned_files_are_not_a_change`
+      (finding 2, the documented limit: an empty commit, and an index-only edit committed while the working
+      tree is put back, leave the delta at the owned file). `test_a_tree_reached_through_a_replaced_attempt_directory_is_not_read`
+      is in `TestAttemptDirectory` (task 3.5).
+      Evidence (round 1): the byte-budget tests failed before the fix (1,048,588, 6,012 and 1,048,743 bytes
+      read against a limit of 4,096 plus 1,024); the git-only test passed before and is a guard that fails
+      when the top-level `.git` is walked.
 - [x] 2.3 Transfer (D6). `transfer(delta, user_repo, m0, journal, hooks=None)`: the read-only phase
       (each path resolved from a root descriptor with `O_DIRECTORY | O_NOFOLLOW`; the user's file
       opened relative to its parent with `O_NOFOLLOW | O_NONBLOCK` and checked by `fstat` before it
@@ -167,6 +193,16 @@ Conventions for every task:
       prior state.
 
       Evidence: `TestRestore` green; moving the journal append after the mutation (rename, deletion), removing the directory identity check, restoring over a user edit, reporting an unmade mutation, not removing directories, not emptying the journal and leaving a temporary file each failed their named test. `test_journal_is_emptied_at_the_start_of_each_attempt` moved to task 3.2 (it needs the executor).
+      Review finding 5 (Codex on 0501d65e): `_restore` popped an entry and then let a state-read error
+      (`PermissionError` from `stat`) end the loop, so the remaining files stayed transferred and, inside
+      `transfer`'s rollback, the caller retried only what was left. An entry now leaves the journal after it
+      was dealt with; an `Exception` on one entry is that path's `not_restored` result (`describe_failure`) and
+      the loop continues; an interrupt leaves the entry journalled. Tests in `TestRestore`:
+      `test_restore_continues_after_a_state_read_error`, `test_rollback_continues_after_a_state_read_error`
+      (through `transfer`'s own rollback: a third path fails, then the second path's state read fails) and
+      `test_interrupted_restore_keeps_the_unprocessed_entry`.
+      Evidence (round 1): all three failed before the fix (`PermissionError` and `OSError` escaped; the journal
+      held one entry instead of two) and failed again with the loop's `except` or the pop order reverted.
 ## 3. The executor
 
 - [x] 3.1 Prompt (D10). `build_opencode_prompt(unit)` names the objective, owned files,
@@ -243,6 +279,31 @@ Conventions for every task:
       repository is unchanged", so closing the limit turns it red until the mark is removed.
 
       Evidence: `TestMatrix` green (seven hostile variants, `test_no_context_file_at_all`, and the strict xfail); running git in the attempt tree, or walking `.git`, fails the planted-configuration tests.
+- [x] 3.5 The attempt directory is held by descriptor (D2; review finding 4, Codex on 0501d65e).
+      `remove_tree(parent)` ran `chmod` and `rmtree` on a pathname the worker can rename and replace by a
+      link, so it changed modes under an outside directory. `AttemptDirectory(temp_root)` opens the
+      directory and the temporary directory above it right after `mkdtemp`, records the directory's device
+      and inode, empties it through the held descriptor (`_empty_directory`, `_remove_entry`: `unlink`,
+      `rmdir`, `fchmod`, `O_NOFOLLOW` opens relative to descriptors, a no-follow `chmod` by name for a
+      directory the worker made unreadable) and removes its name with `rmdir(name, dir_fd=...)` only when
+      `lstat` of that name still equals the recorded identity; `execute_unit` uses it in place of
+      `remove_tree(parent)`, and `remove_tree(path)` remains for a failed seed, before any worker exists.
+      Files: `verdict/autodev_opencode.py`, `tests/test_autodev_opencode.py`. Verify:
+      `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py::TestAttemptDirectory`
+      with `test_cleanup_does_not_follow_a_replaced_attempt_directory` (the worker renames the attempt
+      directory and links an outside directory in its place; the outside modes and files are unchanged and
+      the renamed directory is emptied), `test_cleanup_leaves_a_directory_that_replaced_the_attempt_directory`,
+      `test_cleanup_does_not_follow_a_link_inside_the_tree`,
+      `test_cleanup_removes_directories_the_worker_made_unusable` (parametrised 0o555 and 0o000; the second
+      skips on a host that cannot chmod by name without following links),
+      `test_a_tree_reached_through_a_replaced_attempt_directory_is_not_read` (a forged complete copy of the
+      tree behind the link is `error`, not `applied`) and `test_no_descriptor_is_left_open` (five exit paths;
+      counts `/proc/self/fd`).
+      Evidence (round 1): `test_cleanup_does_not_follow_a_replaced_attempt_directory` failed before the fix
+      (the outside directory went from 0o755 to 0o700); the other tests are guards that failed with the
+      named line mutated (cleanup by pathname, the identity check on the name, the identity check on the
+      tree, a chmod by name that follows links, no `fchmod` of a read-only directory, no chmod by name for an
+      unreadable one, a descriptor left open). Pathname calls that remain run before any worker exists.
 ## 4. `run_autodev` wiring
 
 - [x] 4.1 Protocol, gateway check and the restore rule (D7, D8). Add the `UnitExecutor`
@@ -275,6 +336,15 @@ Conventions for every task:
       `test_restore_capability_alone_grants_nothing` (has `restore()`, not `isolated`, still fails
       the gateway equality check and is not subject to the retry refusal), and `test_patch_executor_is_never_restored`.
       Evidence: `TestRestoreWiring` green (against the unwired `autodev_run.py` the wiring file fails 23 of 25); the existing `tests/test_autodev_wiring.py` and the other six autodev test files pass unmodified (222 tests); removing the restore on a false result, on an exception, the verified-unit guard, the swallow of a restore failure, or the isolated skip of the gateway check, or letting a `restore` method imply `isolated`, fails its named test.
+      Review finding 1 (Codex on 0501d65e): the nested handler caught only `Exception`, so a
+      `KeyboardInterrupt` or `SystemExit` out of `restore()` replaced the exception that was propagating. It
+      now catches `BaseException`, prints it and re-raises the original (a Ctrl-C pressed during that rollback
+      is reported, not obeyed; see the pull request's decisions for the operator). Test:
+      `test_restore_is_interrupted_while_an_exception_propagates` (parametrised: `PermissionError` or
+      `KeyboardInterrupt` propagating, `KeyboardInterrupt` or `SystemExit` out of `restore()`; the
+      propagated object is the original and standard error names the restore interrupt).
+      Evidence (round 1): all four cases failed before the fix (the restore interrupt escaped) and again with
+      `Exception` put back.
 - [x] 4.1b Hand the run id to the executor (D8). `run_autodev` calls `executor.begin_run(attempt_run_id)`
       once, before the first unit, when the executor has it. Files: `verdict/autodev_run.py`,
       `tests/test_autodev_opencode_wiring.py`. Verify:

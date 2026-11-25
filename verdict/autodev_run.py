@@ -3195,10 +3195,12 @@ def _run_unit_once(
     try:
         outcome, executor_failed = _run_model_tier(unit, repo, executor, before, runner=runner)
     except BaseException:
-        # The original exception propagates unchanged; a failure of restore() never replaces it.
+        # The original exception propagates unchanged; nothing restore() raises replaces it,
+        # not even a KeyboardInterrupt or SystemExit (the entries it had not reached stay in the
+        # executor's journal and git can undo them).
         try:
             restore()
-        except Exception as restore_error:
+        except BaseException as restore_error:
             print(
                 f"autodev: restoring the owned files of unit {unit.unit_id} failed: "
                 f"{type(restore_error).__name__}: {restore_error}",

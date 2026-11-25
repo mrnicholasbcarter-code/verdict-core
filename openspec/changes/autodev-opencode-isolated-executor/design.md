@@ -96,6 +96,23 @@ Option A) would make an environment without `.venv` the judge; it stays rejected
 In a new `0700` temp directory: `git clone --no-local -c core.hooksPath=/dev/null`, then `remote remove
 origin`. It is removed on every exit path, and before the transfer (D7). After SIGKILL one can remain.
 
+The worker runs as the same user inside that directory, so it can rename it or leave a link in its place;
+a cleanup that walks the pathname (`chmod` then `rmtree`) would then change the modes under, and remove
+files from, whatever the link points at (review finding 4). `AttemptDirectory` therefore opens the directory
+(and the temporary directory above it) as descriptors right after `mkdtemp`, empties the directory through
+the held descriptor with `unlink`/`rmdir`/`fchmod` relative to descriptors and `O_NOFOLLOW` opens, and
+removes the name with `rmdir(name, dir_fd=temp_root_fd)` only when `lstat` of that name still equals the
+device and inode recorded at creation. A moved directory is emptied and left where it was moved; the
+entry the worker left at the old name is not touched. A directory the worker made unreadable (mode 000) is
+reopened by `chmod(name, 0o700, dir_fd=parent, follow_symlinks=False)` [exp: Python 3.13.18 on Linux 6.8
+changes a directory this way and refuses a symlink; Python raises `NotImplementedError` or `ValueError`
+where the platform cannot]; a refusal leaves that directory (a stated limit). The
+temporary directory itself is opened following links, since `TMPDIR` can legitimately be one and is not the
+worker's. The same primitives remove and write inside the clone at seed time (finding 3): every ancestor is
+opened `O_NOFOLLOW` from the clone's root descriptor, so a committed symlink cannot route a removal or a
+write outside the clone. Pathname calls that remain run before any worker exists (`git clone`, `git remote
+remove`, opening the clone) in a directory only Verdict can reach.
+
 ### D3. Seed by file copy, and take manifest M0
 
 The user's dirty state is overlaid by copying files, never by writing git objects, from `git status
@@ -125,7 +142,17 @@ they do not matter; a reverted edit leaves no delta. In order:
 
 The tree is worker-controlled, so the walk and byte reads are descriptor-relative, follow no link and
 block on no special file (task 2.2). A path that changes kind between the metadata read and the open is
-`error`, never `rejected`; each delta file is read once and hashed against M1.
+`error`, never `rejected`; each delta file is read once and hashed against M1. The directories above the
+tree are the worker's too, so `attempt_delta` opens the tree by path once, accepts only the directory with
+the device and inode recorded at seed time (`AttemptTree.identity`), and uses that one descriptor for the
+walk and every read. Each file is hashed with a limit of what is left of the tree's byte budget, so a huge
+or growing file stops the walk as soon as the budget is spent instead of at its end (finding 6).
+
+Because only contents are compared, git's own state is invisible by design: a commit, a branch or an
+index-only edit to an unowned file that leaves its working-tree bytes as seeded changes nothing the
+delta sees and nothing is copied back, and a new unowned path the user's ignore rules match is dropped as
+a byproduct (step 1 below). What rejects an attempt is a difference in a path's kind, executable bit or
+bytes, whether or not the worker also staged or committed it (finding 2).
 
 ### D5. An owned file must be recoverable by git, or absent
 
@@ -185,11 +212,18 @@ On main `_touched_since` and `_verify` run outside any handler and `_run` catche
 not "restore after a false verify" but "call `restore()` once on every exit after `execute_unit` was
 called other than a verified success" (the spec lists the exits). An exception is re-raised unchanged, and
 a failure inside `restore()` is printed to standard error (Python 3.10 has no `add_note`), never replacing
-it; a second interrupt during `restore()` is not covered. An `Exception` that `execute_unit` itself
+it, and that includes a `KeyboardInterrupt` or `SystemExit` raised inside `restore()` (review finding 1: the
+handler catches `BaseException`, reports it and re-raises the original; a Ctrl-C pressed during a rollback
+that an earlier exception already triggered is reported, not obeyed, and what the rollback had not reached
+can still be put back from git, as after a crash). An `Exception` that `execute_unit` itself
 raises keeps main's behaviour (`_run_unit_once` turns it into an unverified `executor error:` outcome and
 does not re-raise), after the one `restore()` call, so the default path is untouched; a `KeyboardInterrupt`
 and any exception from `_touched_since` or `_verify` are re-raised. The transfer is the last fallible step
 of `execute_unit`, after the clone is removed.
+
+A failure to read or write one path during restore is that path's `not_restored` entry and the loop goes
+on (review finding 5); an entry leaves the journal only after it was dealt with, so an interrupt mid-entry
+leaves it journalled and a second `restore()` finds it done or does it.
 
 The journal belongs to one `execute_unit` call: that call empties it first, so a later unit's failure
 cannot undo an earlier unit's verified files (`run_autodev` reuses one executor).
@@ -288,7 +322,8 @@ and tells the worker to edit only owned files and not commit or push.
   Whether OpenCode itself leaves other files in the working directory is also unmeasured here (no live
   run): such a file is an unowned new path and would reject the attempt.
 - A shell is still a shell: a worker can write an absolute path in the user's repository (ADR-053
-  Decision 4). A crash leaves D7's residue, and an attempt directory (`0700`, no sweep) can remain.
+  Decision 4). A crash leaves D7's residue, and an attempt directory (`0700`, no sweep) can remain, as can
+  a directory the worker made inaccessible on a host that cannot change a mode without following a link.
 - Known gaps until OC2b: ledger rows for OpenCode units keep the label `verdict-autodev-executor`
   [main], the receipt shows the requested route with no served identity, a failed unit is not retried,
   and serve and autodev admit separately, so serve can refuse a route autodev probed.

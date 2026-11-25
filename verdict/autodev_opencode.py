@@ -16,8 +16,11 @@ stage, commit and half-edit that tree, so this module never lets the worker touc
 ``verdict.autodev_run`` stays the judge: it attributes the change, runs the unit's command in the
 user's tree and calls ``restore()`` on every exit that is not a verified success.
 
-Everything that reads a tree the worker could have written is descriptor-relative and follows no
-link, so swapping a directory for a symlink cannot redirect a read or a write. POSIX only.
+Everything that reads, writes or removes a path the worker could have changed is descriptor-relative
+and follows no link, so swapping a directory for a symlink cannot redirect a read, a write or a
+removal: the walk and the reads open the attempt tree once and accept only the directory that was
+seeded, and the attempt directory is held by descriptor from the moment it is made
+(:class:`AttemptDirectory`) because the worker can rename it.  POSIX only.
 """
 
 from __future__ import annotations
@@ -117,7 +120,16 @@ def _hook(hooks: Hooks | None, name: str, *args: Any) -> None:
 def _missing_operations() -> list[str]:
     missing = [
         fn.__name__
-        for fn in (os.open, os.stat, os.mkdir, os.rename, os.unlink, os.rmdir, os.readlink)
+        for fn in (
+            os.open,
+            os.stat,
+            os.mkdir,
+            os.rename,
+            os.unlink,
+            os.rmdir,
+            os.readlink,
+            os.symlink,
+        )
         if fn not in os.supports_dir_fd
     ]
     if os.scandir not in os.supports_fd:
@@ -159,10 +171,15 @@ class Entry:
 
 @dataclass
 class AttemptTree:
-    """A seeded attempt tree and its manifest M0."""
+    """A seeded attempt tree, its manifest M0 and its device and inode.
+
+    The worker can rename the directories above the tree and put a link where one was, so a read
+    opens the tree by path once and accepts only the directory with this identity.
+    """
 
     path: Path
     manifest: dict[str, Entry]
+    identity: tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -404,14 +421,18 @@ def _walk_dir(
         if stat.S_ISREG(st.st_mode):
             _hook(hooks, "before_open", rel)
             try:
-                entry, _ = _state_at(dir_fd, name, hooks=hooks)
+                # The read stops at what is left of the tree's byte budget: a worker-made file that
+                # is huge, or still growing, is never hashed to its end.
+                entry, _ = _state_at(dir_fd, name, limit=MAX_SEED_BYTES - totals[1], hooks=hooks)
             except _RacedError as exc:
                 raise AttemptFailedError("the attempt tree changed during validation") from exc
+            except _OverLimitError as exc:
+                raise limit_error(
+                    f"the tree holds more than {MAX_SEED_BYTES} bytes (limit)"
+                ) from exc
             if entry is None or entry.kind != "file":
                 raise AttemptFailedError("the attempt tree changed during validation")
             totals[1] += entry.size
-            if totals[1] > MAX_SEED_BYTES:
-                raise limit_error(f"the tree holds more than {MAX_SEED_BYTES} bytes (limit)")
             manifest[rel] = entry
         elif stat.S_ISLNK(st.st_mode):
             try:
@@ -425,20 +446,28 @@ def _walk_dir(
 
 
 def walk_manifest(
-    root: Path, *, hooks: Hooks | None = None, limit_error: Callable[[str], Exception]
+    root: Path | int, *, hooks: Hooks | None = None, limit_error: Callable[[str], Exception]
 ) -> dict[str, Entry]:
-    """Every non-directory path under ``root`` (outside the top-level ``.git``), by descriptor."""
+    """Every non-directory path under ``root`` (outside the top-level ``.git``), by descriptor.
+
+    ``root`` is a directory path, opened here without following a link in its last component, or a
+    directory descriptor the caller holds and keeps open (the attempt tree is walked that way, so the
+    walk and the reads that follow it use one open of the tree).
+    """
     require_descriptor_operations()
+    manifest: dict[str, Entry] = {}
+    if isinstance(root, int):
+        _walk_dir(root, "", manifest, [0, 0], top=True, hooks=hooks, limit_error=limit_error)
+        return manifest
     try:
         root_fd = os.open(str(root), _DIR_FLAGS)
     except OSError as exc:
         raise AttemptFailedError(f"the attempt tree cannot be read ({type(exc).__name__})") from exc
     try:
-        manifest: dict[str, Entry] = {}
         _walk_dir(root_fd, "", manifest, [0, 0], top=True, hooks=hooks, limit_error=limit_error)
-        return manifest
     finally:
         os.close(root_fd)
+    return manifest
 
 
 # --------------------------------------------------------------------------------------------
@@ -483,64 +512,213 @@ def _read_user_file(root_fd: int, rel: str) -> tuple[str, Any]:
             os.close(fd)
 
 
-def _remove_in_tree(tree: Path, rel: str) -> None:
-    target = tree.joinpath(*rel.split("/"))
+def _open_removable_dir(parent_fd: int, name: str) -> int | None:
+    """Open the directory ``name`` under ``parent_fd`` without following a link; ``None`` when it is
+    absent, not a real directory, or cannot be made readable.
+
+    A directory the worker made unreadable is ours (the same user), so it is given back owner access
+    by name relative to ``parent_fd`` and with no link followed, where this host can do that; where it
+    cannot, the directory is left.
+    """
     try:
-        st = target.lstat()
+        return _open_dir_at(parent_fd, name)
+    except PermissionError:
+        try:
+            os.chmod(name, 0o700, dir_fd=parent_fd, follow_symlinks=False)
+            return _open_dir_at(parent_fd, name)
+        except (OSError, NotImplementedError, ValueError):
+            return None
+    except OSError:
+        return None  # absent, a link (ELOOP) or not a directory (ENOTDIR)
+
+
+def _empty_directory(dir_fd: int, *, strict: bool) -> None:
+    """Remove everything under the directory ``dir_fd``, descending by descriptor and following no link.
+
+    ``strict`` raises the first ``OSError``; otherwise an entry that cannot be removed is left.
+    """
+    with contextlib.suppress(OSError):
+        os.fchmod(dir_fd, 0o700)  # a 0o555 directory cannot lose entries until its owner says so
+    try:
+        with os.scandir(dir_fd) as scanner:
+            names = [item.name for item in scanner]
+    except OSError:
+        if strict:
+            raise
+        return
+    for name in names:
+        try:
+            _remove_entry(dir_fd, name, strict=strict)
+        except OSError:
+            if strict:
+                raise
+
+
+def _remove_entry(parent_fd: int, name: str, *, strict: bool) -> None:
+    """Remove ``name`` under ``parent_fd``: a file or link is unlinked, never followed; a directory is
+    emptied (see :func:`_empty_directory`) and removed.  Absent is fine.  ``strict`` as above.
+    """
+    try:
+        os.unlink(name, dir_fd=parent_fd)
+        return
     except FileNotFoundError:
         return
-    if stat.S_ISDIR(st.st_mode):
-        shutil.rmtree(target, ignore_errors=True)
-    else:
-        target.unlink()
-
-
-def _copy_into_tree(tree: Path, rel: str, kind: str, payload: Any) -> None:
-    parts = rel.split("/")
-    cur = tree
-    for name in parts[:-1]:
-        cur = cur / name
-        try:
-            st = cur.lstat()
-        except FileNotFoundError:
-            cur.mkdir()
-            continue
-        if not stat.S_ISDIR(st.st_mode):
-            cur.unlink()
-            cur.mkdir()
-    target = tree.joinpath(*parts)
-    with contextlib.suppress(FileNotFoundError):
-        if stat.S_ISDIR(target.lstat().st_mode):
-            shutil.rmtree(target)
-        else:
-            target.unlink()
-    if kind == "symlink":
-        os.symlink(payload, target)
+    except OSError as exc:  # a directory is EISDIR on Linux and EPERM elsewhere
+        failure = exc
+    child = _open_removable_dir(parent_fd, name)
+    if child is None:
+        if strict:
+            raise failure
         return
-    data, mode = payload
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        view = memoryview(data)
-        while view:
-            view = view[os.write(fd, view) :]
-        os.fchmod(fd, mode & 0o7777 or 0o644)
+        _empty_directory(child, strict=strict)
     finally:
-        os.close(fd)
+        os.close(child)
+    try:
+        os.rmdir(name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        if strict:
+            raise
 
 
-def _make_removable(path: str) -> None:
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o700)
-        with os.scandir(path) as scanner:
-            for item in scanner:
-                if item.is_dir(follow_symlinks=False):
-                    _make_removable(item.path)
+def _remove_in_tree(tree_fd: int, rel: str) -> None:
+    """Remove ``rel`` from the clone open at ``tree_fd``; every ancestor is opened without following a
+    link, so a committed symlink in the clone can never route the removal outside it.
+
+    An ancestor that is absent, a link or a file means nothing below it is part of the clone's tree:
+    there is nothing to remove, and the overlay replaces that ancestor if the user's tree has a
+    directory there.
+    """
+    parts = rel.split("/")
+    opened: list[int] = []
+    cur = tree_fd
+    try:
+        for name in parts[:-1]:
+            try:
+                cur = _open_dir_at(cur, name)
+            except OSError:
+                return
+            opened.append(cur)
+        _remove_entry(cur, parts[-1], strict=True)
+    finally:
+        for fd in opened:
+            os.close(fd)
+
+
+def _copy_into_tree(tree_fd: int, rel: str, kind: str, payload: Any) -> None:
+    """Write the user's ``rel`` into the clone open at ``tree_fd``, relative to descriptors held from
+    the root and following no link; a non-directory in the way of an ancestor is replaced."""
+    parts = rel.split("/")
+    opened: list[int] = []
+    cur = tree_fd
+    try:
+        for name in parts[:-1]:
+            try:
+                st = os.stat(name, dir_fd=cur, follow_symlinks=False)
+            except FileNotFoundError:
+                os.mkdir(name, 0o777, dir_fd=cur)
+            else:
+                if not stat.S_ISDIR(st.st_mode):
+                    _remove_entry(cur, name, strict=True)
+                    os.mkdir(name, 0o777, dir_fd=cur)
+            cur = _open_dir_at(cur, name)
+            opened.append(cur)
+        final = parts[-1]
+        _remove_entry(cur, final, strict=True)
+        if kind == "symlink":
+            os.symlink(payload, final, dir_fd=cur)
+            return
+        data, mode = payload
+        fd = os.open(
+            final,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=cur,
+        )
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view) :]
+            os.fchmod(fd, mode & 0o7777 or 0o644)
+        finally:
+            os.close(fd)
+    finally:
+        for fd in opened:
+            os.close(fd)
 
 
 def remove_tree(path: Path) -> None:
-    """Remove an attempt directory the worker may have made unreadable.  Never raises."""
-    _make_removable(str(path))
-    shutil.rmtree(path, ignore_errors=True)
+    """Remove a directory Verdict made before any worker could reach it (a failed seed).  Never raises
+    an ``Exception``; see :class:`AttemptDirectory` for the one a worker has run in."""
+    try:
+        parent_fd = os.open(str(path.parent), _DIR_FLAGS)
+    except OSError:
+        return
+    try:
+        with contextlib.suppress(Exception):  # best effort; a very deep tree raises RecursionError
+            _remove_entry(parent_fd, path.name, strict=False)
+    finally:
+        os.close(parent_fd)
+
+
+class AttemptDirectory:
+    """The private directory one attempt lives in, held by descriptor from the moment it is made.
+
+    The worker runs inside it as the same user, so it can rename this directory or leave a link where
+    it was.  Cleanup therefore never walks the pathname: it empties the directory through the
+    descriptor opened before the worker started, and removes the name only when the entry there is
+    still the directory it made (its device and inode).  A directory the worker moved away is emptied
+    and left in place.
+    """
+
+    def __init__(self, temp_root: Path | None) -> None:
+        self.path = Path(
+            os.path.abspath(tempfile.mkdtemp(prefix="verdict-autodev-oc-", dir=temp_root))
+        )
+        self._root_fd = -1
+        self._fd = -1
+        try:
+            # The temporary directory is the operator's, not the worker's: it may itself be a link.
+            self._root_fd = os.open(
+                str(self.path.parent),
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            self._fd = _open_dir_at(self._root_fd, self.path.name)
+            made = os.fstat(self._fd)
+            self._identity = (made.st_dev, made.st_ino)
+        except BaseException:
+            for fd in (self._fd, self._root_fd):
+                if fd >= 0:
+                    os.close(fd)
+            self._fd = self._root_fd = -1
+            with contextlib.suppress(OSError):
+                os.rmdir(self.path)
+            raise
+
+    def remove(self) -> None:
+        """Empty the directory and remove its name; idempotent, and never raises an ``Exception``."""
+        fd, root_fd = self._fd, self._root_fd
+        if fd < 0:
+            return
+        self._fd = self._root_fd = -1
+        try:
+            with contextlib.suppress(
+                Exception
+            ):  # best effort; a very deep tree raises RecursionError
+                _empty_directory(fd, strict=False)
+                try:
+                    at_name = os.stat(self.path.name, dir_fd=root_fd, follow_symlinks=False)
+                except OSError:
+                    return  # moved away: only the emptied directory remains
+                same = (at_name.st_dev, at_name.st_ino) == self._identity
+                if stat.S_ISDIR(at_name.st_mode) and same:
+                    with contextlib.suppress(OSError):
+                        os.rmdir(self.path.name, dir_fd=root_fd)
+        finally:
+            os.close(fd)
+            os.close(root_fd)
 
 
 def seed_attempt_tree(repo: Path, parent_dir: Path, owned_files: Iterable[str]) -> AttemptTree:
@@ -621,23 +799,36 @@ def _seed(repo: Path, tree: Path, owned: tuple[str, ...]) -> AttemptTree:
         loaded: dict[str, tuple[str, Any]] = {}
         for rel in dict.fromkeys(copies + removals):
             loaded[rel] = _read_user_file(root_fd, rel)
-        for rel in dict.fromkeys(removals + copies):
-            kind, _payload = loaded[rel]
-            if kind == "absent":
-                _remove_in_tree(tree, rel)
-        for rel in dict.fromkeys(copies):
-            kind, payload = loaded[rel]
-            if kind in ("file", "symlink"):
-                _copy_into_tree(tree, rel, kind, payload)
-            elif kind == "other":
-                raise AttemptFailedError(f"{rel} is not a regular file or a symlink; not supported")
+        tree_fd = os.open(str(tree), _DIR_FLAGS)
+        try:
+            made = os.fstat(tree_fd)
+            for rel in dict.fromkeys(removals + copies):
+                kind, _payload = loaded[rel]
+                if kind == "absent":
+                    _seed_step(_remove_in_tree, tree_fd, rel)
+            for rel in dict.fromkeys(copies):
+                kind, payload = loaded[rel]
+                if kind in ("file", "symlink"):
+                    _seed_step(_copy_into_tree, tree_fd, rel, kind, payload)
+                elif kind == "other":
+                    raise AttemptFailedError(
+                        f"{rel} is not a regular file or a symlink; not supported"
+                    )
+            manifest = walk_manifest(
+                tree_fd, limit_error=lambda reason: AttemptFailedError(f"seed refused: {reason}")
+            )
+        finally:
+            os.close(tree_fd)
     finally:
         os.close(root_fd)
+    return AttemptTree(tree, manifest, (made.st_dev, made.st_ino))
 
-    manifest = walk_manifest(
-        tree, limit_error=lambda reason: AttemptFailedError(f"seed refused: {reason}")
-    )
-    return AttemptTree(tree, manifest)
+
+def _seed_step(step: Callable[..., None], tree_fd: int, rel: str, *args: Any) -> None:
+    try:
+        step(tree_fd, rel, *args)
+    except OSError as exc:
+        raise AttemptFailedError(f"seeding {rel} failed ({describe_failure(exc)})") from exc
 
 
 # --------------------------------------------------------------------------------------------
@@ -701,37 +892,44 @@ def attempt_delta(
     the attempt tree.
     """
     m0 = tree.manifest
-    m1 = walk_manifest(
-        tree.path,
-        hooks=hooks,
-        limit_error=lambda reason: AttemptRefusedError(
-            f"the attempt tree is over the limit: {reason}"
-        ),
-    )
-    changed = {path for path in set(m0) | set(m1) if m0.get(path) != m1.get(path)}
-    # A new path the user's rules ignore is a byproduct (a cache, a build output). A path the unit
-    # owns never is: dropping it would transfer half of a repair, or reject a repair as empty.
-    fresh = sorted(path for path in changed if path not in m0 and not unit.owns(path))
-    dropped = _ignored_paths(Path(repo), fresh)
-    delta_paths = sorted(changed - dropped)
-    escaped = unit.out_of_bounds(delta_paths)
-    if escaped:
-        raise AttemptRefusedError(f"changed files outside the unit boundary: {list(escaped)}")
-    special = [
-        f"{path} ({m1[path].kind})"
-        for path in delta_paths
-        if path in m1 and m1[path].kind != "file"
-    ]
-    if special:
-        raise AttemptRefusedError(f"changed paths that are not a regular file: {special}")
-    if not delta_paths:
-        raise AttemptRefusedError("worker made no change to the owned files")
-
+    require_descriptor_operations()
+    # One descriptor for the walk and for every read: the directories above the tree are the
+    # worker's to rename or replace by a link, so the tree is opened once and must be the directory
+    # that was seeded.
     try:
         root_fd = os.open(str(tree.path), _DIR_FLAGS)
     except OSError as exc:
-        raise AttemptFailedError("the attempt tree changed during validation") from exc
+        raise AttemptFailedError(f"the attempt tree cannot be read ({type(exc).__name__})") from exc
     try:
+        opened = os.fstat(root_fd)
+        if (opened.st_dev, opened.st_ino) != tree.identity:
+            raise AttemptFailedError("the attempt tree changed during validation")
+        m1 = walk_manifest(
+            root_fd,
+            hooks=hooks,
+            limit_error=lambda reason: AttemptRefusedError(
+                f"the attempt tree is over the limit: {reason}"
+            ),
+        )
+        changed = {path for path in set(m0) | set(m1) if m0.get(path) != m1.get(path)}
+        # A new path the user's rules ignore is a byproduct (a cache, a build output). A path the
+        # unit owns never is: dropping it would transfer half of a repair, or reject a repair as empty.
+        fresh = sorted(path for path in changed if path not in m0 and not unit.owns(path))
+        dropped = _ignored_paths(Path(repo), fresh)
+        delta_paths = sorted(changed - dropped)
+        escaped = unit.out_of_bounds(delta_paths)
+        if escaped:
+            raise AttemptRefusedError(f"changed files outside the unit boundary: {list(escaped)}")
+        special = [
+            f"{path} ({m1[path].kind})"
+            for path in delta_paths
+            if path in m1 and m1[path].kind != "file"
+        ]
+        if special:
+            raise AttemptRefusedError(f"changed paths that are not a regular file: {special}")
+        if not delta_paths:
+            raise AttemptRefusedError("worker made no change to the owned files")
+
         items: list[DeltaItem] = []
         for path in delta_paths:
             if path not in m1:
@@ -1142,12 +1340,20 @@ def _restore_file(
 def _restore(root_fd: int, journal: list[JournalEntry], *, hooks: Hooks | None) -> RestoreResult:
     result = RestoreResult(touched=bool(journal))
     while journal:
-        entry = journal.pop()
+        # The entry leaves the journal only once it has been dealt with, so an interrupt in the
+        # middle of one leaves it there for a second restore (which finds it done or does it).
+        entry = journal[-1]
         parts = entry.path.split("/")
-        if entry.op == "mkdir":
-            _restore_directory(root_fd, entry, result, parts)
-        else:
-            _restore_file(root_fd, entry, result, parts, hooks)
+        try:
+            if entry.op == "mkdir":
+                _restore_directory(root_fd, entry, result, parts)
+            else:
+                _restore_file(root_fd, entry, result, parts, hooks)
+        except Exception as exc:
+            # A read or write failure on one path (a permission error on its state read, say) is that
+            # path's result: the paths still in the journal are restored all the same.
+            result.not_restored.append((entry.path, describe_failure(exc)))
+        journal.pop()
     return result
 
 
@@ -1159,7 +1365,10 @@ def restore_transfer(
     For each entry a path holding the intended state is returned to its prior state; a path
     already holding the prior state is left and not reported (the mutation was never made);
     anything else is left alone and named.  A created directory is removed only when empty and
-    still the directory the transfer created.  The journal is emptied; calling again is a no-op.
+    still the directory the transfer created.  A read or write failure on one path is that path's
+    ``not_restored`` entry and the loop goes on.  The journal is emptied, so calling again is a
+    no-op; an interrupt (``KeyboardInterrupt``) leaves the entry in progress and those before it in
+    the journal, and a second call continues from there.
     """
     if not journal:
         return RestoreResult()
@@ -1342,10 +1551,10 @@ class OpenCodeUnitExecutor:
         except AttemptFailedError as exc:
             return finish("error", exc.reason)
 
-        parent = Path(tempfile.mkdtemp(prefix="verdict-autodev-oc-", dir=self._temp_root))
+        attempt_dir = AttemptDirectory(self._temp_root)
         try:
             try:
-                tree = seed_attempt_tree(self._repo, parent, unit.owned_files)
+                tree = seed_attempt_tree(self._repo, attempt_dir.path, unit.owned_files)
             except AttemptFailedError as exc:
                 return finish("error", f"seed refused: {exc.reason}")
             terminal = asyncio.run(
@@ -1368,7 +1577,7 @@ class OpenCodeUnitExecutor:
                 return finish("rejected", exc.reason, usage=usage)
             except AttemptFailedError as exc:
                 return finish("error", exc.reason, usage=usage)
-            remove_tree(parent)  # before the transfer, which is the last fallible step
+            attempt_dir.remove()  # before the transfer, which is the last fallible step
             try:
                 transfer(delta, self._repo, tree.manifest, self._journal, self._hooks)
             except AttemptRefusedError as exc:
@@ -1377,7 +1586,7 @@ class OpenCodeUnitExecutor:
                 return finish("error", exc.reason, usage=usage)
             return finish("applied", changed=delta.paths, usage=usage)
         finally:
-            remove_tree(parent)
+            attempt_dir.remove()
 
     # -- the precondition ------------------------------------------------------------------
 

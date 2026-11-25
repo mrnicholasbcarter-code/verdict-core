@@ -487,9 +487,21 @@ files over it, and runs OpenCode there with a signed assignment bound to the aut
 one the attempt ledger uses) and the unit id.  An attempt lasts at most 600 seconds.  When it ends
 Verdict compares the clone with what it seeded, from file contents, without running git in the
 clone (a hook or `core.fsmonitor` the worker plants never runs).  Only changes to the files the
-unit owns, as regular files or deletions, are copied back; any other change (an unowned file, a
-symlink, a commit or staged edit to an unowned file) rejects the attempt and leaves your
-repository byte-identical.  The clone is removed before the copy-back and on every exit path.
+unit owns, as regular files or deletions, are copied back.  Any other change to a file's bytes, kind
+or executable bit (an unowned file edited, created or deleted, a symlink, a special file) rejects the
+attempt and leaves your repository byte-identical, whether or not the worker also staged or committed
+it in the clone.  Two things are deliberately not changes: git's own state in the clone (a commit, a
+branch, the index) is never read or copied back, so a commit or an index-only edit to an unowned file
+whose working-tree bytes are as seeded is not seen and reaches nothing; and a new file that your own
+ignore rules match (a cache or build output) is dropped as a byproduct unless the unit owns it.
+
+**The clone is removed** before the copy-back and on every exit path.  The worker runs as you inside
+it, so it could rename it or leave a link where it was; Verdict holds the directory open from the
+moment it makes it, empties it through that handle without following any link, and removes its name
+only if the entry there is still the directory it made.  A directory the worker moved away is emptied
+and left where it was moved, and what it put at the old name is not touched.  Where this host cannot
+change a directory's mode without following links, a directory the worker made unreadable (mode 000)
+is left behind.
 
 **An owned file git cannot recover is refused.**  The copy-back keeps its undo information in
 memory, so before a worker starts git must hold your bytes.  A unit is refused, with the file and
@@ -504,7 +516,11 @@ they are seeded into the clone.
 **Restore.**  Every exit after the copy-back other than a verified success (a failing
 verification command, an error, Ctrl-C) puts the owned files back.  Restore never overwrites a
 change made since: a file the verification command or you edited is left as it is and named in the
-unit's reason.  A verified unit stays, and a later unit's failure never undoes it.
+unit's reason, and a file whose state cannot be read during the restore is named too while the
+others are still restored.  A verified unit stays, and a later unit's failure never undoes it.  If the
+restore itself fails or is interrupted while an exception is already propagating, that is printed and
+the original exception is the one raised, and what the restore had not reached is put back the way
+**A crash** below describes.
 
 **A crash.**  If the process is killed while it writes, each owned file holds either its old or its
 new bytes (the copy is a rename), at most one `.verdict-transfer-*` file is left in a directory the

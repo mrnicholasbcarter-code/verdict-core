@@ -300,6 +300,43 @@ class TestRestoreWiring:
             go(repo, executor, plan(("u1", "a.py")), verify=explode)
         assert "restore itself broke" in capsys.readouterr().err
 
+    @pytest.mark.parametrize(
+        ("original", "interrupt"),
+        [
+            (PermissionError("the original exception"), KeyboardInterrupt("restore interrupted")),
+            (PermissionError("the original exception"), SystemExit("restore exited")),
+            (KeyboardInterrupt(), SystemExit("restore exited")),
+            (KeyboardInterrupt(), KeyboardInterrupt("restore interrupted")),
+        ],
+    )
+    def test_restore_is_interrupted_while_an_exception_propagates(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        original: BaseException,
+        interrupt: BaseException,
+    ) -> None:
+        """Review finding 1: a ``KeyboardInterrupt`` or ``SystemExit`` out of ``restore()`` never replaces it."""
+        repo = make_repo(tmp_path)
+
+        class InterruptedRestore(SpyExecutor):
+            def restore(self) -> str:
+                self.restore_calls += 1
+                raise interrupt
+
+        def explode(_call: int) -> Any:
+            raise original
+
+        executor = isolated(repo, tmp_path, StubRunner(edit_a), cls=InterruptedRestore)
+        raised: BaseException | None = None
+        try:  # not pytest.raises: an escaped interrupt must fail this test, not end the session
+            go(repo, executor, plan(("u1", "a.py")), verify=explode)
+        except BaseException as exc:
+            raised = exc
+        assert raised is original
+        assert executor.restore_calls == 1
+        assert f"{type(interrupt).__name__}: {interrupt}" in capsys.readouterr().err
+
     def test_restore_capability_alone_grants_nothing(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path)
 
