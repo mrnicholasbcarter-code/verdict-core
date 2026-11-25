@@ -89,9 +89,27 @@ after the active and cooling steps and then runs every per-route gate on it (not
 re-admitted, unknown health is never healthy), skipping only serve's text-based second guesses
 (keyword scanner, worthiness class, planner capabilities, Top-K shortlist, cheap-path pack);
 `streaming` is waived for a verified assignment and recorded in the receipts. `WorkerAssignedRoute`
-is removed. The executor that signs the assignment is #1325: until it lands, the opt-in OpenCode
-executor still sends the serve token and the bare header, which serve now refuses by design. The
-decision above is unchanged.*
+is removed. The decision above is unchanged.*
+
+*Implementation note (2026-11-25, #1325, `openspec/changes/opencode-worker-adapter`): the executor
+signs the assignment. For each attempt `OpenCodeExecutor` signs the route, the run id (the run
+directory's name, the id the run receipt shows), the node id, the time it is issued and the time it
+expires: the attempt's timeout rounded up plus 60 s, never more than the 1,800 s the format allows
+(an attempt that would need more fails closed before launch, never clamped). The assignment is the
+worker's only credential and the only value that serve accepts from it; it reaches the child as
+`VERDICT_WORKER_API_KEY` and nowhere else, and it is redacted from everything recorded. Serve's own
+token stays in the orchestrator's process for its one readiness request (serve accepts an
+assignment on the two relay paths only) and is never a fallback: a missing or unreadable signing key, a missing run id or node
+id, or a bad timeout is a `harness_configuration:` block before launch. The `X-Verdict-Worker`
+header is no longer sent. Serve's refusal of an assignment (403 `authentication failed`) is a
+configuration block, not a provider denial that would cool the provider down. The streaming waiver
+serve records for an assigned request is read back by digest from serve's receipt database and
+shown on the attempt in the run receipt (`verdict run-receipt`). Planner calls carry no node id and
+get no assignment: `AnswerOnlyExecutor` refuses this executor before any call. The worker still
+holds the operator's home directory and an unrestricted shell (Decision 4), so it can read
+`serve.env` and the signing key from disk; the assignment stops a model from choosing its route and
+keeps the serve token out of the worker's environment, arguments, config and recorded output, but it
+is not a sandbox. The decision above is unchanged.*
 
 *Implementation note (2026-11-24, #1326): the dispatch-origin stopgap is gone. The executor no longer
 declares `LOCAL_EXECUTOR_ORIGIN` (which matched any bound origin) while its workers send through

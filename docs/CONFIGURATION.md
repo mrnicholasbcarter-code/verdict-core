@@ -675,8 +675,27 @@ assignment is refused with 403.
   minting one (an accepted risk, ADR-053 decision 4). An assignment is a bearer credential: anyone
   who holds an unexpired one can call its one route until it expires.
 
-The executor that signs assignments is a later story (#1325), so until it lands `verdict
-orchestrate --executor opencode` still sends the serve token and is refused by serve.
+- **Signing.** `verdict orchestrate --executor opencode` signs one assignment per attempt
+  (`verdict.worker_assignment.mint_assignment`) with that key: the route, the run id (the run
+  directory's name, which `receipt.json` shows as `run_id`), the node id, `iat` (now) and `exp`
+  (the attempt's timeout rounded up, plus 60 seconds). The format allows at most 1,800 seconds,
+  so an attempt whose timeout would need more is refused before launch with a `harness_configuration:`
+  message (the runtime's own attempts need at most 945). The assignment is the worker's only
+  credential, passed as `VERDICT_WORKER_API_KEY`; the serve token stays in the orchestrator's
+  process for its one readiness request and is never a fallback. A missing, unreadable or short
+  key, a missing run id or node id, or an attempt timeout that is not a positive finite number
+  ends the attempt the same way, before anything is launched and with no request to serve.
+  The orchestrator and serve must read the same key, which means the same `HOME`: when serve
+  refuses an assignment (403 `authentication failed`), the attempt ends as a configuration block
+  rather than as a provider denial.
+- **Receipts.** The waiver serve records for an assigned request is read back by the assignment's
+  digest from serve's receipt database (`VERDICT_RECEIPTS_DB`, then the older `VERDICT_EVIDENCE_DB`,
+  then `serve.env`), read-only and only for rows written since the worker started, and shown on the
+  attempt in `receipt.json` (`worker_assignment.serve_receipts`: `requests`, `requests_waived`,
+  `requirement_waivers`) and in `verdict run-receipt` (`streaming waived`). A database that cannot
+  be read (unconfigured, in memory, missing, damaged, or over 10,000 matching rows) is shown as
+  `unavailable` with its reason and `null` figures; it is never shown as "no waiver" and does not
+  fail an attempt that worked.
 
 ### Outcome shadow sink
 

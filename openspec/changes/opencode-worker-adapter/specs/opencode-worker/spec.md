@@ -267,44 +267,176 @@ when the installed OpenCode version differs from v2.3.2.
 - **THEN** `verdict doctor` shows a non-fatal warning naming the installed version
   and the pinned version
 
-### Requirement: Worker credential resolved by Verdict; one pre-dispatch check
+### Requirement: The worker's only credential is a signed per-attempt assignment; one pre-dispatch check
 
-An OpenCode worker SHALL authenticate to `verdict serve` with a credential that Verdict
-resolves itself, never the OmniRoute gateway key and never an undocumented operator variable.
-Until the executor story #1325 this is the serve bearer token (environment, credential store,
-`serve.env`); `serve-worker-assignment` (2026-11-24) makes the signed per-attempt assignment the
-worker's only credential on serve's side, so the opt-in executor is refused by serve until #1325
-signs one.  It SHALL reach the child only under the
-configured key variable name and SHALL be redacted from everything recorded.  Before an attempt
-writes or launches anything, the executor SHALL check that the credential resolves, that the
-`opencode` binary runs and that serve is reachable and accepts the credential; a failure SHALL be
-one `harness_configuration:` message that recovery treats as a block.  The checks SHALL be safe
-under cancellation: when the attempt is cancelled, the version probe's process group SHALL be
-killed and reaped, no serve request SHALL be started afterwards, and the cancellation SHALL
-complete only after the thread that ran the checks has finished.
+An OpenCode worker SHALL authenticate to `verdict serve` with one credential: a signed assignment
+(`vwa1.<payload>.<tag>`) that the executor signs for that attempt, naming the route, the run id,
+the node id, the time it was issued and the time it expires.  Serve's own token SHALL stay in the
+orchestrator's process, for the readiness check alone, and SHALL NOT be placed in the worker's
+environment, arguments, stdin or config files, or in anything recorded; it SHALL NOT be the
+fallback when an assignment cannot be signed, and neither it nor the OmniRoute gateway key is ever
+a worker credential.  The assignment SHALL reach the child only under the configured key variable
+name, and it, its payload and its tag SHALL be redacted from everything recorded.  The run id is the
+id of the run the node belongs to (the run directory's name, which the run receipt shows) and
+the node id is the node's; both SHALL be carried from the runtime to the executor through
+`run_executor` and `bounded_executor_call` as optional keywords, offered only to an executor that
+accepts them, so every other executor is called exactly as before.
 
-#### Scenario: Credential reaches only the child environment
+The assignment SHALL expire at its issue time plus the attempt timeout (rounded up to whole
+seconds) plus 60 seconds.  An attempt whose lifetime would exceed the 1,800 seconds the format
+allows SHALL fail closed before launch, and the lifetime SHALL NOT be shortened to fit.  A missing
+or unreadable signing key, a missing run id or node id, a timeout that is not a positive finite
+number, or an id the verifier would refuse SHALL each end the attempt with one
+`harness_configuration:` message before anything is launched, with no request of any kind sent to
+serve, and recovery SHALL treat it as a block.
+
+Before an attempt writes or launches anything, the executor SHALL also check that the serve token
+resolves, that the `opencode` binary runs and that serve is reachable and accepts the serve token;
+a failure SHALL be one `harness_configuration:` message that recovery treats as a block.  The
+checks SHALL be safe under cancellation: when the attempt is cancelled, the version probe's process
+group SHALL be killed and reaped, no serve request SHALL be started afterwards, and the
+cancellation SHALL complete only after the thread that ran the checks has finished.
+
+#### Scenario: The worker holds only the signed assignment
 
 - **WHEN** an attempt launches
-- **THEN** the credential appears in the child's environment under the key variable name only,
-  not in its arguments, its config file or any other variable
+- **THEN** the assignment appears in the child's environment under the key variable name only, and
+  serve's token appears in none of the child's environment variables, arguments, stdin or config
+  directory files; the assignment verifies with serve's verifier and names the attempt's route,
+  run id and node id (`test_the_worker_holds_only_the_signed_assignment_and_never_the_serve_token`,
+  `test_a_serve_token_in_the_process_environment_never_reaches_the_worker`)
 
-#### Scenario: Missing credential fails once, before launch
+#### Scenario: Serve is checked with the serve token, never with the assignment
 
-- **WHEN** no serve credential can be resolved
-- **THEN** the attempt ends with a `harness_configuration:` terminal, nothing is written to the
-  worktree, no worker is launched and recovery blocks instead of retrying
+- **WHEN** the readiness check runs
+- **THEN** it sends the serve token, and no request carries the assignment off the relay
+  (`test_serve_is_checked_with_the_serve_token_and_never_with_the_assignment`)
 
-#### Scenario: Unrunnable binary, unreachable serve or rejected credential
+#### Scenario: The signer agrees with the independent signer
 
-- **WHEN** the binary does not run, serve is unreachable, or serve answers 401 or 403
-- **THEN** the attempt ends the same way, with a reason that never contains the credential
+- **WHEN** the production signer and the independent test signer sign the same payload with the
+  same key
+- **THEN** the tokens are byte-identical, and serve's verifier accepts the production one
+  (`test_a_minted_token_is_byte_identical_to_the_independent_signers`,
+  `test_a_minted_token_is_accepted_by_the_verifier_with_the_signed_fields`)
+
+#### Scenario: The lifetime follows the attempt timeout and is never clamped
+
+- **WHEN** an attempt has a timeout of 100.2 s
+- **THEN** its assignment lives 161 s; and a timeout whose lifetime would exceed 1,800 s ends the
+  attempt `harness_configuration:` before launch with no key read and no request sent
+  (`test_the_lifetime_is_the_attempt_timeout_rounded_up_plus_the_margin`,
+  `test_a_timeout_that_would_need_more_than_1800_seconds_fails_closed_before_launch`,
+  `test_a_lifetime_outside_one_to_1800_whole_seconds_is_refused_not_clamped`)
+
+#### Scenario: A missing key or a missing id blocks before launch
+
+- **WHEN** the signing key is missing, unreadable, too short or not a key, or the run id or the
+  node id is missing or one the verifier would refuse
+- **THEN** the attempt ends `harness_configuration:`, no worker is launched, nothing is written to
+  the worktree, serve receives no request, the serve token is not used instead, and recovery
+  blocks (`test_a_missing_or_unreadable_key_blocks_before_launch_and_never_falls_back`,
+  `test_a_missing_run_id_or_node_id_blocks_before_launch`,
+  `test_an_id_the_verifier_would_refuse_is_never_signed`)
+
+#### Scenario: The run id and node id reach the executor from the runtime
+
+- **WHEN** the runtime dispatches a node's attempt to an executor that accepts `run_id` and
+  `node_id`
+- **THEN** it receives the run directory's name and the node's id, through `MixedExecutor` and
+  `FaultInjectingExecutor` too, and an executor that accepts neither is called exactly as before
+  (`test_the_runtime_gives_the_executor_the_run_id_and_the_node_id`,
+  `test_an_executor_without_the_id_keywords_is_called_exactly_as_before`,
+  `test_mixed_executor_hands_the_ids_to_the_executor_it_picks`,
+  `test_fault_injecting_executor_hands_the_ids_to_the_executor_it_wraps`)
+
+#### Scenario: A planner call is never given an assignment
+
+- **WHEN** a planner call is made with an `OpenCodeExecutor`
+- **THEN** `AnswerOnlyExecutor` refuses it before any call, and an executor asked to run without a
+  node id launches nothing
+  (`test_a_planner_call_has_no_node_and_the_answer_only_wrapper_refuses_an_agent_executor`)
+
+#### Scenario: An expired or tampered assignment fails closed with no upstream call
+
+- **WHEN** the worker presents to the real serve an assignment that is expired, altered after
+  signing, signed with a key serve does not hold, or dated ahead of serve's clock
+- **THEN** serve refuses it with 403, nothing is sent upstream, serve writes no evidence, and the
+  attempt ends `harness_configuration:` (a block with no cooldown), not as the provider denying the
+  account (`test_an_expired_assignment_fails_closed_with_no_upstream_call`,
+  `test_a_tampered_assignment_fails_closed_with_no_upstream_call`,
+  `test_an_assignment_signed_with_a_key_serve_does_not_hold_fails_closed`,
+  `test_an_assignment_dated_ahead_of_serves_clock_fails_closed`,
+  `test_serves_refusal_of_the_assignment_is_a_configuration_block_not_a_provider_denial`)
+
+#### Scenario: Other 401 and 403 answers are still the provider's
+
+- **WHEN** a worker fails with a 401 or 403 whose message is not serve's refusal, or serve's message
+  with another status
+- **THEN** recovery sees the status as before (`test_other_denials_are_still_read_as_the_providers`)
+
+#### Scenario: Unrunnable binary, unreachable serve or rejected serve token
+
+- **WHEN** the binary does not run, serve is unreachable, or serve answers 401 or 403 to the
+  readiness check
+- **THEN** the attempt ends the same way, with a reason that never contains the serve token
 
 #### Scenario: Cancelled during the version probe
 
 - **WHEN** the attempt is cancelled while `opencode --version` is still running
 - **THEN** the probe's process group is gone when the cancellation completes, and serve receives
   no request from that attempt, even if the probe would have finished later
+
+### Requirement: The streaming waiver serve records is shown in the run receipt
+
+`verdict serve` records, in its receipt database, the requirement it waived for a request served
+under a verified assignment (today `streaming` only).  The executor SHALL read that back read-only
+after the worker is gone, match it to its own assignment by digest (never by the credential) and
+only among rows written after the worker started, and put it on the attempt's terminal; the
+runtime SHALL record it on the `terminal` event, `receipt.json` SHALL carry it on that attempt, and
+`verdict run-receipt` SHALL mark the attempt.  An attempt served without a waiver SHALL carry none,
+an executor that signs nothing SHALL add nothing to its receipt, and a database that cannot be read
+SHALL be reported as unavailable with its reason and null figures, never as "no waiver", and SHALL
+NOT fail an attempt that worked.  The reader SHALL NOT create, migrate or write the database.
+
+#### Scenario: An attempt served under the waiver carries it
+
+- **WHEN** serve served three of an attempt's requests with `streaming` waived
+- **THEN** the attempt's terminal, its `terminal` event and its row in `receipt.json` carry
+  `requests: 3`, `requests_waived: 3` and the `streaming` waiver, and `verdict run-receipt` shows
+  `streaming waived` on that attempt
+  (`test_an_attempt_served_under_the_waiver_carries_it_on_its_terminal`,
+  `test_the_signed_assignment_is_served_on_the_signed_route_and_the_waiver_is_read_back`,
+  `test_an_attempt_served_under_the_waiver_carries_it_in_the_receipt`,
+  `test_run_receipt_text_marks_the_attempt_that_ran_with_streaming_waived`)
+
+#### Scenario: An attempt without the waiver carries none
+
+- **WHEN** an attempt's requests needed no waiver, or its executor signs nothing
+- **THEN** it carries an empty waiver list, or no assignment record at all, and its receipt is
+  otherwise unchanged
+  (`test_an_attempt_that_was_not_waived_carries_none`,
+  `test_a_request_that_needed_no_waiver_leaves_the_attempt_without_one`,
+  `test_an_attempt_that_was_not_served_under_the_waiver_does_not_carry_one`,
+  `test_a_run_without_any_assignment_has_a_receipt_with_no_new_key`)
+
+#### Scenario: Unreadable serve receipts are unavailable, not clean
+
+- **WHEN** serve's receipt database is unconfigured, in memory, missing, damaged, or holds too many
+  matching rows, or the read runs out of time
+- **THEN** the record is `unavailable` with a reason and `null` counts, the attempt's own result is
+  unchanged, and nothing is created on disk
+  (`test_unreadable_serve_receipts_are_unavailable_with_a_reason_and_the_attempt_still_ends_ok`,
+  `test_a_missing_file_is_mark_zero_and_unavailable_at_read_time_and_is_never_created`,
+  `test_too_many_matching_roots_is_unavailable_never_a_short_count`,
+  `test_an_unreadable_serve_receipt_is_null_with_a_reason_never_a_clean_attempt`)
+
+#### Scenario: A waiver from before the attempt is not attributed to it
+
+- **WHEN** serve's database already holds roots carrying the same digest from before the worker
+  started
+- **THEN** they are not counted (`test_a_waiver_from_before_the_attempt_started_is_not_attributed_to_it`,
+  `test_only_rows_after_the_mark_can_belong_to_the_attempt`)
 
 ### Requirement: Serve address comes from configuration
 

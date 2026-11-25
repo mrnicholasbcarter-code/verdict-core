@@ -137,21 +137,72 @@ the value, on both relay surfaces); `IntelligenceService.route` also refuses a w
 route combined with `execution_path_request`, so no other caller can select a worker's route
 through that flow. This rejection is the contract, not a gap.
 
-2026-11-24: the worker held the serve token and the route was pinned by the worker header until #1313 story 1; that is superseded (`serve-worker-assignment`): serve now accepts only a signed assignment from a worker and refuses the bare header, so the opt-in executor, which still sends the serve token, is refused by design until #1325. (#1313, OC1b, carries the signed per-attempt assignment and a prompt-only task delivery; the real dispatch-origin check is done, see "Dispatch origin" below (#1326); the task is now an instructions file in the config directory, #1327.)
+2026-11-24: the worker held the serve token and the route was pinned by the worker header until #1313 story 1; that is superseded (`serve-worker-assignment`): serve now accepts only a signed assignment from a worker and refuses the bare header, and the executor now signs one per attempt (#1325, see "Signed assignment per attempt" below). (#1313, OC1b, carries the signed per-attempt assignment and a prompt-only task delivery; the real dispatch-origin check is done, see "Dispatch origin" below (#1326); the task is now an instructions file in the config directory, #1327.)
 
-**Worker credential and pre-dispatch check (design detail):** (The serve side is superseded by
-`serve-worker-assignment`: serve refuses the serve token from a worker and accepts only a signed
-assignment; the executor side changes in #1325.) The credential is, until then, serve's own
-bearer token, resolved by Verdict (`serve_service.resolve_serve_token`: the environment's
-`LLMGATE_AUTH_TOKEN`, the credential store, then `serve.env`, in the order `verdict setup` uses),
-never an operator-exported worker variable and never the OmniRoute gateway key. It is chosen in
-one small function (`_worker_credential`) so a signed assignment can replace it. It is set in the
-child environment only under the configured key name (the config holds the `{env:...}`
-reference) and is covered by redaction. Before an attempt writes or launches anything the
-executor checks, once, that the credential resolves, that the `opencode` binary runs
-(`--version`) and that serve is reachable and accepts the credential (`GET /v1/guidance/status`,
-no redirect followed). Any failure is one `harness_configuration:` message with a non-secret
-reason, which recovery maps to BLOCK (no retry, no cooldown).
+**Worker credential and pre-dispatch check (design detail):** The worker's credential is the signed
+per-attempt assignment of "Signed assignment per attempt" below, never serve's own bearer token and
+never the OmniRoute gateway key. It is set in the child environment only under the configured key
+name (the config holds the `{env:...}` reference) and is covered by redaction (its payload and tag
+too). Serve's own token is resolved by Verdict (`serve_service.resolve_serve_token`: the
+environment's `LLMGATE_AUTH_TOKEN`, the credential store, then `serve.env`, in the order `verdict
+setup` uses) and is used in the orchestrator's own process for one thing: the readiness check
+below. Before an attempt writes or launches anything the executor signs the assignment (a missing
+run id or node id, an attempt timeout that is not a positive finite number or whose lifetime
+would exceed 1,800 s, and a missing, unreadable or short signing key each end the attempt here)
+and checks, once, that the serve token resolves, that the `opencode` binary runs (`--version`)
+and that serve is reachable and accepts the serve token (`GET /v1/guidance/status`, no redirect
+followed; an assignment is not accepted on that path, so it is never sent there). Any failure is
+one `harness_configuration:` message with a non-secret reason, which recovery maps to BLOCK (no
+retry, no cooldown). Nothing falls back to the serve token.
+
+**Signed assignment per attempt (design detail, 2026-11-25, #1325):** `OpenCodeExecutor.run` takes
+`run_id` and `node_id` (the runtime passes both through `bounded_executor_call` and
+`run_executor`, which offer an optional keyword only to an executor that accepts it, so every
+other executor and fake is called exactly as before; `MixedExecutor` and `FaultInjectingExecutor`
+forward them). The run id is the run directory's name, the id `run_started`, `graph.json` and the
+run receipt carry, and the node id is the graph's. The executor signs
+(`worker_assignment.mint_assignment`, key from `load_assignment_key`, which reads
+`~/.config/verdict/worker-assignment.key` on every use) the route, the run id, the node id,
+`iat` (now, whole seconds) and `exp` = `iat` + the attempt timeout rounded up + 60 s
+(`ASSIGNMENT_MARGIN_SECONDS`: the assignment is dated just before the pre-dispatch checks, which
+spend the attempt's budget, so it ends 60 s after the attempt's deadline: room for the last
+request and the kill grace, and no more). The format allows at most 1,800 s, so an attempt whose
+timeout plus the margin would exceed it fails closed before launch; it is never clamped (the
+runtime caps an attempt at 900 s and gives the executor 10% less, so the real case is 945 s at
+most). The signer is `mint_assignment` in `verdict/worker_assignment.py` next to the verifier;
+`tests/worker_assignment_helpers.py` stays the independent signer, and a test proves both give
+the same token for the same payload and key. The worker's header `X-Verdict-Worker` is no longer
+sent: serve selects nothing from it.
+
+Planner calls carry no node id and no assignment: `AnswerOnlyExecutor` (which every planner call
+goes through) takes no ids and refuses an executor that is not answer-only, which includes
+`OpenCodeExecutor`, so a planner call never reaches the signing executor; if it did, a missing
+node id is a `harness_configuration:` block with nothing launched. No synthetic node id exists.
+
+Serve answers any refused assignment with one 403 `authentication failed` (expired, tampered, a
+key serve does not hold, dated ahead of its clock). The executor recognises that message with
+that status (captured from the real OpenCode 2.3.2, `tests/fixtures/opencode_stdout`) and ends
+the attempt `harness_configuration:` instead of passing the 403 to recovery, which would read it as
+the provider denying the account and cool the provider down for an hour for a fault that is
+Verdict's own. An orchestrator and a serve that read different `HOME`s, and so different keys,
+meet here on the first request.
+
+**What serve recorded, read back into the run receipt (design detail, #1325):** serve writes one
+evidence root per relay request to its receipt database (`VERDICT_RECEIPTS_DB`), naming the
+assignment by its digest (`routing_decision.receipt.worker_assignment`) and, for a request that
+required `streaming`, the waiver (`requirement_waivers`). After the worker's process group is gone
+the executor reads that database back read-only (`mode=ro`, never created or migrated; the path is
+`VERDICT_RECEIPTS_DB`, the legacy `VERDICT_EVIDENCE_DB`, then `serve.env`) and counts the roots
+that carry its assignment's digest, looking only at rows added since a mark taken just before the
+worker started (the database grows with every request and holds large payloads). The result is on
+the terminal as `worker_assignment` (the digest, never the credential, and `serve_receipts`:
+`status` `read` with `requests`, `requests_waived` and the distinct waivers, or `unavailable`
+with a reason and every figure `null` when the database is unconfigured, in memory, missing,
+unreadable, over 10,000 matching roots or out of the 5 s read budget). `unavailable` is never
+reported as "no waiver" and never fails an attempt that worked. The runtime puts it on the
+`terminal` event, `receipt.json` projects it onto the attempt (only when present, so receipts of
+other executors are byte-identical), and `verdict run-receipt` marks an attempt `streaming
+waived` or `serve receipts unavailable`.
 
 **Serve address (design detail):** `--serve-url` on `verdict orchestrate`, else
 `VERDICT_SERVE_URL`, else the serve unit's own address (`serve_service.DEFAULT_ORIGIN`,

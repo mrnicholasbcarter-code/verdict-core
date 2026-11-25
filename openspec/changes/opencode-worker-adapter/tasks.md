@@ -42,12 +42,86 @@
       `test_two_concurrent_attempts_never_share_config_data_or_state`) and when the temp
       filesystem fails (`test_a_full_temp_filesystem_is_a_failed_terminal_not_an_exception`).
       The live run with the real OpenCode binary is task 2.8; it is not ticked here.
-- [x] 2.5 (serve side superseded 2026-11-24 by `serve-worker-assignment`; the executor side
-      changes in #1325) Worker credential and pre-dispatch check: resolve serve's bearer token with
-      Verdict's own code, set it in the child env only under the key name, redact it, and check
-      once before launch that the credential resolves, the binary runs and serve accepts it
-      (one `harness_configuration:` message, treated as a block). Verify: tests in
-      `tests/test_opencode_executor.py` and `tests/test_serve_service_resolvers.py`.
+- [x] 2.5 (serve side superseded 2026-11-24 by `serve-worker-assignment`; the worker's credential
+      is superseded by the signed assignment of tasks 2.14 to 2.16, #1325) Pre-dispatch check:
+      resolve serve's bearer token with Verdict's own code (now used in the orchestrator only, for
+      the readiness check), and check once before launch that it resolves, the binary runs and
+      serve accepts it (one `harness_configuration:` message, treated as a block). Verify: tests
+      in `tests/test_opencode_executor.py` and `tests/test_serve_service_resolvers.py`.
+- [x] 2.14 Production signer (#1325): `mint_assignment` and `assignment_digest` in
+      `verdict/worker_assignment.py`, next to the verifier, same wire format, key from
+      `load_assignment_key`; it sets `iat` from the clock, refuses (never clamps) a lifetime over
+      1,800 s, an id, key, clock or token length the verifier would refuse, and gives the same
+      token as the independent signer in `tests/worker_assignment_helpers.py`. Verify:
+      `tests/test_worker_assignment.py` (`test_a_minted_token_is_byte_identical_to_the_independent_signers`,
+      `test_a_minted_token_is_accepted_by_the_verifier_with_the_signed_fields`,
+      `test_a_lifetime_outside_one_to_1800_whole_seconds_is_refused_not_clamped`,
+      `test_an_id_the_verifier_would_refuse_is_never_signed`,
+      `test_a_token_the_verifier_would_refuse_for_its_length_is_never_returned`).
+      **Evidence (2026-11-25):** the 66 new tests failed before `mint_assignment` existed
+      (`AttributeError`) and all 218 tests of the file pass after; changing the signer to write
+      non-ASCII unescaped, or to accept a lifetime of 0 or 1,805 s, fails the parity and lifetime tests.
+- [x] 2.15 Carry the run id and the node id (#1325): `run_executor` and `bounded_executor_call`
+      take optional `run_id` and `node_id` and pass each only to an executor that accepts the
+      keyword; the runtime passes the run directory's name and the node id; `MixedExecutor` and
+      `FaultInjectingExecutor` forward them; planner calls pass none. Verify:
+      `tests/test_worker_identity_carry.py`, `tests/test_orch_runtime.py`
+      (`test_the_runtime_gives_the_executor_the_run_id_and_the_node_id`,
+      `test_an_executor_without_the_id_keywords_is_called_exactly_as_before`).
+      **Evidence (2026-11-25):** 9 of the 11 tests of `tests/test_worker_identity_carry.py` and the
+      runtime test failed before the change (`TypeError: ... unexpected keyword argument 'run_id'`);
+      the two that passed are the "called exactly as before" guards.
+- [x] 2.16 The executor signs one assignment per attempt and hands the worker nothing else (#1325):
+      lifetime = the attempt timeout rounded up + 60 s, refused before launch above 1,800 s; a
+      missing or unreadable key, a missing run id or node id or a bad timeout is a
+      `harness_configuration:` block before launch, with no request to serve and no fallback to the
+      serve token; the serve token is used only for the readiness check; serve's own 403
+      `authentication failed` is a configuration block, not a provider denial; the
+      `X-Verdict-Worker` header is no longer sent. Verify: `tests/test_opencode_signed_assignment.py`,
+      `tests/test_opencode_executor.py`
+      (`test_the_worker_holds_only_the_signed_assignment_and_never_the_serve_token`,
+      `test_the_assignment_never_reaches_terminal_events_or_logs`,
+      `test_write_attempt_config_sends_no_worker_header_and_reads_the_key_from_the_environment`).
+      **Evidence (2026-11-25):** each of these changes was reverted in turn and the tests failed:
+      the serve token to the child (11 failures), no 1,800 s refusal (5), clamping (5), the
+      assignment to the readiness check (1), no refusal mapping (2), margin 0 (8), no launched flag
+      (8), a stale mark (3), no run id check (5), no timeout check (3), the serve token as the
+      fallback (34).
+- [x] 2.17 The executor-to-serve path through the real app (#1325): a loopback server runs the real
+      `verdict serve` app with a recording upstream; the real executor signs and a fake worker sends
+      one request; the assignment is served on the signed route and serve's evidence names the
+      run, the node and the route; an expired, tampered, foreign-key or future-dated assignment
+      gets 403 with no upstream call and no evidence. Verify:
+      `tests/test_opencode_assignment_serve_path.py`.
+- [x] 2.18 The streaming waiver serve records is shown in the run receipt (#1325): serve's receipt
+      database is read back read-only by digest (`verdict/orchestration/serve_evidence.py`,
+      `serve_service.resolve_serve_receipts_db`), the terminal carries `worker_assignment`, the
+      runtime records it on the `terminal` event, `receipt.json` projects it and `verdict
+      run-receipt` marks the attempt. Verify: `tests/test_serve_evidence.py`,
+      `tests/test_serve_service_resolvers.py`, `tests/test_run_receipt_worker_assignment.py`,
+      `tests/test_opencode_signed_assignment.py` (the read-back section).
+      **Evidence (2026-11-25):** 6 of the 14 tests of `tests/test_run_receipt_worker_assignment.py`
+      and 6 resolver tests failed before the change; mutations of the reader (no row mark, roots
+      only, no JSON guard, read-write open, no row limit, no deadline) each fail a test.
+- [x] 2.19 Live smoke of the signed assignment (#1325, operator consent in the issue, one
+      attempt, 2026-11-25): a spare `verdict serve` from this branch on port 18325 with a private
+      copy of the state in a temp directory and its own signing key, never port 8000 and never the
+      real `~/.verdict`; one `OpenCodeExecutor` attempt through the real gateway on
+      `cc/claude-haiku-5-5` (an admitted, already-paid subscription route), in a scratch git
+      repository. Verify: the edit lands, the terminal is ok, and serve's receipts show the
+      pinned route. **Evidence:** run at head `538cf004`: terminal `ok: true`, `stop_reason`
+      `stop`, 14.0 s, 250 input and 411 output tokens, `cost_usd` null with the reason `not_reported`;
+      `greet.py` now returns `"hello, " + name` and the verification command passed; serve served
+      three `POST /v1/chat/completions` (HTTP 200) and wrote three evidence roots, each
+      `selected`, `model` and `resolved_route` `cc/claude-haiku-5-5`, `worker_assignment`
+      `{route cc/claude-haiku-5-5, run run-oc1c-smoke, node smoke-1}` with the same digest,
+      `requirement_waivers` `streaming` on all three, and the executor's terminal read the same back
+      (`requests: 3`, `requests_waived: 3`). No second attempt was made. The real `~/.verdict` and
+      `~/.config/verdict` were not written. Raw output is in the pull request.
+- [ ] (post-merge) 2.20 The same one-attempt smoke on installed main, after `verdict setup --apply
+      --allow host.serve` has created the signing key and restarted serve: an `OpenCodeExecutor`
+      attempt on an admitted route lands an edit in a scratch repository and the installed serve's
+      receipt shows the pinned route. Record the raw output in the story's DoD evidence file.
 - [x] 2.6 Serve address from configuration (`--serve-url`, `VERDICT_SERVE_URL`, default
       `http://127.0.0.1:8000`). Verify: `tests/test_orch_executors.py`,
       `tests/test_serve_service_resolvers.py`.
@@ -127,9 +201,10 @@
       path through serve is tasks 2.8 and 8.1; serve's own proof that it forwards to the permit's
       gateway and the signed assignment stay with #1313.
 - [ ] (post-merge) 2.8 Live smoke of the worker on an admitted route, run with
-      `--executor opencode` (OpenCode is opt-in) and **expected to fail until #1313 lands**
-      (serve refuses the worker's requests until it honours the worker's assignment before its
-      own escalation and tier classification): one attempt through
+      `--executor opencode` (OpenCode is opt-in; it failed until #1313 landed, because serve
+      refused the worker's requests before it honoured the worker's assignment; the serve side
+      merged in #1335 and the executor signs the assignment in #1325, whose branch smoke is task
+      2.19; this task is the run through `verdict orchestrate` on installed main): one attempt through
       `OpenCodeExecutor`, in a scratch git repository, against a spare `verdict serve` with a
       private copy of the state, pinned to the cheapest admitted SUBSCRIPTION route (the
       operator's decision of 2026-11-24). Verify: the edit lands in the scratch repository, the
@@ -209,7 +284,8 @@
       because the adapter is opt-in and cannot complete a request through serve until #1313
       reworks that path. No review was run on the commit that records this decision.
 - [ ] (post-merge) 8.1 On installed main, run `verdict orchestrate --executor opencode` on a
-      task with a coding node (OpenCode is opt-in, so the flag is required) and **expect it to
-      fail until #1313 lands**: once serve admits the worker, the node edits a file, runs
+      task with a coding node (OpenCode is opt-in, so the flag is required); it needed #1313 (serve
+      honours the assignment) and #1325 (the executor signs one) and needs the signing key from
+      `verdict setup --apply --allow host.serve`: the node edits a file, runs
       verification, and the receipt shows `harness: opencode` with the correct route and usage
       and what OpenCode reports as cost. Record the raw output in the story's DoD evidence file.
