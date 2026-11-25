@@ -583,15 +583,24 @@ class _UnresolvedDirFdError(Exception):
         return f"<dir_fd {self.fd}: {self.reason}>/{self.name}"
 
 
-def _fd_number(value: Any) -> int | None:
-    """The descriptor a ``dir_fd`` argument names; None when it names none (not given, ``-1``)."""
-    if value is None:
-        return None
+def _as_integer(value: Any) -> int | None:
+    """What an ``os`` call reads from an integer argument; None when it is not integer-like.
+
+    ``os.open`` and the rest convert an ``int`` parameter through ``__index__``, so an object
+    that is no ``int`` can still carry the flags or the descriptor. This is the guard's own
+    reading, for its own decision: the call gets the original argument and converts it again,
+    and an object that is not integer-like gets the call's own ``TypeError``.
+    """
     try:
-        number = operator.index(value)
+        return operator.index(value)
     except TypeError:  # the call itself rejects it
         return None
-    return number if number >= 0 else None
+
+
+def _fd_number(value: Any) -> int | None:
+    """The descriptor a ``dir_fd`` argument names; None when it names none (not given, ``-1``)."""
+    number = None if value is None else _as_integer(value)
+    return number if number is not None and number >= 0 else None
 
 
 def _fd_directory(fd: int, name: str) -> str | None:
@@ -819,11 +828,11 @@ class HomeWriteGuard:
         given = dict(zip(spec.parameters, args, strict=False))
         given.update((k, v) for k, v in kwargs.items() if k in spec.parameters or k == "dir_fd")
         name = _as_path(given.get("path"))
-        flags = given.get(spec.flags) if spec.flags else None
+        flags = _as_integer(given.get(spec.flags)) if spec.flags else None
         if not name:
             return None
-        if spec.flags and not (isinstance(flags, int) and flags & _WRITE_FLAGS):
-            return None  # a read, or arguments the call itself rejects
+        if spec.flags and not (flags is not None and flags & _WRITE_FLAGS):
+            return None  # a read, or flags the call itself rejects (it raises its own TypeError)
         fd = _fd_number(given.get("dir_fd"))
         anchor = None if name.startswith("/") else fd  # an absolute name ignores the descriptor
         if spec.audited and anchor is None:
@@ -843,7 +852,7 @@ class HomeWriteGuard:
                 self._deny(spec.event, target)
         finally:
             self._busy.on = False
-        return (name, flags | _O_CLOEXEC) if spec.audited and isinstance(flags, int) else None
+        return (name, flags | _O_CLOEXEC) if spec.audited and flags is not None else None
 
     def check(self, event: str, args: tuple[Any, ...]) -> None:
         if event != "open" and event not in _MUTATED_ARGS:

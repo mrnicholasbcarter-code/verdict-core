@@ -23,6 +23,10 @@ another worker's writes) and the workers and the controller would overwrite one
 JSON report. ``-n`` / ``--dist`` / ``--tx`` together with ``--home-leak-root`` is
 a usage error at session start; drop them, or pass ``-n 0``.
 
+A relative ``--home-leak-root`` or ``--home-leak-json`` is read against the directory pytest
+was started in, once, at configuration; a test that changes the working directory does not
+move either.
+
 Use a throwaway root, never the operator's real home: the real home is changed
 by other processes (installed services) and would blame tests for their writes.
 ``tests/helpers/home_guard.py`` is the enforcement that works against the real
@@ -270,6 +274,15 @@ def _is_parallel(config: pytest.Config) -> bool:
     )
 
 
+def _anchored(config: pytest.Config, value: str) -> Path:
+    """``value`` as an absolute path, a relative one read against where pytest was started.
+
+    Done once, at configuration: a test (or a hook) that changes the working directory must
+    not move the tree that is snapshotted or the file the report is written to.
+    """
+    return (config.invocation_params.dir / value).resolve()
+
+
 def pytest_configure(config: pytest.Config) -> None:
     root = config.getoption("--home-leak-root")
     if not root:
@@ -278,5 +291,8 @@ def pytest_configure(config: pytest.Config) -> None:
         raise pytest.UsageError(PARALLEL_REFUSAL)
     json_path = config.getoption("--home-leak-json")
     config.pluginmanager.register(
-        HomeLeakDetector(Path(root), Path(json_path) if json_path else None), "home-leak-detector"
+        HomeLeakDetector(
+            _anchored(config, root), _anchored(config, json_path) if json_path else None
+        ),
+        "home-leak-detector",
     )

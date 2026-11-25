@@ -21,9 +21,11 @@ import errno
 import inspect
 import json
 import os
+import posix
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import textwrap
@@ -737,6 +739,143 @@ def test_a_writable_open_relative_to_a_dir_fd_cannot_reach_protected_state(
     assert _listing(dir_fds.root) == before
 
 
+class _Index:
+    """An integer-like object: ``os`` takes it wherever it takes an int (``__index__``)."""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __index__(self) -> int:
+        return self.value
+
+
+class _LyingInt(int):
+    """An int whose ``__index__`` disagrees with its value: the call uses the value."""
+
+    def __index__(self) -> int:
+        return 0
+
+
+#: How each integer parameter of ``os.open`` is spelled so that it is NOT an ``int``.
+_INTEGER_LIKE_OPENS: dict[str, Callable[[str, int, int], int]] = {
+    "flags": lambda name, flags, fd: os.open(name, _Index(flags), dir_fd=fd),
+    "flags, positional mode": lambda name, flags, fd: os.open(
+        name, _Index(flags), 0o600, dir_fd=fd
+    ),
+    "dir_fd": lambda name, flags, fd: os.open(name, flags, dir_fd=_Index(fd)),
+    "mode": lambda name, flags, fd: os.open(name, flags, _Index(0o600), dir_fd=fd),
+    "everything, keywords": lambda name, flags, fd: os.open(
+        path=name, flags=_Index(flags), mode=_Index(0o600), dir_fd=_Index(fd)
+    ),
+    "flags an int subclass that lies": lambda name, flags, fd: os.open(
+        name, _LyingInt(flags), dir_fd=fd
+    ),
+}
+
+
+@pytest.mark.parametrize("spelling", sorted(_INTEGER_LIKE_OPENS))
+@pytest.mark.parametrize("case", sorted(_WRITING_OPENS))
+def test_integer_like_arguments_do_not_hide_a_writable_open_from_the_guard(
+    dir_fds: DirFds, case: str, spelling: str
+) -> None:
+    """``flags`` (or ``dir_fd``) with ``__index__`` is converted by ``os.open``: the guard reads it too."""
+    name, flags = _WRITING_OPENS[case]
+    metadata = dir_fds.root / "model-metadata.json"
+    content, before = metadata.read_bytes(), _listing(dir_fds.root)
+    with pytest.raises(PermissionError) as raised:
+        _INTEGER_LIKE_OPENS[spelling](name, flags, dir_fds.root_fd)
+    assert raised.value.errno == errno.EACCES
+    found = GUARD.drain()
+    assert [(v.event, os.path.realpath(v.path)) for v in found] == [
+        ("os.open", os.path.realpath(dir_fds.root / name))
+    ]
+    assert metadata.read_bytes() == content
+    assert _listing(dir_fds.root) == before
+
+
+@pytest.mark.parametrize("spelling", sorted(_INTEGER_LIKE_OPENS))
+def test_an_integer_like_writable_open_outside_state_is_not_read_against_the_cwd(
+    dir_fds: DirFds, spelling: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(dir_fds.root)  # a cwd reading would put ``made.json`` in the protected root
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    os.close(_INTEGER_LIKE_OPENS[spelling]("made.json", flags, dir_fds.other_fd))
+    assert (dir_fds.elsewhere / "made.json").is_file()
+    assert not (dir_fds.root / "made.json").exists()
+    assert not GUARD.violations
+
+
+@pytest.mark.parametrize("spelling", sorted(_INTEGER_LIKE_OPENS))
+def test_an_integer_like_open_that_does_not_write_stays_allowed_through_a_protected_dir_fd(
+    dir_fds: DirFds, spelling: str
+) -> None:
+    os.close(_INTEGER_LIKE_OPENS[spelling]("model-metadata.json", os.O_RDONLY, dir_fds.root_fd))
+    assert not GUARD.violations
+
+
+class _IndexRaisesTypeError:
+    def __index__(self) -> int:
+        raise TypeError("not an integer after all")
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        pytest.param(object(), id="object"),
+        pytest.param("w", id="str"),
+        pytest.param(1.5, id="float"),
+        pytest.param(None, id="None"),
+        pytest.param(_IndexRaisesTypeError(), id="__index__ raises TypeError"),
+    ],
+)
+def test_flags_that_are_not_integer_like_get_the_operating_systems_own_type_error(
+    dir_fds: DirFds, flags: Any
+) -> None:
+    """The guard decides only for flags it can read; anything else is the call's own business."""
+    with pytest.raises(TypeError) as direct:
+        posix.open("model-metadata.json", flags, dir_fd=dir_fds.root_fd)
+    with pytest.raises(TypeError) as guarded:
+        os.open("model-metadata.json", flags, dir_fd=dir_fds.root_fd)
+    assert str(guarded.value) == str(direct.value)
+    assert not GUARD.violations
+
+
+def test_an_index_that_raises_something_else_is_not_swallowed_by_the_guard(dir_fds: DirFds) -> None:
+    class Broken:
+        def __index__(self) -> int:
+            raise ValueError("broken")
+
+    flags: Any = Broken()
+    with pytest.raises(ValueError, match="broken"):
+        os.open("model-metadata.json", flags, dir_fd=dir_fds.root_fd)
+    assert not GUARD.violations
+
+
+@pytest.mark.parametrize("call", ["mkfifo", "mknod"])
+def test_integer_like_mode_and_device_do_not_change_what_the_guard_does(
+    dir_fds: DirFds, call: str
+) -> None:
+    """The guard never reads ``mode`` or ``device``: protected state is refused, the rest runs.
+
+    (``device`` is left a plain int here: ``os.mknod`` itself refuses an ``__index__`` object
+    for it, which ``dir_fd_probe`` compares with and without the guard.)
+    """
+    node = {
+        "mkfifo": lambda fd, name: os.mkfifo(name, _Index(0o600), dir_fd=_Index(fd)),
+        "mknod": lambda fd, name: os.mknod(
+            name, _Index(stat.S_IFREG | 0o600), 0, dir_fd=_Index(fd)
+        ),
+    }[call]
+    before = _listing(dir_fds.root)
+    with pytest.raises(PermissionError):
+        node(dir_fds.root_fd, "made")
+    assert [v.event for v in GUARD.drain()] == [f"os.{call}"]
+    assert _listing(dir_fds.root) == before
+    node(dir_fds.other_fd, "made")
+    assert stat.S_ISFIFO((dir_fds.elsewhere / "made").lstat().st_mode) == (call == "mkfifo")
+    assert not GUARD.violations
+
+
 def test_a_builtin_open_with_an_opener_is_read_against_the_openers_descriptor(
     dir_fds: DirFds,
 ) -> None:
@@ -977,11 +1116,13 @@ def test_the_guard_does_not_change_what_descriptor_calls_do(tmp_path: Path) -> N
     # The comparison is only worth anything if the guard really was in the second interpreter.
     assert plain["engaged"] == {
         "descriptor write": "allowed",
+        "integer-like flags write": "allowed",
         "path write": "allowed",
         "wrapped": {"mkfifo": False, "mknod": False, "open": False},
     }
     assert guarded["engaged"] == {
         "descriptor write": "refused",
+        "integer-like flags write": "refused",
         "path write": "refused",
         "wrapped": {"mkfifo": True, "mknod": True, "open": True},
     }
@@ -1725,6 +1866,96 @@ def test_detector_plugin_names_the_leaking_test_and_not_the_clean_one(tmp_path: 
     assert leaked["created"] == [".verdict/prove-at-rest", ".verdict/prove-at-rest/state.json"]
     assert "test_probe.py::test_leaks" in result.stdout
     assert "prove-at-rest/state.json" in result.stdout
+
+
+def test_the_leak_detector_anchors_a_relative_root_and_report_before_a_test_changes_directory(
+    tmp_path: Path,
+) -> None:
+    """A test that ``os.chdir``s must not move what the detector snapshots or where it reports."""
+    work = tmp_path / "work"
+    work.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    sentinel = work / "sentinel-home"
+    (sentinel / ".verdict").mkdir(parents=True)
+    (sentinel / ".verdict" / "keep.json").write_text("keep")
+    result = _child_pytest(
+        work,
+        {
+            "test_probe.py": f"""
+                import os, pathlib
+
+                SENTINEL = pathlib.Path({str(sentinel)!r})
+
+                def test_changes_directory_and_never_goes_back():
+                    os.chdir({str(elsewhere)!r})
+
+                def test_leaks_after_that():
+                    (SENTINEL / ".verdict" / "state.json").write_text("{{}}")
+            """
+        },
+        home=tmp_path,
+        args=(
+            "-p",
+            "tests.helpers.home_snapshot",
+            "--home-leak-root=sentinel-home",
+            "--home-leak-json=leaks.json",
+        ),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (elsewhere / "leaks.json").exists(), "the report followed the working directory"
+    data = json.loads((work / "leaks.json").read_text())
+    assert data["leaking_tests"] == {
+        "test_probe.py::test_leaks_after_that": {
+            "created": [".verdict/state.json"],
+            "modified": [],
+            "deleted": [],
+        }
+    }
+    assert "keep.json" not in result.stdout, "the whole tree was reported, not the leak"
+    assert data["root"] == str(sentinel.resolve())
+
+
+def test_the_leak_detector_anchors_a_relative_report_path_before_the_session_ends_elsewhere(
+    tmp_path: Path,
+) -> None:
+    """pytest restores the start directory before ``pytest_sessionfinish``; a hook can still undo it."""
+    work = tmp_path / "work"
+    work.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    sentinel = work / "sentinel-home"
+    (sentinel / ".verdict").mkdir(parents=True)
+    result = _child_pytest(
+        work,
+        {
+            "conftest.py": f"""
+                import os
+                import pytest
+
+                @pytest.hookimpl(tryfirst=True)
+                def pytest_sessionfinish(session):
+                    os.chdir({str(elsewhere)!r})
+            """,
+            "test_probe.py": f"""
+                import pathlib
+
+                def test_leaks():
+                    pathlib.Path({str(sentinel)!r}, ".verdict", "state.json").write_text("{{}}")
+            """,
+        },
+        home=tmp_path,
+        args=(
+            "-p",
+            "tests.helpers.home_snapshot",
+            "--home-leak-root=sentinel-home",
+            "--home-leak-json=leaks.json",
+        ),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (elsewhere / "leaks.json").exists(), "the report followed the working directory"
+    data = json.loads((work / "leaks.json").read_text())
+    assert list(data["leaking_tests"]) == ["test_probe.py::test_leaks"]
 
 
 def _detector_probe(sentinel: Path, marker: Path) -> dict[str, str]:

@@ -36,6 +36,31 @@ WRAPPED_NAMES = ("open", "mkfifo", "mknod")
 
 _O_PATH = getattr(os, "O_PATH", 0)
 _CREATE = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+_APPEND = os.O_WRONLY | os.O_APPEND
+
+
+class _Index:
+    """An integer-like object: ``os`` takes it wherever it takes an int (``__index__``)."""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __index__(self) -> int:
+        return self.value
+
+
+class _LyingInt(int):
+    """An int whose ``__index__`` disagrees with its value: the call uses the value."""
+
+    def __index__(self) -> int:
+        return 0
+
+
+class _IndexRaises:
+    """Looks integer-like and is not: ``__index__`` raises ``TypeError``."""
+
+    def __index__(self) -> int:
+        raise TypeError("not an integer after all")
 
 
 def _opened(name: Any, flags: int, *args: Any, **kwargs: Any) -> Callable[[], object]:
@@ -155,6 +180,48 @@ def _operations(d: str, dfd: int, ffd: int, cfd: int) -> list[tuple[str, Callabl
         ("open descriptor a float", _opened("existing", os.O_WRONLY, dir_fd=1.5)),
         ("open too many positionals", lambda: os.open("existing", os.O_WRONLY, 0o600, dfd)),
         ("open unknown keyword", _opened("existing", os.O_WRONLY, nonsense=1)),
+        # os.open: integer-like arguments (``__index__``), which the call converts itself
+        ("open create, flags integer-like", _opened("ix1", _Index(_CREATE), 0o600, dir_fd=dfd)),
+        ("open create again, flags integer-like", _opened("ix1", _Index(_CREATE), dir_fd=dfd)),
+        (
+            "open truncate, flags integer-like",
+            _opened("existing", _Index(os.O_WRONLY | os.O_TRUNC), dir_fd=dfd),
+        ),
+        ("open append, flags integer-like", _opened("existing", _Index(_APPEND), dir_fd=dfd)),
+        (
+            "open create, flags an int that lies",
+            _opened("ix2", _LyingInt(_CREATE), 0o600, dir_fd=dfd),
+        ),
+        ("open create, mode integer-like", _opened("ix3", _CREATE, _Index(0o600), dir_fd=dfd)),
+        (
+            "open create, descriptor integer-like",
+            _opened("ix4", _CREATE, 0o600, dir_fd=_Index(dfd)),
+        ),
+        (
+            "open create, everything integer-like, keywords",
+            lambda: os.close(
+                os.open(path="ix5", flags=_Index(_CREATE), mode=_Index(0o600), dir_fd=_Index(dfd))
+            ),
+        ),
+        ("open read, flags integer-like", _opened("existing", _Index(os.O_RDONLY), dir_fd=dfd)),
+        (
+            "open create, flags integer-like, closed descriptor",
+            _opened("ix6", _Index(_CREATE), 0o600, dir_fd=cfd),
+        ),
+        (
+            "open create, flags integer-like, descriptor -1",
+            _opened("ix7", _Index(_CREATE), 0o600, dir_fd=_Index(-1)),
+        ),
+        (
+            "open create, flags integer-like, absolute name",
+            _opened(path("ix8"), _Index(_CREATE), 0o600, dir_fd=_Index(cfd)),
+        ),
+        ("open write, flags an object", _opened("existing", object(), dir_fd=dfd)),
+        ("open write, flags a string", _opened("existing", "w", dir_fd=dfd)),
+        ("open write, flags None", _opened("existing", None, dir_fd=dfd)),
+        ("open write, flags raise TypeError", _opened("existing", _IndexRaises(), dir_fd=dfd)),
+        ("open create, mode an object", _opened("ix9", _CREATE, object(), dir_fd=dfd)),
+        ("open create, descriptor an object", _opened("ix10", _CREATE, 0o600, dir_fd=object())),
         # os.mkfifo / os.mknod: no audit event at all
         ("mkfifo descriptor", lambda: os.mkfifo("fifo1", dir_fd=dfd)),
         ("mkfifo descriptor again", lambda: os.mkfifo("fifo1", dir_fd=dfd)),
@@ -167,11 +234,32 @@ def _operations(d: str, dfd: int, ffd: int, cfd: int) -> list[tuple[str, Callabl
         ("mkfifo file descriptor", lambda: os.mkfifo("fifo8", dir_fd=ffd)),
         ("mkfifo descriptor -1", lambda: os.mkfifo("fifo9", dir_fd=-1)),
         ("mkfifo no arguments", lambda: os.mkfifo()),
+        ("mkfifo mode integer-like", lambda: os.mkfifo("fifo10", _Index(0o600), dir_fd=dfd)),
+        ("mkfifo descriptor integer-like", lambda: os.mkfifo("fifo11", 0o600, dir_fd=_Index(dfd))),
+        ("mkfifo mode an object", lambda: os.mkfifo("fifo12", object(), dir_fd=dfd)),
+        ("mkfifo mode a string", lambda: os.mkfifo("fifo13", "x", dir_fd=dfd)),
+        ("mkfifo mode a string, no descriptor", lambda: os.mkfifo(path("fifo14"), "x")),
+        ("mkfifo descriptor an object", lambda: os.mkfifo("fifo15", dir_fd=object())),
         ("mknod descriptor", lambda: os.mknod("node1", dir_fd=dfd)),
         ("mknod descriptor again", lambda: os.mknod("node1", dir_fd=dfd)),
         ("mknod regular file mode", lambda: os.mknod("node2", stat.S_IFREG | 0o600, dir_fd=dfd)),
         ("mknod positional device", lambda: os.mknod("node3", stat.S_IFREG | 0o600, 0, dir_fd=dfd)),
         ("mknod plain path", lambda: os.mknod(path("node4"))),
+        (
+            "mknod mode integer-like",
+            lambda: os.mknod("node7", _Index(stat.S_IFREG | 0o600), dir_fd=dfd),
+        ),
+        (
+            "mknod device integer-like",
+            lambda: os.mknod("node8", stat.S_IFREG | 0o600, _Index(0), dir_fd=dfd),
+        ),
+        (
+            "mknod descriptor integer-like",
+            lambda: os.mknod("node9", stat.S_IFREG | 0o600, 0, dir_fd=_Index(dfd)),
+        ),
+        ("mknod mode a string", lambda: os.mknod("node10", "x", dir_fd=dfd)),
+        ("mknod device a string", lambda: os.mknod("node11", stat.S_IFREG, "x", dir_fd=dfd)),
+        ("mknod device an object", lambda: os.mknod("node12", stat.S_IFREG, object(), dir_fd=dfd)),
         ("mknod closed descriptor", lambda: os.mknod("node5", dir_fd=cfd)),
         ("mknod file descriptor", lambda: os.mknod("node6", dir_fd=ffd)),
         # calls whose audit events carry the descriptor
@@ -276,6 +364,15 @@ def results(guarded: bool) -> dict[str, Any]:
         engaged["descriptor write"] = "allowed"
     except PermissionError:
         engaged["descriptor write"] = "refused"
+    finally:
+        os.close(root_fd)
+    root_fd = os.open(protected, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        # the same write, with arguments that are integer-like and not ints
+        os.close(os.open("engaged-ix", _Index(os.O_WRONLY | os.O_CREAT), 0o600, dir_fd=root_fd))
+        engaged["integer-like flags write"] = "allowed"
+    except PermissionError:
+        engaged["integer-like flags write"] = "refused"
     finally:
         os.close(root_fd)
     engaged["wrapped"] = {name: hasattr(getattr(os, name), "__wrapped__") for name in WRAPPED_NAMES}
