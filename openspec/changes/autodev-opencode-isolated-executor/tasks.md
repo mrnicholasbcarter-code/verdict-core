@@ -62,14 +62,17 @@ Conventions for every task:
       `test_directory_and_file_swapped`, `test_special_files_in_the_attempt_tree` (a FIFO would
       hang without `O_NONBLOCK`), `test_a_regular_file_replaced_by_a_fifo_during_validation` and
       `test_ancestor_directory_swapped_during_validation` (both through a `hooks` seam between
-      the metadata read and the open), `test_context_file_created_by_the_executor`,
-      `test_no_context_file_at_all`, `test_a_tracked_file_with_the_byproduct_name`,
-      `test_ignored_byproduct`, `test_a_worker_cannot_hide_a_path_by_editing_gitignore`; plus
+      the metadata read and the open), `test_a_tracked_file_with_the_byproduct_name`,
+      `test_ignored_byproduct` (a new path in a user-ignored directory is dropped),
+      `test_a_worker_cannot_hide_a_path_by_editing_gitignore`; plus
+      `test_ignored_path_present_at_seed_is_not_a_byproduct`, `test_owned_delete_is_in_the_delta`,
+      `test_mode_only_change_is_in_the_delta`, `test_symlink_in_an_owned_path_is_rejected`,
       `test_delta_hash_mismatch_is_error`, `test_file_over_the_limit_is_a_named_refusal` and
       `test_tree_over_the_limit_is_a_named_refusal`.
 - [ ] 2.3 Transfer (D6). `transfer(delta, user_repo, m0, hooks=None)`: the read-only phase
-      (each path resolved from a root descriptor with `O_DIRECTORY | O_NOFOLLOW`, compared with
-      M0, limits), then the write phase (`mkdir` by descriptor, journalled; comparison and
+      (each path resolved from a root descriptor with `O_DIRECTORY | O_NOFOLLOW`; the user's file
+      opened relative to its parent with `O_NOFOLLOW | O_NONBLOCK` and checked by `fstat` before it
+      is read; kind, mode and SHA-256, or absence, compared with M0; limits), then the write phase (`mkdir` by descriptor, journalled; comparison and
       device and inode check repeated before each write; one `replace_file(parent_fd, name,
       data, mode)` helper that creates a unique `.verdict-transfer-*` file with
       `O_CREAT | O_EXCL | O_NOFOLLOW`, writes, sets the mode and renames, and unlinks the
@@ -78,7 +81,11 @@ Conventions for every task:
       on any failure after the first write. It refuses where `os.supports_dir_fd` lacks `open`,
       `stat`, `mkdir`, `rename` or `unlink`. Files: `verdict/autodev_opencode.py`,
       `tests/test_autodev_opencode.py`. Verify: `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py -k "transfer or kill"`
-      with `test_owned_file_changed_after_the_seed`, `test_only_the_mode_changed`,
+      with `test_owned_file_changed_after_the_seed`, `test_file_appeared_after_the_seed`,
+      `test_non_regular_file_in_the_user_s_tree`, `test_edit_between_the_checks_and_the_first_write`
+      (through a `hooks` seam), `test_only_the_mode_changed`,
+      `test_path_that_escapes_the_root_is_refused` (a crafted `..` or absolute delta path),
+      `test_user_file_over_the_limit_is_refused`,
       `test_symlinked_parent`, `test_parent_swapped_for_a_symlink_during_the_transfer`,
       `test_parent_directory_renamed_away_during_the_transfer`,
       `test_a_refusal_on_a_later_path_leaves_no_directory_behind`,
@@ -97,7 +104,7 @@ Conventions for every task:
       `.verdict-transfer-*` file exists, `git status --porcelain` lists nothing but owned paths
       and that file, and `git checkout -- <owned paths>` plus removing the created files and
       empty directories leaves the repository byte-identical to before the transfer.
-- [ ] 2.4 Restore (D7). `restore(journal)` undoes the last transfer in reverse with task 2.3's
+- [ ] 2.4 Restore (D7). `restore(journal)` undoes the current attempt's transfer in reverse with task 2.3's
       traversal, re-check and `replace_file` helper, checking kind, executable bit and SHA-256
       against what the transfer wrote; it leaves alone and reports any path that differs, removes
       created directories when empty, and is idempotent. Files: `verdict/autodev_opencode.py`,
@@ -107,7 +114,7 @@ Conventions for every task:
       `test_user_edit_after_the_transfer_is_kept`,
       `test_user_mode_change_after_the_transfer_is_kept`,
       `test_parent_swapped_between_transfer_and_restore`, `test_restore_twice`,
-      `test_restore_without_a_transfer`, `test_restore_write_failure_leaves_no_temporary_file`,
+      `test_restore_without_a_transfer`, `test_journal_is_emptied_at_the_start_of_each_attempt`, `test_restore_write_failure_leaves_no_temporary_file`,
       and `test_restore_of_a_modified_file_and_of_a_deleted_file`.
 
 ## 3. The executor
@@ -153,8 +160,11 @@ Conventions for every task:
       `tests/test_autodev_opencode.py`. Verify: `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode.py -k matrix`
       with `test_out_of_bounds_edits_are_rejected` (parametrised: a plain edit, a staged edit, a
       worker `git commit`, an unowned new file, a symlink swapped into an owned path, a worker
-      `git push origin` which has no target, a planted `core.fsmonitor` and hook). One more test
-      records the limit ADR-053 Decision 4 accepts:
+      `git push origin` which has no target, a planted `core.fsmonitor` and hook). Two more run
+      end to end through `execute_unit` with a stub that also writes `.verdict-context.md` into
+      `cwd`: `test_context_file_created_by_the_executor` (the owned repair is `applied` and the
+      file is absent from the user's repository) and `test_no_context_file_at_all` (the same
+      repair with no such file). One more test records the limit ADR-053 Decision 4 accepts:
       `test_absolute_path_write_is_an_accepted_risk` is `xfail(strict=True)` on "the user's
       repository is unchanged", so closing the limit turns it red until the mark is removed.
 
@@ -175,13 +185,16 @@ Conventions for every task:
       (existing `PatchExecutor` behaviour unchanged), with
       `test_verification_fails_after_an_applied_attempt` (byte-identical, a pre-existing dirty
       unowned file untouched), `test_verification_command_writes_to_the_repository`,
-      `test_verified_unit_is_not_restored`, `test_verification_raises` (a runner raising
+      `test_verified_unit_is_not_restored`, `test_earlier_verified_unit_is_not_undone` (unit A
+      verified, then unit B rejected, erroring or raising on the same executor, A's files stay),
+      `test_user_edit_after_the_transfer_is_kept` (the same scenario through `_run_unit_once`: the
+      reason names the file), `test_verification_raises` (a runner raising
       `PermissionError` in `_verify`; the `PermissionError` propagates), `test_attribution_raises`,
       `test_interrupt_after_the_transfer` (`KeyboardInterrupt`), `test_executor_raises_after_its_transfer`,
       `test_restore_fails_while_an_exception_propagates` (restore raises `RuntimeError`; the
       propagated exception is the original and standard error names the restore failure),
       `test_restore_capability_alone_grants_nothing` (has `restore()`, not `isolated`, still fails
-      the gateway equality check), and `test_patch_executor_is_never_restored`.
+      the gateway equality check and is not subject to the retry refusal), and `test_patch_executor_is_never_restored`.
 - [ ] 4.2 Refuse retries and handle null sampling (D8). With an `isolated` executor and non-empty
       `retry_routes` or a `retry_executor_factory`, raise `AutodevError` before the planner call.
       Make `_executor_lineage` and the attempt-record write accept `None` sampling values,
@@ -194,11 +207,12 @@ Conventions for every task:
 - [ ] 4.3 The precondition hook (D5). `_run_unit_once` calls `executor.preflight(unit)` first
       when the executor has it, before `_try_mechanical`, and acts on the reason only if the
       mechanical tier declines the unit: the unit fails with the reason, `execute_unit` is not
-      called, and the outcome has tier `refused` so no attempt record and no unreported-usage
-      entry is made. Files: `verdict/autodev_run.py`, `tests/test_autodev_opencode_wiring.py`. Verify:
+      called, and the outcome has tier `refused`: `run_autodev` writes no attempt record for it
+      (it does so for tier `model`), `unreported_units` omits it, and `AutodevReport.summary`
+      counts model units by tier `model`. Files: `verdict/autodev_run.py`, `tests/test_autodev_opencode_wiring.py`. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode_wiring.py -k preflight`
-      with `test_refusal_starts_no_worker_and_writes_nothing` (also asserts no attempt record and that
-      `unreported_units` omits the unit), `test_mechanical_edit_does_not_refuse`
+      with `test_refusal_starts_no_worker_and_writes_nothing` (also asserts no attempt record, that
+      `unreported_units` omits the unit and that the summary's model count excludes it), `test_mechanical_edit_does_not_refuse`
       (a fake runner makes `ruff --fix` edit the owned file and the check still fail),
       `test_mechanical_tier_fixes_a_modified_owned_file` and `test_default_path_unaffected`
       (`PatchExecutor` has no `preflight` and runs on a modified owned file).

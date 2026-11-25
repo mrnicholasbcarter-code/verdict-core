@@ -104,9 +104,8 @@ fails; `_tree_state` returns `{}` on failure, so it is not reused. Unowned dirty
 edit in an owned file and a later check would refuse every ruff unit the mechanical tier could not
 finish. It acts on the reason only if the mechanical tier declines and the model tier would run: the
 unit fails with the path and "commit or stash it, or run without the flag", no worker starts, nothing is
-written. Its outcome has tier `refused`, not `model`, because `run_autodev` writes an attempt-ledger row
-and an unreported-usage entry for every `model` outcome and no model ran. A dirty owned file the
-mechanical tier fixes is still verified mechanically.
+written, and no model attempt is recorded or counted (an attempt-ledger row would blame a route that
+never ran; task 4.3). A dirty owned file the mechanical tier fixes is still verified mechanically.
 
 **Behaviour change for the operator.** On the default path autodev applies a patch to an owned file
 with uncommitted changes; with the flag it does not. This is the narrowing; the pull request asks.
@@ -139,16 +138,18 @@ unchanged, and a failure inside `restore()` is caught and printed to standard er
 `add_note`), never replacing it. A second interrupt during `restore()` is not covered. So that
 `execute_unit` itself is covered, the transfer is its last fallible step and the clone is removed first.
 
-Restore walks the journal in reverse with D6's traversal and write helper and leaves alone, and
-reports, any path that is no longer what the transfer wrote (a user edit or `chmod`), so it never
-overwrites content it did not write. It covers only paths the transfer wrote: a verification command
+The journal belongs to one `execute_unit` call: that call empties it first, so a later unit's failure
+cannot undo an earlier unit's verified files (`run_autodev` reuses one executor). Restore walks it in
+reverse with D6's traversal and write helper and leaves alone, and reports, any path that is no longer
+what the transfer wrote (a user edit or `chmod`), so it never overwrites content it did not write. It covers only paths the transfer wrote: a verification command
 that edits or creates other files leaves them, as on main after a failed verify.
 
 A crash (SIGKILL, SIGTERM's default action, an uncaught crash) runs no handler and the journal is lost;
 D5 makes that harmless. A `rename` is atomic, so each owned path holds its complete old or new bytes;
 the residue is created files and empty directories and at most one `.verdict-transfer-*` file. Every
-pre-existing owned path was tracked and unmodified at the unit's start, so `git checkout -- <path>`
-restores it. Nothing runs automatically after a crash; power loss is not claimed.
+pre-existing owned path was tracked and unmodified at the unit's start (given the single-writer
+assumption of D6), so `git checkout -- <path>` restores it, mechanical-tier edit included. Nothing runs
+automatically after a crash; power loss is not claimed.
 
 ### D8. `run_autodev` wiring
 

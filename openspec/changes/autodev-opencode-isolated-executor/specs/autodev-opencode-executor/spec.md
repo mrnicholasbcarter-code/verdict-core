@@ -99,8 +99,9 @@ report SHALL NOT be refused, and no other file is checked. The reads are made at
 start of the unit, before the mechanical tier; a refusal is acted on only if the mechanical tier
 then declines the unit, so an edit the mechanical tier makes to an owned file does not cause
 one. A refused unit SHALL fail with a reason that names the path and the remedy, start no
-worker, create no attempt tree, write nothing to the repository and be recorded as no model
-attempt (no attempt-ledger row, no unreported-usage entry). The default path
+worker, create no attempt tree, write nothing to the repository and count as no model attempt (no
+attempt-ledger row, no unreported-usage entry, not among the model units in the report summary). The
+default path
 (`PatchExecutor`) SHALL keep running on a modified owned file.
 
 #### Scenario: Tracked and unmodified owned file
@@ -260,6 +261,18 @@ run on a host whose descriptor-relative file operations it needs are unavailable
 - **WHEN** the user edits an owned file after the seed and before the transfer
 - **THEN** the attempt is `rejected` with the reason that the file changed since the seed, and the user's edit is intact
 
+#### Scenario: File appeared after the seed
+- **WHEN** the seed had no file at an owned path and the user creates one before the transfer
+- **THEN** the attempt is `rejected` and the user's file is intact
+
+#### Scenario: Non-regular file in the user's tree
+- **WHEN** an owned path in the user's tree is a FIFO or a directory
+- **THEN** the attempt is `rejected`, nothing blocks, and nothing is written there
+
+#### Scenario: Edit between the checks and the first write
+- **WHEN** the user edits an owned file after the read-only checks and before the first write
+- **THEN** the attempt is `rejected`, nothing was written or created, and the user's edit is intact
+
 #### Scenario: Only the mode changed
 - **WHEN** the user changes only the executable bit of an owned file after the seed
 - **THEN** the attempt is `rejected` for that file and the user's mode is intact
@@ -313,8 +326,10 @@ restore result in the outcome reason. For an exception it SHALL re-raise the ori
 exception unchanged after restore; a failure inside `restore()` SHALL be caught and reported
 on standard error and SHALL NOT replace or hide the original exception. A second interrupt
 during `restore()` is not covered. The executor SHALL make the transfer the last step of
-`execute_unit` that can fail: the attempt tree is removed before it. Restore SHALL return each
-transferred path to its prior bytes, mode or absence, using the same no-follow traversal and
+`execute_unit` that can fail: the attempt tree is removed before it. The executor's journal
+SHALL belong to one `execute_unit` call: it is emptied as that call's first action and after a
+rollback, so a later unit's failure cannot undo an earlier unit's verified change. Restore SHALL
+return each transferred path to its prior bytes, mode or absence, using the same no-follow traversal and
 at-the-moment comparison as the transfer, remove directories it created when empty, and SHALL
 leave alone and name any path whose kind, executable bit or bytes are no longer what the
 transfer wrote. Restore SHALL cover only paths the transfer wrote. A verified unit SHALL NOT
@@ -339,6 +354,10 @@ be restored. The `PatchExecutor` path SHALL be unchanged.
 #### Scenario: Created files and directories are removed
 - **WHEN** the transferred change created an owned file in a new directory and verification fails
 - **THEN** the file and the directory restore created are gone
+
+#### Scenario: Earlier verified unit is not undone
+- **WHEN** unit A is verified and unit B on the same executor is then rejected, errors or raises
+- **THEN** `restore()` for unit B leaves unit A's transferred files as they are
 
 #### Scenario: Parent swapped between transfer and restore
 - **WHEN** a transferred file's parent directory is replaced by a symlink after the transfer and restore runs
@@ -388,8 +407,9 @@ claimed) SHALL leave every owned path holding either its complete prior bytes or
 worker's complete bytes. The only other residue SHALL be files the transfer created, empty
 directories it created and at most one temporary file named `.verdict-transfer-*`, all in the
 owned files' own paths and directories. No other path SHALL change. Every pre-existing owned
-path was tracked and unmodified when the unit started, so `git checkout -- <path>` restores
-it. No automatic recovery runs after a crash.
+path was tracked and unmodified when the unit started (provided nothing but the mechanical tier
+wrote it since, the single-writer assumption), so `git checkout -- <path>` restores it, and also
+drops any edit the mechanical tier made. No automatic recovery runs after a crash.
 
 #### Scenario: Kill after the temporary write
 - **WHEN** the process is killed after the temporary file of the first path is written and before its rename
