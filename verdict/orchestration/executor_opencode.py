@@ -995,17 +995,16 @@ class OpenCodeExecutor:
         if not terminal.harness:
             terminal = replace(terminal, harness="opencode")
         if attempt.launched and attempt.digest and attempt.mark is not None:
-            terminal = replace(terminal, worker_assignment=await self._serve_evidence(attempt))
+            record = await self._serve_evidence(attempt.mark, attempt.digest)
+            terminal = replace(terminal, worker_assignment=record)
         return terminal
 
-    async def _serve_evidence(self, attempt: _Attempt) -> dict[str, Any]:
+    async def _serve_evidence(self, mark: EvidenceMark, digest: str) -> dict[str, Any]:
         """What serve recorded under this attempt's assignment, once its worker is gone.
 
         Read in a thread (it opens a file) and never raises: any failure is an ``unavailable``
         record with its reason, which the run receipt shows as such.
         """
-        assert attempt.mark is not None
-        mark, digest = attempt.mark, attempt.digest
         try:
             serve_receipts = await _to_thread_joined(read_assignment_evidence, mark, digest)
         except Exception as exc:  # the reader does not raise; this is the last line

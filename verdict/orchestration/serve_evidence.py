@@ -36,17 +36,28 @@ from typing import Any
 
 __all__ = ["EvidenceMark", "read_assignment_evidence", "take_mark"]
 
-#: A read is cut off after this many seconds of work, whatever the database holds.
-READ_DEADLINE_SECONDS = 5.0
+#: A read is cut off after this many seconds of work, whatever the database holds.  It runs after
+#: the worker is gone and inside the settle reserve the runtime leaves an executor (at most 15 s,
+#: of which the kill grace takes 5), so it is kept short.
+READ_DEADLINE_SECONDS = 2.0
 #: More matching roots than this and the figures would be a guess: the read is unavailable.
 MAX_MATCHING_ROOTS = 10_000
 #: How long a read waits for a lock another process holds.
-_BUSY_TIMEOUT_SECONDS = 2.0
+_BUSY_TIMEOUT_SECONDS = 1.0
 #: The SQLite virtual-machine steps between two looks at the deadline.
 _PROGRESS_STEPS = 1000
 
-_DIGEST_PATH = "$.routing_decision.receipt.worker_assignment.assignment_digest"
-_WAIVERS_PATH = "$.routing_decision.receipt.requirement_waivers"
+#: Constant text, no value is ever formatted into it: the digest, the mark and the limit are bound.
+_MATCHING_ROOTS_SQL = """
+    SELECT json_extract(payload_json, '$.routing_decision.receipt.requirement_waivers')
+    FROM receipts
+    WHERE rowid > ? AND receipt_type = 'decision' AND parent_receipt_id IS NULL
+      AND CASE WHEN json_valid(payload_json)
+               THEN json_extract(
+                   payload_json, '$.routing_decision.receipt.worker_assignment.assignment_digest'
+               ) END = ?
+    LIMIT ?
+"""
 
 
 @dataclass(frozen=True)
@@ -153,15 +164,7 @@ def read_assignment_evidence(mark: EvidenceMark, digest: str) -> dict[str, Any]:
         conn = _connect(mark.db_path, deadline)
         try:
             rows = conn.execute(
-                f"""
-                SELECT json_extract(payload_json, '{_WAIVERS_PATH}')
-                FROM receipts
-                WHERE rowid > ? AND receipt_type = 'decision' AND parent_receipt_id IS NULL
-                  AND CASE WHEN json_valid(payload_json)
-                           THEN json_extract(payload_json, '{_DIGEST_PATH}') END = ?
-                LIMIT ?
-                """,
-                (mark.rowid, digest, MAX_MATCHING_ROOTS + 1),
+                _MATCHING_ROOTS_SQL, (mark.rowid, digest, MAX_MATCHING_ROOTS + 1)
             ).fetchall()
         finally:
             conn.close()

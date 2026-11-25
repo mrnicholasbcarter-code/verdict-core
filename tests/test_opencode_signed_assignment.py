@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import stat
 import sys
 import textwrap
@@ -208,7 +209,13 @@ def _unreadable_key(home: Path) -> None:
     "setup",
     [
         pytest.param(lambda home: None, id="missing"),
-        pytest.param(_unreadable_key, id="unreadable"),
+        pytest.param(
+            _unreadable_key,
+            id="unreadable",
+            marks=pytest.mark.skipif(
+                os.geteuid() == 0, reason="root can read a mode 0 file, so nothing is unreadable"
+            ),
+        ),
         pytest.param(
             lambda home: (
                 wa.assignment_key_path(home).parent.mkdir(parents=True),

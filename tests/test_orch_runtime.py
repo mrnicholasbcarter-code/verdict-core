@@ -2253,3 +2253,79 @@ async def test_an_executor_without_the_id_keywords_is_called_exactly_as_before(r
     result = await rt.run()
     assert result.outcome is RunOutcome.COMPLETE, result.reason
     assert ex.calls == [("a", "cc/s")]
+
+
+class AssignmentRecordingExecutor(Executor):
+    """Node ``a`` is served under a waiver (its terminal says so); node ``b`` signs nothing."""
+
+    RECORD: ClassVar[dict[str, Any]] = {
+        "assignment_digest": "c" * 64,
+        "serve_receipts": {
+            "status": "read",
+            "reason": None,
+            "requests": 2,
+            "requests_waived": 2,
+            "requirement_waivers": [
+                {"requirement": "streaming", "reason": "verified_worker_assignment"}
+            ],
+        },
+    }
+
+    async def run(  # type: ignore[override]
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        terminal = await super().run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+        if prompt.startswith("a:"):
+            return replace(terminal, worker_assignment=self.RECORD)
+        return terminal
+
+
+async def test_the_waiver_serve_recorded_reaches_the_run_receipt_for_the_node_that_had_it(
+    repo: Path,
+) -> None:
+    """The issue's own acceptance: a node whose attempt was served under the waiver carries it in
+    ``receipt.json``, and a node whose attempt was not does not.  Run through the real runtime
+    and a real event log, so the terminal event, the attempt file and the receipt all agree."""
+    from verdict.orchestration.receipt import EventLog, build_run_receipt
+
+    graph = WorkGraph("g", (node("a"), node("b")), max_parallel=2)
+    run_dir = repo.parent / "run1"
+    run_dir.mkdir()
+    (run_dir / "graph.json").write_text(json.dumps(graph.to_dict()))
+    log = EventLog(run_dir / "events.jsonl")
+    log.emit("run_started", run_id="run1", goal="g")
+    runtime = DagRuntime(
+        repo=repo,
+        run_dir=run_dir,
+        graph=graph,
+        selector=Selector(["cc/s"]),
+        executor=AssignmentRecordingExecutor({}, delay=0),
+        classifier=Classifier(),
+        events=log,
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(),
+        now=lambda: NOW,
+    )
+    result = await runtime.run()
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+
+    terminals = {e.node_id: e.data for e in log.read() if e.type == "terminal"}
+    assert terminals["a"]["worker_assignment"] == AssignmentRecordingExecutor.RECORD
+    assert "worker_assignment" not in terminals["b"]
+
+    attempt_file = json.loads((run_dir / "attempts" / "a-a1.json").read_text())
+    assert attempt_file["worker_assignment"] == AssignmentRecordingExecutor.RECORD
+    assert "worker_assignment" not in json.loads((run_dir / "attempts" / "b-a1.json").read_text())
+
+    receipt = build_run_receipt(run_dir)
+    by_node = {n["node_id"]: n for n in receipt["nodes"]}
+    (served,) = by_node["a"]["attempts"]
+    (plain,) = by_node["b"]["attempts"]
+    assert served["worker_assignment"] == AssignmentRecordingExecutor.RECORD
+    assert served["worker_assignment"]["serve_receipts"]["requirement_waivers"] == [
+        {"requirement": "streaming", "reason": "verified_worker_assignment"}
+    ]
+    assert "worker_assignment" not in plain

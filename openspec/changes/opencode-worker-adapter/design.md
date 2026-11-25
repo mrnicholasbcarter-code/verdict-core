@@ -198,7 +198,7 @@ worker started (the database grows with every request and holds large payloads).
 the terminal as `worker_assignment` (the digest, never the credential, and `serve_receipts`:
 `status` `read` with `requests`, `requests_waived` and the distinct waivers, or `unavailable`
 with a reason and every figure `null` when the database is unconfigured, in memory, missing,
-unreadable, over 10,000 matching roots or out of the 5 s read budget). `unavailable` is never
+unreadable, over 10,000 matching roots or out of the 2 s read budget). `unavailable` is never
 reported as "no waiver" and never fails an attempt that worked. The runtime puts it on the
 `terminal` event, `receipt.json` projects it onto the attempt (only when present, so receipts of
 other executors are byte-identical), and `verdict run-receipt` marks an attempt `streaming
