@@ -686,8 +686,32 @@ assignment is refused with 403.
   process for its one readiness request and is never a fallback. A missing, unreadable or short
   key, a missing run id or node id, or an attempt timeout that is not a positive finite number
   ends the attempt the same way, before anything is launched and with no request to serve.
-  The orchestrator and serve must read the same key, which means the same `HOME`. When serve
-  refuses an assignment (403 `authentication failed`) the attempt ends as a configuration block
+  The orchestrator and serve must read the same key, which means the same `HOME`.
+  **Pre-launch probe.** Before it launches a worker, the executor asks serve whether it accepts
+  this attempt's own assignment: one `POST /v1/chat/completions` that carries the assignment as
+  its bearer (never the serve token; the readiness request carries the serve token and never the
+  assignment) and a body that is only `{"model": <a value no route can equal>}`, with no
+  messages. Serve verifies the assignment first and then refuses a `model` that differs from the
+  assignment's route with 400, before it routes anything. So a 400 means serve accepted the
+  assignment, and the probe makes no routing decision, mints no admission proof, sends nothing
+  upstream and writes no evidence. Serve's refusal (403 with its exact body, `authentication
+  failed`) or its 503 `worker assignments are not configured` ends the attempt, on a run's first
+  attempt as on any other, as a `harness_configuration:` block: nothing is launched, nothing is
+  sent upstream and no provider is cooled down. The message lists the causes the probe cannot tell
+  apart (the orchestrator and serve read different `worker-assignment.key` files or homes, clocks
+  more than 60 seconds apart, a serve older than the signed-assignment change or running
+  anonymous) and the fix (`verdict setup --apply --allow host.serve`, one `HOME` for both). It
+  reads no receipts, so a remote or spare serve whose database the orchestrator cannot open is
+  covered. Any other result (no answer in time, a refused connection, a redirect, another 5xx, a
+  403 with another body, a 2xx, a 404) is unproven: the attempt goes on exactly as before, and an
+  unproven probe is never a block and never a provider failure. The probe is bounded by the
+  attempt's own deadline and counts against its budget. Serve logs one WARNING
+  (`worker assignment refused: reason=model_mismatch`, with the signed ids and never the
+  credential) for each probe: that is the probe being refused by design, not a fault. A fault
+  that starts after the probe passed (a key replaced since, a worker's tampered copy) is still
+  serve refusing the worker's own request mid-run, which is read as follows.
+  When serve refuses an assignment mid-run (403 `authentication failed` to the worker) the attempt
+  ends as a configuration block
   rather than as a provider denial only if the executor can show that serve, and not the route's
   provider, said it: a provider's own 401 or 403 can carry the same words, which serve forwards
   unchanged. What shows it is serve's receipts (read back as below) holding no request under the
@@ -701,10 +725,11 @@ assignment is refused with 403.
   `--serve-url` received) and then only for that file (its device and inode, not just its path:
   a file replaced, or a link retargeted, at the same path is another database) and that address.
   In every other case the failure stays the provider's, with the provider cooldown that implies,
-  and the attempt's receipts say `unavailable`. Plainly: a signing key serve does not share, found on a run's first attempt,
-  is not recognised as a configuration block (every attempt of that run is refused, none is
-  served, nothing is ever shown), and shows as the route's provider answering `authentication
-  failed`. What was shown lasts for that one `verdict orchestrate` process, and `--resume` starts
+  and the attempt's receipts say `unavailable`. Plainly: a refusal that comes after the probe passed
+  (a key replaced since, a tampered copy), on a run's first attempt, is not recognised as a
+  configuration block, and shows as the route's provider answering `authentication failed`; the
+  probe is what recognises a key, home or clock mismatch there. What was shown lasts for that one
+  `verdict orchestrate` process, and `--resume` starts
   again without it. What cannot be told from here is a serve restarted on another database while
   the orchestrator's configuration still names the old one: the old file stays the one read, and
   a provider's own refusal of that kind is then read as serve's.

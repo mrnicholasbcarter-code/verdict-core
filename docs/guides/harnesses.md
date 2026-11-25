@@ -387,20 +387,31 @@ read the same file.
 **Pre-dispatch check.** Before an attempt launches anything, Verdict signs the assignment (a
 missing or unreadable signing key, a missing run id or node id, or a timeout whose lifetime would
 exceed 1,800 seconds ends the attempt here), and checks once that the serve token resolves, that the
-`opencode` binary runs, and that `verdict serve` is reachable and accepts the serve token.  A failure
-is a single `harness_configuration:` message and recovery treats it as a block, not a retry, so a
-misconfigured host does not burn a node's attempts.  The same holds when serve later refuses the
-assignment (it answers every refused assignment with one 403 `authentication failed`) and its
-receipts show it admitted no request under that assignment: the attempt is a configuration block,
-not a provider denial.  A provider's own 401 or 403 can carry the same words, so when serve's
+`opencode` binary runs, that `verdict serve` is reachable and accepts the serve token, and that serve
+accepts this attempt's own assignment.  That last check is a probe: the assignment, as the bearer
+and never with the serve token, on a `POST /v1/chat/completions` whose body is only a model no route
+can equal.  Serve verifies the assignment and then refuses the model with 400 before it routes
+anything, so a 400 means "accepted" and the probe makes no decision, mints no proof and sends
+nothing upstream.  Serve's exact 403 `authentication failed` or its 503 `worker assignments are not
+configured` ends the attempt, the first of a run included, with nothing launched and no provider
+cooled down; the message lists the causes it cannot tell apart (different signing key files or
+homes, clocks more than 60 seconds apart, a serve older than the signed-assignment change or
+anonymous) and the fix.  It reads no receipts, so a remote or spare serve is covered.  Any other
+result (no answer, a redirect, another status or body) is unproven and the attempt goes on as
+before.  Serve logs one WARNING (`reason=model_mismatch`) per probe; that is the probe being
+refused by design.  A failure is a single `harness_configuration:` message and recovery treats it as
+a block, not a retry, so a misconfigured host does not burn a node's attempts.  The same holds when
+serve refuses the worker's own request later (it answers every refused assignment with one 403
+`authentication failed`) and its receipts show it admitted no request under that assignment: the
+attempt is a configuration block, not a provider denial.  A provider's own 401 or 403 can carry the same words, so when serve's
 receipts hold a request under the assignment, or cannot be read, the failure stays the provider's.
 So does an empty read of a receipt database nothing has tied to the serve at `--serve-url`: the
 database is found from this host's configuration, so with a spare or remote serve it can be
 another serve's.  It counts only after an earlier attempt of the same executor (one per run; a
 node named in `--executor-map` has its own) was served in it (a
 request under that attempt's own assignment was found in that same file, not merely at that path),
-so a signing key serve does not share, refused from the run's first attempt, is not recognised as
-a configuration block.  Run
+so a refusal that comes after the probe passed (a key replaced since, a tampered copy), on a run's
+first attempt, is not recognised as a configuration block.  Run
 `verdict setup --apply --allow host.serve` to create the serve token, the signing key and the unit.
 
 **Receipts.** `verdict run-receipt` marks an attempt that serve served with the streaming

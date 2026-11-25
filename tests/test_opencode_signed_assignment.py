@@ -10,12 +10,17 @@ Nothing here reads a real home, key or database, or contacts anything but loopba
 from __future__ import annotations
 
 import asyncio
+import http.server
 import json
 import math
 import os
 import stat
 import sys
 import textwrap
+import threading
+import time
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -40,25 +45,37 @@ KEY = bytes(range(32))
 SERVE_TOKEN = "serve-token-UNIQUE-77aa31"
 FIXTURES = Path(__file__).parent / "fixtures" / "opencode_stdout"
 
+# The real pre-dispatch functions, captured before the autouse fixture replaces them.
+REAL_CHECK_SERVE = executor_module._check_serve
+REAL_CHECK_ASSIGNMENT = executor_module._check_assignment
+
 
 class Calls:
     """What the pre-dispatch checks were asked."""
 
     def __init__(self) -> None:
         self.serve: list[tuple[str, str]] = []
+        self.assignment: list[tuple[str, str, float]] = []
 
 
 @pytest.fixture(autouse=True)
 def calls(monkeypatch: pytest.MonkeyPatch) -> Calls:
-    """The binary runs; serve accepts the serve token and the call is recorded."""
+    """The binary runs; serve accepts the serve token and the attempt's own assignment, and each
+    call is recorded.  Nothing here contacts a serve: not even the default address, which on a
+    host may be a real one (the tests of the real checks use ``real_checks``)."""
     seen = Calls()
 
     def check_serve(origin: str, token: str, timeout: float) -> str | None:
         seen.serve.append((origin, token))
         return None
 
+    def check_assignment(origin: str, assignment: str, timeout: float) -> str | None:
+        seen.assignment.append((origin, assignment, timeout))
+        return None
+
     monkeypatch.setattr(executor_module, "_check_binary", lambda *a, **k: None)
     monkeypatch.setattr(executor_module, "_check_serve", check_serve)
+    monkeypatch.setattr(executor_module, "_check_assignment", check_assignment)
     return seen
 
 
@@ -171,7 +188,9 @@ def test_a_timeout_that_would_need_more_than_1800_seconds_fails_closed_before_la
     assert terminal.error.startswith("harness_configuration:"), terminal.error
     assert "1800" in terminal.error and "lower the attempt timeout" in terminal.error
     assert not ran.exists(), "the worker was launched"
-    assert calls.serve == [], "serve was contacted for an attempt that cannot be signed"
+    assert calls.serve == [] and calls.assignment == [], (
+        "serve was contacted for an attempt that cannot be signed"
+    )
     assert keys == [], "the key was read for an attempt that cannot be signed"
     assert list(cwd.iterdir()) == []
     assert terminal.worker_assignment is None
@@ -186,7 +205,7 @@ def test_a_timeout_that_is_not_a_positive_finite_number_is_a_configuration_block
     assert terminal.ok is False
     assert terminal.error.startswith("harness_configuration:"), terminal.error
     assert "positive, finite" in terminal.error
-    assert not ran.exists() and calls.serve == []
+    assert not ran.exists() and calls.serve == [] and calls.assignment == []
     verdict = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
     assert (verdict.category, verdict.action) == ("harness_configuration", "BLOCK")
 
@@ -254,7 +273,7 @@ def test_a_missing_or_unreadable_key_blocks_before_launch_and_never_falls_back(
     assert "key_unavailable" in terminal.error and "verdict setup" in terminal.error
     assert SERVE_TOKEN not in terminal.error and str(home) not in terminal.error
     assert not ran.exists(), "the worker was launched without an assignment"
-    assert calls.serve == [], "no request of any kind went to serve"
+    assert calls.serve == [] and calls.assignment == [], "no request of any kind went to serve"
     assert list(cwd.iterdir()) == []
     assert terminal.worker_assignment is None
     verdict = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
@@ -271,7 +290,7 @@ def test_a_key_provider_that_raises_is_a_configuration_block_naming_only_the_typ
     terminal = go(executor(binary, key_provider=boom), workdir(tmp_path))
     assert terminal.error.startswith("harness_configuration:")
     assert "RuntimeError" in terminal.error and "secret detail" not in terminal.error
-    assert not ran.exists() and calls.serve == []
+    assert not ran.exists() and calls.serve == [] and calls.assignment == []
 
 
 @pytest.mark.parametrize("missing", ["run_id", "node_id"])
@@ -286,7 +305,8 @@ def test_a_missing_run_id_or_node_id_blocks_before_launch(
     assert terminal.ok is False
     assert terminal.error.startswith("harness_configuration:"), terminal.error
     assert missing.replace("_", " ") in terminal.error
-    assert not ran.exists() and calls.serve == [] and list(cwd.iterdir()) == []
+    assert not ran.exists() and calls.serve == [] and calls.assignment == []
+    assert list(cwd.iterdir()) == []
     verdict = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
     assert (verdict.category, verdict.action) == ("harness_configuration", "BLOCK")
 
@@ -302,7 +322,7 @@ def test_an_id_the_verifier_would_refuse_is_never_signed(
         "harness_configuration: the worker assignment cannot be signed"
     )
     assert value not in terminal.error
-    assert not ran.exists() and calls.serve == []
+    assert not ran.exists() and calls.serve == [] and calls.assignment == []
 
 
 def test_the_default_run_without_ids_is_a_block_so_a_planner_call_never_gets_a_credential(
@@ -316,7 +336,7 @@ def test_the_default_run_without_ids_is_a_block_so_a_planner_call_never_gets_a_c
         executor(binary).run("plan", route_id=ROUTE, cwd=workdir(tmp_path), timeout_seconds=10.0)
     )
     assert terminal.error.startswith("harness_configuration: no run id")
-    assert not ran.exists() and calls.serve == []
+    assert not ran.exists() and calls.serve == [] and calls.assignment == []
 
 
 def test_the_serve_token_is_not_the_fallback_when_no_assignment_can_be_signed(
@@ -1051,3 +1071,419 @@ def test_a_mark_that_uses_up_the_budget_launches_nothing(
     assert not ran.exists(), "the worker was launched after the budget was spent"
     assert terminal.worker_assignment is None
     assert list(cwd.iterdir()) == []
+
+
+# --- the pre-launch assignment probe (#1340) ---------------------------------------------
+#
+# Before a worker is launched, the executor sends the attempt's own assignment to serve and reads
+# the answer: 400 (serve's model check, which comes after it verified the assignment and before any
+# routing) means "accepted"; serve's exact 403 refusal or its 503 "worker assignments are not
+# configured" ends the attempt as a configuration block; anything else is "unproven" and the
+# attempt goes on exactly as before.  These tests run the real checks against a scripted loopback
+# server that records every request; the same probe against the real serve app is in
+# ``test_opencode_assignment_serve_path.py``.
+
+SERVE_REFUSAL = json.dumps(
+    {"error": {"message": "authentication failed", "type": "authentication_error"}}
+).encode()
+SERVE_NOT_CONFIGURED = json.dumps(
+    {"error": {"message": "worker assignments are not configured", "type": "api_error"}}
+).encode()
+SERVE_MODEL_CHECK = json.dumps(
+    {
+        "error": {
+            "message": "the request's model must equal the route in the worker assignment",
+            "type": "invalid_request_error",
+        }
+    }
+).encode()
+
+
+@dataclass
+class Reply:
+    """What the scripted serve answers to one kind of request."""
+
+    status: int = 200
+    body: bytes = b"{}"
+    headers: dict[str, str] = field(default_factory=dict)
+    delay: float = 0.0  # seconds before it answers
+    hang_up: bool = False  # close the connection without any answer
+    short_body: bool = False  # promise more bytes than are sent, then close
+
+
+@dataclass
+class SeenRequest:
+    method: str
+    path: str
+    headers: dict[str, str]  # names lower-cased
+    body: bytes
+
+
+class ScriptedServe:
+    """A loopback HTTP server that answers from a script and records every request."""
+
+    def __init__(self, post: Reply, get: Reply | None = None) -> None:
+        self.seen: list[SeenRequest] = []
+        seen = self.seen
+        replies = {"GET": get or Reply(200, b'{"status": "ok"}'), "POST": post}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args: Any) -> None:
+                pass
+
+            def _answer(self) -> None:
+                length = int(self.headers.get("content-length") or 0)
+                body = self.rfile.read(length) if length else b""
+                headers = {name.lower(): value for name, value in self.headers.items()}
+                seen.append(SeenRequest(self.command, self.path, headers, body))
+                reply = replies[self.command]
+                if reply.delay:
+                    time.sleep(reply.delay)
+                if reply.hang_up:
+                    self.close_connection = True
+                    return
+                self.send_response(reply.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header(
+                    "Content-Length", str(len(reply.body) + (100 if reply.short_body else 0))
+                )
+                for name, value in reply.headers.items():
+                    self.send_header(name, value)
+                self.end_headers()
+                try:
+                    self.wfile.write(reply.body)
+                    self.wfile.flush()
+                except OSError:
+                    pass
+                if reply.short_body:
+                    self.close_connection = True
+
+            def do_GET(self) -> None:
+                self._answer()
+
+            def do_POST(self) -> None:
+                self._answer()
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.origin = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture
+def scripted() -> Iterator[Callable[..., ScriptedServe]]:
+    servers: list[ScriptedServe] = []
+
+    def make(post: Reply, get: Reply | None = None) -> ScriptedServe:
+        server = ScriptedServe(post, get)
+        servers.append(server)
+        return server
+
+    yield make
+    for server in servers:
+        server.close()
+
+
+@pytest.fixture
+def real_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Serve's readiness check and the assignment probe run for real."""
+    monkeypatch.setattr(executor_module, "_check_serve", REAL_CHECK_SERVE)
+    monkeypatch.setattr(executor_module, "_check_assignment", REAL_CHECK_ASSIGNMENT)
+
+
+def an_assignment() -> str:
+    return wa.mint_assignment(
+        KEY,
+        route_id=ROUTE,
+        run_id=RUN_ID,
+        node_id=NODE_ID,
+        lifetime_seconds=120,
+        now=datetime.now(timezone.utc),
+    )
+
+
+def test_the_probe_model_is_no_route_id_a_verified_assignment_can_carry() -> None:
+    """The probe's model must differ from the route of every assignment serve can verify: serve
+    refuses a model that differs, before routing, which is what keeps the probe from being a
+    spend.  A verified assignment's route id is a string of 1 to 128 characters without control
+    characters, so the sentinel is one that the signer will not sign and the verifier rejects."""
+    model = executor_module._ASSIGNMENT_PROBE_MODEL
+    assert isinstance(model, str)
+    with pytest.raises(ValueError):
+        wa.mint_assignment(
+            KEY,
+            route_id=model,
+            run_id=RUN_ID,
+            node_id=NODE_ID,
+            lifetime_seconds=60,
+            now=datetime.now(timezone.utc),
+        )
+    issued = int(time.time())
+    hand_signed = sign.assignment(
+        KEY, route_id=model, run_id=RUN_ID, node_id=NODE_ID, exp=issued + 60, iat=issued
+    )
+    with pytest.raises(wa.AssignmentError) as refused:
+        wa.verify_assignment(hand_signed, KEY, now=datetime.now(timezone.utc))
+    assert refused.value.reason == wa.REASON_MALFORMED
+    from tests.test_assigned_lane import ROUTES
+
+    assert model not in {ROUTE, *ROUTES}
+    body = json.loads(executor_module._assignment_probe_body())
+    assert body == {"model": model}, "the probe sends the model and nothing else (no messages)"
+
+
+def test_the_probe_carries_the_assignment_only_and_the_readiness_check_the_serve_token_only(
+    tmp_path: Path, scripted: Callable[..., ScriptedServe], real_checks: None
+) -> None:
+    serve = scripted(Reply(400, SERVE_MODEL_CHECK))
+    binary, credential_file = recording_worker(tmp_path)
+    terminal = go(executor(binary, serve_base_url=serve.origin), workdir(tmp_path))
+    assert terminal.ok, terminal  # accepted: the attempt went on and the worker ran
+    credential = credential_file.read_text()
+    assert credential.startswith("vwa1.")
+    readiness, probe = serve.seen  # in that order, and nothing else
+    assert (readiness.method, readiness.path) == ("GET", "/v1/guidance/status")
+    assert readiness.headers["authorization"] == f"Bearer {SERVE_TOKEN}"
+    assert credential not in json.dumps(readiness.headers)
+    assert (probe.method, probe.path) == ("POST", "/v1/chat/completions")
+    assert probe.headers["authorization"] == f"Bearer {credential}"
+    assert SERVE_TOKEN not in json.dumps(probe.headers) + probe.body.decode()
+    assert probe.headers["content-type"] == "application/json"
+    assert json.loads(probe.body) == {"model": executor_module._ASSIGNMENT_PROBE_MODEL}
+    # it is this attempt's own assignment: serve's verifier accepts it and reads the attempt's ids
+    verified = wa.verify_assignment(credential, KEY, now=datetime.now(timezone.utc))
+    assert (verified.route_id, verified.run_id, verified.node_id) == (ROUTE, RUN_ID, NODE_ID)
+
+
+def blocked_terminal(serve: ScriptedServe, tmp_path: Path) -> tuple[Any, Path, Path]:
+    binary, ran = marker_worker(tmp_path)
+    cwd = workdir(tmp_path)
+    terminal = go(executor(binary, serve_base_url=serve.origin), cwd)
+    return terminal, ran, cwd
+
+
+def assert_a_block_before_launch(terminal: Any, ran: Path, cwd: Path, serve: ScriptedServe) -> str:
+    """Block, nothing launched or written, recovery blocks without a cooldown; the reason."""
+    assert terminal.ok is False
+    prefix = f"harness_configuration: verdict serve at {serve.origin} "
+    assert terminal.error.startswith(prefix), terminal.error
+    reason = terminal.error.removeprefix("harness_configuration: ")
+    assert len(reason) <= 400, "a longer reason loses its beginning (the tail is what is kept)"
+    assert not ran.exists(), "the worker was launched"
+    assert list(cwd.iterdir()) == []
+    assert terminal.worker_assignment is None and terminal.status_code is None
+    assert SERVE_TOKEN not in terminal.error and "vwa1." not in terminal.error
+    assert [request.method for request in serve.seen] == ["GET", "POST"]
+    verdict = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
+    assert (verdict.category, verdict.action, verdict.cooldown_seconds, verdict.scope) == (
+        "harness_configuration",
+        "BLOCK",
+        0,
+        "none",
+    )
+    return reason
+
+
+def test_serves_exact_refusal_ends_the_first_attempt_before_launch_naming_the_causes(
+    tmp_path: Path, scripted: Callable[..., ScriptedServe], real_checks: None
+) -> None:
+    serve = scripted(Reply(403, SERVE_REFUSAL))
+    terminal, ran, cwd = blocked_terminal(serve, tmp_path)
+    reason = assert_a_block_before_launch(terminal, ran, cwd, serve)
+    assert "HTTP 403" in reason
+    assert "worker-assignment.key" in reason and "HOME" in reason  # another key or home
+    assert "60 s" in reason  # clocks
+    assert "older than the signed-assignment change" in reason and "anonymous" in reason
+    assert "verdict setup --apply --allow host.serve" in reason  # the fix
+
+
+def test_serves_503_not_configured_ends_the_attempt_the_same_way_naming_setup(
+    tmp_path: Path, scripted: Callable[..., ScriptedServe], real_checks: None
+) -> None:
+    serve = scripted(Reply(503, SERVE_NOT_CONFIGURED))
+    terminal, ran, cwd = blocked_terminal(serve, tmp_path)
+    reason = assert_a_block_before_launch(terminal, ran, cwd, serve)
+    assert "HTTP 503" in reason and "no worker assignment signing key" in reason
+    assert "verdict setup --apply --allow host.serve" in reason
+
+
+@pytest.mark.parametrize("status", [403, 503])
+def test_the_block_message_keeps_its_beginning_for_a_long_serve_address(status: int) -> None:
+    """The recorded reason keeps its last 400 characters, so a longer one would lose the start
+    that says which serve refused: a 60-character address must still fit."""
+    origin = "http://" + "h" * 53
+    assert len(origin) == 60
+    reason = executor_module._probe_refusal_reason(origin, status)
+    assert len(reason) <= 400, len(reason)
+    assert reason.startswith(f"verdict serve at {origin} ")
+    assert executor_module._sanitize(reason) == reason
+
+
+UNPROVEN = [
+    pytest.param(Reply(200, b'{"id": "x"}'), id="2xx"),
+    pytest.param(Reply(204, b""), id="204-empty"),
+    pytest.param(Reply(404, b'{"detail": "Not Found"}'), id="404"),
+    pytest.param(Reply(500, b'{"error": "boom"}'), id="500"),
+    pytest.param(Reply(502, b"<html>bad gateway</html>"), id="502-html"),
+    pytest.param(Reply(503, b'{"detail": "Proxy not initialized"}'), id="503-not-initialized"),
+    pytest.param(Reply(503, b""), id="503-empty"),
+    pytest.param(
+        Reply(403, b'{"error": {"message": "forbidden", "type": "authentication_error"}}'),
+        id="403-another-body",
+    ),
+    pytest.param(Reply(403, b"<html>blocked by a proxy</html>"), id="403-html"),
+    pytest.param(Reply(403, b""), id="403-empty"),
+    pytest.param(
+        Reply(
+            403,
+            b'{"error": {"message": "authentication failed", "type": "authentication_error"},'
+            b' "extra": 1}',
+        ),
+        id="403-serves-words-and-more",
+    ),
+    pytest.param(Reply(403, SERVE_REFUSAL + b" " * 10_000), id="403-body-over-the-read-limit"),
+    pytest.param(Reply(401, SERVE_REFUSAL), id="401-with-serves-403-body"),
+    pytest.param(Reply(503, SERVE_REFUSAL), id="503-with-the-refusal-body"),
+    pytest.param(Reply(403, SERVE_NOT_CONFIGURED), id="403-with-the-503-body"),
+    pytest.param(Reply(400, b'{"error": "bad"}'), id="400-another-body"),
+    pytest.param(Reply(403, b'{"error"', short_body=True), id="403-cut-short"),
+    pytest.param(Reply(hang_up=True), id="connection-closed-without-an-answer"),
+]
+
+
+@pytest.mark.parametrize("reply", UNPROVEN)
+def test_an_unclear_probe_result_is_unproven_and_the_attempt_goes_on_as_before(
+    tmp_path: Path, scripted: Callable[..., ScriptedServe], real_checks: None, reply: Reply
+) -> None:
+    serve = scripted(reply)
+    probe = executor_module._probe_assignment(serve.origin, an_assignment(), 5.0)
+    assert probe.outcome == "unproven" and probe.reason is None
+    binary, seen = recording_worker(tmp_path)
+    terminal = go(executor(binary, serve_base_url=serve.origin), workdir(tmp_path))
+    assert terminal.ok, terminal  # never a block, never a failure of the attempt
+    assert seen.read_text().startswith("vwa1."), "the worker was launched with its assignment"
+    assert not (terminal.error or "").startswith("harness_configuration:")
+
+
+def test_a_probe_that_gets_no_answer_in_time_is_unproven_and_the_attempt_goes_on(
+    tmp_path: Path,
+    scripted: Callable[..., ScriptedServe],
+    real_checks: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    serve = scripted(Reply(403, SERVE_REFUSAL, delay=2.0))
+    started = time.monotonic()
+    probe = executor_module._probe_assignment(serve.origin, an_assignment(), 0.3)
+    assert probe.outcome == "unproven" and probe.reason is None
+    assert time.monotonic() - started < 1.5, "the probe waited for the slow answer"
+    monkeypatch.setattr(executor_module, "_SERVE_CHECK_TIMEOUT_SECONDS", 0.3)
+    binary, seen = recording_worker(tmp_path)
+    terminal = go(executor(binary, serve_base_url=serve.origin), workdir(tmp_path))
+    assert terminal.ok, terminal
+    assert seen.read_text().startswith("vwa1.")
+
+
+def test_a_probe_to_nothing_listening_is_unproven() -> None:
+    server = ScriptedServe(Reply())
+    origin = server.origin
+    server.close()  # the port now refuses connections
+    probe = executor_module._probe_assignment(origin, an_assignment(), 2.0)
+    assert (probe.outcome, probe.status, probe.reason) == ("unproven", None, None)
+
+
+@pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+def test_a_redirect_is_never_followed_so_the_assignment_goes_nowhere_else(
+    tmp_path: Path, scripted: Callable[..., ScriptedServe], real_checks: None, code: int
+) -> None:
+    """urllib itself follows a 301, 302 or 303 answer to a POST (as a GET, carrying the
+    Authorization header along), so these are what shows that the probe does not."""
+    elsewhere = scripted(Reply(403, SERVE_REFUSAL))
+    serve = scripted(Reply(code, b"", headers={"Location": f"{elsewhere.origin}/captured"}))
+    probe = executor_module._probe_assignment(serve.origin, an_assignment(), 5.0)
+    assert probe.outcome == "unproven"
+    assert elsewhere.seen == [], "the assignment was sent to where the redirect pointed"
+    binary, _credential = recording_worker(tmp_path)
+    terminal = go(executor(binary, serve_base_url=serve.origin), workdir(tmp_path))
+    assert terminal.ok, terminal
+    assert elsewhere.seen == []
+
+
+def test_the_probe_is_bounded_by_what_is_left_of_the_attempt(
+    tmp_path: Path, calls: Calls, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    given: list[float] = []
+
+    def probe(origin: str, assignment: str, timeout: float) -> str | None:
+        given.append(timeout)
+        return None
+
+    monkeypatch.setattr(executor_module, "_check_assignment", probe)
+    binary, _seen = recording_worker(tmp_path)
+    assert go(executor(binary), workdir(tmp_path), timeout=2.0).ok
+    assert go(executor(binary), workdir(tmp_path), timeout=100.0).ok
+    short, long = given
+    assert 0 < short <= 2.0, "the probe may take only what the attempt has left"
+    assert 0 < long <= executor_module._SERVE_CHECK_TIMEOUT_SECONDS
+
+
+def test_a_failed_readiness_check_ends_the_attempt_with_no_probe(
+    tmp_path: Path, calls: Calls, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        executor_module, "_check_serve", lambda *a, **k: "verdict serve is unreachable at x"
+    )
+    binary, ran = marker_worker(tmp_path)
+    terminal = go(executor(binary), workdir(tmp_path))
+    assert terminal.error == "harness_configuration: verdict serve is unreachable at x"
+    assert calls.assignment == [], "the assignment was sent to a serve that failed its readiness"
+    assert not ran.exists()
+
+
+def test_a_readiness_check_that_uses_up_the_budget_leaves_no_time_for_the_probe(
+    tmp_path: Path, calls: Calls, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def slow(origin: str, token: str, timeout: float) -> None:
+        time.sleep(1.2)
+
+    monkeypatch.setattr(executor_module, "_check_serve", slow)
+    binary, ran = marker_worker(tmp_path)
+    terminal = go(executor(binary), workdir(tmp_path), timeout=1.0)
+    assert terminal.ok is False and terminal.error == "timeout"
+    assert calls.assignment == [] and not ran.exists()
+
+
+def test_a_refusal_that_arrives_after_the_attempts_deadline_is_a_timeout_not_a_block(
+    tmp_path: Path, calls: Calls, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Like the readiness check: a check that ran into the attempt's own deadline is the
+    attempt's timeout, never a verdict about serve."""
+
+    def late_refusal(origin: str, assignment: str, timeout: float) -> str:
+        time.sleep(1.2)
+        return f"verdict serve at {origin} refused this attempt's worker assignment"
+
+    monkeypatch.setattr(executor_module, "_check_assignment", late_refusal)
+    binary, ran = marker_worker(tmp_path)
+    terminal = go(executor(binary), workdir(tmp_path), timeout=1.0)
+    assert terminal.ok is False and terminal.error == "timeout"
+    assert not ran.exists()
+
+
+def test_the_probe_cannot_raise_into_the_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scripted: Callable[..., ScriptedServe]
+) -> None:
+    """Whatever goes wrong while sending or reading the probe is 'unproven', never a failure."""
+    serve = scripted(Reply(403, SERVE_REFUSAL))
+
+    def explode(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("unforeseen")
+
+    import verdict.http_safety as http_safety
+
+    monkeypatch.setattr(http_safety, "open_no_redirect", explode)
+    probe = executor_module._probe_assignment(serve.origin, an_assignment(), 5.0)
+    assert (probe.outcome, probe.status, probe.reason) == ("unproven", None, None)

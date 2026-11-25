@@ -8,13 +8,15 @@ Each attempt:
 0. Checks the run id, the node id and the attempt timeout, signs a worker assignment for this
    one attempt (:func:`verdict.worker_assignment.mint_assignment`, key from
    :func:`~verdict.worker_assignment.load_assignment_key`) and checks, once and before anything
-   is launched, that the opencode binary runs and that ``verdict serve`` is reachable and
-   accepts the *serve* token.  Any failure is one ``harness_configuration:`` message, which
+   is launched, that the opencode binary runs, that ``verdict serve`` is reachable and accepts the
+   *serve* token, and that serve accepts this attempt's own assignment (the pre-launch probe,
+   :func:`_probe_assignment`).  Any failure is one ``harness_configuration:`` message, which
    recovery treats as a block, not a retry.  The assignment is the worker's only credential for
    serve: it names the route, the run and the node and expires with the attempt.  The serve token
-   stays in this (the orchestrator's) process, for that readiness check alone; it is never put in
+   stays in this (the orchestrator's) process, for the readiness check alone; it is never put in
    the worker's environment, arguments, config or recorded output, and it is never the fallback
-   when an assignment cannot be signed.
+   when an assignment cannot be signed.  The probe carries the assignment and never the serve
+   token; the readiness check carries the serve token and never the assignment.
 1. Writes a per-attempt ``opencode.json`` to a temp directory, pointed at by
    ``OPENCODE_CONFIG_DIR``, and the task text beside it as the instructions file
    :data:`TASK_FILE_NAME`, which that config lists.  OpenCode skips a listed file that is
@@ -35,8 +37,10 @@ Each attempt:
    host's configuration, not from the serve the worker called, so an empty read counts only for a
    database file (its device and inode, not just its path) this executor has already seen hold a
    request under one of its own assignments, for the same serve address; otherwise the receipts
-   are unavailable and the error stays the provider's.  A refusal of the very first assignment
-   of a run is therefore never proven.
+   are unavailable and the error stays the provider's.  A refusal that comes after the pre-launch
+   probe passed (a tampered copy, a key rotated since) is therefore never proven on a run's first
+   attempt; the probe is what recognises a key, home or clock mismatch there, before anything is
+   launched and without any receipts.
 
 **Dispatch origin** — OpenCode workers send through Verdict serve (:8000), not the gateway
 (OmniRoute :20128), so this executor reports the serve origin it really calls (the address it
@@ -67,7 +71,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from verdict.orchestration.contracts import AttemptUsage, WorkerServeOrigin, WorkerTerminal
 from verdict.orchestration.executors import idle_output_seconds_from_env
@@ -617,6 +621,146 @@ def _check_serve(origin: str, token: str, timeout: float) -> str | None:
         return "the verdict serve credential is not a valid HTTP header value"
 
 
+#: The ``model`` of the pre-launch probe: a value no assignment can name as its route.  A route id
+#: in a verified assignment is a string of 1 to 128 characters without control characters (the
+#: signer refuses to sign anything else and the verifier rejects it), so this one, which holds a
+#: control character, can equal none.  Serve refuses a request whose ``model`` differs from the
+#: assignment's route with 400 before it routes anything, which is what makes the probe free.
+_ASSIGNMENT_PROBE_MODEL = "verdict-assignment-probe\x00not-a-route"
+#: The most of an answer's body the probe reads; serve's answers are far smaller.
+_PROBE_BODY_LIMIT = 4096
+#: The bodies of the answers serve gives the probe, exactly as ``verdict.api`` writes them (the
+#: refusal's words are :data:`_SERVE_REFUSAL_MESSAGE`).  A body that differs in any way, from a
+#: proxy in front of serve or from a provider, is not serve's answer.
+_SERVE_REFUSAL_BODY = {"error": {"message": _SERVE_REFUSAL_MESSAGE, "type": "authentication_error"}}
+_SERVE_NOT_CONFIGURED_BODY = {
+    "error": {"message": "worker assignments are not configured", "type": "api_error"}
+}
+_SERVE_MODEL_CHECK_BODY = {
+    "error": {
+        "message": "the request's model must equal the route in the worker assignment",
+        "type": "invalid_request_error",
+    }
+}
+_SETUP_COMMAND = "verdict setup --apply --allow host.serve"
+
+
+@dataclass(frozen=True)
+class _AssignmentProbe:
+    """What serve said to the pre-launch probe.
+
+    ``accepted``: serve verified the assignment (it answered with its model check, which comes
+    after verification and before any routing).  ``refused``: serve refused the assignment, and
+    ``reason`` says what to do.  ``unproven``: anything else (no answer, an answer that is not
+    serve's, an unexpected status): nothing is concluded and the attempt goes on as before.
+    """
+
+    outcome: Literal["accepted", "refused", "unproven"]
+    status: int | None = None
+    reason: str | None = None
+
+
+def _assignment_probe_body() -> bytes:
+    """The probe's whole body: the sentinel model and nothing else (no ``messages``)."""
+    return json.dumps({"model": _ASSIGNMENT_PROBE_MODEL}).encode("utf-8")
+
+
+def _probe_refusal_reason(origin: str, status: int) -> str:
+    """The block message for serve's refusal.  It cannot know the cause, so it lists them.
+
+    Kept under 400 characters: the recorded reason keeps its tail, so a longer one would lose
+    its beginning.  It names no token or secret value.
+    """
+    if status == 503:
+        return (
+            f"verdict serve at {origin} has no worker assignment signing key (HTTP 503: worker "
+            f"assignments are not configured). Serve probably runs under another HOME, or was "
+            f"never set up. Fix: run '{_SETUP_COMMAND}' under the HOME serve uses (serve reads "
+            f"the key on every request, so no restart is needed)."
+        )
+    return (
+        f"verdict serve at {origin} refused this attempt's worker assignment (HTTP {status}). "
+        f"Possible causes: different worker-assignment.key files (another key or HOME), clocks "
+        f"more than 60 s apart, or a serve older than the signed-assignment change or "
+        f"anonymous. Fix: run '{_SETUP_COMMAND}' under the one HOME both use."
+    )
+
+
+def _json_body(response: Any) -> Any:
+    """The JSON an error response carries, or None for anything else (never raises).
+
+    At most :data:`_PROBE_BODY_LIMIT` bytes are read; a longer body, a body that cannot be read
+    to its end, and one that is not JSON are all None.
+    """
+    try:
+        raw = response.read(_PROBE_BODY_LIMIT + 1)
+        if len(raw) > _PROBE_BODY_LIMIT:
+            return None
+        return json.loads(raw)
+    except Exception:  # an unreadable answer proves nothing
+        return None
+
+
+def _probe_assignment(origin: str, assignment: str, timeout: float) -> _AssignmentProbe:
+    """Ask serve at ``origin`` whether it accepts ``assignment``, before any worker is launched.
+
+    One ``POST /v1/chat/completions`` with the assignment as its bearer and the body
+    :func:`_assignment_probe_body`.  Serve verifies the assignment in its middleware (403, or
+    503 when it has no key, otherwise) and only then compares ``model`` with the assignment's
+    route and answers 400, before any routing: so 400 with serve's words means serve accepted
+    the assignment, and the probe made no decision, minted no proof and sent nothing upstream
+    (serve logs one WARNING, ``reason=model_mismatch``, per probe).  The orchestrator relies on
+    that order (pinned in ``tests/test_serve_worker_route_proof.py``).
+
+    Only serve's exact refusal bodies are a refusal: a 403 or 503 with any other body (a proxy in
+    front of serve, a provider, "Proxy not initialized") and every other status are unproven.
+    No redirect is followed, so the assignment cannot be sent elsewhere.  The request carries the
+    assignment alone, never the serve token.  Never raises: a timeout, a refused connection,
+    anything unforeseen is unproven.
+    """
+    from verdict.http_safety import open_no_redirect
+
+    try:
+        request = urllib.request.Request(
+            f"{origin.rstrip('/')}/v1/chat/completions",
+            data=_assignment_probe_body(),
+            headers={
+                "Authorization": f"Bearer {assignment}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with open_no_redirect(request, timeout=timeout) as reply:
+                return _AssignmentProbe("unproven", reply.status)
+        except urllib.error.HTTPError as exc:
+            try:
+                status = exc.code
+                body = _json_body(exc) if status in {400, 403, 503} else None
+            finally:
+                exc.close()
+    except Exception:  # best effort: anything unforeseen proves nothing
+        return _AssignmentProbe("unproven")
+    if status == 400 and body == _SERVE_MODEL_CHECK_BODY:
+        return _AssignmentProbe("accepted", status)
+    if (status == 403 and body == _SERVE_REFUSAL_BODY) or (
+        status == 503 and body == _SERVE_NOT_CONFIGURED_BODY
+    ):
+        return _AssignmentProbe("refused", status, _probe_refusal_reason(origin, status))
+    return _AssignmentProbe("unproven", status)
+
+
+def _check_assignment(origin: str, assignment: str, timeout: float) -> str | None:
+    """None unless serve at ``origin`` is shown to refuse ``assignment``; else the block reason.
+
+    The pre-dispatch step after :func:`_check_serve`: an accepted probe and an unproven one are
+    both None and the attempt goes on exactly as before, so an unclear answer is never a block
+    and never a provider failure.
+    """
+    return _probe_assignment(origin, assignment, timeout).reason
+
+
 _CHILD_ENV_ALLOWLIST: frozenset[str] = frozenset(
     {
         "PATH",
@@ -1123,17 +1267,25 @@ class OpenCodeExecutor:
         )
 
     def _pre_dispatch_reason(
-        self, serve_token: str, deadline: float, cancel: threading.Event | None = None
+        self,
+        serve_token: str,
+        assignment: str,
+        deadline: float,
+        cancel: threading.Event | None = None,
     ) -> str | None:
-        """Why this attempt cannot be launched (binary, then serve), or None.  Blocking.
+        """Why this attempt cannot be launched (binary, serve, assignment), or None.  Blocking.
 
         ``serve_token`` is serve's own token and is used here only, for the one readiness
-        request; the worker never holds it.
+        request; ``assignment`` is this attempt's own, used only for the one probe that asks
+        serve to accept it (:func:`_probe_assignment`).  The worker never holds the serve token,
+        and the readiness request never carries the assignment.
 
-        Both checks share the attempt's absolute ``deadline`` (``time.monotonic()``): each gets
-        at most what is left, and running out is :data:`_BUDGET_EXHAUSTED`, not a block.  Once
-        ``cancel`` is set the probe is killed, no further check starts (so no authenticated
-        serve request is made for an attempt that has ended) and :data:`_CANCELLED` is returned.
+        All three checks share the attempt's absolute ``deadline`` (``time.monotonic()``): each
+        gets at most what is left, and running out is :data:`_BUDGET_EXHAUSTED`, not a block.
+        The probe runs only after serve is ready, and an unproven probe is not a reason: it
+        returns None.  Once ``cancel`` is set the probe is killed, no further check starts (so
+        no serve request, authenticated or not, is made for an attempt that has ended) and
+        :data:`_CANCELLED` is returned.
         """
         if cancel is not None and cancel.is_set():
             return _CANCELLED
@@ -1155,8 +1307,19 @@ class OpenCodeExecutor:
         reason = _check_serve(
             self._serve_base_url, serve_token, min(_SERVE_CHECK_TIMEOUT_SECONDS, left)
         )
+        if reason is not None:
+            # the check ran into the attempt's own deadline: that is its timeout, not a verdict
+            return _BUDGET_EXHAUSTED if time.monotonic() >= deadline else reason
+        if cancel is not None and cancel.is_set():
+            return _CANCELLED
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return _BUDGET_EXHAUSTED
+        reason = _check_assignment(
+            self._serve_base_url, assignment, min(_SERVE_CHECK_TIMEOUT_SECONDS, left)
+        )
         if reason is not None and time.monotonic() >= deadline:
-            return _BUDGET_EXHAUSTED  # the check ran into the attempt's own deadline
+            return _BUDGET_EXHAUSTED  # the probe ran into the attempt's own deadline
         return reason
 
     def _sign(
@@ -1240,9 +1403,10 @@ class OpenCodeExecutor:
         started = time.monotonic()
         session_id = _attempt_session_id()
 
-        # --- pre-dispatch: serve token, signed assignment, binary, serve (one message, nothing
-        # launched).  The serve token is only for the readiness check below; the worker is given
-        # the assignment alone. ---
+        # --- pre-dispatch: serve token, signed assignment, binary, serve, and serve's acceptance
+        # of the assignment (one message, nothing launched).  The serve token is only for the
+        # readiness check below and the assignment only for the probe after it; the worker is
+        # given the assignment alone. ---
         token_source = self._serve_token_provider or _serve_token
         try:
             serve_token = token_source()
@@ -1291,6 +1455,7 @@ class OpenCodeExecutor:
         reason = await _to_thread_joined(
             self._pre_dispatch_reason,
             serve_token,
+            assignment,
             started + timeout_seconds,
             cancel,
             on_cancel=cancel.set,

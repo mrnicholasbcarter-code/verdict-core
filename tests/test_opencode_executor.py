@@ -60,17 +60,19 @@ NODE_ID = "node-1"
 @pytest.fixture(autouse=True)
 def _serve_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default for every test here: a serve token and a signing key resolve, the binary runs,
-    serve accepts the token.
+    serve accepts the token and the attempt's own assignment.
 
     The fake workers are scripts that record what they are given, so the real binary check
-    (which runs ``--version``) is replaced too.  The tests of the pre-dispatch checks put the
-    real functions back.  Nothing here ever reads a real credential store, signing key or
+    (which runs ``--version``) is replaced too, and so is the pre-launch assignment probe (it
+    would send a signed assignment to the default serve address).  The tests of the pre-dispatch
+    checks put the real functions back.  Nothing here ever reads a real credential store, signing key or
     receipt database, or contacts a real serve.
     """
     monkeypatch.setattr(executor_module, "_serve_token", lambda *a, **k: "fixture-serve-token-0000")
     monkeypatch.setattr(executor_module, "load_assignment_key", lambda *a, **k: SIGNING_KEY)
     monkeypatch.setattr(executor_module, "_check_binary", lambda *a, **k: None)
     monkeypatch.setattr(executor_module, "_check_serve", lambda *a, **k: None)
+    monkeypatch.setattr(executor_module, "_check_assignment", lambda *a, **k: None)
 
 
 # ---------------------------------------------------------------------------
@@ -1690,8 +1692,12 @@ def test_cancelling_run_between_the_binary_and_serve_checks_skips_the_serve_chec
     def recording_serve_check(origin: str, token: str, timeout: float) -> None:
         serve_calls.append(origin)
 
+    def recording_probe(origin: str, assignment: str, timeout: float) -> None:
+        serve_calls.append(f"probe {origin}")
+
     monkeypatch.setattr(executor_module, "_check_binary", blocked_binary_check)
     monkeypatch.setattr(executor_module, "_check_serve", recording_serve_check)
+    monkeypatch.setattr(executor_module, "_check_assignment", recording_probe)
     cwd = tmp_path / "work"
     cwd.mkdir()
     executor = OpenCodeExecutor(opencode_bin=make_fake_opencode(tmp_path, "sys.exit(0)\n"))
@@ -1769,6 +1775,57 @@ def test_cancelling_run_waits_for_a_serve_check_that_is_already_in_flight(
 
     asyncio.run(scenario())
     assert list(cwd.iterdir()) == [], "the worktree was written to after the cancellation"
+
+
+def test_cancelling_run_waits_for_an_assignment_probe_that_is_already_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pre-launch assignment probe is a request too: once started it cannot be recalled, so
+    the cancellation completes only after it has returned and nothing is launched behind it."""
+    import threading
+
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    marker = tmp_path / "worker-ran.txt"
+
+    def blocked_probe(origin: str, assignment: str, timeout: float) -> None:
+        started.set()
+        assert release.wait(timeout=30), "test never released the blocked probe"
+        finished.set()
+
+    monkeypatch.setattr(executor_module, "_check_assignment", blocked_probe)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    executor = OpenCodeExecutor(
+        opencode_bin=make_fake_opencode(tmp_path, f"open({str(marker)!r}, 'w').write('ran')\n")
+    )
+
+    async def scenario() -> None:
+        task = asyncio.ensure_future(
+            executor.run(
+                "task",
+                route_id=ROUTE,
+                cwd=cwd,
+                timeout_seconds=30.0,
+                run_id=RUN_ID,
+                node_id=NODE_ID,
+            )
+        )
+        for _ in range(500):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set(), "the assignment probe never started"
+        task.cancel()
+        await asyncio.sleep(0.3)
+        assert not task.done(), "run() finished cancelling while its probe was running"
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=20.0)
+        assert finished.is_set(), "the cancellation completed before the probe returned"
+
+    asyncio.run(scenario())
+    assert list(cwd.iterdir()) == [], "the worktree was written to after the cancellation"
+    assert not marker.exists(), "a worker was launched for a cancelled attempt"
 
 
 def test_a_failing_credential_lookup_is_a_configuration_failure_not_an_exception(
