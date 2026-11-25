@@ -606,6 +606,67 @@ def test_what_was_seen_in_one_database_does_not_vouch_for_another(tmp_path: Path
     assert back.error.startswith("harness_configuration: verdict serve refused")
 
 
+@pytest.mark.parametrize("change", ["replaced", "retargeted", "replaced-during-the-attempt"])
+def test_what_was_seen_of_a_database_does_not_outlast_the_file(tmp_path: Path, change: str) -> None:
+    """The proof is a request found in one file.  A path can be replaced, or a link retargeted, with
+    another valid receipt database that serve never wrote; the path is unchanged but the file is
+    not, so an empty read of it proves nothing (neither between attempts nor during one)."""
+    first_dir, other_dir = tmp_path / "first", tmp_path / "other"
+    first_dir.mkdir()
+    other_dir.mkdir()
+    real = empty_serve_database(first_dir)
+    spare = empty_serve_database(other_dir)  # another valid, empty receipt database
+    path = tmp_path / "serve-receipts-link.db"
+    path.symlink_to(real)
+    where = path if change == "retargeted" else real
+    during = f"os.replace({str(spare)!r}, {str(real)!r})\n" if change.endswith("attempt") else ""
+
+    helper = tmp_path / "seed.py"
+    helper.write_text(
+        textwrap.dedent(
+            f"""
+            import hashlib, os, sys
+            sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+            from tests.test_opencode_signed_assignment import seed_serve_root
+            from pathlib import Path
+            token = os.environ["VERDICT_WORKER_API_KEY"]
+            digest = hashlib.sha256(token.split(".")[1].encode()).hexdigest()
+            seed_serve_root(Path({str(where)!r}), digest, [], 1)
+            """
+        )
+    )
+    ran = tmp_path / "already-ran.txt"
+    binary = fake_worker(
+        tmp_path,
+        f"import subprocess\n"
+        f"if not os.path.exists({str(ran)!r}):\n"
+        f"    open({str(ran)!r}, 'w').write('1')\n"
+        f"    sys.exit(subprocess.call([{sys.executable!r}, {str(helper)!r}]))\n"
+        f"{during}"
+        f"sys.stdout.write({REFUSAL!r})\n"
+        f"sys.exit(1)\n",
+    )
+    ex = executor(binary, receipts_db_provider=lambda: where)
+    assert go(ex, workdir(tmp_path)).ok
+
+    if change == "replaced":
+        os.replace(spare, real)
+    elif change == "retargeted":
+        path.unlink()
+        path.symlink_to(spare)
+    refused = go(ex, workdir(tmp_path))
+
+    assert refused.ok is False
+    assert not refused.error.startswith("harness_configuration:"), refused.error
+    assert refused.error == "authentication failed"
+    serve = refused.worker_assignment["serve_receipts"]  # type: ignore[index]
+    assert serve["status"] == "unavailable"
+    assert serve["requests"] is None
+    verdict = FailureIntelligence().classify(refused, now=datetime.now(timezone.utc))
+    assert verdict.category != "harness_configuration"
+    assert verdict.cooldown_seconds > 0
+
+
 def test_an_attempt_that_serve_never_served_does_not_show_the_database_to_be_serves(
     tmp_path: Path,
 ) -> None:
@@ -934,10 +995,10 @@ def test_unreadable_serve_receipts_are_unavailable_with_a_reason_and_the_attempt
 def test_a_reader_that_raises_is_unavailable_never_an_exception(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def boom(mark: Any, digest: str, *, association_shown: bool = False) -> Any:
+    def boom(self: Any, mark: Any, digest: str, *, origin: str) -> Any:
         raise RuntimeError("row detail that must not be recorded")
 
-    monkeypatch.setattr(executor_module, "read_assignment_evidence", boom)
+    monkeypatch.setattr(executor_module.SeenDatabases, "read", boom)
     binary, _ = recording_worker(tmp_path)
     terminal = go(executor(binary), workdir(tmp_path))
     assert terminal.ok

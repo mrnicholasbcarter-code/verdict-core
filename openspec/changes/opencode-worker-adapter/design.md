@@ -215,18 +215,26 @@ configured with received that assignment, so such a row shows that this database
 serve's. The executor keeps, for the life of one `verdict orchestrate` process
 (`_worker_executor` builds the default executor once per run, so it serves every attempt of the
 run; a node named in `--executor-map` gets its own, which learns for itself), the set of (serve
-address, database) pairs in which it has found a request under its own assignments. An empty read is
+address, database file) pairs in which it has found a request under its own assignments
+(`serve_evidence.SeenDatabases`). The file is its device and inode (`os.stat`, following links),
+not its path: a path can be replaced by, or a link retargeted at, another valid receipt database
+that serve never wrote, and what was seen of the old file then vouches for nothing. The file
+must also be the one the attempt's mark was taken of (so a swap during the attempt is not
+trusted), and one replaced while it is read makes the read `unavailable`. An empty read is
 "serve recorded nothing" only for a pair in that set; otherwise the record is `unavailable` with
 the reason that the database is not shown to be the selected serve's, and its figures are `null`.
 A request found under the assignment is read whether or not the pair was known (it is what adds
 the pair). The cost is accepted: a signing key serve does not share, refused from the run's first
 attempt, is not recognised as a configuration block (no attempt of that run is ever served, so
 nothing is shown), and a refusal read from a database nothing has tied to serve stays the
-provider's, with the cooldown that implies. A serve repointed at another database during a run is
-still read as its old one until the process ends, because the executor has no way to ask serve;
-`--resume` and a restarted controller start from nothing shown. Telling a refusal from a provider's
-words without serve's receipts needs serve to say so in its answer or to name its database, which
-this story does not change (a decision for the operator in the pull request).
+provider's, with the cooldown that implies. What cannot be told from here is a serve restarted
+on another database while the orchestrator's configuration still names the old file: the old
+file is the one read, because the executor has no way to ask serve, and a provider's own refusal
+of that kind is then read as serve's; the same is true of a device and inode that the system
+reuses for another file. `--resume` and a restarted controller start from nothing seen. Telling a
+refusal from a provider's words without serve's receipts needs serve to say so in its answer or to
+name its database, which this story does not change (a decision for the operator in the pull
+request).
 
 **What serve recorded, read back into the run receipt (design detail, #1325):** serve writes one
 evidence root per relay request to its receipt database (`VERDICT_RECEIPTS_DB`), naming the
@@ -374,11 +382,13 @@ rejected and classified as a failure before verification runs.
   a `harness_configuration:` block before anything is launched. The default is not switched here
   (#1328): one live attempt through a spare serve passed on 2026-11-25 (task 2.19), the run on
   installed main is post-merge (task 8.1).
-- **Known gap: the status matcher misses the `requests` forms.** An HTTP status in
-  unstructured text needs an HTTP or status marker or its reason phrase right after the number,
-  so `429 Client Error: Too Many Requests for url: ...` and
-  `503 Server Error: Service Unavailable for url: ...` get no status and are not rerouted;
-  accepted by the operator on 2026-11-24 and moved to #1313.
+- **Resolved gap (2026-11-25, #1336): the status matcher reads the `requests` forms.** At the
+  time of the 2026-11-24 review an HTTP status in unstructured text needed an HTTP or status
+  marker or its reason phrase right after the number, so `429 Client Error: Too Many Requests
+  for url: ...` and `503 Server Error: Service Unavailable for url: ...` got no status and were
+  not rerouted; the operator accepted that on 2026-11-24 and moved it to #1313. The matcher now
+  reads both forms (see the scenario "The requests-library status forms are read" in the spec
+  delta).
 
 ## Migration / rollback
 

@@ -397,7 +397,7 @@ receipts hold a request under the assignment, or cannot be read, the failure sta
 So does an empty read of a receipt database nothing has tied to the serve at `--serve-url`: the
 database is found from this host's configuration, so with a spare or remote serve it can be
 another serve's.  It counts only after an earlier attempt of the same run was served in it (a
-request under that attempt's own assignment was found there), so a signing key serve does not
+request under that attempt's own assignment was found in that same file, not merely at that path), so a signing key serve does not
 share, refused from the run's first attempt, is not recognised as a configuration block.  Run
 `verdict setup --apply --allow host.serve` to create the serve token, the signing key and the unit.
 

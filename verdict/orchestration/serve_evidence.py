@@ -27,7 +27,10 @@ never from the serve at the address the worker called, so with a spare or remote
 another serve's, or one nothing writes to.  A request found under the assignment's digest shows
 the database is serve's (only the serve at that address received the assignment); an empty read
 means "serve recorded nothing" only once the caller has such a sign for the same address and
-database (``association_shown``), and is otherwise unavailable.
+database (``association_shown``), and is otherwise unavailable.  "The same database" means the
+same file, not the same path: a path can be replaced or a link retargeted with another valid
+receipt database, so what was seen is bound to the file's device and inode
+(:func:`database_identity`) and :class:`SeenDatabases` keeps it.
 
 Nothing here touches a credential: the digest is the only identifier that goes in, and a reason
 names the problem, never a path's contents or a row.
@@ -36,13 +39,22 @@ names the problem, never a path's contents or a row.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-__all__ = ["NOT_SHOWN_REASON", "EvidenceMark", "read_assignment_evidence", "take_mark"]
+__all__ = [
+    "NOT_SHOWN_REASON",
+    "EvidenceMark",
+    "SeenDatabases",
+    "database_identity",
+    "read_assignment_evidence",
+    "take_mark",
+]
 
 #: A read is cut off after this many seconds of work, whatever the database holds.  It runs after
 #: the worker is gone and inside the settle reserve the runtime leaves an executor (at most 15 s,
@@ -80,12 +92,30 @@ class EvidenceMark:
 
     ``rowid`` is the highest row there was (0 for no rows or no file yet); only later rows can
     belong to the attempt.  ``reason`` is set when the database cannot be read at all, and then
-    the later read is unavailable for the same reason.
+    the later read is unavailable for the same reason.  ``identity`` is the file's device and
+    inode when it existed (``None`` when it did not yet).
     """
 
     db_path: Path | None
     rowid: int
     reason: str = ""
+    identity: tuple[int, int] | None = None
+
+
+def database_identity(path: Path | str | None) -> tuple[int, int] | None:
+    """The device and inode of the file ``path`` names right now, or ``None``.
+
+    Follows links, so a link retargeted at another database, or a file replaced by another, has
+    another identity under the same path.  ``None`` for no path, a path that does not exist or
+    cannot be examined.  Never creates or changes anything.
+    """
+    if path is None or str(path).strip() == "":
+        return None
+    try:
+        stat = os.stat(Path(path).expanduser())
+    except (OSError, ValueError):
+        return None
+    return (stat.st_dev, stat.st_ino)
 
 
 def _connect(path: Path, deadline: float) -> sqlite3.Connection:
@@ -116,6 +146,7 @@ def take_mark(db_path: Path | str | None) -> EvidenceMark:
     path = Path(db_path).expanduser()
     if not path.exists():
         return EvidenceMark(path, 0)
+    identity = database_identity(path)
     try:
         conn = _connect(path, time.monotonic() + READ_DEADLINE_SECONDS)
         try:
@@ -124,9 +155,9 @@ def take_mark(db_path: Path | str | None) -> EvidenceMark:
             conn.close()
     except (sqlite3.Error, OSError, ValueError) as exc:
         return EvidenceMark(
-            path, 0, f"serve's receipt database cannot be read ({type(exc).__name__})"
+            path, 0, f"serve's receipt database cannot be read ({type(exc).__name__})", identity
         )
-    return EvidenceMark(path, int(row[0] or 0))
+    return EvidenceMark(path, int(row[0] or 0), identity=identity)
 
 
 def _unavailable(reason: str) -> dict[str, Any]:
@@ -227,3 +258,43 @@ def read_assignment_evidence(
         "requests_waived": waived,
         "requirement_waivers": distinct,
     }
+
+
+class SeenDatabases:
+    """The receipt databases in which a caller has found requests under assignments it issued.
+
+    A row that carries the digest of an assignment the caller issued shows that the file holding
+    it is the database of the serve that received the assignment (only that serve could have
+    written it).  That is what lets a later empty read mean "serve recorded nothing": the pair
+    (serve address, file) is remembered, and only that pair, only while the path still names the
+    same file and the file was the same when the attempt's mark was taken.  Thread-safe: attempts
+    run concurrently.  Nothing is persisted; a new process starts with nothing seen.
+    """
+
+    def __init__(self) -> None:
+        self._seen: set[tuple[str, str, tuple[int, int]]] = set()
+        self._lock = threading.Lock()
+
+    def read(self, mark: EvidenceMark, digest: str, *, origin: str) -> dict[str, Any]:
+        """:func:`read_assignment_evidence`, told whether this file is already shown to be serve's.
+
+        ``origin`` is the address of the serve the worker called.  A request found adds the pair;
+        a file replaced while it was read is unavailable (what was read may be from either file).
+        Blocking, never raises.
+        """
+        path = mark.db_path
+        before = database_identity(path)
+        key = (
+            (origin, os.path.abspath(path), before)
+            if path is not None and before is not None
+            else None
+        )
+        with self._lock:
+            shown = key is not None and before == mark.identity and key in self._seen
+        record = read_assignment_evidence(mark, digest, association_shown=shown)
+        if database_identity(path) != before:
+            return _unavailable("serve's receipt database was replaced while it was read")
+        if key is not None and record["status"] == "read" and record["requests"]:
+            with self._lock:
+                self._seen.add(key)
+        return record

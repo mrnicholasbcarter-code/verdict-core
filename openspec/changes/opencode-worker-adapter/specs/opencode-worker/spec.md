@@ -416,13 +416,20 @@ cancellation SHALL complete only after the thread that ran the checks has finish
 - **WHEN** a worker fails with serve's refusal status and words and the receipt database the
   executor read is empty for the assignment but nothing has shown it is the one the serve at the
   worker's address writes (no request under an earlier assignment of the executor was found in
-  it, or the executor's earlier requests were found in a different database)
+  it, the executor's earlier requests were found in a different database, or the file at the path
+  is no longer the one they were found in: replaced, or a link retargeted, between attempts or
+  during one)
 - **THEN** the terminal keeps the worker's status and message, recovery sees the provider's denial
   (with a cooldown), and the terminal carries `serve_receipts` `unavailable` with the reason and
-  `null` figures; what was shown for one database does not vouch for another
+  `null` figures; what was shown for one database file or serve address does not vouch for another
   (`test_serves_words_are_the_providers_while_the_database_is_not_shown_to_be_serves`,
   `test_what_was_seen_in_one_database_does_not_vouch_for_another`,
-  `test_an_attempt_that_serve_never_served_does_not_show_the_database_to_be_serves`)
+  `test_what_was_seen_of_a_database_does_not_outlast_the_file`,
+  `test_an_attempt_that_serve_never_served_does_not_show_the_database_to_be_serves`,
+  `test_what_was_found_in_a_file_is_not_carried_to_the_file_that_replaces_it`,
+  `test_what_was_found_for_one_serve_address_does_not_vouch_for_another`,
+  `test_a_file_that_was_not_the_one_marked_is_not_vouched_for`,
+  `test_a_file_replaced_while_it_is_read_is_unavailable`)
 
 #### Scenario: Other 401 and 403 answers are still the provider's
 

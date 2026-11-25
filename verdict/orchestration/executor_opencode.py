@@ -33,9 +33,10 @@ Each attempt:
    configuration block only when serve's receipts show it admitted no request under the
    assignment, and the provider's in every other case.  The receipt database is found from this
    host's configuration, not from the serve the worker called, so an empty read counts only for a
-   database this executor has already seen hold a request under one of its own assignments (for
-   the same serve address); otherwise the receipts are unavailable and the error stays the
-   provider's.  A refusal of the very first assignment of a run is therefore never proven.
+   database file (its device and inode, not just its path) this executor has already seen hold a
+   request under one of its own assignments, for the same serve address; otherwise the receipts
+   are unavailable and the error stays the provider's.  A refusal of the very first assignment
+   of a run is therefore never proven.
 
 **Dispatch origin** — OpenCode workers send through Verdict serve (:8000), not the gateway
 (OmniRoute :20128), so this executor reports the serve origin it really calls (the address it
@@ -70,7 +71,7 @@ from typing import Any, TypeVar
 
 from verdict.orchestration.contracts import AttemptUsage, WorkerServeOrigin, WorkerTerminal
 from verdict.orchestration.executors import idle_output_seconds_from_env
-from verdict.orchestration.serve_evidence import EvidenceMark, read_assignment_evidence, take_mark
+from verdict.orchestration.serve_evidence import EvidenceMark, SeenDatabases, take_mark
 from verdict.worker_assignment import (
     MAX_LIFETIME_SECONDS,
     AssignmentError,
@@ -969,11 +970,10 @@ class OpenCodeExecutor:
         self._issued: dict[str, datetime] = {}
         self._issued_lock = threading.Lock()
         self._receipts_db_provider = receipts_db_provider
-        # The (serve address, receipt database) pairs in which a request under one of this
-        # executor's assignments has been found: for those, and no others, an empty read means
-        # serve recorded nothing (see ``_serve_evidence``).
-        self._receipts_shown: set[tuple[str, str]] = set()
-        self._receipts_shown_lock = threading.Lock()
+        # The receipt databases (files) in which a request under one of this executor's
+        # assignments has been found, for this serve address: for those, and no others, an empty
+        # read means serve recorded nothing (see ``_serve_evidence``).
+        self._seen_databases = SeenDatabases()
         self._binary_checked = False
         self._env = dict(env) if env is not None else None
         self.max_output_bytes: int = (
@@ -1091,17 +1091,16 @@ class OpenCodeExecutor:
         The database is the one this host's configuration names, not one found through the serve
         the worker called, so an empty read of it proves nothing by itself: it is unavailable
         until a request under one of this executor's own assignments has been found in the same
-        database for the same serve address.  Only the serve at that address received the
-        assignment, so such a row shows the database is the one that serve writes; what is shown
-        is kept for the executor's life (one ``verdict orchestrate`` run) and never carried over
-        to another address or database.
+        file (not just the same path) for the same serve address.  Only the serve at that address
+        received the assignment, so such a row shows the file is the one that serve writes; what
+        is seen is kept for the executor's life (one ``verdict orchestrate`` run) and never
+        carried over to another address or file (:class:`SeenDatabases`).
         """
-        where = (self._serve_base_url, os.path.abspath(mark.db_path) if mark.db_path else "")
-        with self._receipts_shown_lock:
-            shown = where in self._receipts_shown
         try:
             serve_receipts = await _to_thread_joined(
-                functools.partial(read_assignment_evidence, association_shown=shown), mark, digest
+                functools.partial(self._seen_databases.read, origin=self._serve_base_url),
+                mark,
+                digest,
             )
         except Exception as exc:  # the reader does not raise; this is the last line
             serve_receipts = {
@@ -1111,9 +1110,6 @@ class OpenCodeExecutor:
                 "requests_waived": None,
                 "requirement_waivers": None,
             }
-        if serve_receipts.get("status") == "read" and serve_receipts.get("requests"):
-            with self._receipts_shown_lock:
-                self._receipts_shown.add(where)
         return {"assignment_digest": digest, "serve_receipts": serve_receipts}
 
     def _failure(self, route_id: str, started: float, error: str) -> WorkerTerminal:

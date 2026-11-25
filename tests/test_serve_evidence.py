@@ -8,6 +8,7 @@ the shape of a root is the one a real relay request leaves (proved against the r
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -366,3 +367,131 @@ def test_a_waiver_field_that_is_missing_or_json_null_is_no_waiver_not_unavailabl
     result = _read(db, mine)
     assert (result["status"], result["requests"], result["requests_waived"]) == ("read", 3, 0)
     assert result["requirement_waivers"] == []
+
+
+# --- which file a database is ---------------------------------------------------------------
+#
+# What was found in a database (a request under an assignment the caller issued) vouches for that
+# file only: a path can be re-pointed at another database, or the file replaced, and then it
+# vouches for nothing.  The file's device and inode say which file a path names right now.
+
+
+def _identity_of(path: Path) -> tuple[int, int]:
+    stat = os.stat(path)
+    return (stat.st_dev, stat.st_ino)
+
+
+def test_a_mark_names_the_file_it_was_taken_of(db: Db) -> None:
+    mark = evidence.take_mark(db.path)
+    assert mark.identity == _identity_of(db.path)
+    assert evidence.database_identity(db.path) == mark.identity
+
+
+def test_a_file_that_does_not_exist_yet_has_no_identity(tmp_path: Path) -> None:
+    missing = tmp_path / "not-yet.db"
+    assert evidence.database_identity(missing) is None
+    assert evidence.take_mark(missing).identity is None
+    assert evidence.database_identity(None) is None
+    assert not missing.exists()
+
+
+def test_a_replaced_file_and_a_retargeted_link_are_other_files(tmp_path: Path) -> None:
+    first = Db(tmp_path / "first.db")
+    second = Db(tmp_path / "second.db")
+    one, other = _identity_of(first.path), _identity_of(second.path)
+    assert one != other
+
+    link = tmp_path / "serve-receipts.db"
+    link.symlink_to(first.path)
+    assert evidence.database_identity(link) == one
+    link.unlink()
+    link.symlink_to(second.path)
+    assert evidence.database_identity(link) == other  # retargeted
+
+    plain = tmp_path / "plain.db"
+    Db(plain)
+    before = evidence.database_identity(plain)
+    os.replace(second.path, plain)  # another database moved into the path
+    assert evidence.database_identity(plain) == other != before
+
+
+def test_an_unreadable_path_has_no_identity(tmp_path: Path) -> None:
+    assert evidence.database_identity(tmp_path / "no-such-dir" / "x.db") is None
+
+
+# --- what was seen, kept per serve address and file ----------------------------------------
+
+ORIGIN = "http://127.0.0.1:8000"
+
+
+def _seen_read(
+    seen: evidence.SeenDatabases, db: Db, digest: str, *, origin: str = ORIGIN
+) -> dict[str, Any]:
+    return seen.read(evidence.take_mark(db.path), digest, origin=origin)
+
+
+def test_an_empty_read_is_zero_requests_only_after_a_request_was_found_in_the_same_file(
+    db: Db,
+) -> None:
+    seen = evidence.SeenDatabases()
+    first = _seen_read(seen, db, _digest("first"))
+    assert first["status"] == "unavailable"  # nothing is known about this file yet
+    db.put(_digest("second"), [WAIVER])
+    mark = evidence.take_mark(db.path)
+    db.put(_digest("third"), [])
+    found = seen.read(mark, _digest("third"), origin=ORIGIN)
+    assert (found["status"], found["requests"]) == ("read", 1)
+    again = _seen_read(seen, db, _digest("fourth"))
+    assert (again["status"], again["requests"], again["requests_waived"]) == ("read", 0, 0)
+
+
+def test_what_was_found_for_one_serve_address_does_not_vouch_for_another(db: Db) -> None:
+    seen = evidence.SeenDatabases()
+    mark = evidence.take_mark(db.path)
+    db.put(_digest("mine"), [])
+    assert seen.read(mark, _digest("mine"), origin=ORIGIN)["requests"] == 1
+    assert _seen_read(seen, db, _digest("next"))["status"] == "read"
+    elsewhere = _seen_read(seen, db, _digest("next"), origin="http://127.0.0.1:18325")
+    assert elsewhere["status"] == "unavailable"
+    assert "not shown to be" in elsewhere["reason"]
+
+
+def test_what_was_found_in_a_file_is_not_carried_to_the_file_that_replaces_it(
+    tmp_path: Path,
+) -> None:
+    seen = evidence.SeenDatabases()
+    first = Db(tmp_path / "first.db")
+    spare = Db(tmp_path / "spare.db")
+    mark = evidence.take_mark(first.path)
+    first.put(_digest("mine"), [])
+    assert seen.read(mark, _digest("mine"), origin=ORIGIN)["requests"] == 1
+    path = first.path
+    os.replace(spare.path, path)  # another valid receipt database now sits at the path
+    replaced = seen.read(evidence.take_mark(path), _digest("next"), origin=ORIGIN)
+    assert replaced["status"] == "unavailable"
+    assert replaced["requests"] is None
+
+
+def test_a_file_that_was_not_the_one_marked_is_not_vouched_for(db: Db) -> None:
+    """The mark was taken of another file than the one read (the path was re-pointed in between)."""
+    seen = evidence.SeenDatabases()
+    mark = evidence.take_mark(db.path)
+    db.put(_digest("mine"), [])
+    assert seen.read(mark, _digest("mine"), origin=ORIGIN)["requests"] == 1
+    stale = evidence.EvidenceMark(mark.db_path, mark.rowid, identity=(mark.identity[0], 1))  # type: ignore[index]
+    result = seen.read(stale, _digest("next"), origin=ORIGIN)
+    assert result["status"] == "unavailable"
+
+
+def test_a_file_replaced_while_it_is_read_is_unavailable(
+    db: Db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = evidence.SeenDatabases()
+    db.put(_digest("mine"), [])
+    real = evidence.database_identity
+    answers = iter([real(db.path), (1, 2)])  # the path names another file by the end of the read
+    monkeypatch.setattr(evidence, "database_identity", lambda path: next(answers))
+    result = seen.read(evidence.EvidenceMark(db.path, 0), _digest("mine"), origin=ORIGIN)
+    assert result["status"] == "unavailable"
+    assert "replaced while" in result["reason"]
+    assert result["requests"] is None

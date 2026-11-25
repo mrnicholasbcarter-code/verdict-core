@@ -109,8 +109,17 @@
       `tests/test_opencode_assignment_serve_path.py` 4: the first-attempt refusals were blocks);
       with the association never recorded 13 failed (every block test), and with any database seen
       vouching for every database `test_what_was_seen_in_one_database_does_not_vouch_for_another`
-      failed. The accepted cost is that a signing key serve does not share, refused from a run's
-      first attempt, is not recognised as a block.
+      failed. A second review of that commit found the proof was kept by path: a path replaced
+      by, or a link retargeted at, another valid receipt database kept vouching for it. What was
+      seen is now bound to the file (device and inode, `serve_evidence.SeenDatabases`), to the
+      file the attempt's mark was taken of, and a file replaced while it is read is unavailable;
+      written first, 7 tests failed (4 of the identity helpers, and `replaced`, `retargeted` and
+      `replaced-during-the-attempt` of
+      `test_what_was_seen_of_a_database_does_not_outlast_the_file`: each was a false block), and
+      with the file left out of the key, the mark's file not compared, or no replaced-while-read
+      check, tests failed. The accepted cost is that a signing key serve does not share, refused
+      from a run's first attempt, is not recognised as a block; a serve restarted on another
+      database while the orchestrator's configuration names the old file cannot be told apart.
 - [x] 2.17 The executor-to-serve path through the real app (#1325): a loopback server runs the real
       `verdict serve` app with a recording upstream; the real executor signs and a fake worker sends
       one request; the assignment is served on the signed route and serve's evidence names the
@@ -321,7 +330,8 @@
       and is not rerouted. The operator accepted it on 2026-11-24 and moved it to #1313,
       because the adapter was opt-in and, at the time, could not complete a request through
       serve until #1313 reworked that path (it has since: serve's side in #1335, the executor's
-      in #1325). No review was run on the commit that records this decision.
+      in #1325). The matcher has since been fixed (2026-11-25, #1336: it reads both `requests`
+      forms). No review was run on the commit that records this decision.
 - [ ] (post-merge) 8.1 On installed main, run `verdict orchestrate --executor opencode` on a
       task with a coding node (OpenCode is opt-in, so the flag is required); it needed #1313 (serve
       honours the assignment) and #1325 (the executor signs one) and needs the signing key from
