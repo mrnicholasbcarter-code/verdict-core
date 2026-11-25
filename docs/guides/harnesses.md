@@ -413,6 +413,17 @@ url: ...`, `503 Server Error: Service Unavailable for url: ...`), so recovery re
 rate limit and an upstream outage.  A bare number is still not a status (`retrying in 500 ms`,
 `failed after 429 attempts`).
 
+**Output.** Verdict reads the JSON lines OpenCode 2.3.2 prints (real captures are in
+`tests/fixtures/opencode_stdout`, with a README): `type` and `sessionID` are top-level, and the
+rest sits under `part`.  The worker's output text is the `part.text` of each `text` event, which
+is one whole block, joined in order; the token usage is the sum of `part.tokens` over the
+`step_finish` events (one per model step); the stop reason is the last step's `part.reason`.
+`part.cost` is `0` for a custom provider, and a `0` is recorded as an unknown cost, never as free.
+When the upstream answers 429 or 503, OpenCode retries by itself and prints a `retry` event for
+each try (ten of them, over 85 to 100 seconds in the captures) before the final `error` event
+that carries the HTTP status and the retry delay; only that final event is read, so a status
+appears after the retries, not before.
+
 **What this does not restrict** (ADR-053 decision 4): the worker keeps the operator's home
 directory and an unrestricted shell, so it can read files there and reach the gateway
 directly.  "All model calls go through serve" holds for OpenCode's own provider calls only.

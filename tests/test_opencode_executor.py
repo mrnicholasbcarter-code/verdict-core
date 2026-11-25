@@ -97,26 +97,66 @@ def run_executor(
     return asyncio.run(executor.run(prompt, route_id=ROUTE, cwd=cwd, timeout_seconds=timeout))
 
 
+# Event shapes below are the ones the installed OpenCode 2.3.2 prints, taken from the captures in
+# ``tests/fixtures/opencode_stdout`` (see its README): ``type``, ``timestamp`` and ``sessionID``
+# are top-level; the text, stop reason, tokens and cost of a step sit under ``part``.
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "opencode_stdout"
+_TS = 1795550120185
+
+
+def captured(name: str) -> str:
+    """The stdout OpenCode 2.3.2 really printed (see the fixture README)."""
+    return (FIXTURE_DIR / name).read_text(encoding="utf-8")
+
+
+def _part_event(
+    event_type: str, part: object, session_id: str = "ses_abc123", **top: object
+) -> str:
+    event: dict[str, object] = {
+        "type": event_type,
+        "timestamp": _TS,
+        "sessionID": session_id,
+        "part": part,
+    }
+    event.update(top)
+    return json.dumps(event)
+
+
+def text_event(text: str, session_id: str = "ses_abc123") -> str:
+    """One whole text block, as 2.3.2 prints it."""
+    part = {"type": "text", "text": text, "time": {"start": _TS - 15, "end": _TS}}
+    return _part_event("text", part, session_id)
+
+
+def step_finish_event(
+    cost: object = 0,
+    tokens_in: int = 100,
+    tokens_out: int = 42,
+    reason: str = "stop",
+    session_id: str = "ses_abc123",
+) -> str:
+    """A ``step_finish`` as 2.3.2 prints it; ``cost=None`` leaves the figure out."""
+    part: dict[str, object] = {
+        "type": "step-finish",
+        "reason": reason,
+        "tokens": {
+            "input": tokens_in,
+            "output": tokens_out,
+            "reasoning": 0,
+            "cache": {"read": 0, "write": 0},
+        },
+    }
+    if cost is not None:
+        part["cost"] = cost
+    return _part_event("step_finish", part, session_id)
+
+
 def ndjson_success(text: str = "Done", session_id: str = "ses_abc123") -> str:
-    """Build a minimal NDJSON success payload (two lines)."""
+    """A one-step success run in the shape 2.3.2 prints (cost 0, as for a custom provider)."""
     lines = [
-        json.dumps(
-            {
-                "type": "step_finish",
-                "sessionID": session_id,
-                "reason": "stop",
-                "tokens": {"input": 100, "output": 42},
-                "timestamp": "2026-11-23T00:00:00Z",
-            }
-        ),
-        json.dumps(
-            {
-                "type": "text",
-                "sessionID": session_id,
-                "text": text,
-                "timestamp": "2026-11-23T00:00:00Z",
-            }
-        ),
+        _part_event("step_start", {"type": "step-start"}, session_id),
+        text_event(text, session_id),
+        step_finish_event(session_id=session_id),
     ]
     return "\n".join(lines)
 
@@ -488,6 +528,146 @@ def test_parse_ndjson_output_extracts_error_message() -> None:
     assert result["error_message"] == "rate limit exceeded"
 
 
+# --- lines captured from the real OpenCode 2.3.2 (tests/fixtures/opencode_stdout) -------------
+
+
+def test_captured_success_run_parses_to_text_tokens_session_and_stop_reason() -> None:
+    parsed = _parse_ndjson_output(captured("v2_3_2_success.jsonl"))
+    assert parsed["last_text"] == "ok"
+    assert parsed["session_id"] == "ses_a1b2c3d4e5f60718293a"
+    assert parsed["stop_reason"] == "stop"
+    usage = parsed["usage"]
+    assert usage is not None
+    assert (usage.input_tokens, usage.output_tokens) == (1, 1)
+    # The tool printed ``"cost":0`` for the custom provider: unknown, never free.
+    assert usage.cost_usd is None and usage.cost_note and "0" in usage.cost_note
+    assert parsed["error_message"] == "" and parsed["error_status"] is None
+
+
+def test_captured_multistep_run_sums_its_steps_and_keeps_every_text_block() -> None:
+    """Two steps (a tool call, then the answer): tokens add up, the tool_use line is not text,
+    and the answer arrives as one whole block, not as the six deltas the endpoint streamed."""
+    parsed = _parse_ndjson_output(captured("v2_3_2_multistep.jsonl"))
+    assert parsed["last_text"] == (
+        "Running a command. The quick brown fox jumps over the lazy dog. Second sentence ends here."
+    )
+    assert parsed["stop_reason"] == "stop", "the last step decides, not the tool-calls step"
+    usage = parsed["usage"]
+    assert (usage.input_tokens, usage.output_tokens) == (11 + 12, 5 + 34)
+    assert usage.cost_usd is None and usage.cost_note
+
+
+@pytest.mark.parametrize(
+    ("name", "status", "retry_seconds", "message"),
+    [
+        ("v2_3_2_error.jsonl", 429, 7.0, "fake upstream 429"),
+        ("v2_3_2_error_503.jsonl", 503, None, "fake upstream 503"),
+    ],
+)
+def test_captured_upstream_failure_keeps_its_status_and_retry_delay(
+    name: str, status: int, retry_seconds: float | None, message: str
+) -> None:
+    """The final ``error`` event decides; the ten ``retry`` events before it carry the same
+    error but are not errors of the attempt."""
+    parsed = _parse_ndjson_output(captured(name))
+    assert parsed["error_status"] == status
+    assert parsed["retry_after_seconds"] == retry_seconds
+    assert parsed["error_message"] == message
+    assert parsed["session_id"] == "ses_a1b2c3d4e5f60718293a"
+    assert parsed["usage"] is None and parsed["last_text"] == ""
+
+
+def test_executor_turns_the_captured_success_run_into_a_non_empty_ok_terminal(
+    tmp_path: Path,
+) -> None:
+    """Regression for #1337: a real successful run used to parse to empty output and no usage,
+    which recovery then classified as ``empty_output``."""
+    payload = captured("v2_3_2_success.jsonl")
+    fake = make_fake_opencode(tmp_path, f"sys.stdout.write({payload!r})\nsys.exit(0)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is True, terminal  # type: ignore[attr-defined]
+    assert terminal.output == "ok"  # type: ignore[attr-defined]
+    assert terminal.session_ref == "ses_a1b2c3d4e5f60718293a"  # type: ignore[attr-defined]
+    usage = terminal.usage  # type: ignore[attr-defined]
+    assert (usage.input_tokens, usage.output_tokens) == (1, 1)
+
+
+@pytest.mark.parametrize(
+    ("name", "status", "retry_seconds"),
+    [("v2_3_2_error.jsonl", 429, 7.0), ("v2_3_2_error_503.jsonl", 503, None)],
+)
+def test_executor_classifies_a_captured_upstream_failure(
+    tmp_path: Path, name: str, status: int, retry_seconds: float | None
+) -> None:
+    payload = captured(name)
+    fake = make_fake_opencode(tmp_path, f"sys.stdout.write({payload!r})\nsys.exit(1)\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
+    assert terminal.ok is False  # type: ignore[attr-defined]
+    assert terminal.status_code == status  # type: ignore[attr-defined]
+    assert terminal.retry_after_seconds == retry_seconds  # type: ignore[attr-defined]
+    assert terminal.error == f"fake upstream {status}"  # type: ignore[attr-defined]
+
+
+def test_only_the_part_object_is_read_for_text_tokens_and_cost() -> None:
+    """2.3.2 never prints these at the top level of an event, so they are not read there: a
+    line that did would be somebody else's shape, not evidence of a result."""
+    top_level = "\n".join(
+        [
+            json.dumps({"type": "text", "sessionID": "ses_x", "text": "from the top"}),
+            json.dumps(
+                {
+                    "type": "step_finish",
+                    "sessionID": "ses_x",
+                    "reason": "stop",
+                    "cost": 0.5,
+                    "tokens": {"input": 9, "output": 9},
+                }
+            ),
+        ]
+    )
+    parsed = _parse_ndjson_output(top_level)
+    assert parsed["last_text"] == ""
+    assert parsed["usage"] is None and parsed["stop_reason"] is None
+
+
+@pytest.mark.parametrize("part", [None, "text", ["text"], 7, {}, {"text": 5}, {"text": None}])
+def test_a_text_or_step_finish_part_of_the_wrong_shape_is_ignored(part: object) -> None:
+    lines = "\n".join(
+        [_part_event("text", part), _part_event("step_finish", part), text_event("kept")]
+    )
+    parsed = _parse_ndjson_output(lines)
+    assert parsed["last_text"] == "kept"
+    assert parsed["usage"] is None and parsed["stop_reason"] is None
+
+
+def test_a_secret_split_across_two_text_events_is_redacted_after_joining() -> None:
+    secret = "sk-test-SPLIT-7c1f09ab"
+    half = len(secret) // 2
+    stream = "\n".join(
+        [
+            text_event(f"key is {secret[:half]}"),
+            _part_event("tool_use", {"type": "tool", "tool": "bash"}),
+            text_event(f"{secret[half:]} and more"),
+            step_finish_event(),
+        ]
+    )
+    parsed = _parse_ndjson_output(stream, [secret])
+    assert secret not in parsed["last_text"]
+    assert "[REDACTED]" in parsed["last_text"]
+    assert parsed["last_text"].endswith(" and more")
+
+
+def test_a_secret_in_a_whole_text_block_and_a_bearer_value_are_redacted() -> None:
+    stream = text_event(f"echo {_KEY} / Authorization: Bearer {_OTHER_BEARER}")
+    parsed = _parse_ndjson_output(stream, [_KEY])
+    assert _KEY not in parsed["last_text"] and _OTHER_BEARER not in parsed["last_text"]
+    assert parsed["last_text"].count("[REDACTED]") == 2
+
+
 # ---------------------------------------------------------------------------
 # _attempt_session_id
 # ---------------------------------------------------------------------------
@@ -855,16 +1035,16 @@ def test_executor_redacts_worker_key_everywhere(
         "type": "error",
         "message": f"401 Unauthorized; sent Authorization: Bearer {_KEY} (key={_KEY})",
     }
-    txt = {"type": "text", "text": f"echo {_KEY} / Authorization: Bearer {_OTHER_BEARER}"}
+    txt = text_event(f"echo {_KEY} / Authorization: Bearer {_OTHER_BEARER}")
     stderr_text = (
         f"debug headers: Authorization: Bearer {_KEY}\n"
         f"retry with Authorization: Bearer {_OTHER_BEARER}\nkey={_KEY}\n"
     )
     lines = []
     if scenario == "ndjson_error":
-        lines = [json.dumps(txt), json.dumps(err)]
+        lines = [txt, json.dumps(err)]
     elif scenario == "text_output":
-        lines = [json.dumps(txt), ndjson_success("done")]
+        lines = [txt, ndjson_success("done")]
     exit_code = 0 if scenario == "text_output" else 1
     fake = make_fake_opencode(
         tmp_path,
@@ -1729,11 +1909,22 @@ def test_the_local_origin_declaration_and_its_stopgap_note_are_gone() -> None:
 # ---------------------------------------------------------------------------
 
 
+_ERROR_TYPES = {429: "provider.rate-limit"}
+
+
 def _ndjson_error(status: int, message: str, retry_after_ms: int | None = None) -> str:
-    detail: dict[str, object] = {"type": "provider.error", "message": message, "status": status}
+    """A final ``error`` event as 2.3.2 prints it (see ``v2_3_2_error.jsonl``)."""
+    detail: dict[str, object] = {
+        "type": _ERROR_TYPES.get(status, "provider.internal"),
+        "message": message,
+        "status": status,
+        "response": {"body": json.dumps({"error": {"message": message}})},
+    }
     if retry_after_ms is not None:
         detail["retryAfterMs"] = retry_after_ms
-    return json.dumps({"type": "error", "error": detail})
+    return json.dumps(
+        {"type": "error", "timestamp": _TS, "sessionID": "ses_abc123", "error": detail}
+    )
 
 
 @pytest.mark.parametrize(("status", "retry_ms"), [(429, 7000), (503, None), (500, None)])
@@ -2123,7 +2314,7 @@ def test_a_secret_in_the_head_of_a_long_error_never_reaches_the_terminal(tmp_pat
 def test_deeply_nested_json_in_worker_output_is_malformed_not_a_crash() -> None:
     """``json.loads`` raises RecursionError (not ValueError) on thousands of nested arrays, and a
     worker can print such a line well within the output cap."""
-    parsed = _parse_ndjson_output("[" * 100_000 + "\n" + json.dumps({"type": "text", "text": "ok"}))
+    parsed = _parse_ndjson_output("[" * 100_000 + "\n" + text_event("ok"))
     assert parsed["last_text"] == "ok", "the lines after the bad one must still be read"
 
 
@@ -2268,13 +2459,7 @@ def test_an_unexpected_exception_inside_run_is_a_failed_terminal_not_an_exceptio
 
 
 def _step_finish(cost: object, tokens_in: int = 100, tokens_out: int = 42) -> str:
-    event: dict[str, object] = {
-        "type": "step_finish",
-        "tokens": {"input": tokens_in, "output": tokens_out},
-    }
-    if cost is not None:
-        event["cost"] = cost
-    return json.dumps(event)
+    return step_finish_event(cost, tokens_in, tokens_out)
 
 
 @pytest.mark.parametrize("reported", [0, 0.0, {"total": 0}])
