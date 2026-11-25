@@ -245,7 +245,7 @@ Conventions for every task:
       Evidence: `TestMatrix` green (seven hostile variants, `test_no_context_file_at_all`, and the strict xfail); running git in the attempt tree, or walking `.git`, fails the planted-configuration tests.
 ## 4. `run_autodev` wiring
 
-- [ ] 4.1 Protocol, gateway check and the restore rule (D7, D8). Add the `UnitExecutor`
+- [x] 4.1 Protocol, gateway check and the restore rule (D7, D8). Add the `UnitExecutor`
       protocol and the optional `isolated`, `restore` and `preflight` capabilities; type the
       `executor` parameter and `_run_unit_once`; skip only the base-URL equality for an
       `isolated` executor and keep the model equality; in `_run_unit_once` wrap `execute_unit` and
@@ -274,13 +274,15 @@ Conventions for every task:
       propagated exception is the original and standard error names the restore failure),
       `test_restore_capability_alone_grants_nothing` (has `restore()`, not `isolated`, still fails
       the gateway equality check and is not subject to the retry refusal), and `test_patch_executor_is_never_restored`.
-- [ ] 4.1b Hand the run id to the executor (D8). `run_autodev` calls `executor.begin_run(attempt_run_id)`
+      Evidence: `TestRestoreWiring` green (against the unwired `autodev_run.py` the wiring file fails 23 of 25); the existing `tests/test_autodev_wiring.py` and the other six autodev test files pass unmodified (222 tests); removing the restore on a false result, on an exception, the verified-unit guard, the swallow of a restore failure, or the isolated skip of the gateway check, or letting a `restore` method imply `isolated`, fails its named test.
+- [x] 4.1b Hand the run id to the executor (D8). `run_autodev` calls `executor.begin_run(attempt_run_id)`
       once, before the first unit, when the executor has it. Files: `verdict/autodev_run.py`,
       `tests/test_autodev_opencode_wiring.py`. Verify:
       `$TESTENV uv run --frozen python -m pytest -q -n 2 tests/test_autodev_opencode_wiring.py::TestRunId`
       with `test_run_id_and_unit_id_reach_the_opencode_executor` (the stub OpenCode executor receives the
       receipt's `attempt_run_id` and the unit's id) and `test_patch_executor_gets_no_run_id`.
-- [ ] 4.2 Refuse retries and handle null sampling (D8). With an `isolated` executor and non-empty
+      Evidence: `TestRunId` green; removing the `begin_run` call fails `test_run_id_and_unit_id_reach_the_opencode_executor`.
+- [x] 4.2 Refuse retries and handle null sampling (D8). With an `isolated` executor and non-empty
       `retry_routes` or a `retry_executor_factory`, raise `AutodevError` before the planner call.
       Make `_executor_lineage` and the attempt-record write accept `None` sampling values,
       omitting the keys if the record schema requires numbers. Files: `verdict/autodev_run.py`,
@@ -289,7 +291,8 @@ Conventions for every task:
       any decomposer call), `test_failed_unit_is_not_retried` (`PatchExecutor` patched to raise is
       never constructed) and `test_attempt_record_for_an_isolated_unit_is_written` (temp
       `VERDICT_HOME`).
-- [ ] 4.3 The precondition hook (D5). `_run_unit_once` calls `executor.preflight(unit)` first
+      Evidence: `TestRetries` green; removing the retry refusal fails `test_retry_routes_with_the_isolated_executor`; recording unsent settings as null values fails the attempt-record test.
+- [x] 4.3 The precondition hook (D5). `_run_unit_once` calls `executor.preflight(unit)` first
       when the executor has it, before `_try_mechanical`, and acts on the reason only if the
       mechanical tier declines the unit: the unit fails with the reason, `execute_unit` is not
       called, and the outcome has tier `refused` with `changed_files` from `_touched_since` (as
@@ -311,6 +314,7 @@ Conventions for every task:
       `test_mechanical_tier_fixes_a_modified_owned_file` and `test_default_path_unaffected`
       (`PatchExecutor` has no `preflight` and runs on a modified owned file).
 
+      Evidence: `TestPreflightHook` green; asking preflight after the mechanical tier, dropping the refusal, counting a refused unit as a model unit, dropping the mechanical edit from `changed_files`, counting it in the summary, or letting a raising preflight pass fails its named test.
 ## 5. CLI
 
 - [ ] 5.1 Readiness check and the credential seam (D9, D10). Functions in
