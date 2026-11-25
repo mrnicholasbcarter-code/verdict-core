@@ -45,23 +45,30 @@ ROUTE = "cc/claude-sonnet-5"
 TASK_FILE = "verdict-task.md"
 
 # The real pre-dispatch functions, captured before the autouse fixture replaces them.
-_REAL_WORKER_CREDENTIAL = executor_module._worker_credential
+_REAL_SERVE_TOKEN = executor_module._serve_token
+_REAL_LOAD_KEY = executor_module.load_assignment_key
 _REAL_CHECK_BINARY = executor_module._check_binary
 _REAL_CHECK_SERVE = executor_module._check_serve
+
+#: The signing key every test here uses unless it tests the key itself, and the ids the helper
+#: passes: the runtime gives an executor both on every worker attempt.
+SIGNING_KEY = bytes(range(32))
+RUN_ID = "run-1"
+NODE_ID = "node-1"
 
 
 @pytest.fixture(autouse=True)
 def _serve_ready(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default for every test here: a serve credential resolves, the binary runs, serve accepts.
+    """Default for every test here: a serve token and a signing key resolve, the binary runs,
+    serve accepts the token.
 
     The fake workers are scripts that record what they are given, so the real binary check
     (which runs ``--version``) is replaced too.  The tests of the pre-dispatch checks put the
-    real functions back.  Nothing here ever reads a real credential store or contacts a real
-    serve.
+    real functions back.  Nothing here ever reads a real credential store, signing key or
+    receipt database, or contacts a real serve.
     """
-    monkeypatch.setattr(
-        executor_module, "_worker_credential", lambda *a, **k: "fixture-serve-token-0000"
-    )
+    monkeypatch.setattr(executor_module, "_serve_token", lambda *a, **k: "fixture-serve-token-0000")
+    monkeypatch.setattr(executor_module, "load_assignment_key", lambda *a, **k: SIGNING_KEY)
     monkeypatch.setattr(executor_module, "_check_binary", lambda *a, **k: None)
     monkeypatch.setattr(executor_module, "_check_serve", lambda *a, **k: None)
 
@@ -94,7 +101,11 @@ def make_fake_opencode(tmp_path: Path, body: str) -> str:
 def run_executor(
     executor: OpenCodeExecutor, prompt: str, cwd: Path, timeout: float = 10.0
 ) -> object:
-    return asyncio.run(executor.run(prompt, route_id=ROUTE, cwd=cwd, timeout_seconds=timeout))
+    return asyncio.run(
+        executor.run(
+            prompt, route_id=ROUTE, cwd=cwd, timeout_seconds=timeout, run_id=RUN_ID, node_id=NODE_ID
+        )
+    )
 
 
 # Event shapes below are the ones the installed OpenCode 2.3.2 prints, taken from the captures in
@@ -296,7 +307,11 @@ def test_write_attempt_config_includes_route_model(tmp_path: Path) -> None:
     assert cfg["providers"]["verdict"]["settings"]["baseURL"] == "http://127.0.0.1:8000/v1"
 
 
-def test_write_attempt_config_has_worker_marker_header(tmp_path: Path) -> None:
+def test_write_attempt_config_sends_no_worker_header_and_reads_the_key_from_the_environment(
+    tmp_path: Path,
+) -> None:
+    """``X-Verdict-Worker`` selects nothing on serve any more: the signed assignment, read from
+    the environment variable the config names, is the only thing that identifies the worker."""
     cwd = tmp_path / "work"
     cwd.mkdir()
     _write_attempt_config(
@@ -306,9 +321,11 @@ def test_write_attempt_config_has_worker_marker_header(tmp_path: Path) -> None:
         api_key_env="VERDICT_WORKER_API_KEY",
         cwd=cwd,
     )
-    cfg = json.loads((tmp_path / "cfg" / "opencode.json").read_text())
-    headers = cfg["providers"]["verdict"].get("headers", {})
-    assert headers.get("X-Verdict-Worker") == "opencode"
+    text = (tmp_path / "cfg" / "opencode.json").read_text()
+    cfg = json.loads(text)
+    assert "headers" not in cfg["providers"]["verdict"]
+    assert "x-verdict-worker" not in text.lower()
+    assert cfg["providers"]["verdict"]["settings"]["apiKey"] == "{env:VERDICT_WORKER_API_KEY}"
 
 
 def test_write_attempt_config_has_external_directory_deny(tmp_path: Path) -> None:
@@ -1186,7 +1203,14 @@ def test_two_concurrent_attempts_never_share_config_data_or_state(tmp_path: Path
         return list(
             await asyncio.gather(
                 *(
-                    executor.run("task", route_id=ROUTE, cwd=cwd, timeout_seconds=20.0)
+                    executor.run(
+                        "task",
+                        route_id=ROUTE,
+                        cwd=cwd,
+                        timeout_seconds=20.0,
+                        run_id=RUN_ID,
+                        node_id=NODE_ID,
+                    )
                     for cwd in cwds
                 )
             )
@@ -1354,15 +1378,22 @@ class _FakeServe:
         self._server.server_close()
 
 
-def test_serve_credential_reaches_only_the_child_env_under_the_configured_name(
+def test_the_worker_holds_only_the_signed_assignment_and_never_the_serve_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Resolved by Verdict's own code (here via serve's documented LLMGATE_AUTH_TOKEN) and
-    handed to the worker only as VERDICT_WORKER_API_KEY: not in argv, stdin, the config
-    directory's files (the config and the task instructions file), or any other variable."""
+    """The serve token is resolved by Verdict's own code (here via serve's documented
+    LLMGATE_AUTH_TOKEN) for the orchestrator's readiness check alone.  The worker is handed a
+    signed assignment, as VERDICT_WORKER_API_KEY and nowhere else: the serve token is not in its
+    environment, arguments, stdin or the config directory's files (the config and the task
+    instructions file), and the assignment is in none of those but the one variable."""
+    from datetime import datetime, timezone
+
+    from tests import worker_assignment_helpers as sign
+    from verdict.worker_assignment import verify_assignment
+
     _isolated_home(monkeypatch, tmp_path)
     monkeypatch.setenv("LLMGATE_AUTH_TOKEN", _SERVE_TOKEN)
-    monkeypatch.setattr(executor_module, "_worker_credential", _REAL_WORKER_CREDENTIAL)
+    monkeypatch.setattr(executor_module, "_serve_token", _REAL_SERVE_TOKEN)
     capture = tmp_path / "capture.json"
     fake = make_fake_opencode(
         tmp_path,
@@ -1379,12 +1410,26 @@ def test_serve_credential_reaches_only_the_child_env_under_the_configured_name(
     terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "do the task", cwd)
     assert terminal.ok is True, terminal
     data = json.loads(capture.read_text())
-    holders = [name for name, value in data["env"].items() if _SERVE_TOKEN in value]
-    assert holders == ["VERDICT_WORKER_API_KEY"], holders
-    assert TASK_FILE_NAME in data["config"], "the instructions file was not among the files"
+    assert [n for n, v in data["env"].items() if _SERVE_TOKEN in v] == []
     for surface in ("argv", "config", "stdin"):
-        assert _SERVE_TOKEN not in json.dumps(data[surface]), f"credential leaked into {surface}"
+        assert _SERVE_TOKEN not in json.dumps(data[surface]), f"serve token leaked into {surface}"
+    assert TASK_FILE_NAME in data["config"], "the instructions file was not among the files"
+
+    # The worker's one credential is found by what it is (an assignment-shaped value) and its
+    # name is asserted: exactly one variable holds one, and it is the one the config refers to.
+    holders = {name: value for name, value in data["env"].items() if value.startswith("vwa1.")}
+    assert list(holders) == ["VERDICT_WORKER_API_KEY"], list(holders)
+    (token,) = holders.values()
+    for surface in ("argv", "config", "stdin"):
+        assert token not in json.dumps(data[surface]), f"the assignment leaked into {surface}"
     assert "{env:VERDICT_WORKER_API_KEY}" in json.dumps(data["config"])
+
+    # What the worker holds is exactly one assignment for this route, run and node, that serve's
+    # own verifier accepts, and it lives for the attempt's timeout (10 s here) plus the margin.
+    verified = verify_assignment(token, SIGNING_KEY, now=datetime.now(timezone.utc))
+    assert (verified.route_id, verified.run_id, verified.node_id) == (ROUTE, RUN_ID, NODE_ID)
+    fields = sign.decode_payload(token)
+    assert fields["exp"] - fields["iat"] == 10 + executor_module.ASSIGNMENT_MARGIN_SECONDS
 
 
 def test_the_omniroute_gateway_key_is_never_the_worker_credential(
@@ -1393,14 +1438,14 @@ def test_the_omniroute_gateway_key_is_never_the_worker_credential(
     _isolated_home(monkeypatch, tmp_path)
     monkeypatch.setenv("OMNIROUTE_API_KEY", "omniroute-gateway-key-NOT-FOR-WORKERS")
     monkeypatch.setenv("VERDICT_OMNIROUTE_API_KEY", "omniroute-gateway-key-NOT-FOR-WORKERS")
-    assert _REAL_WORKER_CREDENTIAL("cc/claude-sonnet-5", "ses_x") is None
+    assert _REAL_SERVE_TOKEN() is None
 
 
 def test_missing_serve_credential_fails_closed_before_anything_is_launched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _isolated_home(monkeypatch, tmp_path)
-    monkeypatch.setattr(executor_module, "_worker_credential", _REAL_WORKER_CREDENTIAL)
+    monkeypatch.setattr(executor_module, "_serve_token", _REAL_SERVE_TOKEN)
     ran = tmp_path / "worker-ran.txt"
     fake = make_fake_opencode(
         tmp_path, f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\nsys.exit(0)\n"
@@ -1421,7 +1466,7 @@ def test_pre_dispatch_failure_is_classified_as_a_block_not_a_retry(tmp_path: Pat
     terminal = run_executor(
         OpenCodeExecutor(
             opencode_bin=make_fake_opencode(tmp_path, "sys.exit(0)\n"),
-            credential_provider=lambda route, attempt: None,
+            serve_token_provider=lambda: None,
         ),
         "task",
         tmp_path,
@@ -1565,12 +1610,19 @@ def _cancel_run_during_a_blocked_version_probe(
     executor = OpenCodeExecutor(
         opencode_bin=str(script),
         serve_base_url=serve.origin,
-        credential_provider=lambda route, attempt: _SERVE_TOKEN,
+        serve_token_provider=lambda: _SERVE_TOKEN,
     )
 
     async def scenario() -> tuple[bool, float]:
         task = asyncio.ensure_future(
-            executor.run("task", route_id=ROUTE, cwd=cwd, timeout_seconds=60.0)
+            executor.run(
+                "task",
+                route_id=ROUTE,
+                cwd=cwd,
+                timeout_seconds=60.0,
+                run_id=RUN_ID,
+                node_id=NODE_ID,
+            )
         )
         for _ in range(500):  # up to 5 s for the probe to start
             if pid_file.exists() and pid_file.read_text().strip():
@@ -1646,7 +1698,14 @@ def test_cancelling_run_between_the_binary_and_serve_checks_skips_the_serve_chec
 
     async def scenario() -> None:
         task = asyncio.ensure_future(
-            executor.run("task", route_id=ROUTE, cwd=cwd, timeout_seconds=30.0)
+            executor.run(
+                "task",
+                route_id=ROUTE,
+                cwd=cwd,
+                timeout_seconds=30.0,
+                run_id=RUN_ID,
+                node_id=NODE_ID,
+            )
         )
         for _ in range(500):
             if started.is_set():
@@ -1686,7 +1745,14 @@ def test_cancelling_run_waits_for_a_serve_check_that_is_already_in_flight(
 
     async def scenario() -> None:
         task = asyncio.ensure_future(
-            executor.run("task", route_id=ROUTE, cwd=cwd, timeout_seconds=30.0)
+            executor.run(
+                "task",
+                route_id=ROUTE,
+                cwd=cwd,
+                timeout_seconds=30.0,
+                run_id=RUN_ID,
+                node_id=NODE_ID,
+            )
         )
         for _ in range(500):
             if started.is_set():
@@ -1708,12 +1774,12 @@ def test_cancelling_run_waits_for_a_serve_check_that_is_already_in_flight(
 def test_a_failing_credential_lookup_is_a_configuration_failure_not_an_exception(
     tmp_path: Path,
 ) -> None:
-    def exploding(route: str, attempt: str) -> str:
+    def exploding() -> str:
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "malformed credentials file")
 
     fake = make_fake_opencode(tmp_path, "sys.exit(0)\n")
     terminal = run_executor(
-        OpenCodeExecutor(opencode_bin=fake, credential_provider=exploding), "task", tmp_path
+        OpenCodeExecutor(opencode_bin=fake, serve_token_provider=exploding), "task", tmp_path
     )
     assert terminal.ok is False
     assert terminal.error.startswith("harness_configuration: serve credential lookup failed")
@@ -1773,7 +1839,7 @@ def test_executor_stops_before_launch_when_serve_rejects_the_credential(tmp_path
         executor = OpenCodeExecutor(
             opencode_bin=fake,
             serve_base_url=serve.origin,
-            credential_provider=lambda route, attempt: _SERVE_TOKEN,
+            serve_token_provider=lambda: _SERVE_TOKEN,
         )
         terminal = run_executor(executor, "task", cwd)
     finally:
@@ -1787,29 +1853,33 @@ def test_executor_stops_before_launch_when_serve_rejects_the_credential(tmp_path
     assert list(cwd.iterdir()) == []
 
 
-def test_serve_credential_value_never_reaches_terminal_events_or_logs(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-    capfd: pytest.CaptureFixture[str],
+def test_the_assignment_never_reaches_terminal_events_or_logs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    """The worker echoes the credential it was given (from its env) to stderr and into NDJSON."""
-    monkeypatch.setattr(executor_module, "_worker_credential", lambda *a, **k: _SERVE_TOKEN)
+    """The worker echoes the credential it was given (from its env) to stderr and into NDJSON:
+    the assignment, its payload and its tag are redacted wherever the executor records output."""
+    seen = tmp_path / "assignment.txt"
     fake = make_fake_opencode(
         tmp_path,
         "tok = os.environ['VERDICT_WORKER_API_KEY']\n"
-        "sys.stderr.write('debug Authorization: Bearer ' + tok + ' key=' + tok + '\\n')\n"
-        "sys.stdout.write(json.dumps({'type': 'error', 'error': {'message': 'bad ' + tok}}) + '\\n')\n"
+        f"open({str(seen)!r}, 'w').write(tok)\n"
+        "payload, tag = tok.split('.')[1:]\n"
+        "sys.stderr.write('debug Authorization: Bearer ' + tok + ' key=' + tok + ' tag=' + tag + '\\n')\n"
+        "sys.stdout.write(json.dumps({'type': 'error', 'error': {'message': 'bad ' + tok + ' ' + payload}}) + '\\n')\n"
         "sys.exit(1)\n",
     )
     cwd = tmp_path / "work"
     cwd.mkdir()
     with caplog.at_level(logging.DEBUG):
         terminal = run_executor(OpenCodeExecutor(opencode_bin=fake), "task", cwd)
-    assert _SERVE_TOKEN not in json.dumps(dataclasses.asdict(terminal), default=str)
-    assert _SERVE_TOKEN not in caplog.text
+    token = seen.read_text()
+    payload, tag = token.split(".")[1:]
+    recorded = json.dumps(dataclasses.asdict(terminal), default=str)
     captured = capfd.readouterr()
-    assert _SERVE_TOKEN not in captured.out + captured.err
+    for secret in (token, payload, tag, "fixture-serve-token-0000"):
+        assert secret not in recorded
+        assert secret not in caplog.text
+        assert secret not in captured.out + captured.err
     assert "[REDACTED]" in terminal.error
 
 
@@ -2273,7 +2343,7 @@ def test_a_secret_in_stderr_is_redacted_before_a_status_is_read_from_it(tmp_path
     )
     cwd = tmp_path / "work"
     cwd.mkdir()
-    executor = OpenCodeExecutor(opencode_bin=fake, credential_provider=lambda *_a: secret)
+    executor = OpenCodeExecutor(opencode_bin=fake, serve_token_provider=lambda: secret)
     terminal = run_executor(executor, "task", cwd)
     assert terminal.status_code is None
     assert terminal.error == "request failed"
@@ -2300,7 +2370,7 @@ def test_a_secret_in_the_head_of_a_long_error_never_reaches_the_terminal(tmp_pat
     fake = make_fake_opencode(tmp_path, f"sys.stdout.write({line!r} + '\\n')\nsys.exit(1)\n")
     cwd = tmp_path / "work"
     cwd.mkdir()
-    executor = OpenCodeExecutor(opencode_bin=fake, credential_provider=lambda *_a: secret)
+    executor = OpenCodeExecutor(opencode_bin=fake, serve_token_provider=lambda: secret)
     terminal = run_executor(executor, "task", cwd)
     assert terminal.status_code == 429
     assert secret not in json.dumps(dataclasses.asdict(terminal), default=str)
@@ -2410,9 +2480,7 @@ def test_a_malformed_serve_credential_is_a_configuration_failure_not_an_exceptio
     cwd.mkdir()
     executor_module._check_serve = _REAL_CHECK_SERVE  # restored by the autouse fixture
     executor = OpenCodeExecutor(
-        opencode_bin=fake,
-        serve_base_url="http://127.0.0.1:9",
-        credential_provider=lambda route, attempt: token,
+        opencode_bin=fake, serve_base_url="http://127.0.0.1:9", serve_token_provider=lambda: token
     )
     terminal = run_executor(executor, "task", cwd)
     assert terminal.ok is False
@@ -2752,7 +2820,14 @@ def test_the_instructions_file_is_removed_when_the_attempt_is_cancelled(
 
     async def scenario() -> None:
         task = asyncio.ensure_future(
-            executor.run("the task", route_id=ROUTE, cwd=work, timeout_seconds=60.0)
+            executor.run(
+                "the task",
+                route_id=ROUTE,
+                cwd=work,
+                timeout_seconds=60.0,
+                run_id=RUN_ID,
+                node_id=NODE_ID,
+            )
         )
         for _ in range(500):  # up to 5 s for the worker to launch and record
             if capture.exists():

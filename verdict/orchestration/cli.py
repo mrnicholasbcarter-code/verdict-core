@@ -1230,6 +1230,27 @@ def _derive_no_change_nodes(run_dir: Path, receipt: Mapping[str, Any]) -> list[s
     return [str(n) for n in fresh.get("no_change_nodes", []) if str(n).strip()]
 
 
+def _assignment_note(attempt: dict[str, Any]) -> str:
+    """What the attempt's signed assignment adds to its line in ``run-receipt``, or nothing.
+
+    ``, streaming waived`` when serve served at least one request of the attempt with a
+    requirement waived; ``, serve receipts unavailable`` when that could not be read, so a
+    reader never takes an unread record for a clean one.  An attempt that signed nothing, or that
+    serve saw without a waiver, adds nothing.
+    """
+    record = attempt.get("worker_assignment")
+    serve = record.get("serve_receipts") if isinstance(record, dict) else None
+    if not isinstance(serve, dict):
+        return ""
+    if serve.get("status") == "unavailable":
+        return ", serve receipts unavailable"
+    waivers = serve.get("requirement_waivers") or []
+    names = sorted(
+        {str(w["requirement"]) for w in waivers if isinstance(w, dict) and w.get("requirement")}
+    )
+    return f", {', '.join(names)} waived" if names else ""
+
+
 def _receipt(args: argparse.Namespace) -> int:
     from verdict.actions.registry import run_action
 
@@ -1278,6 +1299,7 @@ def _receipt(args: argparse.Namespace) -> int:
                 f"{a.get('route_id') or 'merge'}[{a.get('outcome')}"
                 + (f":{a['failure_category']}" if a.get("failure_category") else "")
                 + ("*" if a.get("fault_injected") else "")
+                + _assignment_note(a)
                 + "]"
                 for a in node.get("attempts", [])
             )

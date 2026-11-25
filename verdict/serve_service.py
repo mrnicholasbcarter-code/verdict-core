@@ -198,6 +198,29 @@ def resolve_serve_token(
     return (from_file, "serve_env") if from_file else None
 
 
+def resolve_serve_receipts_db(
+    environ: Mapping[str, str] | None = None, *, home: Path | None = None
+) -> Path | None:
+    """The receipt database ``verdict serve`` writes its evidence to, or None.
+
+    The same variables serve reads (``VERDICT_RECEIPTS_DB``, then the older
+    ``VERDICT_EVIDENCE_DB``) in the environment, then ``VERDICT_RECEIPTS_DB`` in ``serve.env``,
+    which is what the unit loads.  An unreadable ``serve.env`` is skipped.  The value is returned
+    as written (``:memory:`` too), so the caller can say why it cannot read it; nothing is opened
+    or created here.
+    """
+    source = os.environ if environ is None else environ
+    for name in (RECEIPTS_ENV, "VERDICT_EVIDENCE_DB"):
+        value = (source.get(name) or "").strip()
+        if value:
+            return Path(value)
+    try:
+        from_file = (_read_env_file(env_file_path(home)).get(RECEIPTS_ENV) or "").strip()
+    except (OSError, ValueError):
+        from_file = ""
+    return Path(from_file) if from_file else None
+
+
 def _write_private(path: Path, text: str) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     staged = path.with_name(f".{path.name}.tmp")

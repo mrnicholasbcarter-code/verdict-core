@@ -35,8 +35,9 @@ default: each worker request goes straight to the gateway, so no agent harness
 has to be installed. Prime Agent is an optional harness. Select it with
 `--executor prime-headless` (alias `prime`), or per node with
 `--executor-map node-1=prime-headless`. OpenCode is opt-in too: `--executor opencode`
-(see [the harnesses guide](guides/harnesses.md#opencode-as-a-worker-harness); it does not
-yet work through `verdict serve`, issue #1313).
+(see [the harnesses guide](guides/harnesses.md#opencode-as-a-worker-harness); its workers
+call `verdict serve` with a signed per-attempt assignment, see
+[worker assignments](#worker-assignments)).
 
 - Route visibility follows the executor. Plain `verdict eligibility` and the
   default run read the live gateway catalog; Prime's model registry
@@ -675,8 +676,49 @@ assignment is refused with 403.
   minting one (an accepted risk, ADR-053 decision 4). An assignment is a bearer credential: anyone
   who holds an unexpired one can call its one route until it expires.
 
-The executor that signs assignments is a later story (#1325), so until it lands `verdict
-orchestrate --executor opencode` still sends the serve token and is refused by serve.
+- **Signing.** `verdict orchestrate --executor opencode` signs one assignment per attempt
+  (`verdict.worker_assignment.mint_assignment`) with that key: the route, the run id (the run
+  directory's name, which `receipt.json` shows as `run_id`), the node id, `iat` (now) and `exp`
+  (the attempt's timeout rounded up, plus 60 seconds). The format allows at most 1,800 seconds,
+  so an attempt whose timeout would need more is refused before launch with a `harness_configuration:`
+  message (the runtime's own attempts need at most 945). The assignment is the worker's only
+  credential, passed as `VERDICT_WORKER_API_KEY`; the serve token stays in the orchestrator's
+  process for its one readiness request and is never a fallback. A missing, unreadable or short
+  key, a missing run id or node id, or an attempt timeout that is not a positive finite number
+  ends the attempt the same way, before anything is launched and with no request to serve.
+  The orchestrator and serve must read the same key, which means the same `HOME`. When serve
+  refuses an assignment (403 `authentication failed`) the attempt ends as a configuration block
+  rather than as a provider denial only if the executor can show that serve, and not the route's
+  provider, said it: a provider's own 401 or 403 can carry the same words, which serve forwards
+  unchanged. What shows it is serve's receipts (read back as below) holding no request under the
+  assignment, and that is only evidence when the database read is the one the serve at
+  `--serve-url` writes. The orchestrator finds that database from its own configuration
+  (`VERDICT_RECEIPTS_DB`, `serve.env`), never from the serve it called, so with a spare or remote
+  serve it can be another serve's or one nothing writes. An empty read therefore counts only after
+  an earlier attempt of the same executor (one per `verdict orchestrate` run; a node named in
+  `--executor-map` has its own) was served in that same database (a
+  request carrying that attempt's own assignment digest was found there, which only the serve at
+  `--serve-url` received) and then only for that file (its device and inode, not just its path:
+  a file replaced, or a link retargeted, at the same path is another database) and that address.
+  In every other case the failure stays the provider's, with the provider cooldown that implies,
+  and the attempt's receipts say `unavailable`. Plainly: a signing key serve does not share, found on a run's first attempt,
+  is not recognised as a configuration block (every attempt of that run is refused, none is
+  served, nothing is ever shown), and shows as the route's provider answering `authentication
+  failed`. What was shown lasts for that one `verdict orchestrate` process, and `--resume` starts
+  again without it. What cannot be told from here is a serve restarted on another database while
+  the orchestrator's configuration still names the old one: the old file stays the one read, and
+  a provider's own refusal of that kind is then read as serve's.
+- **Receipts.** The waiver serve records for an assigned request is read back by the assignment's
+  digest from serve's receipt database (`VERDICT_RECEIPTS_DB`, then the older `VERDICT_EVIDENCE_DB`,
+  then `serve.env`), read-only and only for rows written since the worker started, and shown on the
+  attempt in `receipt.json` (`worker_assignment.serve_receipts`: `requests`, `requests_waived`,
+  `requirement_waivers`) and in `verdict run-receipt` (`streaming waived`). A database that cannot
+  be read (unconfigured, in memory, missing, damaged, replaced since the worker started, or over
+  10,000 matching rows), or in which
+  no request was found under the assignment while nothing yet shows it is the database of the
+  serve at `--serve-url` (see Signing), is shown as `unavailable` with its reason and `null`
+  figures; it is never shown as "no waiver" and does not fail an attempt that worked. A request
+  found under the assignment is always read: it is itself what shows the database is serve's.
 
 ### Outcome shadow sink
 

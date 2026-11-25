@@ -19,8 +19,12 @@ the process's variables, standard library only.  A refusal is one :class:`Assign
 and nothing taken from the token, so a caller can log the code without logging the credential.
 The caller (``verdict serve``) answers every refusal with the same generic body.
 
-Minting an assignment belongs to the executor story (#1325); the tests sign with an independent
-helper written from the format above, so they check this verifier against the format.
+:func:`mint_assignment` is the production signer, used by the OpenCode executor (#1325).  It is
+as pure as the verifier (key bytes and a clock in, a token out) and refuses, with ``ValueError``,
+anything the verifier would refuse, so a token that is returned is one serve can accept.  The
+tests sign with an independent helper (``tests/worker_assignment_helpers.py``) written from the
+format above and prove that it and this signer give the same token for the same payload and key,
+so each checks the other against the format.
 """
 
 from __future__ import annotations
@@ -132,6 +136,11 @@ def _utc_from_epoch(seconds: int) -> datetime:
     return _EPOCH + timedelta(seconds=seconds)
 
 
+def _epoch_seconds(moment: datetime) -> int:
+    """Whole seconds since the epoch (rounded down) without going through a float."""
+    return (moment - _EPOCH) // timedelta(seconds=1)
+
+
 def _is_second(value: Any) -> bool:
     return type(value) is int and 0 <= value <= MAX_EPOCH_SECONDS
 
@@ -217,6 +226,70 @@ def verify_assignment(token: Any, key: bytes, *, now: datetime) -> VerifiedWorke
         assignment_digest=hashlib.sha256(payload_text.encode("ascii")).hexdigest(),
         _seal=_SEAL,
     )
+
+
+def mint_assignment(
+    key: bytes, *, route_id: str, run_id: str, node_id: str, lifetime_seconds: int, now: datetime
+) -> str:
+    """Sign an assignment for one route, run and node, valid from ``now`` for ``lifetime_seconds``.
+
+    ``iat`` is ``now`` in whole seconds (rounded down) and ``exp`` is ``iat + lifetime_seconds``,
+    so the lifetime the verifier checks is exactly the one asked for.  Nothing is clamped: a
+    lifetime that is not a whole number of seconds from 1 through :data:`MAX_LIFETIME_SECONDS`,
+    an id the verifier would refuse (empty, over :data:`MAX_ID_CHARS`, or holding a control
+    character), a key shorter than :data:`MIN_KEY_BYTES`, a clock without a UTC offset, an ``exp``
+    or ``iat`` that is not a representable UTC second, or a token longer than
+    :data:`MAX_TOKEN_CHARS` is a ``ValueError``, and no token is returned.  The message names the
+    rule, never the key or an id.
+
+    The payload is the JSON object with its keys sorted, written compactly, with non-ASCII
+    escaped (the form the format's reference signer produces), then base64url without padding.
+    """
+    if not isinstance(key, (bytes, bytearray)) or len(key) < MIN_KEY_BYTES:
+        raise ValueError(f"the signing key must be at least {MIN_KEY_BYTES} bytes")
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be a datetime with a timezone offset")
+    if type(lifetime_seconds) is not int or not 1 <= lifetime_seconds <= MAX_LIFETIME_SECONDS:
+        raise ValueError(
+            f"the lifetime must be a whole number of seconds from 1 through {MAX_LIFETIME_SECONDS}"
+        )
+    ids = {"route_id": route_id, "run_id": run_id, "node_id": node_id}
+    for name, value in ids.items():
+        if not _is_id(value):
+            raise ValueError(
+                f"{name} must be a string of 1 to {MAX_ID_CHARS} characters without control "
+                "characters"
+            )
+    try:
+        issued = _epoch_seconds(now)
+    except OverflowError as exc:
+        raise ValueError("the clock is not a representable UTC second") from exc
+    expires = issued + lifetime_seconds
+    if not (_is_second(issued) and _is_second(expires)):
+        raise ValueError("the clock is not a representable UTC second")
+    payload = {**ids, "exp": expires, "iat": issued}
+    payload_text = _b64url_encode(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    tag = hmac.new(bytes(key), DOMAIN + payload_text.encode("ascii"), hashlib.sha256).digest()
+    token = f"{VERSION}.{payload_text}.{_b64url_encode(tag)}"
+    if len(token) > MAX_TOKEN_CHARS:
+        raise ValueError(f"the assignment would be longer than {MAX_TOKEN_CHARS} characters")
+    return token
+
+
+def assignment_digest(token: str) -> str:
+    """The SHA-256 (hex) of the payload text of ``token``: what a verifier records for it.
+
+    The same value :func:`verify_assignment` puts in ``assignment_digest``, so a signer can name
+    its own assignment in a receipt serve wrote without the credential itself.  It reads the
+    token's shape only and does not check the tag; ``ValueError`` for anything that is not three
+    ``.``-separated parts of ASCII.
+    """
+    parts = token.split(".") if isinstance(token, str) and token.isascii() else []
+    if len(parts) != 3 or parts[0] != VERSION or not parts[1]:
+        raise ValueError("not a worker assignment")
+    return hashlib.sha256(parts[1].encode("ascii")).hexdigest()
 
 
 def assignment_key_path(home: Path | None = None) -> Path:
