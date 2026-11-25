@@ -106,7 +106,11 @@ device and inode recorded at creation. A moved directory is emptied and left whe
 entry the worker left at the old name is not touched, and an entry that cannot be removed is left.
 Cleanup is best effort and never raises an `Exception` (a descriptor that will not close is skipped, and the
 others are still closed), because it runs in `execute_unit`'s `finally`, in the seed's failure handler and in
-the constructor's, where an exception is usually already propagating. A directory the worker made unreadable (mode 000) is
+the constructor's, where an exception is usually already propagating. The same holds for every close of a
+directory or of a read-only file in the module (round 5): they all go through `_close_quietly`, so a failing
+close cannot replace a `PermissionError` or a `KeyboardInterrupt` unwinding through a transfer or a restore.
+The close of a file the module wrote (`replace_file`, the seed's copy) is the write's own failure on the path
+that succeeds and still surfaces there; on a path that is already failing it is quiet too. A directory the worker made unreadable (mode 000) is
 reopened by `chmod(name, 0o700, dir_fd=parent, follow_symlinks=False)` [exp: Python 3.13.18 on Linux 6.8
 changes a directory this way and refuses a symlink; Python raises `NotImplementedError` or `ValueError`
 where the platform cannot]; a refusal leaves that directory (a stated limit). The

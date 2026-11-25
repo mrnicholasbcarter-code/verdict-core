@@ -280,7 +280,7 @@ def _state_at(
             raise _RacedError
         digest, size, data = _hash_fd(fd, keep=keep, limit=limit)
     finally:
-        os.close(fd)
+        _close_quietly(fd)
     entry = Entry(
         "file", bool(fst.st_mode & stat.S_IXUSR), digest, mode=stat.S_IMODE(fst.st_mode), size=size
     )
@@ -416,7 +416,7 @@ def _walk_dir(
                     limit_error=limit_error,
                 )
             finally:
-                os.close(child)
+                _close_quietly(child)
             continue
         totals[0] += 1
         if totals[0] > MAX_SEED_FILES:
@@ -469,7 +469,7 @@ def walk_manifest(
     try:
         _walk_dir(root_fd, "", manifest, [0, 0], top=True, hooks=hooks, limit_error=limit_error)
     finally:
-        os.close(root_fd)
+        _close_quietly(root_fd)
     return manifest
 
 
@@ -519,7 +519,7 @@ def _read_user_file(root_fd: int, rel: str, limit: int) -> tuple[str, Any]:
         return "file", (data, entry.mode)
     finally:
         for fd in opened:
-            os.close(fd)
+            _close_quietly(fd)
 
 
 def _open_removable_dir(parent_fd: int, name: str) -> int | None:
@@ -583,7 +583,7 @@ def _remove_entry(parent_fd: int, name: str, *, strict: bool) -> None:
     try:
         _empty_directory(child, strict=strict)
     finally:
-        os.close(child)
+        _close_quietly(child)
     try:
         os.rmdir(name, dir_fd=parent_fd)
     except FileNotFoundError:
@@ -614,7 +614,7 @@ def _remove_in_tree(tree_fd: int, rel: str) -> None:
         _remove_entry(cur, parts[-1], strict=True)
     finally:
         for fd in opened:
-            os.close(fd)
+            _close_quietly(fd)
 
 
 def _copy_into_tree(tree_fd: int, rel: str, kind: str, payload: Any) -> None:
@@ -652,16 +652,21 @@ def _copy_into_tree(tree_fd: int, rel: str, kind: str, payload: Any) -> None:
             while view:
                 view = view[os.write(fd, view) :]
             os.fchmod(fd, mode & 0o7777 or 0o644)
-        finally:
-            os.close(fd)
+        except BaseException:
+            _close_quietly(fd)  # the write's own failure is what propagates
+            raise
+        os.close(fd)  # nothing else is propagating: a failing close is the write's failure
     finally:
         for fd in opened:
-            os.close(fd)
+            _close_quietly(fd)
 
 
 def _close_quietly(fd: int) -> None:
-    """Close ``fd`` in cleanup that runs while another exception propagates (or on every exit): a close
-    that fails is not worth replacing that exception, and the caller's other closes still run."""
+    """Close ``fd`` in cleanup: every close of a directory or of a file opened only to read it, in a
+    ``finally``, a handler or any other cleanup.  A close that fails is not worth replacing the
+    exception that is propagating, and the caller's other closes still run.  The one exception is the
+    close of a file the module wrote, which is the write's own failure when nothing else is propagating
+    (``replace_file``, ``_copy_into_tree``); when something is, it comes here too."""
     with contextlib.suppress(OSError):
         os.close(fd)
 
@@ -848,9 +853,9 @@ def _seed(repo: Path, tree: Path, owned: tuple[str, ...]) -> AttemptTree:
                 tree_fd, limit_error=lambda reason: AttemptFailedError(f"seed refused: {reason}")
             )
         finally:
-            os.close(tree_fd)
+            _close_quietly(tree_fd)
     finally:
-        os.close(root_fd)
+        _close_quietly(root_fd)
     return AttemptTree(tree, manifest, (made.st_dev, made.st_ino), root_identity)
 
 
@@ -909,7 +914,7 @@ def _read_delta_file(root_fd: int, rel: str, hooks: Hooks | None) -> tuple[Entry
         return entry, data
     finally:
         for fd in opened:
-            os.close(fd)
+            _close_quietly(fd)
 
 
 def attempt_delta(
@@ -970,7 +975,7 @@ def attempt_delta(
                 raise AttemptFailedError("the attempt tree changed during validation")
             items.append(DeltaItem(path, "write", data, entry.executable, entry.digest))
     finally:
-        os.close(root_fd)
+        _close_quietly(root_fd)
     return Delta(tuple(items))
 
 
@@ -1069,8 +1074,10 @@ def replace_file(
                 written = os.write(fd, view)
                 view = view[written:]
             os.fchmod(fd, mode & 0o7777)
-        finally:
-            os.close(fd)
+        except BaseException:
+            _close_quietly(fd)  # the write's own failure is what propagates
+            raise
+        os.close(fd)  # nothing else is propagating: a failing close is the write's failure
         _hook(hooks, "after_temp_write", path)
         if before_rename is not None:
             before_rename()
@@ -1141,7 +1148,7 @@ def _check_read_only(root_fd: int, item: DeltaItem, m0: Mapping[str, Entry]) -> 
             raise _ConflictError(why)
     finally:
         for fd in fds:
-            os.close(fd)
+            _close_quietly(fd)
 
 
 def _verify_held(held: Sequence[tuple[int, str, int]], path: str) -> None:
@@ -1313,7 +1320,7 @@ def _write_item(
         _hook(hooks, "after_item", item.path)
     finally:
         for fd, _name, _parent in held:
-            os.close(fd)
+            _close_quietly(fd)
 
 
 def transfer(
@@ -1378,7 +1385,7 @@ def transfer(
                 raise TransferFailedError(f"{reason}; rolled back, but {note}") from exc
             raise TransferFailedError(f"{reason}; rolled back ({note})") from exc
     finally:
-        os.close(root_fd)
+        _close_quietly(root_fd)
 
 
 def _restore_directory(
@@ -1409,7 +1416,7 @@ def _restore_directory(
         try:
             now = os.fstat(probe)
         finally:
-            os.close(probe)
+            _close_quietly(probe)
         if entry.dir_identity is not None and (now.st_dev, now.st_ino) != entry.dir_identity:
             result.not_restored.append((entry.path, "replaced by another directory"))
             return
@@ -1422,7 +1429,7 @@ def _restore_directory(
         result.restored.append(entry.path + "/")
     finally:
         for fd in fds:
-            os.close(fd)
+            _close_quietly(fd)
 
 
 def _restore_file(
@@ -1495,7 +1502,7 @@ def _restore_file(
         result.restored.append(entry.path)
     finally:
         for fd in fds:
-            os.close(fd)
+            _close_quietly(fd)
 
 
 def _root_refusal(root_fd: int, journal: Sequence[JournalEntry]) -> str | None:
@@ -1572,7 +1579,7 @@ def restore_transfer(
     try:
         return _restore(root_fd, journal, hooks=hooks)
     finally:
-        os.close(root_fd)
+        _close_quietly(root_fd)
 
 
 # --------------------------------------------------------------------------------------------

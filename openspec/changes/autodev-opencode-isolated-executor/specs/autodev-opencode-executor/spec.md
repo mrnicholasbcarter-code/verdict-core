@@ -101,7 +101,13 @@ again by changing its mode by name, relative to its parent's descriptor and with
 where the host supports that, and where it does not, that directory and the attempt directory above it
 are left; an entry that cannot be removed is left with the directory above it. Cleanup SHALL NOT raise an
 `Exception`, so that it cannot replace an exception that is propagating, and a descriptor whose close fails
-SHALL NOT stop the executor closing the others. A close that fails while a path's directories are being
+SHALL NOT stop the executor closing the others. That holds for every close of a directory descriptor or of a
+file opened only to read it, wherever it runs (a `finally`, a handler or any other cleanup), on the path that
+succeeds as well as on the one that fails: a failing close SHALL NOT replace the exception that is
+propagating (a `PermissionError` or a `KeyboardInterrupt` from a transfer or a restore reaches the caller
+as itself), and SHALL NOT skip a later close. A file the executor wrote is the one exception: when nothing
+else is propagating, a failing close of it is the write's own failure and surfaces; when another exception
+is propagating, it SHALL NOT replace that exception. A close that fails while a path's directories are being
 opened and one of them is not a real directory SHALL NOT replace that refusal. Every descriptor the executor
 opened for an attempt is closed on every exit path.
 
@@ -192,6 +198,22 @@ opened for an attempt is closed on every exit path.
 #### Scenario: A refused seed keeps its own error when cleanup cannot close
 - **WHEN** the seed is refused (the repository has no commit) and closing the descriptor the cleanup opened fails
 - **THEN** the refusal propagates and not the close error
+
+#### Scenario: A transfer failure is not replaced by a close that fails while it unwinds
+- **WHEN** a `PermissionError` or a `KeyboardInterrupt` is raised during a transfer, with a directory of the user's repository held open, and every directory and read-only close that runs while it unwinds reports an I/O error
+- **THEN** a `KeyboardInterrupt` reaches the caller as the same object with its journal intact, a `PermissionError` raised in the write loop is the cause of the rollback's `TransferFailedError` and one raised outside the loop reaches the caller as itself, the rollback still completes, and every descriptor opened is closed
+
+#### Scenario: A restore failure is not replaced by a close that fails while it unwinds
+- **WHEN** a `PermissionError` or a `KeyboardInterrupt` is raised while one journalled path is restored, and the closes that run while it unwinds report an I/O error
+- **THEN** the `KeyboardInterrupt` reaches the caller as the same object with the entry still journalled, the `PermissionError` is the one reason named for that path and no second entry names a close, and every descriptor opened is closed
+
+#### Scenario: A close that fails never stops an attempt
+- **WHEN** every close of a directory or of a file opened only to read it reports an I/O error during a seed, a delta, a transfer and a restore that would otherwise succeed
+- **THEN** each of them completes as it would without the failure, and every descriptor opened is closed
+
+#### Scenario: A failing close of a written file is the write's failure only when nothing else is propagating
+- **WHEN** the close of the file `replace_file` or the seed's copy wrote reports an I/O error
+- **THEN** with nothing else propagating the I/O error surfaces (and the temporary file is removed), and with the write's own failure propagating, that failure reaches the caller and not the close error
 
 ### Requirement: An owned file SHALL be tracked and unmodified, or absent, before a worker starts
 

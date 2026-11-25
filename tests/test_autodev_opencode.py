@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import errno
+import fcntl
 import hashlib
 import inspect
 import os
@@ -2234,6 +2235,60 @@ def failing_directory_close(
     return close
 
 
+class CloseLedger:
+    """Wraps ``os.open`` and ``os.close`` on ``patch`` and records every directory or regular-file
+    descriptor opened and closed (a pipe or a device a subprocess uses is not counted).
+
+    Once ``armed``, a close of a descriptor in ``fail`` ("read": a directory or a file open read-only;
+    "written": a file open for writing) really closes it and then reports an I/O error, as close(2)
+    may.  A test arms it from inside the failure it injects, so only the closes that run while that
+    failure unwinds can fail.
+    """
+
+    def __init__(
+        self, patch: pytest.MonkeyPatch, *, fail: tuple[str, ...] = ("read",), armed: bool = False
+    ) -> None:
+        self.opened: list[int] = []
+        self.closed: list[int] = []
+        self.armed = armed
+        real_open, real_close = os.open, os.close
+
+        def kind_of(fd: int) -> str | None:
+            try:
+                mode = os.fstat(fd).st_mode
+                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            except OSError:
+                return None
+            if stat.S_ISDIR(mode):
+                return "read"
+            if stat.S_ISREG(mode):
+                return "written" if flags & os.O_ACCMODE == os.O_WRONLY else "read"
+            return None
+
+        def tracking_open(*args: Any, **kwargs: Any) -> int:
+            fd = real_open(*args, **kwargs)
+            if kind_of(fd) is not None:
+                self.opened.append(fd)
+            return fd
+
+        def close(fd: int) -> None:
+            kind = kind_of(fd)
+            real_close(fd)
+            if kind is None:
+                return
+            self.closed.append(fd)
+            if self.armed and kind in fail:
+                raise OSError(errno.EIO, "Input/output error")
+
+        patch.setattr(os, "open", tracking_open)
+        patch.setattr(os, "close", close)
+
+    def assert_every_descriptor_closed(self) -> None:
+        """Each descriptor opened was closed exactly once: a failing close skipped none of the others."""
+        assert self.opened  # the call under test opened descriptors
+        assert sorted(self.closed) == sorted(self.opened)
+
+
 class TestCleanupNeverMasks:
     """Sweep after review finding 4 (Codex on 4ee5c0f3): cleanup that runs because something failed, or
     on every exit, never raises, so it cannot replace the exception that is propagating."""
@@ -2296,6 +2351,247 @@ class TestCleanupNeverMasks:
             with pytest.raises(oc.AttemptFailedError) as caught:
                 oc.seed_attempt_tree(repo, parent, ("a.py",))
         assert "no HEAD commit" in caught.value.reason
+
+    # Review round 5 (Codex on 6af5e4cd): every close in a ``finally`` or a handler of the module,
+    # not only in the attempt directory's own cleanup.  Each test arms the ledger from inside the
+    # failure it injects, so the closes that fail are the ones that run while that failure unwinds.
+
+    @pytest.mark.parametrize(
+        ("hook", "primary_type", "expected"),
+        [
+            ("after_checks", PermissionError, PermissionError),
+            ("after_checks", KeyboardInterrupt, KeyboardInterrupt),
+            ("before_write", PermissionError, oc.TransferFailedError),
+            ("before_write", KeyboardInterrupt, KeyboardInterrupt),
+        ],
+    )
+    def test_a_transfer_failure_is_not_replaced_by_a_close_that_fails_while_it_unwinds(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        hook: str,
+        primary_type: type[BaseException],
+        expected: type[BaseException],
+    ) -> None:
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        m0 = user_manifest(repo)
+        before = snapshot(repo)
+        primary = primary_type("primary failure")
+        journal: list[oc.JournalEntry] = []
+        items = [witem("a.py", "worker\n"), witem("d/inner.py", "worker\n")]
+        with monkeypatch.context() as patch:
+            ledger = CloseLedger(patch)
+
+            def fail(*args: str) -> None:
+                if not args or args[0] == "d/inner.py":  # the second write, with ``d`` held open
+                    ledger.armed = True  # every read-only and directory close from here on fails
+                    raise primary
+
+            with pytest.raises(expected) as caught:
+                run_transfer(repo, items, m0, journal, {hook: fail})
+        ledger.assert_every_descriptor_closed()
+        if isinstance(caught.value, oc.TransferFailedError):
+            assert caught.value.__cause__ is primary  # the failure the rollback was run for
+            assert "PermissionError: primary failure" in caught.value.reason
+            assert "Input/output" not in caught.value.reason
+            assert journal == [] and snapshot(repo) == before  # and the rollback finished
+        else:
+            assert caught.value is primary  # the original object, not an OSError for the close
+            if hook == "before_write":
+                assert len(journal) == 1  # a.py is journalled for the caller's restore()
+                oc.restore_transfer(journal, repo)
+            assert snapshot(repo) == before
+
+    @pytest.mark.parametrize("path", ["a.py", "d/inner.py"])
+    @pytest.mark.parametrize("primary_type", [PermissionError, KeyboardInterrupt])
+    def test_a_restore_failure_is_not_replaced_by_a_close_that_fails_while_it_unwinds(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
+        primary_type: type[BaseException],
+    ) -> None:
+        """``a.py`` holds no directory, so only ``restore_transfer``'s own close can mask; ``d/inner.py``
+        holds one, so ``_restore_file``'s can too."""
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        before = snapshot(repo)
+        journal = transferred(repo, [witem(path, "worker\n")])
+        primary = primary_type("primary failure")
+        with monkeypatch.context() as patch:
+            ledger = CloseLedger(patch)
+
+            def failing_state(*_args: Any, **_kwargs: Any) -> tuple[Any, bytes]:
+                ledger.armed = True
+                raise primary
+
+            patch.setattr(oc, "_state_at", failing_state)
+            if primary_type is KeyboardInterrupt:
+                with pytest.raises(KeyboardInterrupt) as caught:
+                    oc.restore_transfer(journal, repo)
+                assert caught.value is primary
+                assert len(journal) == 1  # the entry in progress stays for a second restore
+            else:
+                result = oc.restore_transfer(journal, repo)
+                # the path's own failure is what is named, and no second entry is made for a close
+                assert result.not_restored == [(path, "PermissionError: primary failure")]
+                assert journal == []
+        ledger.assert_every_descriptor_closed()
+        if primary_type is KeyboardInterrupt:
+            oc.restore_transfer(journal, repo)
+            assert snapshot(repo) == before
+
+    @pytest.mark.parametrize("primary_type", [PermissionError, KeyboardInterrupt])
+    def test_a_directory_restore_failure_is_not_replaced_by_a_close_that_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, primary_type: type[BaseException]
+    ) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        journal = transferred(repo, [witem("deep/er/new.py", "created\n")])
+        primary = (
+            PermissionError(errno.EACCES, "primary failure")
+            if primary_type is PermissionError
+            else KeyboardInterrupt("primary failure")
+        )
+        real_rmdir = os.rmdir
+        with monkeypatch.context() as patch:
+            ledger = CloseLedger(patch)
+
+            def failing_rmdir(name: str, *args: Any, **kwargs: Any) -> None:
+                if name != "er":  # the created directory with ``deep`` held open above it
+                    real_rmdir(name, *args, **kwargs)
+                    return
+                ledger.armed = True
+                raise primary
+
+            patch.setattr(os, "rmdir", failing_rmdir)
+            if primary_type is KeyboardInterrupt:
+                with pytest.raises(KeyboardInterrupt) as caught:
+                    oc.restore_transfer(journal, repo)
+                assert caught.value is primary
+                assert len(journal) == 2  # deep/er and deep are still to be undone
+            else:
+                result = oc.restore_transfer(journal, repo)
+                assert ("deep/er", "primary failure") in result.not_restored
+                assert not any("Input/output" in why for _path, why in result.not_restored)
+                assert journal == []
+        ledger.assert_every_descriptor_closed()
+        if primary_type is KeyboardInterrupt:
+            oc.restore_transfer(journal, repo)
+            assert snapshot(repo) == before
+
+    def test_every_directory_and_read_only_close_may_fail_and_an_attempt_still_completes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The success paths of the seed, the delta, the transfer and the restore: a close of a
+        directory or of a file opened only to read it is not worth an error."""
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        before = snapshot(repo)
+        # one to change, one to create in a directory that exists, one in directories to create
+        owned = ("d/inner.py", "d/new.py", "deep/er/new.py")
+        with monkeypatch.context() as patch:
+            ledger = CloseLedger(patch, armed=True)
+            assert user_manifest(repo)["a.py"].kind == "file"  # the walk, opened by pathname
+            tree = seed(repo, tmp_path, owned)
+            for rel in owned:
+                write(tree.path, rel, "worker\n")
+            changes = delta(tree, repo, owned)
+            journal: list[oc.JournalEntry] = []
+            oc.transfer(changes, repo, tree.manifest, journal, root_identity=tree.root_identity)
+            assert (repo / "deep" / "er" / "new.py").read_text() == "worker\n"
+            result = oc.restore_transfer(journal, repo)
+        ledger.assert_every_descriptor_closed()
+        assert result.not_restored == []
+        assert snapshot(repo) == before
+
+    def test_cleanup_removes_nested_directories_when_every_close_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A close that fails must not skip the ``rmdir`` of the directory it was opened to empty."""
+        parent = tmp_path / "attempts"
+        parent.mkdir()
+        with monkeypatch.context() as patch:
+            ledger = CloseLedger(patch, armed=True)
+            attempt_dir = oc.AttemptDirectory(parent)
+            write(attempt_dir.path, "tree/sub/deep/f.txt", "x\n")
+            attempt_dir.remove()  # must not raise
+        assert list(parent.iterdir()) == []
+        ledger.assert_every_descriptor_closed()
+
+    def test_a_directory_in_the_way_of_a_copied_file_is_replaced_when_its_close_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tree = tmp_path / "tree"
+        write(tree, "x/inner/f.txt", "in the way\n")
+        tree_fd = os.open(tree, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with monkeypatch.context() as patch:
+                ledger = CloseLedger(patch, armed=True)
+                oc._copy_into_tree(tree_fd, "x", "file", (b"data\n", 0o644))
+        finally:
+            os.close(tree_fd)
+        assert (tree / "x").read_text() == "data\n"
+        ledger.assert_every_descriptor_closed()
+
+    @pytest.mark.parametrize("primary_type", [PermissionError, KeyboardInterrupt])
+    @pytest.mark.parametrize("writer", ["replace_file", "copy_into_tree"])
+    def test_a_write_failure_is_not_replaced_by_a_failing_close_of_the_written_file(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        writer: str,
+        primary_type: type[BaseException],
+    ) -> None:
+        directory = tmp_path / "target"
+        directory.mkdir()
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        primary = primary_type("primary failure")
+        real_write = os.write
+        try:
+            with monkeypatch.context() as patch:
+                ledger = CloseLedger(patch, fail=("read", "written"))
+
+                def failing_write(fd: int, data: Any) -> int:
+                    if fd not in ledger.opened:
+                        return real_write(fd, data)
+                    ledger.armed = True  # the written file's close, and the directories', now fail
+                    raise primary
+
+                patch.setattr(os, "write", failing_write)
+                with pytest.raises(primary_type) as caught:
+                    if writer == "replace_file":
+                        oc.replace_file(dir_fd, "f.txt", b"data", 0o644)
+                    else:
+                        oc._copy_into_tree(dir_fd, "sub/f.txt", "file", (b"data", 0o644))
+        finally:
+            os.close(dir_fd)
+        assert caught.value is primary
+        ledger.assert_every_descriptor_closed()
+        if writer == "replace_file":
+            assert list(directory.iterdir()) == []  # the temporary file was removed
+
+    @pytest.mark.parametrize("writer", ["replace_file", "copy_into_tree"])
+    def test_a_failing_close_of_the_written_file_is_still_the_write_s_own_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, writer: str
+    ) -> None:
+        """The other half of the rule: with nothing else propagating, a close of a file that was
+        written is the write's failure and surfaces (the seed names it, the transfer rolls back)."""
+        directory = tmp_path / "target"
+        directory.mkdir()
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with monkeypatch.context() as patch:
+                ledger = CloseLedger(patch, fail=("written",), armed=True)
+                with pytest.raises(OSError) as caught:
+                    if writer == "replace_file":
+                        oc.replace_file(dir_fd, "f.txt", b"data", 0o644)
+                    else:
+                        oc._copy_into_tree(dir_fd, "f.txt", "file", (b"data", 0o644))
+        finally:
+            os.close(dir_fd)
+        assert caught.value.errno == errno.EIO
+        ledger.assert_every_descriptor_closed()
+        if writer == "replace_file":
+            assert list(directory.iterdir()) == []  # no temporary file is left behind
 
 
 # --------------------------------------------------------------------------------------------

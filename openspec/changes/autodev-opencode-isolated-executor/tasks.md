@@ -429,9 +429,26 @@ Conventions for every task:
       `test_a_refused_seed_keeps_its_own_error_when_cleanup_cannot_close` and
       `test_a_parent_that_is_a_file_is_still_a_conflict_when_a_close_fails`. Evidence: all four failed before
       the fix (`OSError: [Errno 5]` out of `remove`, `5 == 24` for the construction error, `OSError` replacing
-      the seed refusal and replacing the conflict) and pass after. The other `os.close` calls in the module
-      are listed in the pull request: directory and read-only descriptors, which `close(2)` cannot fail on, and
-      the two descriptors of files the module wrote, whose close error is the write's own failure.
+      the seed refusal and replacing the conflict) and pass after.
+      Review round 5 (Codex on 6af5e4cd): the sweep had left the other closes alone on the argument that `close(2)`
+      cannot fail on a directory or a read-only file. A close that fails while an exception unwinds through them
+      replaces it (a `KeyboardInterrupt` from a transfer reached the caller as an `OSError`, the rollback was
+      reported as not restored, and the first failing close skipped the rest). Every close of a directory
+      or read-only descriptor in the module now goes through `_close_quietly`, and the two descriptors of files
+      the module wrote (`replace_file`, `_copy_into_tree`) are closed quietly only when the write has already
+      failed; on the path that succeeds their close error is still the write's failure. Tests in
+      `TestCleanupNeverMasks` (a `CloseLedger` counts every descriptor opened and closed and arms its failing
+      closes from inside the injected failure):
+      `test_a_transfer_failure_is_not_replaced_by_a_close_that_fails_while_it_unwinds`,
+      `test_a_restore_failure_is_not_replaced_by_a_close_that_fails_while_it_unwinds`,
+      `test_a_directory_restore_failure_is_not_replaced_by_a_close_that_fails`,
+      `test_every_directory_and_read_only_close_may_fail_and_an_attempt_still_completes`,
+      `test_cleanup_removes_nested_directories_when_every_close_fails`,
+      `test_a_directory_in_the_way_of_a_copied_file_is_replaced_when_its_close_fails`,
+      `test_a_write_failure_is_not_replaced_by_a_failing_close_of_the_written_file` and
+      `test_a_failing_close_of_the_written_file_is_still_the_write_s_own_error`. Evidence: 17 of the 23 tests in
+      the class failed before the fix and all pass after; each of the 25 `_close_quietly` calls turned back into
+      `os.close` fails at least one test, and so does making either success-path written close quiet.
 ## 4. `run_autodev` wiring
 
 - [x] 4.1 Protocol, gateway check and the restore rule (D7, D8). Add the `UnitExecutor`
