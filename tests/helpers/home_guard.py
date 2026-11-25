@@ -2,14 +2,17 @@
 
 Two layers, both loaded from ``tests/conftest.py``:
 
-1. Isolation (``tests/conftest.py``): every test gets its own temp ``HOME`` and
+1. Base protection (``tests/conftest.py``): every test gets its own temp ``HOME`` and
    every state-path env var is cleared (``HOST_STATE_ENV``), so each path
-   ``verdict.paths`` derives lands under that temp home.
-2. Enforcement (this module): a ``sys.addaudithook`` hook, installed at session
-   start, refuses any write, create, rename, delete or SQLite open that targets
-   the real state roots, BEFORE the syscall runs, and records it. The test (or
-   the session, for code outside a test) then fails naming the file and the
-   verdict/test frames that asked for it.
+   ``verdict.paths`` derives lands under that temp home. This is what keeps tests off
+   the real state.
+2. Tripwire (this module): a ``sys.addaudithook`` hook, installed at session start,
+   refuses any write, create, rename, delete or SQLite open that targets the real
+   state roots, BEFORE the syscall runs, and records it; three ``os`` functions whose
+   audit events cannot carry a directory descriptor are wrapped for the session. The
+   test (or the session, for code outside a test) then fails naming the file and the
+   verdict/test frames that asked for it. It adds no isolation of its own: it notices,
+   and where it can stops, a write that got past layer 1.
 
 Why an audit hook and not a before/after fingerprint of ``~/.verdict``: the
 installed services write there every few minutes, so a fingerprint blames tests
@@ -17,36 +20,82 @@ for other processes' writes and only reports after the damage. The hook sees
 only calls made by THIS pytest process, so every hit is a test leak by
 construction, and the write never happens.
 
-Scope (the contract). The guard refuses writes, creates, renames, deletes,
-links and SQLite opens whose arguments NAME a protected root, a path beneath it,
-or (for tree moves, links and symlinks) an ancestor of it, spelled however
-(relative, ``..``, ``//``, ``file:`` URIs). It is lexical: it does not resolve
-symlinks. It does not defend against a test that deliberately builds an alias
-chain, nor against child processes (they inherit the isolated env), links that
-already existed, or C-level I/O that bypasses the audited entry points. For
-those, run the suite with the real state directories masked by empty mounts, or
-under a throwaway ``HOME`` with ``tests/helpers/home_snapshot.py``.
+Guarantees and limits (the one place they are stated)
+=====================================================
 
-A name is read against the directory it is relative to. A relative name given
-with a ``dir_fd`` (``os.mkdir``, ``os.remove``, ``os.rename``, ``shutil.rmtree``
-and the like) is read against the directory the descriptor names
-(``/proc/self/fd``, Linux), never the working directory; where that cannot be
-read it is not checked. ``os.open(..., dir_fd=)`` is the exception: its audit
-event does not carry the descriptor, so its relative name is read against the
-working directory. A ``sqlite3.connect`` argument that names no file (``:memory:``
-and the empty private temporary database) is never a write target. The audit event
-does not say ``uri=``, so a ``file:`` string is read both ways: as a URI (decoded;
-a last ``mode`` of ``ro`` or ``memory`` touches no file) and as a literal filename
-in the working directory, which SQLite does create.
+Guaranteed. In the process that runs the tests (the pytest process, or an xdist
+worker), from ``pytest_configure`` on, a call to any of the entry points below whose
+arguments name a protected root, a path beneath it, or (for tree moves, links and
+symlinks) an ancestor of it, spelled however (relative, ``..``, ``//``, ``file:``
+URIs), is refused with ``PermissionError`` before the system call runs, is recorded,
+and fails the test that made it even when the code under test swallows the error.
+Outside a test it fails the session. Entry points, each pinned by
+``tests/test_home_isolation.py``:
 
-The guard loads from ``tests/conftest.py``, so it does not exist in a run that
-skips that conftest (``--noconftest``); load it there with
-``-p tests.helpers.home_guard``. Under pytest-xdist a worker's own
-exit status never reaches the controller, so each worker hands its refused
-writes to the controller through ``workeroutput`` when it finishes, and the
-controller fails the run for them (a refused write during session teardown, or
-after the last per-test drain). A worker that finishes without reporting, or
-whose report cannot be read, also fails the run: unknown is never clean.
+* opens for writing: ``open``, ``io.open``, ``pathlib`` and ``os.open`` with a write
+  flag (``O_WRONLY``, ``O_RDWR``, ``O_APPEND``, ``O_CREAT``, ``O_TRUNC``, ``O_EXCL``), or
+  a ``w``, ``a``, ``x`` or ``+`` mode;
+* ``os.rename`` (and ``os.replace``), ``os.remove`` (and ``os.unlink``), ``os.rmdir``,
+  ``os.mkdir``, ``os.truncate``, ``os.symlink``, ``os.link``, ``os.chmod``,
+  ``os.chown``, ``os.utime``, and ``os.mkfifo`` and ``os.mknod`` (wrapped; see below);
+* ``shutil.copyfile``, ``copymode``, ``copystat``, ``copytree`` (the destination),
+  ``move`` and ``rmtree``;
+* ``sqlite3.connect`` of a file (``:memory:`` and the empty name are not files).
+
+A name is read against the directory it is relative to. A relative name given with
+a ``dir_fd`` is read against the directory the descriptor names (``/proc/self/fd``),
+never the working directory. ``DIR_FD_COVERAGE`` says, for every ``os`` function that
+takes a ``dir_fd``, whether its audit event carries the descriptor (then the hook reads
+it) or the function is wrapped; the test pins the table against the running interpreter.
+``os.open``, ``os.mkfifo`` and ``os.mknod`` are wrapped for the session
+(``install_descriptor_wrappers``, installed and removed with the plugin, and members of
+``os.supports_dir_fd`` while installed): the ``open`` event carries no descriptor, and
+the other two raise no audit event at all. A wrapper hands its arguments to the original
+unchanged, so results, exceptions and errnos are the original's (compared in two
+interpreters, with and without the guard, by ``dir_fd_probe``). A descriptor that is no
+open directory (closed, or a file) is left to the operating system, which fails the call
+with EBADF or ENOTDIR and changes nothing. An open directory descriptor whose path cannot
+be read is refused and recorded, not skipped. A session on a platform where descriptors
+cannot be resolved does not start (``descriptor_resolution_problem``).
+
+NOT guaranteed (out of reach of a Python-level guard):
+
+* Child processes (``subprocess``, ``multiprocessing``, ``os.system``, services): they
+  inherit the isolated environment of layer 1, but the guard does not run in them.
+* C code that raises no audit event: extension modules, ``ctypes``, and SQLite writing a
+  file named in SQL (``ATTACH DATABASE``, ``VACUUM INTO``) after a connection that was
+  not itself refused. Extended attributes (``os.setxattr``, ``os.removexattr``) are not
+  checked.
+* A descriptor opened before the guard was installed or inherited, and anything done
+  through an open descriptor: ``os.write``, ``os.pwrite``, ``os.ftruncate``,
+  ``os.sendfile``, ``os.fchmod``, ``os.fchown``, ``os.utime`` on a descriptor,
+  ``open(fd, 'w')``, ``mmap`` of an already open file.
+* Aliases. Names are read lexically; symlinks are not resolved. A symlink, bind mount or
+  hard link that already existed and leads into a root from a name outside it is not seen
+  (the guard refuses to CREATE a link or symlink into protected state, or one to an
+  ancestor of it), and neither is a test that deliberately builds an alias chain.
+* References to the unwrapped functions: ``from os import open`` or ``posix.open``
+  captured before the wrappers were installed, and a builtin ``open(name, opener=...)``,
+  whose own ``open`` event carries a relative name that is read against the working
+  directory (the opener's ``os.open`` call is wrapped and read correctly).
+* The check and the call are not one atomic step: another thread can close or replace a
+  descriptor, or move a directory, between them.
+* A run that skips ``tests/conftest.py`` (``--noconftest``) has no guard; load it there
+  with ``-p tests.helpers.home_guard``.
+* Linux only. Descriptors are resolved through ``/proc/self/fd``; elsewhere the session
+  refuses to start rather than run unguarded.
+* While the wrappers are installed ``os.open``, ``os.mkfifo`` and ``os.mknod`` are
+  Python functions (with ``__wrapped__``), not the builtins: calls behave the same,
+  identity does not (for example ``pickle`` of ``os.open``).
+* Audit event shapes differ between Python versions. ``tests/test_home_isolation.py``
+  checks the shape of every event this module relies on against the interpreter that
+  runs it (CI's interpreter matrix is in ``.github/workflows/ci.yml``).
+
+For what is not guaranteed, run the suite with the real state directories masked by
+empty mounts, or under a throwaway ``HOME`` with ``tests/helpers/home_snapshot.py``.
+
+Roots, wiring and reporting
+===========================
 
 The real roots are resolved ONCE, when this module is imported (conftest import,
 before any fixture monkeypatches the environment). They are the home-relative
@@ -61,6 +110,18 @@ repository or the working directory (``/``, ``/tmp``, ``.``) cannot be protected
 without refusing every ordinary write, so the run stops at start with a usage
 error naming the variable (``STARTUP_PROBLEMS``) instead of dropping it.
 
+A ``sqlite3.connect`` argument that names no file (``:memory:`` and the empty private
+temporary database) is never a write target. The audit event does not say ``uri=``, so
+a ``file:`` string is read both ways: as a URI (decoded; a last ``mode`` of ``ro`` or
+``memory`` touches no file) and as a literal filename in the working directory, which
+SQLite does create.
+
+Under pytest-xdist a worker's own exit status never reaches the controller, so each
+worker hands its refused writes to the controller through ``workeroutput`` when it
+finishes, and the controller fails the run for them (a refused write during session
+teardown, or after the last per-test drain). A worker that finishes without reporting,
+or whose report cannot be read, also fails the run: unknown is never clean.
+
 Escape hatch: there is none. A test that believes it needs the real home does
 not; point ``HOME``/``VERDICT_HOME`` at ``tmp_path`` instead.
 """
@@ -68,8 +129,11 @@ not; point ``HOME``/``VERDICT_HOME`` at ``tmp_path`` instead.
 from __future__ import annotations
 
 import errno
+import functools
+import operator
 import os
 import re
+import stat
 import sys
 import sysconfig
 import tempfile
@@ -329,6 +393,9 @@ _WRITE_FLAGS = (
     os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC | getattr(os, "O_EXCL", 0)
 )
 
+#: ``os.open`` adds this to the flags it reports in its ``open`` audit event.
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+
 #: audit event -> indexes of the argument(s) that name a path the call changes.
 _MUTATED_ARGS: dict[str, tuple[int, ...]] = {
     "os.rename": (0, 1),
@@ -355,7 +422,7 @@ _MUTATED_ARGS: dict[str, tuple[int, ...]] = {
 
 #: audit event -> {index of a path argument: index of the ``dir_fd`` it is relative to}.
 #: The event carries ``-1`` (or ``None``) for a ``dir_fd`` that was not given.
-#: ``open`` is absent: its audit event has no descriptor argument.
+#: ``open`` is absent: its audit event has no descriptor argument (see ``DESCRIPTOR_CALLS``).
 _DIR_FD_ARGS: dict[str, dict[int, int]] = {
     "os.rename": {0: 2, 1: 3},
     "os.link": {0: 2, 1: 3},
@@ -367,6 +434,57 @@ _DIR_FD_ARGS: dict[str, dict[int, int]] = {
     "os.chown": {0: 3},
     "os.utime": {0: 3},
     "shutil.rmtree": {0: 1},
+}
+
+#: Every ``os`` function that takes a ``dir_fd`` (``os.supports_dir_fd``) and how the guard covers it:
+#: ``read-only`` changes nothing; ``audit event`` is covered by the named event, which carries the
+#: descriptor (``_DIR_FD_ARGS``); ``wrapper`` is covered by the session wrapper of that name
+#: (``DESCRIPTOR_CALLS``) because its audit event does not carry the descriptor or does not exist.
+#: ``tests/test_home_isolation.py`` pins this table against the running interpreter: every member
+#: of ``os.supports_dir_fd`` is classified, and each named event is raised with the descriptor at
+#: the index ``_DIR_FD_ARGS`` says. (``os.replace`` raises ``os.rename``, ``os.unlink`` raises
+#: ``os.remove``; ``lstat`` is in the set from Python 3.12.) Not in the set but taking a
+#: ``dir_fd``: ``shutil.rmtree`` (3.11+; its event carries it and its inner calls are the
+#: ``os.remove``/``os.rmdir`` rows) and ``os.fwalk`` (reads only). ``pathlib`` takes none.
+DIR_FD_COVERAGE: dict[str, tuple[str, str]] = {
+    "access": ("read-only", ""),
+    "chmod": ("audit event", "os.chmod"),
+    "chown": ("audit event", "os.chown"),
+    "link": ("audit event", "os.link"),
+    "lstat": ("read-only", ""),
+    "mkdir": ("audit event", "os.mkdir"),
+    "mkfifo": ("wrapper", "mkfifo"),
+    "mknod": ("wrapper", "mknod"),
+    "open": ("wrapper", "open"),
+    "readlink": ("read-only", ""),
+    "rename": ("audit event", "os.rename"),
+    "rmdir": ("audit event", "os.rmdir"),
+    "stat": ("read-only", ""),
+    "symlink": ("audit event", "os.symlink"),
+    "unlink": ("audit event", "os.remove"),
+    "utime": ("audit event", "os.utime"),
+}
+
+
+@dataclass(frozen=True)
+class DescriptorCall:
+    """An ``os`` function the session wraps because its audit event cannot place a ``dir_fd`` name.
+
+    ``os.open`` raises an ``open`` event without the descriptor, so its relative name would be
+    read against the working directory. ``os.mkfifo`` and ``os.mknod`` raise no audit event at
+    all, with a path or with a descriptor.
+    """
+
+    event: str  # the name a violation carries
+    parameters: tuple[str, ...]  # positional parameters, in order (``dir_fd`` is keyword-only)
+    audited: bool  # its call with a path (no descriptor) raises an event the hook checks
+    flags: str | None  # the parameter whose write flags decide whether the call writes
+
+
+DESCRIPTOR_CALLS: dict[str, DescriptorCall] = {
+    "open": DescriptorCall("os.open", ("path", "flags", "mode"), audited=True, flags="flags"),
+    "mkfifo": DescriptorCall("os.mkfifo", ("path", "mode"), audited=False, flags=None),
+    "mknod": DescriptorCall("os.mknod", ("path", "mode", "device"), audited=False, flags=None),
 }
 
 #: Names SQLite opens without touching a file, whatever ``uri=`` says: ``:memory:``
@@ -448,13 +566,87 @@ def _sqlite_file_targets(value: str) -> list[str]:
     return targets
 
 
-def _fd_directory(fd: int) -> str | None:
-    """The directory an open descriptor names (Linux ``/proc/self/fd``); None if unknown."""
-    try:
-        target = os.readlink(f"/proc/self/fd/{fd}")
-    except OSError:  # not open, or no /proc
+#: Where Linux lists this process's open descriptors, and how an entry is read.
+#: Module attributes so the guard's own tests can make the lookup fail.
+_PROC_FD_DIR = "/proc/self/fd"
+_readlink = os.readlink
+
+
+class _UnresolvedDirFdError(Exception):
+    """An open directory descriptor whose path could not be read: the guard cannot place the call."""
+
+    def __init__(self, fd: int, name: str, reason: str) -> None:
+        super().__init__(reason)
+        self.fd, self.name, self.reason = fd, name, reason
+
+    def describe(self) -> str:
+        return f"<dir_fd {self.fd}: {self.reason}>/{self.name}"
+
+
+def _fd_number(value: Any) -> int | None:
+    """The descriptor a ``dir_fd`` argument names; None when it names none (not given, ``-1``)."""
+    if value is None:
         return None
-    return target if target.startswith("/") else None
+    try:
+        number = operator.index(value)
+    except TypeError:  # the call itself rejects it
+        return None
+    return number if number >= 0 else None
+
+
+def _fd_directory(fd: int, name: str) -> str | None:
+    """The directory an open descriptor names (Linux ``/proc/self/fd``).
+
+    None when ``fd`` is not an open directory (closed, or a file, socket, pipe): the
+    operating system then fails the call itself, with EBADF or ENOTDIR, and changes
+    nothing, so there is nothing to place. An open DIRECTORY whose name cannot be read
+    raises ``_UnresolvedDirFdError``: the call can land anywhere, so the caller refuses it.
+    """
+    try:
+        mode = os.fstat(fd).st_mode
+    except OSError:
+        return None
+    if not stat.S_ISDIR(mode):
+        return None
+    link = f"{_PROC_FD_DIR}/{fd}"
+    try:
+        target = _readlink(link)
+    except OSError as exc:
+        raise _UnresolvedDirFdError(
+            fd, name, f"{link} cannot be read ({exc.strerror or exc})"
+        ) from None
+    if not target.startswith("/"):
+        raise _UnresolvedDirFdError(fd, name, f"{link} names {target!r}, not a path")
+    return target
+
+
+def _anchored(name: str, fd: int) -> str | None:
+    """``name`` (relative to the directory ``fd`` names) as an absolute path; None: the OS fails."""
+    base = _fd_directory(fd, name)
+    return os.path.join(base, name) if base else None
+
+
+def descriptor_resolution_problem() -> str | None:
+    """Why this platform cannot name the directory a descriptor refers to; None when it can.
+
+    Probed with a directory that always exists (this checkout), opened read-only, so the
+    probe creates nothing and does not go through ``tempfile``'s cached temp dir.
+    """
+    probe = str(_REPO_ROOT)
+    try:
+        fd = os.open(probe, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as exc:
+        return f"{probe} cannot be opened to probe descriptor resolution ({exc})"
+    try:
+        resolved = _fd_directory(fd, probe)
+    except _UnresolvedDirFdError as unresolved:
+        return unresolved.reason
+    finally:
+        os.close(fd)
+    expected = os.path.realpath(probe)
+    if resolved != expected:
+        return f"{_PROC_FD_DIR}/<fd> names {resolved!r} for a directory open at {expected!r}"
+    return None
 
 
 def _event_path(event: str, args: tuple[Any, ...], index: int) -> str | None:
@@ -464,17 +656,15 @@ def _event_path(event: str, args: tuple[Any, ...], index: int) -> str | None:
     the working directory, so reading it against the cwd would refuse harmless
     calls (``shutil.rmtree`` of a tree elsewhere, with the cwd inside a root) and
     allow others. The event carries the descriptor (``-1`` or None when it was not
-    given). When its directory cannot be read the name is not checkable: None.
+    given). None: the descriptor is no open directory, so the OS fails the call itself.
+    Raises ``_UnresolvedDirFdError`` for an open directory whose path cannot be read.
     """
     path = _as_path(args[index]) if index < len(args) else None
     if not path or path.startswith("/"):
         return path
     fd_index = _DIR_FD_ARGS.get(event, {}).get(index)
-    dir_fd = args[fd_index] if fd_index is not None and fd_index < len(args) else None
-    if not isinstance(dir_fd, int) or isinstance(dir_fd, bool) or dir_fd < 0:
-        return path
-    base = _fd_directory(dir_fd)
-    return os.path.join(base, path) if base else None
+    fd = _fd_number(args[fd_index]) if fd_index is not None and fd_index < len(args) else None
+    return path if fd is None else _anchored(path, fd)
 
 
 def _normalise(path: str) -> str:
@@ -508,8 +698,9 @@ def _symlink_ends(args: tuple[Any, ...]) -> tuple[str | None, str | None]:
     """(link path, resolved target) of an ``os.symlink`` event.
 
     A relative target resolves against the link's directory, not the cwd. The
-    link is read against its ``dir_fd`` when it has one (``_event_path``); a
-    relative target of a link whose directory is unknown is not checkable.
+    link is read against its ``dir_fd`` when it has one (``_event_path``); when
+    that descriptor is no open directory the OS fails the call itself and the
+    relative target has nothing to resolve against.
     """
     target = _as_path(args[0]) if args else None
     link = _event_path("os.symlink", args, 1)
@@ -521,10 +712,11 @@ def _symlink_ends(args: tuple[Any, ...]) -> tuple[str | None, str | None]:
 class HomeWriteGuard:
     """Refuses and records writes under ``roots``.
 
-    ``check`` is the audit-hook body. It never writes. It reads only to place a
-    name (a ``stat`` for a ``file:`` SQLite name, a ``readlink`` of
-    ``/proc/self/fd/N`` for a ``dir_fd``); neither raises an audit event, and the
-    ``_busy`` flag stops it recursing into itself.
+    ``check`` is the audit-hook body; ``vet`` is the same decision for the three
+    ``os`` functions the session wraps (``DESCRIPTOR_CALLS``). Neither writes. They
+    read only to place a name (a ``stat`` for a ``file:`` SQLite name; an ``fstat``
+    and a ``readlink`` of ``/proc/self/fd/N`` for a ``dir_fd``); none of those
+    raises an audit event, and the ``_busy`` flag stops a check recursing into itself.
     """
 
     def __init__(self, roots: Iterable[str | os.PathLike[str]]) -> None:
@@ -594,27 +786,97 @@ class HomeWriteGuard:
             return [target for p in paths for target in _sqlite_file_targets(p)]
         return paths
 
+    def expect_open(self, expected: tuple[str, int] | None) -> None:
+        """The ``open`` event the next wrapped ``os.open`` raises was already read (or None)."""
+        self._busy.expected_open = expected
+
+    def _already_read(self, args: tuple[Any, ...]) -> bool:
+        """Is this ``open`` event the one a wrapper has just read against its descriptor?"""
+        expected = getattr(self._busy, "expected_open", None)
+        if expected is None:
+            return False
+        name = _as_path(args[0]) if args else None
+        flags = args[2] if len(args) > 2 and isinstance(args[2], int) else None
+        if flags is None or (name, flags | _O_CLOEXEC) != expected:
+            return False
+        self._busy.expected_open = None
+        return True
+
+    def vet(
+        self, spec: DescriptorCall, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> tuple[str, int] | None:
+        """Refuse a wrapped call that would change protected state (``PermissionError``).
+
+        A relative name given with a ``dir_fd`` is read against the directory the
+        descriptor names. A descriptor that is no open directory is left to the OS
+        (EBADF, ENOTDIR); an open directory whose path cannot be read is refused.
+
+        Returns, for a call whose own ``open`` audit event must not be read again against
+        the working directory, that event's (name, flags); otherwise None.
+        """
+        if getattr(self._busy, "on", False):
+            return None
+        given = dict(zip(spec.parameters, args, strict=False))
+        given.update((k, v) for k, v in kwargs.items() if k in spec.parameters or k == "dir_fd")
+        name = _as_path(given.get("path"))
+        flags = given.get(spec.flags) if spec.flags else None
+        if not name:
+            return None
+        if spec.flags and not (isinstance(flags, int) and flags & _WRITE_FLAGS):
+            return None  # a read, or arguments the call itself rejects
+        fd = _fd_number(given.get("dir_fd"))
+        anchor = None if name.startswith("/") else fd  # an absolute name ignores the descriptor
+        if spec.audited and anchor is None:
+            return None  # its ``open`` event reads this name against the cwd, which is right
+        self._busy.on = True
+        try:
+            target: str | None = name
+            problem = ""
+            if anchor is not None:
+                try:
+                    target = _anchored(name, anchor)
+                except _UnresolvedDirFdError as unresolved:
+                    target, problem = None, unresolved.describe()
+            if problem:
+                self._deny(spec.event, problem)
+            if target and self.protected_root(target):
+                self._deny(spec.event, target)
+        finally:
+            self._busy.on = False
+        return (name, flags | _O_CLOEXEC) if spec.audited and isinstance(flags, int) else None
+
     def check(self, event: str, args: tuple[Any, ...]) -> None:
         if event != "open" and event not in _MUTATED_ARGS:
             return
         if getattr(self._busy, "on", False):
             return
+        if event == "open" and self._already_read(args):
+            return
         self._busy.on = True
         try:
-            for path in self._write_target(event, args):
-                if self.protected_root(path):
-                    self._deny(event, path)
-            for index in _TREE_ENDS.get(event, ()):
-                source = _event_path(event, args, index)
-                if source and self.contained_root(source):
-                    self._deny(event, source)
-            if event == "os.symlink":
-                # A new alias to an ANCESTOR of a root reaches the root through it.
-                target = _symlink_ends(args)[1]
-                if target and self.contained_root(target):
-                    self._deny(event, target)
+            self._refuse_protected(event, args)
+        except _UnresolvedDirFdError as unresolved:
+            problem = unresolved.describe()
+        else:
+            problem = ""
         finally:
             self._busy.on = False
+        if problem:
+            self._deny(event, problem)
+
+    def _refuse_protected(self, event: str, args: tuple[Any, ...]) -> None:
+        for path in self._write_target(event, args):
+            if self.protected_root(path):
+                self._deny(event, path)
+        for index in _TREE_ENDS.get(event, ()):
+            source = _event_path(event, args, index)
+            if source and self.contained_root(source):
+                self._deny(event, source)
+        if event == "os.symlink":
+            # A new alias to an ANCESTOR of a root reaches the root through it.
+            target = _symlink_ends(args)[1]
+            if target and self.contained_root(target):
+                self._deny(event, target)
 
     def _deny(self, event: str, path: str) -> None:
         self.violations.append(Violation(self.phase, event, path, _callers()))
@@ -623,7 +885,7 @@ class HomeWriteGuard:
             "tests must not write the operator's real Verdict state "
             "(isolated HOME/VERDICT_HOME did not cover this path)",
             path,
-        )
+        ) from None
 
     def drain(self) -> list[Violation]:
         found, self.violations = self.violations, []
@@ -647,6 +909,68 @@ def install(guard: HomeWriteGuard = GUARD) -> None:
     _hook_installed = True
     check: Callable[[str, tuple[Any, ...]], None] = guard.check
     sys.addaudithook(check)
+
+
+#: name -> (the ``os`` function as it was, the wrapper) while the wrappers are installed.
+_wrapped: dict[str, tuple[Callable[..., Any], Callable[..., Any]]] = {}
+
+
+def _wrap(
+    guard: HomeWriteGuard, spec: DescriptorCall, original: Callable[..., Any]
+) -> Callable[..., Any]:
+    """``original`` behind ``guard.vet``: same arguments, same result, same exceptions.
+
+    The wrapper takes ``*args, **kwargs`` and hands them on untouched, so a call the
+    guard does not understand (wrong arity, wrong types) fails inside ``original`` with
+    its own error. ``vet`` only reads, and only raises the guard's ``PermissionError``.
+    """
+
+    @functools.wraps(original)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if spec.audited and kwargs.get("dir_fd") is None:
+            return original(*args, **kwargs)  # its ``open`` event is the hook's business alone
+        expected = guard.vet(spec, args, kwargs)
+        if expected is None:
+            return original(*args, **kwargs)
+        guard.expect_open(expected)
+        try:
+            return original(*args, **kwargs)
+        finally:
+            guard.expect_open(None)
+
+    return wrapper
+
+
+def install_descriptor_wrappers(guard: HomeWriteGuard | None = None) -> None:
+    """Wrap ``os.open``, ``os.mkfifo`` and ``os.mknod`` (``DESCRIPTOR_CALLS``); idempotent.
+
+    Each wrapper is also added to ``os.supports_dir_fd`` while it is installed: ``shutil``
+    and other code decide whether to use descriptor-relative calls by testing membership of
+    the ``os`` function in that set, and a wrapper that is not a member would switch
+    ``shutil.rmtree`` to its slower path.
+    """
+    guard = GUARD if guard is None else guard
+    for name, spec in DESCRIPTOR_CALLS.items():
+        current = getattr(os, name)
+        recorded = _wrapped.get(name)
+        if recorded is not None and recorded[1] is current:
+            continue
+        if recorded is not None:  # something else replaced our wrapper: forget it
+            os.supports_dir_fd.discard(recorded[1])
+        wrapper = _wrap(guard, spec, current)
+        _wrapped[name] = (current, wrapper)
+        if current in os.supports_dir_fd:
+            os.supports_dir_fd.add(wrapper)
+        setattr(os, name, wrapper)
+
+
+def remove_descriptor_wrappers() -> None:
+    """Put back what ``install_descriptor_wrappers`` replaced (unless something else did since)."""
+    for name, (original, wrapper) in list(_wrapped.items()):
+        if getattr(os, name) is wrapper:
+            setattr(os, name, original)
+        os.supports_dir_fd.discard(wrapper)
+        del _wrapped[name]
 
 
 def render_violations(found: list[Violation]) -> str:
@@ -768,8 +1092,21 @@ def pytest_configure(config: pytest.Config) -> None:
             "real state. Unset each variable or point it at a dedicated directory, then rerun:\n  "
             + "\n  ".join(STARTUP_PROBLEMS)
         )
+    unresolvable = descriptor_resolution_problem()
+    if unresolvable:
+        raise pytest.UsageError(
+            "tests/helpers/home_guard.py cannot start: it places a descriptor-relative name "
+            "(a call with dir_fd=) through /proc/self/fd, and that does not work here, so such "
+            "a write could land in real state unseen. Run the tests on Linux with /proc "
+            f"mounted. Reason: {unresolvable}"
+        )
+    install_descriptor_wrappers()
     plugins = config.pluginmanager
     module = sys.modules[__name__]
     # Already registered when loaded with ``-p tests.helpers.home_guard``.
     if not plugins.is_registered(module):
         plugins.register(module, "verdict-home-write-guard")
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    remove_descriptor_wrappers()

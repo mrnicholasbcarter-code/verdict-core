@@ -188,9 +188,10 @@ archived change, only when `scripts/check_dod.py <file>` passes; CI runs
 - Isolate state. Point `VERDICT_HOME` (or `HOME`) at a temp directory in tests
   and scripts; never write to the real `~/.verdict`. `tests/conftest.py` gives
   every test its own temp `HOME` and clears every state-path env var;
-  `tests/helpers/home_guard.py` refuses, and fails the test on, direct
-  in-process writes to the real state roots (not child processes or deliberate
-  alias chains); `tests/test_home_isolation.py` pins both. To list which tests
+  `tests/helpers/home_guard.py` is the tripwire on top: it refuses, and fails the
+  test on, the in-process writes to the real state roots it can see (its docstring
+  section "Guarantees and limits" lists what it cannot, for example child processes
+  and C code); `tests/test_home_isolation.py` pins both. To list which tests
   write into a throwaway home, run pytest with `-p tests.helpers.home_snapshot
   --home-leak-root=<dir>` (serial only: `-n` is refused; see that module's docstring).
 - No secrets in code, fixtures, logs or docs. No `/home/...` host paths in

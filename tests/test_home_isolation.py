@@ -5,10 +5,11 @@ Three layers are pinned here:
 * resolution: under the per-test isolation every path ``verdict.paths`` (and the
   other state resolvers) derives lands under the per-test home, and every path
   env var ``verdict/`` reads is cleared or accounted for;
-* enforcement: ``tests/helpers/home_guard.py`` refuses and reports any write to
-  the real state roots. It is proved against a FAKE "real home" (never the
-  operator's), including end to end in a child pytest run with a deliberately
-  leaking test;
+* enforcement: ``tests/helpers/home_guard.py`` refuses and reports the in-process
+  writes to the real state roots it can see; its docstring section "Guarantees and
+  limits" says which those are and which it cannot see. It is proved against a FAKE
+  "real home" (never the operator's), including end to end in a child pytest run with
+  a deliberately leaking test;
 * detection: ``tests/helpers/home_snapshot.py`` snapshots a throwaway home so a
   run can list exactly which tests wrote into it.
 """
@@ -26,6 +27,8 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -276,6 +279,17 @@ def _flags(*names: str) -> int:
         ("os.mkdir", ("{r}/dir", 0o777, -1), True),
         ("os.remove", ("{r}/state.json", -1), True),
         ("os.rename", ("{o}/a", "{r}/b", -1, -1), True),
+        ("os.chmod", ("{r}/state.json", 0o600, -1), True),
+        ("os.chmod", ("{o}/state.json", 0o600, -1), False),
+        ("os.chown", ("{r}/state.json", -1, -1, -1), True),
+        ("os.chown", ("{o}/state.json", -1, -1, -1), False),
+        ("os.utime", ("{r}/state.json", None, None, -1), True),
+        ("os.utime", ("{o}/state.json", None, None, -1), False),
+        ("shutil.copymode", ("{o}/src", "{r}/dst"), True),
+        ("shutil.copymode", ("{r}/src", "{o}/dst"), False),
+        ("shutil.copystat", ("{o}/src", "{r}/dst"), True),
+        ("shutil.copystat", ("{r}/src", "{o}/dst"), False),
+        ("shutil.copytree", ("{o}/src", "{r}/dst"), True),
         ("os.listdir", ("{r}",), False),
         ("socket.connect", (None, ("127.0.0.1", 1)), False),
     ],
@@ -530,12 +544,6 @@ def test_the_last_sqlite_mode_parameter_decides_whether_a_uri_touches_a_file(
     assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
 
 
-needs_proc_fd = pytest.mark.skipif(
-    not os.path.isdir("/proc/self/fd"), reason="a dir_fd names its directory through /proc/self/fd"
-)
-
-
-@needs_proc_fd
 def test_names_relative_to_a_dir_fd_are_not_resolved_against_the_cwd(
     fake_real_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -553,7 +561,6 @@ def test_names_relative_to_a_dir_fd_are_not_resolved_against_the_cwd(
     assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
 
 
-@needs_proc_fd
 def test_dir_fd_calls_are_checked_against_the_directory_the_descriptor_names(
     fake_real_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -605,11 +612,10 @@ def test_dir_fd_calls_are_checked_against_the_directory_the_descriptor_names(
     assert (elsewhere / "abs").is_dir() and (elsewhere / "dst.txt").is_file()
 
 
-@needs_proc_fd
-def test_a_dir_fd_that_names_no_directory_checks_nothing_and_writes_nothing(
+def test_a_closed_dir_fd_gets_the_operating_systems_own_error_not_a_guard_error(
     fake_real_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An fd that cannot be resolved is not guessed at: the OS refuses the call itself."""
+    """A descriptor that is not open names no directory: the OS refuses the call itself."""
     root = fake_real_home / ".verdict"
     monkeypatch.chdir(root)
     closed_fd = os.open(tmp_path, os.O_RDONLY)
@@ -620,6 +626,385 @@ def test_a_dir_fd_that_names_no_directory_checks_nothing_and_writes_nothing(
         assert raised.value.errno == errno.EBADF
         assert not GUARD.violations
     assert sorted(p.name for p in root.iterdir()) == ["model-metadata.json"]
+
+
+# ---------------------------------------------------------------------------
+# Descriptor-relative calls: a name is read against the directory its descriptor names
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DirFds:
+    root: Path  # the protected root
+    elsewhere: Path  # an ordinary directory
+    root_fd: int
+    other_fd: int
+    cwd: Path  # the working directory: inside neither
+
+
+@pytest.fixture
+def dir_fds(
+    fake_real_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[DirFds]:
+    """A protected root and an ordinary directory, each held open; the cwd is in neither."""
+    root = fake_real_home / ".verdict"
+    elsewhere = tmp_path / "elsewhere"
+    cwd = tmp_path / "deep" / "cwd"
+    for directory in (root, elsewhere):
+        (directory / "sub").mkdir(parents=True, exist_ok=True)
+        (directory / "src.txt").write_text("s")
+    cwd.mkdir(parents=True)
+    monkeypatch.chdir(cwd)
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    other_fd = os.open(elsewhere, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with GUARD.protect(root):
+            yield DirFds(root, elsewhere, root_fd, other_fd, cwd)
+    finally:
+        os.close(root_fd)
+        os.close(other_fd)
+
+
+def _listing(directory: Path) -> list[tuple[str, int, int, int]]:
+    """Name, mode, size and mtime of every entry: any change to the directory shows."""
+    found = []
+    for entry in os.scandir(directory):
+        info = entry.stat(follow_symlinks=False)
+        found.append((entry.name, info.st_mode, info.st_size, info.st_mtime_ns))
+    return sorted(found)
+
+
+def _open_closed(name: str, flags: int, fd: int) -> int:
+    descriptor = os.open(name, flags, 0o600, dir_fd=fd)
+    os.close(descriptor)
+    return descriptor
+
+
+#: What each call below would do to the directory its descriptor names.
+_DESCRIPTOR_CALLS: dict[str, Callable[[int], object]] = {
+    "os.open (truncate)": lambda fd: _open_closed("src.txt", os.O_WRONLY | os.O_TRUNC, fd),
+    "os.open (create)": lambda fd: _open_closed("made", os.O_WRONLY | os.O_CREAT, fd),
+    "os.mkdir": lambda fd: os.mkdir("made", dir_fd=fd),
+    "os.remove": lambda fd: os.remove("src.txt", dir_fd=fd),
+    "os.rmdir": lambda fd: os.rmdir("sub", dir_fd=fd),
+    "os.rename": lambda fd: os.rename("src.txt", "moved.txt", src_dir_fd=fd, dst_dir_fd=fd),
+    "os.link": lambda fd: os.link("src.txt", "linked", src_dir_fd=fd, dst_dir_fd=fd),
+    "os.symlink": lambda fd: os.symlink("src.txt", "alias", dir_fd=fd),
+    "os.chmod": lambda fd: os.chmod("src.txt", 0o600, dir_fd=fd),
+    "os.utime": lambda fd: os.utime("src.txt", None, dir_fd=fd),
+    "os.chown": lambda fd: os.chown("src.txt", -1, -1, dir_fd=fd),
+    "os.mkfifo": lambda fd: os.mkfifo("fifo", dir_fd=fd),
+    "os.mknod": lambda fd: os.mknod("node", dir_fd=fd),
+}
+if sys.version_info >= (3, 11):  # shutil.rmtree has no dir_fd before 3.11
+    _DESCRIPTOR_CALLS["shutil.rmtree"] = lambda fd: shutil.rmtree("sub", dir_fd=fd)
+
+_WRITING_OPENS = {
+    "truncate an existing file": ("model-metadata.json", os.O_WRONLY | os.O_TRUNC),
+    "open an existing file read-write": ("model-metadata.json", os.O_RDWR),
+    "append": ("model-metadata.json", os.O_WRONLY | os.O_APPEND),
+    "create": ("made.json", os.O_WRONLY | os.O_CREAT),
+    "create exclusive": ("made.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW),
+}
+
+_OPEN_SPELLINGS: dict[str, Callable[[str, int, int], int]] = {
+    "positional mode": lambda name, flags, fd: os.open(name, flags, 0o600, dir_fd=fd),
+    "default mode": lambda name, flags, fd: os.open(name, flags, dir_fd=fd),
+    "keywords": lambda name, flags, fd: os.open(path=name, flags=flags, mode=0o600, dir_fd=fd),
+    "bytes name": lambda name, flags, fd: os.open(os.fsencode(name), flags, dir_fd=fd),
+    "path-like name": lambda name, flags, fd: os.open(Path(name), flags, dir_fd=fd),
+}
+
+
+@pytest.mark.parametrize("spelling", sorted(_OPEN_SPELLINGS))
+@pytest.mark.parametrize("case", sorted(_WRITING_OPENS))
+def test_a_writable_open_relative_to_a_dir_fd_cannot_reach_protected_state(
+    dir_fds: DirFds, case: str, spelling: str
+) -> None:
+    """``os.open('state.json', O_TRUNC, dir_fd=root_fd)`` from a cwd outside the root."""
+    name, flags = _WRITING_OPENS[case]
+    metadata = dir_fds.root / "model-metadata.json"
+    content, before = metadata.read_bytes(), _listing(dir_fds.root)
+    with pytest.raises(PermissionError) as raised:
+        _OPEN_SPELLINGS[spelling](name, flags, dir_fds.root_fd)
+    assert raised.value.errno == errno.EACCES
+    found = GUARD.drain()
+    assert [(v.event, os.path.realpath(v.path)) for v in found] == [
+        ("os.open", os.path.realpath(dir_fds.root / name))
+    ]
+    assert any("test_home_isolation.py" in frame for frame in found[0].where), found[0].where
+    assert metadata.read_bytes() == content
+    assert _listing(dir_fds.root) == before
+
+
+def test_a_builtin_open_with_an_opener_is_read_against_the_openers_descriptor(
+    dir_fds: DirFds,
+) -> None:
+    """The builtin's own ``open`` event carries the bare name; the opener's ``os.open`` is wrapped."""
+
+    def opener(name: str, flags: int) -> int:
+        return os.open(name, flags, 0o600, dir_fd=dir_fds.root_fd)
+
+    with pytest.raises(PermissionError), open("made.json", "w", opener=opener):
+        pass
+    assert [v.event for v in GUARD.drain()] == ["os.open"]
+    assert not (dir_fds.root / "made.json").exists()
+
+
+def test_a_descriptor_relative_name_that_climbs_into_protected_state_is_refused(
+    dir_fds: DirFds,
+) -> None:
+    climb = os.path.relpath(dir_fds.root / "model-metadata.json", dir_fds.elsewhere)
+    assert climb.startswith("..")
+    metadata = dir_fds.root / "model-metadata.json"
+    content = metadata.read_bytes()
+    with pytest.raises(PermissionError):
+        os.open(climb, os.O_WRONLY | os.O_TRUNC, dir_fd=dir_fds.other_fd)
+    assert GUARD.drain()
+    assert metadata.read_bytes() == content
+
+
+def test_opens_that_do_not_write_stay_allowed_through_a_protected_dir_fd(dir_fds: DirFds) -> None:
+    kept = [
+        os.open("model-metadata.json", os.O_RDONLY, dir_fd=dir_fds.root_fd),
+        os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fds.root_fd),
+        os.open("model-metadata.json", os.O_PATH | os.O_NOFOLLOW, dir_fd=dir_fds.root_fd),
+    ]
+    for descriptor in kept:
+        os.close(descriptor)
+    assert not GUARD.violations
+
+
+def test_a_writable_open_relative_to_a_dir_fd_outside_state_is_not_read_against_the_cwd(
+    dir_fds: DirFds, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cwd reading would put ``made.json`` inside the protected root and refuse a fine call."""
+    monkeypatch.chdir(dir_fds.root)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    os.close(os.open("made.json", flags, 0o600, dir_fd=dir_fds.other_fd))
+    assert (dir_fds.elsewhere / "made.json").is_file()
+    assert not (dir_fds.root / "made.json").exists()
+    assert not GUARD.violations
+
+
+@pytest.mark.parametrize("kind", ["closed", "a file"])
+@pytest.mark.parametrize("label", sorted(_DESCRIPTOR_CALLS))
+def test_a_descriptor_that_is_no_open_directory_gets_the_operating_systems_own_error(
+    dir_fds: DirFds, label: str, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EBADF / ENOTDIR from the OS, never a guard error, even with the cwd inside the root."""
+    monkeypatch.chdir(dir_fds.root)  # a cwd reading would refuse every call below
+    before = _listing(dir_fds.root)
+    if kind == "closed":
+        bad = os.open(dir_fds.elsewhere, os.O_RDONLY)
+        os.close(bad)
+        expected = errno.EBADF
+    else:
+        bad = os.open(dir_fds.elsewhere / "src.txt", os.O_RDONLY)
+        expected = errno.ENOTDIR
+    try:
+        with pytest.raises(OSError) as raised:
+            _DESCRIPTOR_CALLS[label](bad)
+    finally:
+        if kind == "a file":
+            os.close(bad)
+    assert raised.value.errno == expected, raised.value
+    assert not GUARD.drain()
+    assert _listing(dir_fds.root) == before
+
+
+def _no_procfs(path: str) -> str:
+    raise FileNotFoundError(errno.ENOENT, "No such file or directory", path)
+
+
+def _procfs_unreadable(path: str) -> str:
+    raise PermissionError(errno.EACCES, "Permission denied", path)
+
+
+def _procfs_names_no_path(path: str) -> str:
+    return "anon_inode:[not-a-directory]"
+
+
+_BROKEN_READLINKS = {
+    "no procfs": _no_procfs,
+    "inaccessible": _procfs_unreadable,
+    "names no path": _procfs_names_no_path,
+}
+
+
+@pytest.mark.parametrize("broken", sorted(_BROKEN_READLINKS))
+@pytest.mark.parametrize("target", ["protected", "ordinary"])
+@pytest.mark.parametrize("label", sorted(_DESCRIPTOR_CALLS))
+def test_a_directory_descriptor_that_cannot_be_resolved_is_refused_and_recorded(
+    dir_fds: DirFds, label: str, target: str, broken: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard cannot say where the call lands, so it does not let it run."""
+    directory, fd = {
+        "protected": (dir_fds.root, dir_fds.root_fd),
+        "ordinary": (dir_fds.elsewhere, dir_fds.other_fd),
+    }[target]
+    before = _listing(directory)
+    monkeypatch.setattr(home_guard, "_readlink", _BROKEN_READLINKS[broken])
+    with pytest.raises(PermissionError) as raised:
+        _DESCRIPTOR_CALLS[label](fd)
+    assert raised.value.errno == errno.EACCES
+    found = GUARD.drain()
+    assert len(found) == 1, found
+    assert found[0].event == label.split(" ")[0]
+    assert "dir_fd" in found[0].path and "/proc/self/fd" in found[0].path, found[0].path
+    assert _listing(directory) == before
+
+
+def test_a_broken_descriptor_lookup_refuses_nothing_that_needs_no_lookup(
+    dir_fds: DirFds, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(home_guard, "_readlink", _no_procfs)
+    os.close(os.open("src.txt", os.O_RDONLY, dir_fd=dir_fds.root_fd))  # a read
+    elsewhere = dir_fds.elsewhere
+    os.mkdir(str(elsewhere / "abs"), dir_fd=dir_fds.root_fd)  # absolute: the descriptor is ignored
+    os.mkfifo(str(elsewhere / "abs-fifo"), dir_fd=dir_fds.root_fd)
+    os.close(os.open(str(elsewhere / "abs-file"), os.O_WRONLY | os.O_CREAT, dir_fd=dir_fds.root_fd))
+    os.mkdir(dir_fds.cwd / "plain")  # no descriptor at all
+    assert not GUARD.violations
+
+
+@pytest.mark.parametrize("make", ["mkfifo", "mknod"])
+@pytest.mark.parametrize("how", ["absolute path", "relative to the cwd", "dir_fd"])
+def test_special_files_cannot_be_created_in_protected_state(
+    dir_fds: DirFds, make: str, how: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``os.mkfifo`` and ``os.mknod`` raise no audit event: the session wraps them."""
+    create = getattr(os, make)
+    before = _listing(dir_fds.root)
+    with pytest.raises(PermissionError):
+        if how == "absolute path":
+            create(dir_fds.root / "special")
+        elif how == "relative to the cwd":
+            monkeypatch.chdir(dir_fds.root)
+            create("special")
+        else:
+            create("special", dir_fd=dir_fds.root_fd)
+    found = GUARD.drain()
+    assert [v.event for v in found] == [f"os.{make}"]
+    assert _listing(dir_fds.root) == before
+    create(dir_fds.elsewhere / "special")  # outside the root the same call is fine
+    assert (dir_fds.elsewhere / "special").exists()
+
+
+def test_the_probe_that_stops_a_session_without_descriptor_resolution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert home_guard.descriptor_resolution_problem() is None
+    with monkeypatch.context() as patched:
+        patched.setattr(home_guard, "_PROC_FD_DIR", str(tmp_path / "no-proc"))
+        problem = home_guard.descriptor_resolution_problem()
+        assert problem and str(tmp_path / "no-proc") in problem
+    with monkeypatch.context() as patched:
+        patched.setattr(home_guard, "_readlink", _procfs_unreadable)
+        assert "Permission denied" in (home_guard.descriptor_resolution_problem() or "")
+    with monkeypatch.context() as patched:
+        patched.setattr(home_guard, "_readlink", lambda path: "/somewhere/else")
+        assert "/somewhere/else" in (home_guard.descriptor_resolution_problem() or "")
+    assert home_guard.descriptor_resolution_problem() is None
+
+
+# How the guard covers every ``os`` function that takes a ``dir_fd``, checked against the
+# interpreter that runs the tests (``dir_fd_probe events`` raises the real audit events).
+
+
+def _probe(*argv: str, home: Path, guard_env: bool = False) -> dict[str, Any]:
+    """Run ``tests.helpers.dir_fd_probe`` in a fresh interpreter; its last stdout line is JSON."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in home_guard.HOST_STATE_ENV and not key.startswith("PYTEST_")
+    }
+    env.update(HOME=str(home), PYTHONPATH=str(REPO_ROOT))
+    home.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.helpers.dir_fd_probe", *argv],
+        cwd=home,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    document: dict[str, Any] = json.loads(result.stdout.strip().splitlines()[-1])
+    return document
+
+
+def test_every_os_function_that_takes_a_dir_fd_is_classified() -> None:
+    members = {function.__name__ for function in os.supports_dir_fd}
+    assert members <= set(home_guard.DIR_FD_COVERAGE), (
+        f"classify {sorted(members - set(home_guard.DIR_FD_COVERAGE))} in DIR_FD_COVERAGE"
+    )
+    for name, (how, detail) in home_guard.DIR_FD_COVERAGE.items():
+        assert how in {"read-only", "audit event", "wrapper"}, name
+        if how == "audit event":
+            assert detail in home_guard._DIR_FD_ARGS, name
+        if how == "wrapper":
+            assert detail in home_guard.DESCRIPTOR_CALLS, name
+    assert {n for n, (how, _) in home_guard.DIR_FD_COVERAGE.items() if how == "wrapper"} == set(
+        home_guard.DESCRIPTOR_CALLS
+    )
+
+
+def test_the_audit_events_the_coverage_table_relies_on_carry_the_descriptor(tmp_path: Path) -> None:
+    """Each "audit event" row raises that event, with the descriptor where ``_DIR_FD_ARGS`` says."""
+    seen = _probe("events", home=tmp_path / "home")
+    for member, (how, event) in home_guard.DIR_FD_COVERAGE.items():
+        if member not in seen["calls"] or how != "audit event":
+            continue
+        raised = [args for name, args in seen["calls"][member] if name == event]
+        assert raised, f"os.{member} raised no {event} event: {seen['calls'][member]}"
+        for path_index, fd_index in home_guard._DIR_FD_ARGS[event].items():
+            assert raised[0][fd_index] == seen["dir_fd"], (member, event, raised[0])
+            assert isinstance(raised[0][path_index], str)
+    for member, (how, _) in home_guard.DIR_FD_COVERAGE.items():
+        if member in seen["calls"] and how == "wrapper":
+            names = {name for name, _ in seen["calls"][member]}
+            # the wrapped call's own event (``open``) does not carry the descriptor; the
+            # others raise none: either way the wrapper is what reads the descriptor
+            assert not (names & set(home_guard._DIR_FD_ARGS)), (member, names)
+
+
+def test_the_guard_does_not_change_what_descriptor_calls_do(tmp_path: Path) -> None:
+    """Same calls, with and without the guard: same results, exceptions, errnos and files."""
+    plain = _probe("results", home=tmp_path / "plain-home")
+    guarded = _probe("results", "--guard", home=tmp_path / "guarded-home")
+    # The comparison is only worth anything if the guard really was in the second interpreter.
+    assert plain["engaged"] == {
+        "descriptor write": "allowed",
+        "path write": "allowed",
+        "wrapped": {"mkfifo": False, "mknod": False, "open": False},
+    }
+    assert guarded["engaged"] == {
+        "descriptor write": "refused",
+        "path write": "refused",
+        "wrapped": {"mkfifo": True, "mknod": True, "open": True},
+    }
+    different = {
+        label: (plain["results"][label], outcome)
+        for label, outcome in guarded["results"].items()
+        if plain["results"][label] != outcome
+    }
+    assert not different, different
+    assert guarded["results"].keys() == plain["results"].keys()
+    assert guarded["listing"] == plain["listing"]
+    assert len(plain["results"]) > 60
+
+
+def test_the_descriptor_wrappers_live_exactly_as_long_as_the_guard_plugin(tmp_path: Path) -> None:
+    """Installed for a pytest run, gone after it, and a second run in the same process works."""
+    work = tmp_path / "work"
+    work.mkdir()
+    report = _probe("lifecycle", str(work), home=tmp_path / "home")
+    assert report["runs"] == [
+        {"exit": 0, "restored": True, "membership": True},
+        {"exit": 0, "restored": True, "membership": True},
+    ]
 
 
 def test_double_leading_slash_cannot_reach_a_protected_root(fake_real_home: Path) -> None:
@@ -1219,6 +1604,41 @@ def test_an_export_that_would_cover_the_temp_dir_stops_the_run_naming_the_variab
     assert "VERDICT_CLAUDE_OUTBOX_DIR=/tmp" in output, output
     assert "usage" in output.lower() or "ERROR" in output, output
     assert not marker.exists(), "a test ran although the guard could not start safely"
+
+
+@pytest.mark.parametrize("args", [(), _XDIST_ARGS], ids=["serial", "xdist"])
+def test_a_session_that_cannot_resolve_descriptors_stops_and_says_why(
+    tmp_path: Path, args: tuple[str, ...]
+) -> None:
+    fake_home = tmp_path / "fake-real-home"
+    fake_home.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+    marker = tmp_path / "ran.marker"
+    result = _child_pytest(
+        work,
+        {
+            "conftest.py": """
+                import tests.helpers.home_guard as home_guard
+
+                home_guard._PROC_FD_DIR = "/nonexistent/proc/self/fd"
+                from tests.helpers.home_guard import pytest_configure  # noqa: F401
+            """,
+            "test_never_runs.py": f"""
+                import pathlib
+
+                def test_would_run_unguarded():
+                    pathlib.Path({str(marker)!r}).write_text("ran")
+            """,
+        },
+        home=fake_home,
+        args=args,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == int(pytest.ExitCode.USAGE_ERROR), output
+    assert "/nonexistent/proc/self/fd" in output, output
+    assert "dir_fd" in output, output
+    assert not marker.exists(), "a test ran although descriptors could not be resolved"
 
 
 # ---------------------------------------------------------------------------
