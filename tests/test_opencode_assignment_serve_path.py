@@ -26,15 +26,18 @@ import sqlite3
 import textwrap
 import threading
 import time
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 import verdict.api as api
 from tests.relay_proof_helpers import ASSIGNMENT_KEY, ASSIGNMENT_SERVE_TOKEN
 from tests.test_assigned_lane import (  # noqa: F401  (the fixtures are used by name)
+    ORIGIN,
     ROUTES,
     Wired,
     body_for,
@@ -44,6 +47,7 @@ from tests.test_assigned_lane import (  # noqa: F401  (the fixtures are used by 
 )
 from verdict.orchestration.executor_opencode import OpenCodeExecutor
 from verdict.orchestration.recovery import FailureIntelligence
+from verdict.proxy import UpstreamProxy
 
 ROUTE = ROUTES[2]
 RUN_ID = "run-e2e"
@@ -161,22 +165,69 @@ class Harness:
         return [json.loads(row[0]) for row in rows]
 
 
-@pytest.fixture
-def harness(
+def _serving(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     now: datetime,  # noqa: F811  (a fixture imported by name)
     store: Any,  # noqa: F811
-) -> Any:
+    *,
+    upstream_status: int | None = None,
+) -> Iterator[Harness]:
+    """The real app on a loopback port; with ``upstream_status`` its upstream answers that status
+    and serve's own refusal text, as a provider that denies the account would."""
     db = tmp_path / "serve-receipts.db"
     monkeypatch.setenv("VERDICT_RECEIPTS_DB", str(db))
     wired = Wired(monkeypatch, tmp_path, build_service(now, store))
+    if upstream_status is not None:
+
+        async def denies(request: httpx.Request) -> httpx.Response:
+            raw = await request.aread()
+            wired.upstream.append(
+                {
+                    "headers": dict(request.headers),
+                    "body": json.loads(raw) if raw else None,
+                    "raw": raw.decode(),
+                }
+            )
+            return httpx.Response(
+                upstream_status,
+                json={"error": {"message": "authentication failed", "type": "provider_auth"}},
+            )
+
+        monkeypatch.setattr(
+            api,
+            "_build_proxy",
+            lambda: UpstreamProxy(
+                ORIGIN, api_key="gateway-key", transport=httpx.MockTransport(denies)
+            ),
+        )
     serve = LiveServe()
     origin = serve.start()
     try:
         yield Harness(wired, serve, origin, tmp_path)
     finally:
         serve.stop()
+
+
+@pytest.fixture
+def harness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    now: datetime,  # noqa: F811  (a fixture imported by name)
+    store: Any,  # noqa: F811
+) -> Iterator[Harness]:
+    yield from _serving(monkeypatch, tmp_path, now, store)
+
+
+@pytest.fixture(params=[401, 403])
+def harness_upstream_denies(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    now: datetime,  # noqa: F811
+    store: Any,  # noqa: F811
+) -> Iterator[Harness]:
+    yield from _serving(monkeypatch, tmp_path, now, store, upstream_status=request.param)
 
 
 def test_the_signed_assignment_is_served_on_the_signed_route_and_the_waiver_is_read_back(
@@ -227,6 +278,29 @@ def test_a_request_that_needed_no_waiver_leaves_the_attempt_without_one(harness:
     serve = terminal.worker_assignment["serve_receipts"]
     assert (serve["status"], serve["requests"], serve["requests_waived"]) == ("read", 1, 0)
     assert serve["requirement_waivers"] == []
+
+
+def test_an_admitted_request_whose_upstream_says_authentication_failed_is_the_providers(
+    harness_upstream_denies: Harness,
+) -> None:
+    """Serve forwards a provider's own 401 or 403 unchanged, so the very words serve uses to
+    refuse an assignment can come from the route's provider.  Serve admitted this assignment (its
+    receipts hold the request), so the denial is the provider's and recovery must see it as such,
+    not as a configuration block."""
+    harness = harness_upstream_denies
+    terminal = harness.run(body_for(ROUTE, tools=TOOLS, stream=True))
+    seen = harness.worker_saw()
+    assert seen["status"] in (401, 403)
+    assert json.loads(seen["body"])["error"]["message"] == "authentication failed"
+    assert len(harness.wired.upstream) == 1, "the request was not admitted and sent upstream"
+    assert len(harness.evidence_roots()) == 1
+    assert terminal.ok is False
+    assert terminal.status_code == seen["status"]
+    assert not terminal.error.startswith("harness_configuration:"), terminal.error
+    serve = terminal.worker_assignment["serve_receipts"]
+    assert (serve["status"], serve["requests"]) == ("read", 1)
+    verdict = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
+    assert verdict.category != "harness_configuration"
 
 
 def _assert_refused_and_nothing_happened(harness: Harness, terminal: Any) -> None:

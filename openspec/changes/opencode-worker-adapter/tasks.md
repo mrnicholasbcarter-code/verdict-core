@@ -76,7 +76,10 @@
       missing or unreadable key, a missing run id or node id or a bad timeout is a
       `harness_configuration:` block before launch, with no request to serve and no fallback to the
       serve token; the serve token is used only for the readiness check; serve's own 403
-      `authentication failed` is a configuration block, not a provider denial; the
+      `authentication failed` is a configuration block, not a provider denial, but only when
+      serve's receipts (read after the worker is gone) hold no request under the assignment; the
+      same words from a request serve admitted, or with receipts that cannot be read, stay the
+      provider's (a provider's 401 or 403 is forwarded by serve unchanged); the
       `X-Verdict-Worker` header is no longer sent. Verify: `tests/test_opencode_signed_assignment.py`,
       `tests/test_opencode_executor.py`
       (`test_the_worker_holds_only_the_signed_assignment_and_never_the_serve_token`,
@@ -88,7 +91,14 @@
       (8), a stale mark (3), no run id check (5), no timeout check (3), the serve token as the
       fallback (34). After review round 1 (2026-11-25) each live assignment of an executor also has
       its own digest, so serve's receipts cannot be attributed to the wrong attempt of one node
-      in one second (the identity tests fail with that logic removed).
+      in one second (the identity tests fail with that logic removed). After the pull request
+      review (2026-11-25) the refusal is decided from serve's receipts, not from the words alone:
+      the 8 new tests (`test_an_admitted_request_whose_upstream_says_authentication_failed_is_the_providers`
+      with 401 and 403, `test_serves_words_after_a_request_serve_admitted_are_the_providers`
+      with 401 and 403, and `test_serves_words_are_the_providers_when_serves_receipts_cannot_be_read`
+      with four kinds of unreadable receipts) failed with the gate removed (the old behaviour:
+      a block on the words alone), and the refusal tests failed with a gate that never blocks
+      (6 failures).
 - [x] 2.17 The executor-to-serve path through the real app (#1325): a loopback server runs the real
       `verdict serve` app with a recording upstream; the real executor signs and a fake worker sends
       one request; the assignment is served on the signed route and serve's evidence names the

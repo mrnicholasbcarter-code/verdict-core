@@ -28,7 +28,10 @@ Each attempt:
 4. Deletes the temp directory, and with it the instructions file, on every way out.
 5. Reads back what serve recorded under the assignment (its digest, never the credential) and puts
    it on the terminal, so the run receipt shows which attempts ran with a requirement waived
-   (:mod:`verdict.orchestration.serve_evidence`).
+   (:mod:`verdict.orchestration.serve_evidence`).  The same record decides what a 401 or 403 with
+   serve's refusal words means: serve forwards a provider's error unchanged, so it is a
+   configuration block only when serve's receipts show it admitted no request under the
+   assignment, and the provider's in every other case.
 
 **Dispatch origin** — OpenCode workers send through Verdict serve (:8000), not the gateway
 (OmniRoute :20128), so this executor reports the serve origin it really calls (the address it
@@ -238,18 +241,34 @@ def _as_float(value: Any) -> float | None:
 
 #: The one message ``verdict serve`` answers any refused worker assignment with (HTTP 403, body
 #: ``{"error": {"message": "authentication failed", ...}}``): expired, tampered, signed with
-#: another key or dated ahead all look alike on purpose.
+#: another key or dated ahead all look alike on purpose.  A provider's own 401 or 403 can say the
+#: same words, because serve forwards an upstream error unchanged, so the message alone never
+#: proves that serve refused the assignment (see :func:`_serve_never_admitted`).
 _SERVE_REFUSAL_MESSAGE = "authentication failed"
 
 
-def _is_serve_refusal(status: int | None, message: str) -> bool:
-    """True when a failed worker's error is serve refusing the worker's own credential.
+def _looks_like_serve_refusal(status: int | None, message: str) -> bool:
+    """True when a failed worker's error has the status and the words of serve's refusal.
 
-    Recovery would otherwise read the 401/403 as the route's provider denying the account and
-    cool the provider down for an hour, for a fault that is Verdict's own (a signing key serve
-    does not share, a clock that disagrees, an assignment that expired under a slow attempt).
+    Only a candidate: a provider's 401 or 403 may say the same, and recovery reads that as the
+    route's provider denying the account (a cooldown for the provider), which is right for a
+    provider and wrong for a fault that is Verdict's own (a signing key serve does not share, a
+    clock that disagrees).  What decides between the two is serve's own record, read after the
+    worker is gone: :func:`_serve_never_admitted`.
     """
     return status in {401, 403} and message.strip().rstrip(".").lower() == _SERVE_REFUSAL_MESSAGE
+
+
+def _serve_never_admitted(serve_receipts: dict[str, Any]) -> bool:
+    """True only when serve's receipts were read and hold no request under this assignment.
+
+    Serve writes a receipt for every request that passes its door and reaches routing, before
+    anything is sent upstream, and none for one it refuses at the door, so an assignment under
+    which serve recorded a request was accepted and an error that came back was the upstream's.  Anything short of a read with
+    no request (receipts that cannot be read, a request recorded) leaves the origin of the error
+    unproven, and an unproven origin stays the provider's.
+    """
+    return serve_receipts.get("status") == "read" and serve_receipts.get("requests") == 0
 
 
 def _attempt_session_id() -> str:
@@ -895,6 +914,9 @@ class _Attempt:
     digest: str = ""  # SHA-256 of the assignment's payload; empty until one is signed
     mark: EvidenceMark | None = None  # serve's receipt database before the worker started
     launched: bool = False  # a worker process was started, so serve may hold requests for it
+    # The status of a failure that has serve's refusal's status and words; whether it really was
+    # serve's is decided in ``run`` once serve's receipts are read (``_serve_never_admitted``).
+    refusal_candidate: int | None = None
 
 
 class OpenCodeExecutor:
@@ -1020,7 +1042,31 @@ class OpenCodeExecutor:
         if attempt.launched and attempt.digest and attempt.mark is not None:
             record = await self._serve_evidence(attempt.mark, attempt.digest)
             terminal = replace(terminal, worker_assignment=record)
+            if attempt.refusal_candidate is not None and _serve_never_admitted(
+                record["serve_receipts"]
+            ):
+                terminal = self._serve_refusal(terminal, attempt.refusal_candidate)
         return terminal
+
+    def _serve_refusal(self, terminal: WorkerTerminal, status: int) -> WorkerTerminal:
+        """``terminal`` as a configuration block: serve refused the assignment, so no provider did.
+
+        Only when serve's receipts show it admitted nothing under the assignment; otherwise the
+        failure stays as the provider's (:func:`_serve_never_admitted`).  A block is not retried
+        and does not cool the provider down.
+        """
+        return replace(
+            terminal,
+            error=(
+                f"harness_configuration: verdict serve refused the worker assignment "
+                f"(HTTP {status}, and its receipts hold no request under it); an assignment is "
+                f"refused when it is expired, tampered, or signed with a key serve does not hold, "
+                f"so check that the orchestrator and serve share the signing key "
+                f"({_CREDENTIAL_HELP}) and the clock"
+            ),
+            status_code=status,
+            retry_after_seconds=None,
+        )
 
     async def _serve_evidence(self, mark: EvidenceMark, digest: str) -> dict[str, Any]:
         """What serve recorded under this attempt's assignment, once its worker is gone.
@@ -1370,6 +1416,7 @@ class OpenCodeExecutor:
                 duration=time.monotonic() - started,
                 session_id=session_id,
                 secrets=secrets,
+                attempt=attempt,
             )
         finally:
             _cleanup_attempt_dir(attempt_tmp)
@@ -1459,12 +1506,16 @@ class OpenCodeExecutor:
         duration: float,
         session_id: str,
         secrets: Iterable[str] = (),
+        attempt: _Attempt | None = None,
     ) -> WorkerTerminal:
         """Map opencode output to WorkerTerminal.
 
         Exit code is authoritative: 0 → ok=True, non-zero → ok=False.
         NDJSON is parsed for usage (``step_finish`` tokens), the session ID and, on a
-        failure, the upstream HTTP status and retry delay it reports.
+        failure, the upstream HTTP status and retry delay it reports.  A failure is always the
+        provider's here; one that has the status and the words of serve's refusal is noted on
+        ``attempt`` and :meth:`run` turns it into a configuration block when serve's receipts
+        show that serve admitted nothing under the assignment.
         """
         secrets = list(secrets)
         parsed = _parse_ndjson_output(stdout, secrets)
@@ -1483,24 +1534,8 @@ class OpenCodeExecutor:
             stderr_full = _sanitize_full(stderr, secrets)
             tail = error_message or stderr_full[-_STDERR_TAIL_CHARS:] or f"exit {returncode}"
             status = parsed["error_status"] or _status_from_full_text(stderr_full)
-            if _is_serve_refusal(status, error_message):
-                return WorkerTerminal(
-                    executor_kind="live",
-                    ok=False,
-                    model=route_id,
-                    harness="opencode",
-                    error=(
-                        f"harness_configuration: verdict serve refused the worker assignment "
-                        f"(HTTP {status}); an assignment is refused when it is expired, "
-                        f"tampered, or signed with a key serve does not hold, so check that the "
-                        f"orchestrator and serve share the signing key ({_CREDENTIAL_HELP}) and "
-                        f"the clock"
-                    ),
-                    status_code=status,
-                    duration_seconds=duration,
-                    session_ref=actual_session_id,
-                    usage=usage,
-                )
+            if attempt is not None and _looks_like_serve_refusal(status, error_message):
+                attempt.refusal_candidate = status
             return WorkerTerminal(
                 executor_kind="live",
                 ok=False,

@@ -91,8 +91,9 @@ OpenCode config to a temp directory, sets `OPENCODE_CONFIG_DIR` for that
 process, and deletes the temp directory on exit. This prevents cross-attempt and
 cross-worker session DB contamination. The config contains:
 
-- Provider entry: `verdict`, base URL `http://127.0.0.1:8000/v1`, API key from
-  the serve bearer token (never written to disk or logs).
+- Provider entry: `verdict`, base URL `http://127.0.0.1:8000/v1`, API key from the signed
+  per-attempt assignment, which is the worker's only credential (`{env:VERDICT_WORKER_API_KEY}`;
+  the serve bearer token is never given to the worker, and no key value is written to disk or logs).
 - Model entry: `verdict/<route_id>` mapped to `<route_id>`.
 - Policies: deny all `provider.use` actions; allow only `verdict`. Prevents the
   worker from calling openrouter, bedrock, or any other provider directly.
@@ -186,12 +187,25 @@ goes through) takes no ids and refuses an executor that is not answer-only, whic
 node id is a `harness_configuration:` block with nothing launched. No synthetic node id exists.
 
 Serve answers any refused assignment with one 403 `authentication failed` (expired, tampered, a
-key serve does not hold, dated ahead of its clock). The executor recognises that message with
-that status (captured from the real OpenCode 2.3.2, `tests/fixtures/opencode_stdout`) and ends
-the attempt `harness_configuration:` instead of passing the 403 to recovery, which would read it as
-the provider denying the account and cool the provider down for an hour for a fault that is
-Verdict's own. An orchestrator and a serve that read different `HOME`s, and so different keys,
-meet here on the first request.
+key serve does not hold, dated ahead of its clock). That message and status alone do not prove
+serve refused: serve forwards a provider's own buffered 401 or 403 unchanged, so a provider that
+answers `{"error":{"message":"authentication failed"}}` looks the same to the worker. The
+executor therefore treats a failure with that status (401 or 403) and those words (captured from
+the real OpenCode 2.3.2, `tests/fixtures/opencode_stdout`) as a candidate only, and decides after
+the worker is gone, from serve's own receipts (read back as below): serve writes a root for every
+request that passes its door and reaches routing, before anything is sent upstream, and none for
+one it refuses at the door. The
+attempt ends `harness_configuration:` (a block, no cooldown) only when the read succeeded and
+serve holds no request under the attempt's assignment. A request recorded under it means serve
+admitted the assignment, so the error is the upstream's; receipts that cannot be read (not
+configured, in memory, missing, unreadable, over the row limit or out of time) leave the origin
+unproven. In both cases the failure stays the provider's and recovery handles it as before, with a
+cooldown for the route's provider. The cost is accepted: when the orchestrator cannot read serve's
+receipts (an orchestrator and a serve that read different `HOME`s, the usual cause of a refused
+assignment, may also read different receipt databases) a real refusal is read as the provider's,
+and a refusal after an earlier request of the same attempt was admitted cannot be told from the
+provider's either. Telling them apart without serve's receipts needs serve to say so in its
+answer, which this story does not change.
 
 **What serve recorded, read back into the run receipt (design detail, #1325):** serve writes one
 evidence root per relay request to its receipt database (`VERDICT_RECEIPTS_DB`), naming the
@@ -231,7 +245,8 @@ only, never with `gateway_origin`, and is refused as `executor origin mismatch` 
 or when none is bound; every other origin is compared with `gateway_origin` exactly as before. The
 permit still binds the gateway (serve's relay checks the permit against its own upstream), so the
 recorded `dispatch_permit` evidence and its redaction are unchanged. Not done here: serve's own
-proof that it forwards to the permit's gateway, and the signed per-attempt assignment (#1313).
+proof that it forwards to the permit's gateway (the signed per-attempt assignment is built, see
+"Signed assignment per attempt").
 
 **Recorded cost (design detail):** OpenCode reports a cost of 0 for a custom provider with no
 pricing, which is not "free". `cost_usd` is recorded only for a real positive figure across
@@ -322,16 +337,21 @@ rejected and classified as a failure before verification runs.
   admission mints a route-bound proof only for the route it selects. Pinning therefore
   happens inside admission (see "Worker identity" above), so the receipt attests the
   route that was admitted and had its proof minted, and a route that is not admitted can
-  never be selected. It does not authenticate the worker-supplied route against the one
-  Verdict dispatched: until #1313 a worker can name another *admitted* route.
+  never be selected. The route is the one Verdict dispatched: the executor signs it into the
+  assignment, serve pins the request to it and refuses a request whose `model` differs, so a
+  worker cannot name another route (the executor's signing is #1325; before it, the worker held
+  the serve token and could name another *admitted* route).
 - **JSON output field names** from `opencode --format json` are confirmed at
   build time. If usage fields are absent, `opencode session export <attempt_id>`
   is used as a fallback; the builder handles the case where both sources are
   incomplete.
 - **No behaviour change for runs that do not name `opencode`.** `direct-gateway` stays the
   default, so a run without `--executor` is unchanged. A run that opts in with
-  `--executor opencode` before #1313 lands has its worker refused by serve and fails its
-  nodes; that is why the default was not switched.
+  `--executor opencode` needs the signing key that `verdict setup --apply --allow host.serve`
+  creates, and the orchestrator and serve must read the same one; without it the attempt ends in
+  a `harness_configuration:` block before anything is launched. The default is not switched here
+  (#1328): one live attempt through a spare serve passed on 2026-11-25 (task 2.19), the run on
+  installed main is post-merge (task 8.1).
 - **Known gap: the status matcher misses the `requests` forms.** An HTTP status in
   unstructured text needs an HTTP or status marker or its reason phrase right after the number,
   so `429 Client Error: Too Many Requests for url: ...` and
@@ -345,16 +365,18 @@ rejected and classified as a failure before verification runs.
 - `prime-headless` users are unaffected.
 - Making OpenCode the default is a later one-line change to the `DEFAULT_REGISTRY` default
   (`default=True` on `OpenCodeAdapter`, removed from `DirectGatewayAdapter`), with the
-  default tests flipped, made only after a live smoke passes with #1313 in place. If the
-  adapter is defective before then, nothing needs reverting for runs that do not name it.
+  default tests flipped, made in its own change (#1328) after a live run on installed main
+  passes. If the adapter is defective before then, nothing needs reverting for runs that do not
+  name it.
 
 ## ADR impact
 
 - Amends nothing yet: [ADR-041](../../../docs/adr/ADR-041-generic-harness-contracts.md)'s
   default worker executor (`direct-gateway`) is unchanged until the default is switched.
   This change adds an opt-in `opencode` worker executor, and ADR-053 Decision 2 is amended
-  (2026-11-24): the move of the default to `opencode` waits for #1313 and a passing live
-  smoke.
+  (2026-11-24): the move of the default to `opencode` waits for a passing live smoke with
+  serve honouring the signed assignment (serve's side merged in #1335, the executor's in
+  #1325) and is made in its own change (#1328).
 - Relates to [ADR-036](../../../docs/adr/ADR-036-goal-to-receipt-orchestration.md)
   (goal-to-receipt orchestration): worker output becomes richer (edit loop
   instead of answer-only).
@@ -362,10 +384,12 @@ rejected and classified as a failure before verification runs.
 
 ## Security / trust implications
 
-- **API key handling:** the bearer token for `verdict serve` must not appear in
-  the OpenCode config file, in log output, or in process arguments. It is passed
-  via an env var or a credential field that OpenCode does not echo; the builder
-  confirms the mechanism.
+- **API key handling:** the worker's credential is the signed per-attempt assignment, and the
+  general `verdict serve` bearer token never reaches the worker. Neither may appear in the
+  OpenCode config file, in log output, or in process arguments: the config holds only the
+  `{env:VERDICT_WORKER_API_KEY}` reference and the assignment is passed in that environment
+  variable alone, which OpenCode does not echo (checked by tests that search every recorded
+  value for the credential and for the serve token).
 - **Worker isolation:** each attempt runs in a node worktree scoped by the
   runtime; workers cannot access the main repo or other worktrees. The
   `external_directory` deny in the OpenCode config is a defence-in-depth measure;

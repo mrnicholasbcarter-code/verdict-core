@@ -35,8 +35,9 @@ default: each worker request goes straight to the gateway, so no agent harness
 has to be installed. Prime Agent is an optional harness. Select it with
 `--executor prime-headless` (alias `prime`), or per node with
 `--executor-map node-1=prime-headless`. OpenCode is opt-in too: `--executor opencode`
-(see [the harnesses guide](guides/harnesses.md#opencode-as-a-worker-harness); it does not
-yet work through `verdict serve`, issue #1313).
+(see [the harnesses guide](guides/harnesses.md#opencode-as-a-worker-harness); its workers
+call `verdict serve` with a signed per-attempt assignment, see
+[worker assignments](#worker-assignments)).
 
 - Route visibility follows the executor. Plain `verdict eligibility` and the
   default run read the live gateway catalog; Prime's model registry
@@ -687,7 +688,9 @@ assignment is refused with 403.
   ends the attempt the same way, before anything is launched and with no request to serve.
   The orchestrator and serve must read the same key, which means the same `HOME`: when serve
   refuses an assignment (403 `authentication failed`), the attempt ends as a configuration block
-  rather than as a provider denial.
+  rather than as a provider denial, provided serve's receipts (read back as below) hold no request
+  under the assignment: a provider's own 401 or 403 can say the same words, so with a request
+  recorded, or with receipts that cannot be read, the failure stays the provider's.
 - **Receipts.** The waiver serve records for an assigned request is read back by the assignment's
   digest from serve's receipt database (`VERDICT_RECEIPTS_DB`, then the older `VERDICT_EVIDENCE_DB`,
   then `serve.env`), read-only and only for rows written since the worker started, and shown on the

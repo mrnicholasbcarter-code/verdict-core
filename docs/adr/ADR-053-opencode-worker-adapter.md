@@ -44,6 +44,10 @@ every individual request from a worker. Building that per-request pinning is
 part of the adapter implementation work (Decision 1 below). This ADR records
 the agreed architecture; the implementation detail is in the OpenSpec change.
 
+*Closed (2026-11-25): serve pins each worker request to the route in its verified signed
+assignment (#1335), and the executor signs one per attempt (#1325); see the amendment and the
+implementation note of Decision 1.*
+
 ## Decision
 
 The eight decisions below were agreed with the operator on 2026-11-23 in two
@@ -68,9 +72,10 @@ rejected with 400 before any routing. The execution-path flow selects its own of
 pin the assigned route; pinned execution-path support for workers is not built, and rejection is
 the accepted contract.*
 
-*Implementation note (2026-11-24): the worker authenticates to serve with serve's own bearer
-token, resolved by Verdict (`verdict.serve_service.resolve_serve_token`), passed to the child only
-as `VERDICT_WORKER_API_KEY`, and checked once before launch together with the binary and serve's
+*Implementation note (2026-11-24, superseded by the amendment and the note of 2026-11-25 below,
+which say what runs now): the worker authenticates to serve with serve's own bearer token,
+resolved by Verdict (`verdict.serve_service.resolve_serve_token`), passed to the child only as
+`VERDICT_WORKER_API_KEY`, and checked once before launch together with the binary and serve's
 reachability. Until issue #1313 (OC1b) the route is pinned by the worker header: a worker could
 name another admitted route, never a non-admitted one. #1313 replaces the credential with a signed
 per-attempt assignment (see the amendment below).*
@@ -102,7 +107,13 @@ token stays in the orchestrator's process for its one readiness request (serve a
 assignment on the two relay paths only) and is never a fallback: a missing or unreadable signing key, a missing run id or node
 id, or a bad timeout is a `harness_configuration:` block before launch. The `X-Verdict-Worker`
 header is no longer sent. Serve's refusal of an assignment (403 `authentication failed`) is a
-configuration block, not a provider denial that would cool the provider down. The streaming waiver
+configuration block, not a provider denial that would cool the provider down, but only when serve's
+receipts show it: serve forwards a provider's own 401 or 403 unchanged, so the words alone prove
+nothing, and the attempt is blocked only when the executor, after the worker is gone, reads serve's
+receipt database successfully and finds no request under the attempt's assignment. A request
+recorded under it, or receipts that cannot be read, leave the failure the provider's, with the
+cooldown that implies (the price is that a real refusal is then read as the provider's when the
+orchestrator cannot read serve's receipts). The streaming waiver
 serve records for an assigned request is read back by digest from serve's receipt database and
 shown on the attempt in the run receipt (`verdict run-receipt`). Planner calls carry no node id and
 get no assignment: `AnswerOnlyExecutor` refuses this executor before any call. The worker still
@@ -226,12 +237,12 @@ binary. No ToS restrictions apply. Proceed.
 
 - `verdict orchestrate` coding nodes selected with `--executor opencode` run a full
   edit–test–fix loop, which resolves the core reason #1269 (deliver) runs were BLOCKED:
-  one-shot workers could not run their own tests and lint. That holds once serve admits the
-  worker's requests (#1313); until then an OpenCode worker is refused by serve, which is why
-  it is opt-in and `direct-gateway` stays the default.
-- The relay gains a per-request route-pinning requirement. Until that is built,
-  the serve relay forwards the admission decision but cannot enforce per-call
-  route identity; the adapter implementation covers this.
+  one-shot workers could not run their own tests and lint. That holds now that serve admits the
+  worker's requests under a signed assignment (serve's side #1335, the executor's #1325); before
+  that an OpenCode worker was refused by serve. `direct-gateway` stays the default until the
+  default is switched in its own change (#1328).
+- The relay gained a per-request route-pinning requirement, built as the signed assignment
+  (#1335): serve enforces the route of the assignment for each worker request.
 - Shell commands inside the worker are not sandboxed to an allow-list (Decision
   4). Verdict's post-attempt owned-files check and verification commands remain
   the enforcement layer. The risk is accepted explicitly by the operator.

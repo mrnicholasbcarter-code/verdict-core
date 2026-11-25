@@ -290,6 +290,14 @@ number, or an id the verifier would refuse SHALL each end the attempt with one
 `harness_configuration:` message before anything is launched, with no request of any kind sent to
 serve, and recovery SHALL treat it as a block.
 
+A worker failure with HTTP status 401 or 403 and the message `authentication failed` (serve's
+answer to a refused assignment) SHALL end the attempt as a `harness_configuration:` block, with no
+cooldown for the route's provider, only when serve's receipts, read after the worker's process
+group is gone, were read successfully and hold no request under the attempt's assignment.  Serve
+forwards a provider's own 401 or 403 unchanged, so the status and the words alone do not show
+that serve refused; when serve's receipts hold a request under the assignment, or cannot be read,
+the failure SHALL stay the provider's, exactly as the worker reported it.
+
 Before an attempt writes or launches anything, the executor SHALL also check that the serve token
 resolves, that the `opencode` binary runs and that serve is reachable and accepts the serve token;
 a failure SHALL be one `harness_configuration:` message that recovery treats as a block.  The
@@ -377,7 +385,8 @@ cancellation SHALL complete only after the thread that ran the checks has finish
   signing, signed with a key serve does not hold, or dated ahead of serve's clock
 - **THEN** serve refuses it with 403, nothing is sent upstream, serve writes no evidence, and the
   attempt ends `harness_configuration:` (a block with no cooldown), not as the provider denying the
-  account (`test_an_expired_assignment_fails_closed_with_no_upstream_call`,
+  account, because the executor read serve's receipts and they hold no request under the
+  assignment (`test_an_expired_assignment_fails_closed_with_no_upstream_call`,
   `test_a_tampered_assignment_fails_closed_with_no_upstream_call`,
   `test_an_assignment_signed_with_a_key_serve_does_not_hold_fails_closed`,
   `test_an_assignment_dated_ahead_of_serves_clock_fails_closed`,
@@ -386,8 +395,28 @@ cancellation SHALL complete only after the thread that ran the checks has finish
 #### Scenario: Other 401 and 403 answers are still the provider's
 
 - **WHEN** a worker fails with a 401 or 403 whose message is not serve's refusal, or serve's message
-  with another status
+  with another status, even though serve's receipts hold no request under the assignment
 - **THEN** recovery sees the status as before (`test_other_denials_are_still_read_as_the_providers`)
+
+#### Scenario: Serve's words from a request serve admitted are the provider's
+
+- **WHEN** a worker fails with a 401 or 403 whose message is serve's refusal text
+  (`authentication failed`) and serve's receipts hold a request under the attempt's assignment,
+  because serve admitted it and forwarded the upstream's own error unchanged
+- **THEN** the attempt is not a configuration block: the terminal keeps the upstream's status and
+  message, recovery classifies it as the provider's denial (with a cooldown), and the terminal
+  carries `serve_receipts` `read` with `requests` 1
+  (`test_an_admitted_request_whose_upstream_says_authentication_failed_is_the_providers`,
+  `test_serves_words_after_a_request_serve_admitted_are_the_providers`)
+
+#### Scenario: Serve's words stay the provider's when serve's receipts cannot be read
+
+- **WHEN** a worker fails with serve's refusal status and words and serve's receipts are not
+  configured, in memory, missing or unreadable
+- **THEN** the origin of the error is not established, so the attempt is not blocked on the words
+  alone: the terminal keeps the worker's status and message, recovery sees the provider's denial,
+  and the terminal carries `serve_receipts` `unavailable` with its reason
+  (`test_serves_words_are_the_providers_when_serves_receipts_cannot_be_read`)
 
 #### Scenario: Unrunnable binary, unreachable serve or rejected serve token
 

@@ -390,8 +390,10 @@ exceed 1,800 seconds ends the attempt here), and checks once that the serve toke
 `opencode` binary runs, and that `verdict serve` is reachable and accepts the serve token.  A failure
 is a single `harness_configuration:` message and recovery treats it as a block, not a retry, so a
 misconfigured host does not burn a node's attempts.  The same holds when serve later refuses the
-assignment (it answers every refused assignment with one 403 `authentication failed`): the
-attempt is a configuration block, not a provider denial.  Run `verdict setup --apply --allow
+assignment (it answers every refused assignment with one 403 `authentication failed`) and its
+receipts show it admitted no request under that assignment: the attempt is a configuration block,
+not a provider denial.  A provider's own 401 or 403 can carry the same words, so when serve's
+receipts hold a request under the assignment, or cannot be read, the failure stays the provider's.  Run `verdict setup --apply --allow
 host.serve` to create the serve token, the signing key and the unit.
 
 **Receipts.** `verdict run-receipt` marks an attempt that serve served with the streaming

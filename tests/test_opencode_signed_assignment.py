@@ -413,6 +413,35 @@ def test_the_assignment_serve_would_verify_is_what_the_worker_gets(tmp_path: Pat
 
 
 # --- serve refusing the worker's assignment ----------------------------------------------
+#
+# A refusal and a provider's own 401 or 403 can say the same words, because serve forwards an
+# upstream error unchanged.  Serve's receipts tell them apart: serve writes a root for every
+# request it admits and none for one it refuses at the door.  The tests below run the executor
+# against an empty serve database (serve has admitted nothing under the assignment), one with a
+# request recorded, and receipts that cannot be read; the words and the status are the same in all.
+
+REFUSAL = (FIXTURES / "v2_3_2_error_403_serve_refusal.jsonl").read_text()
+
+
+def error_line(message: str, status: int) -> str:
+    return json.dumps(
+        {
+            "type": "error",
+            "sessionID": "ses_x",
+            "error": {"type": "provider.auth", "message": message, "status": status},
+        }
+    )
+
+
+def empty_serve_database(tmp_path: Path) -> Path:
+    """Serve's receipt database as it stands when serve has admitted nothing."""
+    db = tmp_path / "serve-receipts.db"
+    ReceiptStore(db, strict_scope=True)
+    return db
+
+
+def failing_worker(tmp_path: Path, stdout: str) -> str:
+    return fake_worker(tmp_path, f"sys.stdout.write({stdout!r})\nsys.exit(1)\n")
 
 
 def test_serves_refusal_of_the_assignment_is_a_configuration_block_not_a_provider_denial(
@@ -420,14 +449,18 @@ def test_serves_refusal_of_the_assignment_is_a_configuration_block_not_a_provide
 ) -> None:
     """Captured from the real OpenCode 2.3.2 against a loopback stand-in for serve (see the
     fixtures README).  Read as plain 403 it would cool the provider down for an hour."""
-    captured = (FIXTURES / "v2_3_2_error_403_serve_refusal.jsonl").read_text()
-    binary = fake_worker(tmp_path, f"sys.stdout.write({captured!r})\nsys.exit(1)\n")
-    terminal = go(executor(binary), workdir(tmp_path))
+    db = empty_serve_database(tmp_path)
+    terminal = go(
+        executor(failing_worker(tmp_path, REFUSAL), receipts_db_provider=lambda: db),
+        workdir(tmp_path),
+    )
     assert terminal.ok is False
     assert terminal.error.startswith(
         "harness_configuration: verdict serve refused the worker assignment"
     )
     assert terminal.status_code == 403
+    serve = terminal.worker_assignment["serve_receipts"]  # type: ignore[index]
+    assert (serve["status"], serve["requests"]) == ("read", 0)
     verdict = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
     assert (verdict.category, verdict.action, verdict.scope) == (
         "harness_configuration",
@@ -435,6 +468,17 @@ def test_serves_refusal_of_the_assignment_is_a_configuration_block_not_a_provide
         "none",
     )
     assert verdict.cooldown_seconds == 0
+
+
+def test_a_401_with_serves_refusal_message_is_the_same_block(tmp_path: Path) -> None:
+    db = empty_serve_database(tmp_path)
+    line = error_line("Authentication failed.", 401)
+    terminal = go(
+        executor(failing_worker(tmp_path, line + "\n"), receipts_db_provider=lambda: db),
+        workdir(tmp_path),
+    )
+    assert terminal.error.startswith("harness_configuration: verdict serve refused")
+    assert terminal.status_code == 401
 
 
 @pytest.mark.parametrize(
@@ -450,31 +494,77 @@ def test_serves_refusal_of_the_assignment_is_a_configuration_block_not_a_provide
 def test_other_denials_are_still_read_as_the_providers(
     tmp_path: Path, status: int, message: str
 ) -> None:
-    line = json.dumps(
-        {
-            "type": "error",
-            "sessionID": "ses_x",
-            "error": {"type": "provider.auth", "message": message, "status": status},
-        }
+    """With serve's receipts empty (so the receipts alone would say 'refused') a failure that does
+    not have serve's status and words is still the provider's."""
+    db = empty_serve_database(tmp_path)
+    line = error_line(message, status)
+    terminal = go(
+        executor(failing_worker(tmp_path, line + "\n"), receipts_db_provider=lambda: db),
+        workdir(tmp_path),
     )
-    binary = fake_worker(tmp_path, f"sys.stdout.write({line!r} + '\\n')\nsys.exit(1)\n")
-    terminal = go(executor(binary), workdir(tmp_path))
     assert terminal.ok is False
     assert not terminal.error.startswith("harness_configuration:")
     assert terminal.status_code == status
+    serve = terminal.worker_assignment["serve_receipts"]  # type: ignore[index]
+    assert (serve["status"], serve["requests"]) == ("read", 0)
 
 
-def test_a_401_with_serves_refusal_message_is_the_same_block(tmp_path: Path) -> None:
-    line = json.dumps(
-        {
-            "type": "error",
-            "sessionID": "ses_x",
-            "error": {"type": "provider.auth", "message": "Authentication failed.", "status": 401},
-        }
+@pytest.mark.parametrize("status", [401, 403])
+def test_serves_words_after_a_request_serve_admitted_are_the_providers(
+    tmp_path: Path, status: int
+) -> None:
+    """Serve forwards a provider's own 401 or 403 unchanged, so the same words can come from the
+    upstream.  Serve's receipts hold a request under this assignment (it was admitted), so the
+    error is the provider's: recovery must cool the provider down, not block the harness."""
+    db = empty_serve_database(tmp_path)
+    binary = worker_that_serve_sees(
+        tmp_path, db, [], 1, stdout=error_line("authentication failed", status) + "\n", code=1
     )
-    binary = fake_worker(tmp_path, f"sys.stdout.write({line!r} + '\\n')\nsys.exit(1)\n")
-    terminal = go(executor(binary), workdir(tmp_path))
-    assert terminal.error.startswith("harness_configuration: verdict serve refused")
+    terminal = go(executor(binary, receipts_db_provider=lambda: db), workdir(tmp_path))
+    assert terminal.ok is False
+    assert terminal.error == "authentication failed"
+    assert terminal.status_code == status
+    serve = terminal.worker_assignment["serve_receipts"]  # type: ignore[index]
+    assert (serve["status"], serve["requests"]) == ("read", 1)
+    verdict = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
+    assert verdict.category != "harness_configuration"
+    assert verdict.cooldown_seconds > 0
+
+
+def unreadable_database(tmp_path: Path) -> Path:
+    db = tmp_path / "not-a-database.db"
+    db.write_bytes(b"this is not an sqlite file" * 40)
+    return db
+
+
+@pytest.mark.parametrize(
+    "receipts",
+    [
+        pytest.param(lambda tmp: None, id="not-configured"),
+        pytest.param(lambda tmp: ":memory:", id="in-memory"),
+        pytest.param(lambda tmp: tmp / "never-created.db", id="missing"),
+        pytest.param(unreadable_database, id="unreadable"),
+    ],
+)
+def test_serves_words_are_the_providers_when_serves_receipts_cannot_be_read(
+    tmp_path: Path, receipts: Any
+) -> None:
+    """If the origin of the error cannot be established it stays the provider's: it is never
+    blocked on the words alone."""
+    location = receipts(tmp_path)
+    terminal = go(
+        executor(failing_worker(tmp_path, REFUSAL), receipts_db_provider=lambda: location),
+        workdir(tmp_path),
+    )
+    assert terminal.ok is False
+    assert not terminal.error.startswith("harness_configuration:")
+    assert terminal.error == "authentication failed"
+    assert terminal.status_code == 403
+    serve = terminal.worker_assignment["serve_receipts"]  # type: ignore[index]
+    assert serve["status"] == "unavailable"
+    assert serve["requests"] is None
+    verdict = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
+    assert verdict.category != "harness_configuration"
 
 
 # --- what serve recorded under the assignment, read back for the run receipt -------------
@@ -506,8 +596,17 @@ def seed_serve_root(db: Path, digest: str, waivers: list[dict[str, str]], n: int
         )
 
 
-def worker_that_serve_sees(tmp_path: Path, db: Path, waivers: list[dict[str, str]], n: int) -> str:
-    """A worker that, as serve would, leaves ``n`` roots under the assignment it was handed."""
+def worker_that_serve_sees(
+    tmp_path: Path,
+    db: Path,
+    waivers: list[dict[str, str]],
+    n: int,
+    *,
+    stdout: str = "",
+    code: int = 0,
+) -> str:
+    """A worker that, as serve would, leaves ``n`` roots under the assignment it was handed, then
+    prints ``stdout`` and exits ``code``."""
     helper = tmp_path / "seed.py"
     helper.write_text(
         textwrap.dedent(
@@ -524,7 +623,10 @@ def worker_that_serve_sees(tmp_path: Path, db: Path, waivers: list[dict[str, str
     )
     return fake_worker(
         tmp_path,
-        f"import subprocess\nsys.exit(subprocess.call([{sys.executable!r}, {str(helper)!r}]))\n",
+        f"import subprocess\n"
+        f"seeded = subprocess.call([{sys.executable!r}, {str(helper)!r}])\n"
+        f"sys.stdout.write({stdout!r})\n"
+        f"sys.exit(seeded or {code})\n",
     )
 
 
