@@ -16,6 +16,7 @@ calls, no network, and an isolated ``VERDICT_HOME``.  They prove:
 from __future__ import annotations
 
 import asyncio
+import inspect
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -230,6 +231,14 @@ def test_the_default_executor_takes_the_ids_and_keeps_the_opencode_label() -> No
     executor = _default_opencode_executor()
     assert isinstance(executor, OpenCodeExecutor)
     assert _accepts_keyword(executor, "run_id") and _accepts_keyword(executor, "node_id")
+    # The subclass offers exactly the keywords the executor's own ``run`` takes: a keyword the
+    # executor gains later must be added to the subclass, or the runtime (which offers only what
+    # ``run`` declares) would stop passing it.
+    own = inspect.signature(OpenCodeExecutor.run).parameters
+    default = inspect.signature(type(executor).run).parameters
+    assert [(n, p.kind, p.default) for n, p in default.items()] == [
+        (n, p.kind, p.default) for n, p in own.items()
+    ]
     assert DEFAULT_REGISTRY.label_for(executor) == "opencode"
     assert DEFAULT_REGISTRY.label_for(OpenCodeExecutor(serve_base_url="http://127.0.0.1:9")) == (
         "opencode"
