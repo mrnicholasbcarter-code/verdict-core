@@ -12,8 +12,9 @@ Conventions for every task:
   removed, then passing. Put the output in the PR.
 - No live or paid call and no real `gh` or `git push` in a test: every spawn goes through one function
   (task 6.1) that tests replace with a fake, except the tests that name a real child. The fake installed main
-  is a temporary git repository (a merge commit M and a later commit S) with a stub `.venv/bin/python` that
-  prints canned output per argument list; the clock and `gh` are parameters. The draft-check tests do not stub
+  is a temporary git repository (a merge commit M and a later commit S, `.venv` ignored) with a stub
+  `.venv/bin/python` that prints canned output per argument list, a `.venv/pyvenv.cfg` and a
+  `verdict/__main__.py`, so the virtualenv and package checks of D4 pass; the clock and `gh` are parameters. The draft-check tests do not stub
   the checker: they run the repository's real `scripts/check_dod.py` under the test interpreter with `--root`
   the fake main (`check_dod_argv` is a parameter; production uses installed main's interpreter and script).
   The shared fixture is `tests/helpers/closeout_fixture.py`.
@@ -102,9 +103,11 @@ Conventions for every task:
       `test_identity_checks_leave_the_installed_index_untouched` (stale stat time; compare index bytes; fails
       with plain `git status`).
 - [ ] 5.2 Merge commit. `lookup_merge(pr, spawn)` with a validated integer, the answer validated by shape the
-      way a real loader would, then the local existence and ancestor tests. Files:
+      way a real loader would, returning a merge identity only for `MERGED` with a valid `oid` (everything
+      else is a named skip that is never cached; the cache is task 8.4), then the local existence and
+      ancestor tests, run from a given `oid` so they can run before each cycle. Files:
       `verdict/closeout/identity.py`, `tests/test_closeout_identity.py`. Verify: same file
-      `::TestMergeCommit` with `test_merged_ancestor_proceeds`, `test_unmerged_pull_request_is_refused`,
+      `::TestMergeCommit` with `test_merged_ancestor_proceeds`, `test_unmerged_pull_request_waits`,
       `test_merge_commit_absent_from_installed_main_waits`,
       `test_merge_commit_that_is_not_an_ancestor_is_refused`, `test_malformed_lookup_result_is_refused`
       (one case each: not JSON, missing key, null, wrong type, non-hex `oid`, timeout; none spawns a story
@@ -113,19 +116,34 @@ Conventions for every task:
 ## 6. Spawn, scrub and judge (D4, D6)
 
 - [ ] 6.1 The one spawn function. Kind plus argument list, `shell=False`, new session, closed stdin, timeout,
-      process-group kill on every exit, the environment rule, interpreter resolved inside the installed root.
-      Files: `verdict/closeout/execute.py`, `tests/test_closeout_execute.py`. Verify: `$TESTENV uv run
+      process-group kill on every exit, the environment rule, and the interpreter `<root>/.venv/bin/python`
+      passed unresolved after the virtualenv and package checks of D4 (`.venv` inside the root with a
+      `pyvenv.cfg`, executable `bin/python` whose target may be anywhere, `verdict/__main__.py` inside the
+      root); the environment strips `PYTHONHOME`, `PYTHONPATH` and `PYTHONSAFEPATH` as well. Output is drained from both
+      pipes concurrently into two buffers capped at 1 MiB in total (two reader threads or `selectors`), and
+      passing the cap kills the group. Files: `verdict/closeout/execute.py`, `tests/test_closeout_execute.py`. Verify: `$TESTENV uv run
       --frozen python -m pytest -q -n 2 tests/test_closeout_execute.py::TestSpawn` with
       `test_allowlisted_command_runs_from_installed_main`,
-      `test_interpreter_outside_installed_main_is_refused`,
-      `test_child_environment_carries_no_consent_switch`, `test_timeout_kills_the_process_group` (real stub
-      script that forks a sleeping child; assert no survivor).
-- [ ] 6.2 Scrub and judge. `redact_text`, `$HOME` to `~`, `/home/<name>` to `/operator`, 1 MiB cap, then
-      `expect`, marker and exit code on the scrubbed text. Files: `verdict/closeout/execute.py`,
+      `test_symlinked_virtualenv_interpreter_runs_from_installed_main` (real symlink virtualenv built in a
+      temporary root: symlink to the test interpreter's base Python, `pyvenv.cfg` with `home`, a stub
+      `verdict/__main__.py` printing `sys.prefix` and `verdict.__file__`, and a decoy `verdict` with its own
+      `__main__` on `PYTHONPATH` with `PYTHONSAFEPATH=1` in the environment; it fails against a check that
+      resolves the interpreter and against an environment that keeps `PYTHONSAFEPATH`), `test_unusable_virtualenv_is_refused` (parametrised:
+      missing, dangling, not executable, no `pyvenv.cfg`, `.venv` symlinked out),
+      `test_package_outside_installed_main_is_refused` (missing, symlinked out),
+      `test_child_environment_carries_no_consent_switch_or_python_path_override`, `test_timeout_kills_the_process_group` (real stub
+      script that forks a sleeping child; assert no survivor),
+      `test_large_output_on_both_streams_does_not_block_the_child` (real child, stderr first, 10 s timeout; it
+      fails against a read-stdout-then-stderr capture), `test_oversized_output_fails_the_step`
+      (parametrised: stdout, stderr, stderr then stdout; the child prints without end under a 10 s timeout and
+      the test asserts `output_too_large`, not `timeout`, within a few seconds, the group gone, and a stored
+      file of at most 1 MiB equal to its own redaction; it fails against capture-then-truncate).
+- [ ] 6.2 Scrub and judge. `redact_text`, `$HOME` to `~`, `/home/<name>` to `/operator`, then `expect`,
+      marker and exit code on the scrubbed text. Files: `verdict/closeout/execute.py`,
       `tests/test_closeout_execute.py`. Verify: same file `::TestScrub` with `test_echoed_secret_is_not_stored`
       (the secret is searched for in the output file, the ledger, the report and the captured log),
       `test_home_path_is_rewritten`, `test_stored_output_is_stable_under_redaction`,
-      `test_expected_text_is_judged_after_scrubbing`, `test_oversized_output_fails_the_step`.
+      `test_expected_text_is_judged_after_scrubbing`.
 
 ## 7. The ledger and the write helper (D7, D10)
 
@@ -142,25 +160,46 @@ Conventions for every task:
 
 ## 8. The cycle and the state machine (D8)
 
-- [ ] 8.1 One cycle. Steps in order (`on_main` once, items, `doctor`), every step runs, records from what
-      executed. Files: `verdict/closeout/cycle.py`, `tests/test_closeout_cycle.py`. Verify: `$TESTENV uv run
+- [ ] 8.1 One cycle. Steps in the spec's order (each item in declaration order, `doctor`, then `on_main`
+      while no run of it has passed), every step runs, records from what executed: acceptance and `doctor`
+      entries carry installed `HEAD`, the `on_main` entry the merge commit. Files:
+      `verdict/closeout/cycle.py`, `tests/test_closeout_cycle.py`. Verify: `$TESTENV uv run
       --frozen python -m pytest -q -n 2 tests/test_closeout_cycle.py::TestCycle` with
-      `test_installed_sha_is_recorded_not_the_merge_sha`,
+      `test_installed_sha_is_recorded_for_runs_and_the_merge_sha_for_on_main`,
       `test_first_run_records_the_installed_sha_time_exit_code_and_output_digest`,
       `test_failing_command_keeps_its_output_and_yields_no_draft`, `test_spawn_failure_records_no_run`,
-      `test_red_doctor_fails_the_cycle`, `test_unusable_on_main_fails_the_first_cycle` (exit 8 pending, a
-      failing exit, and exit 0 without a run URL), `test_corrupt_ledger_stops_only_its_story`.
+      `test_red_doctor_fails_the_cycle`, `test_unusable_on_main_fails_the_cycle` (exit 8 pending, a
+      failing exit, and exit 0 without a run URL),
+      `test_cycle_runs_its_steps_in_order_and_repeats_on_main_until_it_passes` (the spec scenario: a failed
+      `on_main`, its retry, then a fresh cycle; asserts the whole recorded spawn sequence, and fails if
+      `on_main` runs first or is not retried), `test_corrupt_ledger_stops_only_its_story`.
 - [ ] 8.2 Window. Derived from the ledger by replay; injected clock; no option sets it. Files:
       `verdict/closeout/cycle.py`, `tests/test_closeout_cycle.py`. Verify: same file `::TestWindow` with
-      `test_run_before_the_window_spawns_nothing` (59 minutes against 1 hour; the fake spawn counts zero),
-      `test_run_after_the_window_records_a_fresh_run`, `test_window_counts_from_the_passing_first_run`,
-      `test_changed_declaration_voids_the_first_run`, `test_merge_lookup_is_asked_once_per_story`.
+      `test_run_before_the_window_spawns_nothing` (59 minutes against 1 hour; the fake spawn counts zero
+      after the identity checks), `test_run_after_the_window_records_a_fresh_run`,
+      `test_window_counts_from_the_passing_first_run`.
 - [ ] 8.3 Retries and reset. At most three failed cycles in all, `needs_person`, `reset` as a ledger entry.
       Files: `verdict/closeout/cycle.py`, `tests/test_closeout_cycle.py`. Verify: same file `::TestRetries`
       with `test_failed_cycle_is_retried_on_the_next_invocation`,
-      `test_third_failed_cycle_leaves_the_story_for_a_person` (a fourth invocation spawns nothing),
+      `test_third_failed_cycle_leaves_the_story_for_a_person` (a fourth invocation spawns nothing after the identity checks),
       `test_reset_resumes_a_story_and_keeps_its_history`, and `::TestNoClockOption` with
       `test_no_option_changes_the_clock_or_the_window`.
+
+- [ ] 8.4 Merge cache and fingerprint (D3, D7, D8). The `merge` entry is written only for a successful lookup
+      and keyed on `pr`; every step entry carries `fingerprint(declaration)` (the fields named in the spec's
+      Terms), and replay counts cycles, failed ones included, only for entries whose fingerprint equals the
+      declaration's. Files: `verdict/closeout/cycle.py`, `verdict/closeout/declaration.py`,
+      `tests/test_closeout_cycle.py`. Verify: same file `::TestMergeCache` with
+      `test_merged_lookup_is_asked_once_per_story`,
+      `test_pull_request_that_merges_later_progresses` (parametrised: `OPEN`, `CLOSED`, command failure,
+      timeout, malformed; an `OPEN` then `MERGED` run counts two `gh pr view` spawns; it fails against a
+      cache that stores the first answer), `test_changed_pull_request_refreshes_the_merge_lookup` (also asserts `status` shows `waiting_install` before
+      the next invocation, and that no draft cites pull request 10); and
+      `::TestFingerprint` with `test_changed_declaration_voids_the_first_run` (parametrised over the
+      window longer and shorter, `criterion`, `argv`, `expect`, `expect_exit_code`, `real_state_marker`; each
+      case also asserts the other fields kept the run valid),
+      `test_declaration_fields_outside_the_fingerprint_do_not_void_the_first_run`,
+      `test_changed_declaration_restarts_the_failed_cycle_count`.
 
 ## 9. The draft (D9)
 
@@ -169,14 +208,15 @@ Conventions for every task:
       main, move a rejected candidate to `rejected/`, append the `draft` entry. Files:
       `verdict/closeout/draft.py`, `tests/test_closeout_draft.py`. Verify: `$TESTENV uv run --frozen python
       -m pytest -q -n 2 tests/test_closeout_draft.py::TestDraft` with
-      `test_complete_story_yields_a_draft_that_passes_the_draft_check`,
+      `test_complete_story_yields_a_draft_that_passes_the_draft_check` (merge commit M earlier than
+      installed `HEAD` S, so `on_main.sha` M and run `sha` S are both exercised by the real checker),
       `test_rejected_candidate_is_moved_aside_and_not_offered` (a candidate the real checker rejects),
       `test_draft_carries_no_confirmation`,
       `test_strict_check_fails_on_the_draft_for_confirmation_and_archive_only` (runs the plain
       `check_dod.py` on the draft, with and without a stub confirmation),
       `test_too_early_fresh_run_fails_the_draft_check` (hand-built draft),
       `test_no_draft_for_a_run_that_did_not_happen` (first cycle only; corrupt ledger; `spawn_error`),
-      `test_failed_runs_are_listed_in_the_report_and_not_in_the_evidence`.
+      `test_failed_runs_are_listed_in_the_report_and_not_in_the_evidence` (also a voided cycle).
 
 ## 10. The command and its boundary (D8, D10)
 
@@ -185,7 +225,8 @@ Conventions for every task:
       `verdict/commands/dispatch.py`, `verdict/cli.py`, `tests/test_closeout_cli.py`. Verify: `$TESTENV uv run
       --frozen python -m pytest -q -n 2 tests/test_closeout_cli.py::TestCli` with
       `test_status_shows_an_empty_ledger_as_not_started`, `test_status_spawns_nothing_and_writes_nothing`,
-      `test_second_invocation_exits_busy`.
+      `test_second_invocation_exits_busy`, `test_waiting_exits_zero_and_any_other_skip_exits_one` (the seven
+      skips of the scenario).
 - [ ] 10.2 Boundary proofs. Files: `tests/test_closeout_cli.py`. Verify: same file `::TestBoundary` with
       `test_a_full_cycle_writes_only_under_the_closeout_home` (both trees diffed, index identical, and no file
       under the closeout home holds the home path or `/home/`),
@@ -219,7 +260,8 @@ Each task below is its own verification: the output it names is the proof, recor
       from installed main run `verdict closeout status`: the pilot is listed `not_started`. Record the raw
       output in the PR.
 - [ ] (post-merge) 12.2 Run `verdict closeout run` from installed main: the identity check passes (exit not 2),
-      the ledger holds `first` entries whose `sha` equals `git -C <installed main> rev-parse HEAD`,
+      the `first` entries of the items and `doctor` hold a `sha` equal to `git -C <installed main> rev-parse
+      HEAD` and the `on_main` entry holds the merge commit,
       `grep -r /home/` over the story's directory finds nothing, and a second `run` inside the window spawns
       nothing.
 - [ ] (post-merge) 12.3 After one window, `verdict closeout run` records the fresh run and a draft;

@@ -20,7 +20,9 @@ Facts. [main] `check_evidence` returns at the first schema error, reads raw outp
 and runs git in `root`; `_run` requires `operator-host` for a `product` story, `on_main` included. `_source_sha`
 has no dirty check. Hourly acceptance keeps digests, not output. [host] `verdict-acceptance.service` has
 `WorkingDirectory` `~/.local/share/verdict/installed-main`, a clean detached checkout; no constant for it exists
-in code, and serve's unit uses `%h`.
+in code, and serve's unit uses `%h`. [main] `acceptance_service` writes `ExecStart` from the unresolved
+`Path(sys.executable).absolute()`. [host] there `.venv/bin/python` is a symlink to a uv-managed Python
+outside the checkout, `.venv` holds `pyvenv.cfg`, and the package is an editable install of the checkout.
 
 ## Goals / Non-Goals
 
@@ -69,21 +71,31 @@ writes nothing. An `--installed-root` option was rejected: a caller could name t
 
 ### D3. The merge commit comes from the declared PR, through `gh` [P]
 
-The squash SHA does not exist when the declaration is written, so it cannot be in the file.
-`gh pr view <N> --json state,mergeCommit` (field names verified on #1238 in the research) is asked once and
-kept in the ledger; the ancestor test runs locally every cycle. This is a read, not a GitHub write, and not
-story 3. `N` is validated as a positive integer before it reaches argv. `on_main` is the output of
-`gh pr checks <N> --required` in the first cycle, its marker the first Actions run URL in it (none: the step fails).
+The squash SHA does not exist at declaration time. `gh pr view <N> --json state,mergeCommit` (field names verified
+on #1238 in the research) is asked on every invocation until it succeeds, then kept as a `merge` entry keyed on
+`pr`. Only `MERGED` with a valid `oid` is kept: caching `OPEN`, `CLOSED` or a failure would freeze a story first
+seen before its merge. Existence and ancestry are tested locally before each cycle. This is a read, not a GitHub
+write. `N` is validated as a positive integer before it reaches argv. `on_main` is `gh pr checks <N> --required`,
+repeated each cycle until one run passes, its marker the first Actions run URL in it (none: the step fails). Its
+`sha` is the merge commit because [main] `check_dod` requires `on_main.sha == merged_sha`; the installed-`HEAD` rule
+covers only steps run in installed main, and the checker is unchanged.
 
 ### D4. Five process kinds, one spawn function
 
 Read-only `git` in the installed root; `gh pr view`; `gh pr checks`; an allowlisted `verdict` command; and
-`scripts/check_dod.py --draft` of installed main. One function takes a kind and an argument list (never a
-string), runs with `shell=False`, a new session, closed stdin and a timeout, and kills the process group on
-every exit. The child's environment is closeout's own minus `VERDICT_LIVE_SMOKE` and `VERDICT_PREPUSH_SKIP`,
-plus `PYTHONDONTWRITEBYTECODE=1` so installed main stays clean. The recorded command is canonical, `verdict `
-plus `shlex.join(argv)`: `check_dod` compares `command` as a string across first, fresh and confirmation, the
-text lands under `docs/proof`, and a confirmer must be able to re-run it from installed main.
+`scripts/check_dod.py --draft` of installed main. One function takes a kind and an argument list (never a string),
+runs with `shell=False`, a new session, closed stdin and a timeout, and kills the process group on every exit. The
+child's environment is closeout's own minus `VERDICT_LIVE_SMOKE`, `VERDICT_PREPUSH_SKIP`, `PYTHONHOME`, `PYTHONPATH`
+and `PYTHONSAFEPATH`, plus `PYTHONDONTWRITEBYTECODE=1` so installed main stays clean. The recorded command is
+canonical, `verdict ` plus `shlex.join(argv)`: `check_dod` compares `command` as a string across first, fresh and
+confirmation, the text lands under `docs/proof`, and a confirmer must be able to re-run it from installed main.
+
+The interpreter is `<root>/.venv/bin/python` as written, not resolved: Python finds `pyvenv.cfg` from the path it is
+started by, so a resolved path would drop the virtualenv, and requiring the symlink target inside the root would
+refuse the normal layout. The checks are on what the root provides: `.venv` resolves inside it with a `pyvenv.cfg`,
+`bin/python` is executable, `verdict/__main__.py` is a regular file inside it. With `-m` and `cwd` the root, the
+root is first on `sys.path` (observed: it wins over a `PYTHONPATH` decoy, but not under `PYTHONSAFEPATH=1`, so that
+variable is stripped), so installed main's package runs.
 
 ### D5. The allowlist is code; matching is exact on tokens
 
@@ -102,36 +114,44 @@ Live commands (decision 1, second half) are refused, not designed: `live: true`,
 
 ### D6. A run is recorded from what executed, after scrubbing
 
-Spawn, capture stdout then stderr (after a `--- stderr ---` line when non-empty), cap at 1 MiB, scrub, judge,
-write, append. Scrub: `redact_text`, then `$HOME` to `~`, then `/home/<name>` to `/operator`. `expect` and the
-marker are looked up in the scrubbed text (one the scrub would rewrite is refused at load). Only scrubbed text
-is stored or hashed, and the unscrubbed text is never logged (lesson 11; the research's extra raw-output hash
-is dropped for that). `at` is the spawn time from an injected clock, UTC with offset (lesson 9). A failure's
-reason names the check that rejected the run (lesson 8).
+Spawn, drain stdout and stderr concurrently while the child runs (reading one to the end first can deadlock on a
+full pipe), retain at most 1 MiB of both and kill the group past it (`output_too_large`; the prefix is kept, as for
+a timeout), join stderr after a `--- stderr ---` line when non-empty, scrub, judge, write, append. Truncating after
+capture was rejected: a command may print without limit inside its timeout. Scrub: `redact_text`, then `$HOME` to
+`~`, then `/home/<name>` to `/operator`. `expect` and the marker are looked up in the scrubbed text (one the scrub
+would rewrite is refused at load). Only scrubbed text is stored or hashed, and the unscrubbed text is never logged
+(lesson 11; the research's extra raw-output hash is dropped for that). `at` is the spawn time from an injected
+clock, UTC with offset (lesson 9). A failure's reason names the check that rejected the run (lesson 8).
 
 ### D7. The ledger is a chain verified on every read
 
-`<home>/<story>/ledger.jsonl`: `seq`, `prev`, `kind` (`merge`, `first`, `fresh`, `skip`, `reset`, `draft`),
-step fields and `sha256` over the entry's canonical JSON. Output files are `runs/<seq>-<step>.txt`, written and
-flushed before the entry that cites them; the append is the commit point, so a crash leaves an orphan file,
-never a recorded run without output. State is derived by replay; there is no second state file to disagree
-with it. The chain catches accidents and a careless agent's edits. It does not stop an actor with the
-operator's rights who rewrites the whole chain, and a removed tail is undetectable (the effect is a repeated
-run). A non-blocking `flock` on `<home>/.lock` keeps two invocations apart.
+`<home>/<story>/ledger.jsonl`: `seq`, `prev`, `kind` (`merge`, `first`, `fresh`, `skip`, `reset`, `draft`), step
+fields, the declaration's fingerprint on every step entry (a `merge` entry carries its `pr` instead) and `sha256`
+over the entry's canonical JSON. Output files are `runs/<seq>-<step>.txt`, written and flushed before the entry that
+cites them; the append is the commit point, so a crash leaves an orphan file, never a recorded run without output.
+State is derived by replay; there is no second state file to disagree with it. The chain catches accidents and a
+careless agent's edits. It does not stop an actor with the operator's rights who rewrites the whole chain, and a
+removed tail is undetectable (the effect is a repeated run). A non-blocking `flock` on `<home>/.lock` keeps two
+invocations apart.
 
 ### D8. The state machine
 
-`waiting_install` (PR not merged, or its merge commit not yet in installed main; no spawn, no failure counted)
-→ `needs_first` → `waiting_window` → `needs_fresh` → `awaiting_confirmation` (draft written and checked); side
-states `needs_person`, `refused` (bad declaration, merge commit not an ancestor), `draft_invalid`,
-`ledger_corrupt`. A cycle runs every step even when one fails, so one tick leaves every output. A cycle
-passes when its items and `doctor` pass and `on_main` has passed once (it repeats until then). The window ends
-at `max(first.at) + hours`, so each item meets `fresh.at - first.at >= window`. At most three failed cycles in all, then
-`needs_person` until `verdict closeout reset <story>` (an entry, not an erase). A first run is void when the
-declaration's canonical commands change, because the fresh run must repeat the command. Commands: `run
-[--story S]`, `status [--json]` (declarations and ledgers only: no lock, no spawn, no identity check; an empty
-ledger shows `not_started`), `reset <story>`. Exit status: 0 when every story progressed or waits; 1 when any failed, was refused or needs a person; 2 for a refused identity or bad usage;
-3 when the lock is held. Nothing exposes the clock.
+`waiting_install` (no applicable `merge` entry, or its commit not yet in installed main: PR not merged, `pr`
+changed, lookup unusable; no story command, no failure counted, the lookup repeats) → `needs_first` →
+`waiting_window` → `needs_fresh` → `awaiting_confirmation` (draft written and checked); side states `needs_person`,
+`refused` (bad declaration, merge commit not an ancestor), `draft_invalid`, `ledger_corrupt`. A cycle runs its steps
+in this order (items in declaration order, `doctor`, `on_main` until one run has passed), every step even when one
+fails, so one tick leaves every output; it passes when its items and `doctor` pass and `on_main` has. The window
+ends at `max(first.at) + hours`, so each item meets `fresh.at - first.at >= window`. At most three failed cycles in
+all, then `needs_person` until `verdict closeout reset <story>` (an entry, not an erase). Only entries whose
+fingerprint equals the declaration's count: a change to `pr`, the window or an item's criterion, command,
+expectation, exit code or marker voids the earlier cycles (they stay in the ledger and the report), so a fresh run
+repeats the first run's contract, and the failed count restarts. The fingerprint is a consistency control, not a
+signature (D1: review of the declaration is the anchor). Commands: `run [--story S]`, `status [--json]`
+(declarations and ledgers only: no lock, no spawn, no identity check; an empty ledger shows `not_started`), `reset
+<story>`. Exit status: 0 when every story progressed or waits (PR not merged, commit not installed, window open); 1
+when any failed, was refused, was skipped for another reason (lookup failure, virtualenv, spawn) or needs a person;
+2 for a refused identity or bad usage; 3 when the lock is held.
 
 ### D9. The draft and `check_dod.py --draft` (decision 10, first half)
 
@@ -151,8 +171,8 @@ failed runs (decision 8 wants them listed), so they go in `report.md` beside the
 
 One helper writes every file: it joins onto `verdict_home() / "closeout"`, resolves, and refuses an absolute
 path, `..` or a symlink out. Proof in layers. (a) A full first and fresh cycle runs in a temporary
-`HOME`/`VERDICT_HOME` with a fake installed main (a temporary git repository with a stub `.venv/bin/python`
-for the story commands); both trees are diffed: only `.verdict/closeout/**` is new, the fake main has no
+`HOME`/`VERDICT_HOME` with a fake installed main (a temporary git repository with a stub `.venv/bin/python`, a
+`pyvenv.cfg` and a `verdict/__main__.py` for the story commands); both trees are diffed: only `.verdict/closeout/**` is new, the fake main has no
 changed file and an identical index. The draft check is the repository's real `scripts/check_dod.py`, run by
 the test interpreter with `--root` the fake main, so ancestry and hashes are really checked. (b) The helper is tested with each bad path. (c) The shared
 home guard of #1311 [U] (an audit hook, autouse in `tests/conftest.py`) refuses writes to the real roots; one
@@ -165,6 +185,9 @@ process, so none of these covers the child commands' own writes (Risks).
   it to history installed main contains. Review of the declaration PR is the check.
 - **Child writes are bounded by allowlist review.** The per-entry temporary-home test shows an entry wrote nothing
   there, not that it writes nothing on the real home.
+- **A stream cut by the cap or a timeout may end inside a secret** `redact_text` cannot recognise; the prefix
+  is scrubbed like any output. **A declaration change restarts its story,** and a waiting story costs one
+  `gh pr view` and one ledger skip per invocation.
 - **The ledger is not a signature.** Part 7, a non-author's own run, is the real control.
 - **A red `doctor` row blocks every product closeout** until fixed (DoD part 3); the output is kept.
 - **Nothing schedules it until story 2.** The post-merge tasks run it by hand.

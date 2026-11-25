@@ -12,7 +12,7 @@ and reinstall; story 3 is GitHub status and the evidence pull request.
 
 - New `verdict closeout run | status | reset` (`verdict/closeout/`). For each declared merged story it checks
   installed main (real SHA, clean, anchored on the acceptance unit), resolves the merge commit by a read-only
-  `gh` call and refuses one that is not an ancestor, runs the story's allowlisted `argv` from installed main,
+  `gh` call (cached once merged) and refuses one that is not an ancestor, runs the story's allowlisted `argv` from installed main,
   stores scrubbed raw output, re-runs after the freshness window and assembles a draft evidence file outside
   the repository. It never marks a story done, waives the window or writes `parent_confirmation`, and never
   writes evidence for a run that did not happen.

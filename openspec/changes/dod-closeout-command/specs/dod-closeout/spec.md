@@ -4,9 +4,13 @@ Terms. The **closeout home** is `$VERDICT_HOME/closeout` (`verdict.paths.verdict
 directory in it is `<home>/<story>/`. **Installed main** is the git checkout the installed services run
 from. A **cycle** is one pass over a story's steps: each acceptance item in declaration order, then
 `verdict doctor --json` (timeout 180 s), and `on_main` (`gh pr checks <N> --required`, timeout 60 s) in every
-cycle until one run of it has passed. The **canonical command** of an argument
+cycle until one run of it has passed. A cycle **passes** when every item and `doctor` pass in it and
+`on_main` has a passing run, in it or in an earlier cycle, under the current fingerprint. The **canonical command** of an argument
 list `argv` is `verdict ` followed by `shlex.join(argv)`; it never holds an interpreter path or a host
-path. Every scenario below has one test, named `test_` plus the scenario title in snake case.
+path. The **fingerprint** of a declaration is the SHA-256 of the canonical JSON of its evidence-defining
+fields: `pr`, `freshness_window_hours` and, per item in order, `criterion`, the canonical command, `expect`,
+`expect_exit_code` and `real_state_marker`. Every scenario below has one test, named `test_` plus the
+scenario title in snake case.
 
 ## ADDED Requirements
 
@@ -60,11 +64,14 @@ Before any story command, closeout SHALL establish three facts: the root it runs
 root is a full 40-hex SHA; and the root has no tracked or untracked change (ignored files excluded). It
 SHALL read git state with `--no-optional-locks`, so it never rewrites the index. When any fact fails it
 SHALL spawn no further process, write no story record, print the named reason and exit with status 2.
-Every run record SHALL carry this `HEAD` as the run's `sha`, never the story's merge commit.
+The record of a step that runs in installed main (an acceptance item or `doctor`) SHALL carry this `HEAD`
+as its `sha`, never the story's merge commit. The `on_main` record is the answer of `gh pr checks` about the
+merge commit, not a run of installed main: its `sha` is the merge commit, which `scripts/check_dod.py`
+requires (`on_main.sha == merged_sha`).
 
-#### Scenario: Installed SHA is recorded, not the merge SHA
+#### Scenario: Installed SHA is recorded for runs and the merge SHA for on_main
 - **WHEN** a story merged at commit M is run while installed main is at a later commit S
-- **THEN** the run record and the draft's run `sha` are S, and M appears only as `merged_sha`
+- **THEN** the acceptance and `doctor` records and the draft's run `sha` values are S, and `on_main` and `merged_sha` are M
 
 #### Scenario: Development checkout is refused
 - **WHEN** closeout runs from a root that is not the unit file's `WorkingDirectory`
@@ -88,19 +95,22 @@ Every run record SHALL carry this `HEAD` as the run's `sha`, never the story's m
 
 ### Requirement: The merge commit SHALL come from the declared PR and be an ancestor of installed main
 
-For each story closeout SHALL ask `gh pr view <N> --json state,mergeCommit` (timeout 30 s) once, keep the
-answer in the story's ledger and use it for every later cycle. It SHALL proceed only when `state` is `MERGED`, `mergeCommit.oid` is a 40-hex string,
-that commit exists in installed main and `git merge-base --is-ancestor <merge> <installed HEAD>` succeeds.
-Anything else (a missing key, null, a wrong type, a command failure or a timeout) SHALL refuse the story
-before any acceptance command spawns, with the reason written to the ledger as a skip, not as a run.
+For each story closeout SHALL ask `gh pr view <N> --json state,mergeCommit` (timeout 30 s) and SHALL cache
+only a successful answer: `state` is `MERGED` and `mergeCommit.oid` is a 40-hex string, appended as a
+`merge` entry holding `pr` and `oid`. A cached entry applies only while its `pr` equals the declaration's.
+Without an applicable entry every invocation asks again. Before each cycle closeout SHALL check, from the
+cached `oid`, that the commit exists in installed main and that `git merge-base --is-ancestor <merge>
+<installed HEAD>` succeeds. Anything else (`OPEN`, `CLOSED`, a missing key, null, a wrong type, a command
+failure or a timeout) SHALL skip the story before any acceptance command spawns, with the reason written to
+the ledger as a skip, not as a run; it is never cached and never counts as a failed cycle.
 
 #### Scenario: Merged ancestor proceeds
 - **WHEN** the PR is merged and its merge commit is an ancestor of installed main
 - **THEN** the story proceeds and its ledger holds the merge commit
 
-#### Scenario: Unmerged pull request is refused
+#### Scenario: Unmerged pull request waits
 - **WHEN** `state` is `OPEN` or `CLOSED`
-- **THEN** the story is skipped with reason `pr_not_merged` and nothing runs
+- **THEN** the story is skipped with reason `pr_not_merged`, nothing runs and no `merge` entry is written
 
 #### Scenario: Merge commit absent from installed main waits
 - **WHEN** the merge commit is not an object in installed main (installed main is behind)
@@ -110,13 +120,21 @@ before any acceptance command spawns, with the reason written to the ledger as a
 - **WHEN** the commit exists in installed main but is not an ancestor of its `HEAD`
 - **THEN** the story is skipped with reason `merge_commit_not_ancestor` and nothing runs
 
-#### Scenario: Merge lookup is asked once per story
+#### Scenario: Merged lookup is asked once per story
 - **WHEN** a story runs a first and a fresh cycle
 - **THEN** `gh pr view` is spawned once and the second cycle reads the merge commit from the ledger
 
+#### Scenario: Pull request that merges later progresses
+- **WHEN** an invocation finds the pull request `OPEN`, `CLOSED`, or its lookup failing, timing out or malformed, and a later invocation finds it `MERGED`
+- **THEN** each of the first invocations spawned `gh pr view` and wrote no `merge` entry, and the later one asks again, caches the commit and runs the first cycle
+
+#### Scenario: Changed pull request refreshes the merge lookup
+- **WHEN** a story with a cached merge commit for pull request 10 and a passing first cycle is redeclared with pull request 11
+- **THEN** `status` (which spawns nothing) shows `waiting_install`, the next invocation asks `gh pr view 11`, the entry for 11 is the applicable one, and the commit and cycles of 10 are used by no cycle and no draft
+
 #### Scenario: Malformed lookup result is refused
 - **WHEN** the `gh` output is not JSON, lacks `state` or `mergeCommit`, has `mergeCommit: null`, a wrong type or a non-hex `oid`, or the call times out
-- **THEN** the story is skipped naming the broken field and no acceptance command runs
+- **THEN** the story is skipped naming the broken field, nothing is cached, and no acceptance command runs
 
 ### Requirement: Only allowlisted commands SHALL run, as an argument list, from installed main
 
@@ -126,9 +144,15 @@ of `argv` SHALL equal one of those words or flags exactly. Abbreviated flags, `-
 flags and positional arguments SHALL be refused. Closeout SHALL execute
 `[<installed root>/.venv/bin/python, "-m", "verdict", *argv]` with `shell=False`, `cwd` the installed
 root, `stdin` closed and its own process group; the declaration cannot name a binary, a working
-directory or an environment variable. The interpreter SHALL resolve inside the installed root. The
-child's environment SHALL be closeout's own with `VERDICT_LIVE_SMOKE` and `VERDICT_PREPUSH_SKIP` removed
-and `PYTHONDONTWRITEBYTECODE=1` set. Closeout SHALL spawn only these processes: read-only `git` commands
+directory or an environment variable. The interpreter path SHALL be passed as written, never resolved:
+the virtualenv is found from `pyvenv.cfg` beside that path, and its symlink target (a Python outside the
+checkout is the normal layout) may lie anywhere. Before a story's first spawn closeout SHALL check that
+`<root>/.venv` resolves inside the root and holds a regular `pyvenv.cfg`, that `.venv/bin/python` exists
+and is executable, and that `<root>/verdict/__main__.py` is a regular file inside the root: with `-m` and
+the root as `cwd` the root comes first on `sys.path`, so the `verdict` package that runs is installed
+main's. The child's environment SHALL be closeout's own with `VERDICT_LIVE_SMOKE`, `VERDICT_PREPUSH_SKIP`,
+`PYTHONHOME`, `PYTHONPATH` and `PYTHONSAFEPATH` removed (the last would keep the root off `sys.path`) and
+`PYTHONDONTWRITEBYTECODE=1` set. Closeout SHALL spawn only these processes: read-only `git` commands
 in the installed root, `gh pr view <N> --json state,mergeCommit`, `gh pr checks <N> --required`, an
 allowlisted `verdict` command, and `scripts/check_dod.py --draft` of installed main. Every spawn SHALL go
 through one function.
@@ -153,13 +177,21 @@ through one function.
 - **WHEN** `argv` names `orchestrate`, `autodev --allow-live`, `bench`, `setup`, `serve`, `acceptance run`, `doctor --fix` or `memory docs --fix`
 - **THEN** each is refused by name, and a declaration cannot add an allowlist entry
 
-#### Scenario: Interpreter outside installed main is refused
-- **WHEN** `.venv/bin/python` is missing, or a symlink resolving outside the installed root
-- **THEN** the story is skipped naming `interpreter_not_in_installed_main` and nothing spawns
+#### Scenario: Symlinked virtualenv interpreter runs from installed main
+- **WHEN** `.venv/bin/python` is a symlink to a Python outside the root, `.venv/pyvenv.cfg` exists, and closeout's environment holds `PYTHONSAFEPATH=1` and a `PYTHONPATH` with a decoy `verdict` package that has its own `__main__`
+- **THEN** a real child started through the spawn function reports `sys.prefix` equal to the virtualenv and `verdict.__file__` under the root, and the spawn's first argument is the unresolved `.venv/bin/python` path
 
-#### Scenario: Child environment carries no consent switch
-- **WHEN** closeout's environment holds `VERDICT_LIVE_SMOKE=1` and `VERDICT_PREPUSH_SKIP=1`
-- **THEN** the child's environment holds neither and holds `PYTHONDONTWRITEBYTECODE=1`
+#### Scenario: Unusable virtualenv is refused
+- **WHEN** `.venv/bin/python` is missing, a dangling symlink or not executable, `.venv/pyvenv.cfg` is missing, or `.venv` is a symlink resolving outside the root
+- **THEN** the story is skipped naming `venv_unusable` and nothing spawns
+
+#### Scenario: Package outside installed main is refused
+- **WHEN** `<root>/verdict/__main__.py` is missing or a symlink resolving outside the root
+- **THEN** the story is skipped naming `package_not_in_installed_main` and nothing spawns
+
+#### Scenario: Child environment carries no consent switch or Python path override
+- **WHEN** closeout's environment holds `VERDICT_LIVE_SMOKE=1`, `VERDICT_PREPUSH_SKIP=1`, `PYTHONHOME`, `PYTHONPATH` and `PYTHONSAFEPATH`
+- **THEN** the child's environment holds none of them and holds `PYTHONDONTWRITEBYTECODE=1`
 
 #### Scenario: Each allowlist entry leaves a temporary home unchanged
 - **WHEN** every allowlist entry is run as a real child process with `HOME` and `VERDICT_HOME` in a temporary directory
@@ -171,8 +203,10 @@ through one function.
 
 ### Requirement: Each run SHALL be recorded from what executed
 
-For every step closeout SHALL record, after the process ends, the start time (UTC, with offset), the
-installed `HEAD`, the canonical command, the exit code and the stored output's path and SHA-256. A step
+For every step closeout SHALL record, after the process ends, the start time (UTC, with offset), the `sha`
+(installed `HEAD`; the merge commit for `on_main`), the fingerprint, the canonical command, the exit code and
+the stored output's path and SHA-256. A cycle SHALL run its steps in the order of Terms (items, `doctor`,
+then `on_main` while it has not passed) and every step runs even when an earlier one failed. A step
 whose exit code differs from `expect_exit_code`, whose scrubbed output lacks `expect` or
 `real_state_marker`, or that times out, SHALL be recorded as failed with the reason of the check that
 rejected it, and its output SHALL be kept. A timeout SHALL kill the whole process group. A spawn that
@@ -191,9 +225,13 @@ built from it.
 - **WHEN** every item passes and `verdict doctor --json` exits 1
 - **THEN** the cycle is failed with reason `doctor_not_green`, its output is kept and no draft follows
 
-#### Scenario: Unusable on_main fails the first cycle
+#### Scenario: Unusable on_main fails the cycle
 - **WHEN** `gh pr checks <N> --required` exits non-zero (pending or failing), or exits 0 with no Actions run URL in its output
 - **THEN** the cycle is failed with reason `on_main_not_green` or `on_main_marker_missing`, and later cycles repeat `on_main` until it passes
+
+#### Scenario: Cycle runs its steps in order and repeats on_main until it passes
+- **WHEN** a story with two items has a cycle whose `on_main` fails, a next cycle whose `on_main` passes, and then a fresh cycle
+- **THEN** the recorded spawns of the cycles are item 1, item 2, `doctor`, `on_main`; item 1, item 2, `doctor`, `on_main`; and item 1, item 2, `doctor` with no `on_main`
 
 #### Scenario: Timeout kills the process group
 - **WHEN** a command (fake interpreter script) spawns a child and sleeps past `timeout_seconds`
@@ -208,8 +246,11 @@ built from it.
 Closeout SHALL apply `verdict.security.redact_text`, then replace every occurrence of the current `$HOME`
 path with `~` and every remaining `/home/<name>` with `/operator`, and SHALL store, hash and judge only
 that result. `expect` and `real_state_marker` SHALL be looked up in the stored text. The stored text SHALL
-satisfy `redact_text(text) == text`. Output over 1 MiB SHALL fail the step with reason `output_too_large`.
-The unscrubbed output SHALL NOT be written, logged or hashed.
+satisfy `redact_text(text) == text`. Closeout SHALL drain the child's stdout and stderr concurrently while
+it runs, so neither stream blocks the other, and SHALL retain at most 1 MiB of both together. A child that
+passes that cap SHALL have its process group killed and its step failed with reason `output_too_large`;
+what was retained is scrubbed and kept like any failed step's output. The unscrubbed output SHALL NOT be
+written, logged or hashed.
 
 #### Scenario: Echoed secret is not stored
 - **WHEN** the command prints a bearer token and a `sk-` style key
@@ -227,9 +268,13 @@ The unscrubbed output SHALL NOT be written, logged or hashed.
 - **WHEN** `expect` appears only inside a string that scrubbing rewrites
 - **THEN** the step fails with `expect_missing`, not passes on the unscrubbed text
 
+#### Scenario: Large output on both streams does not block the child
+- **WHEN** a real child writes 200 KiB to stderr and then 200 KiB to stdout (each past a pipe buffer, together under the cap) and exits 0
+- **THEN** the step ends long before its timeout with both streams in the stored text and no `timeout`
+
 #### Scenario: Oversized output fails the step
-- **WHEN** a command prints more than 1 MiB
-- **THEN** the step is failed with `output_too_large` and at most 1 MiB is stored
+- **WHEN** a real child prints without end on stdout, on stderr, or on stderr first and then on stdout, under a 10 s timeout
+- **THEN** the step ends within a few seconds failed with `output_too_large` and not `timeout`, no process of the group survives, and the stored output is at most 1 MiB and equal to its own redaction
 
 ### Requirement: The ledger SHALL be append-only and verified on every read
 
@@ -262,18 +307,21 @@ its only effect is a repeated run, never a recorded run that did not happen.
 
 ### Requirement: The freshness window SHALL start at the passing first run and never be waived
 
-A story's first cycle passes only when every step passes in one cycle. Its `at` times start the window;
-the fresh cycle may start once the clock is at least the declared hours after the latest first-run
-`at`, and SHALL be a new execution of the same canonical commands. Before then, an invocation SHALL
-spawn nothing for the story. A failed cycle SHALL be retried by a later invocation, at most three failed
-cycles in all; the fourth SHALL NOT run and the story is `needs_person` until `verdict closeout reset
-<story>` appends a reset entry (history is kept). A declaration whose canonical commands differ from the
-passing first run's SHALL void that first run. No option, environment variable or declaration value SHALL
+The first cycle that passes starts the window with its `at` times; the fresh cycle may start once the
+clock is at least the declared hours after the latest first-run `at`, and SHALL be a new execution of the
+same canonical commands. Before then, an invocation SHALL spawn nothing for the story beyond the identity
+checks. A failed cycle SHALL be retried by a later invocation, at most three failed cycles in all; the
+fourth SHALL NOT run and the story is `needs_person` until `verdict closeout reset <story>` appends a reset
+entry (history is kept). Every step entry SHALL carry the fingerprint of the declaration it ran under. A
+change to any fingerprinted field, a command included, SHALL void the cycles recorded under another
+fingerprint: they stay in the ledger and the report, but count as no first run, no fresh run and no failed
+cycle, and no draft cites them. A change outside the fingerprint (`timeout_seconds`, `author`,
+`stays_true_job`, `openspec`) voids nothing. No option, environment variable or declaration value SHALL
 set the clock or shorten the window.
 
 #### Scenario: Run before the window spawns nothing
 - **WHEN** a story has a passing first cycle and the clock is 59 minutes after it with a 1 hour window
-- **THEN** the invocation spawns nothing for that story and `status` shows `waiting_window` with the time it ends
+- **THEN** the invocation spawns nothing for that story after the identity checks and `status` shows `waiting_window` with the time it ends
 
 #### Scenario: Run after the window records a fresh run
 - **WHEN** the clock is past the window
@@ -284,8 +332,16 @@ set the clock or shorten the window.
 - **THEN** the window ends the declared hours after the passing cycle, not after the failed one
 
 #### Scenario: Changed declaration voids the first run
-- **WHEN** the canonical command of an item differs from the one recorded in the passing first run
-- **THEN** that first run is void, `status` shows `needs_first` with reason `declaration_changed`, and no draft uses it
+- **WHEN** after a passing first cycle one of these changes: `freshness_window_hours` (longer or shorter), or an item's `criterion`, `argv`, `expect`, `expect_exit_code` or `real_state_marker`
+- **THEN** that first run is void, `status` shows `needs_first` with reason `declaration_changed`, no draft uses it, and the next invocation runs a new first cycle
+
+#### Scenario: Declaration fields outside the fingerprint do not void the first run
+- **WHEN** after a passing first cycle only `timeout_seconds`, `author`, `stays_true_job` or `openspec` changes
+- **THEN** the first run stays valid and `status` is unchanged
+
+#### Scenario: Changed declaration restarts the failed cycle count
+- **WHEN** two cycles failed under one fingerprint and the declaration then changes
+- **THEN** the next invocation runs a cycle, the earlier failures stay in the ledger and the report, and a story already `needs_person` runs without a reset
 
 #### Scenario: Failed cycle is retried on the next invocation
 - **WHEN** a cycle fails and the next invocation comes
@@ -293,7 +349,7 @@ set the clock or shorten the window.
 
 #### Scenario: Third failed cycle leaves the story for a person
 - **WHEN** three cycles have failed
-- **THEN** the next invocation spawns nothing for the story and `status` shows `needs_person`
+- **THEN** the next invocation spawns nothing for the story after the identity checks and `status` shows `needs_person`
 
 #### Scenario: Reset resumes a story and keeps its history
 - **WHEN** `verdict closeout reset <story>` runs on a `needs_person` story
@@ -307,18 +363,19 @@ set the clock or shorten the window.
 
 When a story has a passing first cycle and a passing fresh cycle, closeout SHALL write a draft under
 `<home>/<story>/draft/docs/proof/dod/`: `<story>.json` and every cited output copied byte for byte. It
-SHALL fill `merged_sha` and `pr` from the ledger, `on_main` from the recorded `gh pr checks` run, each
-acceptance run from its ledger entries, `setup_doctor` from the fresh cycle's `doctor` run, and the
-declared fields from the declaration. It SHALL NOT write `parent_confirmation`. It SHALL run
+SHALL fill `merged_sha` and `pr` from the applicable `merge` entry, `on_main` from the recorded `gh pr
+checks` run, each acceptance run from its ledger entries, `setup_doctor` from the fresh cycle's `doctor`
+run, and the declared fields from the declaration, all from step entries whose fingerprint equals the
+declaration's and the `merge` entry whose `pr` does. It SHALL NOT write `parent_confirmation`. It SHALL run
 `scripts/check_dod.py --draft --root <installed root> --evidence-root <draft dir>` on installed main and
 SHALL offer the draft only when that exits 0; a rejected candidate goes to `<home>/<story>/rejected/`
-with the checker's output. It SHALL write `report.md` beside the draft listing every run, failed runs
-included, by step, time, exit code and output path. It SHALL NOT write under `docs/proof/dod/` of any
+with the checker's output. It SHALL write `report.md` beside the draft listing every run, failed and
+voided runs included, by step, time, exit code and output path. It SHALL NOT write under `docs/proof/dod/` of any
 repository, mark a story done, or write a confirmation.
 
 #### Scenario: Complete story yields a draft that passes the draft check
-- **WHEN** a fixture story has a passing first and fresh cycle
-- **THEN** the draft exists, `check_dod.py --draft` exits 0 on it, and the ledger gains a `draft` entry with the file's digest
+- **WHEN** a fixture story has a passing first and fresh cycle, with merge commit M earlier than installed `HEAD` S
+- **THEN** the draft exists with `on_main.sha` M and run `sha` values S, `check_dod.py --draft` exits 0 on it, and the ledger gains a `draft` entry with the file's digest
 
 #### Scenario: Rejected candidate is moved aside and not offered
 - **WHEN** `check_dod.py --draft` exits 1 on a candidate
@@ -341,8 +398,8 @@ repository, mark a story done, or write a confirmation.
 - **THEN** no draft is written and the candidate directory holds nothing
 
 #### Scenario: Failed runs are listed in the report and not in the evidence
-- **WHEN** a cycle failed before the passing one
-- **THEN** `report.md` lists it with its output path, and the draft JSON cites only passing runs
+- **WHEN** a cycle failed before the passing one, and an earlier cycle was voided by a changed declaration
+- **THEN** `report.md` lists both with their output paths, and the draft JSON cites only passing runs of the current fingerprint
 
 ### Requirement: Closeout SHALL write only under its home and never change anything else
 
@@ -351,7 +408,9 @@ helper that refuses an absolute path, `..` or a symlink that leaves the home. Cl
 installed main, in any other repository, in `~/.verdict` outside the closeout home, or in GitHub, and it
 SHALL NOT archive an OpenSpec change, tick a task, mark a story done, install or restart a service, or
 reinstall installed main. Two invocations SHALL NOT run at once: a second finds the lock held, changes
-nothing and exits 3. `verdict closeout status` SHALL spawn nothing and write nothing.
+nothing and exits 3. The exit status of `run` SHALL be 0 when every story progressed or waits (pull request
+not merged, merge commit not installed, window open), and 1 when any story failed, was refused, needs a
+person or was skipped for another reason. `verdict closeout status` SHALL spawn nothing and write nothing.
 
 #### Scenario: A full cycle writes only under the closeout home
 - **WHEN** a story runs first and fresh cycles against a temporary home and a fake installed main
@@ -360,6 +419,10 @@ nothing and exits 3. `verdict closeout status` SHALL spawn nothing and write not
 #### Scenario: Escaping path is refused
 - **WHEN** the write helper is given an absolute path, `..` or a story directory that is a symlink out of the home
 - **THEN** it raises a named error and nothing is written outside
+
+#### Scenario: Waiting exits zero and any other skip exits one
+- **WHEN** one story is in each of these conditions: `pr_not_merged`, `merge_commit_not_installed`, an open window, a lookup failure, `venv_unusable`, `package_not_in_installed_main` and `spawn_error`
+- **THEN** the exit status is 0 for the first three and 1 for each of the others
 
 #### Scenario: Status shows an empty ledger as not started
 - **WHEN** a declared story has no ledger entry
