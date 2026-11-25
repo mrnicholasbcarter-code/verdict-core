@@ -10,6 +10,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -382,7 +383,10 @@ class TestDelta:
             delta(tree, repo)
         assert "a.py" in caught2.value.reason
 
-    def test_a_regular_file_replaced_by_a_fifo_during_validation(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("seam", ["before_open", "after_metadata"])
+    def test_a_regular_file_replaced_by_a_fifo_during_validation(
+        self, tmp_path: Path, seam: str
+    ) -> None:
         repo = make_repo(tmp_path)
         tree = seed(repo, tmp_path)
         write(tree.path, "a.py", "x = 2\n")
@@ -394,8 +398,17 @@ class TestDelta:
                 (tree.path / "a.py").unlink()
                 os.mkfifo(tree.path / "a.py")
 
-        with pytest.raises(oc.AttemptFailedError) as caught:
-            delta(tree, repo, hooks={"before_open": swap})
+        def hang_guard(_signum: int, _frame: Any) -> None:
+            raise TimeoutError("the executor blocked opening a FIFO")
+
+        previous = signal.signal(signal.SIGALRM, hang_guard)
+        signal.alarm(15)
+        try:
+            with pytest.raises(oc.AttemptFailedError) as caught:
+                delta(tree, repo, hooks={seam: swap})
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
         assert "changed during validation" in caught.value.reason
 
     def test_ancestor_directory_swapped_during_validation(self, tmp_path: Path) -> None:
@@ -699,12 +712,12 @@ class TestTransfer:
     def test_a_refusal_on_a_later_path_leaves_no_directory_behind(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path)
         m0 = user_manifest(repo)
-        write(repo, "a.py", "user edit\n")
+        write(repo, "b.py", "user edit\n")
         before = snapshot(repo)
         with pytest.raises(oc.AttemptRefusedError):
-            run_transfer(repo, [witem("a.py", "w\n"), witem("newdir/x.py", "w\n")], m0)
+            run_transfer(repo, [witem("adir/x.py", "w\n"), witem("b.py", "w\n")], m0)
         assert snapshot(repo) == before
-        assert not (repo / "newdir").exists()
+        assert not (repo / "adir").exists()
 
     def test_late_conflict_after_earlier_paths_were_written(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path, {"a.py": "a = 1\n", "b.py": "b = 1\n", "c.py": "c = 1\n"})

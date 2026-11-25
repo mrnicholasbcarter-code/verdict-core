@@ -208,7 +208,12 @@ def _hash_fd(fd: int, *, keep: bool, limit: int | None) -> tuple[str, int, bytes
 
 
 def _state_at(
-    parent_fd: int, name: str, *, keep: bool = False, limit: int | None = None
+    parent_fd: int,
+    name: str,
+    *,
+    keep: bool = False,
+    limit: int | None = None,
+    hooks: Hooks | None = None,
 ) -> tuple[Entry | None, bytes]:
     """The state of ``name`` under ``parent_fd``, never following a link and never opening a
     non-regular file.  ``(None, b"")`` when it is absent.  ``_RacedError`` if its kind changes under us.
@@ -227,6 +232,7 @@ def _state_at(
         return Entry("symlink", False, _sha256(os.fsencode(target))), b""
     if not stat.S_ISREG(st.st_mode):
         return Entry("other", False, ""), b""
+    _hook(hooks, "after_metadata", name)
     try:
         fd = os.open(name, _FILE_FLAGS, dir_fd=parent_fd)
     except OSError as exc:
@@ -381,7 +387,7 @@ def _walk_dir(
         if stat.S_ISREG(st.st_mode):
             _hook(hooks, "before_open", rel)
             try:
-                entry, _ = _state_at(dir_fd, name)
+                entry, _ = _state_at(dir_fd, name, hooks=hooks)
             except _RacedError as exc:
                 raise AttemptFailedError("the attempt tree changed during validation") from exc
             if entry is None or entry.kind != "file":
@@ -651,7 +657,9 @@ def _read_delta_file(root_fd: int, rel: str, hooks: Hooks | None) -> tuple[Entry
                 raise AttemptFailedError("the attempt tree changed during validation") from exc
             opened.append(cur)
         try:
-            entry, data = _state_at(cur, parts[-1], keep=True, limit=MAX_TRANSFER_FILE_BYTES)
+            entry, data = _state_at(
+                cur, parts[-1], keep=True, limit=MAX_TRANSFER_FILE_BYTES, hooks=hooks
+            )
         except _RacedError as exc:
             raise AttemptFailedError("the attempt tree changed during validation") from exc
         except _OverLimitError as exc:
