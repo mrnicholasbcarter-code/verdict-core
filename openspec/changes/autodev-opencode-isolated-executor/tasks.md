@@ -317,7 +317,7 @@ Conventions for every task:
       Evidence: `TestPreflightHook` green; asking preflight after the mechanical tier, dropping the refusal, counting a refused unit as a model unit, dropping the mechanical edit from `changed_files`, counting it in the summary, or letting a raising preflight pass fails its named test.
 ## 5. CLI
 
-- [ ] 5.1 Readiness check and the credential seam (D9, D10). Functions in
+- [x] 5.1 Readiness check and the credential seam (D9, D10). Functions in
       `verdict/autodev_opencode.py`, called by task 5.2 before `prepare_live_autodev` and
       `prepare_live_autodev_selected`, check the opencode binary (OC1's resolver and version
       probe; extract one shared helper if the doctor's probe is not callable) and serve
@@ -339,7 +339,8 @@ Conventions for every task:
       label names the readiness check, and that `prepare_live_autodev`,
       `prepare_live_autodev_selected`, the decomposer, `run_autodev` and `PatchExecutor`, each
       patched to raise, are never called.
-- [ ] 5.2 The flag. Add `--worker-harness` (choices: `opencode`; default none) to the autodev
+      Evidence: `TestReadiness` green (against the tree without the CLI code the readiness and flag classes fail 19 of 19); the readiness checks run against a loopback fake serve, a fake `opencode` script and a temporary home. Skipping the binary, version-exit, serve-engine or serve-status, token or key check, dropping the version note, or failing on a different version fails its named test.
+- [x] 5.2 The flag. Add `--worker-harness` (choices: `opencode`; default none) to the autodev
       parser, pass it through dispatch to `cmd_autodev`, build the isolated executor with task
       5.1's builder, pass `retry_routes=()`, leave the selection report unchanged. Files:
       `verdict/commands/parsers_routing.py`, `verdict/commands/dispatch.py`, `verdict/cli.py`,
@@ -349,6 +350,7 @@ Conventions for every task:
       `test_flag_with_dry_run` (nothing runs), `test_flag_passes_the_isolated_executor_and_no_retry_routes`
       and `test_help_says_retries_and_lineage_are_not_yet_supported`.
 
+      Evidence: `TestFlag` green, and `TestEndToEnd` drives the real `OpenCodeExecutor` with a fake worker under the autodev run id (the signed run id and node id equal the receipt's `attempt_run_id` and the unit id, and the worker's directory holds nothing the executor wrote). Gating readiness on a missing decision or running it under `--dry-run`, passing the retry routes, not building the executor, a hard-coded failure label, a dropped dispatch argument or an unsaid help line fails its named test; the existing autodev tests pass unmodified.
 ## 6. Docs
 
 - [ ] 6.1 Document the flag in `docs/guides/harnesses.md` (a subsection of "OpenCode as a worker

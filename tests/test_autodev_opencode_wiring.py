@@ -601,6 +601,7 @@ class FakeServe:
                     "not_verdict": (200, b'{"status": "healthy", "engine": "something-else"}'),
                     "not_json": (200, b"hello"),
                     "unavailable": (503, b'{"engine": "verdict"}'),
+                    "created": (201, b'{"status": "healthy", "engine": "verdict"}'),
                 }[outer.mode]
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -715,7 +716,10 @@ def a_decision() -> Any:
 
 
 class TestReadiness:
-    @pytest.mark.parametrize("how", ["missing", "version_fails"])
+    @pytest.mark.parametrize(
+        ("how", "detail"),
+        [("missing", "not found or not executable"), ("version_fails", "`--version` exited 3")],
+    )
     def test_opencode_binary_missing(
         self,
         tmp_path: Path,
@@ -723,6 +727,7 @@ class TestReadiness:
         serve_factory: Any,
         capsys: pytest.CaptureFixture[str],
         how: str,
+        detail: str,
     ) -> None:
         serve = serve_factory("ok")
         binary = "/nonexistent/opencode" if how == "missing" else fake_binary(tmp_path, exit_code=3)
@@ -734,10 +739,13 @@ class TestReadiness:
         assert caught.value.code == 1
         out = capsys.readouterr().out
         assert "binary check failed" in out and "opencode readiness failed" in out
+        assert detail in " ".join(out.split())
         assert forbidden.calls == []
         assert serve.requests == []  # the binary is checked first
 
-    @pytest.mark.parametrize("mode", ["refused", "hang", "unavailable", "not_verdict", "not_json"])
+    @pytest.mark.parametrize(
+        "mode", ["refused", "hang", "unavailable", "created", "not_verdict", "not_json"]
+    )
     def test_serve_not_answering(
         self,
         tmp_path: Path,
