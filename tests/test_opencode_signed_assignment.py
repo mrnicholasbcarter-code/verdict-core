@@ -1112,6 +1112,9 @@ class Reply:
     chunked: bool = False  # no Content-Length: the body is one chunk (as behind a proxy)
     trickle: float = 0.0  # seconds between the bytes of the answer, which is sent a byte at a time
     trickle_from: str = "start"  # "start": the status line and headers too; "body": only the body
+    connection_close: bool = (
+        False  # a trickled answer says "Connection: close" (HTTP/1.1 closes it)
+    )
 
 
 @dataclass
@@ -1173,9 +1176,10 @@ class ScriptedServe:
 
             def _trickle(self, reply: Reply) -> None:
                 """Send the answer one byte at a time, each sooner than any socket timeout."""
+                closing = "Connection: close\r\n" if reply.connection_close else ""
                 head = (
                     f"HTTP/1.1 {reply.status} X\r\nContent-Type: application/json\r\n"
-                    f"Content-Length: {len(reply.body)}\r\n\r\n"
+                    f"{closing}Content-Length: {len(reply.body)}\r\n\r\n"
                 ).encode("ascii")
                 self.close_connection = True
                 try:
@@ -1447,11 +1451,67 @@ def test_an_answer_without_a_content_length_is_read_the_same(
     assert probe.outcome == outcome
 
 
+@pytest.mark.parametrize("connection_close", [False, True], ids=["keep-alive", "close"])
+@pytest.mark.parametrize("trickle_from", ["start", "body"])
+def test_an_answer_that_trickles_in_is_cut_off_at_the_probes_deadline(
+    scripted: Callable[..., ScriptedServe], trickle_from: str, connection_close: bool
+) -> None:
+    """A socket timeout restarts with every byte, so a server that sends its answer a byte at a
+    time, each sooner than the timeout, would hold the probe (and a cancellation that waits for
+    it) for as long as it likes.  The probe's time is one budget for the whole exchange, also for
+    an answer that closes the connection (which ``http.client`` hands over to the response)."""
+    serve = scripted(
+        Reply(
+            403,
+            SERVE_REFUSAL,
+            trickle=0.1,
+            trickle_from=trickle_from,
+            connection_close=connection_close,
+        )
+    )
+    started = time.monotonic()
+    probe = executor_module._probe_assignment(serve.origin, an_assignment(), 0.5)
+    assert (probe.outcome, probe.reason) == ("unproven", None)
+    assert time.monotonic() - started < 2.0, "the probe waited for the whole slow answer"
+    assert probe_threads_gone(), "the abandoned request was left reading the slow answer"
+
+
+def test_a_resolver_that_never_answers_cannot_hold_the_probe_past_its_deadline(
+    scripted: Callable[..., ScriptedServe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Looking a host name up is not bounded by any socket timeout.  The probe returns at its
+    deadline whatever the resolver is doing, and once the lookup does return the request is not
+    sent: its time had run out."""
+    import socket
+    import threading
+
+    serve = scripted(Reply(403, SERVE_REFUSAL))
+    port = serve.server.server_address[1]
+    released = threading.Event()
+    real_getaddrinfo = socket.getaddrinfo
+
+    def stuck_getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if host == "serve.resolver-test.invalid":
+            assert released.wait(timeout=30), "the test never released the resolver"
+            return real_getaddrinfo("127.0.0.1", *args, **kwargs)
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", stuck_getaddrinfo)
+    started = time.monotonic()
+    probe = executor_module._probe_assignment(
+        f"http://serve.resolver-test.invalid:{port}", an_assignment(), 0.3
+    )
+    assert (probe.outcome, probe.reason) == ("unproven", None)
+    assert time.monotonic() - started < 2.0, "the probe waited for the resolver"
+    released.set()  # the lookup now returns and finds the probe's time gone
+    assert probe_threads_gone()
+    assert serve.seen == [], "the assignment was sent after the probe's time had run out"
+
+
 def test_a_probe_whose_connection_used_up_its_time_sends_nothing_more(
     scripted: Callable[..., ScriptedServe], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The watchdog only has a socket to shut down once the connection is made; if the time ran
-    out while connecting, the request is not sent at all."""
+    """If the time ran out while connecting, the request is not sent when the connection comes."""
     import http.client
 
     real_connect = http.client.HTTPConnection.connect
@@ -1464,21 +1524,22 @@ def test_a_probe_whose_connection_used_up_its_time_sends_nothing_more(
     serve = scripted(Reply(403, SERVE_REFUSAL))
     probe = executor_module._probe_assignment(serve.origin, an_assignment(), 0.2)
     assert (probe.outcome, probe.reason) == ("unproven", None)
+    assert probe_threads_gone()  # the connection has now come
     assert serve.seen == [], "the assignment was sent after the probe's time had run out"
 
 
-@pytest.mark.parametrize("trickle_from", ["start", "body"])
-def test_an_answer_that_trickles_in_is_cut_off_at_the_probes_deadline(
-    scripted: Callable[..., ScriptedServe], trickle_from: str
-) -> None:
-    """A socket timeout restarts with every byte that arrives, so a server that sends its answer
-    a byte at a time, each sooner than the timeout, would hold the probe (and a cancellation that
-    waits for it) for as long as it likes.  The probe's time is one budget for the whole exchange."""
-    serve = scripted(Reply(403, SERVE_REFUSAL, trickle=0.1, trickle_from=trickle_from))
-    started = time.monotonic()
-    probe = executor_module._probe_assignment(serve.origin, an_assignment(), 0.5)
-    assert (probe.outcome, probe.reason) == ("unproven", None)
-    assert time.monotonic() - started < 2.0, "the probe waited for the whole slow answer"
+def probe_threads_gone(within: float = 3.0) -> bool:
+    """True once no probe helper thread is left running (the probe stops waiting for a late one at
+    its deadline, and shuts its socket so that it ends)."""
+    end = time.monotonic() + within
+    while time.monotonic() < end:
+        if not any(
+            thread.name == "verdict-assignment-probe" and thread.is_alive()
+            for thread in threading.enumerate()
+        ):
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def test_a_probe_to_nothing_listening_is_unproven() -> None:

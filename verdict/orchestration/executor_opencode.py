@@ -708,17 +708,22 @@ def _json_body(response: http.client.HTTPResponse) -> Any:
         return None
 
 
-def _post_probe(origin: str, assignment: str, timeout: float) -> tuple[int, Any]:
+def _post_probe(
+    origin: str,
+    assignment: str,
+    timeout: float,
+    expired: threading.Event,
+    sockets: list[socket.socket],
+) -> tuple[int, Any]:
     """Send the probe and return serve's status and its JSON body (None when it has none worth
     reading).  Raises on any transport failure: the caller turns every exception into unproven.
 
-    The whole exchange (connecting, sending, the status line, the headers and the body) shares one
-    budget of ``timeout`` seconds.  A socket timeout alone would restart with every byte received,
-    so a server that sends its answer a byte at a time could hold the attempt, and a cancellation
-    that waits for this thread, for as long as it likes; a watchdog shuts the socket down at the
-    deadline instead.  ``http.client`` is used rather than ``urllib`` because it never follows a
-    redirect, so the assignment cannot be sent anywhere but ``origin``, and it never goes through
-    a proxy.
+    Runs on a helper thread that :func:`_probe_assignment` stops waiting for at the deadline.
+    ``http.client`` is used rather than ``urllib`` because it never follows a redirect, so the
+    assignment cannot be sent anywhere but ``origin``, and it never goes through a proxy.  The
+    connected socket is added to ``sockets`` so the deadline can shut it down (``http.client``
+    drops its own reference to it when an answer closes the connection), and once ``expired`` is
+    set, which can happen while a host name is still being looked up, nothing is sent.
     """
     parts = urllib.parse.urlsplit(origin)
     if parts.scheme not in {"http", "https"} or not parts.hostname:
@@ -727,22 +732,12 @@ def _post_probe(origin: str, assignment: str, timeout: float) -> tuple[int, Any]
         http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
     )
     connection = connection_class(parts.hostname, parts.port, timeout=timeout)
-    expired = threading.Event()
-
-    def abort() -> None:
-        expired.set()
-        sock = connection.sock
-        if sock is not None:
-            with contextlib.suppress(OSError):
-                sock.shutdown(socket.SHUT_RDWR)
-
-    watchdog = threading.Timer(timeout, abort)
-    watchdog.daemon = True
-    watchdog.start()
     try:
         connection.connect()
+        if connection.sock is not None:
+            sockets.append(connection.sock)
         if expired.is_set():
-            raise TimeoutError("the probe's time ran out while connecting")
+            raise TimeoutError("the probe's time ran out before the request was sent")
         connection.request(
             "POST",
             f"{parts.path.rstrip('/')}/v1/chat/completions",
@@ -757,7 +752,6 @@ def _post_probe(origin: str, assignment: str, timeout: float) -> tuple[int, Any]
         status = response.status
         return status, _json_body(response) if status in {400, 403, 503} else None
     finally:
-        watchdog.cancel()
         connection.close()
 
 
@@ -775,14 +769,33 @@ def _probe_assignment(origin: str, assignment: str, timeout: float) -> _Assignme
     Only serve's exact bodies count: a 403 or 503 with any other body (a proxy in front of serve,
     a provider, "Proxy not initialized"), a 400 that is not serve's model check, and every other
     status are unproven.  No redirect is followed, so the assignment cannot be sent elsewhere.
-    The request carries the assignment alone, never the serve token, and is bounded by
-    ``timeout`` as a whole (:func:`_post_probe`).  Never raises: a timeout, a refused connection,
-    a cut-off answer, anything unforeseen is unproven.
+    The request carries the assignment alone, never the serve token.
+
+    ``timeout`` bounds the whole exchange, which a socket timeout cannot (it restarts with every
+    byte received, and does not cover looking a host name up): the request runs on a helper
+    thread, this call stops waiting for it at the deadline, shuts its socket down and sets
+    ``expired`` so a lookup that returns late sends nothing.  The abandoned thread ends on its
+    own (the shutdown fails its read, or the lookup returns).  Never raises: a timeout, a refused
+    connection, a cut-off answer, anything unforeseen is unproven.
     """
-    try:
-        status, body = _post_probe(origin, assignment, timeout)
-    except Exception:  # best effort: anything unforeseen proves nothing
+    outcome: list[tuple[int, Any]] = []
+    expired = threading.Event()
+    sockets: list[socket.socket] = []
+
+    def work() -> None:
+        with contextlib.suppress(Exception):  # best effort: anything unforeseen proves nothing
+            outcome.append(_post_probe(origin, assignment, timeout, expired, sockets))
+
+    helper = threading.Thread(target=work, name="verdict-assignment-probe", daemon=True)
+    helper.start()
+    helper.join(timeout)
+    if not outcome:
+        expired.set()
+        for sock in list(sockets):
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
         return _AssignmentProbe("unproven")
+    status, body = outcome[0]
     if status == 400 and body == _SERVE_MODEL_CHECK_BODY:
         return _AssignmentProbe("accepted", status)
     if (status == 403 and body == _SERVE_REFUSAL_BODY) or (

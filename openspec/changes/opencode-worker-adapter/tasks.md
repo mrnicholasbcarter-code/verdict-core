@@ -167,9 +167,10 @@
       receipts, so a remote or spare serve is covered; anything else (timeout, connection error, a
       redirect, another 5xx, another 403 or 400 body, a 2xx, a 404, an answer cut short) is unproven
       and the attempt goes on as before. No redirect is followed (the probe uses `http.client`, which never follows one), the
-      whole exchange is bounded by what is left of the attempt's budget (a watchdog shuts the
-      socket at the deadline, so an answer sent a byte at a time cannot stretch it) and no request
-      is started for a cancelled attempt. The receipt-based classification of a refusal
+      whole exchange is bounded by what is left of the attempt's budget (the request runs on a
+      helper thread the probe stops waiting for at the deadline, shutting its socket, so neither
+      an answer sent a byte at a time nor a resolver that never answers can stretch it, and a
+      lookup that returns late sends nothing) and no request is started for a cancelled attempt. The receipt-based classification of a refusal
       mid-run is unchanged. Serve is not changed: it logs one WARNING (`reason=model_mismatch`) per
       probe, which is accepted and documented, and its order (the model is refused before routing)
       is now relied on and pinned. Not built: a `verdict doctor` probe of the same kind (a
@@ -206,7 +207,19 @@
       for both `start` and `body` waited for the whole answer; the probe now uses `http.client`
       with a watchdog that shuts the socket at the deadline, and without the watchdog both fail;
       without the connect-phase expiry check `test_a_probe_whose_connection_used_up_its_time_sends_nothing_more`
-      fails); and the docs said a bare 400 is "accepted" (it is serve's own model-check body). The
+      fails); and the docs said a bare 400 is "accepted" (it is serve's own model-check body). Review
+      round 2 (2026-11-25, same reviewer, head `6145ee9d`) found three more, fixed in the commit
+      after it and not re-reviewed (the review budget of two rounds was spent): an answer that
+      closes the connection (`Connection: close`) makes `http.client` drop its own reference to
+      the socket, so the watchdog had nothing to shut and a trickled body held the probe (red:
+      `test_an_answer_that_trickles_in_is_cut_off_at_the_probes_deadline[body-close]` returned
+      `refused` after the whole answer); a host-name lookup is bounded by no socket timeout and
+      the watchdog could not interrupt it (red:
+      `test_a_resolver_that_never_answers_cannot_hold_the_probe_past_its_deadline` waited the
+      whole 30 s the resolver was held for); and the requirement text promised a whole-exchange
+      bound the code did not give. The request now runs on a helper thread that the probe stops
+      waiting for at the deadline (a watchdog is no longer needed); with the wait unbounded, with
+      the sockets not retained, or with no check before sending, 6, 6 and 2 tests fail. The
       earlier redirect check (301, 302 and 303 of
       `test_a_redirect_is_never_followed_so_the_assignment_goes_nowhere_else` failed when the probe
       used `urllib`'s default opener) still guards the contract, and `http.client` follows none.

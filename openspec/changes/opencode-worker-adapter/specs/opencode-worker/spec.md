@@ -310,8 +310,9 @@ a failure SHALL be one `harness_configuration:` message that recovery treats as 
 before the receipts mark and the launch, it SHALL send serve one probe of the attempt's own
 assignment: `POST /v1/chat/completions` with the assignment as the bearer (and not the serve
 token) and a body that is only `{"model": <a value no route can equal>}`, with no `messages`,
-followed by no redirect and bounded, as a whole exchange and not only per socket operation, by
-what is left of the attempt's budget.  Serve verifies the
+followed by no redirect and bounded, as a whole exchange (a host-name lookup, a connection, an
+answer sent slowly) and not only per socket operation, by what is left of the attempt's budget;
+a request whose time has run out SHALL NOT be sent.  Serve verifies the
 assignment and then refuses a `model` that differs from the assignment's route with 400, before
 any routing, so the probe SHALL make no routing decision, mint no admission proof, send nothing
 upstream and write no serve evidence.  A 400 with serve's body SHALL mean accepted and the attempt
@@ -388,6 +389,7 @@ cancellation SHALL complete only after the thread that ran the checks has finish
   `test_a_probe_to_nothing_listening_is_unproven`, `test_the_probe_cannot_raise_into_the_attempt`,
   `test_an_answer_that_trickles_in_is_cut_off_at_the_probes_deadline`,
   `test_an_answer_without_a_content_length_is_read_the_same`,
+  `test_a_resolver_that_never_answers_cannot_hold_the_probe_past_its_deadline`,
   `test_a_probe_whose_connection_used_up_its_time_sends_nothing_more`)
 
 #### Scenario: The probe counts against the attempt's budget

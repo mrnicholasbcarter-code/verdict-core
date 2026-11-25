@@ -261,9 +261,11 @@ as before. A proxy in front of serve can answer 403 too, which is why the body a
 status decides. The probe follows no redirect (it is sent with `http.client`, which never follows one and never
 uses a proxy), is bounded by the attempt's own deadline like the readiness check
 (`min(5 s, what is left)`; a refusal that arrives after the deadline is the attempt's timeout)
-and, unlike a bare socket timeout, by that time as a whole: a watchdog shuts the socket at the
-deadline, so a server that sends its answer a byte at a time cannot hold the attempt or a
-cancellation (the readiness check, which reads no body, keeps its socket timeout), and a cancelled attempt does not start it. The block message lists what the
+and, unlike a bare socket timeout, by that time as a whole: the request runs on a helper thread
+that the probe stops waiting for at the deadline (it then shuts the helper's socket down, and a
+host-name lookup that returns late sends nothing), so neither a server that sends its answer a
+byte at a time nor a resolver that never answers can hold the attempt or a cancellation (the
+readiness check, unchanged here, keeps its per-operation socket timeout), and a cancelled attempt does not start it. The block message lists what the
 probe cannot tell apart (different `worker-assignment.key` files or homes, clocks more than 60 s
 apart, a serve older than the signed-assignment change or anonymous) and the fix. The receipts'
 classification of a refusal mid-run is unchanged; the probe does not replace it, because a key
