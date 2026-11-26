@@ -501,7 +501,7 @@ loop described in [How it works](#the-loop), it includes:
 | Claude Code report | `/bootstrap claude` is read-only: it tells you what would work if Claude Code pointed at Verdict, and changes nothing. <!-- claim:C-013 --> |
 | Prompt completion | Commands, flags, model ids and run ids complete as you type; see [docs/guides/tui-completion.md](guides/tui-completion.md). <!-- claim:C-014 --> |
 | Payment failures | A reply that says the account has no credits is a payment failure, even with HTTP 200, and routes billed against prepaid credit are not assumed free. |
-| Stalled workers | A worker that prints nothing for `VERDICT_WORKER_IDLE_SECONDS` (default 300) is killed as `stalled` and its node goes to another admitted route. |
+| Stalled and refused workers | A worker that prints nothing for `VERDICT_WORKER_IDLE_SECONDS` (default 300) is killed as `stalled` and its node goes to another admitted route. An OpenCode worker whose assigned route `verdict serve` refuses (HTTP 503, `assigned route '<id>' denied: <code>`) is ended at the first denial with a permanent code (`opaque_route_disallowed`, `metadata_ghost`) and at the second identical denial for any other code, instead of after OpenCode's ten retries: its processes are ended with it and the failed attempt carries the denial text and status 503. Recovery treats that like any other 503 for now. |
 | Run metrics | `verdict metrics` reports accepted tasks, dollars (unknown when any attempt has no cost) and capacity shares from verified receipts. |
 | Route re-checks | `verdict prove-at-rest once --reprobe ROUTE` re-checks a free route even when its proof is fresh. |
 

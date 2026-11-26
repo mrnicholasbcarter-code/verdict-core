@@ -78,6 +78,7 @@ from typing import Any, Literal, TypeVar
 
 from verdict.orchestration.contracts import AttemptUsage, WorkerServeOrigin, WorkerTerminal
 from verdict.orchestration.executors import idle_output_seconds_from_env
+from verdict.orchestration.opencode_denial import DenialWatch
 from verdict.orchestration.serve_evidence import EvidenceMark, SeenDatabases, take_mark
 from verdict.worker_assignment import (
     MAX_LIFETIME_SECONDS,
@@ -1776,8 +1777,10 @@ class OpenCodeExecutor:
             try:
                 try:
                     await _send_prompt(proc, TASK_PROMPT)
-                    stdout_b, stderr_b, cut = await self._collect(
-                        proc, max(0.0, timeout_seconds - (time.monotonic() - started))
+                    stdout_b, stderr_b, cut, denial = await self._collect(
+                        proc,
+                        max(0.0, timeout_seconds - (time.monotonic() - started)),
+                        route_id=route_id,
                     )
                 finally:
                     # Always end the whole process tree before returning, whatever the path
@@ -1793,6 +1796,8 @@ class OpenCodeExecutor:
                 )
             except Exception as exc:
                 return self._failure(route_id, started, f"worker_io_failed: {type(exc).__name__}")
+            if cut == "serve_denied":
+                return replace(self._failure(route_id, started, denial), status_code=503)
             if cut:
                 stalled = cut == "stalled"
                 if stalled:
@@ -1822,29 +1827,39 @@ class OpenCodeExecutor:
             _cleanup_attempt_dir(attempt_tmp)
 
     async def _collect(
-        self, proc: asyncio.subprocess.Process, timeout_seconds: float
-    ) -> tuple[bytes, bytes, str]:
+        self, proc: asyncio.subprocess.Process, timeout_seconds: float, *, route_id: str = ""
+    ) -> tuple[bytes, bytes, str, str]:
         """Collect both pipes with timeout and idle-output stall kill.
 
-        Returns ``(stdout, stderr, cut)``; ``cut`` is ``""`` on normal exit,
+        Returns ``(stdout, stderr, cut, denial)``; ``cut`` is ``""`` on normal exit,
         ``"timeout"`` when the whole attempt runs past ``timeout_seconds``,
-        ``"stalled"`` when no output byte arrived for ``idle_output_seconds``, and
-        ``"output_limit"`` when stdout plus stderr exceed ``max_output_bytes``.  A pipe
-        read that fails raises :class:`_WorkerIOError`: partial output is never
+        ``"stalled"`` when no output byte arrived for ``idle_output_seconds``,
+        ``"output_limit"`` when stdout plus stderr exceed ``max_output_bytes``, and
+        ``"serve_denied"`` when, given a ``route_id``, stdout shows ``verdict serve`` refusing
+        that assigned route (:class:`DenialWatch`); ``denial`` is then its text, else ``""``.
+        A pipe read that fails raises :class:`_WorkerIOError`: partial output is never
         presented as a finished attempt.
         """
         buffers: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
         last_output = time.monotonic()
+        watch = DenialWatch(route_id) if route_id else None
+        denial = ""
 
         over_limit = asyncio.Event()
 
         async def pump(name: str, stream: asyncio.StreamReader | None) -> None:
-            nonlocal last_output
+            nonlocal last_output, denial
             if stream is None:
                 return
             while chunk := await stream.read(65536):
                 buffers[name] += chunk
                 last_output = time.monotonic()
+                if name == "stdout" and watch is not None:
+                    found = watch.feed(chunk)
+                    if found is not None:
+                        denial = found
+                        over_limit.set()  # the same wake-up as the output cap
+                        return
                 if len(buffers["stdout"]) + len(buffers["stderr"]) > self.max_output_bytes:
                     over_limit.set()
                     return
@@ -1861,7 +1876,7 @@ class OpenCodeExecutor:
         try:
             while True:
                 if over_limit.is_set():
-                    cut = "output_limit"
+                    cut = "serve_denied" if denial else "output_limit"
                     break
                 if any(t.done() and not t.cancelled() and t.exception() is not None for t in tasks):
                     break  # a failed read or wait: stop now, report it below
@@ -1894,7 +1909,7 @@ class OpenCodeExecutor:
         for result in results:
             if isinstance(result, Exception):
                 raise _WorkerIOError(f"{type(result).__name__}: {result}") from result
-        return bytes(buffers["stdout"]), bytes(buffers["stderr"]), cut
+        return bytes(buffers["stdout"]), bytes(buffers["stderr"]), cut, denial
 
     def _interpret(
         self,
