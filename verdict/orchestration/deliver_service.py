@@ -19,6 +19,7 @@ See the ``verdict-deliver`` OpenSpec change.
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import json
 import math
@@ -38,7 +39,12 @@ from verdict.orchestration.deliver import (
     DeliverRequest,
     plan_delivery,
 )
-from verdict.orchestration.deliver_publish import CommandRunner, PublishError, run_command
+from verdict.orchestration.deliver_publish import (
+    DEFAULT_PUSH_TIMEOUT_S,
+    CommandRunner,
+    PublishError,
+    run_command,
+)
 from verdict.orchestration.deliver_publish import publish_branch_and_pr as _publish
 from verdict.orchestration.deliver_render import render_pull_request
 from verdict.orchestration.ready_gate import (
@@ -79,6 +85,7 @@ class DeliverRunRequest(DeliverRequest):
     repo_dir: Path | None = None
     ci_deadline_s: float = DEFAULT_CI_DEADLINE_S
     run_ready_gate: bool = True
+    push_timeout_s: float = DEFAULT_PUSH_TIMEOUT_S
 
 
 @dataclass(frozen=True)
@@ -301,6 +308,15 @@ def _record_mismatches(record: DeliveryRecord, plan: DeliverPlan) -> list[str]:
     return [name for name, stored, current in pairs if stored != current]
 
 
+def _push_timeout_s(request: DeliverRunRequest | DeliverRequest) -> float | None:
+    """The request's push timeout in seconds; ``None`` when it is not finite and positive."""
+    try:
+        seconds = float(getattr(request, "push_timeout_s", DEFAULT_PUSH_TIMEOUT_S))
+    except (TypeError, ValueError):
+        return None
+    return seconds if math.isfinite(seconds) and seconds > 0 else None
+
+
 def deliver_run(
     request: DeliverRunRequest | DeliverRequest,
     *,
@@ -320,6 +336,16 @@ def deliver_run(
                 DeliverReason.INVALID_REQUEST,
                 f"the checks deadline must be a finite number of seconds above zero, "
                 f"got {deadline_s!r}",
+                Path(request.run_dir),
+            )
+        )
+    push_timeout_s = _push_timeout_s(request)
+    if push_timeout_s is None:
+        return _refused(
+            DeliverRefusal(
+                DeliverReason.INVALID_REQUEST,
+                "the push timeout must be a finite number of seconds above zero, got "
+                f"{getattr(request, 'push_timeout_s', None)!r}",
                 Path(request.run_dir),
             )
         )
@@ -381,11 +407,17 @@ def deliver_run(
             body=rendered.body,
         )
 
+    # The push runs the repository's pre-push hook, which takes far longer than an ordinary
+    # command, so it gets its own timeout. An injected runner runs every command itself.
+    push_runner = (
+        None if runner is not None else functools.partial(run_command, timeout=push_timeout_s)
+    )
     result = _publish(
         plan,
         rendered.title,
         rendered.body,
         runner=runner or run_command,
+        push_runner=push_runner,
         cwd=Path(repo_dir) if repo_dir is not None else None,
     )
     if isinstance(result, PublishError):

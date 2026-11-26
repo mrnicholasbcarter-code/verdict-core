@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from verdict.orchestration.contracts import WorkGraph, WorkNode
-from verdict.orchestration.deliver_publish import CommandResult
+from verdict.orchestration.deliver_publish import DEFAULT_PUSH_TIMEOUT_S, CommandResult
 from verdict.orchestration.deliver_service import (
     DELIVERY_DIGEST_FILE,
     DELIVERY_FILE,
@@ -63,10 +63,16 @@ def _make_run(
 class FakeRunner:
     def __init__(self, handlers: dict[tuple[str, ...], CommandResult] | None = None) -> None:
         self.calls: list[list[str]] = []
+        #: the ``timeout`` each call was made with (``None``: the runner's own default),
+        #: aligned with ``calls``; the real ``run_command`` takes the same keyword
+        self.timeouts: list[float | None] = []
         self.handlers = handlers or {}
 
-    def __call__(self, argv: Sequence[str], cwd: Path | None) -> CommandResult:
+    def __call__(
+        self, argv: Sequence[str], cwd: Path | None, *, timeout: float | None = None
+    ) -> CommandResult:
         self.calls.append(list(argv))
+        self.timeouts.append(timeout)
         for prefix, result in self.handlers.items():
             if tuple(argv[: len(prefix)]) == prefix:
                 return result
@@ -287,6 +293,14 @@ def test_default_runner_is_used_when_none_given(
     outcome = deliver_run(_request(run_dir), clock=_clock)
     assert outcome.status is DeliverStatus.DELIVERED
     assert seen.calls
+    # only the push carries the push timeout; every other command keeps the runner's default
+    pushes = [t for c, t in zip(seen.calls, seen.timeouts, strict=True) if c[:2] == ["git", "push"]]
+    assert pushes == [DEFAULT_PUSH_TIMEOUT_S]
+    assert all(
+        t is None
+        for c, t in zip(seen.calls, seen.timeouts, strict=True)
+        if c[:2] != ["git", "push"]
+    )
 
 
 # --- F10: a stored record is bound to this run, not only to the issue number --------------

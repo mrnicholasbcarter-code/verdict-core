@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -303,17 +302,22 @@ def test_no_mutating_verbs_and_all_argv_are_lists(level: str) -> None:
 def test_default_runner_never_uses_shell(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[dict[str, Any]] = []
 
-    def spy(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        seen.append({"argv": args[0], **kwargs})
-        if args[0][:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(args[0], 0, json.dumps({"headRefOid": HEAD}), "")
-        if "/check-runs" in args[0][-1]:
-            return subprocess.CompletedProcess(
-                args[0], 0, json.dumps({"total_count": 1, "check_runs": [_run("success")]}), ""
-            )
-        return subprocess.CompletedProcess(args[0], 0, json.dumps({"total_count": 0}), "")
+    class FakeProcess:
+        """What ``subprocess.Popen`` gives ``run_command``: a finished process with output."""
 
-    monkeypatch.setattr("verdict.orchestration.deliver_publish.subprocess.run", spy)
+        def __init__(self, argv: Any, **kwargs: Any) -> None:
+            seen.append({"argv": argv, **kwargs})
+            self.returncode = 0
+            self._stdout = json.dumps({"total_count": 0})
+            if argv[:3] == ["gh", "pr", "view"]:
+                self._stdout = json.dumps({"headRefOid": HEAD})
+            elif "/check-runs" in argv[-1]:
+                self._stdout = json.dumps({"total_count": 1, "check_runs": [_run("success")]})
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            return self._stdout, ""
+
+    monkeypatch.setattr("verdict.orchestration.deliver_publish.subprocess.Popen", FakeProcess)
     outcome = run_pr_ready_gate(_plan_at("family"), pr_ref=PR, head_sha=HEAD)
     assert outcome.ready
     assert seen

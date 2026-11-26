@@ -290,19 +290,24 @@ def test_every_git_call_is_an_argv_list_without_shell_and_never_forces(
 ) -> None:
     sha = _commit(repo, "one")
     seen: list[tuple[Any, dict[str, Any]]] = []
-    real_run = subprocess.run
+    real_popen = subprocess.Popen
 
+    # ``run_command`` starts every command with ``subprocess.Popen`` (it needs its own
+    # process group). ``subprocess.run`` also goes through ``Popen``, so this spy sees a
+    # command however the runner starts it.
     def spy(*args: Any, **kwargs: Any) -> Any:
         seen.append((args[0] if args else kwargs.get("args"), kwargs))
-        return real_run(*args, **kwargs)
+        return real_popen(*args, **kwargs)
 
-    monkeypatch.setattr(deliver_publish.subprocess, "run", spy)
+    monkeypatch.setattr(deliver_publish.subprocess, "Popen", spy)
     runner = RecordingRunner()
     assert push_branch(replace(_plan(head=BRANCH), integration_commit=sha), runner, repo) is None
     assert seen
     for argv, kwargs in seen:
         assert isinstance(argv, list) and all(isinstance(a, str) for a in argv)
         assert not kwargs.get("shell")
+    # every started process is one of the runner's calls: nothing else is spawned
+    assert [argv for argv, _ in seen] == runner.calls
     assert runner.calls
     for argv in runner.calls:
         assert argv[0] == "git"

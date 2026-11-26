@@ -1,8 +1,9 @@
 """Git and GitHub CLI adapter behind ``verdict deliver``.
 
 Every external command goes through an injectable ``CommandRunner`` that takes an
-argv list and a working directory. The default runner wraps ``subprocess.run``
-with argument lists, a timeout and no shell. This module never
+argv list and a working directory. The default runner starts each command with an
+argument list, a timeout, no shell and its own process group, and ends that whole
+group when the command times out or is interrupted. This module never
 force-pushes, never pushes to the base or default branch, and redacts secrets
 from any captured output before it reaches an error message.
 
@@ -14,9 +15,11 @@ OpenSpec change.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 import re
+import signal
 import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
@@ -28,6 +31,7 @@ from verdict.orchestration.deliver import DeliverPlan
 from verdict.security import redact_text
 
 DEFAULT_COMMAND_TIMEOUT_S = 120.0
+DEFAULT_PUSH_TIMEOUT_S = 1800.0
 PROTECTED_BRANCHES = frozenset({"main", "master"})
 MAX_ERROR_DETAIL = 2000
 _MISSING_EXECUTABLE_RC = 127
@@ -38,6 +42,8 @@ _PR_URL_RE = re.compile(r"https?://\S+/pull/\d+")
 _REF_REJECTED_RE = re.compile(r"^\s*!\s*\[", re.MULTILINE)
 _REF_CONFLICT_MARKERS = ("non-fast-forward", "fetch first", "already exists", "stale info")
 _PUSH_FAILED_LINE = "failed to push some refs"
+_TIMED_OUT_RE = re.compile(r"^command timed out after (\S+)s$")
+_KILL_GRACE_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -53,21 +59,50 @@ CommandRunner = Callable[[Sequence[str], Path | None], CommandResult]
 def run_command(
     argv: Sequence[str], cwd: Path | None = None, *, timeout: float = DEFAULT_COMMAND_TIMEOUT_S
 ) -> CommandResult:
-    """Default runner: ``subprocess.run`` with an argv list and a timeout."""
+    """Default runner: an argv list, no shell, a timeout, and its own process group.
+
+    On a timeout, or when the caller is interrupted, the whole group gets SIGTERM, then
+    SIGKILL after a short grace period, so a hook or helper the command started cannot
+    outlive it.
+    """
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             list(argv),
             cwd=str(cwd) if cwd is not None else None,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-            check=False,
+            start_new_session=True,
         )
     except FileNotFoundError as exc:
         return CommandResult(_MISSING_EXECUTABLE_RC, "", f"{exc}")
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        _end_process_group(proc)
         return CommandResult(_TIMEOUT_RC, "", f"command timed out after {timeout:g}s")
-    return CommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
+    except BaseException:
+        # The child is in its own session, so Ctrl-C never reaches it: end it here.
+        _end_process_group(proc)
+        raise
+    return CommandResult(proc.returncode, stdout or "", stderr or "")
+
+
+def _signal_group(pgid: int, sig: signal.Signals) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(pgid, sig)
+
+
+def _end_process_group(proc: subprocess.Popen[str]) -> None:
+    """Stop ``proc`` and everything in its session, then reap it."""
+    pgid = proc.pid
+    _signal_group(pgid, signal.SIGTERM)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.communicate(timeout=_KILL_GRACE_S)
+    _signal_group(pgid, signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.communicate(timeout=_KILL_GRACE_S)
+    proc.wait()
 
 
 class PublishReason(str, Enum):
@@ -164,6 +199,13 @@ def _remote_branch_sha(
 
 def _classify_push_failure(result: CommandResult, branch: str) -> PublishError:
     """Map a failed ``git push`` to ``branch_exists``, ``vgate_rejected`` or ``push_failed``."""
+    timed_out = _TIMED_OUT_RE.search(result.stderr) if result.returncode == _TIMEOUT_RC else None
+    if timed_out is not None:
+        return _error(
+            PublishReason.PUSH_FAILED,
+            f"git push timed out after {timed_out.group(1)} seconds; "
+            "raise the limit with --push-timeout MINUTES",
+        )
     text = f"{result.stderr}\n{result.stdout}".lower()
     if any(marker in text for marker in _REF_CONFLICT_MARKERS):
         return _error(
@@ -181,14 +223,19 @@ def _classify_push_failure(result: CommandResult, branch: str) -> PublishError:
 
 
 def push_branch(
-    plan: DeliverPlan, runner: CommandRunner, cwd: Path | None = None
+    plan: DeliverPlan,
+    runner: CommandRunner,
+    cwd: Path | None = None,
+    *,
+    push_runner: CommandRunner | None = None,
 ) -> PublishError | None:
     """Push the integration commit to the head branch as a create-only push; never overwrite.
 
     A remote branch at the same commit is reused. One at a different commit, or a
     push that races with another writer, is refused with ``branch_exists``. A
     non-zero pre-push hook (vgate) gives ``vgate_rejected`` with the gate tail.
-    The push never skips the hook and cannot move an existing remote branch.
+    The push never skips the hook and cannot move an existing remote branch. Only the
+    ``git push`` call goes to ``push_runner`` (default: ``runner``).
     """
     refused = validate_request(plan)
     if refused is not None:
@@ -216,7 +263,7 @@ def push_branch(
     # force-push: a lease whose expectation is "absent" can only ever create the ref, so
     # it cannot overwrite or rewind a branch, which the design forbids. The pre-push hook
     # still runs.
-    result = runner(
+    result = (push_runner or runner)(
         [
             "git",
             "push",
@@ -329,9 +376,15 @@ def publish_branch_and_pr(
     body: str,
     *,
     runner: CommandRunner = run_command,
+    push_runner: CommandRunner | None = None,
     cwd: Path | None = None,
 ) -> PublishResult | PublishError:
-    """Push the head branch and create or reuse the draft PR."""
+    """Push the head branch and create or reuse the draft PR.
+
+    ``push_runner`` runs the ``git push`` call only. Left unset, the default runner
+    pushes with ``DEFAULT_PUSH_TIMEOUT_S`` (a pre-push hook can be slow) and an
+    injected ``runner`` runs the push as well.
+    """
     refused = validate_request(plan)
     if refused is not None:
         return refused
@@ -340,7 +393,9 @@ def publish_branch_and_pr(
     unavailable = check_tools(runner, cwd)
     if unavailable is not None:
         return unavailable
-    pushed = push_branch(plan, runner, cwd)
+    if push_runner is None and runner is run_command:
+        push_runner = functools.partial(run_command, timeout=DEFAULT_PUSH_TIMEOUT_S)
+    pushed = push_branch(plan, runner, cwd, push_runner=push_runner)
     if pushed is not None:
         return pushed
     branch = plan.head_branch.strip()
