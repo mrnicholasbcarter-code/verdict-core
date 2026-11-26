@@ -275,3 +275,72 @@ def test_module_does_not_import_process_or_network_modules() -> None:
     source = Path(deliver.__file__).read_text()
     for banned in ("import subprocess", "import socket", "import urllib", "import requests"):
         assert banned not in source
+
+
+# --- F9: the gate derives independence from the evidence; it does not trust the record -----
+
+
+def _review(route: str, *, status: str = "PASS") -> dict[str, Any]:
+    return {"status": status, "reviewer": "ocr v1", "route_id": route, "findings": []}
+
+
+def test_pass_review_with_an_empty_reviewer_route_is_refused(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path, review=_review(""), level="family")
+    assert verify_run_receipt(run_dir, repair=False) == []  # the receipt itself is digest-valid
+    refusal = _refused(plan_delivery(_request(run_dir)))
+    assert refusal.code is DeliverReason.REVIEW_FAILED
+    assert "reviewer route" in refusal.message
+
+
+def test_pass_review_with_a_missing_reviewer_route_is_refused(tmp_path: Path) -> None:
+    review = {"status": "PASS", "reviewer": "ocr v1", "findings": []}
+    run_dir = _make_run(tmp_path, review=review, level="family")
+    assert _refused(plan_delivery(_request(run_dir))).code is DeliverReason.REVIEW_FAILED
+
+
+def test_recorded_family_level_with_a_same_family_reviewer_is_route_level(tmp_path: Path) -> None:
+    # the implementer ran on cc/claude-sonnet-5; the "independent" reviewer is also claude
+    run_dir = _make_run(tmp_path, review=_review("cc/claude-opus-5"), level="family")
+    plan = plan_delivery(_request(run_dir))
+    assert isinstance(plan, DeliverPlan)
+    assert plan.review.level == "route"
+    assert plan.review.reviewer_family == "claude"
+    assert plan.review.implementer_families == ("claude",)
+
+
+def test_recorded_family_level_with_a_different_family_reviewer_stays_family_level(
+    tmp_path: Path,
+) -> None:
+    plan = plan_delivery(_request(_make_run(tmp_path, review=_review("gm/gemini-3"))))
+    assert isinstance(plan, DeliverPlan)
+    assert plan.review.level == "family"
+
+
+@pytest.mark.parametrize(("recorded", "expected"), [("route", "route"), (None, "unknown")])
+def test_a_recorded_level_other_than_family_is_never_upgraded(
+    tmp_path: Path, recorded: str | None, expected: str
+) -> None:
+    run_dir = _make_run(tmp_path, review=_review("gm/gemini-3"), level=recorded)
+    plan = plan_delivery(_request(run_dir))
+    assert isinstance(plan, DeliverPlan)
+    assert plan.review.level == expected  # a different-family reviewer does not earn "family"
+
+
+@pytest.mark.parametrize(
+    ("recorded", "route", "families", "expected"),
+    [
+        ("family", "gm/gemini-3", ("claude",), "family"),
+        ("family", "cc/claude-opus-5", ("claude",), "route"),
+        ("family", "cc/claude-opus-5", ("claude", "gpt"), "route"),
+        ("family", "gm/gemini-3", ("claude", "gemini"), "route"),
+        ("family", "", ("claude",), "route"),
+        ("family", "   ", ("claude",), "route"),
+        ("family", "gm/gemini-3", (), "route"),  # no implementer family recorded: unprovable
+        ("route", "gm/gemini-3", ("claude",), "route"),
+        ("unknown", "gm/gemini-3", ("claude",), "unknown"),
+    ],
+)
+def test_review_independence_is_derived_from_route_and_families(
+    recorded: str, route: str, families: tuple[str, ...], expected: str
+) -> None:
+    assert deliver.review_independence_level(recorded, route, families) == expected

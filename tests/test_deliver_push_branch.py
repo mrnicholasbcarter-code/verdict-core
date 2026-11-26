@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 from collections.abc import Sequence
@@ -23,6 +24,7 @@ from verdict.orchestration.deliver_publish import (
 )
 
 BRANCH = "verdict/issue-7-add-thing"
+CREATE_ONLY_LEASE = f"--force-with-lease=refs/heads/{BRANCH}:"
 
 
 @pytest.fixture(autouse=True)
@@ -141,7 +143,13 @@ def test_push_puts_exact_sha_on_remote_branch(repo: Path, remote: Path) -> None:
     result = push_branch(replace(_plan(head=BRANCH), integration_commit=sha), runner, repo)
     assert result is None
     assert _remote_sha(remote) == sha
-    assert ["git", "push", "origin", f"{sha}:refs/heads/{BRANCH}"] in runner.calls
+    assert [
+        "git",
+        "push",
+        CREATE_ONLY_LEASE,
+        "origin",
+        f"{sha}:refs/heads/{BRANCH}",
+    ] in runner.calls
 
 
 def test_push_runs_pre_push_hook_and_hook_pass_allows_push(repo: Path, remote: Path) -> None:
@@ -212,6 +220,60 @@ def test_push_conflict_after_lookup_is_branch_exists(repo: Path, remote: Path) -
     assert _remote_sha(remote) == first
 
 
+def test_ancestor_race_after_lookup_is_branch_exists_and_the_other_branch_is_untouched(
+    repo: Path, remote: Path
+) -> None:
+    """Another writer creates the branch at an ancestor of our commit after ls-remote.
+
+    A plain ``git push`` would fast-forward their branch to our commit. The create-only
+    push must be rejected instead, and their branch must stay where they put it.
+    """
+    first = _commit(repo, "one")
+    second = _commit(repo, "two")  # a descendant of ``first``: a plain push fast-forwards
+    runner = RecordingRunner()
+
+    def racing_lookup(argv: Sequence[str], cwd: Path | None) -> CommandResult:
+        result = runner(argv, cwd)
+        if list(argv[:2]) == ["git", "ls-remote"]:
+            assert result.stdout == ""  # the branch is absent when we look
+            _git(repo, "push", "-q", "origin", f"{first}:refs/heads/{BRANCH}")  # they land now
+        return result
+
+    result = push_branch(
+        replace(_plan(head=BRANCH), integration_commit=second), racing_lookup, repo
+    )
+    assert isinstance(result, PublishError)
+    assert result.reason is PublishReason.BRANCH_EXISTS
+    assert _remote_sha(remote) == first
+    assert any(c[:2] == ["git", "push"] for c in runner.calls)  # the push was attempted
+
+
+def test_race_inside_the_remote_update_is_refused_and_leaves_their_branch(
+    repo: Path, remote: Path
+) -> None:
+    """The branch appears after the push already saw no ref, while the remote applies it.
+
+    The client advertised no branch, so only the remote's own old-value check (create-only)
+    can stop this. The pre-receive hook below plays the competing writer.
+    """
+    first = _commit(repo, "one")
+    second = _commit(repo, "two")
+    _git(repo, "push", "-q", "origin", f"{first}:refs/heads/parked")
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text(
+        "#!/bin/sh\n"
+        "# receive-pack runs hooks in an object quarantine; the competing writer is not in it\n"
+        "unset GIT_QUARANTINE_PATH GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES\n"
+        f"git update-ref refs/heads/{BRANCH} {first} || exit 1\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    result = push_branch(replace(_plan(head=BRANCH), integration_commit=second), run_command, repo)
+    assert isinstance(result, PublishError)
+    assert result.reason is PublishReason.BRANCH_EXISTS
+    assert _remote_sha(remote) == first
+
+
 def test_unreachable_remote_is_push_failed_not_vgate(repo: Path, tmp_path: Path) -> None:
     sha = _commit(repo, "one")
     _git(repo, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
@@ -246,12 +308,23 @@ def test_every_git_call_is_an_argv_list_without_shell_and_never_forces(
         assert argv[0] == "git"
         assert "--force" not in argv and "-f" not in argv
         assert "--force-with-lease" not in argv and "--no-verify" not in argv
-        assert not any(a.startswith(("--force", "+")) for a in argv)
+        # the one allowed lease is create-only: it names the ref and expects it not to exist
+        assert not any(a.startswith("--force") and a != CREATE_ONLY_LEASE for a in argv)
+        assert not any(a.startswith("+") for a in argv)
         assert not any(a.startswith("--no-verify") for a in argv)
 
 
 def test_source_has_no_force_or_skip_hook_flags() -> None:
     source = Path(deliver_publish.__file__).read_text(encoding="utf-8")
     assert "shell=True" not in source
-    for needle in ('"--force', '"--no-verify"', '"-f"', 'f"+'):
+    for needle in ('"--force"', '"--force-with-lease"', '"--no-verify"', '"-f"', 'f"+'):
         assert needle not in source
+    # the only force-like string in the code is the create-only lease on one named ref
+    literals = [
+        node.value
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "--force" in node.value
+    ]
+    assert literals == ["--force-with-lease=refs/heads/"]

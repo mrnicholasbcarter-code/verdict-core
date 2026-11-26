@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ from verdict.orchestration.deliver_service import (
     DeliverStatus,
     deliver_run,
     read_delivery_record,
+    write_delivery_record,
 )
 from verdict.orchestration.receipt import EventLog, write_run_receipt
 
@@ -138,7 +141,8 @@ def test_successful_deliver_returns_url_and_writes_record(tmp_path: Path) -> Non
     assert outcome.created
     assert outcome.delivered_at == "2026-11-26T12:00:00Z"
     assert len(runner.mutating) == 2
-    assert ["git", "push", "origin", f"{INTEGRATION}:refs/heads/{BRANCH}"] in runner.calls
+    lease = f"--force-with-lease=refs/heads/{BRANCH}:"  # create-only: the branch must not exist
+    assert ["git", "push", lease, "origin", f"{INTEGRATION}:refs/heads/{BRANCH}"] in runner.calls
 
     record = read_delivery_record(run_dir)
     assert record is not None
@@ -283,3 +287,83 @@ def test_default_runner_is_used_when_none_given(
     outcome = deliver_run(_request(run_dir), clock=_clock)
     assert outcome.status is DeliverStatus.DELIVERED
     assert seen.calls
+
+
+# --- F10: a stored record is bound to this run, not only to the issue number --------------
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("run_id", "run-from-somewhere-else"),
+        ("integration_commit", "f" * 40),
+        ("receipt_digest", "sha256:" + "0" * 64),
+        ("events_digest", "sha256:" + "1" * 64),
+        ("receipt_digest", ""),  # an old or hand-made record that carries no digest
+    ],
+)
+def test_record_copied_from_another_run_of_the_same_issue_is_a_mismatch(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    run_dir = _make_run(tmp_path)
+    deliver_run(_request(run_dir), runner=FakeRunner(), clock=_clock)
+    record = read_delivery_record(run_dir)
+    assert record is not None
+    # a perfectly valid json + digest pair, for the right issue, but not for this run
+    write_delivery_record(run_dir, replace(record, **{field: value}))
+    runner = FakeRunner()
+    outcome = deliver_run(_request(run_dir), runner=runner, clock=_clock)
+    assert outcome.status is DeliverStatus.FAILED
+    assert not outcome.ok
+    assert outcome.reason == "delivery_record_mismatch"
+    assert field in outcome.message
+    assert outcome.pr_url == PR_URL
+    assert runner.calls == []
+
+
+def test_record_that_matches_this_run_is_still_already_delivered(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path)
+    deliver_run(_request(run_dir), runner=FakeRunner(), clock=_clock)
+    runner = FakeRunner()
+    outcome = deliver_run(_request(run_dir), runner=runner, clock=_clock)
+    assert outcome.status is DeliverStatus.ALREADY_DELIVERED
+    assert runner.calls == []
+
+
+# --- F1: the library entry refuses a deadline that is not a finite positive number ---------
+
+
+@pytest.mark.parametrize("deadline", [math.nan, math.inf, -math.inf, 0.0, -5.0])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_unbounded_or_zero_ci_deadline_is_refused_before_any_command(
+    tmp_path: Path, deadline: float, dry_run: bool
+) -> None:
+    run_dir = _make_run(tmp_path)
+    runner = FakeRunner()
+    outcome = deliver_run(
+        _request(run_dir, ci_deadline_s=deadline, dry_run=dry_run), runner=runner, clock=_clock
+    )
+    assert outcome.status is DeliverStatus.REFUSED
+    assert outcome.reason == "invalid_request"
+    assert "deadline" in outcome.message
+    assert runner.calls == []
+    assert not (run_dir / DELIVERY_FILE).exists()
+
+
+# --- F4: an open pull request that is already ready is never reused as a draft -------------
+
+
+def test_open_pr_that_is_already_ready_fails_with_pr_not_draft_and_is_not_recorded(
+    tmp_path: Path,
+) -> None:
+    run_dir = _make_run(tmp_path)
+    ready_pr = json.dumps([{"number": 3, "url": PR_URL, "isDraft": False}])
+    runner = FakeRunner(handlers={("gh", "pr", "list"): CommandResult(0, ready_pr)})
+    outcome = deliver_run(_request(run_dir), runner=runner, clock=_clock)
+    assert outcome.status is DeliverStatus.FAILED
+    assert outcome.reason == "pr_not_draft"
+    assert outcome.ready is False
+    assert not (run_dir / DELIVERY_FILE).exists()  # nothing claims ready=False for a ready PR
+    assert not (run_dir / DELIVERY_DIGEST_FILE).exists()
+    assert not any(c[:3] == ["gh", "pr", "ready"] or c[:2] == ["gh", "api"] for c in runner.calls)
+    assert not any(c[:3] == ["gh", "pr", "create"] for c in runner.calls)

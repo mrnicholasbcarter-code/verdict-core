@@ -1377,6 +1377,9 @@ _GH_TIMED_OUT_RC = 124
 #: ``gh repo view --json viewerPermission`` values that can push and open a pull request.
 _GH_WRITE_PERMISSIONS = frozenset({"ADMIN", "MAINTAIN", "WRITE"})
 _GH_KNOWN_PERMISSIONS = _GH_WRITE_PERMISSIONS | {"TRIAGE", "READ", "NONE"}
+#: The host ``_GITHUB_REMOTE`` parses. Every ``gh`` call below names it, so ``GH_HOST`` (or a
+#: login problem on some other host) cannot redirect the check to a different repository.
+_GITHUB_HOST = "github.com"
 _GITHUB_REMOTE = re.compile(
     r"github\.com[:/](?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)(?:\.git)?/?\s*$"
 )
@@ -1422,11 +1425,21 @@ def github_delivery_row(
             "Run verdict doctor from a GitHub checkout",
         )
     slug = f"{match.group('owner')}/{match.group('repo')}"
-    auth = run(["gh", "auth", "status"], cwd)
+    auth = run(["gh", "auth", "status", "--hostname", _GITHUB_HOST], cwd)
     if auth.returncode != 0:
         return row("warn", f"gh is not logged in; run: gh auth login (needed for {slug})")
     view = run(
-        ["gh", "repo", "view", slug, "--json", "viewerPermission", "--jq", ".viewerPermission"], cwd
+        [
+            "gh",
+            "repo",
+            "view",
+            f"https://{_GITHUB_HOST}/{slug}",
+            "--json",
+            "viewerPermission",
+            "--jq",
+            ".viewerPermission",
+        ],
+        cwd,
     )
     if view.returncode != 0:
         reason = "timed out" if view.returncode == _GH_TIMED_OUT_RC else "request failed"

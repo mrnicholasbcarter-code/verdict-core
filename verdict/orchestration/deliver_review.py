@@ -54,9 +54,7 @@ def _open_code_reviewer_factory(gateway: str, out_dir: Path) -> ReviewerFactory:
     return factory
 
 
-def _error(detail: str, result: ReviewResult | None = None) -> ReviewResult:
-    if result is None:
-        return ReviewResult(status="ERROR", reviewer="unknown", route_id="", detail=detail)
+def _error(detail: str, result: ReviewResult) -> ReviewResult:
     return replace(result, status="ERROR", detail=detail)
 
 

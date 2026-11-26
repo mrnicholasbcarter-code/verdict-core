@@ -6,6 +6,8 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from verdict.orchestration.deliver import (
     DeliverPlan,
     NodeSummary,
@@ -26,7 +28,22 @@ _CLOSING = re.compile(
     r"(?:[\w.-]+/[\w.-]+)?#\d+",
     re.IGNORECASE,
 )
-_MENTION = re.compile(r"(?<![\w`])@[A-Za-z0-9]")
+_CODE_SPAN = re.compile(r"(?<!\\)`[^`\n]*`")
+_AT_NAME = re.compile(r"@[A-Za-z0-9_]")
+
+
+class _Mention:
+    """A live mention is an ``@name`` that is not inside an unescaped Markdown code span.
+
+    Whatever precedes the ``@`` (a backtick, a letter, punctuation) never makes it inert.
+    """
+
+    @staticmethod
+    def search(text: str) -> re.Match[str] | None:
+        return _AT_NAME.search(_CODE_SPAN.sub("", text))
+
+
+_MENTION = _Mention()
 
 
 def _nodes() -> tuple[NodeSummary, ...]:
@@ -220,3 +237,44 @@ def test_ansi_and_bidi_controls_are_stripped() -> None:
     rendered = render_pull_request(plan)
     for text in (rendered.title, rendered.body):
         assert "\x1b" not in text and "\x00" not in text and "\u202e" not in text
+
+
+def test_mention_after_a_backtick_is_neutralized() -> None:
+    """A backtick in untrusted text is escaped, so it never shields the mention after it."""
+    plan = _plan(goal="fix `@octocat and `@org/team now")
+    rendered = render_pull_request(plan)
+    assert not _MENTION.search(rendered.body)
+    assert "`@octocat`" in rendered.body
+    assert "`@org/team`" in rendered.body
+
+
+def test_mention_check_can_fail_on_an_unwrapped_mention() -> None:
+    assert _MENTION.search("hello @octocat")
+    assert _MENTION.search("\\`@octocat")  # an escaped backtick opens no code span
+    assert _MENTION.search("a `x` and @octocat")
+    assert not _MENTION.search("a `@octocat` b")
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "`@octocat",
+        "``@octocat``",
+        "x`@octocat`y",
+        "(@octocat)",
+        "-@octocat",
+        "a.@octocat",
+        "mail me@octocat.example",
+        "word_@octocat",
+        "Closes `#12 and `@octocat",
+    ],
+)
+def test_no_mention_survives_whatever_precedes_it(goal: str) -> None:
+    plan = _plan(goal=goal)
+    node = replace(_nodes()[0], node_id=goal)
+    body = render_pull_request(
+        replace(plan, nodes=(node,)),
+        node_details={node.node_id: NodeDetail(objective=goal, changed_files=(goal,))},
+    ).body
+    assert not _MENTION.search(body), body
+    assert not _CLOSING.search(body)

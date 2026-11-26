@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -83,7 +83,8 @@ class ReviewEvidence:
     reviewer: str
     route_id: str
     blocking: int
-    # "family", "route" or "unknown" (no REVIEW_INDEPENDENCE event recorded).
+    # "family", "route" or "unknown" (no REVIEW_INDEPENDENCE event recorded). "family" is
+    # derived by ``review_independence_level``: the record alone never earns it.
     level: str
     implementer_families: tuple[str, ...]
     reviewer_family: str
@@ -159,6 +160,26 @@ def _review_level(receipt: Mapping[str, Any]) -> str:
         }:
             level = str(data["level"])
     return level
+
+
+def review_independence_level(
+    recorded: str, reviewer_route: str, implementer_families: Sequence[str]
+) -> str:
+    """The independence level the ready gate may rely on.
+
+    The run's own ``REVIEW_INDEPENDENCE`` record is a claim. It counts as ``family`` only
+    when the evidence agrees: the reviewer route is named, at least one implementer family
+    is known, and the reviewer's family is not one of them. A claimed ``family`` that the
+    evidence does not support is ``route``, so the extra cross-family review runs.
+    ``route`` and ``unknown`` are never upgraded.
+    """
+    if recorded != "family":
+        return recorded
+    route = reviewer_route.strip()
+    families = {f for f in implementer_families if f}
+    if not route or not families or route_family(route) in families:
+        return "route"
+    return "family"
 
 
 def _command_text(command: Any) -> str:
@@ -278,6 +299,14 @@ def plan_delivery(request: DeliverRequest) -> DeliverDecision:
             f"{blocking} blocking finding(s)",
             run_dir,
         )
+    reviewer_route = str(review.get("route_id") or "").strip()
+    if not reviewer_route:
+        return _refuse(
+            DeliverReason.REVIEW_FAILED,
+            f"review for run {run_dir.name} passed without naming the reviewer route, "
+            "so its independence cannot be shown",
+            run_dir,
+        )
 
     outcome = str(receipt.get("outcome") or "")
     if outcome != RunOutcome.COMPLETE.value:
@@ -306,7 +335,7 @@ def plan_delivery(request: DeliverRequest) -> DeliverDecision:
         )
 
     implementer_routes = [r for n in nodes if n.kind == NodeKind.IMPLEMENT.value for r in n.routes]
-    reviewer_route = str(review.get("route_id") or "")
+    implementer_families = tuple(sorted({route_family(r) for r in implementer_routes}))
     openspec = _as_mapping(receipt.get("openspec"))
     change = openspec.get("openspec_change")
     run_id = str(receipt.get("run_id") or run_dir.name)
@@ -327,8 +356,10 @@ def plan_delivery(request: DeliverRequest) -> DeliverDecision:
             reviewer=str(review.get("reviewer") or ""),
             route_id=reviewer_route,
             blocking=blocking,
-            level=_review_level(receipt),
-            implementer_families=tuple(sorted({route_family(r) for r in implementer_routes})),
-            reviewer_family=route_family(reviewer_route) if reviewer_route else "",
+            level=review_independence_level(
+                _review_level(receipt), reviewer_route, implementer_families
+            ),
+            implementer_families=implementer_families,
+            reviewer_family=route_family(reviewer_route),
         ),
     )

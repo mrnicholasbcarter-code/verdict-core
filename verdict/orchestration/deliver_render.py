@@ -42,8 +42,11 @@ _MAX_VERIFICATIONS = 5
 _MAX_FAMILIES = 10
 _OMITTED_RESERVE = 160
 
+# A mention is wrapped wherever it appears: nothing before it (a backtick, a letter, a dot)
+# makes it inert, because the text is untrusted and its backticks are escaped, never code
+# delimiters. Issue references and URLs only need the word-boundary guard.
 _TOKEN = re.compile(
-    r"(?<![\w`])(?:@[A-Za-z0-9_][\w./-]*|(?:[\w.-]+/[\w.-]+)?#\d+|https?://[^\s`]+)", re.IGNORECASE
+    r"@[A-Za-z0-9_][\w./-]*|(?<![\w])(?:(?:[\w.-]+/[\w.-]+)?#\d+|https?://[^\s`]+)", re.IGNORECASE
 )
 _MD_ESCAPE = frozenset("\\`*_[]()|#~!")
 _HTML_ESCAPE = {"&": "&amp;", "<": "&lt;", ">": "&gt;"}

@@ -55,7 +55,7 @@ class GhRunner(FakeRunner):
         if call[:2] == ["gh", "api"] and "/check-runs" in call[2]:
             self.calls.append(call)
             run = {"name": "ci", "status": "completed", "conclusion": self.checks}
-            return CommandResult(0, json.dumps({"check_runs": [run]}))
+            return CommandResult(0, json.dumps({"total_count": 1, "check_runs": [run]}))
         return super().__call__(argv, cwd)
 
     def ready_calls(self) -> list[list[str]]:
@@ -265,6 +265,8 @@ def _cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *argv: str) -> Any:
 def test_cli_defaults_reach_the_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request = _cli(monkeypatch, tmp_path)
     assert request.ci_deadline_s == 3600.0
+    # one number, two entry points: the CLI default (minutes) and the library default (seconds)
+    assert request.ci_deadline_s == ready_gate.DEFAULT_CI_DEADLINE_S
     assert request.run_ready_gate is True
 
 
@@ -272,3 +274,46 @@ def test_cli_options_reach_the_request(tmp_path: Path, monkeypatch: pytest.Monke
     request = _cli(monkeypatch, tmp_path, "--ci-deadline", "5", "--no-ready")
     assert request.ci_deadline_s == 300.0
     assert request.run_ready_gate is False
+
+
+# --- F9: the recorded independence level is checked against the reviewer's real family -----
+
+SAME_FAMILY_REVIEW = {
+    "status": "PASS",
+    "reviewer": "ocr v1",
+    "route_id": "cc/claude-opus-5",
+    "findings": [],
+}
+
+
+def test_same_family_reviewer_with_a_recorded_family_level_still_gets_the_extra_review(
+    tmp_path: Path,
+) -> None:
+    run_dir = _make_run(tmp_path, review=SAME_FAMILY_REVIEW)  # the run recorded "family"
+    runner, reviewer = GhRunner(), FakeReviewer()
+    outcome = deliver_run(_request(run_dir), runner=runner, clock=_clock, reviewer=reviewer)
+    assert outcome.review_level == "route"
+    assert outcome.extra_review_ran is True
+    assert len(reviewer.requests) == 1
+    assert reviewer.requests[0].exclude_families == frozenset({"claude"})
+    assert outcome.ready is True
+
+
+def test_same_family_reviewer_without_an_extra_reviewer_stays_a_draft(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path, review=SAME_FAMILY_REVIEW)
+    runner = GhRunner()
+    outcome = deliver_run(_request(run_dir), runner=runner, clock=_clock)
+    assert outcome.status is DeliverStatus.DELIVERED
+    assert outcome.ready is False
+    assert outcome.ready_reason == "no_cross_family_reviewer"
+    assert runner.ready_calls() == []
+
+
+def test_empty_reviewer_route_is_refused_before_any_command(tmp_path: Path) -> None:
+    review = {"status": "PASS", "reviewer": "ocr v1", "route_id": "", "findings": []}
+    run_dir = _make_run(tmp_path, review=review)
+    runner = GhRunner()
+    outcome = deliver_run(_request(run_dir), runner=runner, clock=_clock)
+    assert outcome.status is DeliverStatus.REFUSED
+    assert outcome.reason == "review_failed"
+    assert runner.calls == []

@@ -7,6 +7,7 @@ live runs and no real home directory is touched.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Sequence
 from dataclasses import replace
@@ -56,23 +57,42 @@ class FakeGh:
         polls: Sequence[list[dict[str, Any]]] = ((_run("success"),),),  # type: ignore[assignment]
         *,
         head: str = HEAD,
+        heads: Sequence[str] | None = None,
         ready_rc: int = 0,
+        statuses: dict[str, Any] | None = None,
+        total_count: int | None = None,
+        page_size: int = 100,
     ) -> None:
         self.calls: list[list[str]] = []
         self.polls = [list(p) for p in polls]
         self.head = head
+        # One head per ``gh pr view``; the last repeats. Lets a test move the head mid-run.
+        self.heads = list(heads) if heads is not None else None
         self.ready_rc = ready_rc
+        self.statuses = statuses if statuses is not None else {"state": "success", "total_count": 0}
+        self.total_count = total_count
+        self.page_size = page_size
+        self._current_poll: list[dict[str, Any]] = []
 
     def __call__(self, argv: Sequence[str], cwd: Path | None) -> CommandResult:
         call = list(argv)
         self.calls.append(call)
         if call[:3] == ["gh", "pr", "view"]:
-            return CommandResult(0, json.dumps({"headRefOid": self.head}))
+            head = self.head
+            if self.heads is not None:
+                head = self.heads[0] if len(self.heads) == 1 else self.heads.pop(0)
+            return CommandResult(0, json.dumps({"headRefOid": head}))
         if call[:2] == ["gh", "api"] and call[2].endswith("/status"):
-            return CommandResult(0, json.dumps({"state": "success", "total_count": 0}))
+            return CommandResult(0, json.dumps(self.statuses))
         if call[:2] == ["gh", "api"] and "/check-runs" in call[2]:
-            runs = self.polls[0] if len(self.polls) == 1 else self.polls.pop(0)
-            return CommandResult(0, json.dumps({"check_runs": runs}))
+            found = re.search(r"[?&]page=(\d+)", call[2])  # not the "page=" inside per_page=
+            page = int(found.group(1)) if found else 1
+            if page == 1:
+                self._current_poll = self.polls[0] if len(self.polls) == 1 else self.polls.pop(0)
+            start = (page - 1) * self.page_size
+            runs = self._current_poll[start : start + self.page_size]
+            total = len(self._current_poll) if self.total_count is None else self.total_count
+            return CommandResult(0, json.dumps({"total_count": total, "check_runs": runs}))
         if call[:3] == ["gh", "pr", "ready"]:
             return CommandResult(self.ready_rc, "", "boom" if self.ready_rc else "")
         return CommandResult(0, "")
@@ -289,7 +309,7 @@ def test_default_runner_never_uses_shell(monkeypatch: pytest.MonkeyPatch) -> Non
             return subprocess.CompletedProcess(args[0], 0, json.dumps({"headRefOid": HEAD}), "")
         if "/check-runs" in args[0][-1]:
             return subprocess.CompletedProcess(
-                args[0], 0, json.dumps({"check_runs": [_run("success")]}), ""
+                args[0], 0, json.dumps({"total_count": 1, "check_runs": [_run("success")]}), ""
             )
         return subprocess.CompletedProcess(args[0], 0, json.dumps({"total_count": 0}), "")
 
@@ -309,3 +329,128 @@ def test_source_has_no_merge_approve_close_or_label_call() -> None:
     for verb in ("merge", "approve", "close", "label", "shell=True"):
         assert f'"{verb}"' not in gate_source
     assert "shell=True" not in gate_source
+
+
+# --- F1: the deadline must be finite and positive --------------------------------------
+
+
+@pytest.mark.parametrize("deadline", [float("nan"), float("inf"), float("-inf"), 0.0, -1.0])
+def test_non_finite_or_non_positive_deadline_is_invalid_request_and_runs_nothing(
+    deadline: float,
+) -> None:
+    gh, reviewer = FakeGh(), FakeReviewer()
+    outcome = _gate(_plan_at("route"), gh, reviewer, deadline_s=deadline)
+    assert not outcome.ready
+    assert outcome.reason is PrReadyReason.INVALID_REQUEST
+    assert gh.calls == []
+    assert reviewer.requests == []
+
+
+def test_default_deadline_is_sixty_minutes() -> None:
+    assert ready_gate.DEFAULT_CI_DEADLINE_S == 3600.0
+
+
+# --- F6: the head is re-read immediately before promotion ------------------------------
+
+
+def test_head_that_moves_during_polling_stops_with_head_moved_and_never_readies() -> None:
+    other = "f" * 40
+    # first pr view (before polling) sees HEAD; the one right before gh pr ready sees a new commit
+    gh = FakeGh(polls=[[_run(None, status="in_progress")], [_run("success")]], heads=[HEAD, other])
+    outcome = _gate(_plan_at("family"), gh)
+    assert not outcome.ready
+    assert outcome.reason is PrReadyReason.HEAD_MOVED
+    assert other in outcome.message
+    assert gh.calls_with("gh", "pr", "ready") == []
+    assert len(gh.calls_with("gh", "pr", "view")) == 2
+    # the promotion check is the last thing before gh pr ready would have run
+    assert gh.calls[-1][:3] == ["gh", "pr", "view"]
+
+
+def test_unmoved_head_is_read_twice_and_the_pr_is_readied_last() -> None:
+    gh = FakeGh(polls=[[_run(None, status="queued")], [_run("success")]])
+    outcome = _gate(_plan_at("family"), gh)
+    assert outcome.ready
+    kinds = [c[:3] for c in gh.calls if c[:3] in (["gh", "pr", "view"], ["gh", "pr", "ready"])]
+    assert kinds == [["gh", "pr", "view"], ["gh", "pr", "view"], ["gh", "pr", "ready"]]
+    assert gh.calls[-2][:3] == ["gh", "pr", "view"]
+
+
+# --- F7: every page of check runs is evaluated -------------------------------------------
+
+
+def test_a_red_check_on_a_later_page_stops_with_ci_red() -> None:
+    runs = [_run("success") for _ in range(5)] + [_run("failure")]
+    gh = FakeGh(polls=[runs], page_size=2)
+    outcome = _gate(_plan_at("family"), gh)
+    assert outcome.reason is PrReadyReason.CI_RED
+    assert gh.calls_with("gh", "pr", "ready") == []
+    pages = [c[2] for c in gh.calls if "/check-runs" in c[2]]
+    assert len(pages) == 3
+    assert all(HEAD in p for p in pages)
+
+
+def test_a_pending_check_on_a_later_page_is_not_green() -> None:
+    runs = [_run("success") for _ in range(4)] + [_run(None, status="in_progress")]
+    gh = FakeGh(polls=[runs], page_size=2)
+    outcome = _gate(_plan_at("family"), gh, deadline_s=60.0)
+    assert outcome.reason is PrReadyReason.CI_PENDING
+    assert gh.calls_with("gh", "pr", "ready") == []
+
+
+def test_all_pages_green_readies_the_pr() -> None:
+    gh = FakeGh(polls=[[_run("success") for _ in range(5)]], page_size=2)
+    assert _gate(_plan_at("family"), gh).ready
+
+
+def test_total_count_larger_than_what_was_read_fails_closed() -> None:
+    """A server that reports more runs than it served must never read as green."""
+    gh = FakeGh(polls=[[_run("success") for _ in range(3)]], total_count=7, page_size=100)
+    outcome = _gate(_plan_at("family"), gh, deadline_s=60.0)
+    assert not outcome.ready
+    assert outcome.reason is PrReadyReason.CI_PENDING
+    assert gh.calls_with("gh", "pr", "ready") == []
+
+
+# --- F8: legacy commit statuses alone can pass -----------------------------------------
+
+
+def test_status_only_repository_with_green_statuses_passes() -> None:
+    gh = FakeGh(
+        polls=[[]],
+        statuses={"state": "success", "total_count": 2, "statuses": [{"state": "success"}] * 2},
+    )
+    outcome = _gate(_plan_at("family"), gh)
+    assert outcome.ready
+    assert len(gh.calls_with("gh", "pr", "ready")) == 1
+
+
+def test_status_only_repository_with_a_red_status_is_ci_red() -> None:
+    gh = FakeGh(
+        polls=[[]],
+        statuses={"state": "failure", "total_count": 1, "statuses": [{"state": "failure"}]},
+    )
+    assert _gate(_plan_at("family"), gh).reason is PrReadyReason.CI_RED
+
+
+def test_status_only_repository_with_pending_statuses_stays_pending() -> None:
+    gh = FakeGh(
+        polls=[[]],
+        statuses={"state": "pending", "total_count": 1, "statuses": [{"state": "pending"}]},
+    )
+    assert _gate(_plan_at("family"), gh, deadline_s=60.0).reason is PrReadyReason.CI_PENDING
+
+
+def test_no_evidence_in_either_mechanism_stays_pending() -> None:
+    gh = FakeGh(polls=[[]], statuses={"state": "pending", "total_count": 0, "statuses": []})
+    outcome = _gate(_plan_at("family"), gh, deadline_s=60.0)
+    assert outcome.reason is PrReadyReason.CI_PENDING
+    assert gh.calls_with("gh", "pr", "ready") == []
+
+
+def test_green_check_runs_with_pending_statuses_stay_pending() -> None:
+    gh = FakeGh(
+        polls=[[_run("success")]],
+        statuses={"state": "pending", "total_count": 1, "statuses": [{"state": "pending"}]},
+    )
+    assert _gate(_plan_at("family"), gh, deadline_s=60.0).reason is PrReadyReason.CI_PENDING

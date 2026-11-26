@@ -4,8 +4,10 @@
 renderer (``deliver_render``) and the git/``gh`` adapter (``deliver_publish``):
 
 1. a refused run returns a ``REFUSED`` outcome and never reaches the publisher;
-2. a run already delivered (a valid ``delivery.json``) returns the recorded PR
-   without any command, so a repeated deliver is idempotent;
+2. a run already delivered (a valid ``delivery.json`` that matches this run's id,
+   integration commit and digests) returns the recorded PR without any command, so a
+   repeated deliver is idempotent; a record for anything else is
+   ``delivery_record_mismatch``;
 3. ``dry_run`` returns the plan, title and body and runs no command at all;
 4. otherwise the publisher runs, and only on success is the delivery record
    (``delivery.json`` plus ``delivery.sha256``) written next to the run's durable
@@ -19,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import tempfile
 from collections.abc import Callable, Mapping
@@ -282,6 +285,22 @@ def _refused(refusal: DeliverRefusal) -> DeliverOutcome:
     )
 
 
+def _record_mismatches(record: DeliveryRecord, plan: DeliverPlan) -> list[str]:
+    """Names of the identity fields where a stored record differs from the current run.
+
+    A record is only reusable for the very run and commit it was written for: the issue
+    number alone would let a valid record copied from another run suppress publication.
+    """
+    pairs: tuple[tuple[str, object, object], ...] = (
+        ("issue_number", record.issue_number, plan.issue_number),
+        ("run_id", record.run_id, plan.run_id),
+        ("integration_commit", record.integration_commit, plan.integration_commit),
+        ("receipt_digest", record.receipt_digest, plan.receipt_digest),
+        ("events_digest", record.events_digest, plan.events_digest),
+    )
+    return [name for name, stored, current in pairs if stored != current]
+
+
 def deliver_run(
     request: DeliverRunRequest | DeliverRequest,
     *,
@@ -294,6 +313,16 @@ def deliver_run(
     After the draft is published the ready gate runs (unless the request skips it).
     A gate stop is recorded but is not a delivery failure: the pull request stays a draft.
     """
+    deadline_s = float(getattr(request, "ci_deadline_s", DEFAULT_CI_DEADLINE_S))
+    if not math.isfinite(deadline_s) or deadline_s <= 0:
+        return _refused(
+            DeliverRefusal(
+                DeliverReason.INVALID_REQUEST,
+                f"the checks deadline must be a finite number of seconds above zero, "
+                f"got {deadline_s!r}",
+                Path(request.run_dir),
+            )
+        )
     decision = plan_delivery(request)
     if isinstance(decision, DeliverRefusal):
         return _refused(decision)
@@ -312,13 +341,15 @@ def deliver_run(
             message=f"delivery record for run {plan.run_id} is not trustworthy: {exc}",
         )
     if existing is not None:
-        if existing.issue_number != plan.issue_number:
+        mismatched = _record_mismatches(existing, plan)
+        if mismatched:
             return _outcome(
                 plan,
                 DeliverStatus.FAILED,
                 reason=DeliverServiceReason.DELIVERY_RECORD_MISMATCH.value,
                 message=(
-                    f"run {plan.run_id} was already delivered for issue "
+                    f"the delivery record in {run_dir.name} does not belong to this run "
+                    f"({', '.join(mismatched)} differ); it records issue "
                     f"#{existing.issue_number}: {existing.pr_url}"
                 ),
                 pr_url=existing.pr_url,
@@ -385,7 +416,7 @@ def deliver_run(
             reviewer=reviewer,
             runner=active_runner,
             cwd=cwd,
-            deadline_s=float(getattr(request, "ci_deadline_s", DEFAULT_CI_DEADLINE_S)),
+            deadline_s=deadline_s,
         )
         ready_fields.update(
             ready=gate.ready,

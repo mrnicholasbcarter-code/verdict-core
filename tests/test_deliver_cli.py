@@ -155,3 +155,25 @@ def test_run_id_resolves_under_runs_dir(tmp_path, monkeypatch):
     (tmp_path / "runs" / "abc").mkdir(parents=True)
     _run(monkeypatch, "deliver", "abc", "--issue", "9", "--runs-dir", str(tmp_path / "runs"))
     assert Path(calls[0].run_dir) == tmp_path / "runs" / "abc"
+
+
+@pytest.mark.parametrize(
+    "value", ["nan", "inf", "-inf", "1e999", "0", "0.0", "-1", "-0.5", "abc", ""]
+)
+def test_ci_deadline_rejects_non_finite_zero_negative_and_garbage(
+    value, tmp_path, capsys, monkeypatch
+):
+    """An unbounded or zero wait is refused at parse time; deliver_run is never reached."""
+    calls = _fake(monkeypatch, _delivered())
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, "deliver", str(tmp_path), "--issue", "9", f"--ci-deadline={value}")
+    assert exc.value.code == 2
+    assert calls == []
+    assert "--ci-deadline" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("value", "seconds"), [("0.5", 30.0), ("1", 60.0), ("90", 5400.0)])
+def test_ci_deadline_accepts_finite_positive_minutes(value, seconds, tmp_path, monkeypatch):
+    calls = _fake(monkeypatch, _delivered())
+    _run(monkeypatch, "deliver", str(tmp_path), "--issue", "9", f"--ci-deadline={value}")
+    assert calls[0].ci_deadline_s == seconds

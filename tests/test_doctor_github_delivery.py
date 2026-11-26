@@ -89,7 +89,36 @@ def test_logged_in_with_push_and_pull_request_permission(permission: str) -> Non
     assert row["status"] == "ok"
     assert "push to and open pull requests on acme/widgets" in row["detail"]
     view = next(call for call in stub.calls if call[:3] == ["gh", "repo", "view"])
-    assert view[3] == "acme/widgets"
+    assert view[3] == "https://github.com/acme/widgets"
+
+
+def test_gh_calls_name_the_host_of_the_remote_and_ignore_gh_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With ``GH_HOST`` set, an unqualified ``gh`` call would query another host.
+
+    ``gh auth status --hostname`` checks one host only, and a repository given as a full
+    URL carries its own host, so neither follows ``GH_HOST``.
+    """
+    monkeypatch.setenv("GH_HOST", "ghe.example.invalid")
+    stub = StubGh()
+    row = dd.github_delivery_row(stub)
+    assert row["status"] == "ok"
+    auth = next(call for call in stub.calls if call[:3] == ["gh", "auth", "status"])
+    assert auth == ["gh", "auth", "status", "--hostname", "github.com"]
+    view = next(call for call in stub.calls if call[:3] == ["gh", "repo", "view"])
+    assert view[3].startswith("https://github.com/")
+    assert view[3] == "https://github.com/acme/widgets"
+
+
+def test_every_gh_repo_call_is_host_qualified() -> None:
+    stub = StubGh(remote=CommandResult(0, "git@github.com:acme/widgets.git\n"))
+    dd.github_delivery_row(stub)
+    for call in stub.calls:
+        if call[:3] == ["gh", "repo", "view"]:
+            assert call[3].startswith("https://github.com/"), call
+        if call[:3] == ["gh", "auth", "status"]:
+            assert "--hostname" in call and call[call.index("--hostname") + 1] == "github.com"
 
 
 def test_unreadable_permission_and_failed_lookup_are_warnings() -> None:

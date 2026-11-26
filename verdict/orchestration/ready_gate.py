@@ -13,6 +13,7 @@ approves, closes or labels anything. See the ``verdict-deliver`` OpenSpec change
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -147,11 +148,13 @@ def ready_decision(
 
 # --- Pull-request ready gate (verdict deliver) ---------------------------------
 
-DEFAULT_CI_DEADLINE_S = 1800.0
+DEFAULT_CI_DEADLINE_S = 3600.0  # 60 minutes, as the design and the CLI default say
 DEFAULT_CI_POLL_INTERVAL_S = 30.0
 _FAMILY_LEVEL = "family"
 _NO_REVIEWER_MARKER = "no independent reviewer"
 _MAX_DETAIL = 500
+_CHECK_RUNS_PER_PAGE = 100
+_MAX_CHECK_RUN_PAGES = 20
 _CHECK_GREEN = frozenset({"success", "neutral", "skipped"})
 _STATUS_GREEN = "success"
 _STATUS_RED = frozenset({"failure", "error"})
@@ -253,11 +256,11 @@ def _run_extra_review(
     return None
 
 
-def _check_runs_state(payload: Any) -> str:
-    runs = payload.get("check_runs") if isinstance(payload, Mapping) else None
-    if not isinstance(runs, list):
-        return "pending"
-    state = "green" if runs else "pending"
+def _check_runs_state(runs: Sequence[Any]) -> str:
+    """``red``, ``pending``, ``green`` or ``none`` (no check run reported at all)."""
+    if not runs:
+        return "none"
+    state = "green"
     for run in runs:
         if not isinstance(run, Mapping):
             return "pending"
@@ -269,24 +272,61 @@ def _check_runs_state(payload: Any) -> str:
 
 
 def _statuses_state(payload: Any) -> str:
+    """``red``, ``pending``, ``green`` or ``none`` (no legacy commit status at all)."""
     if not isinstance(payload, Mapping):
         return "pending"
     if not payload.get("total_count") and not payload.get("statuses"):
-        return "green"  # no commit statuses at all is not a reason to wait
+        return "none"
     state = payload.get("state")
     if state == _STATUS_GREEN:
         return "green"
     return "red" if state in _STATUS_RED else "pending"
 
 
+def _read_check_runs(
+    runner: CommandRunner, head_sha: str, cwd: Path | None
+) -> tuple[list[Any], bool, CommandResult | None]:
+    """Every check run of the commit, following pages until ``total_count`` is reached.
+
+    Returns ``(runs, complete, failure)``. ``complete`` is false when the server reported
+    more runs than it served (or the page cap was hit): the caller must not read that
+    as green.
+    """
+    runs: list[Any] = []
+    total = 0
+    for page in range(1, _MAX_CHECK_RUN_PAGES + 1):
+        payload, failure = _gh_json(
+            runner,
+            [
+                "gh",
+                "api",
+                f"repos/{{owner}}/{{repo}}/commits/{head_sha}/check-runs"
+                f"?per_page={_CHECK_RUNS_PER_PAGE}&page={page}",
+            ],
+            cwd,
+        )
+        if failure is not None:
+            return [], False, failure
+        batch = payload.get("check_runs") if isinstance(payload, Mapping) else None
+        count = payload.get("total_count") if isinstance(payload, Mapping) else None
+        if not isinstance(batch, list) or isinstance(count, bool) or not isinstance(count, int):
+            return [], False, CommandResult(1, "", "unexpected check-runs response from gh")
+        runs.extend(batch)
+        total = count
+        if len(runs) >= total or not batch:
+            break
+    return runs, len(runs) >= total, None
+
+
 def _poll_checks(
     runner: CommandRunner, head_sha: str, cwd: Path | None
 ) -> tuple[str, CommandResult | None]:
-    runs, failure = _gh_json(
-        runner,
-        ["gh", "api", f"repos/{{owner}}/{{repo}}/commits/{head_sha}/check-runs?per_page=100"],
-        cwd,
-    )
+    """One poll: ``red`` if anything failed, ``green`` only on complete green evidence.
+
+    The two CI mechanisms (check runs and legacy commit statuses) are neutral when one of
+    them has no evidence at all; with no evidence in both, the answer is ``pending``.
+    """
+    runs, complete, failure = _read_check_runs(runner, head_sha, cwd)
     if failure is not None:
         return "pending", failure
     statuses, failure = _gh_json(
@@ -294,10 +334,37 @@ def _poll_checks(
     )
     if failure is not None:
         return "pending", failure
-    states = {_check_runs_state(runs), _statuses_state(statuses)}
+    run_state = _check_runs_state(runs)
+    if not complete and run_state != "red":
+        run_state = "pending"  # the server reported runs we never saw
+    states = {run_state, _statuses_state(statuses)}
     if "red" in states:
         return "red", None
-    return ("green" if states == {"green"} else "pending"), None
+    evidence = states - {"none"}
+    return ("green" if evidence == {"green"} else "pending"), None
+
+
+def _verify_head(
+    runner: CommandRunner, ref: str, sha: str, cwd: Path | None, *, review_ran: bool, polls: int = 0
+) -> PrReadyOutcome | None:
+    """Return a stop outcome unless the pull request head is still ``sha``."""
+    view, failure = _gh_json(runner, ["gh", "pr", "view", ref, "--json", "headRefOid"], cwd)
+    if failure is not None:
+        return _stop(
+            PrReadyReason.GH_FAILED,
+            f"gh pr view failed: {failure.stderr}",
+            review_ran=review_ran,
+            polls=polls,
+        )
+    current = str(view.get("headRefOid") or "").lower() if isinstance(view, Mapping) else ""
+    if not current or not (current == sha or current.startswith(sha) or sha.startswith(current)):
+        return _stop(
+            PrReadyReason.HEAD_MOVED,
+            f"pull request head is {current or 'unknown'}, not {sha}",
+            review_ran=review_ran,
+            polls=polls,
+        )
+    return None
 
 
 def run_pr_ready_gate(
@@ -326,6 +393,12 @@ def run_pr_ready_gate(
         return _stop(
             PrReadyReason.INVALID_REQUEST, "a pull request reference and head sha are required"
         )
+    if not math.isfinite(deadline_s) or deadline_s <= 0:
+        # nan and inf never expire (``remaining <= 0`` is never true); zero never waits.
+        return _stop(
+            PrReadyReason.INVALID_REQUEST,
+            f"the checks deadline must be a finite number of seconds above zero, got {deadline_s!r}",
+        )
 
     review_ran = False
     if plan.review.level != _FAMILY_LEVEL:
@@ -334,18 +407,9 @@ def run_pr_ready_gate(
         if stopped is not None:
             return stopped
 
-    view, failure = _gh_json(runner, ["gh", "pr", "view", ref, "--json", "headRefOid"], cwd)
-    if failure is not None:
-        return _stop(
-            PrReadyReason.GH_FAILED, f"gh pr view failed: {failure.stderr}", review_ran=review_ran
-        )
-    current = str(view.get("headRefOid") or "").lower() if isinstance(view, Mapping) else ""
-    if not current or not (current == sha or current.startswith(sha) or sha.startswith(current)):
-        return _stop(
-            PrReadyReason.HEAD_MOVED,
-            f"pull request head is {current or 'unknown'}, not {sha}",
-            review_ran=review_ran,
-        )
+    moved = _verify_head(runner, ref, sha, cwd, review_ran=review_ran)
+    if moved is not None:
+        return moved
 
     deadline = clock() + deadline_s
     polls = 0
@@ -375,6 +439,10 @@ def run_pr_ready_gate(
             )
         sleep(min(poll_interval_s, remaining))
 
+    # The wait may have lasted up to the deadline: promote only the commit that was checked.
+    moved = _verify_head(runner, ref, sha, cwd, review_ran=review_ran, polls=polls)
+    if moved is not None:
+        return moved
     ready = runner(["gh", "pr", "ready", ref], cwd)
     if ready.returncode != 0:
         return _stop(

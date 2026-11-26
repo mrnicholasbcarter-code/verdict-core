@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -20,6 +21,10 @@ from verdict.orchestration.deliver_publish import (
 
 SHA = "a" * 40
 OTHER_SHA = "b" * 40
+BRANCH = "verdict/issue-7-add-thing"
+# The only force-like flag the publisher may send: create-only (the remote ref must not exist).
+CREATE_ONLY_LEASE = f"--force-with-lease=refs/heads/{BRANCH}:"
+PUSH_ARGV = ["git", "push", CREATE_ONLY_LEASE, "origin", f"{SHA}:refs/heads/{BRANCH}"]
 PR_URL = "https://github.com/acme/repo/pull/42"
 TOKEN = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3"
 
@@ -78,7 +83,7 @@ def test_happy_path_argv_sequence_and_url() -> None:
     assert runner.calls[0] == ["git", "--version"]
     assert runner.calls[1] == ["gh", "--version"]
     assert runner.calls[2] == ["gh", "auth", "status"]
-    assert ["git", "push", "origin", f"{SHA}:refs/heads/verdict/issue-7-add-thing"] in runner.calls
+    assert PUSH_ARGV in runner.calls
     create = runner.calls[-1]
     assert create[:4] == ["gh", "pr", "create", "--draft"]
     assert create[create.index("--base") + 1] == "main"
@@ -86,14 +91,48 @@ def test_happy_path_argv_sequence_and_url() -> None:
     assert "--body-file" in create
 
 
-def test_existing_open_pr_is_reused_without_second_create() -> None:
-    runner = FakeRunner(
-        handlers={("gh", "pr", "list"): CommandResult(0, f'[{{"number": 3, "url": "{PR_URL}"}}]')}
-    )
+def _open_pr(**fields: object) -> CommandResult:
+    row: dict[str, object] = {"number": 3, "url": PR_URL, "isDraft": True}
+    row.update(fields)
+    return CommandResult(0, json.dumps([row]))
+
+
+def test_existing_open_draft_pr_is_reused_without_second_create() -> None:
+    runner = FakeRunner(handlers={("gh", "pr", "list"): _open_pr()})
     result = _publish(runner)
     assert isinstance(result, PublishResult)
     assert result.reused and result.pr_url == PR_URL
     assert not any(c[:3] == ["gh", "pr", "create"] for c in runner.calls)
+    listing = next(c for c in runner.calls if c[:3] == ["gh", "pr", "list"])
+    assert "number,url,isDraft" in listing[listing.index("--json") + 1]
+
+
+def test_existing_open_pr_that_is_already_ready_is_refused_not_reused() -> None:
+    """A ready PR must never be recorded as a draft the gate may leave unchanged."""
+    runner = FakeRunner(handlers={("gh", "pr", "list"): _open_pr(isDraft=False)})
+    result = _publish(runner)
+    assert isinstance(result, PublishError)
+    assert result.reason is PublishReason.PR_NOT_DRAFT
+    assert PR_URL in result.message
+    assert not any(c[:3] == ["gh", "pr", "create"] for c in runner.calls)
+    assert not any(c[:3] == ["gh", "pr", "ready"] for c in runner.calls)
+
+
+@pytest.mark.parametrize("is_draft", [None, "true", "false", 1, 0, [], {}])
+def test_open_pr_with_unreadable_draft_state_fails_closed(is_draft: object) -> None:
+    runner = FakeRunner(handlers={("gh", "pr", "list"): _open_pr(isDraft=is_draft)})
+    result = _publish(runner)
+    assert isinstance(result, PublishError)
+    assert result.reason is PublishReason.PR_LOOKUP_FAILED
+    assert not any(c[:3] == ["gh", "pr", "create"] for c in runner.calls)
+
+
+def test_open_pr_without_draft_field_fails_closed() -> None:
+    row = json.dumps([{"number": 3, "url": PR_URL}])
+    runner = FakeRunner(handlers={("gh", "pr", "list"): CommandResult(0, row)})
+    result = _publish(runner)
+    assert isinstance(result, PublishError)
+    assert result.reason is PublishReason.PR_LOOKUP_FAILED
 
 
 def test_remote_branch_at_same_commit_is_not_repushed() -> None:
@@ -197,9 +236,11 @@ def test_unsafe_branch_names_refused(head: str) -> None:
 def test_no_force_flags_in_any_argv() -> None:
     runner = FakeRunner()
     _publish(runner)
+    assert PUSH_ARGV in runner.calls
     for argv in runner.calls:
         assert "--force" not in argv and "-f" not in argv
-        assert not any(a.startswith("--force") for a in argv)
+        assert "--force-with-lease" not in argv  # never the bare, overwrite-capable form
+        assert not any(a.startswith("--force") and a != CREATE_ONLY_LEASE for a in argv)
         assert not any(a.startswith("+") for a in argv)
         assert not any(a.endswith(":refs/heads/main") for a in argv)
 

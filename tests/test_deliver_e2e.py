@@ -50,7 +50,8 @@ def test_success_prints_draft_pr_url(
     _deliver(monkeypatch, run_dir)
 
     assert capsys.readouterr().out.strip() == PR_URL
-    assert ["git", "push", "origin", f"{INTEGRATION}:refs/heads/{BRANCH}"] in runner.calls
+    push = ["git", "push", f"--force-with-lease=refs/heads/{BRANCH}:", "origin"]
+    assert [*push, f"{INTEGRATION}:refs/heads/{BRANCH}"] in runner.calls
     creates = [c for c in runner.calls if c[:3] == ["gh", "pr", "create"]]
     assert len(creates) == 1
     assert "--draft" in creates[0]

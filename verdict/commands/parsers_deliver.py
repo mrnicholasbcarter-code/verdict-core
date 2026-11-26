@@ -2,10 +2,32 @@
 
 from __future__ import annotations
 
+import argparse
+import math
 from typing import Any
 
 EXIT_REFUSED = 3
 EXIT_FAILED = 4
+#: Minutes the ready gate waits for checks by default; ``ready_gate.DEFAULT_CI_DEADLINE_S``
+#: is the same value in seconds (pinned by ``tests/test_deliver_ready_wiring.py``).
+DEFAULT_CI_DEADLINE_MINUTES = 60.0
+
+
+def finite_positive_minutes(value: str) -> float:
+    """argparse type for ``--ci-deadline``: a finite number of minutes greater than zero.
+
+    ``float`` alone accepts ``nan``, ``inf`` and negatives, which would make the wait
+    unbounded (``remaining <= 0`` never holds) or zero.
+    """
+    try:
+        minutes = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number of minutes") from None
+    if not math.isfinite(minutes) or minutes <= 0:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a finite number of minutes greater than zero"
+        )
+    return minutes
 
 
 def register(subparsers: Any) -> None:
@@ -36,10 +58,13 @@ def register(subparsers: Any) -> None:
     )
     parser.add_argument(
         "--ci-deadline",
-        type=float,
-        default=60.0,
+        type=finite_positive_minutes,
+        default=DEFAULT_CI_DEADLINE_MINUTES,
         metavar="MINUTES",
-        help="Minutes to wait for checks before the ready gate stops (default: 60)",
+        help=(
+            "Minutes (finite, greater than zero) to wait for checks before the ready gate "
+            "stops (default: 60)"
+        ),
     )
     parser.add_argument(
         "--no-ready",

@@ -83,6 +83,7 @@ class PublishReason(str, Enum):
     PUSH_FAILED = "push_failed"
     PR_LOOKUP_FAILED = "pr_lookup_failed"
     PR_CREATE_FAILED = "pr_create_failed"
+    PR_NOT_DRAFT = "pr_not_draft"
 
 
 @dataclass(frozen=True)
@@ -182,12 +183,12 @@ def _classify_push_failure(result: CommandResult, branch: str) -> PublishError:
 def push_branch(
     plan: DeliverPlan, runner: CommandRunner, cwd: Path | None = None
 ) -> PublishError | None:
-    """Push the integration commit to the head branch; never force.
+    """Push the integration commit to the head branch as a create-only push; never overwrite.
 
     A remote branch at the same commit is reused. One at a different commit, or a
     push that races with another writer, is refused with ``branch_exists``. A
     non-zero pre-push hook (vgate) gives ``vgate_rejected`` with the gate tail.
-    The push is never forced and never skips the hook.
+    The push never skips the hook and cannot move an existing remote branch.
     """
     refused = validate_request(plan)
     if refused is not None:
@@ -206,7 +207,25 @@ def push_branch(
             PublishReason.BRANCH_EXISTS,
             f"remote branch {branch!r} already points at a different commit",
         )
-    result = runner(["git", "push", "origin", f"{commit}:refs/heads/{branch}"], cwd)
+    # The lookup above is only advice: another writer can create the branch before this
+    # push. An ordinary push would then fast-forward their branch to ours when it sits at an
+    # ancestor of the commit. The lease below names this one ref with an EMPTY expected
+    # value, which git defines as "the ref must not already exist" (git-push, the
+    # force-with-lease option). That is a create-only update, checked by the client against
+    # the ref advertisement and again by the remote when it applies the update. It is not a
+    # force-push: a lease whose expectation is "absent" can only ever create the ref, so
+    # it cannot overwrite or rewind a branch, which the design forbids. The pre-push hook
+    # still runs.
+    result = runner(
+        [
+            "git",
+            "push",
+            f"--force-with-lease=refs/heads/{branch}:",
+            "origin",
+            f"{commit}:refs/heads/{branch}",
+        ],
+        cwd,
+    )
     if result.returncode != 0:
         return _classify_push_failure(result, branch)
     return None
@@ -215,7 +234,13 @@ def push_branch(
 def find_open_pr(
     plan: DeliverPlan, runner: CommandRunner, cwd: Path | None = None
 ) -> tuple[str | None, PublishError | None]:
-    """Return the URL of an open PR for the head branch, if one exists."""
+    """Return the URL of an open draft PR for the head branch, if one exists.
+
+    Only a draft is ever reused: the ready gate leaves a pull request unchanged when it
+    stops, so reusing one that is already ready would record a ready PR as not ready.
+    An open PR that is ready is ``pr_not_draft``; one whose draft state cannot be read
+    is ``pr_lookup_failed``.
+    """
     result = runner(
         [
             "gh",
@@ -228,7 +253,7 @@ def find_open_pr(
             "--base",
             plan.base_branch.strip(),
             "--json",
-            "number,url",
+            "number,url,isDraft",
             "--limit",
             "1",
         ],
@@ -244,8 +269,21 @@ def find_open_pr(
         return None, _error(PublishReason.PR_LOOKUP_FAILED, "gh pr list returned unexpected data")
     for row in rows:
         url = row.get("url") if isinstance(row, dict) else None
-        if isinstance(url, str) and url:
-            return url, None
+        if not isinstance(url, str) or not url:
+            continue
+        is_draft = row.get("isDraft")
+        if not isinstance(is_draft, bool):
+            return None, _error(
+                PublishReason.PR_LOOKUP_FAILED,
+                f"gh pr list did not say whether open pull request {url} is a draft",
+            )
+        if not is_draft:
+            return None, _error(
+                PublishReason.PR_NOT_DRAFT,
+                f"open pull request {url} is already marked ready for review; "
+                "verdict deliver reuses only a draft and never changes a ready pull request",
+            )
+        return url, None
     return None, None
 
 

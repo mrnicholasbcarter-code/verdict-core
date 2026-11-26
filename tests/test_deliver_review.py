@@ -6,6 +6,7 @@ model call runs and no real home directory is touched.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -194,3 +195,14 @@ def test_deliver_command_passes_the_reviewer_to_deliver_run(
     assert seen[0]["reviewer"] is sentinel
     assert len(built) == 1
     assert built[0]["out_dir"] == tmp_path / "deliver-review"
+
+
+def test_error_helper_requires_the_review_result() -> None:
+    """Every caller already has a result, so the helper has no ``None`` fallback branch."""
+    parameter = inspect.signature(deliver_review._error).parameters["result"]
+    assert parameter.default is inspect.Parameter.empty
+    assert "is None" not in inspect.getsource(deliver_review._error)
+    replaced = deliver_review._error("blocked", ReviewResult("PASS", "ocr", "gm/gemini-3"))
+    assert replaced.status == "ERROR"
+    assert replaced.detail == "blocked"
+    assert replaced.route_id == "gm/gemini-3"
