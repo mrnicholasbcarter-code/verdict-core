@@ -26,6 +26,7 @@ import argparse
 import contextlib
 import json
 import os
+import platform
 import sys
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -121,9 +122,16 @@ def emit_ids(path: Path, pytest_args: Sequence[str]) -> int:
 
 
 def run_check(splits: int, marker: str, test_dir: str) -> bool:
-    """Collect full set and each shard, then verify union and disjointness."""
+    """Collect full set and each shard, then verify union and disjointness.
+
+    The log names the Python version the collection ran under and shows the shard sizes
+    adding up to the full count, so a run's log is its own evidence.
+    """
     base: list[str] = [test_dir, "-m", marker]
 
+    print(
+        f"Shard union check under Python {platform.python_version()}: {splits} shards, -m {marker!r}"
+    )
     print("Collecting full test set ...")
     full = set(collect_nodeids(base))
     print(f"  {len(full)} tests")
@@ -151,10 +159,17 @@ def run_check(splits: int, marker: str, test_dir: str) -> bool:
         for t in sorted(duplicates)[:40]:
             print(f"  ~ {t}")
 
+    sizes = [len(shard) for shard in shards]
     if ok:
         print(
-            f"Shard union check PASSED: {len(full)} tests, {splits} shards, "
+            f"Shard union check PASSED: {len(full)} tests = {' + '.join(map(str, sizes))} "
+            f"across {splits} shards (Python {platform.python_version()}), "
             f"union equals full set, shards are pairwise disjoint."
+        )
+    else:
+        print(
+            f"Shard union check FAILED: {len(full)} tests, shards hold {sum(sizes)} "
+            f"(missing {len(missing)}, extra {len(extra)}, duplicated {len(duplicates)})"
         )
     return ok
 

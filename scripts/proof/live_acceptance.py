@@ -9,11 +9,17 @@ access goes through ``run_gh`` so that tests replace it with a fake.
     live_acceptance.py merged-run --run ID --parent-run ID --parent-rev SHA --merged-rev SHA
     live_acceptance.py timing-leg --run ID
     live_acceptance.py rounds --pre FILE --post FILE [--rounds 10]
-    live_acceptance.py unsharded --report PATH
+    live_acceptance.py unsharded --report PATH [--llm-boundary]
 
 ``merged-run`` derives the number of tests the merged change added from node ids
 collected at the parent and merged revisions, in this environment, not from a source
 diff: a parametrized test that gains five cases adds five.
+
+``unsharded`` judges the report under the LLM-boundary condition it is told with
+``--llm-boundary`` (off when absent). The report does not record that condition, so the
+checker cannot read it back: a report that does not match the stated condition fails on
+its gate statuses, because the plan skips the gates the condition leaves out and runs the
+rest.
 """
 
 from __future__ import annotations
@@ -52,6 +58,8 @@ from scripts.proof.runner import plan_gates, selection_collect_args  # noqa: E40
 
 RESEARCH_MEDIAN_SECONDS = 531
 START_DELAY_RULE_SECONDS = 60
+# The exit code the runner records for a gate whose binary is missing (see ProofRunner._run_gate).
+MISSING_BINARY_EXIT_CODE = 127
 # Variables git sets for a hook; they would override ``git -C`` (see check_not_weakened.py).
 GIT_LOCAL_ENV = frozenset(
     {
@@ -680,7 +688,9 @@ def cmd_unsharded(args: argparse.Namespace) -> int:
     targets = report.get("targets", [])
     if not isinstance(targets, list) or not all(isinstance(t, str) for t in targets):
         raise FetchError(f"{args.report}: targets must be a list of strings")
-    planned = plan_gates(contract, mode="full", targets=targets, shard=None, llm_boundary=False)
+    planned = plan_gates(
+        contract, mode="full", targets=targets, shard=None, llm_boundary=args.llm_boundary
+    )
     recorded = {str(g.get("id")): g for g in entries}
     checks = Checks()
     checks.check(report.get("ok") is True, "report ok is true", f"ok={report.get('ok')!r}")
@@ -720,6 +730,18 @@ def cmd_unsharded(args: argparse.Namespace) -> int:
                 gate.get("status") == want_status,
                 f"{item.gate.id} status is {want_status}",
                 f"status={gate.get('status')!r}",
+            )
+        elif item.skip_reason is None and gate.get("status") == "skip":
+            # An optional gate the plan runs has no implied status. The runner records it as
+            # skipped only when its binary is missing (exit code 127); the exit-0 skip is
+            # the plan's own, for a gate this run's condition does not enable. Without this,
+            # an optional conditional gate skipped for want of the boundary would pass for
+            # a run stated to have made with it.
+            code = gate.get("exit_code")
+            checks.check(
+                type(code) is int and code == MISSING_BINARY_EXIT_CODE,
+                f"{item.gate.id} was skipped only for a missing optional binary: the plan runs it",
+                f"exit_code={code!r}",
             )
         if gate.get("status") == "pass" or item.skip_reason is not None:
             code = gate.get("exit_code")
@@ -781,6 +803,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     unsharded = sub.add_parser("unsharded", help="check a local unsharded report (task 7.4)")
     unsharded.add_argument("--report", type=Path, required=True)
+    unsharded.add_argument(
+        "--llm-boundary",
+        action="store_true",
+        help="The run was made with --llm-boundary; without it the run is judged as made without",
+    )
     common(unsharded)
     unsharded.set_defaults(func=cmd_unsharded)
     return parser

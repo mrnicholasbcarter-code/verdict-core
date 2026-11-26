@@ -13,6 +13,8 @@ signing key lives in a temp home.
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import verdict.api as api
+import verdict.orchestration.executor_opencode as executor_module
 from tests.relay_proof_helpers import (
     ASSIGNMENT_KEY,
     assignment_headers,
@@ -320,6 +323,47 @@ def test_a_verified_assignment_for_another_route_than_the_model_is_refused_befor
     assert harness.decisions == []
     assert harness.minted == []
     assert harness.transport.requests == []
+
+
+def test_the_orchestrators_assignment_probe_is_refused_before_routing_and_costs_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The orchestrator RELIES ON this order (#1340).
+
+    Before it launches an OpenCode worker, ``OpenCodeExecutor`` proves that this serve accepts the
+    attempt's own signed assignment by sending the assignment as the bearer on
+    ``POST /v1/chat/completions`` with a body that is only ``{"model": <a value no route can
+    equal>}``: no ``messages``.  Serve verifies the assignment in its middleware, and then the
+    relay compares ``model`` with the assignment's route and refuses a difference with 400 before
+    the ladder runs.  So a 400 tells the orchestrator "verified", while a refused assignment never
+    gets that far (403, or 503 without a key).  If serve ever routed a request whose model does not
+    equal its assignment's route, or checked the body after routing, the probe would become a
+    routing decision, an admission proof and an upstream call (a spend): this test would fail
+    first, and the executor's probe would have to change with it.
+
+    Serve logs one WARNING (``reason=model_mismatch``) for every probe.  That is accepted and
+    documented, not silenced.
+    """
+    harness = _Harness(monkeypatch, _service(), tmp_path)
+    probe_body = executor_module._assignment_probe_body()
+    assert json.loads(probe_body) == {"model": executor_module._ASSIGNMENT_PROBE_MODEL}
+    headers = {**assignment_headers(FREE), "content-type": "application/json"}
+    with caplog.at_level(logging.WARNING, logger="verdict.api"), TestClient(api.app) as client:
+        response = client.post("/v1/chat/completions", content=probe_body, headers=headers)
+
+    assert response.status_code == 400, response.text
+    assert response.json() == {
+        "error": {
+            "message": "the request's model must equal the route in the worker assignment",
+            "type": "invalid_request_error",
+        }
+    }
+    assert harness.decisions == []
+    assert harness.minted == []
+    assert harness.transport.requests == []
+    refusals = [r.getMessage() for r in caplog.records if "model_mismatch" in r.getMessage()]
+    assert len(refusals) == 1 and "reason=model_mismatch" in refusals[0]
+    assert headers["authorization"].split(" ", 1)[1] not in caplog.text  # never the credential
 
 
 def test_route_refuses_a_worker_assignment_combined_with_an_execution_path_request(

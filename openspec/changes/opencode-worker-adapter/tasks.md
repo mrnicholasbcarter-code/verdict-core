@@ -117,7 +117,8 @@
       `test_what_was_seen_of_a_database_does_not_outlast_the_file`: each was a false block), and
       with the file left out of the key, the mark's file not compared, or no replaced-while-read
       check, tests failed. The accepted cost is that a signing key serve does not share, refused
-      from a run's first attempt, is not recognised as a block; a serve restarted on another
+      from a run's first attempt, was not recognised as a block at that commit (since #1340, task
+      2.21, the pre-launch probe recognises it before launch); a serve restarted on another
       database while the orchestrator's configuration names the old file cannot be told apart.
       A third review found the mark's file compared only to decide whether an empty read was
       authoritative, so a database replaced after the mark had the old file's row watermark
@@ -147,6 +148,95 @@
       gets 403 with no upstream call and no evidence, as the run's first assignment (the attempt
       fails, its serve receipts `unavailable`, not a block) and after serve admitted an earlier
       one (a configuration block). Verify: `tests/test_opencode_assignment_serve_path.py`.
+      (At that commit a first assignment's refusal was the provider's: the attempt failed with its
+      serve receipts `unavailable`. Since #1340, task 2.21, an expired, foreign-key or future-dated
+      first assignment is a block before launch, by the pre-launch probe; only a tampered copy or
+      a key replaced after the probe still takes the first path.)
+- [x] 2.21 Pre-launch assignment probe (#1340, follow-up to #1325): after the readiness check and
+      before the receipts mark and the launch, the executor sends the attempt's own assignment, as
+      the bearer and never with the serve token, to `POST {serve-url}/v1/chat/completions` with the
+      body `{"model": "<sentinel>"}` and no `messages` (`_probe_assignment`, `_check_assignment` in
+      `verdict/orchestration/executor_opencode.py`; the sentinel holds a control character, which
+      no route id of a verified assignment can). Serve verifies the assignment and refuses a model
+      that differs from the assignment's route with 400 before any routing, so 400 with serve's body
+      is "accepted" (a 400 that is not serve's model-check body is unproven; no decision, no proof, no upstream call, no evidence); serve's exact 403
+      `authentication failed` or its 503 `worker assignments are not configured` ends the attempt
+      as one `harness_configuration:` block (nothing launched, no cooldown, a message naming the
+      possible causes and `verdict setup`), the run's first attempt included and without reading
+      receipts, so a remote or spare serve is covered; anything else (timeout, connection error, a
+      redirect, another 5xx, another 403 or 400 body, a 2xx, a 404, an answer cut short) is unproven
+      and the attempt goes on as before. No redirect is followed (the probe uses `http.client`, which never follows one), the
+      whole exchange is bounded by what is left of the attempt's budget (the request runs on a
+      helper thread the probe stops waiting for at the deadline, shutting its socket, so neither
+      an answer sent a byte at a time nor a resolver that never answers can stretch it, and a
+      lookup that returns late sends nothing) and no request is started for a cancelled attempt. The receipt-based classification of a refusal
+      mid-run is unchanged. Serve is not changed: it logs one WARNING (`reason=model_mismatch`) per
+      probe, which is accepted and documented, and its order (the model is refused before routing)
+      is now relied on and pinned. Not built: a `verdict doctor` probe of the same kind (a
+      separate story). Verify: `tests/test_opencode_signed_assignment.py` (the probe section),
+      `tests/test_opencode_assignment_serve_path.py` (real serve app: `test_a_first_attempt_serve_refuses_is_a_configuration_block_before_anything_is_launched`,
+      `test_a_serve_with_no_signing_key_is_the_same_block_naming_setup`,
+      `test_a_serve_whose_receipts_the_orchestrator_cannot_read_is_covered_by_the_probe`,
+      `test_a_healthy_serve_answers_the_probe_400_and_the_probe_decides_and_sends_nothing`,
+      `test_a_refusal_after_serve_admitted_an_earlier_attempt_is_a_configuration_block`),
+      `tests/test_serve_worker_route_proof.py`
+      (`test_the_orchestrators_assignment_probe_is_refused_before_routing_and_costs_nothing`),
+      `tests/test_opencode_executor.py`
+      (`test_cancelling_run_waits_for_an_assignment_probe_that_is_already_in_flight`).
+      **Evidence (2026-11-25):** written first against the unchanged executor, the end-to-end
+      cases failed by assertion (the first attempt of an expired, foreign-key or future-dated
+      assignment, and the one with receipts the orchestrator cannot read, ended with
+      `error='authentication failed'`, the provider's denial, not a `harness_configuration:`
+      block; 11 of the end-to-end and serve-side tests failed in all, the other seven on the
+      symbols they use), and the new unit tests failed on the missing `_check_assignment`.
+      After the change each of these was applied in turn and a test failed: the 403 judged by
+      status alone, the 400 judged by status alone, the 503 branch dropped, the serve token sent
+      as the probe's bearer, the probe run even when the readiness check failed, an unproven
+      result treated as a block, a sentinel that is a valid route id, no budget bound on the probe,
+      a refusal after the deadline kept as a block, an unbounded body read (chunked answer), and
+      exceptions let out of the probe; and with serve's model check disabled (`if False and ...`
+      in `_relay_completion`) the serve-side pin and the healthy-serve test failed (HTTP 200, a
+      routed request). Review round 1 (2026-11-25, cross-family) found three things, fixed in the
+      next commit: a sized answer that ends early did not raise (`http.client` `read(n)` returns
+      what it got), so a cut-off answer whose bytes were serve's complete body was read as serve's
+      (red: `403-complete-json-cut-short` was `refused`, `400-complete-json-cut-short` was
+      `accepted`; now the declared length must match, and with that check removed the three
+      cut-short cases fail); a socket timeout restarts with every byte, so an answer sent a byte
+      at a time held the probe for as long as it liked (red: `test_an_answer_that_trickles_in_is_cut_off_at_the_probes_deadline`
+      for both `start` and `body` waited for the whole answer; the probe now uses `http.client`
+      with a watchdog that shuts the socket at the deadline, and without the watchdog both fail;
+      without the connect-phase expiry check `test_a_probe_whose_connection_used_up_its_time_sends_nothing_more`
+      fails); and the docs said a bare 400 is "accepted" (it is serve's own model-check body). Review
+      round 2 (2026-11-25, same reviewer, head `6145ee9d`) found three more, fixed in the commit
+      after it and not re-reviewed (the review budget of two rounds was spent): an answer that
+      closes the connection (`Connection: close`) makes `http.client` drop its own reference to
+      the socket, so the watchdog had nothing to shut and a trickled body held the probe (red:
+      `test_an_answer_that_trickles_in_is_cut_off_at_the_probes_deadline[body-close]` returned
+      `refused` after the whole answer); a host-name lookup is bounded by no socket timeout and
+      the watchdog could not interrupt it (red:
+      `test_a_resolver_that_never_answers_cannot_hold_the_probe_past_its_deadline` waited the
+      whole 30 s the resolver was held for); and the requirement text promised a whole-exchange
+      bound the code did not give. The request now runs on a helper thread that the probe stops
+      waiting for at the deadline (a watchdog is no longer needed); with the wait unbounded, with
+      the sockets not retained, or with no check before sending, 6, 6 and 2 tests fail. The
+      earlier redirect check (301, 302 and 303 of
+      `test_a_redirect_is_never_followed_so_the_assignment_goes_nowhere_else` failed when the probe
+      used `urllib`'s default opener) still guards the contract, and `http.client` follows none.
+      The review of head `44ba9d01` (2026-11-25, cross-family) found that the deadline bounds the
+      caller but not the helpers: a helper stuck in a host-name lookup outlives its probe, so
+      every later attempt added a thread, and `helper.start()` could finally raise into the
+      attempt. At most 8 helpers are now outstanding in the process (a bounded semaphore: a place
+      is taken before the helper starts and given back when it ends); a probe that finds every
+      place taken, or whose helper cannot be started, is unproven without a request. Red first:
+      `test_repeated_probes_behind_a_stuck_lookup_leave_a_bounded_number_of_helpers` failed with 9
+      helpers left against a limit of 8, and `test_a_helper_that_cannot_be_started_is_unproven_and_frees_its_place`
+      with the `RuntimeError` from `start()`; both pass after the change. With a place not given
+      back after a failed start the second fails, and with one not given back when a helper ends
+      both fail.
+- [ ] (post-merge) 2.22 On installed main, after `verdict setup --apply --allow host.serve`: the
+      installed serve answers `_probe_assignment` for an assignment signed with its own key 400
+      (accepted), and for one signed with another key 403 (refused), with no model call and no
+      evidence row; record the raw output in the story's DoD evidence file.
 - [x] 2.18 The streaming waiver serve records is shown in the run receipt (#1325): serve's receipt
       database is read back read-only by digest (`verdict/orchestration/serve_evidence.py`,
       `serve_service.resolve_serve_receipts_db`), the terminal carries `worker_assignment`, the

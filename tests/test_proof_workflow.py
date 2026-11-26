@@ -167,7 +167,7 @@ def test_the_aggregate_downloads_the_legs_and_runs_the_aggregate_script() -> Non
     download = next(
         s for s in steps if str(s.get("uses", "")).startswith("actions/download-artifact@")
     )
-    assert download["uses"] == "actions/download-artifact@v7"
+    assert download["uses"] == "actions/download-artifact@v8"
     assert download["with"]["pattern"] == "proof-shard-*"
     assert download["with"]["path"] == "proof-legs"
     assert download.get("continue-on-error") is True

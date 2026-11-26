@@ -916,6 +916,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 execution_path_decision=legacy._cli_execution_path_decision(
                     parser, getattr(args, "execution_path_request", None), task=args.objective
                 ),
+                worker_harness=getattr(args, "worker_harness", None),
             )
     elif args.command == "autodev-golden-path":
         legacy.cmd_autodev_golden_path(

@@ -99,7 +99,10 @@ run on the cheapest qualified route Verdict can admit.
   serve's receipts, read after the worker is gone, show that serve recorded no request under the
   assignment, in a database shown to be the serve the worker called (a request of an earlier
   attempt of the same executor was found in it); otherwise, or when the receipts cannot be read, recovery
-  sees the provider's denial as before, and a run's first refusal is never proven.
+  sees the provider's denial as before. A refusal of the attempt's own assignment is recognised
+  earlier, before anything is launched: the executor sends that assignment to serve first (a probe
+  that serve answers with 400 once it has verified it, before any routing), and serve's refusal
+  of it ends the attempt as a configuration block, the first attempt of a run included.
 - **`verdict serve` pins each worker request to the route Verdict chose**, from the verified
   signed assignment (serve's side: `serve-worker-assignment`, #1335; the executor signs it:
   #1325). A request whose `model` differs from the signed route is refused before routing.
