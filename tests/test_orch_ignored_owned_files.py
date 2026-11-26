@@ -176,3 +176,50 @@ async def test_ignored_owned_file_survives_to_dependent_node_and_integration(
     )
     assert shown.returncode == 0
     assert shown.stdout == '{"a": 1}\n'
+
+
+async def test_byproducts_under_an_owned_directory_do_not_trip_the_listing_guard(
+    repo: Path,
+) -> None:
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    (repo / "fixtures" / "__pycache__").mkdir(parents=True)
+    (repo / "fixtures" / "node_modules" / "pkg").mkdir(parents=True)
+    (repo / "fixtures" / "x.jsonl").write_text("x\n")
+    for n in range(120):
+        (repo / "fixtures" / "__pycache__" / f"module_number_{n:03d}.cpython-314.pyc").write_bytes(
+            b"\x00"
+        )
+    (repo / "fixtures" / "node_modules" / "pkg" / "index.js").write_text("1\n")
+
+    changed = await Git(repo).changed_files(repo, base, owned_files=("fixtures",))
+
+    assert "fixtures/x.jsonl" in changed
+    assert not any("__pycache__" in p or "node_modules" in p for p in changed)
+    raw = _git(repo, "ls-files", "-z", "-o", "-i", "--exclude-standard", "--", "fixtures")
+    assert len(raw) >= 4000
+
+
+async def test_owned_file_inside_an_ignored_directory_is_staged(repo: Path) -> None:
+    (repo / ".gitignore").write_text("*.jsonl\nbuild/\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "ignore build")
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    (repo / "build" / "deep").mkdir(parents=True)
+    (repo / "build" / "deep" / "out.txt").write_text("out\n")
+
+    changed = await Git(repo).changed_files(repo, base, owned_files=("build/deep/out.txt",))
+
+    assert "build/deep/out.txt" in changed
+
+
+async def test_stray_pyc_outside_pycache_is_not_staged(repo: Path) -> None:
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    (repo / "fixtures").mkdir()
+    (repo / "fixtures" / "stray.pyc").write_bytes(b"\x00")
+    (repo / "fixtures" / "x.jsonl").write_text("x\n")
+
+    await Git(repo).changed_files(repo, base, owned_files=("fixtures",))
+
+    staged = _staged(repo)
+    assert "fixtures/x.jsonl" in staged
+    assert "fixtures/stray.pyc" not in staged
