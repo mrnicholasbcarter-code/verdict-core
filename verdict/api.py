@@ -1052,17 +1052,20 @@ async def lifespan(app: FastAPI) -> Any:
     service = intelligence_instance
     service.state_lane = lane
     yield
-    task, public_models_task = public_models_task, None
-    if task is not None:
-        stopping = True
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
-    public_models_readiness = None
-    # Drain the queued jobs (a terminal evidence write may still be waiting), within a bound.
-    await lane.aclose()
-    state_lane_instance = None
-    service.state_lane = None
+    try:
+        task, public_models_task = public_models_task, None
+        if task is not None:
+            stopping = True
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        public_models_readiness = None
+    finally:
+        # Drain the queued jobs (a terminal evidence write may still be waiting), within a
+        # bound, however the refresh task ended.
+        await lane.aclose()
+        state_lane_instance = None
+        service.state_lane = None
     intelligence_instance = None
     gate_instance = None
     proxy_instance = None
