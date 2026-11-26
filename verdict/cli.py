@@ -3545,6 +3545,7 @@ def main() -> None:
         parsers_census,
         parsers_config,
         parsers_credentials,
+        parsers_deliver,
         parsers_discovery,
         parsers_harness,
         parsers_identify,
@@ -3574,6 +3575,7 @@ def main() -> None:
     parsers_admission.register(subparsers)
     parsers_autodev.register(subparsers)
     parsers_census.register(subparsers)
+    parsers_deliver.register(subparsers)
     parsers_discovery.register(subparsers)
     parsers_identify.register(subparsers)
     parsers_ladder.register(subparsers)

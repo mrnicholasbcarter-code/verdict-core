@@ -199,6 +199,37 @@ def _cmd_pr_watch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     sys.exit(0 if result.get("ok") else 1)
 
 
+def _cmd_deliver(args: argparse.Namespace) -> None:
+    """Handle ``verdict deliver`` CLI command."""
+    from verdict.commands.parsers_deliver import EXIT_FAILED, EXIT_REFUSED
+    from verdict.orchestration.deliver_service import DeliverRunRequest, DeliverStatus, deliver_run
+
+    request = DeliverRunRequest(
+        run_dir=_resolve_run_dir(args.run, args.runs_dir),
+        issue_number=args.issue,
+        issue_title=args.issue_title,
+        base_branch=args.base,
+        dry_run=args.dry_run,
+    )
+    outcome = deliver_run(request)
+
+    if args.json:
+        print(json.dumps(outcome.to_dict(), indent=2, default=str))
+    elif outcome.status is DeliverStatus.DRY_RUN:
+        print(f"dry run: nothing was pushed or created\nbranch: {outcome.branch}")
+        print(f"base: {outcome.base_branch}\ntitle: {outcome.title}")
+    elif outcome.ok:
+        print(outcome.pr_url)
+    else:
+        stream = sys.stderr
+        print(f"{outcome.status.value}: {outcome.reason}: {outcome.message}", file=stream)
+
+    if outcome.status is DeliverStatus.REFUSED:
+        sys.exit(EXIT_REFUSED)
+    if not outcome.ok:
+        sys.exit(EXIT_FAILED)
+
+
 def _cmd_admission(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Handle ``verdict admission <sub>`` CLI commands."""
     if getattr(args, "admission_command", None) != "refresh":
@@ -1391,6 +1422,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         )
     elif args.command == "pr-watch":
         _cmd_pr_watch(parser, args)
+    elif args.command == "deliver":
+        _cmd_deliver(args)
     elif args.command == "admission":
         _cmd_admission(parser, args)
     elif args.command == "discovery":
