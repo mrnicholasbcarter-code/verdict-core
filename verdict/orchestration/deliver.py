@@ -35,7 +35,7 @@ BRANCH_PREFIX = "verdict/issue-"
 MAX_SLUG_LENGTH = 40
 _REVIEW_PASS = "PASS"
 _REVIEW_INDEPENDENCE_STATE = "REVIEW_INDEPENDENCE"
-_SLUG_DROP = re.compile(r"[^a-z0-9-]")
+_SLUG_RUN = re.compile(r"[^a-z0-9]+")
 
 
 class DeliverReason(str, Enum):
@@ -117,9 +117,13 @@ DeliverDecision = DeliverPlan | DeliverRefusal
 
 
 def slugify_title(title: str) -> str:
-    """Lower-case ``[a-z0-9-]``, at most 40 characters; every other character is dropped."""
-    kept = _SLUG_DROP.sub("", title.lower())
-    return kept[:MAX_SLUG_LENGTH].strip("-")
+    """Lower-case, each run of characters outside ``[a-z0-9]`` becomes one hyphen.
+
+    Leading and trailing hyphens are stripped, the result is cut to 40 characters, and a
+    trailing hyphen left by the cut is stripped again.
+    """
+    hyphenated = _SLUG_RUN.sub("-", title.lower()).strip("-")
+    return hyphenated[:MAX_SLUG_LENGTH].strip("-")
 
 
 def head_branch_name(issue_number: int, issue_title: str = "") -> str:

@@ -98,12 +98,12 @@ def _install_hook(repo: Path, body: str) -> None:
 @pytest.mark.parametrize(
     ("title", "expected"),
     [
-        ("Fix: the `rm -rf /` bug; $(whoami)!", "fixtherm-rfbugwhoami"),
-        ("Add   the\tthing\n now", "addthethingnow"),
-        ("  --Leading and trailing--  ", "leadingandtrailing"),
-        ("Hello, World!!!", "helloworld"),
-        ("a/b\\c..d", "abcd"),
-        ("UPPER lower 123", "upperlower123"),
+        ("Fix: the `rm -rf /` bug; $(whoami)!", "fix-the-rm-rf-bug-whoami"),
+        ("Add   the\tthing\n now", "add-the-thing-now"),
+        ("  --Leading and trailing--  ", "leading-and-trailing"),
+        ("Hello, World!!!", "hello-world"),
+        ("a/b\\c..d", "a-b-c-d"),
+        ("UPPER lower 123", "upper-lower-123"),
     ],
 )
 def test_slug_drops_unsafe_characters(title: str, expected: str) -> None:
@@ -126,10 +126,38 @@ def test_slug_is_empty_for_all_symbol_title(title: str) -> None:
 
 
 def test_branch_name_is_exact() -> None:
-    assert head_branch_name(1269, "Deliver it!") == "verdict/issue-1269-deliverit"
+    assert head_branch_name(1269, "Deliver it!") == "verdict/issue-1269-deliver-it"
     assert head_branch_name(5, "") == "verdict/issue-5"
     assert head_branch_name(7, "Add-thing") == "verdict/issue-7-add-thing"
     assert re.fullmatch(r"verdict/issue-7-[a-z0-9-]{1,40}", head_branch_name(7, "Z" * 100))
+    assert (
+        head_branch_name(1368, "Salvage drops an attempt's edit")
+        == "verdict/issue-1368-salvage-drops-an-attempt-s-edit"
+    )
+
+
+def test_punctuation_only_title_gives_bare_branch() -> None:
+    assert head_branch_name(9, "!!! ??? ---") == "verdict/issue-9"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "--- a ---",
+        "a   b\t\tc",
+        "word " * 30,
+        "a" * 39 + " bbb",
+        "x" * 38 + "!!! yy",
+        "!lead ... trail!",
+        "a--b__c  d",
+    ],
+)
+def test_slug_never_has_edge_or_doubled_hyphens(title: str) -> None:
+    slug = slugify_title(title)
+    assert slug
+    assert len(slug) <= 40
+    assert not slug.startswith("-") and not slug.endswith("-")
+    assert "--" not in slug
 
 
 # --- push -----------------------------------------------------------------------------
