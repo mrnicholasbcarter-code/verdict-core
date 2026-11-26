@@ -11,9 +11,12 @@ node depends on. The planning prompt SHALL state that an integrate node owns no 
 and may name in its verification command only test files that already exist or that an implement node
 creates. The planner's repair call SHALL receive the error text. A repaired graph that still breaks
 the rule SHALL fail planning closed (after the one repair round, before any worker runs). The runtime
-SHALL keep not dispatching a worker for these nodes. A graph read back with `WorkGraph.from_dict`
-(a recorded `graph.json`) SHALL load unchanged, with its digest, so a run recorded before this rule
-still resumes and its receipt still verifies.
+SHALL keep not dispatching a worker for these nodes. `WorkGraph.from_dict` SHALL apply the rule by
+default, so a graph supplied to `verdict orchestrate --graph` that breaks it SHALL be refused with
+exit 2 before any run starts. A reader of a recorded run (`graph.json` for resume, controls and
+receipts) SHALL opt out explicitly with `allow_merge_only_owned_files=True`; such a graph SHALL load
+unchanged, with its digest, so a run recorded before this rule still resumes and its receipt still
+verifies.
 
 #### Scenario: an integrate node that owns files is refused
 
@@ -38,10 +41,17 @@ still resumes and its receipt still verifies.
 - **WHEN** an integrate or review node has no `owned_files`
 - **THEN** it is accepted as before
 
+#### Scenario: a fresh graph is held to the rule
+
+- **WHEN** `verdict orchestrate --graph FILE` is given a graph whose integrate or review node has
+  `owned_files`
+- **THEN** it prints `BLOCKED` with the node's error, exits 2, and creates no run directory
+
 #### Scenario: a recorded graph still loads
 
-- **WHEN** `WorkGraph.from_dict` reads a `graph.json` whose integrate node has `owned_files`
-- **THEN** the graph loads with those files and the same digest
+- **WHEN** `WorkGraph.from_dict(..., allow_merge_only_owned_files=True)` reads a `graph.json` whose
+  integrate node has `owned_files`, as resume, run controls and the receipt builder do
+- **THEN** the graph loads with those files and the same digest, and the run resumes
 
 ### Requirement: Collection errors in files the node does not own are an environment error
 
@@ -54,11 +64,13 @@ whose reason names the command and the first three erroring paths. The runtime S
 `environment_error` path: one attempt, BLOCKED, no escalation count, no reassignment, no cooldown, and
 no session ledger or health-cache entry. Without `owned_files` the rule does not apply.
 
-The erroring paths SHALL be complete or the failure SHALL stay `verification_failed`: an `ERROR`
-line that holds anything but a plain repository path (for example a path with a space) makes the
-list unreadable, and an output of at least `VERIFY_OUTPUT_TAIL_CHARS` characters (the most the
-runner keeps, so its first lines may be cut) that shows fewer erroring paths than the
-`N errors during collection` count makes it possibly incomplete.
+The erroring paths SHALL be complete and repo-relative, or the failure SHALL stay
+`verification_failed`: an `ERROR` line that holds anything but a plain repository path (for example a
+path with a space) makes the list unreadable; a path that is absolute or has a `..` part cannot be
+matched to an owned file without a repository root, so it makes the list inconclusive; and an output
+of at least `VERIFY_OUTPUT_TAIL_CHARS` characters (the most the runner keeps, so its first lines may
+be cut) that shows fewer erroring paths than the `N errors during collection` count makes it possibly
+incomplete.
 
 #### Scenario: collection errors only in unowned files
 
@@ -78,6 +90,12 @@ runner keeps, so its first lines may be cut) that shows fewer erroring paths tha
   exits 2 without a collection marker, or exits 2 on collection errors whose paths cannot be read
   from the output
 - **THEN** the failure category is `verification_failed`
+
+#### Scenario: a path that cannot be matched to an owned file is not unowned
+
+- **WHEN** pytest reports a collection error at `/repo/tests/test_a.py` or `../repo/tests/test_a.py`
+  and the node owns `tests/test_a.py`
+- **THEN** the failure category is `verification_failed`, so the worker may correct its own file
 
 #### Scenario: an erroring list that may be incomplete is not trusted
 

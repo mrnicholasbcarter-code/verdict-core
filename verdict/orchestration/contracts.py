@@ -204,7 +204,8 @@ class WorkNode:
         ``allow_merge_only_owned_files`` is for reading a persisted graph back: a run
         recorded before the merge-only rule may hold an integrate node with owned files,
         and its receipt must still verify. The files are kept exactly as recorded, so the
-        graph digest is unchanged. The planner never sets it.
+        graph digest is unchanged. Only ``WorkGraph.from_dict`` sets it, for a reader of a
+        recorded run; the planner and a fresh ``--graph`` never do.
         """
         known = {f for f in cls.__dataclass_fields__}
         unknown = sorted(set(value) - known)
@@ -326,18 +327,26 @@ class WorkGraph:
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> WorkGraph:
-        """Load a persisted graph (``graph.json``): a record of what was planned and run.
+    def from_dict(
+        cls, value: Mapping[str, Any], *, allow_merge_only_owned_files: bool = False
+    ) -> WorkGraph:
+        """Build a graph from a mapping, validating every node.
 
-        An integrate or review node that owns files, written before the merge-only rule,
-        still loads so that old runs resume and old receipts verify.
+        Strict by default, so a fresh graph (``verdict orchestrate --graph``) cannot give an
+        integrate or review node files that no worker would ever write. A reader of a
+        recorded run (``graph.json`` for resume, controls and receipts) passes
+        ``allow_merge_only_owned_files=True``: a run recorded before the merge-only rule may
+        hold such a node, and it must still resume and its receipt still verify.
         """
         nodes = value.get("nodes")
         if not isinstance(nodes, list):
             raise OrchestrationError("graph.nodes must be a list")
         return cls(
             goal=str(value.get("goal", "")),
-            nodes=tuple(WorkNode.from_dict(n, allow_merge_only_owned_files=True) for n in nodes),
+            nodes=tuple(
+                WorkNode.from_dict(n, allow_merge_only_owned_files=allow_merge_only_owned_files)
+                for n in nodes
+            ),
             topology=Topology(value.get("topology", Topology.PARALLEL_WORK_UNITS.value)),
             rationale=tuple(value.get("rationale", ())),
             max_parallel=int(value.get("max_parallel", 3)),

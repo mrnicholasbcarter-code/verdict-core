@@ -1914,10 +1914,15 @@ def test_a_persisted_graph_with_an_integrate_node_that_owns_files_still_loads() 
     import json
 
     raw = json.loads(_INTEGRATE_OWNS_FILES_JSON)
-    graph = WorkGraph.from_dict(raw)
+    graph = WorkGraph.from_dict(raw, allow_merge_only_owned_files=True)
     integrate = graph.node("deliver_integrate")
     assert integrate.owned_files == ("tests/test_deliver_e2e.py",)
-    assert WorkGraph.from_dict(graph.to_dict()).digest() == graph.digest()
+    reloaded = WorkGraph.from_dict(graph.to_dict(), allow_merge_only_owned_files=True)
+    assert reloaded.digest() == graph.digest()
+    # Only a reader of a recorded run says so: the default stays strict
+    # (tests/test_orch_graph_loader.py).
+    with pytest.raises(OrchestrationError, match="must not have owned_files"):
+        WorkGraph.from_dict(raw)
     # A new graph never gets this: the node itself still refuses the shape.
     with pytest.raises(OrchestrationError, match="must not have owned_files"):
         WorkNode.from_dict(raw["nodes"][1])

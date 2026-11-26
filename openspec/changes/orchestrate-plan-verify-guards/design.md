@@ -22,17 +22,23 @@ are `environment_error` and take the fail-closed path (one attempt, BLOCKED, no 
   path obeys it. `parse_plan` already wraps a `WorkNode` error as `parse_plan: node[i]: <message>` and
   `FrontierPlanner.plan` feeds that text into the single repair call; no planner wiring was needed.
   A repair that still breaks the rule fails as "plan invalid after one repair round", before any worker.
-- **A recorded graph still loads.** `WorkGraph.from_dict` (receipts, resume, controls, `--graph`) reads
-  persisted data with `allow_merge_only_owned_files=True`; the files are kept exactly, so the digest is
-  unchanged. The retained proof run `docs/proof/dogfood-bod-225-live-2026-09-29` has such a node and its
-  receipt must keep verifying. The planner calls `WorkNode.from_dict` without the flag.
+- **A recorded graph still loads, a fresh one does not.** `WorkGraph.from_dict` is strict by default.
+  The readers of a recorded run (`run.py` resume, `controls.py`, `receipt.py`) pass
+  `allow_merge_only_owned_files=True`; the files are kept exactly, so the digest is unchanged. The
+  retained proof run `docs/proof/dogfood-bod-225-live-2026-09-29` has such a node and its receipt must
+  keep verifying. The planner (`WorkNode.from_dict`) and `verdict orchestrate --graph` use the strict
+  default, so a supplied graph cannot hold files that no worker would write; `--graph` reports the
+  refusal as `BLOCKED` with exit 2 before the gateway is contacted or a run directory is made. Compatibility
+  is an explicit option at the reader, not a default of the loader.
 - **`owned_files` is `None` by default** in `classify_verify_env_error`, so callers that pass nothing keep
   today's behaviour, while a node that owns nothing passes `()` and every erroring path counts as unowned.
 - **Collection rule.** Exit code 2, a pytest command (`pytest`, `py.test`, `-m pytest`), the
   `N errors during collection` marker, and at least one erroring path read from `ERROR <path>` lines or
   `ERROR collecting <path>` headers, none owned (`path_is_owned`, the same test as `WorkNode.owns`). Any
   doubt (another exit code, no marker, no readable path, one owned path, an `ERROR` line that is not a
-  plain path such as a path with a space, or a capped output that shows fewer paths than pytest
+  plain path such as a path with a space, a path that is not repo-relative (absolute, or with a `..`
+  part: without a repository root it cannot be matched to an owned file, so it is not known to be
+  unowned), or a capped output that shows fewer paths than pytest
   counted) returns `None`, the old result. The cap is `VERIFY_OUTPUT_TAIL_CHARS`, shared with the runner.
   The reason carries the command and at most three paths, taken only from a path-character pattern, so no
   other output text reaches an event.

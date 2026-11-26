@@ -813,7 +813,7 @@ def _follow_console(*, plain: bool, stream: Any = None) -> Any:
 
 
 def _orchestrate(args: argparse.Namespace) -> int:
-    from verdict.orchestration.contracts import WorkGraph
+    from verdict.orchestration.contracts import OrchestrationError, WorkGraph
     from verdict.orchestration.recovery import FailureIntelligence
     from verdict.orchestration.review import REVIEW_BUDGET_CEILING, OpenCodeReviewer
     from verdict.orchestration.run import resolve_api_key, run_golden_path
@@ -834,7 +834,12 @@ def _orchestrate(args: argparse.Namespace) -> int:
     goal = args.goal or ""
     graph = None
     if args.graph:
-        graph = WorkGraph.from_dict(json.loads(Path(args.graph).read_text()))
+        # A supplied graph is fresh work, not a recorded run: it gets the strict loader.
+        try:
+            graph = WorkGraph.from_dict(json.loads(Path(args.graph).read_text()))
+        except OrchestrationError as exc:
+            print(f"BLOCKED: --graph is not a valid work graph: {exc}", file=sys.stderr)
+            return 2
         goal = goal or graph.goal
     if args.resume:
         prior = runs_root / args.resume / "graph.json"

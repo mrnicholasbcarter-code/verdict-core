@@ -8,7 +8,7 @@ import shlex
 import shutil
 import sys
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from verdict.orchestration.contracts import path_is_owned
 
@@ -39,13 +39,21 @@ def _runs_pytest(argv: Sequence[str]) -> bool:
     )
 
 
+def _is_repo_relative(path: str) -> bool:
+    """True for a path that ``path_is_owned`` can judge: not absolute and without ``..``."""
+    parsed = PurePosixPath(path)
+    return not parsed.is_absolute() and ".." not in parsed.parts
+
+
 def _erroring_paths(out: str, expected_errors: int) -> list[str] | None:
     """The distinct files pytest reports as failing to collect, or ``None`` when that list
     cannot be trusted to be complete.
 
     ``None`` when an ``ERROR`` line holds anything but a plain path (for example a path
-    with a space), and when the output hit the runner's length cap and shows fewer paths
-    than the ``expected_errors`` pytest counted, because the missing ones may be owned.
+    with a space), when a path is not repo-relative (absolute, or with a ``..`` part: with no
+    repository root to normalize against it cannot be matched to an owned file, so it is not
+    known to be unowned), and when the output hit the runner's length cap and shows fewer
+    paths than the ``expected_errors`` pytest counted, because the missing ones may be owned.
     """
     erroring: list[str] = []
     for line_re, path_re in (
@@ -54,7 +62,7 @@ def _erroring_paths(out: str, expected_errors: int) -> list[str] | None:
     ):
         for line in line_re.findall(out):
             match = path_re.match(line)
-            if match is None:
+            if match is None or not _is_repo_relative(match.group(1)):
                 return None
             if match.group(1) not in erroring:
                 erroring.append(match.group(1))
@@ -113,9 +121,9 @@ def classify_verify_env_error(
       a pytest run that exits 2 on collection errors, every one in a file the node
       does not own, is an env error that names the command and the first erroring paths.
       A collection error in an owned file, an erroring path that cannot be read from
-      the output or may have been cut from it, exit 4 (a named file is missing), exit 5
-      (no tests) and ordinary test failures stay ``verification_failed``. Without
-      ``owned_files`` this rule is off.
+      the output, is not repo-relative (absolute or with ``..``) or may have been cut
+      from it, exit 4 (a named file is missing), exit 5 (no tests) and ordinary test
+      failures stay ``verification_failed``. Without ``owned_files`` this rule is off.
     """
     if code in (126, 127):
         return f"environment_error: exit {code}: {out[:200]}"

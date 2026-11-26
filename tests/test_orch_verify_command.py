@@ -508,6 +508,65 @@ def test_errors_with_a_reason_suffix_are_parsed_as_paths() -> None:
     assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("tests/test_a.py",)) is None
 
 
+_COLLECTION_INTERRUPTED = (
+    "!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!\n"
+)
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param("/repo/tests/test_a.py", id="absolute"),
+        pytest.param("../repo/tests/test_a.py", id="parent-relative"),
+        pytest.param("tests/../tests/test_a.py", id="parent-in-the-middle"),
+    ],
+)
+@pytest.mark.parametrize("form", ["summary", "header"])
+def test_a_non_repo_relative_erroring_path_is_inconclusive_not_unowned(
+    spelling: str, form: str
+) -> None:
+    """The node owns ``tests/test_a.py``; pytest names that file with a path that is not
+    repo-relative. Without a repository root it cannot be matched to the owned file, so it must
+    not count as unowned: the worker gets another attempt, as for any owned-file failure."""
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    line = (
+        f"ERROR {spelling}\n"
+        if form == "summary"
+        else f"_______________ ERROR collecting {spelling} _______________\n"
+    )
+    out = line + _COLLECTION_INTERRUPTED
+    owned = ("tests/test_a.py",)
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=owned) is None
+    # A node that owns nothing gets the same answer: the path cannot be judged either way.
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=()) is None
+
+
+def test_one_non_repo_relative_path_makes_the_whole_error_list_inconclusive() -> None:
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    out = (
+        "ERROR tests/test_other.py\n"
+        "ERROR /repo/tests/test_a.py\n"
+        "!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!\n"
+    )
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("tests/test_a.py",)) is None
+    # The same list with both paths repo-relative and neither owned is still decided.
+    relative = out.replace("/repo/tests/test_a.py", "tests/test_a.py")
+    reason = classify_verify_env_error(_RUN_ARGV, 2, relative, owned_files=("verdict/a.py",))
+    assert reason is not None and reason.startswith("environment_error:")
+
+
+def test_a_dot_slash_path_is_still_matched_to_the_owned_file() -> None:
+    """``./tests/test_a.py`` is repo-relative: it normalizes to the owned file, not to doubt."""
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    out = "ERROR ./tests/test_a.py\n" + _COLLECTION_INTERRUPTED
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("tests/test_a.py",)) is None
+    reason = classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("verdict/a.py",))
+    assert reason is not None and reason.startswith("environment_error:")
+
+
 @pytest.mark.parametrize(
     ("code", "out", "why"),
     [

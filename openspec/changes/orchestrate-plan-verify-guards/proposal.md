@@ -22,10 +22,13 @@ review, each after 45 to 55 minutes of paid worker time, for plan defects, not w
 
 - A `WorkNode` of kind `integrate` or `review` with `owned_files` is refused, with a message that says to
   move the authoring work to an implement node. The planner prompt states the rule; the planner's
-  existing repair call receives the message. A graph read back from `graph.json` is not re-checked.
+  existing repair call receives the message. A fresh graph (`verdict orchestrate --graph`) gets the same
+  check and is refused with exit 2 before any run starts; a graph read back from a recorded run's
+  `graph.json` (resume, controls, receipts) is not re-checked.
 - `classify_verify_env_error` takes the node's `owned_files`. A pytest run that exits 2 on collection
   errors, none in a file the node owns, is an `environment_error` on the existing path; its reason names
-  the command and the first erroring paths. Everything else stays `verification_failed`.
+  the command and the first erroring paths. Everything else stays `verification_failed`, including an
+  erroring path that is absolute or has a `..` part, which cannot be matched to an owned file.
 
 ## Capabilities
 
