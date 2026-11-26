@@ -2211,6 +2211,114 @@ async def test_missing_binary_during_verify_is_env_error(repo: Path) -> None:
     assert len(ex.calls) == 1
 
 
+# ---- #1356: a verification command that cannot collect is an environment error --------
+
+# Verify tail of run 20261126T020427Z (event seq 30): 59 collection errors, each in a test
+# file the node did not own.
+_COLLECTION_ERRORS_IN_UNOWNED_FILES = (
+    "ts/test_security.py\n"
+    "ERROR tests/test_serve_failure_feedback.py\n"
+    "ERROR tests/test_serve_management_token.py\n"
+    "ERROR tests/test_visual_system.py\n"
+    "!!!!!!!!!!!!!!!!!!! Interrupted: 59 errors during collection !!!!!!!!!!!!!!!!!!!\n"
+    "=============== 1 skipped, 14805 deselected, 59 errors in 10.92s ===============\n"
+)
+
+
+def _collection_runtime(
+    repo: Path, verify_output: str, *, owned_files: tuple[str, ...], run_name: str
+) -> tuple[DagRuntime, Events, Executor]:
+    from collections.abc import Sequence
+
+    from verdict.orchestration.runtime import subprocess_runner
+
+    async def collecting_runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if "-m" in list(argv):
+            return (2, verify_output)
+        return await subprocess_runner(argv, cwd, timeout)
+
+    n = WorkNode(
+        "impl",
+        "implement something",
+        kind=NodeKind.IMPLEMENT,
+        owned_files=owned_files,
+        verification_command=("python", "-m", "pytest", "-q", "tests", "-k", "deliver"),
+    )
+    ex = Executor({("impl", "*"): "ok"})
+    events = Events()
+    rt = DagRuntime(
+        repo=repo,
+        run_dir=repo.parent / run_name,
+        graph=WorkGraph("g", (n,)),
+        selector=Selector(["cc/s", "cx/g"]),
+        executor=ex,
+        classifier=Classifier(),
+        events=events,
+        prompt_for=lambda nd, cwd: f"{nd.node_id}: {nd.objective}",
+        reviewer=Reviewer(),
+        policy=RuntimePolicy(max_attempts_per_node=4),
+        now=lambda: NOW,
+        runner=collecting_runner,
+    )
+    return rt, events, ex
+
+
+@pytest.mark.asyncio
+async def test_collection_errors_in_unowned_files_block_after_one_attempt(repo: Path) -> None:
+    """Exit 2 with collection errors only in files the node does not own ends the node at once.
+
+    One attempt, BLOCKED, category environment_error; with a second route available there is
+    no reassignment, no cooldown, no escalation count, and no ledger or health entry.
+    """
+    from verdict.orchestration.health_cache import HealthCache, default_cache_path
+    from verdict.orchestration.session_evidence import SessionLedger
+
+    rt, events, ex = _collection_runtime(
+        repo,
+        _COLLECTION_ERRORS_IN_UNOWNED_FILES,
+        owned_files=("impl.txt", "tests/test_deliver_e2e.py"),
+        run_name="run_collect_env",
+    )
+    result = await rt.run()
+
+    node_result = result.nodes["impl"]
+    assert node_result.state is NodeState.BLOCKED
+    assert node_result.attempt == 1
+    assert node_result.judged_failure_count == 0
+    assert len(ex.calls) == 1, "the worker must not be sent to a second route"
+    failures = events.of("failure", "impl")
+    assert [f["category"] for f in failures] == ["environment_error"]
+    assert "python -m pytest -q tests -k deliver" in failures[0]["evidence"]
+    assert "tests/test_serve_failure_feedback.py" in failures[0]["evidence"]
+    assert events.of("reassign", "impl") == []
+    assert events.of("cooldown", "impl") == []
+    assert events.of("escalation", "impl") == []
+    assert SessionLedger().load() == ()
+    cache_path = default_cache_path()
+    assert not cache_path.exists() or HealthCache(cache_path).entry("cc/s") is None
+
+
+@pytest.mark.asyncio
+async def test_a_collection_error_in_an_owned_file_is_still_corrected_and_rerouted(
+    repo: Path,
+) -> None:
+    """The control for the test above: the worker's own broken test file is not environmental."""
+    rt, events, ex = _collection_runtime(
+        repo,
+        "ERROR tests/test_deliver_e2e.py\n"
+        "!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!\n",
+        owned_files=("impl.txt", "tests/test_deliver_e2e.py"),
+        run_name="run_collect_owned",
+    )
+    result = await rt.run()
+
+    assert result.nodes["impl"].state is NodeState.BLOCKED
+    assert len(ex.calls) > 1, "a worker-owned collection error gets another attempt"
+    failures = events.of("failure", "impl")
+    assert failures[0]["category"] == "verification_failed"
+    assert all(f["category"] != "environment_error" for f in failures)
+
+
 class IdTakingExecutor(Executor):
     """An executor that asks for the run id and the node id (``OpenCodeExecutor`` does)."""
 

@@ -2850,7 +2850,9 @@ class DagRuntime:
                 **verify_extra,
             )
             if code != 0:
-                env_err = _classify_verify_env_error(resolved, code, out)
+                env_err = _classify_verify_env_error(
+                    resolved, code, out, owned_files=node.owned_files
+                )
                 if env_err is not None:
                     return env_err
                 return f"verification_failed: exit {code}: {out[-300:]}"
