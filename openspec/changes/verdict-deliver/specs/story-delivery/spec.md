@@ -12,7 +12,11 @@
 
 ### Requirement: Push only through the pre-push gate to a Verdict branch
 
-Delivery SHALL push the receipt-verified integration commit to `verdict/issue-N-<slug>` with a create-only push, so that the pre-push vgate runs and an existing remote branch is never moved. It SHALL NOT set `VERDICT_PREPUSH_SKIP` and SHALL NOT overwrite a branch. A branch that exists at another commit, or that another writer creates while the push is in flight, SHALL end delivery with `branch_exists`. A gate rejection SHALL end delivery with `vgate_rejected` and the gate output tail.
+Delivery SHALL push the receipt-verified integration commit to `verdict/issue-N-<slug>` with a create-only push, so that the pre-push vgate runs and an existing remote branch is never moved. It SHALL NOT set `VERDICT_PREPUSH_SKIP` and SHALL NOT overwrite a branch. A branch that exists at another commit, or that another writer creates while the push is in flight, SHALL end delivery with `branch_exists`. A gate rejection SHALL end delivery with `vgate_rejected` and the gate output tail. Before pushing, delivery SHALL check that the directory it pushes from has the integration commit checked out with a clean working tree, because the pre-push gate tests the checkout and not the pushed commit, and SHALL end with `worktree_not_at_integration_commit` otherwise.
+
+#### Scenario: The checkout is not at the integration commit
+- **WHEN** the directory delivery pushes from is at another commit, or has uncommitted or untracked changes
+- **THEN** delivery ends with `worktree_not_at_integration_commit` and nothing is pushed or created
 
 #### Scenario: Gate rejects the push
 - **WHEN** the pre-push hook exits non-zero
