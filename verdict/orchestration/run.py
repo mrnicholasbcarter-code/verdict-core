@@ -1038,7 +1038,10 @@ async def run_golden_path(
 
             # Load graph from file only if not provided
             if graph is None:
-                graph = WorkGraph.from_dict({k: v for k, v in graph_raw.items() if k != "run_id"})
+                graph = WorkGraph.from_dict(
+                    {k: v for k, v in graph_raw.items() if k != "run_id"},
+                    allow_merge_only_owned_files=True,
+                )
         if openspec_block is not None:
             from verdict.openspec_lifecycle import OpenSpecChange, admit_significant_change
 

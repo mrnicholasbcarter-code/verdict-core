@@ -165,7 +165,7 @@ def test_df263_graph_barriers_sanitized() -> None:
     if not graph_path.exists():
         pytest.skip("df263 graph.json not available")
     raw = json.loads(graph_path.read_text())
-    graph = WorkGraph.from_dict(raw)
+    graph = WorkGraph.from_dict(raw, allow_merge_only_owned_files=True)
     for node in graph.nodes:
         assert node.barrier in KNOWN_BARRIERS or node.barrier == "", (
             f"node {node.node_id} has unsanitized barrier: {node.barrier!r}"

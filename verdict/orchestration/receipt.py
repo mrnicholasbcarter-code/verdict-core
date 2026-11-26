@@ -882,7 +882,9 @@ def build_run_receipt(
     graph_path = run_dir / GRAPH_FILE
     graph_raw = _load_json(graph_path) if graph_path.exists() else {}
     graph = (
-        WorkGraph.from_dict({k: v for k, v in graph_raw.items() if k != "run_id"})
+        WorkGraph.from_dict(
+            {k: v for k, v in graph_raw.items() if k != "run_id"}, allow_merge_only_owned_files=True
+        )
         if graph_raw.get("nodes")
         else None
     )

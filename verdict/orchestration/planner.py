@@ -159,6 +159,12 @@ def build_planning_prompt(goal: str, repo_map: str, constraints: str) -> str:
         - research nodes (kind="research") have owned_files=[] and produce
           their output as answer text only, never files. Do NOT give a research
           node any owned_files.
+        - a node with kind="integrate" owns no files: owned_files must be []. It
+          writes nothing and no worker runs for it; it only merges the work of the
+          nodes it depends_on and runs its verification_command. Any file that must
+          be written (a test, a doc, a config), including the test file its own
+          verification_command runs, belongs to an implement node it depends_on, so
+          move that work into an implement node.
 
         RULES:
         1. Decompose into 2-8 nodes total.
@@ -177,8 +183,10 @@ def build_planning_prompt(goal: str, repo_map: str, constraints: str) -> str:
            reference the same test file: give each node its own test file.
         6. Include exactly one final node with kind="integrate" that depends_on
            ALL implement nodes, whose verification_command runs the combined
-           test suite. Keep verification_command test-focused: repo quality gates
-           are run by the runtime at integration.
+           test suite. The integrate node has owned_files=[] and its
+           verification_command may name only test files that already exist in the
+           repo or that an implement node creates. Keep verification_command
+           test-focused: repo quality gates are run by the runtime at integration.
         7. Use short, stable, snake_case or kebab-case node_id values.
         8. If new shared package-marker files (for example __init__.py) are needed,
            exactly one node must own each file. Every node that needs the file

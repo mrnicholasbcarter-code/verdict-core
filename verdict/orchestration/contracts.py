@@ -44,6 +44,11 @@ class NodeKind(str, Enum):
     REVIEW = "review"
 
 
+# Node kinds the runtime never dispatches a worker for: they merge and verify only, so
+# they cannot own files (WorkNode validation enforces it).
+MERGE_ONLY_KINDS: frozenset[NodeKind] = frozenset({NodeKind.INTEGRATE, NodeKind.REVIEW})
+
+
 class NodeState(str, Enum):
     """Explicit worker lifecycle. Admission is never success."""
 
@@ -100,6 +105,22 @@ def _norm_path(value: str) -> str:
     return str(path)
 
 
+def path_is_owned(owned_files: Iterable[str], path: str) -> bool:
+    """True when ``path`` is one of ``owned_files`` or sits under an owned directory.
+
+    ``owned_files`` entries are repo-relative; they are normalized the same way
+    ``WorkNode`` normalizes its own. A ``path`` that is not repo-relative is not owned.
+    """
+    try:
+        candidate = _norm_path(path)
+        owned_paths = [_norm_path(owned) for owned in owned_files]
+    except OrchestrationError:
+        return False
+    return any(
+        candidate == owned or candidate.startswith(owned.rstrip("/") + "/") for owned in owned_paths
+    )
+
+
 @dataclass(frozen=True)
 class WorkNode:
     """One bounded, independently verifiable unit of work in the DAG."""
@@ -153,18 +174,21 @@ class WorkNode:
                 raise OrchestrationError(
                     f"{self.node_id}: implement node needs a verification_command"
                 )
+        if self.kind in MERGE_ONLY_KINDS and self.owned_files:
+            # The runtime never dispatches a worker for these nodes (it merges and verifies
+            # only), so files given to one would never be written. Say where the work goes,
+            # because the planner's repair call receives this message.
+            raise OrchestrationError(
+                f"{self.node_id}: {self.kind.value} node must not have owned_files "
+                f"(got {', '.join(self.owned_files)}): it writes nothing and only merges "
+                "and verifies. Move the authoring work and these files to an implement "
+                "node, and make this node depends_on it"
+            )
         if self.node_id in self.depends_on:
             raise OrchestrationError(f"{self.node_id}: node depends on itself")
 
     def owns(self, path: str) -> bool:
-        try:
-            candidate = _norm_path(path)
-        except OrchestrationError:
-            return False
-        return any(
-            candidate == owned or candidate.startswith(owned.rstrip("/") + "/")
-            for owned in self.owned_files
-        )
+        return path_is_owned(self.owned_files, path)
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -172,7 +196,17 @@ class WorkNode:
         return value
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> WorkNode:
+    def from_dict(
+        cls, value: Mapping[str, Any], *, allow_merge_only_owned_files: bool = False
+    ) -> WorkNode:
+        """Build a node from a mapping, running the same validation as the constructor.
+
+        ``allow_merge_only_owned_files`` is for reading a persisted graph back: a run
+        recorded before the merge-only rule may hold an integrate node with owned files,
+        and its receipt must still verify. The files are kept exactly as recorded, so the
+        graph digest is unchanged. Only ``WorkGraph.from_dict`` sets it, for a reader of a
+        recorded run; the planner and a fresh ``--graph`` never do.
+        """
         known = {f for f in cls.__dataclass_fields__}
         unknown = sorted(set(value) - known)
         if unknown:
@@ -191,6 +225,16 @@ class WorkNode:
                 if isinstance(raw, str) or not isinstance(raw, Sequence):
                     raise OrchestrationError(f"{key} must be a list")
                 data[key] = tuple(str(item) for item in raw)
+        if allow_merge_only_owned_files and data.get("owned_files"):
+            try:
+                merge_only = NodeKind(data.get("kind", NodeKind.IMPLEMENT)) in MERGE_ONLY_KINDS
+            except ValueError:
+                merge_only = False  # the constructor reports the bad kind
+            if merge_only:
+                owned_files = tuple(_norm_path(p) for p in data.pop("owned_files"))
+                node = cls(**data)
+                object.__setattr__(node, "owned_files", owned_files)
+                return node
         return cls(**data)
 
 
@@ -283,13 +327,26 @@ class WorkGraph:
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> WorkGraph:
+    def from_dict(
+        cls, value: Mapping[str, Any], *, allow_merge_only_owned_files: bool = False
+    ) -> WorkGraph:
+        """Build a graph from a mapping, validating every node.
+
+        Strict by default, so a fresh graph (``verdict orchestrate --graph``) cannot give an
+        integrate or review node files that no worker would ever write. A reader of a
+        recorded run (``graph.json`` for resume, controls and receipts) passes
+        ``allow_merge_only_owned_files=True``: a run recorded before the merge-only rule may
+        hold such a node, and it must still resume and its receipt still verify.
+        """
         nodes = value.get("nodes")
         if not isinstance(nodes, list):
             raise OrchestrationError("graph.nodes must be a list")
         return cls(
             goal=str(value.get("goal", "")),
-            nodes=tuple(WorkNode.from_dict(n) for n in nodes),
+            nodes=tuple(
+                WorkNode.from_dict(n, allow_merge_only_owned_files=allow_merge_only_owned_files)
+                for n in nodes
+            ),
             topology=Topology(value.get("topology", Topology.PARALLEL_WORK_UNITS.value)),
             rationale=tuple(value.get("rationale", ())),
             max_parallel=int(value.get("max_parallel", 3)),
