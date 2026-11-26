@@ -158,7 +158,7 @@ def test_run_id_resolves_under_runs_dir(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "value", ["nan", "inf", "-inf", "1e999", "0", "0.0", "-1", "-0.5", "abc", ""]
+    "value", ["nan", "inf", "-inf", "1e999", "1e308", "0", "0.0", "-1", "-0.5", "abc", ""]
 )
 def test_ci_deadline_rejects_non_finite_zero_negative_and_garbage(
     value, tmp_path, capsys, monkeypatch
