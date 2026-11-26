@@ -455,9 +455,9 @@ class Git:
         with ``:(``) is matched exactly rather than reinterpreted.
 
         Finally, ignored untracked regular files under the owned paths are
-        force-added so ``.gitignore`` cannot drop a deliverable; byproduct
-        directories are excluded in the listing itself, and byproduct files,
-        symlinks and files with credential-shaped content are never added.
+        force-added so ``.gitignore`` cannot drop a deliverable; byproducts
+        are excluded in the listing itself, and byproducts, symlinks and files
+        with credential-shaped content are never added.
         """
         _ensure_local_excludes(cwd)
         dir_excludes = [p for p in BYPRODUCT_EXCLUDES if p.endswith("/")]
@@ -492,7 +492,10 @@ class Git:
                     "--exclude-standard",
                     "--",
                     *(f":(literal){p}" for p in owned_files),
-                    *(f":(exclude,glob)**/{p}**" for p in dir_excludes),
+                    *(
+                        f":(exclude,glob)**/{p}**" if p.endswith("/") else f":(exclude,glob)**/{p}"
+                        for p in BYPRODUCT_EXCLUDES
+                    ),
                 ),
                 cwd,
                 60,

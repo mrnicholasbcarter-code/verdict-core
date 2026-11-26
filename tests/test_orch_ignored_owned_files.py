@@ -212,6 +212,22 @@ async def test_owned_file_inside_an_ignored_directory_is_staged(repo: Path) -> N
     assert "build/deep/out.txt" in changed
 
 
+async def test_loose_byproduct_files_do_not_trip_the_listing_guard(repo: Path) -> None:
+    """Many ``.pyc`` files outside ``__pycache__`` are left out of the listing too."""
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    (repo / "fixtures").mkdir()
+    (repo / "fixtures" / "x.jsonl").write_text("x\n")
+    (repo / "fixtures" / ".coverage").write_bytes(b"\x00")
+    for n in range(150):
+        (repo / "fixtures" / f"module_number_{n:03d}.cpython-314.pyc").write_bytes(b"\x00")
+
+    changed = await Git(repo).changed_files(repo, base, owned_files=("fixtures",))
+
+    assert changed == ["fixtures/x.jsonl"]
+    raw = _git(repo, "ls-files", "-z", "-o", "-i", "--exclude-standard", "--", "fixtures")
+    assert len(raw) >= 4000
+
+
 async def test_explicitly_owned_byproduct_files_are_not_staged(repo: Path) -> None:
     """Naming a byproduct file as owned does not make it a deliverable."""
     base = _git(repo, "rev-parse", "HEAD").strip()
