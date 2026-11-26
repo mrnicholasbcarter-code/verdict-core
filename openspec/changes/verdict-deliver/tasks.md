@@ -2,8 +2,10 @@
 
 ## 1. Preconditions and record
 
-- [ ] 1.1 Delivery preconditions: receipt verifies, outcome COMPLETE, integration commit exists, issue exists, `gh` can push and create PRs. Each failure has a named reason, with no push and no PR. Verify: unit tests for each refusal (tampered receipt, BLOCKED run, missing issue, missing `gh` login), with git and `gh` faked.
-- [ ] 1.2 Write `delivery.json` atomically, plus `delivery.sha256`, leaving `events.jsonl` and `receipt.json` byte-identical. Verify: test comparing digests before and after.
+- [x] 1.1 Delivery preconditions: receipt verifies, outcome COMPLETE, integration commit exists, issue exists, `gh` can push and create PRs. Each failure has a named reason, with no push and no PR. Verify: unit tests for each refusal (tampered receipt, BLOCKED run, missing issue, missing `gh` login), with git and `gh` faked.
+  Evidence: tests/test_deliver_gate.py, tests/test_deliver_publish.py, tests/test_deliver_service.py.
+- [x] 1.2 Write `delivery.json` atomically, plus `delivery.sha256`, leaving `events.jsonl` and `receipt.json` byte-identical. Verify: test comparing digests before and after.
+  Evidence: tests/test_deliver_service.py.
 
 ## 2. Branch and push
 
@@ -11,13 +13,15 @@
 
 ## 3. Draft PR and ready gate
 
-- [ ] 3.1 Draft PR body built by Verdict, containing `Refs #N`, run id, events digest, change id and reviewer evidence, and never a closing keyword. Verify: a test on the rendered body.
+- [x] 3.1 Draft PR body built by Verdict, containing `Refs #N`, run id, events digest, change id and reviewer evidence, and never a closing keyword. Verify: a test on the rendered body.
+  Evidence: tests/test_deliver_render.py.
 - [ ] 3.2 Ready gate. Read the in-run review level. Run the extra cross-family OpenCodeReview when the in-run review was route-level. Stop with `no_cross_family_reviewer` or `review_failed` when that review is unavailable or fails. Wait for checks on the exact head SHA within the deadline (`ci_red`, `ci_pending`). Run `gh pr ready` only when everything is green. Verify: a test for each outcome with the review and the checks faked.
 - [ ] 3.3 GitHub client surface: no merge, approve, close or label method. Verify: an `assert_no_mutation`-style test.
 
 ## 4. Wiring, doctor and docs
 
-- [ ] 4.1 Add the `verdict deliver` subcommand, a doctor row `github_delivery` that never prints a token, and an entry in docs/CLI_REFERENCE.md. Verify: CLI and doctor tests, the doc-link check, and reachability showing nothing new.
+- [x] 4.1 Add the `verdict deliver` subcommand, a doctor row `github_delivery` that never prints a token, and an entry in docs/CLI_REFERENCE.md. Verify: CLI and doctor tests, the doc-link check, and reachability showing nothing new.
+  Evidence: tests/test_deliver_cli.py, tests/test_deliver_e2e.py, tests/test_doctor_github_delivery.py, tests/test_actions_exclusions.py.
 
 ## 5. Verification
 
