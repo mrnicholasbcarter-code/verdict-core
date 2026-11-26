@@ -104,6 +104,7 @@ from verdict.orchestration.salvage import (
     salvage_owned_files,
 )
 from verdict.orchestration.verification import VERIFY_OUTPUT_TAIL_CHARS
+from verdict.orchestration.verification import classify_gate_env_error as _classify_gate_env_error
 from verdict.orchestration.verification import (
     classify_verify_env_error as _classify_verify_env_error,
 )
@@ -1326,12 +1327,21 @@ class DagRuntime:
         *,
         worker_fixable_only: bool = False,
         failed: list[str] | None = None,
+        classify_environment: bool = False,
     ) -> str | None:
         """Run every declared gate, retaining the first failure with bounded evidence.
 
         ``worker_fixable_only`` (implement-node validation) reports only real check
         failures: configuration errors and missing executables are left for the
         integration barrier, since the node's worker cannot fix them.
+
+        ``classify_environment`` (the integration barrier, where no worker is left to
+        correct anything) reads a failed gate's whole output for an environment fault
+        (:func:`~verdict.orchestration.verification.classify_gate_env_error`).  Such a
+        failure is returned as ``environment_error: ...``, but only when no gate failed for
+        another reason: a gate that really failed makes the result a ``repo_gate_failed``
+        one, so the implementation is never reported as sound because another gate's
+        environment was broken.
         """
         node_id = run.node.node_id
         if not self.policy.run_repo_gates:
@@ -1354,6 +1364,7 @@ class DagRuntime:
             return None if worker_fixable_only else config_reason
         self.events.emit("repo_gates", node_id, **describe_gates(gates))
         reason: str | None = None
+        environment_reason: str | None = None
         for gate in gates:
             resolved = list(gate.argv)
             try:
@@ -1364,6 +1375,11 @@ class DagRuntime:
                 code, out = await self.runner(
                     resolved, worktree, self.policy.verify_timeout_seconds
                 )
+            gate_environment = (
+                _classify_gate_env_error(gate.argv, code, out, worktree)
+                if classify_environment
+                else None
+            )
             self.events.emit(
                 "repo_gate",
                 node_id,
@@ -1374,14 +1390,21 @@ class DagRuntime:
                 executed_command=shlex.join(resolved),
                 source=gate.source,
                 tail=out[-600:],
+                **({"environment_error": gate_environment} if gate_environment else {}),
             )
             fixable = code not in (126, 127) or not worker_fixable_only
             if code != 0 and fixable:
                 message = f"repo_gate_failed: {gate.name} exit {code}: {out[-600:]}"
-                reason = reason or message
+                if gate_environment is not None:
+                    environment_reason = environment_reason or (
+                        f"environment_error: repo gate {gate.name} exit {code}: "
+                        f"{gate_environment.removeprefix('environment_error: ')}"
+                    )
+                else:
+                    reason = reason or message
                 if failed is not None:
                     failed.append(message)
-        return reason
+        return reason or environment_reason
 
     async def _integrate_node(self, run: NodeRun) -> None:
         """Mechanical integration barrier: merge, run combined tests and repo quality gates."""
@@ -1444,7 +1467,7 @@ class DagRuntime:
                 if not ok:
                     reason = f"integration verification failed: exit {code}: {out[-600:]}"
             if ok:
-                reason = await self._run_repo_gates(run, worktree) or ""
+                reason = await self._run_repo_gates(run, worktree, classify_environment=True) or ""
                 ok = not reason
             self.events.emit(
                 "barrier",
@@ -1457,20 +1480,23 @@ class DagRuntime:
             await self.git.remove_worktree(worktree)
         if not ok:
             run.reason = reason
-            self._record_failure(
-                run,
-                WorkerTerminal(ok=False, error="verification_failed: " + reason),
-                run.failures,
-                validated=True,
+            if reason.startswith("environment_error:"):
+                # A gate that could not judge the code (its environment lacks the project's
+                # dependencies): the fail-closed environment path, never a wrong implementation
+                # (no worker is left to correct anything here, and none could fix this).
+                terminal = WorkerTerminal(ok=False, error=reason)
+                failure = FailureClassification("environment_error", "BLOCK", 0, "none", reason)
+            else:
+                terminal = WorkerTerminal(ok=False, error="verification_failed: " + reason)
                 # Gate diagnostics describe verification, never worker transport faults.
-                failure=FailureClassification(
+                failure = FailureClassification(
                     "verification_failed",
                     "CORRECT_IMPLEMENTATION",
                     0,
                     "none",
                     "verification_failed: " + reason,
-                ),
-            )
+                )
+            self._record_failure(run, terminal, run.failures, validated=True, failure=failure)
             run.failure_feedback = reason[-2000:]
             run.history[-1]["evidence"] = run.failure_feedback
             self._set(run, NodeState.BLOCKED, reason=run.reason)
@@ -2289,13 +2315,16 @@ class DagRuntime:
         if failure is None:
             failure = self.classifier.classify(terminal, now=self.now())
         failures.append(failure)
+        # An environment error says nothing about the work: ``validated`` then only chooses
+        # the state transition (REJECTED, from TERMINAL_SUCCESS), never a judgement.
+        judged = validated and failure.category != "environment_error"
         # fix(retry-clean-base): track whether this attempt's work was judged wrong so
         # _attempt() can start the next attempt from the clean base.
-        run.last_rejected = validated or failure.category in _JUDGED_WORK_CATEGORIES
+        run.last_rejected = judged or failure.category in _JUDGED_WORK_CATEGORIES
         # Capability escalation: count judged work failures and tighten the tier
         # ceiling once the threshold is reached.  Interrupted failures (transport,
         # timeout) do not count — only failures that mean the work was wrong.
-        if validated or failure.category in _ESCALATION_JUDGED_CATEGORIES:
+        if judged or failure.category in _ESCALATION_JUDGED_CATEGORIES:
             run.judged_failure_count += 1
             if run.judged_failure_count >= _ESCALATION_JUDGED_FAILURE_THRESHOLD:
                 t = run.last_selected_tier
