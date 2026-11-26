@@ -139,6 +139,8 @@ def test_no_github_remote_is_a_note() -> None:
     "url",
     [
         "git@github.com:owner/repo.git",
+        "github.com:owner/repo.git",
+        "github.com:owner/repo",
         "https://github.com/owner/repo.git",
         "https://github.com/owner/repo",
         "https://user@github.com/owner/repo.git",
@@ -161,6 +163,8 @@ def test_github_remote_forms_are_recognised(url: str) -> None:
         "https://github.com.evil.example/owner/repo.git",
         "https://evil.example/github.com/owner/repo",
         "git@evil.example:github.com/owner/repo.git",
+        "evil.example:github.com/owner/repo.git",
+        "xgithub.com:owner/repo.git",
     ],
 )
 def test_non_github_hosts_are_not_github_remotes(url: str) -> None:

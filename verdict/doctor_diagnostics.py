@@ -1381,7 +1381,7 @@ _GH_KNOWN_PERMISSIONS = _GH_WRITE_PERMISSIONS | {"TRIAGE", "READ", "NONE"}
 #: login problem on some other host) cannot redirect the check to a different repository.
 _GITHUB_HOST = "github.com"
 _GITHUB_REMOTE = re.compile(
-    r"(?:git@github\.com:|(?:https|ssh)://(?:[^/@\s]+@)?github\.com/)"
+    r"(?:(?:git@)?github\.com:|(?:https|ssh)://(?:[^/@\s]+@)?github\.com/)"
     r"(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)(?:\.git)?/?\s*$"
 )
 
