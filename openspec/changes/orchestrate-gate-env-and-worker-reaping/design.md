@@ -35,7 +35,7 @@ processes that are explained are the ones outside the group.
 labelled as one; no process of an attempt outlives it; a signalled orchestrator ends its workers.
 
 **Non-Goals:** the other items of #1354; naming extras per project; changing the node-level base
-comparison; the exit-126/127 wording; non-Linux process discovery.
+comparison; non-Linux process discovery.
 
 ## Decisions
 
@@ -73,33 +73,52 @@ integration barrier has no base comparison and no worker, so it blocked. The res
 by the node worktree, the base worktree and the integration worktree, so D1 reaches all three; the
 base comparison stays as it is.
 
-### D3. An environment fault at integration is an `environment_error`
+### D3. An environment fault at integration is an `environment_error`, on evidence from the base
 
-`classify_gate_env_error` reads the whole gate output (not the 600-character tail the reason
-keeps): a failed `mypy` gate with at least one `import-not-found` or `import-untyped` error,
-every one for a third-party module, is an environment error. "Third party" means the name is not
-a package or module of the project, at the worktree root, under `src/` or in a `[tool.mypy]
-mypy_path` or `MYPYPATH` entry; an unresolved import of the project's own module is a wrong
-implementation. Other mypy errors in the same output are not told
-apart (the observed output mixes them; all of them pass with the libraries installed), so a
-genuine type error beside the import errors shows once the environment is fixed.
+Applied only at the integration barrier (`classify_environment=True`), where no worker is left
+to correct anything; at node level an import error that the base does not also have goes back to
+the worker, as before. A failed gate is the environment's, not the implementation's, in two
+cases only:
 
-Applied only at the integration barrier (`classify_environment=True`): at node level an import
-error that the base does not also have goes back to the worker, as before. A gate that failed for
-another reason wins: the result is `repo_gate_failed`, so the implementation is never reported as
-sound because another gate's environment was broken. The failure takes the existing fail-closed
-path (`FailureClassification("environment_error", "BLOCK", 0, "none")`, REJECTED then BLOCKED),
-and `_record_failure` does not count it as a judged failure. The reason names three packages at
-most; no other output text reaches it. Only the output the runner kept is read (its last 4,000
-characters): a first-party error in a cut-off part is not seen.
+1. **The gate command could not start.** `resolve_gate_argv` raised `FileNotFoundError` (no
+   executable, or `uv.lock` without `uv` on `PATH`), or the runner returned 126 or 127 (the
+   program is missing or not executable). Those are the codes the node level already leaves to
+   integration because no worker can fix them; no code was judged.
+2. **mypy cannot resolve third-party packages that it cannot resolve on the run's untouched
+   base either.** Reading the output alone proves nothing: `import reqeusts` and a deleted
+   top-level package are unresolved and "third party" too. So the signal is only a candidate:
+   a failed `mypy` gate with at least one `import-not-found` or `import-untyped` error, every
+   one for a name that is not a package or module of the project (at the worktree root, under
+   `src/`, in a `[tool.mypy] mypy_path` or `MYPYPATH` entry; an unresolved import of the
+   project's own module is a wrong implementation). Then the same gate runs once in a scratch
+   worktree of the run's base commit (`_base_sha`, not the merged candidate), and the failure is
+   the environment's only if **every package the candidate cannot resolve is also unresolved
+   there**. A typo or a package the implementation deleted resolves, or never existed, on the
+   base, so it stays `verification_failed`. The base is run only after the cheap filters pass,
+   because its first run in a fresh worktree installs every extra; its worktree and branch are
+   removed on every path. When the base cannot be checked (no base commit, the worktree cannot
+   be added, the gate cannot run there) there is no evidence and the failure stays
+   `verification_failed`.
 
-Known limit (open review finding, not fixed here): "first party" is read from the worktree being
-checked, so a top-level module that the run itself deleted while an import of it remains looks
-like a missing dependency. At node level the full-environment gate reports that to the worker
-(the base still has the module); only an interplay between two nodes reaches integration this way.
+The runner keeps the last 4,000 characters, so a long mypy error list loses its head and a new
+import error there would not be seen. mypy's own `Found N errors` total survives the cut. When
+the kept output lists fewer errors than that total (it is cut), the candidate must also report
+no more errors in total than the base, else the failure stays `verification_failed`. The cost: an
+implementation that adds code which uses a library the broken environment lacks raises the total
+and is reported as `verification_failed` with the raw evidence, where only a whole (uncut) output
+is told apart exactly; the missing-extras fault itself is removed at the source by D1.
 
-Left as it is: a gate that cannot start (exit 126 or 127) stays `verification_failed` at
-integration, as existing tests pin.
+Other mypy errors in the same output are not told apart (the observed output mixes them; all of
+them pass with the libraries installed), so a genuine type error beside the import errors shows
+once the environment is fixed. A gate that failed for another reason wins: the result is a plain
+`repo_gate_failed`, whichever gate comes first, so the implementation is never reported as sound
+because another gate's environment was broken. The failure takes the existing fail-closed path
+(`FailureClassification("environment_error", "BLOCK", 0, "none")`, REJECTED then BLOCKED), and
+`_record_failure` does not count it as a judged failure. The reason is
+`environment_error: repo_gate_failed: <gate> exit <code>: <detail>`, the plain reason with a
+prefix, so what names the gate is unchanged; for mypy the detail names three packages at most and
+no other output text. A candidate that looked like the environment but was refused records why in
+the `repo_gate` event (`environment_ruled_out`).
 
 ### D4. Every process of an attempt carries a marker, and ends with the attempt
 
@@ -146,6 +165,9 @@ as an interrupted controller and resumes it.
 - An environment error at integration blocks the run exactly as a verification failure did: the
   change is the label, the route-health writes (none) and the judged-failure count (not
   incremented).
+- Telling a typo from an environment fault costs one more run of the gate, on the base, and only
+  when mypy has already failed with unresolved third-party imports at integration: a cold
+  `--all-extras` install of about a minute, then the run is BLOCKED either way.
 
 ## Security / trust implications
 
@@ -153,7 +175,8 @@ as an interrupted controller and resumes it.
   credential; it is in the worker's environment next to the worker assignment, which is the
   worker's only credential and is unchanged. Signalling is limited to processes of this user that
   carry the marker; nothing is matched by name.
-- Gate output is read for the classification, and only package names reach the reason.
+- Gate output is read for the classification, and only package names reach the reason. The base
+  gate runs the project's own gate command in a worktree of a commit the run already trusts.
 
 ## Routing / context / memory implications
 
@@ -163,9 +186,9 @@ routing, context packs and memory are untouched, and `tests/test_admission.py` i
 ## Migration / rollback
 
 No data migration. Existing receipts and events are unchanged except that a `repo_gate` event may
-carry an `environment_error` field and the failure category of an integration environment fault
-is `environment_error`. Roll back by restoring `uv run --frozen <tool>`, removing the
-`classify_environment` argument, and restoring the single `_kill_process_group` call and the
+carry an `environment_error` or `environment_ruled_out` field and the failure category of an
+integration environment fault is `environment_error`. Roll back by restoring `uv run --frozen <tool>`, removing the
+`classify_environment` argument and the base worktree of `_base_gate_imports`, and restoring the single `_kill_process_group` call and the
 unwrapped `run_golden_path`.
 
 ## ADR impact

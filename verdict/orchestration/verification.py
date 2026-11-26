@@ -8,6 +8,7 @@ import shlex
 import shutil
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from verdict.orchestration.contracts import path_is_owned
@@ -36,6 +37,13 @@ _UNRESOLVED_IMPORT_RE = re.compile(
     r"^[^\n]*: error: (?P<message>[^\n]*?)  \[(?:import-not-found|import-untyped)\]$", re.MULTILINE
 )
 _QUOTED_MODULE_RE = re.compile(r'"([^"\n]+)"')
+# mypy's total (``Found 50 errors in 16 files``, ``Found 1 error in 1 file``) and one error line.
+_FOUND_ERRORS_RE = re.compile(r"^Found (\d+) errors? in \d+ files?", re.MULTILINE)
+_ERROR_LINE_RE = re.compile(r"^[^\n]*: error: ", re.MULTILINE)
+# The exit codes of a gate command that could not start (the runner's 127 for a missing or
+# non-executable program, the shell's 126).  A worker cannot fix them, which is why the node
+# level leaves them to the integration barrier, and there they are the environment's.
+GATE_UNAVAILABLE_EXIT_CODES = (126, 127)
 
 
 def _runs_pytest(argv: Sequence[str]) -> bool:
@@ -199,25 +207,32 @@ def _is_first_party(module: str, worktree: Path) -> bool:
     )
 
 
-def classify_gate_env_error(argv: Sequence[str], code: int, out: str, worktree: Path) -> str | None:
-    """Return an ``"environment_error: <reason>"`` string when a failed repo gate failed
-    because its environment lacks the project's dependencies, not because of the code.
+@dataclass(frozen=True)
+class UnresolvedImports:
+    """What one failed mypy run says about unresolved imports of third-party packages."""
+
+    packages: tuple[str, ...]  # top-level names, in the order they were reported
+    error_count: int | None  # mypy's own ``Found N errors`` total; None without that line
+    complete: bool  # the kept output lists every error mypy found
+
+
+def unresolved_third_party_imports(
+    argv: Sequence[str], code: int, out: str, worktree: Path
+) -> UnresolvedImports | None:
+    """The third-party packages a failed mypy gate could not resolve, or ``None``.
 
     The one signal read is mypy's own: at least one ``import-not-found`` or ``import-untyped``
     error, every one of them for a third-party module (the name is not a package or module of the
-    project: at the worktree root, under ``src/`` or in a ``mypy_path``).  mypy's other errors in
-    the same output are not told apart: the observed output mixes the import errors with others
-    (``untyped-decorator``, ``no-any-return``) that pass once the libraries are installed, so a
-    genuine type error beside them shows once the environment is fixed.  ``None`` for a passing
+    project: at the worktree root, under ``src/`` or in a ``mypy_path``).  ``None`` for a passing
     gate, any other gate, output without such an error, and output with an unresolved import of
-    the project's own modules (a renamed or deleted module is a wrong implementation).  Only the
-    output the runner kept is read; a first-party error in a cut-off part is not seen.
+    the project's own modules (a renamed or deleted module is a wrong implementation).
 
-    The reason names the first three packages only: no other output text reaches it.
+    This alone never proves a broken environment: ``reqeusts`` is "third-party" too.  The caller
+    compares it with the same gate on the run's untouched base (:func:`environment_fault_refusal`).
     """
     if code == 0 or not _runs_mypy(argv):
         return None
-    modules: list[str] = []
+    packages: list[str] = []
     for match in _UNRESOLVED_IMPORT_RE.finditer(out):
         quoted = _QUOTED_MODULE_RE.search(match.group("message"))
         if quoted is None:
@@ -226,18 +241,65 @@ def classify_gate_env_error(argv: Sequence[str], code: int, out: str, worktree: 
         if _is_first_party(module, worktree):
             return None
         package = module.split(".", 1)[0]
-        if package not in modules:
-            modules.append(package)
-    if not modules:
+        if package not in packages:
+            packages.append(package)
+    if not packages:
         return None
-    named = ", ".join(modules[:_REASON_PATHS_NAMED])
-    more = len(modules) - _REASON_PATHS_NAMED
+    found = _FOUND_ERRORS_RE.search(out)
+    error_count = int(found.group(1)) if found else None
+    listed = len(_ERROR_LINE_RE.findall(out))
+    # The runner keeps only the last VERIFY_OUTPUT_TAIL_CHARS characters: the head of a long
+    # error list is gone, and the total in mypy's summary line is what says so.
+    complete = (
+        listed >= error_count if error_count is not None else len(out) < VERIFY_OUTPUT_TAIL_CHARS
+    )
+    return UnresolvedImports(tuple(packages), error_count, complete)
+
+
+def environment_fault_refusal(
+    candidate: UnresolvedImports, base: UnresolvedImports | None
+) -> str | None:
+    """Why the candidate's unresolved imports are not proof of a broken environment, or ``None``
+    when they are.
+
+    The evidence is the same gate on the run's untouched base (``base``; ``None`` when it could
+    not be run): every package the candidate cannot resolve is one the base cannot resolve
+    either.  A typo, and a top-level package the implementation deleted, resolve differently
+    there.  When the kept output is cut (the head is lost, so a new import error could hide
+    in it), the candidate must also report no more errors in total than the base.
+    """
+    if base is None:
+        return (
+            "the untouched base could not be checked, so the unresolved imports are not proven old"
+        )
+    new = [package for package in candidate.packages if package not in base.packages]
+    if new:
+        return "not unresolved on the untouched base: " + ", ".join(new[:_REASON_PATHS_NAMED])
+    if candidate.complete:
+        return None
+    if candidate.error_count is None or base.error_count is None:
+        return "the kept output is cut and its error total cannot be compared with the base"
+    if candidate.error_count > base.error_count:
+        return (
+            f"the kept output is cut and reports {candidate.error_count} errors, more than "
+            f"the {base.error_count} on the untouched base"
+        )
+    return None
+
+
+def describe_environment_fault(argv: Sequence[str], imports: UnresolvedImports) -> str:
+    """The reason for a gate that failed on an environment lacking the project's dependencies.
+
+    It names the first three packages only: no other output text reaches it.
+    """
+    named = ", ".join(imports.packages[:_REASON_PATHS_NAMED])
+    more = len(imports.packages) - _REASON_PATHS_NAMED
     if more > 0:
         named += f" and {more} more"
     return (
-        f"environment_error: `{shlex.join(argv)}` cannot resolve third-party imports ({named}); "
-        "the gate ran without the project's dependencies: fix the environment, "
-        "not the implementation"
+        f"`{shlex.join(argv)}` cannot resolve third-party imports ({named}), and the "
+        "untouched base fails the same way: the gate ran without the project's dependencies, "
+        "fix the environment, not the implementation"
     )
 
 

@@ -16,7 +16,7 @@ from tests.test_orch_runtime import repo as repo
 from tests.test_repo_gates_runtime import gate_bin as gate_bin
 from tests.test_repo_gates_runtime import make_runtime
 from verdict.orchestration import verification
-from verdict.orchestration.contracts import NodeState, RunOutcome
+from verdict.orchestration.contracts import NodeState, OrchestrationError, RunOutcome
 from verdict.orchestration.runtime import _resolve_verify_argv, subprocess_runner
 
 # ------------------------------------------------------------------ subprocess_runner
@@ -968,6 +968,13 @@ pyproject.toml: note: unused section(s): module = ['opentelemetry', 'opentelemet
 Found 50 errors in 16 files (checked 381 source files)
 """
 _MYPY_ARGV = ("mypy", "--strict", "verdict")
+# The same fault in a small project: the output is whole, every error is listed.
+_MYPY_SHORT_ENV_OUTPUT = """\
+verdict/cli.py:14: error: Library stubs not installed for "yaml"  [import-untyped]
+verdict/cli.py:14: note: Hint: "python3 -m pip install types-PyYAML"
+verdict/util.py:9: error: Returning Any from function declared to return "str"  [no-any-return]
+Found 2 errors in 2 files (checked 3 source files)
+"""
 
 
 def _first_party_tree(root: Path) -> Path:
@@ -976,15 +983,25 @@ def _first_party_tree(root: Path) -> Path:
     return root
 
 
-def test_unresolved_third_party_imports_are_an_environment_error(tmp_path: Path) -> None:
-    reason = verification.classify_gate_env_error(
-        _MYPY_ARGV, 1, _MYPY_ENV_OUTPUT, _first_party_tree(tmp_path)
-    )
-    assert reason is not None
-    assert reason.startswith("environment_error:")
-    for module in ("fastapi", "prompt_toolkit", "yaml"):
-        assert module in reason
-    assert "no-any-return" not in reason  # no output text beyond the module names
+def _imports(out: str, root: Path, argv: Sequence[str] = _MYPY_ARGV, code: int = 1) -> Any:
+    return verification.unresolved_third_party_imports(argv, code, out, root)
+
+
+def test_unresolved_third_party_imports_are_read_from_the_mypy_output(tmp_path: Path) -> None:
+    imports = _imports(_MYPY_ENV_OUTPUT, _first_party_tree(tmp_path))
+    assert imports is not None
+    assert imports.packages == ("fastapi", "prompt_toolkit", "yaml")
+    assert imports.error_count == 50
+    # 7 error lines are kept of the 50 the summary counts: the runner cut the head off
+    assert imports.complete is False
+
+
+def test_a_short_output_that_lists_every_error_is_complete(tmp_path: Path) -> None:
+    imports = _imports(_MYPY_SHORT_ENV_OUTPUT, _first_party_tree(tmp_path))
+    assert imports is not None
+    assert imports.packages == ("yaml",)
+    assert imports.error_count == 2
+    assert imports.complete is True
 
 
 def test_a_missing_first_party_module_is_never_an_environment_error(tmp_path: Path) -> None:
@@ -992,16 +1009,14 @@ def test_a_missing_first_party_module_is_never_an_environment_error(tmp_path: Pa
     next to unresolved third-party imports."""
     root = _first_party_tree(tmp_path)
     only = 'verdict/a.py:3: error: Cannot find implementation or library stub for module named "verdict.gone"  [import-not-found]\n'
-    assert verification.classify_gate_env_error(_MYPY_ARGV, 1, only, root) is None
-    assert (
-        verification.classify_gate_env_error(_MYPY_ARGV, 1, _MYPY_ENV_OUTPUT + only, root) is None
-    )
+    assert _imports(only, root) is None
+    assert _imports(_MYPY_ENV_OUTPUT + only, root) is None
 
 
 def test_a_src_layout_first_party_module_is_never_an_environment_error(tmp_path: Path) -> None:
     (tmp_path / "src" / "pkg").mkdir(parents=True)
     out = 'src/pkg/a.py:3: error: Cannot find implementation or library stub for module named "pkg.gone"  [import-not-found]\n'
-    assert verification.classify_gate_env_error(("mypy", "src"), 1, out, tmp_path) is None
+    assert _imports(out, tmp_path, ("mypy", "src")) is None
 
 
 def test_a_module_in_a_configured_mypy_path_is_first_party(tmp_path: Path) -> None:
@@ -1010,10 +1025,10 @@ def test_a_module_in_a_configured_mypy_path_is_first_party(tmp_path: Path) -> No
     (tmp_path / "lib" / "pkg").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text('[tool.mypy]\nmypy_path = ["lib"]\n')
     out = 'lib/pkg/a.py:3: error: Cannot find implementation or library stub for module named "pkg.missing"  [import-not-found]\n'
-    assert verification.classify_gate_env_error(("mypy", "lib"), 1, out, tmp_path) is None
-    # and without the configuration the same output is an environment fault: the config decides
+    assert _imports(out, tmp_path, ("mypy", "lib")) is None
+    # and without the configuration the same output names a third-party package: the config decides
     (tmp_path / "pyproject.toml").write_text("[tool.mypy]\n")
-    assert verification.classify_gate_env_error(("mypy", "lib"), 1, out, tmp_path) is not None
+    assert _imports(out, tmp_path, ("mypy", "lib")) is not None
 
 
 def test_a_module_in_the_mypypath_environment_variable_is_first_party(
@@ -1022,31 +1037,78 @@ def test_a_module_in_the_mypypath_environment_variable_is_first_party(
     (tmp_path / "lib" / "pkg").mkdir(parents=True)
     monkeypatch.setenv("MYPYPATH", "other:lib")
     out = 'a.py:3: error: Cannot find implementation or library stub for module named "pkg.missing"  [import-not-found]\n'
-    assert verification.classify_gate_env_error(("mypy", "."), 1, out, tmp_path) is None
+    assert _imports(out, tmp_path, ("mypy", ".")) is None
 
 
-def test_ordinary_type_errors_stay_verification_failures(tmp_path: Path) -> None:
+def test_ordinary_type_errors_have_no_unresolved_imports(tmp_path: Path) -> None:
     out = (
         'verdict/a.py:3: error: Incompatible return value type (got "int", expected "str")  [return-value]\n'
         "Found 1 error in 1 file (checked 381 source files)\n"
     )
-    assert (
-        verification.classify_gate_env_error(_MYPY_ARGV, 1, out, _first_party_tree(tmp_path))
-        is None
-    )
+    assert _imports(out, _first_party_tree(tmp_path)) is None
 
 
 def test_only_the_mypy_gate_is_read_for_unresolved_imports(tmp_path: Path) -> None:
+    root = _first_party_tree(tmp_path)
+    assert _imports(_MYPY_ENV_OUTPUT, root, ("ruff", "check", ".")) is None
+
+
+def test_a_passing_gate_has_no_unresolved_imports(tmp_path: Path) -> None:
+    assert _imports(_MYPY_ENV_OUTPUT, tmp_path, code=0) is None
+
+
+def _fault(*packages: str, count: int | None = None, complete: bool = True) -> Any:
+    return verification.UnresolvedImports(tuple(packages), count, complete)
+
+
+def test_the_same_unresolved_imports_on_the_untouched_base_are_the_environment() -> None:
+    candidate = _fault("yaml", count=2)
+    assert verification.environment_fault_refusal(candidate, _fault("yaml", count=2)) is None
+    # the base may fail on more than the candidate does
+    assert verification.environment_fault_refusal(candidate, _fault("yaml", "fastapi")) is None
+
+
+def test_an_import_that_the_base_resolves_is_not_the_environment() -> None:
+    """A typo (``reqeusts``) and a deleted top-level package both resolve, or never existed, on
+    the untouched base: the implementation introduced the missing import."""
+    refusal = verification.environment_fault_refusal(_fault("reqeusts"), _fault("yaml"))
+    assert refusal is not None and "reqeusts" in refusal
+    # one new name next to the base's own is still a new unresolved import
+    mixed = verification.environment_fault_refusal(_fault("yaml", "reqeusts"), _fault("yaml"))
+    assert mixed is not None and "reqeusts" in mixed and "yaml" not in mixed
+
+
+def test_a_base_without_the_fault_is_no_evidence() -> None:
+    refusal = verification.environment_fault_refusal(_fault("yaml"), None)
+    assert refusal is not None and "untouched base" in refusal
+
+
+def test_a_cut_output_needs_no_more_errors_than_the_base() -> None:
+    """The runner keeps the last 4000 characters, so a new unresolved import in the cut-off head
+    is not seen: the totals mypy prints still are."""
+    cut = _fault("yaml", count=52, complete=False)
+    assert verification.environment_fault_refusal(cut, _fault("yaml", count=50)) is not None
     assert (
-        verification.classify_gate_env_error(
-            ("ruff", "check", "."), 1, _MYPY_ENV_OUTPUT, _first_party_tree(tmp_path)
+        verification.environment_fault_refusal(
+            _fault("yaml", count=50, complete=False), _fault("yaml", count=50)
         )
         is None
     )
+    assert verification.environment_fault_refusal(cut, _fault("yaml", count=None)) is not None
+    assert (
+        verification.environment_fault_refusal(
+            _fault("yaml", count=None, complete=False), _fault("yaml", count=50)
+        )
+        is not None
+    )
 
 
-def test_a_passing_gate_is_not_an_environment_error(tmp_path: Path) -> None:
-    assert verification.classify_gate_env_error(_MYPY_ARGV, 0, _MYPY_ENV_OUTPUT, tmp_path) is None
+def test_the_environment_reason_names_at_most_three_packages() -> None:
+    reason = verification.describe_environment_fault(
+        _MYPY_ARGV, _fault("a", "b", "c", "d", "e", count=9, complete=False)
+    )
+    assert "a, b, c and 2 more" in reason
+    assert "no-any-return" not in reason  # no output text beyond the package names
 
 
 # ------------------------------------------------------------------ gates through the runtime
@@ -1054,42 +1116,156 @@ def test_a_passing_gate_is_not_an_environment_error(tmp_path: Path) -> None:
 _MYPY_CONFIG = "[tool.mypy]\nfiles = ['a.txt']\n"
 
 
+def _mypy_runner(
+    runtime: Any, *, candidate: tuple[int, str], base: tuple[int, str] | None
+) -> list[Path]:
+    """Make mypy fail with ``candidate`` in the integration worktree and answer ``base`` in the
+    scratch worktree of the run's untouched base (passing when ``base`` is None).  Returns the
+    worktrees mypy ran in at the base."""
+    normal_runner = runtime.runner
+    base_runs: list[Path] = []
+
+    async def runner(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "mypy":
+            if cwd.name.startswith("i-"):
+                return candidate
+            if cwd.name.startswith("integration-base-"):
+                base_runs.append(cwd)
+                return base if base is not None else (0, "Success: no issues found")
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = runner
+    return base_runs
+
+
+def _import_error(module: str) -> str:
+    return (
+        f'a.py:1: error: Cannot find implementation or library stub for module named "{module}"'
+        "  [import-not-found]\n"
+    )
+
+
+async def _worktrees_and_branches(repo: Path) -> tuple[str, str]:
+    worktrees = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True, text=True
+    ).stdout
+    branches = subprocess.run(
+        ["git", "branch", "--list", "verdict/integration-base-*"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return worktrees, branches
+
+
 async def test_an_environment_fault_at_integration_is_an_environment_error(
     repo: Path, gate_bin: Path
 ) -> None:
     """The fourth self-build run: the integration mypy gate failed on a tree that passes in the
-    project's environment, and was recorded as ``verification_failed -> CORRECT_IMPLEMENTATION``."""
+    project's environment, and was recorded as ``verification_failed -> CORRECT_IMPLEMENTATION``.
+    The same gate fails the same way on the run's untouched base, so the environment is the
+    cause."""
     runtime, events, _ = make_runtime(repo, _MYPY_CONFIG)
-    (repo.parent / "unused").touch()
-    normal_runner = runtime.runner
-
-    async def broken_environment(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
-        if Path(argv[0]).name == "mypy" and cwd.name.startswith("i-"):
-            return 1, _MYPY_ENV_OUTPUT
-        return await normal_runner(argv, cwd, timeout)
-
-    runtime.runner = broken_environment
+    base_runs = _mypy_runner(runtime, candidate=(1, _MYPY_ENV_OUTPUT), base=(1, _MYPY_ENV_OUTPUT))
     result = await runtime.run()
     assert result.outcome is RunOutcome.BLOCKED
     assert result.nodes["i"].state is NodeState.BLOCKED
     failure = events.of("failure", "i")[0]
     assert failure["category"] == "environment_error"
     assert failure["action"] == "BLOCK"
-    assert result.nodes["i"].reason.startswith("environment_error:")
+    assert result.nodes["i"].reason.startswith("environment_error: repo_gate_failed: mypy exit 1")
     assert "verification_failed" not in result.nodes["i"].reason
     gate = next(e for e in events.of("repo_gate", "i") if e["name"] == "mypy")
     assert gate["ok"] is False and gate["exit_code"] == 1
+    assert "fastapi" in gate["environment_error"]
     assert [e["state"] for e in events.of("node_state", "i")][-2:] == ["REJECTED", "BLOCKED"]
     # Not a judged failure: nothing about the implementation was found wrong.
     assert result.nodes["i"].judged_failure_count == 0
     assert result.nodes["i"].history[-1]["outcome"] == "environment_error"
     assert result.nodes["i"].history[-1]["rejected"] is False
+    # The evidence came from one run of the gate at the base, whose worktree and branch are gone.
+    assert len(base_runs) == 1
+    worktrees, branches = await _worktrees_and_branches(repo)
+    assert "integration-base-" not in worktrees and branches.strip() == ""
+
+
+@pytest.mark.parametrize(
+    ("candidate", "base", "named"),
+    [
+        pytest.param(  # a typo of a library: the base never imported it
+            (1, _import_error("reqeusts") + "Found 1 error in 1 file (checked 2 source files)\n"),
+            None,
+            "reqeusts",
+            id="typo-and-the-base-passes",
+        ),
+        pytest.param(  # the base has the environment fault, and the candidate one more name
+            (
+                1,
+                _import_error("yaml")
+                + _import_error("reqeusts")
+                + "Found 2 errors in 1 file (checked 2 source files)\n",
+            ),
+            (1, _import_error("yaml") + "Found 1 error in 1 file (checked 2 source files)\n"),
+            "reqeusts",
+            id="typo-beside-the-base-fault",
+        ),
+        pytest.param(  # the cut-off head of the candidate hides what the base does not have
+            (1, _MYPY_ENV_OUTPUT.replace("Found 50 errors", "Found 52 errors")),
+            (1, _MYPY_ENV_OUTPUT),
+            "52 errors",
+            id="cut-output-with-more-errors-than-the-base",
+        ),
+    ],
+)
+async def test_a_missing_import_the_implementation_introduced_is_a_verification_failure(
+    repo: Path, gate_bin: Path, candidate: tuple[int, str], base: tuple[int, str] | None, named: str
+) -> None:
+    """Review finding 1 of #1364: an unresolved name that is not first-party in the tree is not
+    proof of a broken environment.  A typo (or a deleted top-level package) is unresolved only
+    in the candidate, so the run says the implementation is wrong, with the reason recorded."""
+    runtime, events, _ = make_runtime(repo, _MYPY_CONFIG)
+    base_runs = _mypy_runner(runtime, candidate=candidate, base=base)
+    result = await runtime.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    failure = events.of("failure", "i")[0]
+    assert failure["category"] == "verification_failed"
+    assert failure["action"] == "CORRECT_IMPLEMENTATION"
+    assert result.nodes["i"].reason.startswith("repo_gate_failed: mypy exit 1")
+    assert result.nodes["i"].judged_failure_count == 1
+    gate = next(e for e in events.of("repo_gate", "i") if e["name"] == "mypy")
+    assert "environment_error" not in gate
+    assert named in gate["environment_ruled_out"]
+    assert len(base_runs) == 1
+    worktrees, branches = await _worktrees_and_branches(repo)
+    assert "integration-base-" not in worktrees and branches.strip() == ""
+
+
+async def test_an_environment_fault_without_evidence_from_the_base_is_a_verification_failure(
+    repo: Path, gate_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No base worktree, no evidence: the failure stays the implementation's."""
+    runtime, events, _ = make_runtime(repo, _MYPY_CONFIG)
+    base_runs = _mypy_runner(runtime, candidate=(1, _MYPY_ENV_OUTPUT), base=(1, _MYPY_ENV_OUTPUT))
+    real_add = runtime.git.add_worktree
+
+    async def refuse_the_base(path: Path, branch: str, base: str) -> None:
+        if path.name.startswith("integration-base-"):
+            raise OrchestrationError("git worktree add failed (128): no space left")
+        await real_add(path, branch, base)
+
+    monkeypatch.setattr(runtime.git, "add_worktree", refuse_the_base)
+    result = await runtime.run()
+    assert events.of("failure", "i")[0]["category"] == "verification_failed"
+    assert result.nodes["i"].judged_failure_count == 1
+    gate = next(e for e in events.of("repo_gate", "i") if e["name"] == "mypy")
+    assert "environment_error" not in gate and "untouched base" in gate["environment_ruled_out"]
+    assert base_runs == []
 
 
 async def test_a_real_gate_failure_at_integration_stays_a_verification_failure(
     repo: Path, gate_bin: Path
 ) -> None:
-    runtime, events, _ = make_runtime(repo, _MYPY_CONFIG)
+    runtime, events, calls = make_runtime(repo, _MYPY_CONFIG)
     normal_runner = runtime.runner
 
     async def real_type_error(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
@@ -1103,6 +1279,8 @@ async def test_a_real_gate_failure_at_integration_stays_a_verification_failure(
     assert events.of("failure", "i")[0]["category"] == "verification_failed"
     assert result.nodes["i"].reason.startswith("repo_gate_failed: mypy exit 1")
     assert result.nodes["i"].judged_failure_count == 1
+    # no signal of a fault of the environment, so the base is never run (a cold install)
+    assert not [c for _, c, _ in calls if c.name.startswith("integration-base-")]
 
 
 async def test_a_real_failure_in_another_gate_wins_over_an_environment_fault(
@@ -1115,11 +1293,10 @@ async def test_a_real_failure_in_another_gate_wins_over_an_environment_fault(
 
     async def both(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
         name = Path(argv[0]).name
-        if cwd.name.startswith("i-"):
-            if name == "mypy":
-                return 1, _MYPY_ENV_OUTPUT
-            if name == "ruff" and "check" in argv:
-                return 1, "a.py:1:1: F401 unused import"
+        if name == "mypy" and cwd.name.startswith(("i-", "integration-base-")):
+            return 1, _MYPY_ENV_OUTPUT  # the environment fault, proven on the base too
+        if cwd.name.startswith("i-") and name == "ruff" and "check" in argv:
+            return 1, "a.py:1:1: F401 unused import"
         return await normal_runner(argv, cwd, timeout)
 
     runtime.runner = both
@@ -1189,3 +1366,90 @@ async def test_node_base_and_integration_gates_all_run_with_the_projects_extras(
     assert set(mypy_runs) == {"node", "base", "integration"}, calls
     for where, argv in mypy_runs.items():
         assert argv[:5] == [_UV, "run", "--frozen", "--all-extras", "mypy"], (where, argv)
+
+
+# ------------------------------------------------------------------ gates that cannot run
+
+
+def _failure_is_environment(result: Any, events: Any) -> None:
+    run = result.nodes["i"]
+    failure = events.of("failure", "i")[0]
+    assert failure["category"] == "environment_error"
+    assert failure["action"] == "BLOCK"
+    assert run.reason.startswith("environment_error: repo_gate_failed: ")
+    assert run.judged_failure_count == 0
+    assert run.history[-1]["rejected"] is False
+
+
+async def test_a_gate_executable_that_cannot_be_found_is_an_environment_error_at_integration(
+    repo: Path, gate_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review finding 2 of #1364: ``resolve_gate_argv`` raised (exit 127), and the barrier
+    recorded ``verification_failed -> CORRECT_IMPLEMENTATION`` for a missing tool."""
+    (gate_bin / "ruff").unlink()
+    monkeypatch.setattr(verification.shutil, "which", lambda name: None)
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    result = await runtime.run()
+    assert result.outcome is RunOutcome.BLOCKED
+    _failure_is_environment(result, events)
+    assert "ruff-check exit 127" in result.nodes["i"].reason
+    assert "gate executable not found: ruff" in result.nodes["i"].reason
+    # the node level leaves it to the barrier, as before
+    assert result.nodes["a"].state is NodeState.VALIDATED
+    assert not events.of("failure", "a")
+
+
+async def test_uv_missing_from_the_path_is_an_environment_error_at_integration(
+    repo: Path, gate_bin: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``uv.lock`` is present and ``uv`` is not on PATH: the gate cannot run."""
+    (repo / "uv.lock").write_text("# lock\n")
+    subprocess.run(["git", "add", "uv.lock"], cwd=repo, check=True)
+    monkeypatch.setattr(verification.shutil, "which", lambda name: None)
+    runtime, events, _ = make_runtime(repo, _MYPY_CONFIG)
+    result = await runtime.run()
+    _failure_is_environment(result, events)
+    assert "uv not found" in result.nodes["i"].reason
+    assert events.of("failure", "i")[0]["evidence"].startswith("environment_error:")
+
+
+@pytest.mark.parametrize("code", [126, 127])
+async def test_a_gate_command_that_could_not_start_is_an_environment_error_at_integration(
+    repo: Path, gate_bin: Path, code: int
+) -> None:
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n")
+    normal_runner = runtime.runner
+
+    async def cannot_start(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == "ruff" and cwd.name.startswith("i-"):
+            return code, f"verification command not found: {argv[0]}: [Errno 2]"
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = cannot_start
+    result = await runtime.run()
+    _failure_is_environment(result, events)
+    assert f"ruff-check exit {code}" in result.nodes["i"].reason
+
+
+@pytest.mark.parametrize(("missing", "real"), [("ruff", "mypy"), ("mypy", "ruff")])
+async def test_a_real_failure_wins_over_a_gate_that_cannot_run_in_either_order(
+    repo: Path, gate_bin: Path, monkeypatch: pytest.MonkeyPatch, missing: str, real: str
+) -> None:
+    """The missing tool must not hide a gate that really failed: the implementation is wrong
+    whichever gate comes first (``ruff-check`` runs before ``mypy``)."""
+    monkeypatch.setattr(verification.shutil, "which", lambda name: None)
+    (gate_bin / missing).unlink()
+    runtime, events, _ = make_runtime(repo, "[tool.ruff]\n" + _MYPY_CONFIG)
+    normal_runner = runtime.runner
+
+    async def fails(argv: Sequence[str], cwd: Path, timeout: float) -> tuple[int, str]:
+        if Path(argv[0]).name == real and cwd.name.startswith("i-"):
+            return 1, "a.py:1:1: a real failure"
+        return await normal_runner(argv, cwd, timeout)
+
+    runtime.runner = fails
+    result = await runtime.run()
+    assert events.of("failure", "i")[0]["category"] == "verification_failed"
+    assert result.nodes["i"].reason.startswith("repo_gate_failed: ")
+    assert f"{real if real == 'mypy' else 'ruff-check'} exit 1" in result.nodes["i"].reason
+    assert result.nodes["i"].judged_failure_count == 1
