@@ -212,6 +212,24 @@ async def test_owned_file_inside_an_ignored_directory_is_staged(repo: Path) -> N
     assert "build/deep/out.txt" in changed
 
 
+async def test_explicitly_owned_byproduct_files_are_not_staged(repo: Path) -> None:
+    """Naming a byproduct file as owned does not make it a deliverable."""
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    (repo / "fixtures").mkdir()
+    (repo / "fixtures" / "stray.pyc").write_bytes(b"\x00")
+    (repo / ".coverage").write_bytes(b"\x00")
+    (repo / "fixtures" / "x.jsonl").write_text("x\n")
+
+    await Git(repo).changed_files(
+        repo, base, owned_files=("fixtures/stray.pyc", ".coverage", "fixtures/x.jsonl")
+    )
+
+    staged = _staged(repo)
+    assert "fixtures/x.jsonl" in staged
+    assert "fixtures/stray.pyc" not in staged
+    assert ".coverage" not in staged
+
+
 async def test_stray_pyc_outside_pycache_is_not_staged(repo: Path) -> None:
     base = _git(repo, "rev-parse", "HEAD").strip()
     (repo / "fixtures").mkdir()

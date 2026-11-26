@@ -507,7 +507,7 @@ class Git:
                 full = cwd / ignored
                 if full.is_symlink() or not full.is_file():
                     continue
-                if ignored not in owned_files and any(
+                if any(
                     (
                         ignored.startswith(pattern) or f"/{pattern}" in ignored
                         if pattern.endswith("/")
