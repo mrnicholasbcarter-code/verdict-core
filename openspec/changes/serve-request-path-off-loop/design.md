@@ -29,15 +29,17 @@ request, `/health` 16 to 32 s.
 
 ## Decisions
 
-1. **A proof object, not a flag.** `ReceiptStore.verified_scope(scope)` walks once, raises
-   `ReceiptIntegrityError` if the chain is broken, and returns a `VerifiedScope` naming the store
-   and scope. `get_receipt` and `query_receipts` take it as keyword-only `verified`, and skip
-   their own walk only when it names that store and that scope. Anything else (none, another
-   scope, another store) walks as before. `_current` creates one per call and drops it.
+1. **A scoped read block, not a flag or a token.** `ReceiptStore.verified_reads(scope)` is a
+   context manager: it walks the scope once, raises `ReceiptIntegrityError` if the chain is
+   broken (before yielding), then yields a `VerifiedReads` whose two readers have no scope
+   argument and no walk. The object stops working when the block ends, so it cannot be kept,
+   passed on or used after the data changed. `get_receipt` and `query_receipts` keep their
+   signatures and always walk; they have no skip argument for a caller to forge.
 2. **Same failure as before.** `get_receipt` walked first, so a broken chain raised from
-   `_current` before any row was read, also for an unknown key. `verified_scope` raises the same
-   error at the same point. The old `return None` after a second walk could only be reached by a
-   race between two walks and is gone with the second walk.
+   `_current` before any row was read, also for an unknown key. `verified_reads` raises the same
+   error at the same point (on entry to the block). The old `return None` after a second walk
+   could only be reached by a race between two walks and is gone with the second walk. The walk
+   and the reads were never one transaction, and still are not.
 3. **One lane, one thread.** `StateLane` wraps `ThreadPoolExecutor(max_workers=1)`, so jobs run
    in submission order. `submit` queues at the call; `run` awaits it. A shared pool would decide
    requests concurrently and reorder the evidence chain.
@@ -45,22 +47,27 @@ request, `/health` 16 to 32 s.
    instant (a context variable) on the loop, then runs `_route` on the lane with a copy of the
    context. The verified assignment travels in the `context` argument. A service with no lane
    (the CLI, orchestration, tests) decides inline, unchanged.
-5. **Cancellation never drops queued work.** `run` shields the job from its waiter: a request
-   task cancelled while its terminal evidence write is queued still gets the write, in order. A
-   stream's terminal bookkeeping (event then observation) is one job. `_EvidenceStreamAdapter`
-   awaits an async terminal callback and still accepts a plain one.
+5. **Cancellation never drops queued work, and a started row is always ended.** `run` shields
+   the job from its waiter: a request task cancelled while its terminal evidence write is queued
+   still gets the write, in order. A task cancelled while the decision row is being started, or
+   while a step between the row and the first attempt (the permit commit, a fallback event) is
+   queued, queues a `<surface>_cancelled` terminal event behind that job. A stream's terminal
+   bookkeeping (event and observation) and the buffered response's are each one job.
+   `_EvidenceStreamAdapter` awaits an async terminal callback and still accepts a plain one.
 6. **Never hold the lane across an upstream call.** The lane runs the decision before the call
    and the bookkeeping after it; streaming and the upstream call stay on the loop.
 7. **Lifecycle.** The lifespan creates the lane as its last startup step (a failed startup leaves
-   none), attaches it to the service, and on shutdown refuses new jobs, gives queued ones up to
-   10 s, then stops the worker without blocking the loop. With no lifespan (tests that set the
-   instances by hand) the handlers run the work inline.
+   none), attaches it to the service, and on shutdown, however the app ended, refuses new jobs,
+   waits up to 10 s for the queued ones, then tells the worker to stop. The bound ends the wait,
+   not the work: jobs still queued run to completion on the worker thread, so no terminal write
+   is dropped, and the loop is never held. With no lifespan (tests that set the instances by
+   hand) the handlers run the work inline.
 
 ## Risks / Trade-offs
 
-- A request task cancelled while it waits on a lane job before its first upstream attempt (only
-  at shutdown in practice) can leave a decision row without its terminal event. Before, those
-  steps could not be interrupted. The terminal write of a cancelled attempt or stream still lands.
+- At shutdown the lane refuses new jobs, so a request task cancelled then cannot queue its
+  cancelled terminal event; its decision row stays without one. The terminal write of a cancelled
+  attempt or stream, and of a task cancelled before the lane closed, still lands.
 - Work now runs on a second thread beside the loop. The state it touches is already used from
   `to_thread` workers (receipt store: locked writes and per-call connections; health cache: file
   lock), and only the lane thread decides.
@@ -69,10 +76,11 @@ request, `/health` 16 to 32 s.
 
 ## Security / trust implications
 
-- Verification is not weakened: every `_current` call walks the whole scope, a proof is valid for
-  the store and scope it names, and a read that is given none walks as before. The proof is made
-  by one method and kept for one call; an out-of-band edit after the walk is caught by the next
-  call, as before.
+- Verification is not weakened: every `_current` call walks the whole scope, the verified reads
+  are bound to their store and scope and end with the call, and the public readers have no skip
+  argument and walk as before. An out-of-band edit after the walk is caught by the next call, as
+  before; between the walk and the reads of one call it is not, exactly as when the readers
+  walked separately.
 - No change to admission, the proof minted, the permit committed, or any refusal: a denial makes
   no upstream call and mints no proof. Errors raised on the lane surface as the same HTTP
   responses. No new credential or endpoint.
@@ -85,7 +93,7 @@ request, `/health` 16 to 32 s.
 ## Migration / rollback
 
 - No data migration; the receipt schema and the evidence content are unchanged.
-- Roll back by reverting the change: the readers keep working with no proof argument, and the
+- Roll back by reverting the change: the public readers are unchanged, and the
   service decides inline when no lane is attached.
 
 ## ADR impact

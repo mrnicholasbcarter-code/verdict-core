@@ -155,17 +155,23 @@ class StateLane:
         return await asyncio.shield(waiter)
 
     async def aclose(self, *, timeout: float = 10.0) -> None:
-        """Refuse new jobs, give the queued ones up to ``timeout`` seconds, then stop the worker.
+        """Refuse new jobs, wait up to ``timeout`` seconds for the queued ones, stop the worker.
 
-        A job still running after the bound is left to finish on its own thread (the loop is
-        never blocked waiting for it); queued jobs that never started are cancelled.
+        The wait is bounded so the loop is never held at shutdown; it is the only thing that
+        ends at the bound.  Jobs still queued then are not cancelled: the worker runs them to
+        completion on its own thread and exits (a terminal evidence write is never dropped).
+        The worker is told to stop even when this wait is itself cancelled.
         """
         with self._lock:
             self._closed = True
             pending = list(self._pending)
-        if pending:
-            await asyncio.wait([asyncio.wrap_future(future) for future in pending], timeout=timeout)
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        try:
+            if pending:
+                await asyncio.wait(
+                    [asyncio.wrap_future(future) for future in pending], timeout=timeout
+                )
+        finally:
+            self._executor.shutdown(wait=False)
 
 
 def _bind_context_plan(assistance_plan: AssistancePlan, plan: ContextPlan) -> AssistancePlan:

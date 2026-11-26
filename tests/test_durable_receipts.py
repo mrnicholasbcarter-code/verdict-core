@@ -233,7 +233,7 @@ def test_find_by_selector_and_missing_key_walk_once(
     assert walks == [_SCOPE]
 
 
-def test_readers_without_proof_still_verify_every_call(
+def test_the_public_readers_still_verify_every_call(
     tmp_path: Path, walks: list[str | None]
 ) -> None:
     """Other callers of the two readers keep verifying exactly as before."""
@@ -246,25 +246,48 @@ def test_readers_without_proof_still_verify_every_call(
     assert walks == [_SCOPE, _SCOPE, _SCOPE]
 
 
-def test_proof_skips_the_walk_only_for_its_own_scope_and_store(
+def test_verified_reads_walk_once_and_are_bound_to_their_scope(
     tmp_path: Path, walks: list[str | None]
 ) -> None:
     store, keys, _ = _evidence_store(tmp_path)
     receipts = store.receipts
     receipts.put_receipt("decision", "other-scope", {"x": 1})
-    proof = receipts.verified_scope(_SCOPE)
     walks.clear()
-    assert receipts.get_receipt(keys[0], scope=_SCOPE, verified=proof) is not None
-    assert receipts.query_receipts(scope=_SCOPE, verified=proof) != []
-    assert walks == []  # the proof's own scope and store: no further walk
-    # A proof for another scope, another store, or no scope at all is not honoured.
-    receipts.query_receipts(scope="other-scope", verified=proof)
-    assert walks == ["other-scope"]
-    walks.clear()
-    stranger = ReceiptStore(tmp_path / "other.db", strict_scope=True)
-    stranger.put_receipt("decision", _SCOPE, {"x": 1})
-    stranger.query_receipts(scope=_SCOPE, verified=proof)
+    with receipts.verified_reads(_SCOPE) as reads:
+        assert reads.get_receipt(keys[0], include_tombstones=True) is not None
+        assert reads.query_receipts(limit=10) != []
+        assert reads.query_receipts(parent_receipt_id=keys[0], include_tombstones=True) == []
+        # The reads are the scope's own: another scope's rows are not visible through them.
+        assert reads.get_receipt("rcpt-other", include_tombstones=True) is None
     assert walks == [_SCOPE]
+    with pytest.raises(ValueError), receipts.verified_reads(_SCOPE) as reads:
+        reads.query_receipts(limit=0)
+
+
+def test_verified_reads_cannot_be_kept_and_used_after_their_call(tmp_path: Path) -> None:
+    store, keys, _ = _evidence_store(tmp_path)
+    with store.receipts.verified_reads(_SCOPE) as reads:
+        pass
+    with pytest.raises(RuntimeError):
+        reads.get_receipt(keys[0])
+    with pytest.raises(RuntimeError):
+        reads.query_receipts()
+
+
+def test_public_readers_take_no_skip_argument_and_always_walk(
+    tmp_path: Path, walks: list[str | None]
+) -> None:
+    store, keys, _ = _evidence_store(tmp_path)
+    receipts = store.receipts
+    with receipts.verified_reads(_SCOPE):
+        walks.clear()
+        receipts.get_receipt(keys[0], scope=_SCOPE)
+        receipts.query_receipts(scope=_SCOPE)
+        assert walks == [_SCOPE, _SCOPE]  # even inside a verified block
+    with pytest.raises(TypeError):
+        receipts.get_receipt(keys[0], scope=_SCOPE, verified=True)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        receipts.query_receipts(scope=_SCOPE, verified=True)  # type: ignore[call-arg]
 
 
 @pytest.mark.parametrize("victim", [0, 1, 2], ids=["first", "middle", "last"])
@@ -305,18 +328,19 @@ def test_tamper_anywhere_in_scope_still_fails_every_read(
         assert conn.execute("SELECT COUNT(*) FROM receipts").fetchone()[0] == len(keys)
 
 
-def test_proof_is_refused_for_a_tampered_scope(tmp_path: Path) -> None:
+def test_verified_reads_refuse_a_tampered_scope_before_any_read(tmp_path: Path) -> None:
     store, keys, path = _evidence_store(tmp_path)
-    assert store.receipts.verified_scope(_SCOPE).scope == _SCOPE
     with sqlite3.connect(path) as conn:
         conn.execute("UPDATE receipts SET sensitivity = 'public' WHERE receipt_id = ?", (keys[1],))
         conn.commit()
-    with pytest.raises(ReceiptIntegrityError):
-        store.receipts.verified_scope(_SCOPE)
+    entered = False
+    with pytest.raises(ReceiptIntegrityError), store.receipts.verified_reads(_SCOPE):
+        entered = True
+    assert entered is False
 
 
 def test_a_later_tamper_is_caught_by_the_next_call(tmp_path: Path) -> None:
-    """No proof or cache outlives its call: a row damaged after a good read fails the next."""
+    """No cache outlives its call: a row damaged after a good read fails the next."""
     store, keys, path = _evidence_store(tmp_path)
     assert store.find(evidence_id=keys[0], scope=_SCOPE) is not None
     with sqlite3.connect(path) as conn:

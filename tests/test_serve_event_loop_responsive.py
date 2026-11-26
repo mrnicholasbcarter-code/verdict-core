@@ -31,7 +31,7 @@ from tests.test_serve_worker_route_proof import FREE, SUBSCRIPTION, _Harness, _s
 from verdict import intelligence
 from verdict.evidence import DurableEvidenceStore
 from verdict.execution_path import ExecutionPathError
-from verdict.intelligence import IntelligenceService
+from verdict.intelligence import IntelligenceService, StateLane
 from verdict.orchestration.health_cache import HealthCache
 from verdict.worker_assignment import VerifiedWorkerAssignment
 
@@ -449,22 +449,93 @@ def test_closing_the_lane_drains_queued_jobs_within_a_bound_and_then_refuses_new
     assert ran == ["queued"]
 
 
-def test_closing_a_lane_with_a_stuck_job_gives_up_after_the_bound() -> None:
+def test_closing_a_lane_with_a_stuck_job_gives_up_waiting_but_drops_nothing() -> None:
+    """The bound ends the wait, not the work: a queued terminal write still runs afterwards."""
     from verdict.intelligence import StateLane
+
+    ran: list[str] = []
 
     async def scenario() -> float:
         lane = StateLane()
         stuck = threading.Event()
         job = asyncio.ensure_future(lane.run(stuck.wait, 3))
         await asyncio.sleep(0.05)
+        queued = asyncio.ensure_future(lane.run(ran.append, "queued"))
+        await asyncio.sleep(0.05)
         started = time.monotonic()
         await lane.aclose(timeout=0.2)
         elapsed = time.monotonic() - started
+        assert ran == [], "the queued job ran while the lane was stuck"
         stuck.set()
         await job
+        await queued
         return elapsed
 
     assert asyncio.run(scenario()) < 1.5
+    assert ran == ["queued"]
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and any(
+        t.name.startswith(LANE_PREFIX) for t in threading.enumerate()
+    ):
+        time.sleep(0.02)
+    assert not [t for t in threading.enumerate() if t.name.startswith(LANE_PREFIX)]
+
+
+def test_a_cancelled_close_still_stops_the_worker() -> None:
+    from verdict.intelligence import StateLane
+
+    ran: list[str] = []
+
+    async def scenario() -> StateLane:
+        lane = StateLane()
+        gate = threading.Event()
+        busy = asyncio.ensure_future(lane.run(gate.wait, 10))
+        queued = asyncio.ensure_future(lane.run(ran.append, "queued"))
+        await asyncio.sleep(0.05)
+        closing = asyncio.ensure_future(lane.aclose(timeout=30))
+        await asyncio.sleep(0.05)
+        closing.cancel()  # app teardown itself is cancelled while jobs are pending
+        with contextlib.suppress(asyncio.CancelledError):
+            await closing
+        assert lane.closed
+        with pytest.raises(RuntimeError):
+            lane.submit(lambda: None)
+        gate.set()
+        await busy
+        await queued
+        return lane
+
+    lane = asyncio.run(scenario())  # kept alive: an unreferenced executor stops its own worker
+    assert ran == ["queued"]
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and any(
+        t.name.startswith(LANE_PREFIX) for t in threading.enumerate()
+    ):
+        time.sleep(0.02)
+    assert not [t for t in threading.enumerate() if t.name.startswith(LANE_PREFIX)], (
+        "the worker was left running after its close was cancelled"
+    )
+    assert lane.closed
+
+
+def test_the_lifespan_releases_the_lane_when_the_app_exits_with_an_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _Harness(monkeypatch, _service(), tmp_path)
+    service = _service()
+    monkeypatch.setattr(api, "_build_intelligence", lambda: service)
+
+    async def scenario() -> StateLane:
+        with pytest.raises(RuntimeError, match="app failed"):
+            async with contextlib.asynccontextmanager(api.lifespan)(api.app):
+                lane = api.state_lane_instance
+                assert lane is not None and service.state_lane is lane
+                raise RuntimeError("app failed")
+        return lane
+
+    lane = asyncio.run(scenario())
+    assert lane.closed
+    assert api.state_lane_instance is None and service.state_lane is None
 
 
 def test_a_stream_terminal_is_awaited_on_the_lane_even_when_the_closer_is_cancelled() -> None:
@@ -511,3 +582,140 @@ def test_a_stream_terminal_is_awaited_on_the_lane_even_when_the_closer_is_cancel
     asyncio.run(scenario())
     assert [event for event, _ in landed] == ["chat_completion_stream_aborted"]
     assert landed[0][1].startswith(LANE_PREFIX)
+
+
+# -- cancellation of a request task while it waits on the lane --------------------------------
+
+
+def _cancel_while_held(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, hold_site: str
+) -> tuple[_Harness, list[tuple[str, str]]]:
+    """Cancel a request task while ``hold_site`` is held on the lane; return what was recorded."""
+    harness = _Harness(monkeypatch, _service(), tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    finished: list[tuple[str, str]] = []
+    real_finish = api._finish_evidence
+
+    def recording_finish(evidence: Any, event: Any, key: Any = None) -> Any:
+        finished.append((event.event_type, event.outcome))
+        return real_finish(evidence, event, key)
+
+    monkeypatch.setattr(api, "_finish_evidence", recording_finish)
+
+    def hold(real: Callable[..., Any]) -> Callable[..., Any]:
+        def held(*args: Any, **kwargs: Any) -> Any:
+            entered.set()
+            release.wait(HOLD_SECONDS * 4)
+            return real(*args, **kwargs)
+
+        return held
+
+    if hold_site == "start":
+        monkeypatch.setattr(api, "_start_evidence", hold(api._start_evidence))
+    else:
+        monkeypatch.setattr(HealthCache, "commit_dispatch", hold(HealthCache.commit_dispatch))
+
+    import httpx
+
+    from tests.relay_proof_helpers import assignment_headers
+
+    async def scenario() -> None:
+        async with api.app.router.lifespan_context(api.app):
+            transport = httpx.ASGITransport(app=api.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                request = asyncio.ensure_future(
+                    client.post(
+                        "/v1/chat/completions",
+                        json={
+                            "messages": [{"role": "user", "content": "summarize this paragraph"}],
+                            "max_tokens": 16,
+                            "criticality": "low",
+                            "model": FREE,
+                        },
+                        headers=assignment_headers(FREE),
+                    )
+                )
+                assert await asyncio.to_thread(entered.wait, 10), "the hold was never reached"
+                request.cancel()  # the request task goes away while its lane job is held
+                with contextlib.suppress(asyncio.CancelledError):
+                    await request
+                release.set()
+                lane = api.state_lane_instance
+                assert lane is not None
+                await lane.run(lambda: None)  # everything queued before this has now run
+
+    asyncio.run(scenario())
+    return harness, finished
+
+
+@pytest.mark.parametrize("hold_site", ["start", "permit"])
+def test_a_task_cancelled_while_its_row_is_being_started_or_its_permit_committed_ends_the_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, hold_site: str
+) -> None:
+    harness, finished = _cancel_while_held(monkeypatch, tmp_path, hold_site)
+
+    assert ("chat_completion_cancelled", "cancelled") in finished, finished
+    assert harness.transport.requests == [], "a cancelled request reached the upstream"
+
+
+def test_buffered_bookkeeping_keeps_its_order_in_one_lane_job(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Buffered: the observation, then the terminal event, both on the lane."""
+    harness = _Harness(monkeypatch, _service(), tmp_path)
+    order: list[tuple[str, str, str]] = []
+    real_finish = api._finish_evidence
+    real_observe = admit_prove_confirm.record_dispatch_observation
+
+    def finish(evidence: Any, event: Any, key: Any = None) -> Any:
+        if str(event.event_type).endswith(("_buffered", "_streamed")):
+            order.append(("finish", event.event_type, threading.current_thread().name))
+        return real_finish(evidence, event, key)
+
+    def observe(*args: Any, **kwargs: Any) -> Any:
+        order.append(("observe", "", threading.current_thread().name))
+        return real_observe(*args, **kwargs)
+
+    monkeypatch.setattr(api, "_finish_evidence", finish)
+    monkeypatch.setattr(admit_prove_confirm, "record_dispatch_observation", observe)
+    with TestClient(api.app) as client:
+        response = harness.post(client, worker=True, model=FREE)
+    assert response.status_code == 200, response.text
+    assert [kind for kind, _, _ in order] == ["observe", "finish"]
+    assert {thread for _, _, thread in order} == {order[0][2]}
+    assert order[0][2].startswith(LANE_PREFIX)
+
+
+def test_stream_bookkeeping_keeps_its_order_in_one_lane_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stream: the terminal event, then the observation, both on the lane."""
+    from tests.test_proxy import _configure_test_app
+    from tests.test_stream_relay_wiring import CHAT_STANDARD, StreamTransport
+
+    _configure_test_app(monkeypatch, StreamTransport(CHAT_STANDARD))
+    order: list[tuple[str, str]] = []
+    real_finish = api._finish_evidence
+    real_observe = admit_prove_confirm.record_dispatch_observation
+
+    def finish(evidence: Any, event: Any, key: Any = None) -> Any:
+        if str(event.event_type).endswith("_streamed"):
+            order.append(("finish", threading.current_thread().name))
+        return real_finish(evidence, event, key)
+
+    def observe(*args: Any, **kwargs: Any) -> Any:
+        order.append(("observe", threading.current_thread().name))
+        return real_observe(*args, **kwargs)
+
+    monkeypatch.setattr(api, "_finish_evidence", finish)
+    monkeypatch.setattr(admit_prove_confirm, "record_dispatch_observation", observe)
+    with TestClient(api.app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "preserve all fields"}], "stream": True},
+        )
+    assert response.status_code == 200
+    assert [kind for kind, _ in order] == ["finish", "observe"]
+    assert {thread for _, thread in order} == {order[0][1]}
+    assert order[0][1].startswith(LANE_PREFIX)

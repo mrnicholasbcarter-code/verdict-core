@@ -12,10 +12,10 @@ merged: `/health` on the installed serve under one OpenCode worker.
 
 ## What Changes
 
-- `DurableEvidenceStore._current` walks the scope's chain once per call and hands the proof to
-  `get_receipt` and `query_receipts` (keyword `verified`, from `ReceiptStore.verified_scope`).
-  Every call still verifies the whole scope; a broken chain still raises `ReceiptIntegrityError`
-  before any row is read; other callers of the readers verify exactly as before.
+- `DurableEvidenceStore._current` walks the scope's chain once per call and makes its reads inside
+  `ReceiptStore.verified_reads(scope)`, which ends with the call. Every call still verifies the
+  whole scope; a broken chain still raises `ReceiptIntegrityError` before any row is read; the
+  public readers take no skip argument and verify exactly as before.
 - `verdict serve` owns one serial worker lane (`StateLane`, one thread), created at startup and
   drained at shutdown. The route decision, evidence start and finish, permit commit and dispatch
   observation run on it and are awaited from the handlers.

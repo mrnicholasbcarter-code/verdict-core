@@ -6,9 +6,9 @@
 
 `DurableEvidenceStore._current` SHALL walk the whole hash chain of the scope exactly once per
 call and SHALL NOT keep the result beyond the call. The walk SHALL happen before any row is read;
-a broken chain SHALL raise `ReceiptIntegrityError` there. The readers `get_receipt` and
-`query_receipts` SHALL skip their own walk only when given the proof from
-`ReceiptStore.verified_scope` for the same store and scope, and SHALL walk as before otherwise.
+a broken chain SHALL raise `ReceiptIntegrityError` there. The reads of that call SHALL be made
+through `ReceiptStore.verified_reads(scope)`, whose reads end with the call. The public readers
+`get_receipt` and `query_receipts` SHALL take no skip argument and SHALL walk on every call.
 
 #### Scenario: One walk per call
 - **WHEN** `DurableEvidenceStore.find(evidence_id=...)` runs once on a store with several rows
@@ -16,11 +16,11 @@ a broken chain SHALL raise `ReceiptIntegrityError` there. The readers `get_recei
 
 #### Scenario: Tampering anywhere in the scope still fails the read
 - **WHEN** any row of the scope has a changed payload, chain link or metadata, in the first, a middle or the last position
-- **THEN** `find` (by id, by selector, for an unknown id) and `append_event` raise `ReceiptIntegrityError` and append nothing
+- **THEN** `find` (by id, by selector, for an unknown id) and `append_event` raise `ReceiptIntegrityError` and append nothing, and `verified_reads` raises before it yields
 
-#### Scenario: A proof is not honoured for another scope or store
-- **WHEN** `get_receipt` or `query_receipts` is given a proof made for a different scope or a different store
-- **THEN** the reader walks the chain itself
+#### Scenario: Verified reads do not outlive their call
+- **WHEN** the reads yielded by `verified_reads` are used after its block ends
+- **THEN** they raise, and the public readers, even inside a block, walk the chain themselves
 
 ### Requirement: The request path's state work SHALL run on one serial lane off the event loop
 
@@ -47,6 +47,10 @@ cancelled SHALL still run.
 - **WHEN** a request is denied, or the decision raises `ExecutionPathError` or another error
 - **THEN** no upstream call is made and no proof is minted for a denial, `ExecutionPathError` is the same 400 and another error the same 500
 
-#### Scenario: Cancelled waiter, drained shutdown
-- **WHEN** a request that queued a terminal evidence write is cancelled while the lane is busy, or the app shuts down with jobs queued
-- **THEN** the write still runs in order, and shutdown refuses new jobs and drains the queued ones within its bound
+#### Scenario: A cancelled waiter does not drop its job, and a started row is ended
+- **WHEN** a request task is cancelled while its terminal evidence write is queued behind a busy lane, or while its decision row is being started or its permit committed
+- **THEN** the queued write still runs in order, and a cancelled request that has a decision row gets a `cancelled` terminal event, with no upstream call made
+
+#### Scenario: Shutdown
+- **WHEN** the app ends, normally or with an error, with jobs queued
+- **THEN** the lane refuses new jobs, waits up to its bound for the queued ones, stops its worker even if that wait is cancelled, and runs jobs still queued at the bound to completion on the worker thread

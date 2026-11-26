@@ -1051,8 +1051,8 @@ async def lifespan(app: FastAPI) -> Any:
     state_lane_instance = lane
     service = intelligence_instance
     service.state_lane = lane
-    yield
     try:
+        yield
         task, public_models_task = public_models_task, None
         if task is not None:
             stopping = True
@@ -1061,8 +1061,9 @@ async def lifespan(app: FastAPI) -> Any:
                 await task
         public_models_readiness = None
     finally:
-        # Drain the queued jobs (a terminal evidence write may still be waiting), within a
-        # bound, however the refresh task ended.
+        # However the app ends (an exception thrown at the yield, a failed refresh task), the
+        # lane is released: queued jobs (a terminal evidence write may still be waiting) get a
+        # bounded wait, then the worker stops.
         await lane.aclose()
         state_lane_instance = None
         service.state_lane = None
@@ -1570,9 +1571,9 @@ async def route_task(
                 status_code=exc.status_code,
             )
         raise
-    route_evidence, evidence_key = await _on_state_lane(
-        _start_evidence,
+    route_evidence, evidence_key = await _start_evidence_on_lane(
         decision,
+        cancelled_event_prefix="route_decision",
         task=req.task,
         criticality=req.criticality,
         features={
@@ -2405,9 +2406,9 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             )
         return _proxy_error(503, "no executable route was selected", surface=surface)
     attempted_routes = [item.route.to_dict() for item in attempts]
-    route_evidence, evidence_key = await _on_state_lane(
-        _start_evidence,
+    route_evidence, evidence_key = await _start_evidence_on_lane(
         decision,
+        cancelled_event_prefix=event_prefix,
         task=task,
         criticality=criticality,
         features=features,
@@ -2464,11 +2465,22 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     last_status: int | None = None
     _last_error_body: str = ""  # bounded upstream body for failure classification
 
+    async def on_lane(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+        """``_on_state_lane`` for the steps after the decision row exists and before an attempt's
+        own cancellation handler: a task cancelled while it waits still ends its row."""
+        try:
+            return await _on_state_lane(fn, *args, **kwargs)
+        except asyncio.CancelledError:
+            _queue_cancelled_terminal(
+                route_evidence, evidence_key, event_prefix=event_prefix, features=features
+            )
+            raise
+
     async def record_attempt_event(
         *, attempt: Any, event_type: str, details: dict[str, Any]
     ) -> None:
         nonlocal route_evidence
-        route_evidence = await _on_state_lane(
+        route_evidence = await on_lane(
             _finish_evidence,
             route_evidence,
             build_outcome_event(
@@ -2638,7 +2650,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             if attempts_used:
                 break
             continue
-        permit = await _on_state_lane(
+        permit = await on_lane(
             _commit_dispatch_permit,
             expected_scope,
             route_id=proof.route_id,
@@ -3009,17 +3021,13 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     if isinstance(result, BufferedUpstreamResponse):
         from verdict.orchestration.eligibility import selection_accounting
 
-        if result.status_code < 400 and response_actual_route_status(result) != "mismatch":
-            from verdict.admit_prove_confirm import record_dispatch_observation
-
-            await _on_state_lane(
-                record_dispatch_observation,
-                attempts_used[-1]["model"],
-                healthy=True,
-                observed_at=datetime.now(timezone.utc),
-            )
+        observed_model = (
+            attempts_used[-1]["model"]
+            if result.status_code < 400 and response_actual_route_status(result) != "mismatch"
+            else None
+        )
         evidence = await _on_state_lane(
-            _finish_evidence,
+            _finish_with_observation,
             route_evidence,
             build_outcome_event(
                 route_evidence.routing_decision,
@@ -3056,6 +3064,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 },
             ),
             evidence_key,
+            observed_model,
+            observe_first=True,
         )
         if result.status_code >= 400:
             return Response(
@@ -3086,7 +3096,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 # One lane job, so a cancelled closer cannot land the terminal event and lose
                 # the observation (or the reverse).
                 await _on_state_lane(
-                    _finalize_stream_state,
+                    _finish_with_observation,
                     route_evidence,
                     event,
                     evidence_key,
@@ -3240,26 +3250,98 @@ def _finish_evidence(
     return updated
 
 
-def _finalize_stream_state(
-    evidence: ExplainEvidence, event: Any, evidence_key: str | None, observed_model: str | None
-) -> None:
-    """A stream's terminal bookkeeping as one lane job: the evidence event, then the observation.
+def _finish_with_observation(
+    evidence: ExplainEvidence,
+    event: Any,
+    evidence_key: str | None,
+    observed_model: str | None,
+    *,
+    observe_first: bool = False,
+) -> ExplainEvidence:
+    """A terminal evidence event and the dispatch observation beside it, as one lane job.
 
-    ``observed_model`` is the model whose dispatch to record as healthy (an accepted stream), or
-    ``None`` to record none.
+    One job, so a waiter cancelled between the two cannot land one and lose the other.
+    ``observed_model`` is the model whose dispatch to record as healthy, or ``None`` for none.
+    The observation comes first on the buffered path and second on the stream path, as each
+    always did.
     """
-    _finish_evidence(evidence, event, evidence_key)
-    if observed_model is not None:
-        from verdict.admit_prove_confirm import record_dispatch_observation
+    from verdict.admit_prove_confirm import record_dispatch_observation
 
+    if observed_model is not None and observe_first:
         record_dispatch_observation(
             observed_model, healthy=True, observed_at=datetime.now(timezone.utc)
         )
+    finished = _finish_evidence(evidence, event, evidence_key)
+    if observed_model is not None and not observe_first:
+        record_dispatch_observation(
+            observed_model, healthy=True, observed_at=datetime.now(timezone.utc)
+        )
+    return finished
 
 
 def _commit_dispatch_permit(expected_scope: DispatchScope, **kwargs: Any) -> Any:
     """Commit one dispatch permit (state work: lock, reload, rewrite), for the lane."""
     return HealthCache(default_cache_path()).commit_dispatch(expected_scope, **kwargs)
+
+
+def _queue_cancelled_terminal(
+    evidence: ExplainEvidence,
+    evidence_key: str | None,
+    *,
+    event_prefix: str,
+    features: dict[str, Any],
+) -> None:
+    """Queue, without waiting, the cancelled terminal event of a request whose task was cancelled.
+
+    Used when the task is cancelled while it waits on a lane job after its decision row exists
+    and before any attempt could record the cancellation.  The event is queued behind the job
+    the task was waiting on, so it lands after it; a request that already has a terminal event
+    keeps it (an append of a different terminal outcome is refused and ignored).
+    """
+    lane = state_lane_instance
+    if lane is None or evidence_key is None:
+        return
+    event = build_outcome_event(
+        evidence.routing_decision,
+        event_type=f"{event_prefix}_cancelled",
+        outcome="cancelled",
+        features=features,
+        abort_observed=True,
+    )
+    with suppress(RuntimeError):  # the lane is closed (shutdown): nothing more can be recorded
+        lane.submit(_finish_evidence, evidence, event, evidence_key)
+
+
+async def _start_evidence_on_lane(
+    decision: Any, *, cancelled_event_prefix: str, **kwargs: Any
+) -> tuple[ExplainEvidence, str | None]:
+    """``_start_evidence`` on the lane; a cancelled waiter still gives the new row a terminal event.
+
+    The job is queued at the call and runs whatever happens to this task, so a task cancelled
+    while it waits would leave a decision row nobody ends.  The cancelled event is queued from
+    the job's own completion, after the row exists.
+    """
+    lane = state_lane_instance
+    if lane is None:
+        return _start_evidence(decision, **kwargs)
+    future = lane.submit(_start_evidence, decision, **kwargs)
+    try:
+        return await asyncio.shield(asyncio.wrap_future(future))
+    except asyncio.CancelledError:
+
+        def end_the_row(done: Any) -> None:
+            if done.cancelled() or done.exception() is not None:
+                return
+            evidence, evidence_key = done.result()
+            _queue_cancelled_terminal(
+                evidence,
+                evidence_key,
+                event_prefix=cancelled_event_prefix,
+                features=kwargs["features"],
+            )
+
+        future.add_done_callback(end_the_row)
+        raise
 
 
 # ---------------------------------------------------------------------------

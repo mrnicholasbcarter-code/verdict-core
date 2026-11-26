@@ -644,22 +644,16 @@ class DurableEvidenceStore:
 
     def _current(self, key: str, scope: str) -> ExplainEvidence | None:
         # One full walk of the scope's chain serves every read of this call: the readers used to
-        # walk it again each (three walks).  A broken chain raises ``ReceiptIntegrityError`` here,
-        # as it did from the first reader, before any row is read.  The proof lives for this call
-        # only; the next call walks again.
-        verified = self.receipts.verified_scope(scope)
-        root = self.receipts.get_receipt(
-            key, scope=scope, include_tombstones=True, verified=verified
-        )
-        if root is None or root.receipt_type != "decision":
-            return None
-        events = self.receipts.query_receipts(
-            scope=scope,
-            parent_receipt_id=key,
-            limit=100_000,
-            include_tombstones=True,
-            verified=verified,
-        )
+        # walk it again each (three walks).  A broken chain raises ``ReceiptIntegrityError`` on
+        # entry, as it did from the first reader, before any row is read.  The verified reads end
+        # with the block, so the next call walks again.
+        with self.receipts.verified_reads(scope) as reads:
+            root = reads.get_receipt(key, include_tombstones=True)
+            if root is None or root.receipt_type != "decision":
+                return None
+            events = reads.query_receipts(
+                parent_receipt_id=key, limit=100_000, include_tombstones=True
+            )
         return self._decode(root, sorted(events, key=lambda item: item.sequence))
 
     def append_event(self, key: str, event: OutcomeEvent, *, scope: str) -> ExplainEvidence | None:

@@ -14,6 +14,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -110,6 +111,11 @@ class ReceiptIntegrityError(ReceiptStoreError):
 
 def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _check_query_limit(limit: int) -> None:
+    if limit < 1 or limit > 100_000:
+        raise ValueError("receipt query limit must be between 1 and 100000")
 
 
 def _validate_scope(scope: str) -> str:
@@ -227,20 +233,50 @@ class ReceiptRecord:
         return self.receipt_type == "tombstone" or self.tombstone_for is not None
 
 
-@dataclass(frozen=True, eq=False)
-class VerifiedScope:
-    """Proof that one full chain walk of ``scope`` on ``store`` has just passed.
+class VerifiedReads:
+    """Reads of one scope made right after one full chain verification, for one call.
 
-    Only :meth:`ReceiptStore.verified_scope` makes one.  A caller that is about to make
-    several reads of one scope in one call walks the chain once and hands this to each
-    reader, instead of letting every reader walk it again.  It is not a cache: keep it
-    for that one call and never store it, because it says nothing about rows written or
-    damaged afterwards.  A reader honours it only for the same store and the same scope
-    and verifies as usual for anything else.
+    Only :meth:`ReceiptStore.verified_reads` makes one, and only to be used inside its ``with``
+    block: a caller that needs several reads of one scope walks the chain once instead of once
+    per reader.  It is bound to its store and scope (there is no scope argument to get wrong) and
+    stops working when the block ends, so nothing can keep it and read through it later.  The
+    public readers take no such object and always walk.
     """
 
-    store: ReceiptStore
-    scope: str | None
+    def __init__(self, store: ReceiptStore, scope: str) -> None:
+        self._store = store
+        self._scope = scope
+        self._open = True
+
+    def _require_open(self) -> None:
+        if not self._open:
+            raise RuntimeError("verified reads are valid only inside their with block")
+
+    def get_receipt(
+        self, receipt_id: str, *, include_tombstones: bool = False
+    ) -> ReceiptRecord | None:
+        self._require_open()
+        return self._store._read_receipt(
+            receipt_id, scope=self._scope, include_tombstones=include_tombstones
+        )
+
+    def query_receipts(
+        self,
+        receipt_type: ReceiptType | None = None,
+        limit: int = 100,
+        *,
+        include_tombstones: bool = False,
+        parent_receipt_id: str | None = None,
+    ) -> list[ReceiptRecord]:
+        self._require_open()
+        _check_query_limit(limit)
+        return self._store._read_query(
+            receipt_type,
+            self._scope,
+            limit,
+            include_tombstones=include_tombstones,
+            parent_receipt_id=parent_receipt_id,
+        )
 
 
 class ReceiptStore:
@@ -460,23 +496,26 @@ class ReceiptStore:
             key_ref=row["key_ref"],
         )
 
-    def _assert_integrity(
-        self, *, scope: str | None, verified: VerifiedScope | None = None
-    ) -> None:
-        if verified is not None and verified.store is self and verified.scope == scope:
-            return  # the caller walked this scope in this call; do not walk it again
+    def _assert_integrity(self, *, scope: str | None) -> None:
         result = self.verify_integrity(scope=scope)
         if not result["valid"]:
             raise ReceiptIntegrityError("receipt integrity verification failed")
 
-    def verified_scope(self, scope: str | None) -> VerifiedScope:
-        """Walk ``scope`` once and return the proof, or raise :class:`ReceiptIntegrityError`.
+    @contextmanager
+    def verified_reads(self, scope: str) -> Iterator[VerifiedReads]:
+        """Walk ``scope``'s chain once, then yield reads of that scope that do not walk it again.
 
-        The failure is the one :meth:`get_receipt` and :meth:`query_receipts` raise for the same
-        scope, so a caller that reads through the proof fails exactly where it failed before.
+        A broken chain raises :class:`ReceiptIntegrityError` here, before any row is read: the
+        error :meth:`get_receipt` and :meth:`query_receipts` raise for the same scope.  The yielded
+        reads are valid only inside the block; the next call walks again.  Rows are read after the
+        walk, as before (the walk and the reads were never one transaction).
         """
         self._assert_integrity(scope=scope)
-        return VerifiedScope(self, scope)
+        reads = VerifiedReads(self, scope)
+        try:
+            yield reads
+        finally:
+            reads._open = False
 
     def _scope_clause(self, scope: str | None, params: list[Any]) -> str:
         if scope is None:
@@ -770,19 +809,16 @@ class ReceiptStore:
                 conn.close()
 
     def get_receipt(
-        self,
-        receipt_id: str,
-        *,
-        scope: str | None = None,
-        include_tombstones: bool = False,
-        verified: VerifiedScope | None = None,
+        self, receipt_id: str, *, scope: str | None = None, include_tombstones: bool = False
     ) -> ReceiptRecord | None:
-        """Fetch one record; a supplied scope always constrains the lookup.
+        """Fetch one record; a supplied scope always constrains the lookup."""
+        self._assert_integrity(scope=scope)
+        return self._read_receipt(receipt_id, scope=scope, include_tombstones=include_tombstones)
 
-        ``verified`` is the proof from :meth:`verified_scope` for this store and scope, made by
-        the same caller in the same call; without one the scope is walked, as always.
-        """
-        self._assert_integrity(scope=scope, verified=verified)
+    def _read_receipt(
+        self, receipt_id: str, *, scope: str | None, include_tombstones: bool
+    ) -> ReceiptRecord | None:
+        """The lookup behind :meth:`get_receipt`, with no integrity walk (callers verified)."""
         if scope is None:
             if include_tombstones:
                 return self._fetch_one("SELECT * FROM receipts WHERE receipt_id = ?", (receipt_id,))
@@ -813,15 +849,28 @@ class ReceiptStore:
         *,
         include_tombstones: bool = False,
         parent_receipt_id: str | None = None,
-        verified: VerifiedScope | None = None,
     ) -> list[ReceiptRecord]:
-        """Query records, filtering tombstoned facts by default.
+        """Query records, filtering tombstoned facts by default."""
+        _check_query_limit(limit)
+        self._assert_integrity(scope=scope)
+        return self._read_query(
+            receipt_type,
+            scope,
+            limit,
+            include_tombstones=include_tombstones,
+            parent_receipt_id=parent_receipt_id,
+        )
 
-        ``verified`` is the proof from :meth:`verified_scope`, as for :meth:`get_receipt`.
-        """
-        if limit < 1 or limit > 100_000:
-            raise ValueError("receipt query limit must be between 1 and 100000")
-        self._assert_integrity(scope=scope, verified=verified)
+    def _read_query(
+        self,
+        receipt_type: ReceiptType | None,
+        scope: str | None,
+        limit: int,
+        *,
+        include_tombstones: bool,
+        parent_receipt_id: str | None,
+    ) -> list[ReceiptRecord]:
+        """The query behind :meth:`query_receipts`, with no integrity walk (callers verified)."""
         query = "SELECT * FROM receipts WHERE 1=1"
         params: list[Any] = []
         if receipt_type is not None:
