@@ -76,6 +76,8 @@ class FakeRunner:
         for prefix, result in self.handlers.items():
             if tuple(argv[: len(prefix)]) == prefix:
                 return result
+        if list(argv) == ["git", "rev-parse", "HEAD"]:
+            return CommandResult(0, INTEGRATION + "\n")
         if argv[:3] == ["gh", "pr", "list"]:
             return CommandResult(0, "[]")
         if argv[:3] == ["gh", "pr", "create"]:
@@ -137,6 +139,22 @@ def test_dry_run_returns_rendered_plan_and_runs_nothing(tmp_path: Path) -> None:
     assert not (run_dir / DELIVERY_FILE).exists()
 
 
+def test_dry_run_runs_no_command_and_never_reaches_the_worktree_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.orchestration import deliver_service
+
+    def unreachable(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("the worktree check must not run on a dry run")
+
+    monkeypatch.setattr(deliver_service, "_check_worktree", unreachable)
+    run_dir = _make_run(tmp_path)
+    runner = FakeRunner()
+    outcome = deliver_run(_request(run_dir, dry_run=True), runner=runner, clock=_clock)
+    assert outcome.status is DeliverStatus.DRY_RUN
+    assert runner.calls == []
+
+
 def test_successful_deliver_returns_url_and_writes_record(tmp_path: Path) -> None:
     run_dir = _make_run(tmp_path)
     runner = FakeRunner()
@@ -190,6 +208,46 @@ def test_publisher_error_fails_without_record(tmp_path: Path) -> None:
     assert "vgate" in outcome.message
     assert not (run_dir / DELIVERY_FILE).exists()
     assert not (run_dir / DELIVERY_DIGEST_FILE).exists()
+
+
+def _assert_worktree_refused(run_dir: Path, outcome: DeliverOutcome, runner: FakeRunner) -> None:
+    assert outcome.status is DeliverStatus.FAILED
+    assert outcome.reason == "worktree_not_at_integration_commit"
+    assert not outcome.ok
+    assert outcome.title
+    assert outcome.body
+    assert not any(c[:2] == ["git", "push"] for c in runner.calls)
+    assert not any(c[:3] == ["gh", "pr", "create"] for c in runner.calls)
+    assert runner.mutating == []
+    assert not (run_dir / DELIVERY_FILE).exists()
+    assert not (run_dir / DELIVERY_DIGEST_FILE).exists()
+
+
+def test_worktree_at_another_commit_fails_without_push_pr_or_record(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path)
+    runner = FakeRunner(handlers={("git", "rev-parse", "HEAD"): CommandResult(0, "f" * 40 + "\n")})
+    outcome = deliver_run(_request(run_dir), runner=runner, clock=_clock)
+    _assert_worktree_refused(run_dir, outcome, runner)
+
+
+def test_dirty_worktree_fails_without_push_pr_or_record(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path)
+    runner = FakeRunner(
+        handlers={("git", "status", "--porcelain"): CommandResult(0, " M verdict/a.py\n")}
+    )
+    outcome = deliver_run(_request(run_dir), runner=runner, clock=_clock)
+    _assert_worktree_refused(run_dir, outcome, runner)
+
+
+def test_worktree_check_commands_come_before_the_push(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path)
+    runner = FakeRunner()
+    outcome = deliver_run(_request(run_dir), runner=runner, clock=_clock)
+    assert outcome.status is DeliverStatus.DELIVERED
+    head = runner.calls.index(["git", "rev-parse", "HEAD"])
+    status = runner.calls.index(["git", "status", "--porcelain"])
+    push = next(i for i, c in enumerate(runner.calls) if c[:2] == ["git", "push"])
+    assert head < status < push
 
 
 def test_unauthenticated_gh_fails_with_publisher_reason(tmp_path: Path) -> None:
