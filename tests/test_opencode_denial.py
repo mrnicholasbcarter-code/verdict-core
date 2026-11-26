@@ -78,6 +78,30 @@ def test_route_id_is_escaped() -> None:
     assert serve_denial_code(_retry(_denial("a", "cc/example.model")), "cc/example.model") == "a"
 
 
+@pytest.mark.parametrize("route", ["cc/it's-model", "cc/back\\slash", 'cc/say"hi"'])
+def test_route_id_is_quoted_the_way_serve_quotes_it(route: str) -> None:
+    """``IntelligenceService._assigned_denial_reason`` writes the route with ``!r``."""
+    serve_text = f"assigned route {route!r} denied: opaque_route_disallowed (why)"
+    assert serve_denial_code(_retry(serve_text), route) == "opaque_route_disallowed"
+    watch = DenialWatch(route)
+    assert watch.feed(_line(_retry(serve_text))) == (
+        f"assigned route {route!r} denied: opaque_route_disallowed"
+    )
+
+
+@pytest.mark.parametrize("tail", ["X", "_X", "Xy"])
+def test_a_capital_straight_after_the_code_means_it_is_not_a_code(tail: str) -> None:
+    """Without the boundary the lower-case run would be read as a shorter, different code."""
+    assert serve_denial_code(_retry(_denial("opaque_route_disallowed" + tail)), ROUTE) is None
+
+
+@pytest.mark.parametrize("after", ["", " (why)", '"}', '\\"}'])
+def test_a_code_ends_at_the_end_serves_detail_or_the_json_quoting(after: str) -> None:
+    text = _denial("a_b") + after
+    assert serve_denial_code(_retry(text), ROUTE) == "a_b"
+    assert serve_denial_code(_retry("upstream", body=text), ROUTE) == "a_b"
+
+
 @pytest.mark.parametrize("code", sorted(PERMANENT_DENIAL_CODES))
 def test_permanent_code_ends_on_first_denial(code: str) -> None:
     watch = DenialWatch(ROUTE)

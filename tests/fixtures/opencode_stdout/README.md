@@ -1,6 +1,6 @@
 # OpenCode stdout fixtures (captured tool output)
 
-These files are the real standard output of the installed OpenCode, version 2.3.2
+These files (one is derived, see its row) are the real standard output of the installed OpenCode, version 2.3.2
 (`opencode v2.3.2`), run as `verdict orchestrate --executor opencode` runs it:
 
 ```
@@ -24,7 +24,7 @@ capture. Every line is one JSON object, as printed. Exit codes and stderr are no
 | `v2_3_2_error.jsonl` | answered every request `429` with a `retry-after: 7` header | 1 | empty |
 | `v2_3_2_error_503.jsonl` | answered every request `503`, no `retry-after` header | 1 | empty |
 | `v2_3_2_error_403_serve_refusal.jsonl` | a loopback stand-in for `verdict serve` that answered every chat request `403` with serve's own refusal body for a bad assignment, `{"error": {"message": "authentication failed", "type": "authentication_error"}}` (captured 2026-11-25, #1325; no gateway, no model; the bearer was a signed assignment minted by the executor with a throwaway key) | 1 | empty |
-| `v2_3_2_retry_503_serve_denial.jsonl` | a stand-in for `verdict serve` that answered every chat request `503` with the assigned-route denial text (`assigned route '<id>' denied: <code>`); two `retry` lines carrying it, cut short before OpenCode's ten retries (loopback only, no gateway, no model) | 1 | empty |
+| `v2_3_2_retry_503_serve_denial.jsonl` | **derived, not a capture** (#1366): the `step_start` line and the first two `retry` events of `v2_3_2_error_503.jsonl`, with the upstream text replaced by what `verdict serve` answers when it refuses the assigned route: HTTP 503, `{"error": {"message": "assigned route '<id>' denied: <code> (<detail>)", "type": "api_error"}}` (`IntelligenceService._assigned_denial_reason` through `_proxy_error`; the `decision` member serve adds is left out). The route is `cc/example-model`, the code and detail are those of `free_tier_admit`. OpenCode copies the body's `error.message` into the `retry` event's `error.message` (see the 503 capture above), so the text is in `error.message` and in `error.response.body` | n/a | n/a |
 
 What the captures show (and what the parser in `verdict/orchestration/executor_opencode.py`
 relies on):
@@ -46,5 +46,5 @@ relies on):
   (absent in the 503 capture). Nothing was printed on stderr.
 - A `tool_use` event carries the tool's own `state`, under `part`; the parser does not read it.
 
-Do not edit these files by hand: they are evidence of what the tool prints. To re-capture, run the
+Do not edit the captures by hand (every file above except the derived one): they are evidence of what the tool prints. To re-capture, run the
 installed tool against a fake endpoint again, as above, and replace the files.

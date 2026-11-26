@@ -20,8 +20,17 @@ PERMANENT_DENIAL_CODES: frozenset[str] = frozenset(
 _MAX_PARTIAL_LINE_BYTES = 1024 * 1024
 
 
+def _denial_text(route_id: str, code: str) -> str:
+    """Serve's own words, up to the code (``IntelligenceService._assigned_denial_reason`` writes
+    the route with ``!r``, so a route id is quoted exactly as Python quotes it)."""
+    return f"assigned route {route_id!r} denied: {code}"
+
+
 def _denial_pattern(route_id: str) -> re.Pattern[str]:
-    return re.compile(rf"assigned route '{re.escape(route_id)}' denied: ([a-z0-9_]+)")
+    # The code is lower-case snake case (``REASON_*``) and ends where serve's " (detail)" or the
+    # end of the message begins; a letter or digit straight after it means it is not a code.
+    prefix = re.escape(_denial_text(route_id, ""))
+    return re.compile(rf"{prefix}([a-z0-9_]+)(?![A-Za-z0-9_])")
 
 
 def _match_code(pattern: re.Pattern[str], text: object) -> str | None:
@@ -31,7 +40,13 @@ def _match_code(pattern: re.Pattern[str], text: object) -> str | None:
     return found.group(1) if found else None
 
 
-def _serve_denial_code(line: str | bytes, pattern: re.Pattern[str]) -> str | None:
+def serve_denial_code(line: str | bytes, route_id: str) -> str | None:
+    """Return the denial code if ``line`` is a 503 retry denying ``route_id``.
+
+    The text is looked for in ``error.message`` and, failing that, in ``error.response.body``
+    (OpenCode copies the body's ``error.message`` into the first; the second is the raw body).
+    """
+    pattern = _denial_pattern(route_id)  # ``re`` keeps the compiled pattern for the next line
     try:
         event = json.loads(line)
     except (ValueError, RecursionError):
@@ -53,17 +68,11 @@ def _serve_denial_code(line: str | bytes, pattern: re.Pattern[str]) -> str | Non
     return None
 
 
-def serve_denial_code(line: str | bytes, route_id: str) -> str | None:
-    """Return the denial code if ``line`` is a 503 retry denying ``route_id``."""
-    return _serve_denial_code(line, _denial_pattern(route_id))
-
-
 class DenialWatch:
     """Watch OpenCode NDJSON output and say when the attempt should end."""
 
     def __init__(self, route_id: str) -> None:
         self._route_id = route_id
-        self._pattern = _denial_pattern(route_id)
         self._buffer = b""
         self._skipping = False
         self._counts: dict[str, int] = {}
@@ -94,11 +103,11 @@ class DenialWatch:
         return None
 
     def _handle_line(self, line: bytes) -> str | None:
-        code = _serve_denial_code(line, self._pattern)
+        code = serve_denial_code(line, self._route_id)
         if code is None:
             return None
         count = self._counts.get(code, 0) + 1
         self._counts[code] = count
         if code in PERMANENT_DENIAL_CODES or count >= 2:
-            return f"assigned route '{self._route_id}' denied: {code}"
+            return _denial_text(self._route_id, code)
         return None

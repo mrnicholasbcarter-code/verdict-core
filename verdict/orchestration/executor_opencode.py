@@ -1827,11 +1827,7 @@ class OpenCodeExecutor:
             _cleanup_attempt_dir(attempt_tmp)
 
     async def _collect(
-        self,
-        proc: asyncio.subprocess.Process,
-        timeout_seconds: float,
-        *,
-        route_id: str = "",
+        self, proc: asyncio.subprocess.Process, timeout_seconds: float, *, route_id: str = ""
     ) -> tuple[bytes, bytes, str, str]:
         """Collect both pipes with timeout and idle-output stall kill.
 

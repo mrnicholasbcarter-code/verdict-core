@@ -2643,7 +2643,9 @@ def test_group_is_killed_when_collecting_raises_an_ordinary_exception(
         "time.sleep(120)\n",
     )
 
-    async def exploding_collect(self: object, proc: object, timeout_seconds: float) -> object:
+    async def exploding_collect(
+        self: object, proc: object, timeout_seconds: float, **_: object
+    ) -> object:
         for _ in range(1200):  # the worker must be running before we fail
             if capture.exists():
                 break
