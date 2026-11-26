@@ -19,7 +19,6 @@ import os
 import re
 import subprocess
 import tempfile
-import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -36,10 +35,6 @@ _TIMEOUT_RC = 124
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 _PR_URL_RE = re.compile(r"https?://\S+/pull/\d+")
-BRANCH_PREFIX = "verdict/issue-"
-MAX_SLUG_LENGTH = 40
-FALLBACK_SLUG = "untitled"
-_SLUG_RUN_RE = re.compile(r"[^a-z0-9]+")
 _REF_REJECTED_RE = re.compile(r"^\s*!\s*\[", re.MULTILINE)
 _REF_CONFLICT_MARKERS = ("non-fast-forward", "fetch first", "already exists", "stale info")
 _PUSH_FAILED_LINE = "failed to push some refs"
@@ -164,24 +159,6 @@ def _remote_branch_sha(
         if len(parts) == 2 and parts[1] == f"refs/heads/{branch}":
             return parts[0], None
     return None, None
-
-
-def branch_slug(title: str) -> str:
-    """Slug for a branch name from an untrusted issue title.
-
-    Lower-case ``[a-z0-9]`` runs joined by single hyphens, at most 40 characters,
-    no leading or trailing hyphen. Accents fold to ASCII; a title with nothing
-    usable gives the deterministic ``FALLBACK_SLUG``.
-    """
-    folded = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii")
-    slug = _SLUG_RUN_RE.sub("-", folded.lower()).strip("-")
-    slug = slug[:MAX_SLUG_LENGTH].strip("-")
-    return slug or FALLBACK_SLUG
-
-
-def branch_name_for_issue(issue_number: int, title: str) -> str:
-    """The delivery branch, exactly ``verdict/issue-<N>-<slug>``."""
-    return f"{BRANCH_PREFIX}{issue_number}-{branch_slug(title)}"
 
 
 def _classify_push_failure(result: CommandResult, branch: str) -> PublishError:
