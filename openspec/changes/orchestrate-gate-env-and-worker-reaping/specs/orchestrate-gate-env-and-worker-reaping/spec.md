@@ -108,6 +108,10 @@ signal number and without `run_finished`.
 - **WHEN** the caller's loop already handles SIGTERM or SIGINT with `add_signal_handler`
 - **THEN** the run installs nothing for that signal and the caller's callback is still registered afterwards
 
+#### Scenario: A signal a Python handler handles
+- **WHEN** the caller already handles SIGTERM or SIGINT with a handler set through `signal.signal`
+- **THEN** the run installs nothing for that signal, runs with the caller's handler in place, and the caller's handler is still the one set afterwards
+
 #### Scenario: Handlers outside the main thread
 - **WHEN** a run is started in a thread other than the main thread
 - **THEN** no handler is installed and the run proceeds

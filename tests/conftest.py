@@ -192,6 +192,35 @@ def _isolate_home(
 
 
 @pytest.fixture(autouse=True)
+def _termination_signal_handlers_do_not_outlive_the_test() -> Any:
+    """Whatever a test installs for SIGTERM, SIGINT or SIGHUP is gone when the test ends.
+
+    These handlers belong to the process, and an xdist worker runs many files in one process.
+    ``scripts/prime_supervisor.py``'s ``main()`` installs a SIGTERM and a SIGHUP handler and
+    never gives them back, so every test that calls it in process (several files do) left the
+    next file in the worker with a handler that was not the default; a test that asks "what
+    does this run do to SIGTERM" then saw somebody else's.  Pinned by
+    ``tests/test_signal_handler_isolation.py``.
+    """
+    import signal
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        yield  # only the main thread can set a handler
+        return
+    names = ("SIGTERM", "SIGINT", "SIGHUP")
+    before = {
+        number: signal.getsignal(number)
+        for number in (getattr(signal, name) for name in names if hasattr(signal, name))
+    }
+    yield
+    for number, handler in before.items():
+        # ``None`` is a handler installed from C: it cannot be set back from Python.
+        if handler is not None and signal.getsignal(number) != handler:
+            signal.signal(number, handler)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_systemd(monkeypatch: pytest.MonkeyPatch) -> None:
     """Doctor timer probes never ask the operator's real systemd user manager."""
     import subprocess

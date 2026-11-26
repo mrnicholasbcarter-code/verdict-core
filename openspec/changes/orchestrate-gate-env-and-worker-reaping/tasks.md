@@ -29,7 +29,8 @@ Tests are in `tests/test_orch_worker_reaping.py` (real subprocesses, bounded wai
 - [x] 3.3 A second cancellation during cleanup, in both phases: `test_cancelling_again_while_the_attempt_is_ended_still_ends_it`
 - [x] 3.4 Only the attempt's own processes end, and a signal checks the marker on the process it holds: `test_only_the_attempts_own_processes_are_ended`, `test_two_attempts_end_only_their_own_processes`, `test_a_process_that_does_not_carry_the_marker_is_never_signalled`
 - [x] 3.5 An orchestrator process sent SIGTERM or SIGINT while a worker runs leaves no worker behind and exits 143 or 130: `test_an_orchestrator_that_is_signalled_leaves_no_worker_behind`
-- [x] 3.6 Handlers are restored, none is installed off the main thread, and a signal the embedding loop handles is left to it: `test_the_signal_handlers_are_the_runs_while_it_lasts_and_the_callers_after`, `test_a_run_in_a_worker_thread_installs_no_handler_and_still_runs`, `test_a_signal_the_embedding_loop_already_handles_is_left_to_it`
+- [x] 3.6 Handlers are restored, none is installed off the main thread, and a signal the embedding loop or a Python handler handles is left to it: `test_the_signal_handlers_are_the_runs_while_it_lasts_and_the_callers_after`, `test_a_run_in_a_worker_thread_installs_no_handler_and_still_runs`, `test_a_signal_the_embedding_loop_already_handles_is_left_to_it`, `test_a_signal_a_python_handler_already_handles_is_left_to_it`
+- [x] 3.7 A handler a test installs does not outlive it, so the signal tests hold in an xdist worker that ran `scripts/prime_supervisor.py` in process before them: `tests/conftest.py` restores SIGTERM, SIGINT and SIGHUP, pinned by `tests/test_signal_handler_isolation.py`
 
 ## 4. Spec
 

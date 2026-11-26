@@ -551,7 +551,31 @@ _MAIN_THREAD_ONLY = pytest.mark.skipif(
 )
 
 
+@pytest.fixture
+def default_termination_handlers() -> Iterator[None]:
+    """Start the test with SIGTERM and SIGINT at their defaults, and give back what was there.
+
+    A handler belongs to the process, not to the test: another file run earlier in the same
+    xdist worker can leave one behind (``scripts/prime_supervisor.py``'s ``main()`` does), and
+    a run leaves a handler it finds to its owner.  The tests below ask what a run does to the
+    default, so they set that up themselves instead of inheriting it.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        yield
+    finally:
+        for sig, handler in saved.items():
+            if handler is not None:
+                signal.signal(sig, handler)
+
+
 @_MAIN_THREAD_ONLY
+@pytest.mark.usefixtures("default_termination_handlers")
 async def test_the_signal_handlers_are_the_runs_while_it_lasts_and_the_callers_after() -> None:
     from verdict.orchestration.run import _exit_when_signalled
 
@@ -569,6 +593,7 @@ async def test_the_signal_handlers_are_the_runs_while_it_lasts_and_the_callers_a
 
 
 @_MAIN_THREAD_ONLY
+@pytest.mark.usefixtures("default_termination_handlers")
 async def test_a_signal_the_embedding_loop_already_handles_is_left_to_it() -> None:
     """``loop.add_signal_handler`` callbacks cannot be read back or restored, so a run neither
     replaces nor removes one: the caller's SIGTERM callback is still registered afterwards."""
@@ -593,6 +618,31 @@ async def test_a_signal_the_embedding_loop_already_handles_is_left_to_it() -> No
         loop.remove_signal_handler(signal.SIGTERM)
 
 
+@_MAIN_THREAD_ONLY
+@pytest.mark.usefixtures("default_termination_handlers")
+async def test_a_signal_a_python_handler_already_handles_is_left_to_it() -> None:
+    """A handler set with ``signal.signal`` is the caller's too (a daemon's cleanup, a
+    supervisor's ``KeyboardInterrupt``): the run neither replaces nor removes it, and still runs.
+    Without a handler of the caller's own the same run installs one (the first test above)."""
+    from verdict.orchestration.run import _exit_when_signalled
+
+    def callers(signum: int, frame: object) -> None:  # pragma: no cover - never signalled
+        raise AssertionError("the test never sends a signal")
+
+    signal.signal(signal.SIGTERM, callers)
+    seen: list[object] = []
+
+    @_exit_when_signalled
+    async def run() -> str:
+        seen.append(signal.getsignal(signal.SIGTERM))
+        return "done"
+
+    assert await run() == "done"
+    assert seen == [callers], "the run replaced the caller's handler"
+    assert signal.getsignal(signal.SIGTERM) is callers, "the run did not give it back"
+
+
+@pytest.mark.usefixtures("default_termination_handlers")
 def test_a_run_in_a_worker_thread_installs_no_handler_and_still_runs() -> None:
     from verdict.orchestration.run import _exit_when_signalled
 

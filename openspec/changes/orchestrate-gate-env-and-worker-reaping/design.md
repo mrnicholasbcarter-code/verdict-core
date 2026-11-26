@@ -158,6 +158,14 @@ worker (D4). The wrapper then raises `SystemExit(128 + signal)`: `cli.py` is not
 `CancelledError` would otherwise print a traceback. The first signal takes the handlers down, so
 a second signal keeps its default effect, the operator's way out of a cleanup that hangs, and the
 previous handlers are restored on the way out. Outside the main thread nothing is installed.
+A signal that already has a handler of the caller's, whether set through `loop.add_signal_handler`
+or `signal.signal`, is left to it: replacing it would lose the caller's own cleanup (asyncio
+cannot give a loop callback back), and the caller that set it owns what SIGTERM means in its
+process. Only the interpreter's defaults, and the `asyncio.run` SIGINT handler, are the run's to
+take. `verdict orchestrate` starts with no handler of its own, so the run handles both signals.
+The tests that ask what a run does to a signal pin their starting state, and `tests/conftest.py`
+restores the three termination signals after every test, because an xdist worker runs many files
+in one process and `scripts/prime_supervisor.py`'s `main()` leaves handlers behind.
 
 The signal is deliberately not routed into the operator's cancel request: that settles the run
 as CANCELLED with `run_finished`, whereas the supervisor reads "exited without `run_finished`"
