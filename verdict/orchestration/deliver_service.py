@@ -45,6 +45,7 @@ from verdict.orchestration.deliver_publish import (
     PublishError,
     run_command,
 )
+from verdict.orchestration.deliver_publish import check_worktree_at_commit as _check_worktree
 from verdict.orchestration.deliver_publish import publish_branch_and_pr as _publish
 from verdict.orchestration.deliver_render import render_pull_request
 from verdict.orchestration.ready_gate import (
@@ -412,6 +413,18 @@ def deliver_run(
     push_runner = (
         None if runner is not None else functools.partial(run_command, timeout=push_timeout_s)
     )
+    worktree_error = _check_worktree(
+        plan, runner or run_command, Path(repo_dir) if repo_dir is not None else None
+    )
+    if worktree_error is not None:
+        return _outcome(
+            plan,
+            DeliverStatus.FAILED,
+            reason=worktree_error.reason.value,
+            message=worktree_error.message,
+            title=rendered.title,
+            body=rendered.body,
+        )
     result = _publish(
         plan,
         rendered.title,

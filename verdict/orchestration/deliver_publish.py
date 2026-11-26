@@ -119,6 +119,7 @@ class PublishReason(str, Enum):
     PR_LOOKUP_FAILED = "pr_lookup_failed"
     PR_CREATE_FAILED = "pr_create_failed"
     PR_NOT_DRAFT = "pr_not_draft"
+    WORKTREE_NOT_AT_INTEGRATION_COMMIT = "worktree_not_at_integration_commit"
 
 
 @dataclass(frozen=True)
@@ -275,6 +276,59 @@ def push_branch(
     )
     if result.returncode != 0:
         return _classify_push_failure(result, branch)
+    return None
+
+
+def check_worktree_at_commit(
+    plan: DeliverPlan, runner: CommandRunner, cwd: Path | None = None
+) -> PublishError | None:
+    """Check that ``cwd`` has the integration commit checked out and a clean tree.
+
+    The pre-push hook tests the checkout, not the pushed commit, so pushing from a
+    directory at another commit, or with local changes, would gate the wrong content.
+    Ignored files are not counted. The status command runs only after HEAD matched.
+    """
+    commit = plan.integration_commit.strip()
+    where = str(cwd) if cwd is not None else "the current directory"
+    fix = (
+        f"run `git merge --ff-only {commit}` or `git checkout --detach {commit}` in {where}, "
+        "with a clean working tree, then try again"
+    )
+    head = runner(["git", "rev-parse", "HEAD"], cwd)
+    if head.returncode != 0:
+        return _error(
+            PublishReason.WORKTREE_NOT_AT_INTEGRATION_COMMIT,
+            f"could not read HEAD in {where}; {fix}",
+            head,
+        )
+    head_sha = head.stdout.strip()
+    if not head_sha:
+        return _error(
+            PublishReason.WORKTREE_NOT_AT_INTEGRATION_COMMIT,
+            f"git rev-parse HEAD printed nothing in {where}; {fix}",
+        )
+    if not (head_sha == commit or (len(commit) < len(head_sha) and head_sha.startswith(commit))):
+        return _error(
+            PublishReason.WORKTREE_NOT_AT_INTEGRATION_COMMIT,
+            f"{where} is at {head_sha}, not the integration commit {commit}; {fix}",
+        )
+    # Explicit flags: a local ``status.showUntrackedFiles`` or submodule-ignore setting
+    # must not hide a change from this check.
+    status = runner(
+        ["git", "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"], cwd
+    )
+    if status.returncode != 0:
+        return _error(
+            PublishReason.WORKTREE_NOT_AT_INTEGRATION_COMMIT,
+            f"could not read the working tree status in {where}; {fix}",
+            status,
+        )
+    if status.stdout.strip():
+        return _error(
+            PublishReason.WORKTREE_NOT_AT_INTEGRATION_COMMIT,
+            f"{where} has uncommitted or untracked changes: "
+            f"{status.stdout.strip()[:MAX_ERROR_DETAIL]}; {fix}",
+        )
     return None
 
 

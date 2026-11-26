@@ -332,6 +332,8 @@ its URL. It pushes the run's integration commit to a new branch with a
 create-only `git push` (the repository's pre-push hook runs; the push creates
 the branch and can never move an existing one, even one another writer creates
 while the push is in flight) and opens the pull request with `gh pr create --draft`. The push has its own timeout (`--push-timeout`, default 30 minutes) because the pre-push hook can take minutes, and when a command times out its whole process group is ended, so a hook or helper it started does not keep running.
+Run it from a checkout of the repository that has the run's integration commit checked out with a clean working tree: the pre-push hook tests the checkout, not the pushed commit, so delivery stops with `worktree_not_at_integration_commit` before any push when the checkout is at another commit or has uncommitted or untracked changes.
+The branch is `verdict/issue-<N>-<slug>`; in the slug each run of characters outside `a-z0-9` in the title becomes one hyphen.
 An open pull request for the branch is reused only while it is still a draft.
 
 After the draft is published, the ready gate runs unless `--no-ready` is given.

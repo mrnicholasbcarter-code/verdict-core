@@ -118,6 +118,7 @@ def test_without_an_injected_runner_the_publisher_gets_a_push_runner_with_the_re
     run_dir = _make_run(tmp_path)
     publisher = _Publisher()
     monkeypatch.setattr(deliver_service, "_publish", publisher)
+    monkeypatch.setattr(deliver_service, "_check_worktree", lambda *_a, **_k: None)
     outcome = deliver_run(
         _request(run_dir, push_timeout_s=2700.0, run_ready_gate=False), clock=_clock
     )
@@ -137,6 +138,7 @@ def test_the_default_request_pushes_with_the_default_push_timeout(
     run_dir = _make_run(tmp_path)
     publisher = _Publisher()
     monkeypatch.setattr(deliver_service, "_publish", publisher)
+    monkeypatch.setattr(deliver_service, "_check_worktree", lambda *_a, **_k: None)
     deliver_run(_request(run_dir, run_ready_gate=False), clock=_clock)
     assert publisher.kwargs[0]["push_runner"].keywords == {"timeout": DEFAULT_PUSH_TIMEOUT_S}
 
@@ -165,6 +167,7 @@ def test_cli_push_timeout_reaches_the_publishers_push_runner_in_seconds(
     run_dir = _make_run(tmp_path)
     publisher = _Publisher()
     monkeypatch.setattr(deliver_service, "_publish", publisher)
+    monkeypatch.setattr(deliver_service, "_check_worktree", lambda *_a, **_k: None)
     _run(
         monkeypatch,
         "deliver",
