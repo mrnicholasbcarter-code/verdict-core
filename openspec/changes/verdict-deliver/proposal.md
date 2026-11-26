@@ -7,7 +7,7 @@
 ## What Changes
 
 - New `verdict deliver --run <run> --issue N` command. It runs only for a finished run whose receipt verifies (`verify_run_receipt`) and whose outcome is `COMPLETE`.
-- It pushes the integration commit to `verdict/issue-N-<slug>` with a plain `git push`. The pre-push vgate runs; a rejection is a named failure. Verdict never sets `VERDICT_PREPUSH_SKIP`.
+- It pushes the integration commit to `verdict/issue-N-<slug>` with a create-only `git push`: the remote branch must not exist when the push lands, so a branch another writer created in the meantime is never moved. The pre-push vgate runs; a rejection is a named failure. Verdict never sets `VERDICT_PREPUSH_SKIP` and never overwrites a branch.
 - It opens a **draft** PR with `gh pr create --draft`, using the existing `gh` login. The body links the issue (`Refs #N`, never a closing keyword), the run id, the events digest and the OpenSpec change id.
 - **Ready gate.** The PR is marked ready (`gh pr ready`) only when CI is green on the exact head SHA and a review from another model family has passed. If the run's in-run review fell back to route-level independence (same family), `deliver` first runs an extra OpenCodeReview on the PR diff with the implementer families excluded. If no reviewer from another family is available, the PR stays draft with a named reason.
 - `deliver` never approves, merges or closes anything.

@@ -1363,7 +1363,107 @@ def _collect_doctor_diagnostics(
         if status in BLOCKING_ROW_STATES:
             issues_found.append(row["detail"])
 
+    # Informational: a host without a GitHub login still runs every other Verdict command,
+    # so this row never adds an issue or warning and never changes the exit status.
+    github_row = github_delivery_row()
+    sections.append((github_row["label"], github_row["status"], github_row["detail"]))
+
     return diag
+
+
+GITHUB_DELIVERY_LABEL = "github_delivery"
+_GH_TIMEOUT_SECONDS = 20.0
+_GH_TIMED_OUT_RC = 124
+#: ``gh repo view --json viewerPermission`` values that can push and open a pull request.
+_GH_WRITE_PERMISSIONS = frozenset({"ADMIN", "MAINTAIN", "WRITE"})
+_GH_KNOWN_PERMISSIONS = _GH_WRITE_PERMISSIONS | {"TRIAGE", "READ", "NONE"}
+#: The host ``_GITHUB_REMOTE`` parses. Every ``gh`` call below names it, so ``GH_HOST`` (or a
+#: login problem on some other host) cannot redirect the check to a different repository.
+_GITHUB_HOST = "github.com"
+_GITHUB_REMOTE = re.compile(
+    r"github\.com[:/](?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)(?:\.git)?/?\s*$"
+)
+
+
+def _run_gh_command(argv: Any, cwd: Path | None = None) -> Any:
+    """Run one bounded ``gh``/``git`` command (the seam tests replace)."""
+    from verdict.orchestration.deliver_publish import run_command
+
+    return run_command(argv, cwd, timeout=_GH_TIMEOUT_SECONDS)
+
+
+def github_delivery_row(
+    runner: Callable[[Any, Path | None], Any] | None = None, *, cwd: Path | None = None
+) -> dict[str, str]:
+    """Doctor row ``github_delivery``: can the ``gh`` login push to this repository
+    and open pull requests on it (needed by ``verdict deliver``)?
+
+    The text is built here from fixed phrases, the owner/repo parsed from the remote and a
+    permission name from a fixed list. Output of ``gh`` is never copied into the row, so a
+    token cannot reach it.
+    """
+    from verdict.security import redact_text
+
+    run = runner or _run_gh_command
+
+    def row(status: str, detail: str) -> dict[str, str]:
+        return {"label": GITHUB_DELIVERY_LABEL, "status": status, "detail": redact_text(detail)}
+
+    version = run(["gh", "--version"], cwd)
+    if version.returncode != 0:
+        return row(
+            "warn",
+            "gh is not installed; verdict deliver cannot open pull requests. "
+            "Install the GitHub CLI (https://cli.github.com), then run: gh auth login",
+        )
+    remote = run(["git", "remote", "get-url", "origin"], cwd)
+    match = _GITHUB_REMOTE.search(remote.stdout or "") if remote.returncode == 0 else None
+    if match is None:
+        return row(
+            "note",
+            "gh is installed; no GitHub origin remote here, so push access was not checked. "
+            "Run verdict doctor from a GitHub checkout",
+        )
+    slug = f"{match.group('owner')}/{match.group('repo')}"
+    auth = run(["gh", "auth", "status", "--hostname", _GITHUB_HOST], cwd)
+    if auth.returncode != 0:
+        return row("warn", f"gh is not logged in; run: gh auth login (needed for {slug})")
+    view = run(
+        [
+            "gh",
+            "repo",
+            "view",
+            f"https://{_GITHUB_HOST}/{slug}",
+            "--json",
+            "viewerPermission",
+            "--jq",
+            ".viewerPermission",
+        ],
+        cwd,
+    )
+    if view.returncode != 0:
+        reason = "timed out" if view.returncode == _GH_TIMED_OUT_RC else "request failed"
+        return row(
+            "warn",
+            f"gh is logged in but access to {slug} could not be checked ({reason}); "
+            "check the repository name and your network, then run: gh auth status",
+        )
+    permission = (view.stdout or "").strip().upper()
+    if permission in _GH_WRITE_PERMISSIONS:
+        return row(
+            "ok",
+            f"gh login can push to and open pull requests on {slug} ({permission.lower()} access)",
+        )
+    if permission in _GH_KNOWN_PERMISSIONS:
+        return row(
+            "warn",
+            f"gh login has {permission.lower()} access to {slug}, which cannot push or open pull "
+            "requests; ask for write access or log in as an account that has it: gh auth login",
+        )
+    return row(
+        "warn",
+        f"gh is logged in but its permission on {slug} was not recognised; run: gh auth status",
+    )
 
 
 #: Doctor row state for a part that was never set up (distinct from failed, never ok).

@@ -14,7 +14,7 @@ The registered subcommands below are grouped by their primary use. Run
 |---|---|
 | Setup and configuration | `setup`, `plan`, `check`, `doctor`, `compat`, `uninstall` |
 | Routing and selection | `route`, `run`, `compare`, `choose`, `simulate`, `models`, `inspect`, `failover-proof`, `replay` |
-| Orchestration | `orchestrate`, `supervise`, `watch`, `run-receipt`, `eligibility`, `resume` |
+| Orchestration | `orchestrate`, `supervise`, `watch`, `run-receipt`, `deliver`, `eligibility`, `resume` |
 | Execution and service | `serve`, `detect`, `probe`, `catalog`, `prove-at-rest`, `certify` |
 | Metadata, memory, and integrations | `metadata`, `memory`, `mcp`, `hook`, `harness`, `runtime` |
 | Traces and demo | `trace`, `demo` |
@@ -35,6 +35,7 @@ The registered subcommands below are grouped by their primary use. Run
 | `supervise` | Supervise an orchestration controller |
 | `watch` | Live TUI view of a running orchestration |
 | `run-receipt` | Show and verify an orchestration run receipt |
+| `deliver` | Deliver a verified `COMPLETE` run as a draft pull request |
 | `eligibility` | Show the DISCOVERED → … → SELECTED ladder for a route |
 | `route` / `run` | Route a single prompt |
 | `simulate` | Forecast tokens, cost, risk, model — no paid call |
@@ -318,6 +319,76 @@ recorded outcome follows as `recorded (unverified): ...`; `--json` then reports
 Text output includes outcome, integrity, per-node attempts, and, when present,
 how many implement nodes changed no files (`no_change_nodes` on the receipt).
 That field is omitted when empty so committed receipts still verify.
+
+### `verdict deliver` — Deliver a verified run as a draft pull request
+
+```bash
+verdict deliver RUN_ID --issue 1269 --issue-title "Deliver a run as a pull request" --dry-run
+verdict deliver RUN_ID --issue 1269 --issue-title "Deliver a run as a pull request"
+```
+
+Turns a verified `COMPLETE` orchestrate run into a draft pull request and prints
+its URL. It pushes the run's integration commit to a new branch with a
+create-only `git push` (the repository's pre-push hook runs; the push creates
+the branch and can never move an existing one, even one another writer creates
+while the push is in flight) and opens the pull request with `gh pr create --draft`.
+An open pull request for the branch is reused only while it is still a draft.
+
+After the draft is published, the ready gate runs unless `--no-ready` is given.
+When the run's own review was only route-level (not another model family), or
+the receipt does not show a named reviewer route in a family different from every
+implementer, the gate first runs an extra cross-family review of `BASE...HEAD` on a reviewer route
+whose family differs from every implementer's; a skipped, empty or failed review,
+or no admissible reviewer, stops the gate. It then waits for the checks on the
+exact head commit to be green (up to `--ci-deadline`; every page of check runs
+is read, and a repository that reports only legacy commit statuses can pass),
+re-reads the pull request head, and only then runs `gh pr ready`. A head that
+moved while waiting stops the gate with `head_moved`. Any stop leaves the pull request a draft and is recorded in
+`delivery.json` (`ready`, `ready_reason`, `review_level`, `reviewer_route`,
+`extra_review_ran`, `ci_polls`) without failing the delivery. The command never
+approves or merges the pull request.
+
+| Flag | Description |
+|---|---|
+| `run` | Run ID (under `--runs-dir`) or path to a run directory |
+| `--issue ISSUE` | GitHub issue number the pull request refers to (required) |
+| `--issue-title TITLE` | Issue title; only used to build the branch slug |
+| `--base BASE` | Base branch for the pull request (default: `main`) |
+| `--runs-dir RUNS_DIR` | Orchestration runs directory (default: `.verdict/runs`) |
+| `--dry-run` | Print the planned branch, base and title (full title and body with `--json`); push and create nothing |
+| `--ci-deadline MINUTES` | Minutes (finite, greater than zero) to wait for checks before the ready gate stops (default: 60) |
+| `--no-ready` | Skip the ready gate; the pull request stays a draft |
+| `--json` | Print the outcome as JSON |
+
+**dry-run.** `--dry-run` runs the same eligibility checks, then prints the plan
+and exits `0`. It runs no `git` or `gh` command and writes no delivery record.
+
+**Idempotent re-delivery.** After a successful delivery the command writes
+`delivery.json` and `delivery.sha256` in the run directory. Running it again for
+the same run and issue prints the recorded pull request URL and runs no command.
+A record that fails its digest check, or one that does not match this run (a
+different issue, run id, integration commit, receipt digest or events digest),
+fails instead of being reused. `events.jsonl` and `receipt.json` are never
+modified.
+
+**Refusal.** The command refuses a run that is not eligible, before anything is
+pushed: the run is missing, still in progress, has an outcome other than
+`COMPLETE`, has a missing or invalid receipt, failed review (or a review that
+names no reviewer route), or has nothing to deliver. The refusal reason is printed on stderr (the `reason` field with
+`--json`).
+
+**GitHub prerequisites.** `git` and `gh` must be installed, `gh` must be logged
+in, and that login must be able to push to the repository's `origin` and open
+pull requests on it. `verdict doctor` reports this in the `github_delivery`
+row, which never prints a token.
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| `0` | Delivered, already delivered, or `--dry-run` |
+| `3` | Refused: the run is not eligible |
+| `4` | Publish failed (for example `gh` not authenticated, push rejected, the branch already exists at a different commit, or an open pull request for the branch is already ready) |
 
 ### `verdict routing` — Show the recorded routing explorer
 
