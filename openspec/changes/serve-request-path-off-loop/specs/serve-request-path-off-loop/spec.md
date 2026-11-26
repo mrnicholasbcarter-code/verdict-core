@@ -29,7 +29,10 @@ SHALL run on it the route decision (including the assigned lane), the evidence s
 the dispatch permit commit and the dispatch observation, awaiting each from the handler. Jobs
 SHALL run one at a time in the order submitted, with the submitting request's context copied in.
 The lane SHALL NOT be held across an upstream call. A job queued by a request that is then
-cancelled SHALL still run.
+cancelled SHALL still run. The one exception to the single worker and the submission order is a
+write to a decision row that already exists (a cleanup) after a close has given up on a held job
+and told the worker to stop: it SHALL run at once on the thread of its caller, not be dropped, and
+may then run beside, or ahead of, a job the worker still holds.
 
 #### Scenario: /health and cheap refusals answer during a decision
 - **WHEN** a request's route decision is held inside a slow function
@@ -52,8 +55,12 @@ cancelled SHALL still run.
 - **THEN** the queued write still runs in order, and the cancelled request's decision row gets a `cancelled` terminal event, with no upstream call made
 
 #### Scenario: A row is ended even when the lane closed first
-- **WHEN** the lane is closed (its worker still running, or told to stop after the close gave up on a held job) and then a request task is cancelled while its start job or its permit commit is still held
+- **WHEN** the lane is closed (its worker still running, or told to stop after the close gave up on a held job) and then a request task is cancelled while its start job or its permit commit is still held, or while it awaits its upstream call
 - **THEN** the row gets exactly one `cancelled` terminal event: the start job ends its own row when it has written it, and a cleanup for a later step is queued behind the held job while the worker runs, or run at once when it has stopped
+
+#### Scenario: A request that outlives the close still records how it ended
+- **WHEN** the lane is closed while a request awaits its upstream call and the request then completes
+- **THEN** its terminal evidence event is written (the response is unchanged) instead of failing on the closed lane
 
 #### Scenario: Shutdown
 - **WHEN** the app ends, normally or with an error, with jobs queued

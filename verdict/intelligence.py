@@ -194,6 +194,10 @@ class StateLane:
         waiter = asyncio.wrap_future(self.submit(fn, *args, **kwargs))
         return await asyncio.shield(waiter)
 
+    async def run_cleanup(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+        """``run`` for cleanup: ``submit_cleanup``'s job, shielded from a cancelled waiter."""
+        return await asyncio.shield(asyncio.wrap_future(self.submit_cleanup(fn, *args, **kwargs)))
+
     async def aclose(self, *, timeout: float = 10.0) -> None:
         """Refuse new jobs, wait up to ``timeout`` seconds for the queued ones, stop the worker.
 

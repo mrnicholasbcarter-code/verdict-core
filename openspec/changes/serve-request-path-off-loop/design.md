@@ -59,7 +59,11 @@ request, `/health` 16 to 32 s.
    queues the same event as cleanup: `StateLane.submit_cleanup` is taken by a closed lane while
    its worker runs (behind the job the task waited on; the close waits for it), runs at once on
    the calling thread once the worker has been told to stop, and the event is written directly
-   when the app has no lane left. A stream's terminal bookkeeping (event and observation) and
+   when the app has no lane left. Every write to a row that already exists (attempt events, the
+   terminal event of an attempt, a denial, a stream or a buffered response) goes the same way
+   (`_write_row_on_lane`), so a request that outlives the close, or is cancelled during its
+   upstream call after it, still records how it ended; only new work (the decision, the row's
+   start, the permit commit) is refused by a closed lane. A stream's terminal bookkeeping (event and observation) and
    the buffered response's are each one job. `_EvidenceStreamAdapter` awaits an async terminal
    callback and still accepts a plain one.
 6. **Never hold the lane across an upstream call.** The lane runs the decision before the call

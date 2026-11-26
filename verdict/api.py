@@ -343,6 +343,20 @@ async def _on_state_lane(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) ->
     return await lane.run(fn, *args, **kwargs)
 
 
+async def _write_row_on_lane(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+    """``_on_state_lane`` for a write to a decision row that already exists.
+
+    Ending or extending a row is cleanup, not new work: a lane that has closed (the app is
+    shutting down) still takes it, and once its worker has been told to stop it runs at once, so
+    a request that outlives the close, or is cancelled after it, still records how it ended
+    instead of failing on the closed lane and leaving the row open.
+    """
+    lane = state_lane_instance
+    if lane is None:
+        return fn(*args, **kwargs)
+    return await lane.run_cleanup(fn, *args, **kwargs)
+
+
 class CachedRelayAdmission:
     """Bounded cache for relay admission; ``get`` is strictly network-free.
 
@@ -1597,7 +1611,9 @@ async def route_task(
         outcome="denied" if decision.decision == "denied" else "success",
         features={"route_only": True},
     )
-    route_evidence = await _on_state_lane(_finish_evidence, route_evidence, outcome, evidence_key)
+    route_evidence = await _write_row_on_lane(
+        _finish_evidence, route_evidence, outcome, evidence_key
+    )
     status_code = 200 if decision.decision != "denied" else 503
     headers: dict[str, str] = {}
     if route_evidence.evidence_id:
@@ -2432,7 +2448,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             outcome="denied",
             features=features,
         )
-        evidence = await _on_state_lane(_finish_evidence, route_evidence, outcome, evidence_key)
+        evidence = await _write_row_on_lane(_finish_evidence, route_evidence, outcome, evidence_key)
         return _proxy_error(
             503,
             decision.reason,
@@ -2442,7 +2458,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         )
 
     if decision.protected and is_opaque_alias(attempts[0].model):
-        evidence = await _on_state_lane(
+        evidence = await _write_row_on_lane(
             _finish_evidence,
             route_evidence,
             build_outcome_event(
@@ -2468,11 +2484,15 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     last_status: int | None = None
     _last_error_body: str = ""  # bounded upstream body for failure classification
 
-    async def on_lane(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+    async def on_lane(
+        fn: Callable[..., _T], /, *args: Any, row_write: bool = False, **kwargs: Any
+    ) -> _T:
         """``_on_state_lane`` for the steps after the decision row exists and before an attempt's
-        own cancellation handler: a task cancelled while it waits still ends its row."""
+        own cancellation handler: a task cancelled while it waits still ends its row.
+        ``row_write`` marks a write to the row itself (taken by a closed lane as cleanup)."""
+        run = _write_row_on_lane if row_write else _on_state_lane
         try:
-            return await _on_state_lane(fn, *args, **kwargs)
+            return await run(fn, *args, **kwargs)
         except asyncio.CancelledError:
             _queue_cancelled_terminal(
                 route_evidence, evidence_key, event_prefix=event_prefix, features=features
@@ -2500,6 +2520,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 },
             ),
             evidence_key,
+            row_write=True,
         )
 
     # Proofs are bound to the task profile of the request actually being sent,
@@ -2918,7 +2939,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             )
             # The job is queued before the wait, and the lane shields it from this cancellation:
             # the terminal event lands even though this task is going away.
-            await _on_state_lane(_finish_evidence, route_evidence, outcome, evidence_key)
+            await _write_row_on_lane(_finish_evidence, route_evidence, outcome, evidence_key)
             raise
         except Exception as exc:
             result = None
@@ -2954,7 +2975,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     if result is None:
         if dispatch_denial is not None and not attempts_used:
             return _proxy_error(503, dispatch_denial, surface=surface)
-        evidence = await _on_state_lane(
+        evidence = await _write_row_on_lane(
             _finish_evidence,
             route_evidence,
             build_outcome_event(
@@ -3029,7 +3050,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             if result.status_code < 400 and response_actual_route_status(result) != "mismatch"
             else None
         )
-        evidence = await _on_state_lane(
+        evidence = await _write_row_on_lane(
             _finish_with_observation,
             route_evidence,
             build_outcome_event(
@@ -3098,7 +3119,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             try:
                 # One lane job, so a cancelled closer cannot land the terminal event and lose
                 # the observation (or the reverse).
-                await _on_state_lane(
+                await _write_row_on_lane(
                     _finish_with_observation,
                     route_evidence,
                     event,

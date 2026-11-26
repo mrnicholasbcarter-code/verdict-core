@@ -771,6 +771,101 @@ def test_a_row_is_ended_when_the_lane_closes_before_its_waiter_is_cancelled(
     assert harness.transport.requests == [], "a cancelled request reached the upstream"
 
 
+def _close_the_lane_during_upstream_io(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, cancel: bool
+) -> tuple[_Harness, list[tuple[str, str]], Any]:
+    """Close the lane while a request awaits its upstream call, then cancel it or let it finish.
+
+    Returns the harness, the evidence events recorded, and the response (``None`` when the
+    request was cancelled or raised).  The lane is idle when it closes, so its worker has been
+    told to stop by the time the request writes how it ended.
+    """
+    import httpx
+
+    from tests.relay_proof_helpers import assignment_headers
+
+    harness = _Harness(monkeypatch, _service(), tmp_path)
+    finished: list[tuple[str, str]] = []
+    real_finish = api._finish_evidence
+
+    def recording_finish(evidence: Any, event: Any, key: Any = None) -> Any:
+        finished.append((event.event_type, event.outcome))
+        return real_finish(evidence, event, key)
+
+    monkeypatch.setattr(api, "_finish_evidence", recording_finish)
+    real_upstream = harness.transport.handle_async_request
+    in_flight = asyncio.Event
+    state: dict[str, Any] = {}
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        state["entered"].set()
+        await asyncio.wait_for(state["release"].wait(), HOLD_SECONDS * 4)
+        return await real_upstream(request)
+
+    monkeypatch.setattr(harness.transport, "handle_async_request", upstream)
+
+    async def scenario() -> Any:
+        state["entered"], state["release"] = in_flight(), in_flight()
+        async with api.app.router.lifespan_context(api.app):
+            transport = httpx.ASGITransport(app=api.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                request = asyncio.ensure_future(
+                    client.post(
+                        "/v1/chat/completions",
+                        json={
+                            "messages": [{"role": "user", "content": "summarize this paragraph"}],
+                            "max_tokens": 16,
+                            "criticality": "low",
+                            "model": FREE,
+                        },
+                        headers=assignment_headers(FREE),
+                    )
+                )
+                await asyncio.wait_for(state["entered"].wait(), 10)
+                lane = api.state_lane_instance
+                assert lane is not None
+                await lane.aclose(timeout=1)
+                assert lane.closed
+                if cancel:
+                    request.cancel()
+                else:
+                    state["release"].set()
+                response = None
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    response = await request
+                deadline = time.monotonic() + 5
+                while (
+                    not any(outcome != "unknown" for _, outcome in finished)
+                    and time.monotonic() < deadline
+                ):
+                    await asyncio.sleep(0.02)
+                return response
+
+    response = asyncio.run(scenario())
+    return harness, finished, response
+
+
+def test_a_request_cancelled_in_its_upstream_call_after_the_lane_closed_still_ends_its_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, finished, _ = _close_the_lane_during_upstream_io(monkeypatch, tmp_path, cancel=True)
+
+    assert finished == [("chat_completion_cancelled", "cancelled")], finished
+
+
+def test_a_request_that_finishes_after_the_lane_closed_still_records_how_it_ended(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness, finished, response = _close_the_lane_during_upstream_io(
+        monkeypatch, tmp_path, cancel=False
+    )
+
+    assert response is not None and response.status_code == 200, response
+    assert len(harness.transport.requests) == 1
+    assert ("chat_completion_buffered", "success") in finished, finished
+    assert "cancelled" not in {outcome for _, outcome in finished}, finished
+
+
 def _fake_evidence_calls(
     monkeypatch: pytest.MonkeyPatch, *, hold: threading.Event | None = None
 ) -> list[tuple[str, str | None, str]]:
