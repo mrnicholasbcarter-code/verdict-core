@@ -8,6 +8,14 @@ from typing import Any
 
 import pytest
 
+from tests.test_orch_runtime import Executor, make
+from verdict.orchestration.contracts import (
+    NodeState,
+    RunOutcome,
+    WorkerTerminal,
+    WorkGraph,
+    WorkNode,
+)
 from verdict.orchestration.runtime import Git
 
 
@@ -118,3 +126,53 @@ async def test_oversized_listing_raises(repo: Path) -> None:
     git.run = run  # type: ignore[assignment]
     with pytest.raises(RuntimeError, match="too large"):
         await git.changed_files(repo, base, owned_files=("fixtures",))
+
+
+class _IgnoredFixtureExecutor(Executor):
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        if prompt.split(":", 1)[0] == "a":
+            (cwd / "fixtures").mkdir(parents=True, exist_ok=True)
+            (cwd / "fixtures" / "x.jsonl").write_text('{"a": 1}\n')
+            return WorkerTerminal(
+                ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop"
+            )
+        return await super().run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+
+
+async def test_ignored_owned_file_survives_to_dependent_node_and_integration(
+    repo: Path, billing_overlay_subscription: Any
+) -> None:
+    billing_overlay_subscription([("cc", "oauth"), ("kr", "oauth")])
+    node_a = WorkNode(
+        "a",
+        "write a",
+        owned_files=("fixtures/x.jsonl",),
+        verification_command=("sh", "-c", "test -f fixtures/x.jsonl"),
+    )
+    node_b = WorkNode(
+        "b",
+        "write b",
+        depends_on=("a",),
+        owned_files=("b.txt",),
+        verification_command=("sh", "-c", "test -f fixtures/x.jsonl && test -f b.txt"),
+    )
+    runtime, _, _ = make(
+        repo, WorkGraph("g", (node_a, node_b)), _IgnoredFixtureExecutor({}), ["cc/s", "cx/g"]
+    )
+
+    result = await runtime.run()
+
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    assert all(r.state is NodeState.VALIDATED for r in result.nodes.values())
+    shown = subprocess.run(
+        ["git", "show", f"{result.integration_ref}:fixtures/x.jsonl"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert shown.returncode == 0
+    assert shown.stdout == '{"a": 1}\n'
