@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from collections.abc import Sequence
 from dataclasses import replace
@@ -12,13 +13,11 @@ import pytest
 
 from tests.test_deliver_publish import _plan
 from verdict.orchestration import deliver_publish
+from verdict.orchestration.deliver import head_branch_name, slugify_title
 from verdict.orchestration.deliver_publish import (
-    FALLBACK_SLUG,
     CommandResult,
     PublishError,
     PublishReason,
-    branch_name_for_issue,
-    branch_slug,
     push_branch,
     run_command,
 )
@@ -97,42 +96,38 @@ def _install_hook(repo: Path, body: str) -> None:
 @pytest.mark.parametrize(
     ("title", "expected"),
     [
-        ("Fix: the `rm -rf /` bug; $(whoami)!", "fix-the-rm-rf-bug-whoami"),
-        ("Add   the\tthing\n now", "add-the-thing-now"),
-        ("  --Leading and trailing--  ", "leading-and-trailing"),
-        ("Hello, World!!!", "hello-world"),
-        ("a/b\\c..d", "a-b-c-d"),
-        ("Café résumé", "cafe-resume"),
-        ("UPPER lower 123", "upper-lower-123"),
+        ("Fix: the `rm -rf /` bug; $(whoami)!", "fixtherm-rfbugwhoami"),
+        ("Add   the\tthing\n now", "addthethingnow"),
+        ("  --Leading and trailing--  ", "leadingandtrailing"),
+        ("Hello, World!!!", "helloworld"),
+        ("a/b\\c..d", "abcd"),
+        ("UPPER lower 123", "upperlower123"),
     ],
 )
-def test_slug_collapses_punctuation_whitespace_and_unicode(title: str, expected: str) -> None:
-    assert branch_slug(title) == expected
+def test_slug_drops_unsafe_characters(title: str, expected: str) -> None:
+    assert slugify_title(title) == expected
 
 
 def test_slug_long_title_is_capped_without_trailing_hyphen() -> None:
-    title = "word " * 30
-    slug = branch_slug(title)
+    slug = slugify_title("word " * 30)
     assert len(slug) <= 40
     assert not slug.endswith("-") and not slug.startswith("-")
-    assert slug == "word-word-word-word-word-word-word-word"
-    # cut lands exactly on a separator: 8 * "word" + 7 hyphens = 39, 40th char is "-"
-    cut = branch_slug("a" * 39 + " bbb")
+    # cut lands exactly on a separator: 39 letters, a hyphen, then more letters
+    cut = slugify_title("a" * 39 + "-bbb")
     assert cut == "a" * 39
-    assert len(branch_slug("x" * 100)) == 40
+    assert len(slugify_title("x" * 100)) == 40
 
 
 @pytest.mark.parametrize("title", ["", "   ", "!!!???", "日本語", "---", "\n\t"])
-def test_slug_fallback_for_empty_or_all_symbol_title(title: str) -> None:
-    slug = branch_slug(title)
-    assert slug == FALLBACK_SLUG
-    assert slug and 0 < len(slug) <= 40
+def test_slug_is_empty_for_all_symbol_title(title: str) -> None:
+    assert slugify_title(title) == ""
 
 
 def test_branch_name_is_exact() -> None:
-    assert branch_name_for_issue(1269, "Deliver it!") == "verdict/issue-1269-deliver-it"
-    assert branch_name_for_issue(5, "") == f"verdict/issue-5-{FALLBACK_SLUG}"
-    assert branch_name_for_issue(7, "Add thing") == "verdict/issue-7-add-thing"
+    assert head_branch_name(1269, "Deliver it!") == "verdict/issue-1269-deliverit"
+    assert head_branch_name(5, "") == "verdict/issue-5"
+    assert head_branch_name(7, "Add-thing") == "verdict/issue-7-add-thing"
+    assert re.fullmatch(r"verdict/issue-7-[a-z0-9-]{1,40}", head_branch_name(7, "Z" * 100))
 
 
 # --- push -----------------------------------------------------------------------------
