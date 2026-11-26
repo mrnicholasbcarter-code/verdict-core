@@ -245,7 +245,9 @@ def test_worktree_check_commands_come_before_the_push(tmp_path: Path) -> None:
     outcome = deliver_run(_request(run_dir), runner=runner, clock=_clock)
     assert outcome.status is DeliverStatus.DELIVERED
     head = runner.calls.index(["git", "rev-parse", "HEAD"])
-    status = runner.calls.index(["git", "status", "--porcelain"])
+    status = next(
+        i for i, c in enumerate(runner.calls) if c[:3] == ["git", "status", "--porcelain"]
+    )
     push = next(i for i, c in enumerate(runner.calls) if c[:2] == ["git", "push"])
     assert head < status < push
 

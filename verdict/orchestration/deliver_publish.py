@@ -312,7 +312,11 @@ def check_worktree_at_commit(
             PublishReason.WORKTREE_NOT_AT_INTEGRATION_COMMIT,
             f"{where} is at {head_sha}, not the integration commit {commit}; {fix}",
         )
-    status = runner(["git", "status", "--porcelain"], cwd)
+    # Explicit flags: a local ``status.showUntrackedFiles`` or submodule-ignore setting
+    # must not hide a change from this check.
+    status = runner(
+        ["git", "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"], cwd
+    )
     if status.returncode != 0:
         return _error(
             PublishReason.WORKTREE_NOT_AT_INTEGRATION_COMMIT,

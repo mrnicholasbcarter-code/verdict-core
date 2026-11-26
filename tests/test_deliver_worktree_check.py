@@ -113,6 +113,17 @@ def test_untracked_file_is_refused(repo: Path) -> None:
     )
 
 
+def test_untracked_file_is_refused_when_git_config_hides_untracked_files(repo: Path) -> None:
+    """``status.showUntrackedFiles=no`` must not let an untracked file through."""
+    head = _commit(repo, "a.txt")
+    _git(repo, "config", "status.showUntrackedFiles", "no")
+    (repo / "new.txt").write_text("new\n")
+    assert _git(repo, "status", "--porcelain") == ""  # the setting hides it from a plain status
+    error = check_worktree_at_commit(_plan(head), deliver_publish.run_command, repo)
+    _assert_refused(error, repo, head)
+    assert error is not None and "new.txt" in error.message
+
+
 def test_ignored_file_is_not_refused(repo: Path) -> None:
     head = _commit(repo, "a.txt")
     (repo / "ignored.txt").write_text("ignored\n")
@@ -178,7 +189,10 @@ def test_runner_is_called_with_two_positional_arguments(tmp_path: Path) -> None:
     assert check_worktree_at_commit(_plan(), runner, tmp_path) is None
     assert calls == [
         (["git", "rev-parse", "HEAD"], tmp_path),
-        (["git", "status", "--porcelain"], tmp_path),
+        (
+            ["git", "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"],
+            tmp_path,
+        ),
     ]
 
 
