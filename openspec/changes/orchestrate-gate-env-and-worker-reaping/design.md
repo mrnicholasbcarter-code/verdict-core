@@ -94,7 +94,7 @@ cases only:
    worktree of the run's base commit (`_base_sha`, not the merged candidate), and the failure is
    the environment's only if **every package the candidate cannot resolve is also unresolved
    there, and every other error the candidate reports is reported there too** (compared by file,
-   code and message, the line number does not count). A typo or a package the implementation
+   code and message, as many times as the base reports it; the line number does not count). A typo or a package the implementation
    deleted resolves, or never existed, on the base; a new type error is not on it; both stay
    `verification_failed`. More errors of the same unresolved imports (new code using a library the
    base lacks) are explained by the environment. The base is run only after the cheap filters pass,

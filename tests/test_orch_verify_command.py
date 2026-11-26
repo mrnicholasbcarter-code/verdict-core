@@ -1060,7 +1060,7 @@ def test_a_passing_gate_has_no_unresolved_imports(tmp_path: Path) -> None:
 def _fault(
     *packages: str, count: int | None = None, complete: bool = True, other: tuple[str, ...] = ()
 ) -> Any:
-    return verification.UnresolvedImports(tuple(packages), count, complete, frozenset(other))
+    return verification.UnresolvedImports(tuple(packages), count, complete, tuple(sorted(other)))
 
 
 def test_the_same_unresolved_imports_on_the_untouched_base_are_the_environment() -> None:
@@ -1115,6 +1115,20 @@ def test_an_error_the_base_does_not_report_is_not_explained_by_the_environment()
     refusal = verification.environment_fault_refusal(worse, base)
     assert refusal is not None
     assert "verdict/b.py [return-value]" in refusal and "no-any-return" not in refusal
+
+
+def test_the_same_error_once_more_is_a_new_error() -> None:
+    """Review finding of #1364 (round 3): a second ``[return-value]`` in the same file is not the
+    base's one."""
+    one = ("a.py [return-value] Incompatible return value type",)
+    assert (
+        verification.environment_fault_refusal(_fault("yaml", other=one), _fault("yaml", other=one))
+        is None
+    )
+    refusal = verification.environment_fault_refusal(
+        _fault("yaml", other=one * 2), _fault("yaml", other=one)
+    )
+    assert refusal is not None and "a.py [return-value]" in refusal
 
 
 def test_more_unresolved_imports_of_a_package_the_base_cannot_resolve_are_explained() -> None:
@@ -1306,6 +1320,27 @@ async def test_a_new_type_error_beside_the_environment_fault_is_a_verification_f
     gate = next(e for e in events.of("repo_gate", "i") if e["name"] == "mypy")
     assert "environment_error" not in gate
     assert "a.py [return-value]" in gate["environment_ruled_out"]
+
+
+async def test_the_same_type_error_at_a_second_line_is_a_verification_failure(
+    repo: Path, gate_bin: Path
+) -> None:
+    error = 'a.py:{}: error: Incompatible return value type (got "int", expected "str")  [return-value]\n'
+    base_out = (
+        _import_error("yaml")
+        + error.format(5)
+        + "Found 2 errors in 1 file (checked 2 source files)\n"
+    )
+    candidate_out = (
+        _import_error("yaml")
+        + error.format(5)
+        + error.format(9)
+        + "Found 3 errors in 1 file (checked 2 source files)\n"
+    )
+    runtime, events, _ = make_runtime(repo, _MYPY_CONFIG)
+    _mypy_runner(runtime, candidate=(1, candidate_out), base=(1, base_out))
+    await runtime.run()
+    assert events.of("failure", "i")[0]["category"] == "verification_failed"
 
 
 async def test_new_code_using_a_library_the_base_lacks_is_still_the_environment(

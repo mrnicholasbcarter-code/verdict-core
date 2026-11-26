@@ -43,7 +43,7 @@ unresolved import of a module of the project itself SHALL stay `verification_fai
 - **THEN** the resolved mypy gate passes where `uv run --frozen mypy` fails with `import-untyped`
 
 #### Scenario: Environment fault at integration
-- **WHEN** the integration mypy gate fails with unresolved third-party imports and the same gate fails on the run's base with the same unresolved packages (other mypy errors in the output do not change this)
+- **WHEN** the integration mypy gate fails with unresolved third-party imports and the same gate fails on the run's base with the same unresolved packages, and every other error in the output is on the base too (as many times, by file, code and message)
 - **THEN** the failure event has category `environment_error` and action `BLOCK`, the node ends REJECTED then BLOCKED, its judged-failure count stays 0, and the reason starts `environment_error: repo_gate_failed: mypy exit 1`
 
 #### Scenario: A gate that cannot start at integration
@@ -57,7 +57,7 @@ unresolved import of a module of the project itself SHALL stay `verification_fai
 - **THEN** the failure is `verification_failed` with action `CORRECT_IMPLEMENTATION`, the `repo_gate` event records why it was not the environment (`environment_ruled_out`), and the base worktree and branch are removed
 
 #### Scenario: A new error beside the environment fault
-- **WHEN** the integration mypy gate reports the unresolved imports the base has and also an error the base does not report (for example `[return-value]`)
+- **WHEN** the integration mypy gate reports the unresolved imports the base has and also an error the base does not report, or reports once more (for example a `[return-value]` at a second line)
 - **THEN** the failure is `verification_failed`, and a further unresolved import of a package the base cannot resolve either does not change that
 
 #### Scenario: A cut error list
