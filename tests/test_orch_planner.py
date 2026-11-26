@@ -1869,3 +1869,122 @@ def test_eligibility_ladder_excludes_metered_planner_without_band(tmp_path: Path
         f"METERED routes must be excluded from planner candidates even without a band; "
         f"found: {[a.route_id for a in metered_in_candidates]}"
     )
+
+
+# ---------------------------------------------------------------- integrate and review are merge-only (#1356)
+
+# The shape both real self-build runs of 2026-11-26 hit (#1354): the integrate node was
+# handed authoring work and the files to write.
+_INTEGRATE_OWNS_FILES_JSON = """
+{"nodes": [
+  {"node_id": "impl-a", "objective": "implement a", "kind": "implement",
+   "owned_files": ["verdict/a.py"], "verification_command": ["pytest", "-q", "tests/test_a.py"]},
+  {"node_id": "deliver_integrate", "objective": "write the end to end test", "kind": "integrate",
+   "depends_on": ["impl-a"], "owned_files": ["tests/test_deliver_e2e.py"],
+   "verification_command": ["pytest", "-q", "tests/test_deliver_e2e.py"]}
+]}
+"""
+
+
+@pytest.mark.parametrize("kind", [NodeKind.INTEGRATE, NodeKind.REVIEW])
+def test_merge_only_node_with_owned_files_is_rejected_with_an_actionable_reason(
+    kind: NodeKind,
+) -> None:
+    with pytest.raises(OrchestrationError) as raised:
+        WorkNode("m", "merge", kind=kind, owned_files=("tests/test_x.py",))
+    message = str(raised.value)
+    assert "m:" in message
+    assert kind.value in message
+    assert "owned_files" in message
+    assert "implement node" in message
+
+
+@pytest.mark.parametrize("kind", [NodeKind.INTEGRATE, NodeKind.REVIEW])
+def test_merge_only_node_without_owned_files_is_accepted(kind: NodeKind) -> None:
+    node = WorkNode("m", "merge", kind=kind, depends_on=("a",), verification_command=("pytest",))
+    assert node.owned_files == ()
+
+
+def test_a_persisted_graph_with_an_integrate_node_that_owns_files_still_loads() -> None:
+    """History stays readable: a graph written before the rule must still verify and resume.
+
+    The retained live proof run docs/proof/dogfood-bod-225-live-2026-09-29 is such a graph; its
+    receipt is rebuilt in tests/test_trace_evidence_events.py.
+    """
+    import json
+
+    raw = json.loads(_INTEGRATE_OWNS_FILES_JSON)
+    graph = WorkGraph.from_dict(raw, allow_merge_only_owned_files=True)
+    integrate = graph.node("deliver_integrate")
+    assert integrate.owned_files == ("tests/test_deliver_e2e.py",)
+    reloaded = WorkGraph.from_dict(graph.to_dict(), allow_merge_only_owned_files=True)
+    assert reloaded.digest() == graph.digest()
+    # Only a reader of a recorded run says so: the default stays strict
+    # (tests/test_orch_graph_loader.py).
+    with pytest.raises(OrchestrationError, match="must not have owned_files"):
+        WorkGraph.from_dict(raw)
+    # A new graph never gets this: the node itself still refuses the shape.
+    with pytest.raises(OrchestrationError, match="must not have owned_files"):
+        WorkNode.from_dict(raw["nodes"][1])
+
+
+def test_parse_plan_rejects_an_integrate_node_that_owns_files() -> None:
+    with pytest.raises(OrchestrationError) as raised:
+        parse_plan(_INTEGRATE_OWNS_FILES_JSON, goal="g")
+    message = str(raised.value)
+    assert "node[1]" in message
+    assert "deliver_integrate" in message
+    assert "implement node" in message
+
+
+def test_parse_plan_accepts_a_file_less_integrate_node() -> None:
+    graph = parse_plan(_VALID_NODES_JSON, goal="g")
+    assert graph.node("int").owned_files == ()
+
+
+def test_planning_prompt_states_that_integrate_nodes_are_merge_only() -> None:
+    prompt = build_planning_prompt("goal", "map", "")
+    assert 'kind="integrate" owns no files' in prompt
+    assert "owned_files must be []" in prompt
+    assert "move that work into an implement node" in prompt
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_repair_call_receives_the_merge_only_reason(tmp_path: Path) -> None:
+    repo = _init_git_repo(tmp_path)
+    executor = _ScriptedExecutor(
+        [
+            WorkerTerminal(ok=True, output=_INTEGRATE_OWNS_FILES_JSON),
+            WorkerTerminal(ok=True, output=_VALID_NODES_JSON),
+        ]
+    )
+    graph, terminal = await FrontierPlanner().plan(
+        "ship it", repo=repo, executor=executor, route_id="cc/claude-sonnet-5"
+    )
+    assert len(executor.calls) == 2
+    repair_prompt = executor.calls[1]
+    assert "failed validation" in repair_prompt
+    assert "deliver_integrate" in repair_prompt
+    assert "must not have owned_files" in repair_prompt
+    assert "implement node" in repair_prompt
+    assert terminal.output == _VALID_NODES_JSON
+    assert graph.node("int").owned_files == ()
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_fails_closed_when_the_repair_keeps_the_rule_broken(
+    tmp_path: Path,
+) -> None:
+    repo = _init_git_repo(tmp_path)
+    executor = _ScriptedExecutor(
+        [
+            WorkerTerminal(ok=True, output=_INTEGRATE_OWNS_FILES_JSON),
+            WorkerTerminal(ok=True, output=_INTEGRATE_OWNS_FILES_JSON),
+        ]
+    )
+    with pytest.raises(OrchestrationError, match="after one repair round") as raised:
+        await FrontierPlanner().plan(
+            "ship it", repo=repo, executor=executor, route_id="cc/claude-sonnet-5"
+        )
+    assert "must not have owned_files" in str(raised.value)
+    assert len(executor.calls) == 2

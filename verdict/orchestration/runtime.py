@@ -103,6 +103,7 @@ from verdict.orchestration.salvage import (
     restore_salvaged_files,
     salvage_owned_files,
 )
+from verdict.orchestration.verification import VERIFY_OUTPUT_TAIL_CHARS
 from verdict.orchestration.verification import (
     classify_verify_env_error as _classify_verify_env_error,
 )
@@ -182,7 +183,7 @@ async def subprocess_runner(argv: Sequence[str], cwd: Path, timeout: float) -> t
         if isinstance(exc, asyncio.CancelledError):
             raise
         return 124, f"timeout after {timeout}s"
-    return process.returncode or 0, out.decode("utf-8", "replace")[-4000:]
+    return process.returncode or 0, out.decode("utf-8", "replace")[-VERIFY_OUTPUT_TAIL_CHARS:]
 
 
 @dataclass(frozen=True)
@@ -2850,7 +2851,9 @@ class DagRuntime:
                 **verify_extra,
             )
             if code != 0:
-                env_err = _classify_verify_env_error(resolved, code, out)
+                env_err = _classify_verify_env_error(
+                    resolved, code, out, owned_files=node.owned_files
+                )
                 if env_err is not None:
                     return env_err
                 return f"verification_failed: exit {code}: {out[-300:]}"

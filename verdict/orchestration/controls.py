@@ -171,7 +171,9 @@ class RunControl:
         if not graph_path.exists() or not events_path.exists():
             raise ControlError("run does not have a durable graph and event log")
         raw = json.loads(graph_path.read_text())
-        graph = WorkGraph.from_dict({k: v for k, v in raw.items() if k != "run_id"})
+        graph = WorkGraph.from_dict(
+            {k: v for k, v in raw.items() if k != "run_id"}, allow_merge_only_owned_files=True
+        )
         if kind not in VALID_KINDS:
             raise ControlError(f"unknown control kind: {kind!r}")
         if kind in NODE_SCOPED_KINDS and node_id not in {n.node_id for n in graph.nodes}:

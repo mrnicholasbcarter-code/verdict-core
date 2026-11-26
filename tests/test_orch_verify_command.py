@@ -323,3 +323,374 @@ async def test_hydrated_command_matches_runtime_execution(
     verify = next(e for e in events.rows if e["type"] == "verify")
     assert verify["executed_command"] == shown
     assert verify.get("resolved_argv0", "") == ("" if on_path else sys.executable)
+
+
+# ------------------------------------------------------------------ classify_verify_env_error: collection
+
+
+# The verify tail of run 20261126T020427Z (event seq 30, node deliver-e2e, command
+# ``python -m pytest -q tests -k deliver``): 59 collection errors, every one in a test file
+# the node does not own. The first line is cut mid-path because the event keeps the last 600
+# characters of the output.
+_RUN_20261126T020427Z_TAIL = (
+    "ts/test_security.py\n"
+    "ERROR tests/test_serve_failure_feedback.py\n"
+    "ERROR tests/test_serve_management_token.py\n"
+    "ERROR tests/test_serve_route_pinning.py\n"
+    "ERROR tests/test_serve_worker_assignment_auth.py\n"
+    "ERROR tests/test_serve_worker_route_proof.py\n"
+    "ERROR tests/test_stream_relay_wiring.py\n"
+    "ERROR tests/test_tui_completion.py\n"
+    "ERROR tests/test_tui_completion_surfaces.py\n"
+    "ERROR tests/test_verified_models_surfaces.py\n"
+    "ERROR tests/test_visual_system.py\n"
+    "!!!!!!!!!!!!!!!!!!! Interrupted: 59 errors during collection !!!!!!!!!!!!!!!!!!!\n"
+    "=============== 1 skipped, 14805 deselected, 59 errors in 10.92s ===============\n"
+)
+_RUN_ARGV = ("python", "-m", "pytest", "-q", "tests", "-k", "deliver")
+_RUN_OWNED = (
+    "tests/test_deliver_e2e.py",
+    "verdict/commands/dispatch.py",
+    "verdict/orchestration/deliver_service.py",
+    "verdict/orchestration/deliver_publish.py",
+)
+
+
+def _collection_output(*paths: str, count: int | None = None) -> str:
+    errors = count if count is not None else len(paths)
+    return (
+        "".join(f"ERROR {path}\n" for path in paths)
+        + f"!!!!!!!!!!!!!!!!!!! Interrupted: {errors} errors during collection !!!!!!!!!!!!!!!!!!!\n"
+        + f"=============== 1 skipped, 14805 deselected, {errors} errors in 10.92s ===============\n"
+    )
+
+
+def test_collection_errors_in_unowned_files_are_an_environment_error() -> None:
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    reason = classify_verify_env_error(
+        _RUN_ARGV, 2, _RUN_20261126T020427Z_TAIL, owned_files=_RUN_OWNED
+    )
+    assert reason is not None
+    assert reason.startswith("environment_error:")
+    assert "python -m pytest -q tests -k deliver" in reason
+    assert "tests/test_serve_failure_feedback.py" in reason
+    assert "tests/test_serve_management_token.py" in reason
+    # Only the first few paths are named, so the reason stays short.
+    assert "tests/test_visual_system.py" not in reason
+    assert len(reason) < 600
+
+
+def test_the_exact_run_tail_is_unchanged_without_the_node_owned_files() -> None:
+    """``owned_files`` is optional; leaving it out, or passing ``None``, keeps today's result.
+
+    The three-argument call is compatibility coverage and passes on ``main`` by design. The
+    explicit ``owned_files=None`` is the part that did not exist on ``main`` (a ``TypeError``
+    there): it pins the default of the new argument, so a caller that has no node (for example a
+    verification run outside the DAG runtime) never gets the collection rule by accident.
+    """
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    assert classify_verify_env_error(_RUN_ARGV, 2, _RUN_20261126T020427Z_TAIL) is None
+    assert (
+        classify_verify_env_error(_RUN_ARGV, 2, _RUN_20261126T020427Z_TAIL, owned_files=None)
+        is None
+    )
+    # The same output with the node's files is the environment error, so the ``None`` above is
+    # the argument's doing and not an output that the rule cannot read.
+    assert (
+        classify_verify_env_error(_RUN_ARGV, 2, _RUN_20261126T020427Z_TAIL, owned_files=_RUN_OWNED)
+        is not None
+    )
+
+
+def test_collection_errors_are_an_environment_error_for_a_node_that_owns_nothing() -> None:
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    reason = classify_verify_env_error(
+        _RUN_ARGV, 2, _collection_output("tests/test_a.py"), owned_files=()
+    )
+    assert reason is not None and reason.startswith("environment_error:")
+
+
+@pytest.mark.parametrize(
+    ("owned", "paths"),
+    [
+        pytest.param(
+            ("tests/test_deliver_e2e.py", "verdict/a.py"),
+            ("tests/test_other.py", "tests/test_deliver_e2e.py"),
+            id="one-of-the-errors-is-an-owned-file",
+        ),
+        pytest.param(
+            ("tests/test_deliver_e2e.py",), ("tests/test_deliver_e2e.py",), id="only-an-owned-file"
+        ),
+        pytest.param(
+            ("tests/deliver/",), ("tests/deliver/test_x.py",), id="file-under-an-owned-directory"
+        ),
+        pytest.param(
+            ("tests/test_a.py",), ("./tests/test_a.py",), id="owned-file-written-with-a-dot-prefix"
+        ),
+    ],
+)
+def test_a_collection_error_in_an_owned_file_stays_a_verification_failure(
+    owned: tuple[str, ...], paths: tuple[str, ...]
+) -> None:
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    assert (
+        classify_verify_env_error(_RUN_ARGV, 2, _collection_output(*paths), owned_files=owned)
+        is None
+    )
+
+
+def test_an_erroring_path_that_cannot_be_read_keeps_the_failure_a_verification_failure() -> None:
+    """A path with a space is not a plain path: it may be the owned file, so stay conservative."""
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    out = (
+        "ERROR tests/test_other.py\n"
+        "ERROR tests/test owned.py\n"
+        "!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!\n"
+    )
+    assert (
+        classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("tests/test owned.py",)) is None
+    )
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=()) is None
+
+
+def test_a_cut_error_list_is_not_trusted_when_the_runner_capped_the_output() -> None:
+    """The runner keeps the last VERIFY_OUTPUT_TAIL_CHARS; an owned error may be in the cut part."""
+    from verdict.orchestration.verification import (
+        VERIFY_OUTPUT_TAIL_CHARS,
+        classify_verify_env_error,
+    )
+
+    padding = "x" * VERIFY_OUTPUT_TAIL_CHARS + "\n"
+    shown = _collection_output("tests/test_other.py", count=59)
+    capped = (padding + shown)[-VERIFY_OUTPUT_TAIL_CHARS:]
+    assert len(capped) == VERIFY_OUTPUT_TAIL_CHARS and "tests/test_other.py" in capped
+    owned = ("tests/test_deliver_e2e.py",)
+    # 59 errors counted, 1 shown, output at the cap: the other 58 may include an owned file.
+    assert classify_verify_env_error(_RUN_ARGV, 2, capped, owned_files=owned) is None
+    # The same count and paths in a short output (the event tail of run 20261126T020427Z)
+    # are not capped, so the visible paths decide.
+    assert classify_verify_env_error(_RUN_ARGV, 2, shown, owned_files=owned) is not None
+
+
+def test_a_full_error_list_in_a_capped_output_still_decides() -> None:
+    from verdict.orchestration.verification import (
+        VERIFY_OUTPUT_TAIL_CHARS,
+        classify_verify_env_error,
+    )
+
+    paths = tuple(f"tests/test_{n:03d}.py" for n in range(100))
+    out = "x" * VERIFY_OUTPUT_TAIL_CHARS + "\n" + _collection_output(*paths)
+    out = out[-VERIFY_OUTPUT_TAIL_CHARS:]
+    assert len(out) == VERIFY_OUTPUT_TAIL_CHARS
+    assert out.count("ERROR tests/test_") == 100
+    owned = ("tests/test_deliver_e2e.py",)
+    reason = classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=owned)
+    assert reason is not None and reason.startswith("environment_error:")
+    # ... and an owned file anywhere in that full list stays a verification failure.
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("tests/test_042.py",)) is None
+
+
+def test_a_collection_error_header_in_an_owned_file_stays_a_verification_failure() -> None:
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    out = (
+        "==================================== ERRORS ====================================\n"
+        "_______________ ERROR collecting tests/test_deliver_e2e.py _______________\n"
+        "ImportError while importing test module\n"
+        "!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!\n"
+    )
+    assert (
+        classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("tests/test_deliver_e2e.py",))
+        is None
+    )
+    # The same header for a file the node does not own is an environment error.
+    reason = classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("tests/test_other.py",))
+    assert reason is not None and "tests/test_deliver_e2e.py" in reason
+
+
+def test_errors_with_a_reason_suffix_are_parsed_as_paths() -> None:
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    out = (
+        "ERROR tests/test_a.py - ModuleNotFoundError: No module named 'fastapi'\n"
+        "!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!\n"
+    )
+    reason = classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("verdict/a.py",))
+    assert reason is not None and "tests/test_a.py" in reason
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("tests/test_a.py",)) is None
+
+
+_COLLECTION_INTERRUPTED = (
+    "!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!\n"
+)
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param("/repo/tests/test_a.py", id="absolute"),
+        pytest.param("../repo/tests/test_a.py", id="parent-relative"),
+        pytest.param("tests/../tests/test_a.py", id="parent-in-the-middle"),
+    ],
+)
+@pytest.mark.parametrize("form", ["summary", "header"])
+def test_a_non_repo_relative_erroring_path_is_inconclusive_not_unowned(
+    spelling: str, form: str
+) -> None:
+    """The node owns ``tests/test_a.py``; pytest names that file with a path that is not
+    repo-relative. Without a repository root it cannot be matched to the owned file, so it must
+    not count as unowned: the worker gets another attempt, as for any owned-file failure."""
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    line = (
+        f"ERROR {spelling}\n"
+        if form == "summary"
+        else f"_______________ ERROR collecting {spelling} _______________\n"
+    )
+    out = line + _COLLECTION_INTERRUPTED
+    owned = ("tests/test_a.py",)
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=owned) is None
+    # A node that owns nothing gets the same answer: the path cannot be judged either way.
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=()) is None
+
+
+def test_one_non_repo_relative_path_makes_the_whole_error_list_inconclusive() -> None:
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    out = (
+        "ERROR tests/test_other.py\n"
+        "ERROR /repo/tests/test_a.py\n"
+        "!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!\n"
+    )
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("tests/test_a.py",)) is None
+    # The same list with both paths repo-relative and neither owned is still decided.
+    relative = out.replace("/repo/tests/test_a.py", "tests/test_a.py")
+    reason = classify_verify_env_error(_RUN_ARGV, 2, relative, owned_files=("verdict/a.py",))
+    assert reason is not None and reason.startswith("environment_error:")
+
+
+def test_a_dot_slash_path_is_still_matched_to_the_owned_file() -> None:
+    """``./tests/test_a.py`` is repo-relative: it normalizes to the owned file, not to doubt."""
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    out = "ERROR ./tests/test_a.py\n" + _COLLECTION_INTERRUPTED
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("tests/test_a.py",)) is None
+    reason = classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("verdict/a.py",))
+    assert reason is not None and reason.startswith("environment_error:")
+
+
+@pytest.mark.parametrize(
+    ("code", "out", "why"),
+    [
+        pytest.param(
+            4,
+            "ERROR: file or directory not found: tests/test_deliver_e2e.py\n",
+            "exit 4 for an owned test file the worker did not write",
+            id="exit-4-owned-file-missing",
+        ),
+        pytest.param(
+            1,
+            "FAILED tests/test_deliver_e2e.py::test_a - assert 1 == 2\n"
+            "========= 1 failed, 3 passed in 0.31s =========\n",
+            "ordinary test failures",
+            id="exit-1-test-failures",
+        ),
+        pytest.param(
+            5,
+            "============ no tests ran in 0.02s ============\n",
+            "no tests collected",
+            id="exit-5-no-tests",
+        ),
+        pytest.param(
+            1,
+            _collection_output("tests/test_other.py"),
+            "collection text under a non-collection exit code",
+            id="exit-1-with-collection-text",
+        ),
+        pytest.param(
+            2,
+            "!!!!!!!!!!!!!!!!! KeyboardInterrupt !!!!!!!!!!!!!!!!!\n",
+            "an interrupted run with no collection errors",
+            id="exit-2-interrupted",
+        ),
+        pytest.param(
+            2,
+            "!!!!!!!!!!!!!!!!!!! Interrupted: 3 errors during collection !!!!!!!!!!!!!!!!!!!\n",
+            "collection errors whose files cannot be read from the output",
+            id="exit-2-no-error-paths",
+        ),
+        pytest.param(
+            2,
+            "ERROR tests/test_other.py\n=============== 1 error in 0.10s ===============\n",
+            "error lines without the collection marker",
+            id="exit-2-no-collection-marker",
+        ),
+    ],
+)
+def test_other_pytest_outcomes_stay_verification_failures(code: int, out: str, why: str) -> None:
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    assert classify_verify_env_error(_RUN_ARGV, code, out, owned_files=_RUN_OWNED) is None, why
+
+
+def test_collection_output_from_a_command_that_is_not_pytest_is_not_reclassified() -> None:
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    assert (
+        classify_verify_env_error(
+            ("make", "check"), 2, _collection_output("tests/test_other.py"), owned_files=_RUN_OWNED
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("pytest", "-q", "tests"),
+        ("/usr/bin/pytest", "tests"),
+        ("python3", "-m", "pytest", "tests"),
+        ("uv", "run", "--frozen", "python", "-m", "pytest", "-q"),
+    ],
+)
+def test_the_collection_rule_covers_the_usual_pytest_invocations(argv: tuple[str, ...]) -> None:
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    reason = classify_verify_env_error(
+        argv, 2, _collection_output("tests/test_other.py"), owned_files=_RUN_OWNED
+    )
+    assert reason is not None and reason.startswith("environment_error:")
+
+
+def test_existing_environment_rules_are_unchanged_when_owned_files_are_given() -> None:
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    assert (
+        classify_verify_env_error(("nope",), 127, "not found", owned_files=_RUN_OWNED) or ""
+    ).startswith("environment_error: exit 127")
+    assert (
+        classify_verify_env_error(
+            ("python", "-m", "pytest"), 1, "python: No module named pytest", owned_files=_RUN_OWNED
+        )
+        == "environment_error: No module named pytest"
+    )
+    assert (
+        classify_verify_env_error(("python", "-m", "pytest"), 1, "boom", owned_files=_RUN_OWNED)
+        is None
+    )
+
+
+def test_the_reason_names_at_most_three_paths_and_counts_the_rest() -> None:
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    paths = tuple(f"tests/test_{n}.py" for n in "abcdef")
+    reason = classify_verify_env_error(_RUN_ARGV, 2, _collection_output(*paths), owned_files=())
+    assert reason is not None
+    assert "tests/test_a.py" in reason and "tests/test_c.py" in reason
+    assert "tests/test_d.py" not in reason
+    assert "3 more" in reason
