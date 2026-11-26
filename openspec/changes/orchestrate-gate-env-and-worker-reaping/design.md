@@ -1,0 +1,213 @@
+# Design
+
+## Context
+
+Two defects stopped the fourth self-build run (`20261126T082406Z`, #1354) from finishing
+unattended. Both were reproduced here before any code changed.
+
+**Gates.** `resolve_gate_argv` (`verdict/orchestration/verification.py`) turns a bare `ruff` or
+`mypy` into `uv run --frozen <tool>` when the worktree has `uv.lock` and no `.venv`. uv then
+builds an environment of the base dependencies (`Installed 15 packages`). Neither `ruff` nor `mypy` is a base dependency (both are in the `dev`
+extra), so `uv run` fell back to the global ones on `PATH`, and a global `mypy` cannot see the
+project's typed libraries: `mypy --strict verdict` printed 50 errors in 16 files, 24 of them
+unresolved imports (`prompt_toolkit`, `fastapi`, and stubs for `yaml`, `jsonschema`,
+`defusedxml`) and 26 others (22 `untyped-decorator`, 3 `no-any-return`, 1 `misc`). With
+`--all-extras` the same tree is `Success: no issues found in 381 source files`.
+
+**Workers.** The executor starts `opencode run` with `start_new_session=True` and, on every exit
+path of an attempt, signals that process group, waits, and signals it again. Run against a local
+fake model server (no live call), the installed OpenCode 2.3.2 shows the tree it makes:
+`opencode run` starts `opencode serve --stdio --port 0` in a session and group of its own, that
+server starts an `opencode-pty daemon` in another, and the shell command of a tool call runs in
+the daemon's session. A command the model leaves running (`sleep 777 &` in the probe) was alive
+six seconds after `opencode run` exited 0, with its parents gone and the attempt's environment
+variable still in its environment. Signalling the group of `opencode run` cannot reach any of
+them.
+
+What was not reproduced: a surviving `opencode run` leader. On the success path the executor
+reaps its group before it returns, and the probe showed the leader gone. The leftover
+`opencode run --standalone` processes in the evidence run are not explained by the source; the
+processes that are explained are the ones outside the group.
+
+## Goals / Non-Goals
+
+**Goals:** repo gates see the project's dependencies; an environment fault at integration is
+labelled as one; no process of an attempt outlives it; a signalled orchestrator ends its workers.
+
+**Non-Goals:** the other items of #1354; naming extras per project; changing the node-level base
+comparison; non-Linux process discovery.
+
+## Decisions
+
+### D1. mypy runs with all extras; ruff and everything else are unchanged
+
+`--all-extras` on `uv run --frozen`: assessed first. The lock already resolves every extra, so
+the flag installs and never re-resolves. It is a superset of what AGENTS.md prescribes
+(`--extra dev --extra server --extra dashboard`; it adds `tracing` and `all`) and the strict
+check passes in it. The project declares nowhere which extras its gates need, so none is guessed
+by name. Only `mypy` gets it: it is the gate that needs the project's libraries; `ruff` reads source and
+imports nothing from the project.
+
+The command stays as it is today when the project declares no extras, declares
+`[tool.uv] conflicts` (uv refuses `--all-extras` then; naming the non-conflicting extras instead
+is left out), or has a `pyproject.toml` that cannot be read: the flag is a decision, never a
+failure. A `.venv` that was not made by uv is the operator's and is used as is (existing
+behaviour). A `.venv` uv made (uv writes `uv = <version>` into its `pyvenv.cfg`) is the very
+environment `uv run` uses, and an earlier gate's `uv run --frozen ruff` in the same worktree
+creates exactly such a one with the base dependencies and, when mypy is a base or default-group
+dependency, with mypy but without the extras: that one is completed through `uv run`, not used as
+it is. If `uv` is not on `PATH` the venv is used, so the rule never turns a runnable gate into an
+error.
+
+Known limits: the first mypy gate in a fresh worktree installs every extra (about a minute
+without a warm uv cache, under the gate's own timeout); an ordering the sequence of gates can
+produce is covered above only for uv-made venvs.
+
+### D2. Why the node gates passed and the integration gate did not
+
+Node-level gates ran in the same broken environment and failed the same way (the evidence shows
+two failed mypy gates). `_validate` forgives a gate that also fails on the node's base
+(`_gate_fails_on_base`): existing debt is not the node's fault. The base worktree had the same
+broken environment, so the environment fault looked like debt and every node validated. The
+integration barrier has no base comparison and no worker, so it blocked. The resolver is shared
+by the node worktree, the base worktree and the integration worktree, so D1 reaches all three; the
+base comparison stays as it is.
+
+### D3. An environment fault at integration is an `environment_error`, on evidence from the base
+
+Applied only at the integration barrier (`classify_environment=True`), where no worker is left
+to correct anything; at node level an import error that the base does not also have goes back to
+the worker, as before. A failed gate is the environment's, not the implementation's, in two
+cases only:
+
+1. **The gate command could not start.** `resolve_gate_argv` raised `FileNotFoundError` (no
+   executable, or `uv.lock` without `uv` on `PATH`), or the runner returned 126 or 127 (the
+   program is missing or not executable). Those are the codes the node level already leaves to
+   integration because no worker can fix them; no code was judged.
+2. **mypy cannot resolve third-party packages that it cannot resolve on the run's untouched
+   base either.** Reading the output alone proves nothing: `import reqeusts` and a deleted
+   top-level package are unresolved and "third party" too. So the signal is only a candidate:
+   a failed `mypy` gate with at least one `import-not-found` or `import-untyped` error, every
+   one for a name that is not a package or module of the project (at the worktree root, under
+   `src/`, in a `[tool.mypy] mypy_path` or `MYPYPATH` entry; an unresolved import of the
+   project's own module is a wrong implementation). Then the same gate runs once in a scratch
+   worktree of the run's base commit (`_base_sha`, not the merged candidate), and the failure is
+   the environment's only if **every package the candidate cannot resolve is also unresolved
+   there, and every other error the candidate reports is reported there too** (compared by file,
+   code and message, as many times as the base reports it; the line number does not count). A typo or a package the implementation
+   deleted resolves, or never existed, on the base; a new type error is not on it; both stay
+   `verification_failed`. More errors of the same unresolved imports (new code using a library the
+   base lacks) are explained by the environment. The base is run only after the cheap filters pass,
+   because its first run in a fresh worktree installs every extra; its worktree and branch are
+   removed on every path. When the base cannot be checked (no base commit, the worktree cannot
+   be added, the gate cannot run there) there is no evidence and the failure stays
+   `verification_failed`.
+
+The runner keeps the last 4,000 characters, so a long mypy error list loses its head and a new
+error there would not be seen. mypy's own `Found N errors` total survives the cut. When the kept
+output lists fewer errors than that total (it is cut), the candidate must also report no more
+errors in total than the base, else the failure stays `verification_failed`.
+
+The cost of that strictness: an implementation that adds code whose own type errors follow from
+the missing library (for example `untyped-decorator` in a new file) is reported as
+`verification_failed` with the raw evidence, because those errors are not on the base and
+nothing but the base tells them apart from a real one such as `[return-value]`; the incident's output
+(24 unresolved imports and 26 consequences) is only the environment's when the candidate adds no
+such error. The missing-extras fault itself is removed at the source by D1; this classification is
+the second line, and it prefers a wrong "verification failed" (the run is BLOCKED either way,
+with the evidence in the event) to absolving a real type error.
+
+A gate that failed for another reason wins: the result is a plain
+`repo_gate_failed`, whichever gate comes first, so the implementation is never reported as sound
+because another gate's environment was broken. The failure takes the existing fail-closed path
+(`FailureClassification("environment_error", "BLOCK", 0, "none")`, REJECTED then BLOCKED), and
+`_record_failure` does not count it as a judged failure. The reason is
+`environment_error: repo_gate_failed: <gate> exit <code>: <detail>`, the plain reason with a
+prefix, so what names the gate is unchanged; for mypy the detail names three packages at most and
+no other output text. A candidate that looked like the environment but was refused records why in
+the `repo_gate` event (`environment_ruled_out`).
+
+### D4. Every process of an attempt carries a marker, and ends with the attempt
+
+`_build_child_env` sets `VERDICT_WORKER_ATTEMPT` to a value unique to the attempt. The
+processes the worker starts inherit it wherever they are, so `/proc/<pid>/environ` finds them.
+`_reap_attempt` runs in the `finally` that already surrounds collection, so it covers success,
+failure, stall, timeout, output limit and cancellation: it ends the group (`_kill_process_group`,
+unchanged), then `_reap_marked`: SIGTERM, one second of grace, SIGKILL, searching again after
+each signal until a search finds nothing or three seconds are spent. Its last act, on any way
+out, is a synchronous SIGKILL pass, so a second cancellation inside the wait leaves nothing
+behind. The attempt directory is removed after all of that. Worst case for a worker that ignores
+SIGTERM: 5 s (group) plus 3 s, inside the supervisor's 10 s kill grace. A spawn that is cancelled
+while it starts gets the SIGKILL pass too.
+
+Matching is by exact marker, never by a name or a command line, and a search skips its own
+process. A signal goes through a pidfd opened before the marker is checked, as
+`controller_operations` does, so a PID reused in between is never signalled; without pidfds the
+marker is checked again just before a plain `kill` and a window of microseconds remains.
+
+Limits: Linux only (`/proc`; elsewhere the group kill is all there is); a process that scrubs its
+environment (`env -i`) is not found; a process of another user cannot be read; a process in
+uninterruptible sleep survives SIGKILL and is left after the bound.
+
+### D5. SIGTERM and SIGINT cancel the run; the process then exits as a signalled one
+
+A default SIGTERM ends the orchestrator on the spot, and with it every attempt's cleanup.
+`run_golden_path` is wrapped so that, in the main thread, SIGTERM and SIGINT cancel its task.
+`DagRuntime.run` already cancels and awaits its node drivers, and each driver's attempt ends its
+worker (D4). The wrapper then raises `SystemExit(128 + signal)`: `cli.py` is not changed, and a
+`CancelledError` would otherwise print a traceback. The first signal takes the handlers down, so
+a second signal keeps its default effect, the operator's way out of a cleanup that hangs, and the
+previous handlers are restored on the way out. Outside the main thread nothing is installed.
+A signal that already has a handler of the caller's, whether set through `loop.add_signal_handler`
+or `signal.signal`, is left to it: replacing it would lose the caller's own cleanup (asyncio
+cannot give a loop callback back), and the caller that set it owns what SIGTERM means in its
+process. Only the interpreter's defaults, and the `asyncio.run` SIGINT handler, are the run's to
+take. `verdict orchestrate` starts with no handler of its own, so the run handles both signals.
+The tests that ask what a run does to a signal pin their starting state, and `tests/conftest.py`
+restores the three termination signals after every test, because an xdist worker runs many files
+in one process and `scripts/prime_supervisor.py`'s `main()` leaves handlers behind.
+
+The signal is deliberately not routed into the operator's cancel request: that settles the run
+as CANCELLED with `run_finished`, whereas the supervisor reads "exited without `run_finished`"
+as an interrupted controller and resumes it.
+
+## Risks / Trade-offs
+
+- `--all-extras` is slower the first time in a fresh worktree and needs the extras' wheels (from
+  uv's cache or the index). It fails closed: a failure is a gate failure, as before.
+- The marker search reads the environment of every process of the user once per attempt end; a
+  few milliseconds on this host.
+- An environment error at integration blocks the run exactly as a verification failure did: the
+  change is the label, the route-health writes (none) and the judged-failure count (not
+  incremented).
+- Telling a typo from an environment fault costs one more run of the gate, on the base, and only
+  when mypy has already failed with unresolved third-party imports at integration: a cold
+  `--all-extras` install of about a minute, then the run is BLOCKED either way.
+
+## Security / trust implications
+
+- The marker is a random value used only to find the attempt's own processes. It is not a
+  credential; it is in the worker's environment next to the worker assignment, which is the
+  worker's only credential and is unchanged. Signalling is limited to processes of this user that
+  carry the marker; nothing is matched by name.
+- Gate output is read for the classification, and only package names reach the reason. The base
+  gate runs the project's own gate command in a worktree of a commit the run already trusts.
+
+## Routing / context / memory implications
+
+None. The change is in how gates are executed and how worker processes are ended; admission,
+routing, context packs and memory are untouched, and `tests/test_admission.py` is unchanged.
+
+## Migration / rollback
+
+No data migration. Existing receipts and events are unchanged except that a `repo_gate` event may
+carry an `environment_error` or `environment_ruled_out` field and the failure category of an
+integration environment fault is `environment_error`. Roll back by restoring `uv run --frozen <tool>`, removing the
+`classify_environment` argument and the base worktree of `_base_gate_imports`, and restoring the single `_kill_process_group` call and the
+unwrapped `run_golden_path`.
+
+## ADR impact
+
+None. ADR-053 (OpenCode worker adapter) describes the worker's isolation; this change makes its
+process cleanup complete. ADR-036 (goal-to-receipt orchestration): the supervisor still reads
+"exited without `run_finished`" as an interrupted controller.

@@ -92,7 +92,7 @@ from verdict.orchestration.health_cache import (
     default_cache_path,
 )
 from verdict.orchestration.recovery import RecoveryBudget
-from verdict.orchestration.repo_gates import describe_gates, discover_repo_gates
+from verdict.orchestration.repo_gates import RepoGate, describe_gates, discover_repo_gates
 from verdict.orchestration.research_metrics import (
     measure_research_duplication,
     normalize_research_fetch,
@@ -103,7 +103,14 @@ from verdict.orchestration.salvage import (
     restore_salvaged_files,
     salvage_owned_files,
 )
-from verdict.orchestration.verification import VERIFY_OUTPUT_TAIL_CHARS
+from verdict.orchestration.verification import (
+    GATE_UNAVAILABLE_EXIT_CODES,
+    VERIFY_OUTPUT_TAIL_CHARS,
+    UnresolvedImports,
+    describe_environment_fault,
+    environment_fault_refusal,
+    unresolved_third_party_imports,
+)
 from verdict.orchestration.verification import (
     classify_verify_env_error as _classify_verify_env_error,
 )
@@ -1326,12 +1333,22 @@ class DagRuntime:
         *,
         worker_fixable_only: bool = False,
         failed: list[str] | None = None,
+        classify_environment: bool = False,
     ) -> str | None:
         """Run every declared gate, retaining the first failure with bounded evidence.
 
         ``worker_fixable_only`` (implement-node validation) reports only real check
         failures: configuration errors and missing executables are left for the
         integration barrier, since the node's worker cannot fix them.
+
+        ``classify_environment`` (the integration barrier, where no worker is left to
+        correct anything) looks for a fault of the environment in a failed gate
+        (:meth:`_gate_environment_fault`): a gate command that could not start, or unresolved
+        third-party imports that the run's untouched base has too.  Such a failure is returned as
+        ``environment_error: repo_gate_failed: ...``, but only when no gate failed for another
+        reason: a gate that really failed makes the result a plain ``repo_gate_failed`` one, so
+        the implementation is never reported as sound because another gate's environment was
+        broken.
         """
         node_id = run.node.node_id
         if not self.policy.run_repo_gates:
@@ -1354,6 +1371,7 @@ class DagRuntime:
             return None if worker_fixable_only else config_reason
         self.events.emit("repo_gates", node_id, **describe_gates(gates))
         reason: str | None = None
+        environment_reason: str | None = None
         for gate in gates:
             resolved = list(gate.argv)
             try:
@@ -1363,6 +1381,12 @@ class DagRuntime:
             else:
                 code, out = await self.runner(
                     resolved, worktree, self.policy.verify_timeout_seconds
+                )
+            gate_environment: str | None = None
+            ruled_out: str | None = None
+            if classify_environment and code != 0:
+                gate_environment, ruled_out = await self._gate_environment_fault(
+                    gate, code, out, worktree
                 )
             self.events.emit(
                 "repo_gate",
@@ -1374,14 +1398,79 @@ class DagRuntime:
                 executed_command=shlex.join(resolved),
                 source=gate.source,
                 tail=out[-600:],
+                **({"environment_error": gate_environment} if gate_environment else {}),
+                **({"environment_ruled_out": ruled_out} if ruled_out else {}),
             )
-            fixable = code not in (126, 127) or not worker_fixable_only
+            fixable = code not in GATE_UNAVAILABLE_EXIT_CODES or not worker_fixable_only
             if code != 0 and fixable:
                 message = f"repo_gate_failed: {gate.name} exit {code}: {out[-600:]}"
-                reason = reason or message
+                if gate_environment is not None:
+                    environment_reason = environment_reason or (
+                        f"environment_error: repo_gate_failed: {gate.name} exit {code}: "
+                        f"{gate_environment}"
+                    )
+                else:
+                    reason = reason or message
                 if failed is not None:
                     failed.append(message)
-        return reason
+        return reason or environment_reason
+
+    async def _gate_environment_fault(
+        self, gate: RepoGate, code: int, out: str, worktree: Path
+    ) -> tuple[str | None, str | None]:
+        """``(fault, ruled_out)`` for a repo gate that failed at the integration barrier.
+
+        ``fault`` is the reason when the failure is the environment's, never the implementation's:
+
+        * the gate command could not start (exit 126/127: ``resolve_gate_argv`` found no
+          executable, or the program is missing or not executable): no code was judged;
+        * mypy cannot resolve third-party packages that it cannot resolve on the run's untouched
+          base either (:meth:`_base_gate_imports`).  An unresolved name that is not first-party
+          is not proof alone: a typo or a deleted package is unresolved only here.
+
+        ``ruled_out`` records why a fault that looked like the environment's was not accepted.
+        """
+        if code in GATE_UNAVAILABLE_EXIT_CODES:
+            return f"the gate could not run: {out[-500:]}", None
+        candidate = unresolved_third_party_imports(gate.argv, code, out, worktree)
+        if candidate is None:
+            return None, None
+        # The base is run only now: its first run in a fresh worktree installs every extra.
+        refusal = environment_fault_refusal(candidate, await self._base_gate_imports(gate))
+        if refusal is not None:
+            return None, refusal
+        return describe_environment_fault(gate.argv, candidate), None
+
+    async def _base_gate_imports(self, gate: RepoGate) -> UnresolvedImports | None:
+        """What ``gate`` reports on the run's untouched base about unresolved third-party
+        imports: no packages when it passes or fails for another reason there, and ``None``
+        when the base could not be checked (no base, no worktree, the gate cannot run there)."""
+        if not self._base_sha:
+            return None
+        tag = secrets.token_hex(4)
+        scratch = self.run_dir / "worktrees" / f"integration-base-{tag}"
+        branch = f"verdict/integration-base-{tag}"
+        try:
+            try:
+                await self.git.add_worktree(scratch, branch, self._base_sha)
+            except OrchestrationError:
+                return None
+            for base_gate in discover_repo_gates(scratch):
+                if base_gate.name == gate.name:
+                    resolved = _resolve_gate_argv(base_gate.argv, scratch)
+                    code, out = await self.runner(
+                        resolved, scratch, self.policy.verify_timeout_seconds
+                    )
+                    return unresolved_third_party_imports(
+                        base_gate.argv, code, out, scratch
+                    ) or UnresolvedImports((), None, True)
+            return None
+        except (FileNotFoundError, ValueError):
+            return None
+        finally:
+            await self.git.remove_worktree(scratch)
+            with contextlib.suppress(OrchestrationError):
+                await self.git.call("branch", "-D", branch)
 
     async def _integrate_node(self, run: NodeRun) -> None:
         """Mechanical integration barrier: merge, run combined tests and repo quality gates."""
@@ -1444,7 +1533,7 @@ class DagRuntime:
                 if not ok:
                     reason = f"integration verification failed: exit {code}: {out[-600:]}"
             if ok:
-                reason = await self._run_repo_gates(run, worktree) or ""
+                reason = await self._run_repo_gates(run, worktree, classify_environment=True) or ""
                 ok = not reason
             self.events.emit(
                 "barrier",
@@ -1457,20 +1546,23 @@ class DagRuntime:
             await self.git.remove_worktree(worktree)
         if not ok:
             run.reason = reason
-            self._record_failure(
-                run,
-                WorkerTerminal(ok=False, error="verification_failed: " + reason),
-                run.failures,
-                validated=True,
+            if reason.startswith("environment_error:"):
+                # A gate that could not judge the code (its environment lacks the project's
+                # dependencies): the fail-closed environment path, never a wrong implementation
+                # (no worker is left to correct anything here, and none could fix this).
+                terminal = WorkerTerminal(ok=False, error=reason)
+                failure = FailureClassification("environment_error", "BLOCK", 0, "none", reason)
+            else:
+                terminal = WorkerTerminal(ok=False, error="verification_failed: " + reason)
                 # Gate diagnostics describe verification, never worker transport faults.
-                failure=FailureClassification(
+                failure = FailureClassification(
                     "verification_failed",
                     "CORRECT_IMPLEMENTATION",
                     0,
                     "none",
                     "verification_failed: " + reason,
-                ),
-            )
+                )
+            self._record_failure(run, terminal, run.failures, validated=True, failure=failure)
             run.failure_feedback = reason[-2000:]
             run.history[-1]["evidence"] = run.failure_feedback
             self._set(run, NodeState.BLOCKED, reason=run.reason)
@@ -2289,13 +2381,16 @@ class DagRuntime:
         if failure is None:
             failure = self.classifier.classify(terminal, now=self.now())
         failures.append(failure)
+        # An environment error says nothing about the work: ``validated`` then only chooses
+        # the state transition (REJECTED, from TERMINAL_SUCCESS), never a judgement.
+        judged = validated and failure.category != "environment_error"
         # fix(retry-clean-base): track whether this attempt's work was judged wrong so
         # _attempt() can start the next attempt from the clean base.
-        run.last_rejected = validated or failure.category in _JUDGED_WORK_CATEGORIES
+        run.last_rejected = judged or failure.category in _JUDGED_WORK_CATEGORIES
         # Capability escalation: count judged work failures and tighten the tier
         # ceiling once the threshold is reached.  Interrupted failures (transport,
         # timeout) do not count — only failures that mean the work was wrong.
-        if validated or failure.category in _ESCALATION_JUDGED_CATEGORIES:
+        if judged or failure.category in _ESCALATION_JUDGED_CATEGORIES:
             run.judged_failure_count += 1
             if run.judged_failure_count >= _ESCALATION_JUDGED_FAILURE_THRESHOLD:
                 t = run.last_selected_tier

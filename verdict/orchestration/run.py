@@ -15,22 +15,26 @@ Controller survival (minimal demo-safe slice):
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import functools
 import hashlib
 import json
 import os
+import signal
 import subprocess
+import threading
 import time
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Coroutine, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 # SHADOW decision signals (import only for type checking)
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from verdict.availability import opaque_connection_token
 from verdict.context_pack import ContextPlan, estimate_tokens
@@ -811,6 +815,96 @@ def _blocked_before_plan(run_dir: Path, reason: str) -> GoldenRunResult:
     return GoldenRunResult(run_dir, RunOutcome.BLOCKED.value, reason, run_dir / "receipt.json")
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+_TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGINT)
+
+
+def _signal_is_unclaimed(handler: Any) -> bool:
+    """True when nobody but the interpreter (or ``asyncio.run`` for SIGINT) handles the signal.
+
+    ``signal.getsignal`` shows a handler installed with ``loop.add_signal_handler`` as asyncio's
+    own no-op, which is not any of these: such a signal is somebody else's, and replacing it
+    would lose their callback for good (asyncio cannot give it back).
+    """
+    if handler in (signal.SIG_DFL, signal.default_int_handler):
+        return True
+    # Python 3.11+: ``asyncio.run`` handles SIGINT with a partial of ``Runner._on_sigint``.
+    runner = getattr(asyncio, "Runner", None)
+    target = handler.func if isinstance(handler, functools.partial) else handler
+    return runner is not None and isinstance(getattr(target, "__self__", None), runner)
+
+
+@contextlib.contextmanager
+def _cancel_task_on_termination(received: list[int]) -> Iterator[None]:
+    """While open, SIGTERM and SIGINT cancel the task that opened it, and say which in ``received``.
+
+    A default SIGTERM ends the process on the spot, and with it the cleanup of every worker the
+    run started: workers run in sessions of their own, so nothing else ends them.  Cancelling the
+    run's task instead lets each attempt end its worker's processes (the cancellation reaches
+    ``DagRuntime.run``, which cancels and awaits its node drivers) before the process exits.
+
+    The first signal takes the handlers down, so a second one has its default effect: the
+    operator's way out of a cleanup that hangs.  The previous handlers are put back on the way
+    out.  Only in the main thread of a loop that supports signal handlers; anywhere else (a
+    worker thread, a platform without them) nothing is installed and the signal keeps its default.
+    A signal that something else already handles (:func:`_signal_is_unclaimed`) is left to it.
+    """
+    task = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    previous: dict[signal.Signals, Any] = {}
+    if task is not None and threading.current_thread() is threading.main_thread():
+
+        def on_signal(signum: int) -> None:
+            received.append(signum)
+            for installed in tuple(previous):
+                loop.remove_signal_handler(installed)
+            task.cancel()
+
+        for sig in _TERMINATION_SIGNALS:
+            before = signal.getsignal(sig)
+            if not _signal_is_unclaimed(before):
+                continue
+            try:
+                loop.add_signal_handler(sig, on_signal, sig)
+            except (NotImplementedError, RuntimeError, ValueError, OSError):
+                continue
+            previous[sig] = before
+    try:
+        yield
+    finally:
+        for sig, before in previous.items():
+            loop.remove_signal_handler(sig)
+            if before is not None:
+                signal.signal(sig, before)
+
+
+def _exit_when_signalled(
+    run: Callable[_P, Coroutine[Any, Any, _R]],
+) -> Callable[_P, Coroutine[Any, Any, _R]]:
+    """Run ``run`` so that SIGTERM or SIGINT ends it by cancellation and then ends the process
+    with the status of a signalled process (128 plus the signal number), not a traceback.
+
+    The run is left without ``run_finished``: that is how an interrupted controller looks to the
+    supervisor, which resumes it.  It is never routed into the operator's cancel request, which
+    settles the run as CANCELLED.
+    """
+
+    @functools.wraps(run)
+    async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        received: list[int] = []
+        with _cancel_task_on_termination(received):
+            try:
+                return await run(*args, **kwargs)
+            except asyncio.CancelledError:
+                if received:
+                    raise SystemExit(128 + received[0]) from None
+                raise
+
+    return wrapper
+
+
+@_exit_when_signalled
 async def run_golden_path(
     goal: str,
     *,
