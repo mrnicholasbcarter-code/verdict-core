@@ -15,9 +15,10 @@ At the integration barrier a failed repo gate SHALL end the node as `environment
 `BLOCK`, no cooldown, not a judged failure), not as `verification_failed`, in two cases only: the
 gate command could not start (`resolve_gate_argv` raised `FileNotFoundError`, or the exit code is
 126 or 127), or a failed `mypy` gate has unresolved imports of third-party packages that the same
-gate also cannot resolve on the run's untouched base commit. Unresolved imports alone SHALL NOT be
-enough: an import the base resolves (a typo, a deleted top-level package) SHALL stay
-`verification_failed`. When the base cannot be checked there is no evidence and the failure SHALL
+gate also cannot resolve on the run's untouched base commit, and every other error it reports is
+one the base reports too. Unresolved imports alone SHALL NOT be enough: an import the base
+resolves (a typo, a deleted top-level package) and an error the base does not report (a new type
+error) SHALL stay `verification_failed`. When the base cannot be checked there is no evidence and the failure SHALL
 stay `verification_failed`. When the runner cut the head off the gate's output (fewer errors are
 listed than mypy's total), the candidate SHALL also report no more errors in total than the base.
 A gate that failed for another reason SHALL take precedence whichever gate comes first, and an
@@ -54,6 +55,10 @@ unresolved import of a module of the project itself SHALL stay `verification_fai
 #### Scenario: A missing import the implementation introduced
 - **WHEN** the integration mypy gate cannot resolve a package (a typo such as `reqeusts`) that the base resolves, or one more package than the base cannot resolve, or the base cannot be checked
 - **THEN** the failure is `verification_failed` with action `CORRECT_IMPLEMENTATION`, the `repo_gate` event records why it was not the environment (`environment_ruled_out`), and the base worktree and branch are removed
+
+#### Scenario: A new error beside the environment fault
+- **WHEN** the integration mypy gate reports the unresolved imports the base has and also an error the base does not report (for example `[return-value]`)
+- **THEN** the failure is `verification_failed`, and a further unresolved import of a package the base cannot resolve either does not change that
 
 #### Scenario: A cut error list
 - **WHEN** the kept output lists fewer errors than mypy's total and the total exceeds the base's

@@ -93,24 +93,31 @@ cases only:
    project's own module is a wrong implementation). Then the same gate runs once in a scratch
    worktree of the run's base commit (`_base_sha`, not the merged candidate), and the failure is
    the environment's only if **every package the candidate cannot resolve is also unresolved
-   there**. A typo or a package the implementation deleted resolves, or never existed, on the
-   base, so it stays `verification_failed`. The base is run only after the cheap filters pass,
+   there, and every other error the candidate reports is reported there too** (compared by file,
+   code and message, the line number does not count). A typo or a package the implementation
+   deleted resolves, or never existed, on the base; a new type error is not on it; both stay
+   `verification_failed`. More errors of the same unresolved imports (new code using a library the
+   base lacks) are explained by the environment. The base is run only after the cheap filters pass,
    because its first run in a fresh worktree installs every extra; its worktree and branch are
    removed on every path. When the base cannot be checked (no base commit, the worktree cannot
    be added, the gate cannot run there) there is no evidence and the failure stays
    `verification_failed`.
 
 The runner keeps the last 4,000 characters, so a long mypy error list loses its head and a new
-import error there would not be seen. mypy's own `Found N errors` total survives the cut. When
-the kept output lists fewer errors than that total (it is cut), the candidate must also report
-no more errors in total than the base, else the failure stays `verification_failed`. The cost: an
-implementation that adds code which uses a library the broken environment lacks raises the total
-and is reported as `verification_failed` with the raw evidence, where only a whole (uncut) output
-is told apart exactly; the missing-extras fault itself is removed at the source by D1.
+error there would not be seen. mypy's own `Found N errors` total survives the cut. When the kept
+output lists fewer errors than that total (it is cut), the candidate must also report no more
+errors in total than the base, else the failure stays `verification_failed`.
 
-Other mypy errors in the same output are not told apart (the observed output mixes them; all of
-them pass with the libraries installed), so a genuine type error beside the import errors shows
-once the environment is fixed. A gate that failed for another reason wins: the result is a plain
+The cost of that strictness: an implementation that adds code whose own type errors follow from
+the missing library (for example `untyped-decorator` in a new file) is reported as
+`verification_failed` with the raw evidence, because those errors are not on the base and
+nothing but the base tells them apart from a real one such as `[return-value]`; the incident's output
+(24 unresolved imports and 26 consequences) is only the environment's when the candidate adds no
+such error. The missing-extras fault itself is removed at the source by D1; this classification is
+the second line, and it prefers a wrong "verification failed" (the run is BLOCKED either way,
+with the evidence in the event) to absolving a real type error.
+
+A gate that failed for another reason wins: the result is a plain
 `repo_gate_failed`, whichever gate comes first, so the implementation is never reported as sound
 because another gate's environment was broken. The failure takes the existing fail-closed path
 (`FailureClassification("environment_error", "BLOCK", 0, "none")`, REJECTED then BLOCKED), and

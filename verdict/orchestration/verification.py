@@ -40,6 +40,11 @@ _QUOTED_MODULE_RE = re.compile(r'"([^"\n]+)"')
 # mypy's total (``Found 50 errors in 16 files``, ``Found 1 error in 1 file``) and one error line.
 _FOUND_ERRORS_RE = re.compile(r"^Found (\d+) errors? in \d+ files?", re.MULTILINE)
 _ERROR_LINE_RE = re.compile(r"^[^\n]*: error: ", re.MULTILINE)
+# One error line of any kind: ``<file>:<line>[:<col>]: error: <message>  [<code>]``.
+_ERROR_PARTS_RE = re.compile(
+    r"^(?P<file>[^\n:]+):\d+(?::\d+)?: error: (?P<message>[^\n]*?)(?:  \[(?P<code>[\w-]+)\])?$",
+    re.MULTILINE,
+)
 # The exit codes of a gate command that could not start (the runner's 127 for a missing or
 # non-executable program, the shell's 126).  A worker cannot fix them, which is why the node
 # level leaves them to the integration barrier, and there they are the environment's.
@@ -214,6 +219,8 @@ class UnresolvedImports:
     packages: tuple[str, ...]  # top-level names, in the order they were reported
     error_count: int | None  # mypy's own ``Found N errors`` total; None without that line
     complete: bool  # the kept output lists every error mypy found
+    # every other error, as ``file [code] message`` (no line number, no worktree prefix)
+    other_errors: frozenset[str] = frozenset()
 
 
 def unresolved_third_party_imports(
@@ -245,6 +252,12 @@ def unresolved_third_party_imports(
             packages.append(package)
     if not packages:
         return None
+    prefix = str(worktree) + os.sep
+    other_errors = frozenset(
+        f"{m.group('file').removeprefix(prefix)} [{m.group('code') or '-'}] {m.group('message')}"
+        for m in _ERROR_PARTS_RE.finditer(out)
+        if m.group("code") not in ("import-not-found", "import-untyped")
+    )
     found = _FOUND_ERRORS_RE.search(out)
     error_count = int(found.group(1)) if found else None
     listed = len(_ERROR_LINE_RE.findall(out))
@@ -253,7 +266,7 @@ def unresolved_third_party_imports(
     complete = (
         listed >= error_count if error_count is not None else len(out) < VERIFY_OUTPUT_TAIL_CHARS
     )
-    return UnresolvedImports(tuple(packages), error_count, complete)
+    return UnresolvedImports(tuple(packages), error_count, complete, other_errors)
 
 
 def environment_fault_refusal(
@@ -264,9 +277,13 @@ def environment_fault_refusal(
 
     The evidence is the same gate on the run's untouched base (``base``; ``None`` when it could
     not be run): every package the candidate cannot resolve is one the base cannot resolve
-    either.  A typo, and a top-level package the implementation deleted, resolve differently
-    there.  When the kept output is cut (the head is lost, so a new import error could hide
-    in it), the candidate must also report no more errors in total than the base.
+    either, and every other error the candidate reports is one the base reports too (by file,
+    code and message; the line does not count).  A typo, a top-level package the implementation
+    deleted and a real type error resolve or pass differently there.  Where the candidate has
+    more of the same unresolved imports (new code using a library the environment lacks) the
+    environment explains it; a new error of any other kind is never explained.  When the kept
+    output is cut (the head is lost, so a new error could hide in it), the candidate must also
+    report no more errors in total than the base.
     """
     if base is None:
         return (
@@ -275,6 +292,15 @@ def environment_fault_refusal(
     new = [package for package in candidate.packages if package not in base.packages]
     if new:
         return "not unresolved on the untouched base: " + ", ".join(new[:_REASON_PATHS_NAMED])
+    unexplained = sorted(candidate.other_errors - base.other_errors)
+    if unexplained:
+        shown = "; ".join(unexplained[:_REASON_PATHS_NAMED])
+        more = len(unexplained) - _REASON_PATHS_NAMED
+        return (
+            "not reported on the untouched base: "
+            + shown
+            + (f" and {more} more" if more > 0 else "")
+        )
     if candidate.complete:
         return None
     if candidate.error_count is None or base.error_count is None:

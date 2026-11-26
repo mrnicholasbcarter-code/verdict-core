@@ -1057,8 +1057,10 @@ def test_a_passing_gate_has_no_unresolved_imports(tmp_path: Path) -> None:
     assert _imports(_MYPY_ENV_OUTPUT, tmp_path, code=0) is None
 
 
-def _fault(*packages: str, count: int | None = None, complete: bool = True) -> Any:
-    return verification.UnresolvedImports(tuple(packages), count, complete)
+def _fault(
+    *packages: str, count: int | None = None, complete: bool = True, other: tuple[str, ...] = ()
+) -> Any:
+    return verification.UnresolvedImports(tuple(packages), count, complete, frozenset(other))
 
 
 def test_the_same_unresolved_imports_on_the_untouched_base_are_the_environment() -> None:
@@ -1076,6 +1078,49 @@ def test_an_import_that_the_base_resolves_is_not_the_environment() -> None:
     # one new name next to the base's own is still a new unresolved import
     mixed = verification.environment_fault_refusal(_fault("yaml", "reqeusts"), _fault("yaml"))
     assert mixed is not None and "reqeusts" in mixed and "yaml" not in mixed
+
+
+def test_other_errors_are_compared_by_file_code_and_message_not_by_line(tmp_path: Path) -> None:
+    root = _first_party_tree(tmp_path)
+    here = f"{root}/verdict/a.py"
+    moved = (
+        _import_error("yaml")
+        + f'{here}:40: error: Returning Any from function declared to return "str"  [no-any-return]\n'
+    )
+    base = (
+        _import_error("yaml")
+        + 'verdict/a.py:7: error: Returning Any from function declared to return "str"  [no-any-return]\n'
+    )
+    candidate_imports = _imports(moved, root)
+    base_imports = _imports(base, root)
+    assert candidate_imports is not None and base_imports is not None
+    assert candidate_imports.other_errors == base_imports.other_errors
+    assert verification.environment_fault_refusal(candidate_imports, base_imports) is None
+
+
+def test_an_error_the_base_does_not_report_is_not_explained_by_the_environment() -> None:
+    """Review finding of #1364 (round 2): the same unresolved imports beside a new, ordinary type
+    error do not make the whole failure the environment's."""
+    base = _fault("yaml", other=("verdict/a.py [no-any-return] Returning Any",))
+    same = _fault("yaml", other=("verdict/a.py [no-any-return] Returning Any",))
+    assert verification.environment_fault_refusal(same, base) is None
+    assert verification.environment_fault_refusal(_fault("yaml"), base) is None  # fewer is fine
+    worse = _fault(
+        "yaml",
+        other=(
+            "verdict/a.py [no-any-return] Returning Any",
+            "verdict/b.py [return-value] Incompatible return value type",
+        ),
+    )
+    refusal = verification.environment_fault_refusal(worse, base)
+    assert refusal is not None
+    assert "verdict/b.py [return-value]" in refusal and "no-any-return" not in refusal
+
+
+def test_more_unresolved_imports_of_a_package_the_base_cannot_resolve_are_explained() -> None:
+    """New code that imports a library the environment lacks is the environment's: the base
+    shows the library is missing there."""
+    assert verification.environment_fault_refusal(_fault("yaml", "yaml"), _fault("yaml")) is None
 
 
 def test_a_base_without_the_fault_is_no_evidence() -> None:
@@ -1238,6 +1283,44 @@ async def test_a_missing_import_the_implementation_introduced_is_a_verification_
     assert len(base_runs) == 1
     worktrees, branches = await _worktrees_and_branches(repo)
     assert "integration-base-" not in worktrees and branches.strip() == ""
+
+
+async def test_a_new_type_error_beside_the_environment_fault_is_a_verification_failure(
+    repo: Path, gate_bin: Path
+) -> None:
+    """Review finding of #1364 (round 2): the base only lacks ``yaml``; the candidate lacks it too
+    and also returns the wrong type.  The same unresolved import does not absolve that."""
+    base_out = _import_error("yaml") + "Found 1 error in 1 file (checked 2 source files)\n"
+    candidate_out = (
+        _import_error("yaml")
+        + 'a.py:5: error: Incompatible return value type (got "int", expected "str")'
+        "  [return-value]\n"
+        "Found 2 errors in 1 file (checked 2 source files)\n"
+    )
+    runtime, events, _ = make_runtime(repo, _MYPY_CONFIG)
+    _mypy_runner(runtime, candidate=(1, candidate_out), base=(1, base_out))
+    result = await runtime.run()
+    assert events.of("failure", "i")[0]["category"] == "verification_failed"
+    assert events.of("failure", "i")[0]["action"] == "CORRECT_IMPLEMENTATION"
+    assert result.nodes["i"].judged_failure_count == 1
+    gate = next(e for e in events.of("repo_gate", "i") if e["name"] == "mypy")
+    assert "environment_error" not in gate
+    assert "a.py [return-value]" in gate["environment_ruled_out"]
+
+
+async def test_new_code_using_a_library_the_base_lacks_is_still_the_environment(
+    repo: Path, gate_bin: Path
+) -> None:
+    base_out = _import_error("yaml") + "Found 1 error in 1 file (checked 2 source files)\n"
+    candidate_out = (
+        _import_error("yaml")
+        + 'b.py:2: error: Library stubs not installed for "yaml"  [import-untyped]\n'
+        + "Found 2 errors in 2 files (checked 3 source files)\n"
+    )
+    runtime, events, _ = make_runtime(repo, _MYPY_CONFIG)
+    _mypy_runner(runtime, candidate=(1, candidate_out), base=(1, base_out))
+    await runtime.run()
+    assert events.of("failure", "i")[0]["category"] == "environment_error"
 
 
 async def test_an_environment_fault_without_evidence_from_the_base_is_a_verification_failure(
