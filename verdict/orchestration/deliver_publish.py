@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import tempfile
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -35,6 +36,13 @@ _TIMEOUT_RC = 124
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 _PR_URL_RE = re.compile(r"https?://\S+/pull/\d+")
+BRANCH_PREFIX = "verdict/issue-"
+MAX_SLUG_LENGTH = 40
+FALLBACK_SLUG = "untitled"
+_SLUG_RUN_RE = re.compile(r"[^a-z0-9]+")
+_REF_REJECTED_RE = re.compile(r"^\s*!\s*\[", re.MULTILINE)
+_REF_CONFLICT_MARKERS = ("non-fast-forward", "fetch first", "already exists", "stale info")
+_PUSH_FAILED_LINE = "failed to push some refs"
 
 
 @dataclass(frozen=True)
@@ -76,6 +84,7 @@ class PublishReason(str, Enum):
     GH_MISSING = "gh_missing"
     GH_UNAUTHENTICATED = "gh_unauthenticated"
     BRANCH_EXISTS = "branch_exists"
+    VGATE_REJECTED = "vgate_rejected"
     PUSH_FAILED = "push_failed"
     PR_LOOKUP_FAILED = "pr_lookup_failed"
     PR_CREATE_FAILED = "pr_create_failed"
@@ -99,7 +108,7 @@ class PublishResult:
 
 
 def _detail(result: CommandResult) -> str:
-    text = (result.stderr or result.stdout or "").strip()
+    text = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
     return redact_text(text)[-MAX_ERROR_DETAIL:]
 
 
@@ -157,13 +166,51 @@ def _remote_branch_sha(
     return None, None
 
 
+def branch_slug(title: str) -> str:
+    """Slug for a branch name from an untrusted issue title.
+
+    Lower-case ``[a-z0-9]`` runs joined by single hyphens, at most 40 characters,
+    no leading or trailing hyphen. Accents fold to ASCII; a title with nothing
+    usable gives the deterministic ``FALLBACK_SLUG``.
+    """
+    folded = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii")
+    slug = _SLUG_RUN_RE.sub("-", folded.lower()).strip("-")
+    slug = slug[:MAX_SLUG_LENGTH].strip("-")
+    return slug or FALLBACK_SLUG
+
+
+def branch_name_for_issue(issue_number: int, title: str) -> str:
+    """The delivery branch, exactly ``verdict/issue-<N>-<slug>``."""
+    return f"{BRANCH_PREFIX}{issue_number}-{branch_slug(title)}"
+
+
+def _classify_push_failure(result: CommandResult, branch: str) -> PublishError:
+    """Map a failed ``git push`` to ``branch_exists``, ``vgate_rejected`` or ``push_failed``."""
+    text = f"{result.stderr}\n{result.stdout}".lower()
+    if any(marker in text for marker in _REF_CONFLICT_MARKERS):
+        return _error(
+            PublishReason.BRANCH_EXISTS, f"remote branch {branch!r} already exists", result
+        )
+    # A pre-push hook that exits non-zero aborts git before any ref is sent: git
+    # exits 1 and prints only its summary line, with no per-ref "! [..." status.
+    if (
+        result.returncode == 1
+        and _PUSH_FAILED_LINE in text
+        and _REF_REJECTED_RE.search(text) is None
+    ):
+        return _error(PublishReason.VGATE_REJECTED, "pre-push gate rejected the push", result)
+    return _error(PublishReason.PUSH_FAILED, "git push failed", result)
+
+
 def push_branch(
     plan: DeliverPlan, runner: CommandRunner, cwd: Path | None = None
 ) -> PublishError | None:
     """Push the integration commit to the head branch; never force.
 
-    A remote branch at the same commit is reused. One at a different commit is
-    refused with ``branch_exists``.
+    A remote branch at the same commit is reused. One at a different commit, or a
+    push that races with another writer, is refused with ``branch_exists``. A
+    non-zero pre-push hook (vgate) gives ``vgate_rejected`` with the gate tail.
+    The push is never forced and never skips the hook.
     """
     refused = validate_request(plan)
     if refused is not None:
@@ -184,7 +231,7 @@ def push_branch(
         )
     result = runner(["git", "push", "origin", f"{commit}:refs/heads/{branch}"], cwd)
     if result.returncode != 0:
-        return _error(PublishReason.PUSH_FAILED, "git push failed", result)
+        return _classify_push_failure(result, branch)
     return None
 
 
