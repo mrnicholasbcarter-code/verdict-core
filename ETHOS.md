@@ -21,7 +21,7 @@ exist to serve this. New work must say how it advances it.
 
 ## NOW
 
-Next focus (operator, 2026-11-23): Verdict builds a GitHub issue through to a PR ready for the operator's merge ([ADR-052](docs/adr/ADR-052-github-issue-to-ready-pr.md), D37). Delivery comes first (`openspec/changes/verdict-deliver`), and Verdict builds each pipeline story itself through `verdict orchestrate`. In flight: ADR-051 frontier planner (#1266) and CP2 connection billing facts (#1268). Merged and installed on 2026-11-23: #1259 (community roster), #1260 (context-lift supersede), #1261 and #1267 (relay empty reply, serve budget), #1262 (contested proof rescreen), #1264 (pinned metered executor). Their DoD evidence comes after the freshness window.
+Next focus (operator, 2026-11-23): Verdict builds a GitHub issue through to a PR ready for the operator's merge ([ADR-052](docs/adr/ADR-052-github-issue-to-ready-pr.md), D37). `verdict deliver` is merged and installed (#1355, #1371). On 2026-11-26 Verdict built a story with `verdict orchestrate` on an OpenCode worker and delivered it as a ready pull request by itself (#1373, issue #1269 task 6.1); the DoD evidence for #1269 is not filed yet. Self-build runs still need a dictated node plan and `--scope cc/,cx/`. Next: #1372 (node commits and retry base), #1366 part 2 (recover by denial reason), #1369 items 3 and 4, and #1367.
 
 ## Decisions
 
