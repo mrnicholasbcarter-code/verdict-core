@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
+from verdict.evidence import (
+    DurableEvidenceStore,
+    ExplainEvidence,
+    build_outcome_event,
+    build_routing_decision_contract,
+)
+from verdict.models import RoutingDecision
 from verdict.receipt_store import (
     ReceiptConflictError,
     ReceiptIntegrityError,
@@ -145,3 +153,199 @@ def test_import_rolls_back_on_partial_failure() -> None:
     with pytest.raises(ReceiptStoreError):
         target.import_manifest(manifest)
     assert target.query_receipts(scope="scope") == []
+
+
+# ---------------------------------------------------------------------------
+# SB1b (#1360): one chain verification per DurableEvidenceStore._current call.
+# Every read still fully verifies its scope; only the redundant walks go.
+# ---------------------------------------------------------------------------
+
+_SCOPE = "server-auth"
+
+
+def _evidence(request_id: str) -> tuple[ExplainEvidence, object]:
+    decision = RoutingDecision(
+        model="primary/model",
+        provider="omniroute",
+        tier=1,
+        reason="selected",
+        request_id=request_id,
+    )
+    routing = build_routing_decision_contract(
+        decision,
+        task="summarize",
+        criticality="low",
+        features={"stream": False},
+        request_id=request_id,
+        occurred_at="2026-09-18T00:00:00Z",
+    )
+    started = build_outcome_event(routing, event_type="execution_started", outcome="unknown")
+    return ExplainEvidence(routing, started), routing
+
+
+def _evidence_store(tmp_path: Path, rows: int = 3) -> tuple[DurableEvidenceStore, list[str], Path]:
+    path = tmp_path / "receipts.db"
+    store = DurableEvidenceStore(str(path))
+    keys = [store.put(_evidence(f"req-{n}")[0], scope=_SCOPE) for n in range(rows)]
+    return store, keys, path
+
+
+@pytest.fixture
+def walks(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
+    """Record the scope of every full chain walk (``ReceiptStore._iter_chain_records``)."""
+    seen: list[str | None] = []
+    original = ReceiptStore._iter_chain_records
+
+    def counting(self, *, scope, include_tombstones, page_size=5_000):  # type: ignore[no-untyped-def]
+        seen.append(scope)
+        return original(
+            self, scope=scope, include_tombstones=include_tombstones, page_size=page_size
+        )
+
+    monkeypatch.setattr(ReceiptStore, "_iter_chain_records", counting)
+    return seen
+
+
+def test_current_makes_exactly_one_chain_walk(tmp_path: Path, walks: list[str | None]) -> None:
+    store, keys, _ = _evidence_store(tmp_path)
+    walks.clear()
+    found = store.find(evidence_id=keys[1], scope=_SCOPE)  # one _current call
+    assert found is not None and found.evidence_id == keys[1]
+    assert walks == [_SCOPE]
+
+
+def test_append_event_walks_once_per_current_call(tmp_path: Path, walks: list[str | None]) -> None:
+    store, keys, _ = _evidence_store(tmp_path)
+    _, routing = _evidence("req-1")
+    event = build_outcome_event(routing, event_type="attempt_completed", outcome="unknown")
+    walks.clear()
+    updated = store.append_event(keys[1], event, scope=_SCOPE)  # _current, append, _current
+    assert updated is not None and len(updated.events) == 2
+    assert walks == [_SCOPE, _SCOPE]
+
+
+def test_find_by_selector_and_missing_key_walk_once(
+    tmp_path: Path, walks: list[str | None]
+) -> None:
+    store, _, _ = _evidence_store(tmp_path)
+    walks.clear()
+    assert store.find(evidence_id="evidence-missing", scope=_SCOPE) is None
+    assert walks == [_SCOPE]
+
+
+def test_the_public_readers_still_verify_every_call(
+    tmp_path: Path, walks: list[str | None]
+) -> None:
+    """Other callers of the two readers keep verifying exactly as before."""
+    store, keys, _ = _evidence_store(tmp_path)
+    receipts = store.receipts
+    walks.clear()
+    assert receipts.get_receipt(keys[0], scope=_SCOPE) is not None
+    assert receipts.query_receipts(scope=_SCOPE) != []
+    assert receipts.query_receipts(scope=_SCOPE) != []
+    assert walks == [_SCOPE, _SCOPE, _SCOPE]
+
+
+def test_verified_reads_walk_once_and_are_bound_to_their_scope(
+    tmp_path: Path, walks: list[str | None]
+) -> None:
+    store, keys, _ = _evidence_store(tmp_path)
+    receipts = store.receipts
+    elsewhere = receipts.put_receipt("decision", "other-scope", {"x": 1})
+    walks.clear()
+    with receipts.verified_reads(_SCOPE) as reads:
+        assert reads.get_receipt(keys[0], include_tombstones=True) is not None
+        assert reads.query_receipts(limit=10) != []
+        assert reads.query_receipts(parent_receipt_id=keys[0], include_tombstones=True) == []
+        # The reads are the scope's own: another scope's rows are not visible through them.
+        assert reads.get_receipt(elsewhere.receipt_id, include_tombstones=True) is None
+        assert elsewhere.receipt_id not in {r.receipt_id for r in reads.query_receipts(limit=100)}
+    assert walks == [_SCOPE]
+    with pytest.raises(ValueError), receipts.verified_reads(_SCOPE) as reads:
+        reads.query_receipts(limit=0)
+
+
+def test_verified_reads_cannot_be_kept_and_used_after_their_call(tmp_path: Path) -> None:
+    store, keys, _ = _evidence_store(tmp_path)
+    with store.receipts.verified_reads(_SCOPE) as reads:
+        pass
+    with pytest.raises(RuntimeError):
+        reads.get_receipt(keys[0])
+    with pytest.raises(RuntimeError):
+        reads.query_receipts()
+
+
+def test_public_readers_take_no_skip_argument_and_always_walk(
+    tmp_path: Path, walks: list[str | None]
+) -> None:
+    store, keys, _ = _evidence_store(tmp_path)
+    receipts = store.receipts
+    with receipts.verified_reads(_SCOPE):
+        walks.clear()
+        receipts.get_receipt(keys[0], scope=_SCOPE)
+        receipts.query_receipts(scope=_SCOPE)
+        assert walks == [_SCOPE, _SCOPE]  # even inside a verified block
+    with pytest.raises(TypeError):
+        receipts.get_receipt(keys[0], scope=_SCOPE, verified=True)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        receipts.query_receipts(scope=_SCOPE, verified=True)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("victim", [0, 1, 2], ids=["first", "middle", "last"])
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "payload_json = replace(payload_json, 'primary/model', 'evil/model')",
+        "previous_hash = 'deadbeef'",
+        "sensitivity = 'public'",
+    ],
+    ids=["payload", "chain_link", "metadata"],
+)
+def test_tamper_anywhere_in_scope_still_fails_every_read(
+    tmp_path: Path, victim: int, damage: str
+) -> None:
+    """A tampered row in the scope fails get, query, find and append, as on main."""
+    store, keys, path = _evidence_store(tmp_path)
+    _, routing = _evidence("req-x")
+    event = build_outcome_event(routing, event_type="attempt_completed", outcome="unknown")
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"UPDATE receipts SET {damage} WHERE receipt_id = ?", (keys[victim],))
+        conn.commit()
+    other = keys[(victim + 1) % len(keys)]  # the read need not touch the damaged row
+    with pytest.raises(ReceiptIntegrityError):
+        store.find(evidence_id=other, scope=_SCOPE)
+    with pytest.raises(ReceiptIntegrityError):
+        store.find(evidence_id="evidence-missing", scope=_SCOPE)
+    with pytest.raises(ReceiptIntegrityError):
+        store.find(request_id="req-0", scope=_SCOPE)
+    with pytest.raises(ReceiptIntegrityError):
+        store.append_event(other, event, scope=_SCOPE)
+    with pytest.raises(ReceiptIntegrityError):
+        store.receipts.get_receipt(other, scope=_SCOPE)
+    with pytest.raises(ReceiptIntegrityError):
+        store.receipts.query_receipts(scope=_SCOPE)
+    # The tampered scope never becomes readable: nothing was appended to it.
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM receipts").fetchone()[0] == len(keys)
+
+
+def test_verified_reads_refuse_a_tampered_scope_before_any_read(tmp_path: Path) -> None:
+    store, keys, path = _evidence_store(tmp_path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE receipts SET sensitivity = 'public' WHERE receipt_id = ?", (keys[1],))
+        conn.commit()
+    entered = False
+    with pytest.raises(ReceiptIntegrityError), store.receipts.verified_reads(_SCOPE):
+        entered = True
+    assert entered is False
+
+
+def test_a_later_tamper_is_caught_by_the_next_call(tmp_path: Path) -> None:
+    """No cache outlives its call: a row damaged after a good read fails the next."""
+    store, keys, path = _evidence_store(tmp_path)
+    assert store.find(evidence_id=keys[0], scope=_SCOPE) is not None
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE receipts SET sensitivity = 'public' WHERE receipt_id = ?", (keys[2],))
+        conn.commit()
+    with pytest.raises(ReceiptIntegrityError):
+        store.find(evidence_id=keys[0], scope=_SCOPE)

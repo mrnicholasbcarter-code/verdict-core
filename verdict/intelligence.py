@@ -1,17 +1,21 @@
+import asyncio
 import contextlib
+import contextvars
 import hashlib
 import json
 import logging
 import os
 import subprocess
+import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from verdict.admit_prove_confirm import gate_admit_prove_confirm
 from verdict.availability import is_opaque_route_id
@@ -91,6 +95,158 @@ from verdict.worthiness import classify_worthiness
 _LOG = logging.getLogger(__name__)
 # Wall-clock instant bound for one route() call; see IntelligenceService._request_clock.
 _REQUEST_NOW: ContextVar[datetime | None] = ContextVar("verdict_request_now", default=None)
+
+_T = TypeVar("_T")
+
+
+class StateLane:
+    """One worker thread that runs the request path's blocking state work, one job at a time.
+
+    ``verdict serve`` decides a request, records its evidence, commits its dispatch permit and
+    records its observation with synchronous file and database work.  Run on the event loop that
+    work stalls ``/health`` and every other request for as long as it takes (seconds on a large
+    receipt store).  The app owns one lane and awaits it from the handlers, so the loop stays
+    free while decisions keep today's serial order: a single worker runs jobs in the order they
+    were submitted, and a job is submitted the moment ``run`` is called.
+
+    This is not the *assigned lane* (``IntelligenceService._route_assigned``, the route a worker
+    request is pinned to); that is one of the things this runs.
+
+    ``run`` copies the caller's context into the job (the request's fixed instant is a context
+    variable) and shields the job from the waiter: a waiter that is cancelled, for example by a
+    client that disconnected mid-stream, never cancels a job that is still queued, so the terminal
+    evidence write it submitted still lands, in order.  A closed lane refuses ``submit`` but
+    still takes ``submit_cleanup``, for the terminal write of a request that was cancelled.
+    Nothing the lane takes ever runs on the caller's thread, closed or not.
+    Never hold the lane across an upstream call: it would serialise all upstream traffic.
+    """
+
+    def __init__(self, *, name: str = "verdict-state-lane") -> None:
+        self._name = name
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=name)
+        self._lock = threading.Lock()
+        self._closed = False
+        # The worker was shut down because the lane was closed with nothing pending; a cleanup
+        # that arrives later gets a fresh one (``_enqueue``).
+        self._retired = False
+        # Strong references to every job not yet finished, so ``aclose`` can drain them.
+        self._pending: set[Future[Any]] = set()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def drained(self) -> bool:
+        """True once the lane is closed and every job it took has finished."""
+        with self._lock:
+            return self._closed and not self._pending
+
+    def submit(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> Future[_T]:
+        """Queue ``fn`` behind every earlier job, with a copy of the caller's context."""
+        context = contextvars.copy_context()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("the state lane is closed")
+            future = self._enqueue(context, fn, args, kwargs)
+        future.add_done_callback(self._forget)
+        return future
+
+    def submit_cleanup(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> Future[_T]:
+        """Queue ``fn`` as cleanup: taken even after the lane is closed to new work.
+
+        A closed lane refuses ``submit``, but the terminal write of a request that was cancelled
+        is not new work: its decision row already exists and nothing else would end it.  A
+        cleanup is queued behind every earlier job and runs on the lane's worker, never on the
+        caller's thread, however long ``aclose`` waited and whether or not it gave up: the bound
+        ends the wait, not the queue.  A close waits for the cleanups accepted while it waits.
+        If the worker has retired (the lane was closed and drained) a fresh one takes the
+        cleanup and retires again when it is idle.  The future holds the result or the error;
+        nothing is raised, so a cancellation is never replaced by it.
+        """
+        context = contextvars.copy_context()
+        try:
+            with self._lock:
+                queued = self._enqueue(context, fn, args, kwargs)
+        except RuntimeError as error:  # no worker can be started (the interpreter is exiting)
+            failed: Future[_T] = Future()
+            failed.set_exception(error)
+            return failed
+        queued.add_done_callback(self._forget)
+        return queued
+
+    def _enqueue(
+        self,
+        context: contextvars.Context,
+        fn: Callable[..., _T],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Future[_T]:
+        """Queue one job; the caller holds ``_lock``."""
+        if self._retired:
+            # Only a cleanup gets here (``submit`` refuses once closed) and nothing is pending,
+            # so the fresh worker has no earlier job to overtake.
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=self._name)
+            self._retired = False
+        future = self._executor.submit(context.run, lambda: fn(*args, **kwargs))
+        self._pending.add(future)
+        return future
+
+    def _forget(self, future: Future[Any]) -> None:
+        with self._lock:
+            self._pending.discard(future)
+            self._retire_if_idle()
+
+    def _retire_if_idle(self) -> None:
+        """Stop the worker once the lane is closed and nothing is pending; the caller holds the lock.
+
+        The worker is never stopped while a job is pending, so a close that gave up waiting
+        cannot strand or overtake queued work.  ``shutdown(wait=False)`` lets an idle worker exit
+        and a running one finish its queue first.
+        """
+        if self._closed and not self._pending and not self._retired:
+            self._retired = True
+            self._executor.shutdown(wait=False)
+
+    async def run(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+        """Run ``fn`` on the lane and return its result or raise its exception.
+
+        Submission happens at this call, in call order.  If the waiter is cancelled the job still
+        runs; only the wait ends.
+        """
+        waiter = asyncio.wrap_future(self.submit(fn, *args, **kwargs))
+        return await asyncio.shield(waiter)
+
+    async def run_cleanup(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+        """``run`` for cleanup: ``submit_cleanup``'s job, shielded from a cancelled waiter."""
+        return await asyncio.shield(asyncio.wrap_future(self.submit_cleanup(fn, *args, **kwargs)))
+
+    async def aclose(self, *, timeout: float = 10.0) -> None:
+        """Refuse new jobs and wait up to ``timeout`` seconds for the queued ones.
+
+        The wait is bounded so the loop is never held at shutdown; it is the only thing that
+        ends at the bound.  Jobs still queued then are not cancelled and the worker is not
+        stopped: it runs them, and any cleanup that arrives, to completion on its own thread in
+        order (a terminal evidence write is never dropped), and exits once it has nothing left.
+        Cleanups accepted while the wait lasts (``submit_cleanup``) are waited for too.
+        The worker retires when the lane is drained, even when this wait is itself cancelled.
+        """
+        with self._lock:
+            self._closed = True
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                with self._lock:
+                    pending = list(self._pending)
+                remaining = deadline - time.monotonic()
+                if not pending or remaining <= 0:
+                    break
+                await asyncio.wait(
+                    [asyncio.wrap_future(future) for future in pending], timeout=remaining
+                )
+        finally:
+            with self._lock:
+                self._retire_if_idle()
 
 
 def _bind_context_plan(assistance_plan: AssistancePlan, plan: ContextPlan) -> AssistancePlan:
@@ -591,6 +747,9 @@ class IntelligenceService:
         self._admit_snapshot_endpoint: tuple[str, str | None] | None = None
         self._admit_snapshot_loaded_at: float = 0.0
         self._admit_snapshot_refresh_error: str | None = None
+        # The serial worker lane ``verdict serve`` attaches at startup so a decision runs off the
+        # event loop.  None (every other caller) decides inline, exactly as before.
+        self.state_lane: StateLane | None = None
         # Catalog routing does not depend on managed intelligence backends.
         self.managed_backend_status = "offline" if allow_offline else "not_used"
         self._policy_version = "policy-2026-07-13.1"
@@ -704,9 +863,15 @@ class IntelligenceService:
         on the decision *before* it is logged so post-execution outcome receipts
         can join back to this row."""
         with self._request_clock():
-            return await self._route(task, criticality, context, request_id=request_id)
+            lane = self.state_lane
+            if lane is None:
+                return self._route(task, criticality, context, request_id=request_id)
+            # The fixed request instant is bound above, in this task's context, and ``run``
+            # copies the context into the lane thread.  The decision is all synchronous state
+            # work: it runs there so the event loop stays free for /health and cheap refusals.
+            return await lane.run(self._route, task, criticality, context, request_id=request_id)
 
-    async def _route(
+    def _route(
         self,
         task: str | dict[str, Any],
         criticality: str,

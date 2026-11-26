@@ -7,10 +7,13 @@ import re
 import shlex
 import shutil
 import sys
+from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from verdict.orchestration.contracts import path_is_owned
+from verdict.orchestration.repo_gates import _load_pyproject
 
 # The runner keeps only the last VERIFY_OUTPUT_TAIL_CHARS characters of a verification
 # command's output, so a long list of collection errors can lose its first entries.
@@ -26,6 +29,27 @@ _SUMMARY_ERROR_RE = re.compile(rf"^ERROR ({_PATH_CHARS})(?:::\S*)?(?: - .*)?$")
 _HEADER_ERROR_LINE_RE = re.compile(r"^_+ ERROR collecting .* _+$", re.MULTILINE)
 _HEADER_ERROR_RE = re.compile(rf"^_+ ERROR collecting ({_PATH_CHARS}) _+$")
 _REASON_PATHS_NAMED = 3
+# mypy prints one line per unresolved import: ``<file>:<line>: error: <message>  [<code>]``.
+# The module is the first quoted name in the message, for all three wordings mypy uses:
+# ``Cannot find implementation or library stub for module named "x"``,
+# ``Library stubs not installed for "x"`` and ``Skipping analyzing "x": module is installed, but
+# missing library stubs or py.typed marker``.
+_UNRESOLVED_IMPORT_RE = re.compile(
+    r"^[^\n]*: error: (?P<message>[^\n]*?)  \[(?:import-not-found|import-untyped)\]$", re.MULTILINE
+)
+_QUOTED_MODULE_RE = re.compile(r'"([^"\n]+)"')
+# mypy's total (``Found 50 errors in 16 files``, ``Found 1 error in 1 file``) and one error line.
+_FOUND_ERRORS_RE = re.compile(r"^Found (\d+) errors? in \d+ files?", re.MULTILINE)
+_ERROR_LINE_RE = re.compile(r"^[^\n]*: error: ", re.MULTILINE)
+# One error line of any kind: ``<file>:<line>[:<col>]: error: <message>  [<code>]``.
+_ERROR_PARTS_RE = re.compile(
+    r"^(?P<file>[^\n:]+):\d+(?::\d+)?: error: (?P<message>[^\n]*?)(?:  \[(?P<code>[\w-]+)\])?$",
+    re.MULTILINE,
+)
+# The exit codes of a gate command that could not start (the runner's 127 for a missing or
+# non-executable program, the shell's 126).  A worker cannot fix them, which is why the node
+# level leaves them to the integration barrier, and there they are the environment's.
+GATE_UNAVAILABLE_EXIT_CODES = (126, 127)
 
 
 def _runs_pytest(argv: Sequence[str]) -> bool:
@@ -35,6 +59,17 @@ def _runs_pytest(argv: Sequence[str]) -> bool:
         return True
     return any(
         token == "-m" and index + 1 < len(tokens) and tokens[index + 1] == "pytest"
+        for index, token in enumerate(tokens)
+    )
+
+
+def _runs_mypy(argv: Sequence[str]) -> bool:
+    """True when argv is ``mypy ...`` or ``<python> -m mypy ...``."""
+    tokens = list(argv)
+    if any(os.path.basename(token) == "mypy" for token in tokens):
+        return True
+    return any(
+        token == "-m" and index + 1 < len(tokens) and tokens[index + 1] == "mypy"
         for index, token in enumerate(tokens)
     )
 
@@ -141,6 +176,194 @@ def classify_verify_env_error(
     return None
 
 
+def _first_party_roots(worktree: Path) -> list[Path]:
+    """The directories mypy finds the project's own modules in: the worktree root, ``src/``, the
+    ``[tool.mypy] mypy_path`` entries of its ``pyproject.toml`` (a list, or one string separated
+    by ``:`` or ``,``; ``$MYPY_CONFIG_FILE_DIR`` is the worktree) and the ``MYPYPATH``
+    environment variable (``:``-separated, relative to the worktree the gate runs in)."""
+    entries: list[str] = []
+    try:
+        data = _load_pyproject(worktree)
+    except (ValueError, OSError):
+        data = {}
+    tool = data.get("tool")
+    mypy = tool.get("mypy") if isinstance(tool, dict) else None
+    configured = mypy.get("mypy_path") if isinstance(mypy, dict) else None
+    if isinstance(configured, str):
+        entries.extend(part for chunk in configured.split(os.pathsep) for part in chunk.split(","))
+    elif isinstance(configured, list):
+        entries.extend(item for item in configured if isinstance(item, str))
+    entries.extend(os.environ.get("MYPYPATH", "").split(os.pathsep))
+    roots = [worktree, worktree / "src"]
+    for entry in entries:
+        entry = entry.strip().replace("$MYPY_CONFIG_FILE_DIR", str(worktree))
+        if entry:
+            roots.append(worktree / entry)  # an absolute entry stays absolute
+    return roots
+
+
+def _is_first_party(module: str, worktree: Path) -> bool:
+    """True when ``module``'s top-level name is a package or module of the project itself, in
+    one of the places mypy looks for them (:func:`_first_party_roots`): such an import is the
+    implementation's to keep resolvable, never the environment's."""
+    top = module.split(".", 1)[0]
+    return any(
+        (base / top).is_dir() or (base / f"{top}.py").is_file()
+        for base in _first_party_roots(worktree)
+    )
+
+
+@dataclass(frozen=True)
+class UnresolvedImports:
+    """What one failed mypy run says about unresolved imports of third-party packages."""
+
+    packages: tuple[str, ...]  # top-level names, in the order they were reported
+    error_count: int | None  # mypy's own ``Found N errors`` total; None without that line
+    complete: bool  # the kept output lists every error mypy found
+    # every other error, as ``file [code] message`` (no line number, no worktree prefix), sorted,
+    # with repeats: the same error at a second line is a second error
+    other_errors: tuple[str, ...] = ()
+
+
+def unresolved_third_party_imports(
+    argv: Sequence[str], code: int, out: str, worktree: Path
+) -> UnresolvedImports | None:
+    """The third-party packages a failed mypy gate could not resolve, or ``None``.
+
+    The one signal read is mypy's own: at least one ``import-not-found`` or ``import-untyped``
+    error, every one of them for a third-party module (the name is not a package or module of the
+    project: at the worktree root, under ``src/`` or in a ``mypy_path``).  ``None`` for a passing
+    gate, any other gate, output without such an error, and output with an unresolved import of
+    the project's own modules (a renamed or deleted module is a wrong implementation).
+
+    This alone never proves a broken environment: ``reqeusts`` is "third-party" too.  The caller
+    compares it with the same gate on the run's untouched base (:func:`environment_fault_refusal`).
+    """
+    if code == 0 or not _runs_mypy(argv):
+        return None
+    packages: list[str] = []
+    for match in _UNRESOLVED_IMPORT_RE.finditer(out):
+        quoted = _QUOTED_MODULE_RE.search(match.group("message"))
+        if quoted is None:
+            return None  # an import error whose module cannot be read is not trusted
+        module = quoted.group(1)
+        if _is_first_party(module, worktree):
+            return None
+        package = module.split(".", 1)[0]
+        if package not in packages:
+            packages.append(package)
+    if not packages:
+        return None
+    prefix = str(worktree) + os.sep
+    other_errors = tuple(
+        sorted(
+            f"{m.group('file').removeprefix(prefix)} [{m.group('code') or '-'}] {m.group('message')}"
+            for m in _ERROR_PARTS_RE.finditer(out)
+            if m.group("code") not in ("import-not-found", "import-untyped")
+        )
+    )
+    found = _FOUND_ERRORS_RE.search(out)
+    error_count = int(found.group(1)) if found else None
+    listed = len(_ERROR_LINE_RE.findall(out))
+    # The runner keeps only the last VERIFY_OUTPUT_TAIL_CHARS characters: the head of a long
+    # error list is gone, and the total in mypy's summary line is what says so.
+    complete = (
+        listed >= error_count if error_count is not None else len(out) < VERIFY_OUTPUT_TAIL_CHARS
+    )
+    return UnresolvedImports(tuple(packages), error_count, complete, other_errors)
+
+
+def environment_fault_refusal(
+    candidate: UnresolvedImports, base: UnresolvedImports | None
+) -> str | None:
+    """Why the candidate's unresolved imports are not proof of a broken environment, or ``None``
+    when they are.
+
+    The evidence is the same gate on the run's untouched base (``base``; ``None`` when it could
+    not be run): every package the candidate cannot resolve is one the base cannot resolve
+    either, and every other error the candidate reports is one the base reports too (by file,
+    code and message, as many times; the line does not count).  A typo, a top-level package the implementation
+    deleted and a real type error resolve or pass differently there.  Where the candidate has
+    more of the same unresolved imports (new code using a library the environment lacks) the
+    environment explains it; a new error of any other kind is never explained.  When the kept
+    output is cut (the head is lost, so a new error could hide in it), the candidate must also
+    report no more errors in total than the base.
+    """
+    if base is None:
+        return (
+            "the untouched base could not be checked, so the unresolved imports are not proven old"
+        )
+    new = [package for package in candidate.packages if package not in base.packages]
+    if new:
+        return "not unresolved on the untouched base: " + ", ".join(new[:_REASON_PATHS_NAMED])
+    unexplained = sorted((Counter(candidate.other_errors) - Counter(base.other_errors)).elements())
+    if unexplained:
+        shown = "; ".join(unexplained[:_REASON_PATHS_NAMED])
+        more = len(unexplained) - _REASON_PATHS_NAMED
+        return (
+            "not reported on the untouched base: "
+            + shown
+            + (f" and {more} more" if more > 0 else "")
+        )
+    if candidate.complete:
+        return None
+    if candidate.error_count is None or base.error_count is None:
+        return "the kept output is cut and its error total cannot be compared with the base"
+    if candidate.error_count > base.error_count:
+        return (
+            f"the kept output is cut and reports {candidate.error_count} errors, more than "
+            f"the {base.error_count} on the untouched base"
+        )
+    return None
+
+
+def describe_environment_fault(argv: Sequence[str], imports: UnresolvedImports) -> str:
+    """The reason for a gate that failed on an environment lacking the project's dependencies.
+
+    It names the first three packages only: no other output text reaches it.
+    """
+    named = ", ".join(imports.packages[:_REASON_PATHS_NAMED])
+    more = len(imports.packages) - _REASON_PATHS_NAMED
+    if more > 0:
+        named += f" and {more} more"
+    return (
+        f"`{shlex.join(argv)}` cannot resolve third-party imports ({named}), and the "
+        "untouched base fails the same way: the gate ran without the project's dependencies, "
+        "fix the environment, not the implementation"
+    )
+
+
+def _declares_installable_extras(worktree: Path) -> bool:
+    """True when the worktree's ``pyproject.toml`` declares optional dependencies that
+    ``uv run --all-extras`` can install together.
+
+    False (so the command stays as it is today) with no extras, when ``[tool.uv] conflicts``
+    names extras that cannot be installed together (``--all-extras`` would make uv refuse),
+    and when the file cannot be read: this decides a flag, never a failure.
+    """
+    try:
+        data = _load_pyproject(worktree)
+    except (ValueError, OSError):
+        return False
+    project = data.get("project")
+    extras = project.get("optional-dependencies") if isinstance(project, dict) else None
+    if not isinstance(extras, dict) or not extras:
+        return False
+    tool = data.get("tool")
+    uv_table = tool.get("uv") if isinstance(tool, dict) else None
+    return not (isinstance(uv_table, dict) and uv_table.get("conflicts"))
+
+
+def _venv_made_by_uv(venv: Path) -> bool:
+    """True when ``venv`` was created by uv: uv writes ``uv = <version>`` into the
+    ``pyvenv.cfg`` of every environment it makes (``uv run``, ``uv sync``, ``uv venv``)."""
+    try:
+        text = (venv / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return any(line.partition("=")[0].strip() == "uv" for line in text.splitlines())
+
+
 def resolve_verify_argv(argv: Sequence[str]) -> tuple[list[str], str]:
     """Return the executed argv and an interpreter substitution, if one was needed.
 
@@ -160,10 +383,15 @@ def resolve_gate_argv(argv: Sequence[str], worktree: Path) -> list[str]:
     """Resolve bare ruff/mypy to the worktree's own environment.
 
     Resolution order:
-    1. ``<worktree>/.venv/bin/<tool>`` — explicit virtualenv in the worktree.
+    1. ``<worktree>/.venv/bin/<tool>`` — explicit virtualenv in the worktree (except an
+       environment uv made, for ``mypy`` in a project with extras: see rule 2).
     2. ``uv run --frozen <tool>`` — when ``uv.lock`` is present.  ``uv`` must
        be on PATH; if it is not, the gate cannot run and ``FileNotFoundError``
-       is raised (a named environment failure, never a silent pass).
+       is raised (a named environment failure, never a silent pass).  ``mypy`` also gets
+       ``--all-extras`` when the project declares optional dependencies (see below): without
+       them uv builds an environment of the base dependencies only, and mypy reports every
+       typed library of an extra (stubs, ``prompt_toolkit``, ...) as missing.  ``ruff`` reads
+       source and imports nothing, so its command is unchanged.
     3. ``Path(sys.executable).parent/<tool>`` — Verdict's own interpreter env.
     4. ``shutil.which(<tool>)`` — OS PATH as a last resort.
     5. ``FileNotFoundError`` — gate cannot run; callers must fail closed.
@@ -175,9 +403,22 @@ def resolve_gate_argv(argv: Sequence[str], worktree: Path) -> list[str]:
         return resolved
     executable = argv[0]
 
-    # 1. Explicit worktree venv takes priority over everything.
+    # mypy needs the project's optional dependencies; an environment uv made without them
+    # (the ``uv run --frozen ruff`` of an earlier gate in this worktree builds one) has the
+    # tool but not the extras, so it is completed through ``uv run`` below, not used as it is.
+    needs_extras = (
+        executable == "mypy"
+        and (worktree / "uv.lock").is_file()
+        and _declares_installable_extras(worktree)
+    )
+
+    # 1. Explicit worktree venv takes priority over everything.  A venv that was not made by
+    #    uv is the operator's own and is never touched; one uv made is the very environment
+    #    ``uv run`` uses, so rule 2 below reaches it and installs what it lacks.
     venv_candidate = worktree / ".venv" / "bin" / executable
-    if venv_candidate.is_file():
+    if venv_candidate.is_file() and not (
+        needs_extras and _venv_made_by_uv(worktree / ".venv") and shutil.which("uv")
+    ):
         resolved[0] = str(venv_candidate)
         return resolved
 
@@ -191,7 +432,11 @@ def resolve_gate_argv(argv: Sequence[str], worktree: Path) -> list[str]:
                 f"gate executable {executable!r}: uv.lock is present but uv is not on PATH"
                 " — environment_error: uv not found"
             )
-        return [uv, "run", "--frozen", *argv]
+        # ``--all-extras``: the lock already resolves every extra, so this installs and
+        # never re-resolves.  Kept off when the project declares no extras (the command
+        # stays as it was) or declares conflicting ones (uv would refuse the flag).
+        extras = ["--all-extras"] if needs_extras else []
+        return [uv, "run", "--frozen", *extras, *argv]
 
     # 3. Fall back to Verdict's own interpreter environment (non-uv-managed repos).
     verdict_candidate = Path(sys.executable).parent / executable

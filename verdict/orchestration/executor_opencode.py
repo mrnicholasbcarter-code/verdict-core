@@ -122,6 +122,18 @@ ASSIGNMENT_MARGIN_SECONDS = 60
 MAX_IDENTITY_BUMP_SECONDS = 30
 
 _TERM_GRACE_SECONDS = 5.0
+#: The environment variable every worker process carries, with a value that is unique to its
+#: attempt.  Every process the worker starts inherits it, so it finds them wherever they are: the
+#: group the executor started holds only ``opencode run`` itself, because OpenCode starts its
+#: server (``opencode serve --stdio``) in a session of its own and that server starts the model's
+#: tool commands in others, which outlive their parents.  The name is not one OpenCode reads.
+ATTEMPT_MARKER_ENV = "VERDICT_WORKER_ATTEMPT"
+#: After the group is ended, how long the marked processes still alive get to exit on SIGTERM
+#: before SIGKILL, and the longest the whole search for them may take.  Together with the group's
+#: own grace this stays inside the supervisor's kill grace (10 s) for a worker that ignores both.
+_MARKED_TERM_GRACE_SECONDS = 1.0
+_MARKED_REAP_SECONDS = 3.0
+_MARKED_POLL_SECONDS = 0.05
 #: Cap on worker output (stdout plus stderr) kept in memory per attempt.  NDJSON is parsed
 #: after the run and several attempts run concurrently, so a worker that prints without
 #: end must fail its attempt rather than exhaust the orchestrator.
@@ -865,6 +877,7 @@ def _build_child_env(
     api_key_env: str,
     api_key_value: str | None = None,
     base_env: dict[str, str] | None = None,
+    attempt_marker: str | None = None,
 ) -> dict[str, str]:
     """Build an isolated environment for the opencode subprocess.
 
@@ -877,6 +890,8 @@ def _build_child_env(
       ``opencode.json`` in the cwd from merging with the per-attempt config.
     - ``OPENCODE_DISABLE_CLAUDE_CODE=1`` → prevents OpenCode v2.3.2 from
       loading the operator's ``~/.claude`` config and skills.
+    - :data:`ATTEMPT_MARKER_ENV` → ``attempt_marker`` when given: the value that finds every
+      process of the attempt again (:func:`_reap_attempt`).
 
     Credential hygiene (belt-and-braces):
     The child env is built from an explicit allowlist (``_CHILD_ENV_ALLOWLIST``
@@ -903,6 +918,8 @@ def _build_child_env(
     env["XDG_STATE_HOME"] = str(state_dir)
     env["OPENCODE_CONFIG_PROJECT_DISABLE"] = "1"
     env["OPENCODE_DISABLE_CLAUDE_CODE"] = "1"
+    if attempt_marker is not None:
+        env[ATTEMPT_MARKER_ENV] = attempt_marker
     return env
 
 
@@ -1104,6 +1121,115 @@ async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
         if proc.returncode is None:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(proc.wait(), timeout=_TERM_GRACE_SECONDS)
+
+
+def _carries_marker(pid: int, marker: str) -> bool:
+    """True when process ``pid`` is alive and its environment carries ``marker``.
+
+    A process counts only while its environment can be read: a zombie has none (it has ended),
+    and a process of another user cannot be read (and could not be signalled).
+    """
+    needle = f"{ATTEMPT_MARKER_ENV}={marker}".encode()
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as fh:
+            environ = fh.read()
+    except OSError:
+        return False  # gone already, or not ours to read
+    return needle in environ.split(b"\0")
+
+
+def _marked_pids(marker: str) -> list[int]:
+    """The live processes of this user whose environment carries ``marker``, found in ``/proc``.
+
+    Nothing here matches on a name or a command line.  Without ``/proc`` the answer is empty and
+    the group kill is all there is.
+    """
+    own = os.getpid()
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    return [
+        int(entry)
+        for entry in entries
+        if entry.isdigit() and int(entry) != own and _carries_marker(int(entry), marker)
+    ]
+
+
+def _signal_marked(marker: str, pids: Iterable[int], sig: signal.Signals) -> None:
+    """Signal each of ``pids`` that still carries ``marker``.
+
+    A search takes time, and a PID can be reused by an unrelated process in between.  So, as
+    ``controller_operations`` does, a pidfd is opened first and the marker is checked after: the
+    handle then names the process that was checked, and the signal goes to the handle, never to a
+    bare PID.  Without pidfds (an old kernel, another platform) the marker is checked again just
+    before a plain ``kill``.
+    """
+    has_pidfd = hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")
+    for pid in pids:
+        fd: int | None = None
+        if has_pidfd:
+            try:
+                fd = os.pidfd_open(pid)
+            except ProcessLookupError:
+                continue
+            except OSError:
+                fd = None
+        try:
+            if not _carries_marker(pid, marker):
+                continue
+            with contextlib.suppress(ProcessLookupError, OSError):
+                if fd is not None:
+                    signal.pidfd_send_signal(fd, sig)
+                else:
+                    os.kill(pid, sig)
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+
+async def _reap_marked(marker: str) -> None:
+    """End every process that carries ``marker`` and wait until a search finds none.
+
+    SIGTERM first, so a process can close what it has open, then SIGKILL after a short grace; it
+    searches again after every signal, because a process that was ending can have started
+    another.  Bounded: a process that survives SIGKILL for :data:`_MARKED_REAP_SECONDS` (one in
+    uninterruptible sleep) is left, not waited for.  The last thing it does, on any way out
+    including a cancellation that lands in the wait, is a synchronous SIGKILL pass.
+    """
+    started = time.monotonic()
+    termed: set[int] = set()
+    try:
+        while True:
+            pids = _marked_pids(marker)
+            if not pids:
+                return
+            elapsed = time.monotonic() - started
+            if elapsed >= _MARKED_REAP_SECONDS:
+                return
+            if elapsed < _MARKED_TERM_GRACE_SECONDS:
+                _signal_marked(marker, [pid for pid in pids if pid not in termed], signal.SIGTERM)
+                termed.update(pids)
+            else:
+                _signal_marked(marker, pids, signal.SIGKILL)
+            await asyncio.sleep(_MARKED_POLL_SECONDS)
+    finally:
+        _signal_marked(marker, _marked_pids(marker), signal.SIGKILL)
+
+
+async def _reap_attempt(proc: asyncio.subprocess.Process | None, marker: str) -> None:
+    """End the attempt's whole process tree, whatever way it ended, and wait for it.
+
+    The worker's own process group first (:func:`_kill_process_group`), then every process that
+    carries the attempt's marker (:func:`_reap_marked`): the processes OpenCode starts in
+    sessions of their own are not in that group.  The marker pass runs even when the group pass
+    is interrupted by a second cancellation.
+    """
+    try:
+        if proc is not None:
+            await _kill_process_group(proc)
+    finally:
+        await _reap_marked(marker)
 
 
 def _cleanup_attempt_dir(attempt_tmp: tempfile.TemporaryDirectory[str]) -> None:
@@ -1581,6 +1707,7 @@ class OpenCodeExecutor:
                     f"config_write_failed: {_sanitize(str(exc), secrets=secrets)}",
                 )
 
+            marker = uuid.uuid4().hex
             child_env = _build_child_env(
                 config_dir=config_dir,
                 data_dir=data_dir,
@@ -1588,6 +1715,7 @@ class OpenCodeExecutor:
                 api_key_env=self._api_key_env,
                 api_key_value=assignment,
                 base_env=self._base_env(),
+                attempt_marker=marker,
             )
 
             # The last thing before launch: OpenCode skips a listed instructions file that is not
@@ -1638,6 +1766,11 @@ class OpenCodeExecutor:
                 return self._failure(
                     route_id, started, f"spawn_failed: {_sanitize(str(exc), secrets=secrets)}"
                 )
+            except BaseException:
+                # Cancelled while the worker was being started: it may already exist, and
+                # asyncio ends only its leader.
+                _signal_marked(marker, _marked_pids(marker), signal.SIGKILL)
+                raise
 
             attempt.launched = True
             try:
@@ -1647,11 +1780,13 @@ class OpenCodeExecutor:
                         proc, max(0.0, timeout_seconds - (time.monotonic() - started))
                     )
                 finally:
-                    # Always reap the whole process group before returning, whatever the
-                    # path (normal exit, stall, timeout, cancellation or any error): a
-                    # descendant with redirected pipes can outlive its leader and keep
-                    # editing the worktree while owned-files validation runs.
-                    await _kill_process_group(proc)
+                    # Always end the whole process tree before returning, whatever the path
+                    # (normal exit, stall, timeout, cancellation or any error): a descendant
+                    # with redirected pipes can outlive its leader, and OpenCode's server and
+                    # the model's tool commands are in sessions of their own, so a process
+                    # can keep editing the worktree while owned-files validation runs.  The
+                    # attempt's directory is removed only after that (the ``finally`` below).
+                    await _reap_attempt(proc, marker)
             except _WorkerIOError as exc:
                 return self._failure(
                     route_id, started, f"worker_io_failed: {_sanitize(str(exc), secrets=secrets)}"
