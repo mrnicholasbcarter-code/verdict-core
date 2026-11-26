@@ -381,6 +381,51 @@ def test_head_that_moves_during_polling_stops_with_head_moved_and_never_readies(
     assert gh.calls[-1][:3] == ["gh", "pr", "view"]
 
 
+def _gate_expecting(sha: str, gh: FakeGh) -> ready_gate.PrReadyOutcome:
+    t = FakeTime()
+    return run_pr_ready_gate(
+        _plan_at("family"),
+        pr_ref=PR,
+        head_sha=sha,
+        reviewer=None,
+        runner=gh,
+        deadline_s=120.0,
+        poll_interval_s=30.0,
+        clock=t.clock,
+        sleep=t.sleep,
+    )
+
+
+def test_reported_head_that_is_a_prefix_of_the_expected_commit_stops_with_head_moved() -> None:
+    gh = FakeGh(head=HEAD[:12])
+    outcome = _gate_expecting(HEAD, gh)
+    assert not outcome.ready
+    assert outcome.reason is PrReadyReason.HEAD_MOVED
+    assert gh.calls_with("gh", "pr", "ready") == []
+
+
+def test_a_different_full_head_stops_with_head_moved() -> None:
+    gh = FakeGh(head="f" * 40)
+    outcome = _gate_expecting(HEAD, gh)
+    assert not outcome.ready
+    assert outcome.reason is PrReadyReason.HEAD_MOVED
+    assert gh.calls_with("gh", "pr", "ready") == []
+
+
+def test_abbreviated_expected_value_still_matches_the_full_head_it_prefixes() -> None:
+    gh = FakeGh(head=HEAD)
+    outcome = _gate_expecting(HEAD[:12], gh)
+    assert outcome.ready
+    assert len(gh.calls_with("gh", "pr", "ready")) == 1
+
+
+def test_exact_forty_character_head_passes() -> None:
+    gh = FakeGh(head=HEAD)
+    outcome = _gate_expecting(HEAD, gh)
+    assert outcome.ready
+    assert len(gh.calls_with("gh", "pr", "ready")) == 1
+
+
 def test_unmoved_head_is_read_twice_and_the_pr_is_readied_last() -> None:
     gh = FakeGh(polls=[[_run(None, status="queued")], [_run("success")]])
     outcome = _gate(_plan_at("family"), gh)
