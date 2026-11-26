@@ -34,4 +34,16 @@ def register(subparsers: Any) -> None:
         action="store_true",
         help="Print the planned branch, title and body; push and create nothing",
     )
+    parser.add_argument(
+        "--ci-deadline",
+        type=float,
+        default=60.0,
+        metavar="MINUTES",
+        help="Minutes to wait for checks before the ready gate stops (default: 60)",
+    )
+    parser.add_argument(
+        "--no-ready",
+        action="store_true",
+        help="Skip the ready gate; the pull request stays a draft",
+    )
     parser.add_argument("--json", action="store_true", help="Output the outcome as JSON")

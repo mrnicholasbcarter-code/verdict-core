@@ -210,6 +210,8 @@ def _cmd_deliver(args: argparse.Namespace) -> None:
         issue_title=args.issue_title,
         base_branch=args.base,
         dry_run=args.dry_run,
+        ci_deadline_s=args.ci_deadline * 60.0,
+        run_ready_gate=not args.no_ready,
     )
     outcome = deliver_run(request)
 

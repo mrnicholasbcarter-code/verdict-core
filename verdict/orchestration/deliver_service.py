@@ -38,10 +38,16 @@ from verdict.orchestration.deliver import (
 from verdict.orchestration.deliver_publish import CommandRunner, PublishError, run_command
 from verdict.orchestration.deliver_publish import publish_branch_and_pr as _publish
 from verdict.orchestration.deliver_render import render_pull_request
+from verdict.orchestration.ready_gate import (
+    DEFAULT_CI_DEADLINE_S,
+    CrossFamilyReviewer,
+    run_pr_ready_gate,
+)
 
 DELIVERY_FILE = "delivery.json"
 DELIVERY_DIGEST_FILE = "delivery.sha256"
 DELIVERY_SCHEMA = "verdict.delivery/1"
+READY_SKIPPED = "skipped"
 
 Clock = Callable[[], datetime]
 
@@ -68,6 +74,8 @@ class DeliverRunRequest(DeliverRequest):
 
     dry_run: bool = False
     repo_dir: Path | None = None
+    ci_deadline_s: float = DEFAULT_CI_DEADLINE_S
+    run_ready_gate: bool = True
 
 
 @dataclass(frozen=True)
@@ -82,6 +90,12 @@ class DeliveryRecord:
     events_digest: str
     delivered_at: str
     created: bool
+    ready: bool = False
+    ready_reason: str = ""
+    review_level: str = ""
+    reviewer_route: str = ""
+    extra_review_ran: bool = False
+    ci_polls: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +110,12 @@ class DeliveryRecord:
             "events_digest": self.events_digest,
             "delivered_at": self.delivered_at,
             "created": self.created,
+            "ready": self.ready,
+            "ready_reason": self.ready_reason,
+            "review_level": self.review_level,
+            "reviewer_route": self.reviewer_route,
+            "extra_review_ran": self.extra_review_ran,
+            "ci_polls": self.ci_polls,
         }
 
 
@@ -114,6 +134,12 @@ class DeliverOutcome:
     delivered_at: str = ""
     created: bool = False
     record_path: Path | None = None
+    ready: bool = False
+    ready_reason: str = ""
+    review_level: str = ""
+    reviewer_route: str = ""
+    extra_review_ran: bool = False
+    ci_polls: int = 0
 
     @property
     def ok(self) -> bool:
@@ -140,6 +166,12 @@ class DeliverOutcome:
             "delivered_at": self.delivered_at,
             "created": self.created,
             "record_path": str(self.record_path) if self.record_path is not None else None,
+            "ready": self.ready,
+            "ready_reason": self.ready_reason,
+            "review_level": self.review_level,
+            "reviewer_route": self.reviewer_route,
+            "extra_review_ran": self.extra_review_ran,
+            "ci_polls": self.ci_polls,
         }
 
 
@@ -218,7 +250,19 @@ def read_delivery_record(run_dir: Path) -> DeliveryRecord | None:
         events_digest=str(raw.get("events_digest") or ""),
         delivered_at=str(raw.get("delivered_at") or ""),
         created=bool(raw.get("created")),
+        ready=raw.get("ready") is True,
+        ready_reason=str(raw.get("ready_reason") or ""),
+        review_level=str(raw.get("review_level") or ""),
+        reviewer_route=str(raw.get("reviewer_route") or ""),
+        extra_review_ran=raw.get("extra_review_ran") is True,
+        ci_polls=_count(raw.get("ci_polls")),
     )
+
+
+def _count(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
 
 
 def _outcome(plan: DeliverPlan, status: DeliverStatus, **fields: Any) -> DeliverOutcome:
@@ -243,8 +287,13 @@ def deliver_run(
     *,
     runner: CommandRunner | None = None,
     clock: Clock | None = None,
+    reviewer: CrossFamilyReviewer | None = None,
 ) -> DeliverOutcome:
-    """Deliver a verified COMPLETE run as a draft pull request. Never raises on refusal."""
+    """Deliver a verified COMPLETE run as a draft pull request. Never raises on refusal.
+
+    After the draft is published the ready gate runs (unless the request skips it).
+    A gate stop is recorded but is not a delivery failure: the pull request stays a draft.
+    """
     decision = plan_delivery(request)
     if isinstance(decision, DeliverRefusal):
         return _refused(decision)
@@ -283,6 +332,12 @@ def deliver_run(
             created=existing.created,
             record_path=run_dir / DELIVERY_FILE,
             branch=existing.branch or plan.head_branch,
+            ready=existing.ready,
+            ready_reason=existing.ready_reason,
+            review_level=existing.review_level,
+            reviewer_route=existing.reviewer_route,
+            extra_review_ran=existing.extra_review_ran,
+            ci_polls=existing.ci_polls,
         )
 
     rendered = render_pull_request(plan)
@@ -312,6 +367,33 @@ def deliver_run(
             body=rendered.body,
         )
 
+    active_runner = runner or run_command
+    cwd = Path(repo_dir) if repo_dir is not None else None
+    ready_fields: dict[str, Any] = {
+        "ready": False,
+        "ready_reason": READY_SKIPPED,
+        "review_level": plan.review.level,
+        "reviewer_route": plan.review.route_id,
+        "extra_review_ran": False,
+        "ci_polls": 0,
+    }
+    if bool(getattr(request, "run_ready_gate", True)):
+        gate = run_pr_ready_gate(
+            plan,
+            pr_ref=result.pr_url,
+            head_sha=plan.integration_commit,
+            reviewer=reviewer,
+            runner=active_runner,
+            cwd=cwd,
+            deadline_s=float(getattr(request, "ci_deadline_s", DEFAULT_CI_DEADLINE_S)),
+        )
+        ready_fields.update(
+            ready=gate.ready,
+            ready_reason=gate.reason.value if gate.reason is not None else "",
+            extra_review_ran=gate.review_ran,
+            ci_polls=gate.polls,
+        )
+
     stamp = _timestamp(clock or _utc_now)
     record = DeliveryRecord(
         run_id=plan.run_id,
@@ -324,6 +406,7 @@ def deliver_run(
         events_digest=plan.events_digest,
         delivered_at=stamp,
         created=result.created,
+        **ready_fields,
     )
     try:
         record_path = write_delivery_record(run_dir, record)
@@ -338,6 +421,7 @@ def deliver_run(
             body=rendered.body,
             created=result.created,
             branch=result.branch,
+            **ready_fields,
         )
     return _outcome(
         plan,
@@ -350,6 +434,7 @@ def deliver_run(
         created=result.created,
         record_path=record_path,
         branch=result.branch,
+        **ready_fields,
     )
 
 
