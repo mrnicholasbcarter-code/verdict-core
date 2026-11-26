@@ -9,14 +9,17 @@
 
 ## 2. Branch and push
 
-- [ ] 2.1 Slug from the issue title (sanitised, at most 40 characters), branch `verdict/issue-N-<slug>`, push of the integration SHA through the pre-push hook with argument-list subprocess calls. `vgate_rejected` carries the gate tail. `branch_exists` is raised on a conflict. No force-push. Verify: tests with a local bare remote and a fake pre-push hook that rejects.
+- [x] 2.1 Slug from the issue title (sanitised, at most 40 characters), branch `verdict/issue-N-<slug>`, push of the integration SHA through the pre-push hook with argument-list subprocess calls. `vgate_rejected` carries the gate tail. `branch_exists` is raised on a conflict. No force-push. Verify: tests with a local bare remote and a fake pre-push hook that rejects.
+  Evidence: verdict/orchestration/deliver_publish.py, tests/test_deliver_push_branch.py (`python -m pytest -q tests/test_deliver_push_branch.py`).
 
 ## 3. Draft PR and ready gate
 
 - [x] 3.1 Draft PR body built by Verdict, containing `Refs #N`, run id, events digest, change id and reviewer evidence, and never a closing keyword. Verify: a test on the rendered body.
   Evidence: tests/test_deliver_render.py.
-- [ ] 3.2 Ready gate. Read the in-run review level. Run the extra cross-family OpenCodeReview when the in-run review was route-level. Stop with `no_cross_family_reviewer` or `review_failed` when that review is unavailable or fails. Wait for checks on the exact head SHA within the deadline (`ci_red`, `ci_pending`). Run `gh pr ready` only when everything is green. Verify: a test for each outcome with the review and the checks faked.
-- [ ] 3.3 GitHub client surface: no merge, approve, close or label method. Verify: an `assert_no_mutation`-style test.
+- [x] 3.2 Ready gate. Read the in-run review level. Run the extra cross-family OpenCodeReview when the in-run review was route-level. Stop with `no_cross_family_reviewer` or `review_failed` when that review is unavailable or fails. Wait for checks on the exact head SHA within the deadline (`ci_red`, `ci_pending`). Run `gh pr ready` only when everything is green. Verify: a test for each outcome with the review and the checks faked.
+  Evidence: verdict/orchestration/ready_gate.py, tests/test_deliver_ready_gate.py (`python -m pytest -q tests/test_deliver_ready_gate.py`).
+- [x] 3.3 GitHub client surface: no merge, approve, close or label method. Verify: an `assert_no_mutation`-style test.
+  Evidence: tests/test_deliver_github_surface.py (`python -m pytest -q tests/test_deliver_github_surface.py`).
 
 ## 4. Wiring, doctor and docs
 
