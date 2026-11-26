@@ -330,8 +330,18 @@ verdict deliver RUN_ID --issue 1269 --issue-title "Deliver a run as a pull reque
 Turns a verified `COMPLETE` orchestrate run into a draft pull request and prints
 its URL. It pushes the run's integration commit to a new branch with a plain
 `git push` (the repository's pre-push hook runs; the branch is never
-force-pushed) and opens the pull request with `gh pr create --draft`. The
-pull request is never marked ready, approved or merged by this command.
+force-pushed) and opens the pull request with `gh pr create --draft`.
+
+After the draft is published, the ready gate runs unless `--no-ready` is given.
+When the run's own review was only route-level (not another model family), the
+gate first runs an extra cross-family review of `BASE...HEAD` on a reviewer route
+whose family differs from every implementer's; a skipped, empty or failed review,
+or no admissible reviewer, stops the gate. It then waits for the checks on the
+exact head commit to be green (up to `--ci-deadline`) and only then runs
+`gh pr ready`. Any stop leaves the pull request a draft and is recorded in
+`delivery.json` (`ready`, `ready_reason`, `review_level`, `reviewer_route`,
+`extra_review_ran`, `ci_polls`) without failing the delivery. The command never
+approves or merges the pull request.
 
 | Flag | Description |
 |---|---|
@@ -341,6 +351,8 @@ pull request is never marked ready, approved or merged by this command.
 | `--base BASE` | Base branch for the pull request (default: `main`) |
 | `--runs-dir RUNS_DIR` | Orchestration runs directory (default: `.verdict/runs`) |
 | `--dry-run` | Print the planned branch, base and title (full title and body with `--json`); push and create nothing |
+| `--ci-deadline MINUTES` | Minutes to wait for checks before the ready gate stops (default: 60) |
+| `--no-ready` | Skip the ready gate; the pull request stays a draft |
 | `--json` | Print the outcome as JSON |
 
 **dry-run.** `--dry-run` runs the same eligibility checks, then prints the plan

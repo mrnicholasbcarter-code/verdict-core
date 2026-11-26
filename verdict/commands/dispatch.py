@@ -202,10 +202,12 @@ def _cmd_pr_watch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
 def _cmd_deliver(args: argparse.Namespace) -> None:
     """Handle ``verdict deliver`` CLI command."""
     from verdict.commands.parsers_deliver import EXIT_FAILED, EXIT_REFUSED
+    from verdict.orchestration.deliver_review import DEFAULT_GATEWAY, make_cross_family_reviewer
     from verdict.orchestration.deliver_service import DeliverRunRequest, DeliverStatus, deliver_run
 
+    run_dir = _resolve_run_dir(args.run, args.runs_dir)
     request = DeliverRunRequest(
-        run_dir=_resolve_run_dir(args.run, args.runs_dir),
+        run_dir=run_dir,
         issue_number=args.issue,
         issue_title=args.issue_title,
         base_branch=args.base,
@@ -213,7 +215,12 @@ def _cmd_deliver(args: argparse.Namespace) -> None:
         ci_deadline_s=args.ci_deadline * 60.0,
         run_ready_gate=not args.no_ready,
     )
-    outcome = deliver_run(request)
+    reviewer = make_cross_family_reviewer(
+        repo=Path.cwd(),
+        out_dir=run_dir / "deliver-review",
+        gateway=os.environ.get("VERDICT_GATEWAY", DEFAULT_GATEWAY),
+    )
+    outcome = deliver_run(request, reviewer=reviewer)
 
     if args.json:
         print(json.dumps(outcome.to_dict(), indent=2, default=str))
