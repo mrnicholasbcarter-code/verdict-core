@@ -12,16 +12,19 @@ from pathlib import Path
 
 from verdict.orchestration.contracts import path_is_owned
 
+# The runner keeps only the last VERIFY_OUTPUT_TAIL_CHARS characters of a verification
+# command's output, so a long list of collection errors can lose its first entries.
+VERIFY_OUTPUT_TAIL_CHARS = 4000
 # pytest stops with exit 2 and this line when a test file cannot be imported or collected.
-_COLLECTION_INTERRUPTED_RE = re.compile(r"\b\d+ errors? during collection\b")
+_COLLECTION_INTERRUPTED_RE = re.compile(r"\b(\d+) errors? during collection\b")
 # A collection error appears as ``ERROR <path>[ - <reason>]`` in the short summary and as
-# ``____ ERROR collecting <path> ____`` above it. Only plain repo-path characters are kept,
-# so no output text beyond a file path reaches the reason.
+# ``____ ERROR collecting <path> ____`` above it. Only plain repo-path characters are read
+# as a path, so no output text beyond a file path reaches the reason.
 _PATH_CHARS = r"[\w./+@-]+"
-_COLLECTION_ERROR_RES = (
-    re.compile(rf"^ERROR ({_PATH_CHARS})(?:::\S*)?(?: - .*)?$", re.MULTILINE),
-    re.compile(rf"^_+ ERROR collecting ({_PATH_CHARS}) _+$", re.MULTILINE),
-)
+_SUMMARY_ERROR_LINE_RE = re.compile(r"^ERROR .*$", re.MULTILINE)
+_SUMMARY_ERROR_RE = re.compile(rf"^ERROR ({_PATH_CHARS})(?:::\S*)?(?: - .*)?$")
+_HEADER_ERROR_LINE_RE = re.compile(r"^_+ ERROR collecting .* _+$", re.MULTILINE)
+_HEADER_ERROR_RE = re.compile(rf"^_+ ERROR collecting ({_PATH_CHARS}) _+$")
 _REASON_PATHS_NAMED = 3
 
 
@@ -36,23 +39,46 @@ def _runs_pytest(argv: Sequence[str]) -> bool:
     )
 
 
+def _erroring_paths(out: str, expected_errors: int) -> list[str] | None:
+    """The distinct files pytest reports as failing to collect, or ``None`` when that list
+    cannot be trusted to be complete.
+
+    ``None`` when an ``ERROR`` line holds anything but a plain path (for example a path
+    with a space), and when the output hit the runner's length cap and shows fewer paths
+    than the ``expected_errors`` pytest counted, because the missing ones may be owned.
+    """
+    erroring: list[str] = []
+    for line_re, path_re in (
+        (_SUMMARY_ERROR_LINE_RE, _SUMMARY_ERROR_RE),
+        (_HEADER_ERROR_LINE_RE, _HEADER_ERROR_RE),
+    ):
+        for line in line_re.findall(out):
+            match = path_re.match(line)
+            if match is None:
+                return None
+            if match.group(1) not in erroring:
+                erroring.append(match.group(1))
+    if len(out) >= VERIFY_OUTPUT_TAIL_CHARS and len(erroring) < expected_errors:
+        return None
+    return erroring
+
+
 def _unowned_collection_errors(
     argv: Sequence[str], code: int, out: str, owned_files: Sequence[str]
 ) -> str | None:
     """The reason when pytest stopped on collection errors and the node owns none of them.
 
     ``None`` when this is not that case: another exit code, no collection marker, no
-    erroring path to read, or at least one erroring path the node owns (its own broken test
-    or import is a wrong implementation, not an environment problem).
+    erroring path to read, an erroring list that may be incomplete, or at least one
+    erroring path the node owns (its own broken test or import is a wrong implementation,
+    not an environment problem).
     """
-    if code != 2 or not _runs_pytest(argv) or not _COLLECTION_INTERRUPTED_RE.search(out):
+    if code != 2 or not _runs_pytest(argv):
         return None
-    erroring: list[str] = []
-    for pattern in _COLLECTION_ERROR_RES:
-        for match in pattern.finditer(out):
-            path = match.group(1)
-            if path not in erroring:
-                erroring.append(path)
+    marker = _COLLECTION_INTERRUPTED_RE.search(out)
+    if marker is None:
+        return None
+    erroring = _erroring_paths(out, int(marker.group(1)))
     if not erroring or any(path_is_owned(owned_files, path) for path in erroring):
         return None
     named = ", ".join(erroring[:_REASON_PATHS_NAMED])
@@ -87,8 +113,9 @@ def classify_verify_env_error(
       a pytest run that exits 2 on collection errors, every one in a file the node
       does not own, is an env error that names the command and the first erroring paths.
       A collection error in an owned file, an erroring path that cannot be read from
-      the output, exit 4 (a named file is missing), exit 5 (no tests) and ordinary test
-      failures stay ``verification_failed``. Without ``owned_files`` this rule is off.
+      the output or may have been cut from it, exit 4 (a named file is missing), exit 5
+      (no tests) and ordinary test failures stay ``verification_failed``. Without
+      ``owned_files`` this rule is off.
     """
     if code in (126, 127):
         return f"environment_error: exit {code}: {out[:200]}"

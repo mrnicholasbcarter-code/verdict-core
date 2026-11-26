@@ -31,7 +31,9 @@ are `environment_error` and take the fail-closed path (one attempt, BLOCKED, no 
 - **Collection rule.** Exit code 2, a pytest command (`pytest`, `py.test`, `-m pytest`), the
   `N errors during collection` marker, and at least one erroring path read from `ERROR <path>` lines or
   `ERROR collecting <path>` headers, none owned (`path_is_owned`, the same test as `WorkNode.owns`). Any
-  doubt (another exit code, no marker, no readable path, one owned path) returns `None`, the old result.
+  doubt (another exit code, no marker, no readable path, one owned path, an `ERROR` line that is not a
+  plain path such as a path with a space, or a capped output that shows fewer paths than pytest
+  counted) returns `None`, the old result. The cap is `VERIFY_OUTPUT_TAIL_CHARS`, shared with the runner.
   The reason carries the command and at most three paths, taken only from a path-character pattern, so no
   other output text reaches an event.
 - Exit 4 and exit 5 stay `verification_failed`: for an implement node they mean the worker did not write
@@ -40,7 +42,9 @@ are `environment_error` and take the fail-closed path (one attempt, BLOCKED, no 
 ## Risks / Trade-offs
 
 - The runner keeps the last 4,000 characters of output, so with very many errors the first paths may be
-  cut off; the rule then judges the visible ones. An owned path outside the visible part is missed.
+  cut off. At the cap a list that shows fewer paths than pytest counted is not trusted, so a cut list
+  stays `verification_failed` (a worker retry, as before this change); an output below the cap, such as
+  the 600-character tail kept in an event, is judged on the paths it shows.
 - If a node's own source file breaks imports for test files it does not own and its verification command
   is repository-wide, the output cannot say whose edit it was, and the node is classified
   `environment_error` (BLOCK, no retry). The repository-wide command is the defect fixed in a separate item.

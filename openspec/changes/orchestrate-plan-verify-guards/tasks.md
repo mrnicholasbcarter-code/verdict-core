@@ -35,7 +35,10 @@
       readable paths), `test_collection_output_from_a_command_that_is_not_pytest_is_not_reclassified`,
       `test_the_collection_rule_covers_the_usual_pytest_invocations`,
       `test_existing_environment_rules_are_unchanged_when_owned_files_are_given`,
-      `test_the_reason_names_at_most_three_paths_and_counts_the_rest`.
+      `test_the_reason_names_at_most_three_paths_and_counts_the_rest`,
+      `test_an_erroring_path_that_cannot_be_read_keeps_the_failure_a_verification_failure`,
+      `test_a_cut_error_list_is_not_trusted_when_the_runner_capped_the_output`,
+      `test_a_full_error_list_in_a_capped_output_still_decides`.
 - [x] 2.2 The runtime passes the node's `owned_files` (`verdict/orchestration/runtime.py`). Tests in
       `tests/test_orch_runtime.py`: `test_collection_errors_in_unowned_files_block_after_one_attempt`
       (BLOCKED, one attempt, no reassignment, no cooldown, no escalation count, no ledger or health
@@ -54,6 +57,8 @@
 
 - [ ] (post-merge) 4.1 From installed merged main, a self-build run of the remaining work of
       [#1269](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1269) (`verdict
-      orchestrate --openspec-change verdict-deliver`) does not end BLOCKED for an integrate node
-      that was given authoring work or for a verification command that cannot collect; record the run
-      directory and the raw `verify` and `failure` events.
+      orchestrate --openspec-change verdict-deliver`) does not give an integrate node authoring work
+      (a plan that does is repaired, or fails before any worker runs), and a node whose verification
+      command stops on collection errors in files it does not own ends BLOCKED once as
+      `environment_error`, with no reassignment, cooldown or escalation count. Record the run directory
+      and the raw `verify` and `failure` events.

@@ -54,6 +54,12 @@ whose reason names the command and the first three erroring paths. The runtime S
 `environment_error` path: one attempt, BLOCKED, no escalation count, no reassignment, no cooldown, and
 no session ledger or health-cache entry. Without `owned_files` the rule does not apply.
 
+The erroring paths SHALL be complete or the failure SHALL stay `verification_failed`: an `ERROR`
+line that holds anything but a plain repository path (for example a path with a space) makes the
+list unreadable, and an output of at least `VERIFY_OUTPUT_TAIL_CHARS` characters (the most the
+runner keeps, so its first lines may be cut) that shows fewer erroring paths than the
+`N errors during collection` count makes it possibly incomplete.
+
 #### Scenario: collection errors only in unowned files
 
 - **WHEN** a node verifies with `python -m pytest -q tests -k deliver`, pytest exits 2 with 59 errors
@@ -72,6 +78,13 @@ no session ledger or health-cache entry. Without `owned_files` the rule does not
   exits 2 without a collection marker, or exits 2 on collection errors whose paths cannot be read
   from the output
 - **THEN** the failure category is `verification_failed`
+
+#### Scenario: an erroring list that may be incomplete is not trusted
+
+- **WHEN** an `ERROR` line holds a path with a space, or the output is at the runner's length cap and
+  names fewer erroring files than pytest counted, and no path shown is owned
+- **THEN** the failure category is `verification_failed`; a capped output that names every counted
+  file is decided on its paths
 
 #### Scenario: other commands and the older rules are unchanged
 

@@ -426,6 +426,58 @@ def test_a_collection_error_in_an_owned_file_stays_a_verification_failure(
     )
 
 
+def test_an_erroring_path_that_cannot_be_read_keeps_the_failure_a_verification_failure() -> None:
+    """A path with a space is not a plain path: it may be the owned file, so stay conservative."""
+    from verdict.orchestration.verification import classify_verify_env_error
+
+    out = (
+        "ERROR tests/test_other.py\n"
+        "ERROR tests/test owned.py\n"
+        "!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!\n"
+    )
+    assert (
+        classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("tests/test owned.py",)) is None
+    )
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=()) is None
+
+
+def test_a_cut_error_list_is_not_trusted_when_the_runner_capped_the_output() -> None:
+    """The runner keeps the last VERIFY_OUTPUT_TAIL_CHARS; an owned error may be in the cut part."""
+    from verdict.orchestration.verification import (
+        VERIFY_OUTPUT_TAIL_CHARS,
+        classify_verify_env_error,
+    )
+
+    padding = "x" * VERIFY_OUTPUT_TAIL_CHARS + "\n"
+    shown = _collection_output("tests/test_other.py", count=59)
+    capped = (padding + shown)[-VERIFY_OUTPUT_TAIL_CHARS:]
+    assert len(capped) == VERIFY_OUTPUT_TAIL_CHARS and "tests/test_other.py" in capped
+    owned = ("tests/test_deliver_e2e.py",)
+    # 59 errors counted, 1 shown, output at the cap: the other 58 may include an owned file.
+    assert classify_verify_env_error(_RUN_ARGV, 2, capped, owned_files=owned) is None
+    # The same count and paths in a short output (the event tail of run 20261126T020427Z)
+    # are not capped, so the visible paths decide.
+    assert classify_verify_env_error(_RUN_ARGV, 2, shown, owned_files=owned) is not None
+
+
+def test_a_full_error_list_in_a_capped_output_still_decides() -> None:
+    from verdict.orchestration.verification import (
+        VERIFY_OUTPUT_TAIL_CHARS,
+        classify_verify_env_error,
+    )
+
+    paths = tuple(f"tests/test_{n:03d}.py" for n in range(100))
+    out = "x" * VERIFY_OUTPUT_TAIL_CHARS + "\n" + _collection_output(*paths)
+    out = out[-VERIFY_OUTPUT_TAIL_CHARS:]
+    assert len(out) == VERIFY_OUTPUT_TAIL_CHARS
+    assert out.count("ERROR tests/test_") == 100
+    owned = ("tests/test_deliver_e2e.py",)
+    reason = classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=owned)
+    assert reason is not None and reason.startswith("environment_error:")
+    # ... and an owned file anywhere in that full list stays a verification failure.
+    assert classify_verify_env_error(_RUN_ARGV, 2, out, owned_files=("tests/test_042.py",)) is None
+
+
 def test_a_collection_error_header_in_an_owned_file_stays_a_verification_failure() -> None:
     from verdict.orchestration.verification import classify_verify_env_error
 
