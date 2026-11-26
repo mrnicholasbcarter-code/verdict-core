@@ -37,8 +37,11 @@ classifies anything itself. That fix has landed (serve's side in #1335, the exec
 and one live attempt through a spare serve from the branch passed (task 2.19, 2026-11-25, head
 `538cf004`: route `cc/claude-haiku-5-5`, the edit landed, serve's receipts show the pinned
 route), so the operator's condition for the default is met on a branch; the pull request of
-#1328 is built and reviewed now and is merged only after the same smoke passes on installed main
-(task 2.20).
+#1328 was built and reviewed first and was to merge only after the same smoke passes on installed
+main (task 2.20). It passed on installed main `c0452170` on 2026-11-26 (one attempt on
+`cc/claude-haiku-5-5`: the edit landed, serve's receipts show the pinned route and the streaming
+waiver; the probe of task 2.22: own key 400, other key 403), so the default switch is no longer
+held.
 
 ## Goals / Non-Goals
 
@@ -464,8 +467,9 @@ rejected and classified as a failure before verification runs.
   them the attempt ends in a `harness_configuration:` block before anything is launched, and
   `--executor direct-gateway` is the way out (see "OpenCode is the default" above). Nothing
   falls back silently: not to the direct gateway, and not to serve's own token. One live attempt
-  through a spare serve passed on 2026-11-25 (task 2.19); the run on installed main is
-  post-merge (tasks 2.20 and 8.1), and the pull request of #1328 merges only after task 2.20.
+  through a spare serve passed on 2026-11-25 (task 2.19), and one through the installed serve
+  passed on 2026-11-26 (task 2.20, the condition for merging the pull request of #1328); the run
+  of `verdict orchestrate` with no `--executor` flag on installed main is post-merge (task 8.1).
 - **Resolved gap (2026-11-25, #1336): the status matcher reads the `requests` forms.** At the
   time of the 2026-11-24 review an HTTP status in unstructured text needed an HTTP or status
   marker or its reason phrase right after the number, so `429 Client Error: Too Many Requests
@@ -491,8 +495,8 @@ rejected and classified as a failure before verification runs.
   executor: `opencode` replaces `direct-gateway` as the default, which stays registered and
   selectable. ADR-053 Decision 2 was amended on 2026-11-24 (the default waits for a passing live
   smoke with serve honouring the signed assignment) and again on 2026-11-25 (#1328): the default is
-  switched in its own change, built and reviewed now, merged only after the signed-assignment
-  smoke passes on installed main (task 2.20).
+  switched in its own change, built and reviewed first and merged after the signed-assignment
+  smoke passed on installed main (task 2.20, 2026-11-26).
 - Relates to [ADR-036](../../../docs/adr/ADR-036-goal-to-receipt-orchestration.md)
   (goal-to-receipt orchestration): worker output becomes richer (edit loop
   instead of answer-only).

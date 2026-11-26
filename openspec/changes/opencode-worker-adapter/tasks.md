@@ -233,10 +233,20 @@
       with the `RuntimeError` from `start()`; both pass after the change. With a place not given
       back after a failed start the second fails, and with one not given back when a helper ends
       both fail.
-- [ ] (post-merge) 2.22 On installed main, after `verdict setup --apply --allow host.serve`: the
+- [x] (post-merge) 2.22 On installed main, after `verdict setup --apply --allow host.serve`: the
       installed serve answers `_probe_assignment` for an assignment signed with its own key 400
       (accepted), and for one signed with another key 403 (refused), with no model call and no
       evidence row; record the raw output in the story's DoD evidence file.
+      **Evidence (2026-11-26, 00:22:12Z, installed main `c0452170`, reinstalled with `verdict setup
+      --non-interactive --apply --allow host.serve` and `systemctl --user restart verdict-serve`):**
+      the installed serve accepted an assignment signed with its own key and refused one signed
+      with another key, with no model call. Raw output, quoted from the controller's post-merge
+      evidence of that date (also in the pull request body of #1343 under "Evidence"):
+      `own key -> 400 {"error":{"message":"the request's model must equal the route in the worker
+      assignment","type":"invalid_request_error"}}` and `other key -> 403 {"error":{"message":
+      "authentication failed","type":"authentication_error"}}`; serve's log shows `POST
+      /v1/chat/completions 400`, then `403`. The story's DoD evidence file takes this output when
+      it is built after merge.
 - [x] 2.18 The streaming waiver serve records is shown in the run receipt (#1325): serve's receipt
       database is read back read-only by digest (`verdict/orchestration/serve_evidence.py`,
       `serve_service.resolve_serve_receipts_db`), the terminal carries `worker_assignment`, the
@@ -274,12 +284,34 @@
       established. Before the attempt, the dry runs called the gateway's management API (reads,
       no model call) and two loopback rehearsals ran the real OpenCode binary against a local
       stand-in for serve (no gateway, no model).
-- [ ] (post-merge) 2.20 The same one-attempt smoke on installed main, after `verdict setup --apply
+- [x] (post-merge) 2.20 The same one-attempt smoke on installed main, after `verdict setup --apply
       --allow host.serve` has created the signing key and restarted serve: an `OpenCodeExecutor`
       attempt on an admitted route lands an edit in a scratch repository and the installed serve's
       receipt shows the pinned route. Record the raw output in the story's DoD evidence file.
       Operator decision (2026-11-25): the pull request that makes OpenCode the default (task 9.1,
       #1328) is built and reviewed before this task but merges only after it passes.
+      **Evidence (2026-11-26, 00:22:28Z to 00:23:27Z, installed main `c0452170`, one attempt,
+      permission of the operator of that date):** the attempt passed, so the condition for merging
+      the pull request of task 9.1 is met. Route `cc/claude-haiku-5-5`, a scratch git repository in
+      a temp directory, `OpenCodeExecutor()` with the default serve address (port 8000),
+      `run_id=run-postmerge-2-20`, `node_id=smoke-1`, timeout 300 s. Raw output, quoted from the
+      controller's post-merge evidence of that date (also in the pull request body of #1343 under
+      "Evidence"): `ok: true   error: ""   model: cc/claude-haiku-5-5   harness: opencode
+      stop_reason: stop   duration_seconds: 58.5`; `usage: input_tokens 267, output_tokens 452,
+      cost_usd null (not_reported: opencode reported 0 for a step (no pricing for a custom
+      provider)), tokens_source opencode_ndjson`; `worker_assignment: assignment_digest
+      ce3eb11450a96cba2011d0d797a5766d2c3a9fb70704d612c2260bf62083765b`; `serve_receipts: status
+      read, requests 3, requests_waived 3, requirement_waivers [streaming /
+      verified_worker_assignment]`; scratch git diff `-    return "hi"` and `+    return "hello, "
+      + name`; verification `python3 -c "from greet import greet; assert greet('verdict') ==
+      'hello, verdict'"` passed. Serve's receipt database (read-only): the rows carrying the
+      assignment digest have `decision.chosen_from_admit = cc/claude-haiku-5-5`, the pinned route.
+      Serve's log for the attempt: `GET /v1/guidance/status 200`, `POST /v1/chat/completions 400`
+      (the pre-launch probe of task 2.21, accepted), then `POST /v1/chat/completions 200` for the
+      worker's requests; it also shows `GET /v1/models 401` from the worker (OpenCode asks for the
+      model list with the assignment and serve refuses it; harmless, not investigated). The
+      story's DoD evidence file takes this output when it is built after merge. Tasks 2.8 and 8.1
+      (the `verdict orchestrate` runs) are still open.
 - [x] 2.6 Serve address from configuration (`--serve-url`, `VERDICT_SERVE_URL`, default
       `http://127.0.0.1:8000`). Verify: `tests/test_orch_executors.py`,
       `tests/test_serve_service_resolvers.py`.
@@ -389,7 +421,7 @@
       path); at the time this task and 8.1 were expected to fail until #1313 landed (it has since:
       serve's side in #1335 and the executor's in #1325, whose branch smoke is 2.19), and OpenCode
       becomes the default only after the smoke of task 2.20 passes on installed main (the pull
-      request of task 9.1 merges after it). An earlier attempt on a free route
+      request of task 9.1 merges after it; it passed on 2026-11-26). An earlier attempt on a free route
       (`run-20261124T042116Z`) was also denied, for other admission reasons (`passport_stale`,
       `confirm_budget_exhausted`). Raw output:
       `/tmp/claude-takeover/oc1-smoke/run-20261124T051739Z/` (`smoke-run-transcript.txt`,
@@ -456,7 +488,9 @@
 The operator's condition (2026-11-24) was a live smoke that passes after #1313. One attempt through
 a spare serve from the branch landed an edit on the pinned route (task 2.19, head `538cf004`, route
 `cc/claude-haiku-5-5`). The operator decided on 2026-11-25 that this change is built and reviewed
-now and merged only after the same smoke passes on installed main (task 2.20).
+now and merged only after the same smoke passes on installed main (task 2.20). That smoke passed
+on installed main `c0452170` on 2026-11-26 (task 2.20, and the probe of task 2.22), so the hold
+is lifted and the change can merge.
 
 - [x] 9.1 Make OpenCode the default worker executor: `default=True` moves from
       `DirectGatewayAdapter` to `OpenCodeAdapter` in `DEFAULT_REGISTRY`; `--executor direct-gateway`

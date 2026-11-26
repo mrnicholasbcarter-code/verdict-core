@@ -1,6 +1,6 @@
 # ADR-053: OpenCode worker adapter
 
-**Status:** Accepted — every decision agreed with the operator (2026-11-23, two rounds); Decision 2 amended 2026-11-24 (OpenCode merged opt-in; the default was deferred until a live smoke passes after #1313) and 2026-11-25 (#1328: OpenCode is the default; that change merges only after the smoke passes on installed main)
+**Status:** Accepted — every decision agreed with the operator (2026-11-23, two rounds); Decision 2 amended 2026-11-24 (OpenCode merged opt-in; the default was deferred until a live smoke passes after #1313) and 2026-11-25 (#1328: OpenCode is the default; that change merges only after the smoke passes on installed main); that smoke passed on installed main on 2026-11-26, so the default switch is no longer held
 **Date:** 2026-11-23
 **Deciders:** Operator
 **Amends:** [ADR-041](ADR-041-generic-harness-contracts.md)'s default worker executor: `opencode` replaces `direct-gateway` as the default (Decision 2, amended 2026-11-25, #1328; effective when that pull request merges), and `direct-gateway` stays registered and selectable
@@ -157,6 +157,20 @@ without the `opencode` binary, the worker signing key, a running `verdict serve`
 credential ends in one `harness_configuration:` block that names the failed check, what the default
 needs and `--executor direct-gateway`; nothing falls back silently to another executor. This
 amends ADR-041's default (`direct-gateway`), which stays registered and selectable.
+
+*Amendment (2026-11-26, #1328): the condition is met and the default switch is no longer held.
+The smoke of task 2.20 passed on installed main `c0452170` on 2026-11-26 (one attempt, started
+00:22:28Z): the installed serve, reinstalled with `verdict setup --apply --allow host.serve` (it
+created the signing key), served one `OpenCodeExecutor` attempt on `cc/claude-haiku-5-5`; the
+terminal was ok, the edit landed (`greet` now returns `"hello, " + name`) and its verification
+passed, and serve's receipts show the pinned route (`decision.chosen_from_admit`
+`cc/claude-haiku-5-5`), three requests under the assignment, all three with the streaming waiver
+recorded. The probe of task 2.22 on the same installed serve (no model call) was accepted for an
+assignment signed with its own key (400, serve's model-check body) and refused for one signed with
+another key (403 `authentication failed`). The raw output is quoted in tasks 2.20 and 2.22 of
+`openspec/changes/opencode-worker-adapter` and in the pull request of #1328 (#1343). The run of
+`verdict orchestrate` with no `--executor` flag on installed main (tasks 2.8 and 8.1) is still open
+and runs after the merge. The text of the amendment below is kept as it was decided.*
 
 *Amendment (2026-11-25, operator, #1328): the default is switched in its own change. The operator's
 condition of 2026-11-24 was a live smoke that passes after #1313: one worker attempt through serve

@@ -25,6 +25,12 @@
 > that smoke passes. `--executor direct-gateway` selects the previous default; a machine without
 > what OpenCode needs ends in a `harness_configuration:` block that says so and names that flag
 > (task 9.3); planning is unchanged (task 9.2).
+>
+> **Update (2026-11-26): the condition is met.** The smoke of task 2.20 passed on installed main
+> `c0452170` (one attempt on `cc/claude-haiku-5-5`: the edit landed and its verification passed,
+> serve's receipts show the pinned route and the streaming waiver), and so did the probe of task
+> 2.22 (own key 400, other key 403). The default switch is no longer held; only the run of
+> `verdict orchestrate` on installed main (tasks 2.8 and 8.1) is still post-merge.
 
 ## Why
 
