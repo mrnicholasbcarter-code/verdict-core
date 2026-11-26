@@ -2664,6 +2664,7 @@ class DagRuntime:
                         changed_files=changed,
                         replace_existing=True,
                         base_sha=node_base,
+                        repo_root=self.repo,
                     )
                     if result.saved and not result.error:
                         # Successful save replaced any prior stale content.
