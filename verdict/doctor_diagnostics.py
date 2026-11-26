@@ -1381,7 +1381,8 @@ _GH_KNOWN_PERMISSIONS = _GH_WRITE_PERMISSIONS | {"TRIAGE", "READ", "NONE"}
 #: login problem on some other host) cannot redirect the check to a different repository.
 _GITHUB_HOST = "github.com"
 _GITHUB_REMOTE = re.compile(
-    r"github\.com[:/](?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)(?:\.git)?/?\s*$"
+    r"(?:(?:git@)?github\.com:|(?:https|ssh)://(?:[^/@\s]+@)?github\.com/)"
+    r"(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)(?:\.git)?/?\s*$"
 )
 
 
@@ -1417,7 +1418,7 @@ def github_delivery_row(
             "Install the GitHub CLI (https://cli.github.com), then run: gh auth login",
         )
     remote = run(["git", "remote", "get-url", "origin"], cwd)
-    match = _GITHUB_REMOTE.search(remote.stdout or "") if remote.returncode == 0 else None
+    match = _GITHUB_REMOTE.match((remote.stdout or "").strip()) if remote.returncode == 0 else None
     if match is None:
         return row(
             "note",

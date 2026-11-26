@@ -363,7 +363,7 @@ def _verify_head(
             polls=polls,
         )
     current = str(view.get("headRefOid") or "").lower() if isinstance(view, Mapping) else ""
-    if not current or not (current == sha or current.startswith(sha) or sha.startswith(current)):
+    if not current or not (current == sha or (len(sha) < 40 and current.startswith(sha))):
         return _stop(
             PrReadyReason.HEAD_MOVED,
             f"pull request head is {current or 'unknown'}, not {sha}",
