@@ -68,4 +68,8 @@ queue after that bound and retire only when nothing is pending.
 
 #### Scenario: A write after the close gave up never runs on the event loop
 - **WHEN** the app has shut down because its close gave up waiting for a held job, and a request handler then writes to its existing decision row (a terminal event, or the cancelled event of a cancelled task)
-- **THEN** the write is queued behind the held job on the lane's worker and runs after it, in submission order, on the worker's thread and not on the event loop, and a cleanup that arrives after the lane drained gets a fresh worker that retires again when idle
+- **THEN** the write is queued behind the held job on the lane's worker and runs after it, in submission order, on the worker's thread and not on the event loop
+
+#### Scenario: A cleanup submitted to a drained lane gets a fresh worker
+- **WHEN** a cleanup is submitted to a lane that was closed and has drained (its worker retired)
+- **THEN** it runs on a fresh single worker of the lane, never on the caller's thread, and that worker retires again when idle; a handler's write made when no lane is running any job (the app never started one, or its lane has drained) runs where it is called, with no job to overtake

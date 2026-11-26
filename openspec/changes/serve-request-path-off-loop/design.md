@@ -88,6 +88,12 @@ request, `/health` 16 to 32 s.
   an app whose lifespan never started (tests that set the instances by hand), or one that has
   shut down and drained. Nothing is queued for it to overtake, and after the lifespan has ended
   there is no `/health` left to stall.
+- The lane references are process-wide, like `intelligence_instance` and the other globals the
+  lifespan replaces. A handler that outlives its own lifespan and then meets a later lifespan in
+  the same process resolves its lane, like its service, from the later one. `verdict serve` has
+  one lifespan per process (`uvicorn.run`; `reload=True` restarts the process), so this arises
+  only in a test that starts the app twice, where no request outlives its lifespan. Lane
+  ownership per request is not built.
 - A close that gave up on a stuck job leaves its worker running past the lifespan, so the
   process exit waits for that job, as it does for any executor thread.
 - Work now runs on a second thread beside the loop. The state it touches is already used from
