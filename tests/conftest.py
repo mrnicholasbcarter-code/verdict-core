@@ -10,6 +10,12 @@ from typing import Any
 import pytest
 from starlette.testclient import TestClient
 
+from tests.helpers import home_guard
+
+# Registers the real-home write guard (audit hook + per-test failure); see
+# tests/helpers/home_guard.py and tests/test_home_isolation.py.
+from tests.helpers.home_guard import pytest_configure  # noqa: F401
+
 
 @pytest.fixture(autouse=True)
 def _isolate_auth_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,32 +205,9 @@ def _isolate_systemd(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("verdict.doctor_diagnostics._run_systemctl_show_props", not_installed)
 
 
-_HOST_STATE_ENV = (
-    # State locations: an operator export would point tests at the real
-    # ~/.verdict, ~/.config/verdict or ~/.local/share stores (HOME is already
-    # isolated by _isolate_home; these override HOME-relative defaults).
-    "VERDICT_HOME",
-    "VERDICT_SESSION_EVIDENCE",
-    "VERDICT_HEALTH_CACHE",
-    "VERDICT_OUTCOME_SHADOW_ROOTS",
-    "VERDICT_PROVE_AT_REST_STATE",
-    "VERDICT_RUNTIME_STATE_DIR",
-    "VERDICT_CATALOG_CACHE",
-    "VERDICT_RELAY_ADMISSION_CACHE",
-    "VERDICT_EVIDENCE_DB",
-    "VERDICT_MEMORY_DB",
-    "VERDICT_CONNECTIONS_SNAPSHOT",
-    "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME",
-    "XDG_STATE_HOME",
-    "XDG_CACHE_HOME",
-    # Behaviour switches the operator exports in ~/.zshrc.
-    "VERDICT_DECISION_SIGNALS_MODE",
-    "VERDICT_GATEWAY",
-    "VERDICT_SHARED_MEMORY_URL",
-    "VERDICT_SHARED_MEMORY_TOKEN",
-    "VERDICT_ACTIVE_CONTROLLER_ROUTE",
-)
+# Single source of truth lives in tests/helpers/home_guard.py so the isolation
+# test can check the list against the env names verdict/ actually reads.
+_HOST_STATE_ENV = home_guard.HOST_STATE_ENV
 
 
 @pytest.fixture(autouse=True)
@@ -232,6 +215,28 @@ def _isolate_host_state_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Drop exported state paths so every default resolves under the isolated HOME."""
     for key in _HOST_STATE_ENV:
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _state_paths_resolve_under_the_per_test_home(
+    _isolate_home: None, _isolate_host_state_env: None
+) -> None:
+    """Fail setup if a derived Verdict path would land outside the per-test home.
+
+    Depends on both isolation fixtures so it runs after them. A test that
+    re-points HOME or VERDICT_HOME itself does so later, inside its own body.
+    """
+    from verdict.paths import default_decision_log_path, verdict_home
+
+    home = Path(os.environ["HOME"]).resolve()
+    assert str(home) not in home_guard.REAL_HOMES, f"HOME is the real home: {home}"
+    for label, resolved in (
+        ("verdict_home()", verdict_home()),
+        ("default_decision_log_path()", Path(default_decision_log_path())),
+    ):
+        assert resolved.resolve().is_relative_to(home), (
+            f"{label} resolves to {resolved}, outside the per-test home {home}"
+        )
 
 
 @pytest.fixture(autouse=True)
