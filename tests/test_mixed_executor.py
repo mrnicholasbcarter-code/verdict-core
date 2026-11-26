@@ -14,9 +14,12 @@ Design decisions (per reviewer):
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
+import socket
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -754,3 +757,189 @@ def test_mixed_executor_run_label_in_run_started(tmp_path: Path) -> None:
     events = _load_events(run_dir)
     run_started = next(e for e in events if e["type"] == "run_started")
     assert run_started["data"]["executor"] == "mixed", run_started["data"]
+
+
+# ---------------------------------------------------------------------------
+# OpenCode is the default worker executor (ADR-053 Decision 2, amended 2026-11-25, #1328)
+# ---------------------------------------------------------------------------
+
+
+def _parse_orchestrate(*argv: str) -> argparse.Namespace:
+    from verdict.orchestration.cli import add_parsers
+
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    return parser.parse_args(["orchestrate", "ship", "--gateway", "http://gateway.invalid", *argv])
+
+
+def test_executor_map_keeps_working_under_the_default() -> None:
+    """``--executor-map`` is unchanged: mapped nodes use the named backend, unmapped nodes use
+    ``--executor``, which is now OpenCode when it is not given."""
+    from verdict.orchestration.cli import _selector_visibility_executor, _worker_executor
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
+    from verdict.orchestration.executors import DirectGatewayExecutor, PrimeHeadlessExecutor
+
+    args = _parse_orchestrate("--executor-map", "node-1=prime-headless,node-2=direct-gateway")
+    mixed = _worker_executor(args)
+    assert isinstance(mixed, MixedExecutor)
+    assert isinstance(mixed._map["node-1"], PrimeHeadlessExecutor)
+    assert isinstance(mixed._map["node-2"], DirectGatewayExecutor)
+    assert isinstance(mixed._default, OpenCodeExecutor)
+    # Any Prime backend still gives the whole ladder Prime's visibility; without one the
+    # ladder follows --executor, which is OpenCode here (the live catalog, as for the gateway).
+    assert _selector_visibility_executor(args) == "prime-headless"
+    no_prime = _parse_orchestrate("--executor-map", "node-2=direct-gateway")
+    assert _selector_visibility_executor(no_prime) == "opencode"
+    assert _selector_visibility_executor(_parse_orchestrate("--executor", "direct-gateway")) == (
+        "direct-gateway"
+    )
+
+    # Naming the previous default keeps the unmapped nodes on it, as before.
+    previous = _parse_orchestrate("--executor", "direct-gateway", "--executor-map", "node-1=prime")
+    mixed_previous = _worker_executor(previous)
+    assert isinstance(mixed_previous, MixedExecutor)
+    assert isinstance(mixed_previous._default, DirectGatewayExecutor)
+
+
+_ONE_NODE_GRAPH = WorkGraph(
+    goal="default executor on a machine without OpenCode",
+    nodes=(
+        WorkNode(
+            node_id="node-1",
+            objective="write node-1",
+            kind=NodeKind.IMPLEMENT,
+            depends_on=(),
+            owned_files=("node-1.txt",),
+            verification_command=("sh", "-c", "test -f node-1.txt"),
+        ),
+    ),
+    max_parallel=1,
+)
+
+
+@pytest.fixture
+def closed_loopback_port() -> Iterator[int]:
+    """A loopback port that nothing listens on, held for the whole test.
+
+    The socket stays bound (and never listens) until the test ends, so no other process can take
+    the port and a connection to it is refused.
+    """
+    with socket.socket() as holder:
+        holder.bind(("127.0.0.1", 0))
+        yield int(holder.getsockname()[1])
+
+
+@pytest.mark.parametrize(
+    ("missing", "reason"),
+    [
+        ("binary", "opencode binary not found or not executable"),
+        ("signing_key", "the worker assignment signing key is unavailable"),
+        ("serve", "verdict serve is unreachable at"),
+        ("serve_credential", "no verdict serve credential found"),
+    ],
+)
+def test_default_executor_without_opencode_ends_in_one_clear_block_never_a_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    closed_loopback_port: int,
+    missing: str,
+    reason: str,
+) -> None:
+    """With no ``--executor`` the worker is OpenCode.  A machine without the binary, the signing
+    key, serve or serve's credential ends the node in ONE ``harness_configuration:`` block that
+    names the reason, what the default needs and ``--executor direct-gateway``.  The node is not
+    retried, nothing is dispatched to another executor, and nothing is written outside the
+    temporary home."""
+    from verdict.orchestration.cli import _worker_executor
+    from verdict.orchestration.executor_opencode import OPENCODE_BIN_ENV, PINNED_VERSION
+    from verdict.orchestration.executors import DirectGatewayExecutor
+    from verdict.worker_assignment import generate_assignment_key
+
+    home = tmp_path / "home"
+    (home / ".config" / "verdict").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("VERDICT_HOME", str(home / ".verdict"))
+    monkeypatch.delenv("LLMGATE_AUTH_TOKEN", raising=False)
+    if missing != "serve_credential":
+        monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "serve-token-for-this-test-only")
+    if missing != "signing_key":
+        key = home / ".config" / "verdict" / "worker-assignment.key"
+        key.write_text(generate_assignment_key())
+        key.chmod(0o600)
+    binary = tmp_path / "opencode"
+    if missing != "binary":
+        binary.write_text("#!/bin/sh\nexit 0\n")
+        binary.chmod(0o755)
+    monkeypatch.setenv(OPENCODE_BIN_ENV, str(binary))  # absent for "binary"
+
+    dispatched: list[str] = []
+
+    async def never_a_fallback(self: object, *args: object, **kwargs: object) -> WorkerTerminal:
+        dispatched.append("direct-gateway")
+        raise AssertionError("the run fell back to the direct gateway")
+
+    monkeypatch.setattr(DirectGatewayExecutor, "run", never_a_fallback)
+
+    args = _parse_orchestrate("--serve-url", f"http://127.0.0.1:{closed_loopback_port}")
+    assert args.executor == "opencode"  # no --executor flag was given
+    executor = _worker_executor(args)
+
+    runs_root = tmp_path / "runs"
+    workspace = tmp_path / "ws"
+    runs_root.mkdir()
+    workspace.mkdir()
+    repo = _init_repo(workspace)
+    ladder = EligibilityLadder(
+        INVENTORY,
+        CONNECTIONS,
+        _HealthyProbe(),
+        workspace / "health.json",
+        allow_unknown_capacity=True,
+    )
+    reviewer = OpenCodeReviewer(
+        ladder,
+        api_key_env=_OFFLINE_OCR_ENV,
+        out_dir=workspace / "review",
+        runner=_PassingOcrRunner(),
+    )
+    monkeypatch.setenv(_OFFLINE_OCR_ENV, "offline-scripted-no-network")
+    result = asyncio.run(
+        run_golden_path(
+            "default executor on a machine without OpenCode",
+            repo=repo,
+            runs_root=runs_root,
+            selector=ladder,
+            executor=executor,
+            classifier=FailureIntelligence(),
+            reviewer=reviewer,
+            graph=_ONE_NODE_GRAPH,
+            run_id="default-without-opencode",
+            policy=RuntimePolicy(max_parallel=1, max_attempts_per_node=4),
+            mode="offline-scenario",
+        )
+    )
+
+    assert result.outcome == RunOutcome.BLOCKED.value, (result.outcome, result.reason)
+    assert dispatched == []
+    events = _load_events(result.run_dir)
+    terminals = [e for e in events if e["type"] == "terminal" and e.get("node_id") == "node-1"]
+    assert len(terminals) == 1, "a configuration block must not burn the node's other attempts"
+    error = terminals[0]["data"]["error"]
+    assert terminals[0]["data"]["ok"] is False
+    assert terminals[0]["data"]["harness"] == "opencode"
+    assert error.startswith("harness_configuration: "), error
+    assert reason in error
+    assert "--executor direct-gateway" in error
+    assert error.count("harness_configuration:") == 1
+    assert f"opencode {PINNED_VERSION}" in error
+    assert OPENCODE_BIN_ENV in error
+    assert "verdict setup --apply --allow host.serve" in error
+    assert "serve-token-for-this-test-only" not in error
+    node_states = [
+        e["data"]["reason"]
+        for e in events
+        if e["type"] == "node_state" and e.get("node_id") == "node-1" and e["data"].get("reason")
+    ]
+    assert "non-recoverable: harness_configuration" in node_states
+    assert not (tmp_path / "ws" / "node-1.txt").exists()
+    assert verify_run_receipt(result.run_dir) == []

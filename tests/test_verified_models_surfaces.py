@@ -58,6 +58,32 @@ def offline_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import verdict.probes as probes
     import verdict.prove_at_rest as prove
 
+    # CP2 removed oauth → SUBSCRIPTION; write the billing overlay to a SIBLING directory
+    # so it does not appear in files_under(tmp_path) assertions. VERDICT_HOME is set to
+    # billing_home below; adapter_for() uses explicit StorePaths, not VERDICT_HOME.
+    billing_home = tmp_path.parent / (tmp_path.name + "_vh")
+    billing_home.mkdir(parents=True, exist_ok=True)
+    (billing_home / "connection_billing_overlay.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "provider": "cc",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    },
+                    {
+                        "provider": "kr",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    },
+                ]
+            }
+        )
+    )
+
     for name in (
         "VERDICT_HEALTH_CACHE",
         "VERDICT_AUTO_REFRESH",
@@ -73,7 +99,7 @@ def offline_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "FORCE_COLOR",
     ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("VERDICT_HOME", str(tmp_path))
+    monkeypatch.setenv("VERDICT_HOME", str(billing_home))
     monkeypatch.setenv("VERDICT_PLAIN", "1")
     monkeypatch.setattr(surfaces, "active_controller_route", lambda: None)
     monkeypatch.setattr(home, "_COMMAND_INDEX", None)

@@ -531,25 +531,289 @@ def test_cli_parser_exposes_planner_executor_role() -> None:
     add_parsers(parser.add_subparsers(dest="command"))
     args = parser.parse_args(["orchestrate", "ship", "--planner-executor", "direct-gateway"])
 
-    assert args.executor == "direct-gateway"
+    # ADR-053 Decision 2 (amended 2026-11-25, #1328): the worker default is OpenCode; the planner
+    # is its own flag and stays on the answer-only direct gateway.
+    assert args.executor == "opencode"
     assert args.planner_executor == "direct-gateway"
+    named = parser.parse_args(["orchestrate", "ship", "--executor", "direct-gateway"])
+    assert named.executor == "direct-gateway"
+    assert named.planner_executor == "direct-gateway"
+    assert parser.parse_args(["orchestrate", "ship"]).planner_executor == "direct-gateway"
 
 
-def test_default_executor_builds_direct_gateway_not_prime() -> None:
-    """Fails if a no-value or missing --executor silently falls back to Prime."""
+def test_default_executor_builds_opencode_not_prime_or_direct_gateway() -> None:
+    """Fails if a no-value or missing --executor falls back to Prime or the direct gateway.
+
+    ADR-053 Decision 2, amended 2026-11-25 (#1328): OpenCode is the default worker executor;
+    ``--executor direct-gateway`` selects the previous default.
+    """
     import argparse
 
     from verdict.orchestration.cli import _worker_executor, add_parsers
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
     from verdict.orchestration.executors import DirectGatewayExecutor
 
     parser = argparse.ArgumentParser()
     add_parsers(parser.add_subparsers(dest="command"))
     parsed = parser.parse_args(["orchestrate", "ship", "--gateway", "http://gateway.invalid"])
-    assert isinstance(_worker_executor(parsed), DirectGatewayExecutor)
+    assert isinstance(_worker_executor(parsed), OpenCodeExecutor)
     bare = argparse.Namespace(executor_map="", gateway="http://gateway.invalid")
-    assert isinstance(_worker_executor(bare), DirectGatewayExecutor)
+    assert isinstance(_worker_executor(bare), OpenCodeExecutor)
     empty = argparse.Namespace(executor="", executor_map="", gateway="http://gateway.invalid")
-    assert isinstance(_worker_executor(empty), DirectGatewayExecutor)
+    assert isinstance(_worker_executor(empty), OpenCodeExecutor)
+    previous = parser.parse_args(
+        ["orchestrate", "ship", "--executor", "direct-gateway", "--gateway", "http://g.invalid"]
+    )
+    assert isinstance(_worker_executor(previous), DirectGatewayExecutor)
+    assert not isinstance(_worker_executor(previous), OpenCodeExecutor)
+
+
+def test_planning_is_unaffected_by_the_default_worker_executor() -> None:
+    """The planner has its own flag: with no ``--executor`` it is still the answer-only direct
+    gateway, and the OpenCode worker could not be a planner (it is not answer-only)."""
+    import argparse
+
+    from verdict.orchestration.cli import _executor, _planner_executor, add_parsers
+    from verdict.orchestration.contracts import AnswerOnlyExecutor, OrchestrationError
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
+    from verdict.orchestration.executors import DirectGatewayExecutor
+
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["orchestrate", "ship", "--gateway", "http://gateway.invalid"])
+    planner = _planner_executor(args)
+    worker = _executor(args)
+    assert isinstance(planner, DirectGatewayExecutor)
+    assert isinstance(worker, OpenCodeExecutor)
+    AnswerOnlyExecutor(planner)  # accepted
+    with pytest.raises(OrchestrationError, match="answer-only"):
+        AnswerOnlyExecutor(worker)
+
+
+async def test_a_run_with_no_executor_flag_plans_on_the_direct_gateway_not_opencode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The planning call of a default run reaches the direct gateway; OpenCode is never asked."""
+    import argparse
+    import json
+
+    from tests.test_planner_band import _record, _score, _snapshot
+    from verdict.orchestration.cli import _executor, _planner_executor, add_parsers
+    from verdict.orchestration.contracts import (
+        CapacityClass,
+        EligibilityStage,
+        NodeKind,
+        RouteVerdict,
+        WorkNode,
+    )
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
+    from verdict.orchestration.recovery import FailureIntelligence
+    from verdict.orchestration.run import plan_with_failover
+
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["orchestrate", "ship", "--gateway", "http://gateway.invalid"])
+    plan = json.dumps(
+        {
+            "nodes": [
+                WorkNode(
+                    node_id="a",
+                    objective="do a",
+                    kind=NodeKind.IMPLEMENT,
+                    depends_on=(),
+                    owned_files=("a.py",),
+                    verification_command=("true",),
+                ).to_dict()
+            ]
+        }
+    )
+    asked: list[str] = []
+
+    async def direct_run(self: Any, prompt: str, *, route_id: str, **kwargs: Any) -> WorkerTerminal:
+        asked.append(f"direct-gateway:{route_id}")
+        return WorkerTerminal(ok=True, output=plan, model=route_id, stop_reason="stop")
+
+    async def opencode_run(self: Any, prompt: str, **kwargs: Any) -> WorkerTerminal:
+        asked.append("opencode")
+        return WorkerTerminal(ok=False, model="", error="OpenCode must not plan")
+
+    monkeypatch.setattr(DirectGatewayExecutor, "run", direct_run)
+    monkeypatch.setattr(OpenCodeExecutor, "run", opencode_run)
+    monkeypatch.setattr(
+        "verdict.metadata.store.load_store",
+        lambda: _snapshot(
+            _record(
+                "p/cc_claude-sonnet",
+                ("cc/claude-sonnet",),
+                aa_intelligence=_score(90.0),
+                aa_coding=_score(99.0),
+            )
+        ),
+    )
+    monkeypatch.setenv("VERDICT_DECISION_SIGNALS", "off")
+
+    class Selector:
+        def select(self, req: Any, *, now: Any) -> Any:
+            verdict = RouteVerdict(
+                "cc/claude-sonnet",
+                "claude",
+                EligibilityStage.SELECTED,
+                None,
+                "ok",
+                CapacityClass.SUBSCRIPTION,
+            )
+            return verdict, ()
+
+        def inventory_route_ids(self) -> set[str]:
+            return {"cc/claude-sonnet"}
+
+        def set_planner_band(self, band: Any) -> None:
+            pass
+
+    class Events:
+        def emit(self, kind: str, *a: Any, **data: Any) -> None:
+            pass
+
+    from verdict.orchestration.demo_scenario import _init_repo
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    worker = _executor(args)
+    assert isinstance(worker, OpenCodeExecutor)  # the default worker, as the run would build it
+    graph = await plan_with_failover(
+        "ship",
+        repo=_init_repo(workspace),
+        selector=Selector(),
+        executor=worker,
+        planner_executor=_planner_executor(args),
+        classifier=FailureIntelligence(),
+        events=Events(),
+        run_dir=tmp_path / "run",
+    )
+    assert [n.node_id for n in graph.nodes] == ["a"]
+    assert asked == ["direct-gateway:cc/claude-sonnet"]
+
+
+def test_opencode_executor_is_built_when_named_or_by_default() -> None:
+    """``--executor opencode`` selects OpenCode, so does a per-node map entry, and so does the
+    default; ``--executor direct-gateway`` keeps the unmapped nodes of a map on the gateway."""
+    import argparse
+
+    from verdict.orchestration.cli import _worker_executor, add_parsers
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
+    from verdict.orchestration.executors import DirectGatewayExecutor, MixedExecutor
+
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    named = parser.parse_args(
+        ["orchestrate", "ship", "--executor", "opencode", "--gateway", "http://gateway.invalid"]
+    )
+    assert isinstance(_worker_executor(named), OpenCodeExecutor)
+
+    mapped = parser.parse_args(
+        [
+            "orchestrate",
+            "ship",
+            "--executor-map",
+            "node-1=opencode",
+            "--gateway",
+            "http://gateway.invalid",
+        ]
+    )
+    mixed = _worker_executor(mapped)
+    assert isinstance(mixed, MixedExecutor)
+    assert isinstance(mixed._map["node-1"], OpenCodeExecutor)
+    # No --executor: the unmapped nodes use the default, which is OpenCode (#1328).
+    assert isinstance(mixed._default, OpenCodeExecutor)
+
+    previous = parser.parse_args(
+        [
+            "orchestrate",
+            "ship",
+            "--executor",
+            "direct-gateway",
+            "--executor-map",
+            "node-1=opencode",
+            "--gateway",
+            "http://gateway.invalid",
+        ]
+    )
+    mixed_previous = _worker_executor(previous)
+    assert isinstance(mixed_previous, MixedExecutor)
+    assert isinstance(mixed_previous._map["node-1"], OpenCodeExecutor)
+    assert isinstance(mixed_previous._default, DirectGatewayExecutor)
+
+
+def test_orchestrate_help_says_opencode_is_the_default(capsys: pytest.CaptureFixture[str]) -> None:
+    """The ``--executor`` help names OpenCode as the default, what it needs and the way out."""
+    import argparse
+
+    from verdict.orchestration.cli import add_parsers
+
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    with pytest.raises(SystemExit):
+        parser.parse_args(["orchestrate", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert "Worker executor backend (default: opencode)" in text
+    # The planner role is its own flag and keeps its own default.
+    assert "Planner executor backend (answer-only; default: direct-gateway)" in text
+    assert "--executor direct-gateway" in text
+    assert "verdict serve" in text
+    # The stale opt-in text of the earlier amendment is gone.
+    assert "opt-in" not in text
+    assert "does not yet work" not in text
+    assert "#1313" not in text
+    assert "Worker executor backend (default: direct-gateway)" not in text
+
+
+def test_serve_url_flag_reaches_the_opencode_executor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review item 11: the serve address is configuration, not a constant in the executor."""
+    import argparse
+
+    from verdict.orchestration.cli import _worker_executor, add_parsers
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
+
+    monkeypatch.delenv("VERDICT_SERVE_URL", raising=False)
+    parser = argparse.ArgumentParser()
+    add_parsers(parser.add_subparsers(dest="command"))
+    flagged = parser.parse_args(
+        [
+            "orchestrate",
+            "ship",
+            "--executor",
+            "opencode",
+            "--gateway",
+            "http://gateway.invalid",
+            "--serve-url",
+            "http://127.0.0.1:9321",
+        ]
+    )
+    executor = _worker_executor(flagged)
+    assert isinstance(executor, OpenCodeExecutor)
+    assert executor._serve_base_url == "http://127.0.0.1:9321"
+    # No flag: the variable, then the unit's default.
+    plain = parser.parse_args(
+        ["orchestrate", "ship", "--executor", "opencode", "--gateway", "http://gateway.invalid"]
+    )
+    assert plain.serve_url is None
+    assert _worker_executor(plain)._serve_base_url == "http://127.0.0.1:8000"  # type: ignore[attr-defined]
+    monkeypatch.setenv("VERDICT_SERVE_URL", "http://127.0.0.1:9444")
+    assert _worker_executor(plain)._serve_base_url == "http://127.0.0.1:9444"  # type: ignore[attr-defined]
+
+
+def test_serve_url_is_not_forced_on_adapters_that_do_not_take_it() -> None:
+    """Only adapters whose worker_executor accepts ``serve_url`` receive it."""
+    from verdict.orchestration.cli import _build_single_executor
+    from verdict.orchestration.executors import DirectGatewayExecutor
+
+    executor = _build_single_executor(
+        "direct-gateway",
+        gateway="http://gateway.invalid",
+        api_key="",
+        serve_url="http://127.0.0.1:9",
+    )
+    assert isinstance(executor, DirectGatewayExecutor)
 
 
 @pytest.mark.parametrize("name", ["prime", "prime-headless"])

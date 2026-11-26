@@ -15,6 +15,7 @@ permissions:
 jobs:
   python-security:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -98,6 +99,7 @@ jobs:
 
   node-security:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
 
@@ -124,6 +126,7 @@ jobs:
 
   sbom-python:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
 
@@ -150,6 +153,7 @@ jobs:
 
   sbom-node:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
 
@@ -175,6 +179,7 @@ jobs:
 
   dynamic-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 

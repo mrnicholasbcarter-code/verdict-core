@@ -1,0 +1,66 @@
+goal: Add a --json flag to the invoice CLI, with a parser module and tests
+admission: 6 of 10 fixture routes admitted
+  drop auto/best-coding           DISCOVERED  opaque_route
+  drop demo-busy/juniper-coder    AVAILABLE   provider_rate_limited
+  drop demo-free/hazel-coder      HEALTHY     model_unavailable
+  drop demo-orphan/gum-coder      ENTITLED    no_connection_evidence
+[GOAL] Add a --json flag to the invoice CLI, with a parser module and tests
+[UNDERSTAND] goal_chars=68 risk=unknown scope=repo: invoice-repo proof=node verification, integration barrier, independent review
+[PLAN] planning on demo-free/birch-coder
+[WORKERS] controller HEALTHY plan produced
+[WORKERS] run decision_signals
+[DAG] 3 node(s) in 2 layer(s) (PARALLEL_WORK_UNITS)
+[WORKERS] run decision_signals_context_budget
+[PLAN] topology PARALLEL_WORK_UNITS max_parallel=2
+[SELECT] parser ladder discovered=9 entitled=8 healthy=3 available=3 eligible=3
+[SELECT] parser -> demo-free/birch-coder (free, rank 0)
+[SELECT] cli_flag ladder discovered=9 entitled=8 healthy=3 available=3 eligible=3
+[SELECT] cli_flag -> demo-free/birch-coder (free, rank 0)
+[WORKERS] parser dispatch demo-free/birch-coder attempt 1
+[WORKERS] parser terminal failed on demo-free/birch-coder in 0s
+[FAILURE/REASSIGN] parser quota_exhausted -> REROUTE on demo-free/birch-coder
+[WORKERS] controller UNKNOWN
+[QUOTA/COOLDOWN] demo-free (pool) quota_exhausted until 2026-11-23T21:35:39+00:00
+[WORKERS] cli_flag dispatch demo-free/birch-coder attempt 1
+[WORKERS] cli_flag terminal failed on demo-free/birch-coder in 0s
+[FAILURE/REASSIGN] cli_flag no_final_answer -> REROUTE on demo-free/birch-coder
+[WORKERS] controller UNKNOWN
+[QUOTA/COOLDOWN] demo-free/birch-coder (route) no_final_answer until 2026-11-23T19:40:39+00:00
+[SELECT] parser ladder discovered=9 entitled=8 healthy=3 available=1 eligible=1
+[SELECT] parser -> demo-free2/elm-coder (free, rank 0)
+[FAILURE/REASSIGN] parser demo-free/birch-coder -> demo-free2/elm-coder (quota_exhausted)
+[SELECT] cli_flag ladder discovered=9 entitled=8 healthy=3 available=1 eligible=1
+[SELECT] cli_flag -> demo-free2/elm-coder (free, rank 0)
+[FAILURE/REASSIGN] cli_flag demo-free/birch-coder -> demo-free2/elm-coder (no_final_answer)
+[WORKERS] parser dispatch demo-free2/elm-coder attempt 2
+[WORKERS] parser terminal failed on demo-free2/elm-coder in 0s
+[FAILURE/REASSIGN] parser rate_limited -> REROUTE on demo-free2/elm-coder
+[WORKERS] controller UNKNOWN
+[QUOTA/COOLDOWN] demo-free2 (pool) rate_limited until 2026-11-23T19:36:09+00:00
+[WORKERS] cli_flag dispatch demo-free2/elm-coder attempt 2
+[WORKERS] cli_flag terminal ok on demo-free2/elm-coder in 0s
+[VERIFY] barrier ownership ok 1 file(s) within ownership
+[WORKERS] cli_flag lint_autofix
+[SELECT] parser ladder discovered=9 entitled=8 healthy=4 available=1 eligible=1
+[SELECT] parser -> demo-sub/atlas-coder (subscription, rank 0)
+[FAILURE/REASSIGN] parser demo-free2/elm-coder -> demo-sub/atlas-coder (rate_limited)
+[VERIFY] cli_flag pass python3 -c 'import invoice.cli as c; assert c.FLAGS == ('"'"'--json... (exit 0)
+[WORKERS] cli_flag repo_gates
+[WORKERS] parser dispatch demo-sub/atlas-coder attempt 3
+[WORKERS] parser terminal ok on demo-sub/atlas-coder in 0s
+[VERIFY] barrier ownership ok 1 file(s) within ownership
+[WORKERS] parser lint_autofix
+[VERIFY] parser pass python3 -c 'import invoice.parser as p; assert p.parse_invoice('"'"... (exit 0)
+[WORKERS] parser repo_gates
+[WORKERS] integrate terminal ok on unassigned in 0s
+[VERIFY] integrate pass python3 -c 'import invoice.cli, invoice.parser' (exit 0)
+[WORKERS] integrate repo_gates
+[VERIFY] barrier integration ok combined verification and repo gates passed
+[VERIFY] integrate ok 3 commit(s)
+[VERIFY] barrier integration ok 3 validated commit(s) merged
+[WORKERS] controller REVIEW_INDEPENDENCE
+[REVIEW] PASS by fixture-reviewer (no model call) on demo-metered/delta-coder (0 blocking / 0 findings)
+[COMPLETE] COMPLETE all nodes validated, integrated and reviewed
+
+VERDICT COMPLETE: all nodes validated, integrated and reviewed
+ISOLATION OK: live stores byte-identical

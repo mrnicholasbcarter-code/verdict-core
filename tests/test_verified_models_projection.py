@@ -62,6 +62,12 @@ def row(
     return r
 
 
+# CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("cc", "oauth")])
+
+
 def conn(
     provider: str,
     *,
@@ -2753,3 +2759,119 @@ def test_public_model_entry_is_built_only_from_a_verified_projection_row() -> No
     assert entry["verdict"]["availability_state"] == "verified"
     assert entry["verdict"]["fresh_until"] == iso(NOW + timedelta(seconds=0.001))
     assert entry["verdict"]["capability_profile"]["context"] == 200_000
+
+
+# ---------------------------------------------------------------------------
+# _scrub cache: nested projection and unhashable value regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_scrub_non_str_values_bypass_cache() -> None:
+    """Non-str values must bypass the cache to avoid memo-key conflation and unhashable errors.
+
+    1, True and 1.0 are equal as dict keys but str() gives "1", "True" and "1.0".
+    Before the str-only fix, whichever was cached first would be returned for
+    all three, silently corrupting the output.
+
+    Lists are unhashable and must also bypass the cache without raising TypeError.
+    """
+    from verdict.orchestration.verified_models import _scrub, _scrub_proj
+
+    _scrub_proj.cache = {}
+    try:
+        # Distinct non-str values that are equal as dict keys (hash-equivalent):
+        # caching any one would shadow the others if the cache were used for non-str.
+        assert _scrub(1) == "1"
+        assert _scrub(True) == "True"
+        assert _scrub(1.0) == "1.0"
+        # Unhashable value must not raise and must return a str.
+        result = _scrub(["some", "list", "value"])
+        assert isinstance(result, str)
+    finally:
+        _scrub_proj.cache = None
+
+
+def test_nested_project_verified_models_restores_outer_scrub_cache() -> None:
+    """The outer _scrub_proj.cache must be restored by a nested projection.
+
+    Part A: normal-exit nested projection restores the outer dict object.
+    Part B: a nested projection that raises must also restore the outer cache.
+
+    Without the save/restore fix the inner projection's finally block sets
+    _scrub_proj.cache = None unconditionally, clobbering the outer dict.
+    Part A catches this via an id() check; Part B catches it via is-identity
+    when the inner projection raises mid-loop.
+    """
+    import pytest
+
+    import verdict.orchestration.verified_models as _vm
+    from verdict.orchestration.verified_models import _scrub_proj, project_verified_models
+
+    n = 10
+    inv = [row(f"cc/m{i:03d}") for i in range(n)]
+    conns = [conn("cc")]
+    entries = [
+        at_rest_entry(f"cc/m{i:03d}", checked_at=NOW - timedelta(seconds=30)) for i in range(n)
+    ]
+    snaps = snapshots_from_documents(health_cache_doc=health_cache(*entries), now=NOW)
+    query = VerifiedModelQuery(page_size=50)
+
+    # ----- Part A: normal-exit nested projection -----
+
+    # Capture the pre-call cache value (must be None outside any projection).
+    pre_call_cache = getattr(_scrub_proj, "cache", None)
+    assert pre_call_cache is None, "test assumes no active projection before the call"
+
+    outer_cache_id: int | None = None
+    call_count = 0
+
+    orig = _vm._classify_row
+
+    def patched_classify_nested(*args: object, **kwargs: object) -> object:
+        nonlocal outer_cache_id, call_count
+        call_count += 1
+        if call_count == 1:
+            outer_cache_id = id(getattr(_scrub_proj, "cache", None))
+            # Nested projection must NOT disturb the outer cache.
+            project_verified_models(inv[:3], conns, snaps, now=NOW, query=query)
+            # After nested call, outer cache must be the same dict object.
+            assert id(getattr(_scrub_proj, "cache", None)) == outer_cache_id, (
+                "nested project_verified_models clobbered the outer _scrub_proj.cache"
+            )
+        return orig(*args, **kwargs)  # type: ignore[misc]
+
+    _vm._classify_row = patched_classify_nested  # type: ignore[assignment]
+    try:
+        project_verified_models(inv, conns, snaps, now=NOW, query=query)
+    finally:
+        _vm._classify_row = orig
+
+    assert call_count > 0, "patched_classify_nested was never called"
+
+    # After the outer projection, cache must be restored to the pre-call value (None).
+    post_call_cache = getattr(_scrub_proj, "cache", "sentinel")
+    assert post_call_cache is pre_call_cache, (
+        f"cache after outer projection is {post_call_cache!r}, expected {pre_call_cache!r}"
+    )
+
+    # ----- Part B: raising nested projection restores the outer cache -----
+
+    # Simulate being inside an outer projection (non-None cache).
+    outer_cache: dict[str, str] = {}
+    _scrub_proj.cache = outer_cache
+
+    def raising_classify(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("simulated classify failure")
+
+    _vm._classify_row = raising_classify  # type: ignore[assignment]
+    try:
+        with pytest.raises(RuntimeError, match="simulated classify failure"):
+            project_verified_models(inv[:1], conns, snaps, now=NOW, query=query)
+        # With save/restore: finally sets cache back to outer_cache.
+        # Without fix: finally sets cache to None → assertion fails.
+        assert _scrub_proj.cache is outer_cache, (
+            "raising nested projection did not restore outer _scrub_proj.cache"
+        )
+    finally:
+        _vm._classify_row = orig
+        _scrub_proj.cache = None  # clean up

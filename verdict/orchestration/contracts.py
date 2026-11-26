@@ -497,6 +497,7 @@ class AttemptUsage:
     cost_usd: float | None = None  # None unless actually reported; never fabricated
     tokens_source: str | None = None  # e.g. "prime_stdout", "http_header"
     turns: int | None = None  # count of distinct assistant messages summed
+    cost_note: str | None = None  # why cost_usd is None when the worker gave none (never a 0)
 
 
 @dataclass(frozen=True)
@@ -519,6 +520,12 @@ class WorkerTerminal:
     )
     served_check: dict[str, Any] | None = None  # ServedCheck.to_dict() for this response
     research_fetches: tuple[dict[str, Any], ...] | None = None
+    # An executor that signs a per-attempt worker assignment names it by digest (never the
+    # credential) and says what ``verdict serve`` recorded under it: ``{"assignment_digest",
+    # "serve_receipts": {"status", "reason", "requests", "requests_waived",
+    # "requirement_waivers"}}`` (``verdict.orchestration.serve_evidence``). None for every executor
+    # that signs nothing, and for an attempt that never launched a worker.
+    worker_assignment: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -544,6 +551,7 @@ EVENT_TYPES = frozenset(
         "understand",
         "plan_started",
         "plan_ready",
+        "plan_context",  # repo-map digest recorded before the planning call
         "plan_repair_started",  # planner asked the same route to fix an invalid plan
         "plan_repair_terminal",
         "hydrate",
@@ -702,13 +710,23 @@ class WorkerExecutor(Protocol):
     dispatch permit binds, and also when the executor reports no origin at all.
     ``PrimeHeadlessExecutor`` reports its provider's ``baseUrl`` from the
     ``models.json`` copy in the launch dir it pins for that route and ``cwd``. Executors that
-    send nowhere (fake, offline demo) declare :data:`LOCAL_EXECUTOR_ORIGIN`.
+    send nowhere (fake, offline demo) declare :data:`LOCAL_EXECUTOR_ORIGIN`. An executor whose
+    workers send through ``verdict serve`` instead of the gateway (``OpenCodeExecutor``) reports
+    the serve origin it really calls as a :class:`WorkerServeOrigin`; the runtime compares that
+    one with the dispatch authority's worker serve origin, never with its gateway origin.
 
     An executor MAY also accept an optional ``effort: str | None`` keyword.
     A string is the chosen thinking level for that call only. ``None`` means
     the policy omitted the provider override. Executors that do not accept
     the keyword are called exactly as before. Omitted (the sentinel, not
     ``None``) keeps the executor's own constructor default.
+
+    An executor MAY also accept optional ``run_id: str | None`` and ``node_id: str | None``
+    keywords: the id of the run (the run directory's name, the id the run receipt shows) and of
+    the node the attempt is for. An executor that signs a per-attempt credential bound to them
+    (``OpenCodeExecutor``) needs both and fails closed without them. They are passed only when
+    the caller has them (a worker attempt; planner calls have no node) and only to executors that
+    accept the keyword, so every other executor is called exactly as before.
     """
 
     async def run(
@@ -722,6 +740,21 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 #: fake and offline demo executors). It matches any dispatch authority; no
 #: executor that sends to a gateway may use it.
 LOCAL_EXECUTOR_ORIGIN = "local:"
+
+
+class WorkerServeOrigin(str):
+    """The ``verdict serve`` origin an executor's workers really send through.
+
+    A reported origin of this type is bound to the dispatch authority's worker serve origin
+    (:func:`dispatch_origin_problem`); any other reported origin is bound to its gateway
+    origin. The type is the declaration: a URL read from a configuration file or from another
+    executor is a plain ``str`` and so cannot claim the serve binding, and it survives the
+    wrappers that delegate :func:`executor_gateway_origin` (``MixedExecutor``,
+    ``FaultInjectingExecutor``). Only an executor that sends through serve builds one, from the
+    address it really calls.
+    """
+
+    __slots__ = ()
 
 
 def normalize_gateway_origin(url: str) -> str | None:
@@ -787,6 +820,31 @@ def gateway_origin_matches(reported: str, bound: str) -> bool:
     return origin is not None and origin == normalize_gateway_origin(bound)
 
 
+def dispatch_origin_problem(
+    reported: str | None, *, gateway_origin: str, worker_serve_origin: str | None
+) -> str | None:
+    """Why a send reported as coming from ``reported`` must not start, or None when it may.
+
+    ``reported`` is :func:`executor_gateway_origin`'s answer. None is unknown. A
+    :class:`WorkerServeOrigin` must equal ``worker_serve_origin`` (both normalised and
+    parseable; :data:`LOCAL_EXECUTOR_ORIGIN` matches nothing here) and is never compared with
+    ``gateway_origin``; with no ``worker_serve_origin`` bound it is refused. Any other origin
+    is compared with ``gateway_origin`` exactly as :func:`gateway_origin_matches` does.
+    """
+    if reported is None:
+        return "executor origin unknown"
+    if isinstance(reported, WorkerServeOrigin):
+        if worker_serve_origin is None:
+            return "executor origin mismatch: no worker serve origin is bound"
+        origin = normalize_gateway_origin(reported)
+        if origin is None or origin != normalize_gateway_origin(worker_serve_origin):
+            return "executor origin mismatch"
+        return None
+    if not gateway_origin_matches(reported, gateway_origin):
+        return "executor origin mismatch"
+    return None
+
+
 def _accepts_tools_flag(executor: object) -> bool:
     """True when ``executor.run`` takes a ``tools`` keyword (or ``**kwargs``)."""
     return _accepts_keyword(executor, "tools")
@@ -819,17 +877,24 @@ async def run_executor(
     timeout_seconds: float,
     tools: bool = True,
     effort: Any = EFFORT_OMITTED,
+    run_id: str | None = None,
+    node_id: str | None = None,
 ) -> WorkerTerminal:
     """Call ``executor.run``; pass optional keywords only to executors that accept them.
 
-    With ``tools=True`` and effort omitted, the call is byte-identical to a
-    plain ``executor.run(...)``, so existing executors and fakes are unchanged.
+    With ``tools=True``, effort omitted and no ids, the call is byte-identical to a
+    plain ``executor.run(...)``, so existing executors and fakes are unchanged.  ``run_id`` and
+    ``node_id`` are offered only when given (``None`` is "the caller has none", never a value).
     """
     kwargs: dict[str, Any] = {}
     if not tools and _accepts_keyword(executor, "tools"):
         kwargs["tools"] = False
     if effort is not EFFORT_OMITTED and _accepts_keyword(executor, "effort"):
         kwargs["effort"] = effort
+    if run_id is not None and _accepts_keyword(executor, "run_id"):
+        kwargs["run_id"] = run_id
+    if node_id is not None and _accepts_keyword(executor, "node_id"):
+        kwargs["node_id"] = node_id
     if not kwargs:
         return await executor.run(
             prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds

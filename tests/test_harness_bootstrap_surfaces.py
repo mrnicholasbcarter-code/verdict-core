@@ -29,7 +29,8 @@ ORIGINAL_DEPENDENCIES = PrimeReadAdapter.dependencies
 @pytest.fixture
 def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "verdict"))
+    vh = tmp_path / "verdict"
+    monkeypatch.setenv("VERDICT_HOME", str(vh))
     monkeypatch.setenv("PRIME_AGENT_CODING_AGENT_DIR", str(tmp_path / "prime"))
     monkeypatch.setenv("CLAUDE_HOME", str(tmp_path / "claude"))
     monkeypatch.setattr("verdict.actions.verified_models.active_controller_route", lambda: None)
@@ -63,6 +64,21 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(PrimeReadAdapter, "dependencies", dependencies)
     store = StorePaths.defaults(tmp_path / "verdict")
     store.health_cache.parent.mkdir()
+    # CP2 removed oauth → SUBSCRIPTION; write billing overlay so cc/oauth → SUBSCRIPTION.
+    (store.health_cache.parent / "connection_billing_overlay.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "provider": "cc",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    }
+                ]
+            }
+        )
+    )
     store.health_cache.write_text(
         json.dumps(
             health_cache(

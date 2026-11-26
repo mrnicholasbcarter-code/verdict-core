@@ -198,6 +198,11 @@ def build_selector(
     now = datetime.now(timezone.utc) if now is None else now
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
+    from verdict.free_tier_admit import annotate_cached_free_tier
+
+    rows = annotate_cached_free_tier(
+        rows, origin=gateway, now=now, path=state_path.parent / "admit-last-good.json"
+    )
     # BOD-418: public OpenRouter 0/0 set. Selector construction is cache-only
     # against the caller-owned state dir (same path prove_at_rest refresh writes).
     # Missing cache => no openrouter/ FREE assertion (fail closed). Never fetch
@@ -306,8 +311,8 @@ def build_selector(
     from verdict.orchestration.harness import DEFAULT_REGISTRY
 
     # Visibility follows the worker executor; unset means the registry default
-    # (direct-gateway: the live catalog), so Prime's registry file is read only
-    # when a caller selects the Prime harness.
+    # (opencode, like direct-gateway: the live catalog), so Prime's registry file is
+    # read only when a caller selects the Prime harness.
     harness_visible = DEFAULT_REGISTRY.resolve(
         visibility_executor or DEFAULT_REGISTRY.default_name()
     ).harness_visibility(catalog_rows=catalog_rows, sync_visibility=sync_visibility)

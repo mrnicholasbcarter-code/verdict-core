@@ -70,7 +70,11 @@ This operator's mode is `assume_free`.
 Any one of these makes a route `METERED` (or `SUBSCRIPTION` when the fact is a subscription
 connection):
 
-1. A positive declared price in the catalog row.
+1. A positive declared price in the catalog row of an API-key connection.
+   *(operator, 2026-11-23: list price counts for API-key connections only; an
+   account/OAuth connection with no billing catalog entry stays UNKNOWN until
+   an observed fact appears.  A declared zero price makes a route FREE on any
+   connection type.  Implemented in CP2 #1268.)*
 2. A billing fact of `metered` from OmniRoute's curated `connectionBillingCatalog`.
 3. A billing refusal: `billing_402_metered` evidence in the health cache.
 4. A nonzero observed charge: a nonzero cost in the call log, or a nonzero

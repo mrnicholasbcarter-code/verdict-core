@@ -30,14 +30,23 @@ On a new install, before anything is set up:
 
 ## Worker executor and optional harnesses
 
-`verdict orchestrate` runs workers with the `direct-gateway` executor by
-default: each worker request goes straight to the gateway, so no agent harness
-has to be installed. Prime Agent is an optional harness. Select it with
-`--executor prime-headless` (alias `prime`), or per node with
-`--executor-map node-1=prime-headless`.
+`verdict orchestrate` runs workers with the OpenCode executor by default
+(ADR-053 Decision 2, amended 2026-11-25): each coding node is a full edit-test-fix loop,
+and its workers call `verdict serve` with a signed per-attempt assignment (see
+[the harnesses guide](guides/harnesses.md#opencode-as-a-worker-harness) and
+[worker assignments](#worker-assignments)). It needs the pinned `opencode` binary, a running
+`verdict serve` with its credential, and the signing key that
+`verdict setup --apply --allow host.serve` creates. A host without them does not fall back to
+another executor: the node ends in one `harness_configuration:` block that names what is
+missing and the way out. `--executor direct-gateway` selects the previous default: each worker
+request goes straight to the gateway, so no agent harness has to be installed. Prime Agent is an
+optional harness. Select it with `--executor prime-headless` (alias `prime`), or per node with
+`--executor-map node-1=prime-headless`; unmapped nodes use `--executor`, which is OpenCode when it
+is not given. The planner is its own role (`--planner-executor`, answer-only,
+`direct-gateway`) and is not affected by `--executor`.
 
 - Route visibility follows the executor. Plain `verdict eligibility` and the
-  default run read the live gateway catalog; Prime's model registry
+  default run (OpenCode, like the direct gateway) read the live gateway catalog; Prime's model registry
   (`models.json`) is read only when Prime is selected or with
   `verdict eligibility --sync-visibility`.
 - On a host without the Prime Agent binary, `verdict setup` plans no Prime
@@ -589,6 +598,7 @@ comes from models.dev + LiteLLM (`verdict/metadata/`). See [ADR-032](adr/ADR-032
 | `LLMGATE_INTELLIGENCE_PROFILE` | Intelligence profile. Default `development` (`verdict.intelligence.DEFAULT_PROFILE`). `production` makes every `IntelligenceService.route` caller (CLI `route`, supervisor) require an execution-path authority `ExecutionPathDecision` (`serve_path_authority_required`), makes `VERDICT_ALLOW_UNVERIFIED_DEV` inert, and makes `/v1/route/explain` exclude unverified candidates. The default is kept `development` on purpose: fail-closed admission does not depend on it (unknown/error/timeout candidates are excluded unless `VERDICT_ALLOW_UNVERIFIED_DEV=1`), and `/v1/route` forces execution-path authority in every profile (the OpenAI-compatible relay surfaces do not; see [Admission boundary](#admission-boundary)) |
 | `LLMGATE_INTELLIGENCE_TIMEOUT_MS` | Intelligence timeout |
 | `LLMGATE_ALLOW_CLIENT_MODEL_OVERRIDE` | Allow client-requested model override |
+| `VERDICT_SERVE_URL` | Address of `verdict serve` for workers that route through it (the opt-in `opencode` executor of `verdict orchestrate`, and `verdict autodev --worker-harness opencode`, which has no `--serve-url` flag and also checks `GET /health` there before it starts); default `http://127.0.0.1:8000`. `--serve-url` overrides it. A path such as `/v1` is dropped; anything that is not an http(s) origin is refused |
 | `LLMGATE_LOG_PATH` | Decision log path |
 | `LLMGATE_DISCOVERY_TTL_SECONDS` | Discovery TTL |
 | `LLMGATE_FRONTIER_ALLOWLIST` | Comma-separated frontier allowlist |
@@ -624,6 +634,125 @@ verdict serve --host 127.0.0.1 --port 8000
 
 For local development only, `LLMGATE_ALLOW_ANONYMOUS=1` starts without a token
 on a loopback host and keeps receipts in memory (lost on restart).
+
+#### Worker assignments
+
+An OpenCode worker does not hold the serve token. Its only credential is a signed assignment from
+the orchestrator, sent as `Authorization: Bearer vwa1.<payload>.<tag>`:
+
+- `payload` is unpadded base64url of a JSON object with `route_id`, `run_id`, `node_id`, `iat`
+  (issued at) and `exp` (expiry; integer seconds since the Unix epoch, UTC). The lifetime
+  `exp - iat` is at most 1,800 seconds, and `iat` may be at most 60 seconds ahead of serve's clock,
+  so an accepted assignment is usable for at most 1,860 seconds from now.
+- `tag` is unpadded base64url of `HMAC-SHA256(key, "verdict-worker-assignment/v1\n" + payload)`.
+
+`verdict serve` verifies it in constant time and honours it only on `POST /v1/chat/completions`
+and `POST /v1/responses`. On every other authenticated path, on `POST /v1/messages` and in
+`x-api-key` it is refused with 403, and in anonymous mode it is refused on every path without
+reading the key. (`/health` and the OmniRoute webhook path never read a bearer, so an assignment
+there is ignored.) The
+request's `model` must equal the signed route (a different, missing or malformed `model` is refused
+with 400 before routing). The assignment pins the request to that one route on an assigned lane
+that still runs every per-route gate: an inactive, cooled, opaque, unmapped, unhealthy or
+incapable route is denied and nothing else is selected. The assigned lane does not run the keyword
+scanner, the worthiness class, the planner's capability inference, the Top-K shortlist or the
+cheap-path pack, so the body is forwarded as sent; `streaming` is waived for a verified assignment
+and recorded in the receipts (`requirement_waivers`, `worker_assignment`). Explicitly protected
+work (`protected: true`, criticality `critical`) is never offloaded to an assigned route. The
+production profile and `VERDICT_REQUIRE_EXECUTION_PATH` do not support workers: they answer 400.
+The `X-Verdict-Worker` header selects nothing; a request that carries it without a verified
+assignment is refused with 403.
+
+- **Key.** The signing key is a separate generated secret of at least 32 bytes. `verdict setup
+  --apply --allow host.serve` generates it when absent or unusable, keeps a valid one (fixing only a
+  mode other than 0600) and writes nothing on a dry run. It lives in `~/.config/verdict/worker-assignment.key` (mode 0600, written atomically),
+  next to `serve.env` but not in it, not in the credentials store and not in any process
+  environment. Serve and the orchestrator read the file on every use (serve in a worker thread,
+  never on its event loop), so a rotation needs no restart: setup reports a new, replaced or
+  mode-repaired key as `changed` and restarts serve only when the unit or env file changed. `verdict doctor` names a missing, short or wrongly moded key file and never prints its
+  value.
+- **Rotation.** Remove the file and run `verdict setup --apply --allow host.serve` again. An
+  assignment signed with the old key stops verifying at once, so rotate when no run is active.
+- **Responses.** `403` with the same body as a wrong bearer for a forged, expired, tampered,
+  truncated, over-long or otherwise unverifiable assignment (the reason is logged by code only,
+  never the token); `503` when the key file is missing or unusable (requests without an
+  assignment are unaffected).
+- **Residual risk.** A worker runs as the same Unix user, so a hostile shell in it can read the
+  key file. The assignment stops a model from choosing its route; it does not stop a shell from
+  minting one (an accepted risk, ADR-053 decision 4). An assignment is a bearer credential: anyone
+  who holds an unexpired one can call its one route until it expires.
+
+- **Signing.** `verdict orchestrate` (OpenCode, the default executor, or `--executor opencode`)
+  signs one assignment per attempt
+  (`verdict.worker_assignment.mint_assignment`) with that key: the route, the run id (the run
+  directory's name, which `receipt.json` shows as `run_id`), the node id, `iat` (now) and `exp`
+  (the attempt's timeout rounded up, plus 60 seconds). The format allows at most 1,800 seconds,
+  so an attempt whose timeout would need more is refused before launch with a `harness_configuration:`
+  message (the runtime's own attempts need at most 945). The assignment is the worker's only
+  credential, passed as `VERDICT_WORKER_API_KEY`; the serve token stays in the orchestrator's
+  process for its one readiness request and is never a fallback. A missing, unreadable or short
+  key, a missing run id or node id, or an attempt timeout that is not a positive finite number
+  ends the attempt the same way, before anything is launched and with no request to serve.
+  The orchestrator and serve must read the same key, which means the same `HOME`.
+  **Pre-launch probe.** Before it launches a worker, the executor asks serve whether it accepts
+  this attempt's own assignment: one `POST /v1/chat/completions` that carries the assignment as
+  its bearer (never the serve token; the readiness request carries the serve token and never the
+  assignment) and a body that is only `{"model": <a value no route can equal>}`, with no
+  messages. Serve verifies the assignment first and then refuses a `model` that differs from the
+  assignment's route with 400, before it routes anything. So a 400 that carries serve's own
+  model-check body (`the request's model must equal the route in the worker assignment`) means
+  serve accepted the assignment, and the probe makes no routing decision, mints no admission proof, sends nothing
+  upstream and writes no evidence. Serve's refusal (403 with its exact body, `authentication
+  failed`) or its 503 `worker assignments are not configured` ends the attempt, on a run's first
+  attempt as on any other, as a `harness_configuration:` block: nothing is launched, nothing is
+  sent upstream and no provider is cooled down. The message lists the causes the probe cannot tell
+  apart (the orchestrator and serve read different `worker-assignment.key` files or homes, clocks
+  more than 60 seconds apart, a serve older than the signed-assignment change or running
+  anonymous) and the fix (`verdict setup --apply --allow host.serve`, one `HOME` for both). It
+  reads no receipts, so a remote or spare serve whose database the orchestrator cannot open is
+  covered. Any other result (no answer in time, a refused connection, a redirect, another 5xx, a
+  400 or 403 with another body, which a proxy or a validation error can give, a 2xx, a 404, an
+  answer cut short) is unproven: the attempt goes on exactly as before, and an
+  unproven probe is never a block and never a provider failure. The probe is bounded by the
+  attempt's own deadline and counts against its budget. Serve logs one WARNING
+  (`worker assignment refused: reason=model_mismatch`, with the signed ids and never the
+  credential) for each probe: that is the probe being refused by design, not a fault. A fault
+  that starts after the probe passed (a key replaced since, a worker's tampered copy) is still
+  serve refusing the worker's own request mid-run, which is read as follows.
+  When serve refuses an assignment mid-run (403 `authentication failed` to the worker) the attempt
+  ends as a configuration block
+  rather than as a provider denial only if the executor can show that serve, and not the route's
+  provider, said it: a provider's own 401 or 403 can carry the same words, which serve forwards
+  unchanged. What shows it is serve's receipts (read back as below) holding no request under the
+  assignment, and that is only evidence when the database read is the one the serve at
+  `--serve-url` writes. The orchestrator finds that database from its own configuration
+  (`VERDICT_RECEIPTS_DB`, `serve.env`), never from the serve it called, so with a spare or remote
+  serve it can be another serve's or one nothing writes. An empty read therefore counts only after
+  an earlier attempt of the same executor (one per `verdict orchestrate` run; a node named in
+  `--executor-map` has its own) was served in that same database (a
+  request carrying that attempt's own assignment digest was found there, which only the serve at
+  `--serve-url` received) and then only for that file (its device and inode, not just its path:
+  a file replaced, or a link retargeted, at the same path is another database) and that address.
+  In every other case the failure stays the provider's, with the provider cooldown that implies,
+  and the attempt's receipts say `unavailable`. Plainly: a refusal that comes after the probe passed
+  (a key replaced since, a tampered copy), on a run's first attempt, is not recognised as a
+  configuration block, and shows as the route's provider answering `authentication failed`; the
+  probe is what recognises a key, home or clock mismatch there. What was shown lasts for that one
+  `verdict orchestrate` process, and `--resume` starts
+  again without it. What cannot be told from here is a serve restarted on another database while
+  the orchestrator's configuration still names the old one: the old file stays the one read, and
+  a provider's own refusal of that kind is then read as serve's.
+- **Receipts.** The waiver serve records for an assigned request is read back by the assignment's
+  digest from serve's receipt database (`VERDICT_RECEIPTS_DB`, then the older `VERDICT_EVIDENCE_DB`,
+  then `serve.env`), read-only and only for rows written since the worker started, and shown on the
+  attempt in `receipt.json` (`worker_assignment.serve_receipts`: `requests`, `requests_waived`,
+  `requirement_waivers`) and in `verdict run-receipt` (`streaming waived`). A database that cannot
+  be read (unconfigured, in memory, missing, damaged, replaced since the worker started, or over
+  10,000 matching rows), or in which
+  no request was found under the assignment while nothing yet shows it is the database of the
+  serve at `--serve-url` (see Signing), is shown as `unavailable` with its reason and `null`
+  figures; it is never shown as "no waiver" and does not fail an attempt that worked. A request
+  found under the assignment is always read: it is itself what shows the database is serve's.
 
 ### Outcome shadow sink
 
@@ -914,13 +1043,25 @@ the health cache is separate from selection, which is unchanged).
 
 ## Capacity classification
 
-Verdict classifies route capacity into `FREE`, `SUBSCRIPTION`, `METERED`, and `UNKNOWN` from facts
-only, never from a name (operator, 2026-11-19). A route is `FREE` when all declared inventory prices
-are zero (at least one numeric price declared), OpenRouter public 0/0 membership, the
-gateway's free-tier membership, or a connection free signal (`importFreeModelsOnly`, a free plan or
-tier). oauth without a free signal is `SUBSCRIPTION`; a positive price or an observed billing 402
-is `METERED`. A `:free` suffix or a provider name decides nothing: with no fact the route is
-`UNKNOWN` (`no_free_evidence`), and unknown is never free.
+Verdict classifies route capacity into `FREE`, `SUBSCRIPTION`, `METERED`, and `UNKNOWN` from facts,
+not route names, plan labels, or authentication type alone. Connection billing facts come from the
+pinned OmniRoute catalogue and an optional operator overlay at
+`$VERDICT_HOME/connection_billing_overlay.json` (default `~/.verdict/`). The overlay is an object with
+an `entries` array. Each entry declares `provider`, optional `authType`, `billing`, and `overage`;
+see the [overlay schema](../verdict/schemas/connection-billing-overlay.v1.json). An operator entry
+takes precedence over the pinned catalogue. Doctor reports catalogue drift without blocking startup.
+
+`verdict discovery connections [--json]` lists actual connections and their capacity, deciding fact,
+billing source and overage without calling models. It uses a validated `VERDICT_CONNECTIONS_SNAPSHOT`
+when set; otherwise it reads `/api/providers` on the loopback gateway. It does not send a management
+credential to a remote gateway. An unavailable inventory is distinct from an empty inventory.
+
+Free-tier evidence retains `freeType` and `hardStopGuaranteed` where reported. Identify and the
+discovery funnel distinguish one-time credits from recurring supply and from unknown free types.
+Discontinued entries do not supply a free-tier fact. Synced or hardcoded list prices do not override
+connection facts. If the gateway uses pricing sync but does not identify the source of its prices,
+set `PRICING_SYNC_ENABLED=true` in Verdict's environment as well to avoid treating unlabelled model
+prices as connection prices. This setting does not enable pricing sync on OmniRoute.
 
 [ADR-049](adr/ADR-049-cost-policy-and-unknown-handling.md) (accepted 2026-11-21) changes how `UNKNOWN` is used:
 a route is paid only from facts, and an unknown-cost mode decides whether `UNKNOWN` routes run.

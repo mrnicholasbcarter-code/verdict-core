@@ -555,10 +555,13 @@ def routing_view_from_inventory(
             openrouter_free_set=free_set,
         )
         now = datetime.now(timezone.utc)
-        if probe:
-            _selected_v, verdicts = ladder.select(requirements, now=now)
-        else:
-            verdicts = ladder.evaluate(requirements, now=now)
+        from verdict.connection_billing import preload_overlay
+
+        with preload_overlay():
+            if probe:
+                _selected_v, verdicts = ladder.select(requirements, now=now)
+            else:
+                verdicts = ladder.evaluate(requirements, now=now)
 
         # Reconstruct event-like dicts from verdicts so we can reuse
         # _build_evaluations / _candidates_from_event.

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 import subprocess
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from verdict.orchestration.contracts import (
 )
 from verdict.orchestration.planner import (
     FrontierPlanner,
+    _agents_md_where_things_live,
     build_planning_prompt,
     choose_topology,
     hydrate_node_prompt,
@@ -302,6 +305,97 @@ def test_repo_map_respects_max_files(tmp_path: Path) -> None:
     assert "1 tracked files" in text
 
 
+def test_repo_map_lists_verdict_before_tests_in_include_order(tmp_path: Path) -> None:
+    """Files are listed in include-tuple order, not alphabetically across all prefixes."""
+    repo = _init_git_repo(tmp_path)
+    text = repo_map(repo, include=("verdict", "tests"))
+    verdict_pos = text.index("verdict/mod.py")
+    tests_pos = text.index("tests/test_mod.py")
+    assert verdict_pos < tests_pos
+
+
+def _init_git_repo_with_agents_md(tmp_path: Path) -> Path:
+    """Like _init_git_repo but adds AGENTS.md with a 'Where things live' section."""
+    _init_git_repo(tmp_path)
+    agents_text = (
+        "# AGENTS.md\n\n"
+        "## Where things live\n\n"
+        "| Path | What |\n"
+        "|---|---|\n"
+        "| `verdict/cli.py` | CLI entry |\n"
+        "| `verdict/commands/` | Subcommands |\n\n"
+        "## Another section\n\nSome text.\n"
+    )
+    (tmp_path / "AGENTS.md").write_text(agents_text, encoding="utf-8")
+    subprocess.run(["git", "add", "AGENTS.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add agents"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def test_repo_map_includes_agents_md_where_things_live_section(tmp_path: Path) -> None:
+    repo = _init_git_repo_with_agents_md(tmp_path)
+    text = repo_map(repo, include=("verdict", "tests"))
+    assert "Where things live" in text
+    assert "verdict/cli.py" in text  # from AGENTS.md table
+    assert "verdict/commands/" in text  # from AGENTS.md table
+    assert "Another section" not in text  # section boundary respected
+
+
+def test_repo_map_handles_missing_agents_md(tmp_path: Path) -> None:
+    """repo_map works without AGENTS.md, returning only the file listing."""
+    repo = _init_git_repo(tmp_path)
+    text = repo_map(repo, include=("verdict", "tests"))
+    assert "verdict/mod.py" in text
+    assert "Where things live" not in text
+
+
+def test_repo_map_handles_agents_md_without_section(tmp_path: Path) -> None:
+    """repo_map works when AGENTS.md exists but lacks 'Where things live'."""
+    _init_git_repo(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("# AGENTS.md\n\nNo section here.\n", encoding="utf-8")
+    subprocess.run(["git", "add", "AGENTS.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add agents"], cwd=tmp_path, check=True)
+    text = repo_map(tmp_path, include=("verdict", "tests"))
+    assert "verdict/mod.py" in text
+    assert "Where things live" not in text
+
+
+def test_agents_md_where_things_live_byte_cap_with_multibyte_text(tmp_path: Path) -> None:
+    """The 4096-byte cap is enforced on the UTF-8 encoding, not on character count.
+
+    A section filled with 3-byte characters (€, U+20AC) would exceed 4096 bytes
+    if sliced as characters.  The result must be at most 4096 bytes when re-encoded
+    and must decode cleanly (no partial trailing sequences).
+    """
+    # Each '€' is 3 bytes in UTF-8.  1500 of them = 4500 bytes > 4096.
+    wide_row = "| `verdict/cli.py` | " + "€" * 1500 + " |\n"
+    agents_text = (
+        "# AGENTS.md\n\n"
+        "## Where things live\n\n"
+        "| Path | What |\n"
+        "|---|---|\n" + wide_row + "\n## Another section\n\nSome text.\n"
+    )
+    (tmp_path / "AGENTS.md").write_text(agents_text, encoding="utf-8")
+    # Precondition: the section really is over the cap, so the cap has to act.
+    assert len(wide_row.encode("utf-8")) > 4096
+
+    result = _agents_md_where_things_live(tmp_path)
+
+    encoded = result.encode("utf-8")
+    assert len(encoded) <= 4096, f"byte length {len(encoded)} exceeds 4096"
+    # Must decode cleanly — no partial trailing multibyte sequence was kept.
+    encoded.decode("utf-8")
+    # The cap truncates; it does not drop the section. An empty result (extractor
+    # failure) or a result cut far below the cap must fail here.
+    assert result.startswith("## Where things live\n"), result[:60]
+    assert "| Path | What |" in result
+    # A 3-byte character cut mid-sequence loses at most 2 bytes, so a correct cap
+    # keeps 4094..4096 bytes and ends on a whole character.
+    assert 4094 <= len(encoded) <= 4096, f"kept {len(encoded)} bytes; cap is 4096"
+    assert result.endswith("\u20ac")
+    assert "Another section" not in result
+
+
 # ---------------------------------------------------------------- hydrate_node_prompt
 
 
@@ -402,6 +496,108 @@ async def test_frontier_planner_success_first_try(tmp_path: Path) -> None:
     assert isinstance(graph, WorkGraph)
     assert terminal.ok
     assert len(executor.calls) == 1
+
+
+class _RecordingEvents:
+    """Event sink that records every ``emit`` as ``{"type": kind, **data}``."""
+
+    def __init__(self) -> None:
+        self.emitted: list[dict] = []
+
+    def emit(self, kind: str, **data: object) -> None:
+        self.emitted.append({"type": kind, **data})
+
+
+def _repo_map_in_prompt(prompt: str) -> str:
+    """The map text a planning prompt carries between ``REPO MAP:`` and ``CONSTRAINTS:``."""
+    found = re.search(r"REPO MAP:\n(.*?)\n\s*CONSTRAINTS:", prompt, re.DOTALL)
+    assert found is not None, "planning prompt has no REPO MAP section"
+    return found.group(1).strip()
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_emits_plan_context_with_repo_map_sha256(tmp_path: Path) -> None:
+    """plan() emits plan_context whose digest is the SHA-256 of the map the planner was sent."""
+    repo = _init_git_repo_with_agents_md(tmp_path)
+    events = _RecordingEvents()
+
+    executor = _ScriptedExecutor([WorkerTerminal(ok=True, output=_VALID_NODES_JSON)])
+    await FrontierPlanner().plan(
+        "test goal", repo=repo, executor=executor, route_id="cc/test", events=events
+    )
+    plan_ctx = [e for e in events.emitted if e["type"] == "plan_context"]
+    assert len(plan_ctx) == 1
+    sha = plan_ctx[0]["repo_map_sha256"]
+    # sha256 is a 64-character hex string
+    assert isinstance(sha, str) and len(sha) == 64
+    assert all(c in "0123456789abcdef" for c in sha)
+    # It is the hash of the map text inside the prompt the executor actually received,
+    # not just any well-formed digest.
+    sent_map = _repo_map_in_prompt(executor.calls[0])
+    assert sent_map, "the planner prompt carried an empty repo map"
+    assert sha == hashlib.sha256(sent_map.encode()).hexdigest()
+    assert sha != hashlib.sha256(b"").hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_prompt_carries_repo_map_with_agents_section(tmp_path: Path) -> None:
+    """The prompt sent to the planner holds the AGENTS.md section and the ordered file listing."""
+    repo = _init_git_repo_with_agents_md(tmp_path)
+    executor = _ScriptedExecutor([WorkerTerminal(ok=True, output=_VALID_NODES_JSON)])
+    await FrontierPlanner().plan("test goal", repo=repo, executor=executor, route_id="cc/test")
+    assert len(executor.calls) == 1
+    sent_map = _repo_map_in_prompt(executor.calls[0])
+    # The AGENTS.md table reached the planner without any --constraints-file.
+    assert '[AGENTS.md "Where things live"]' in sent_map
+    assert "| `verdict/commands/` | Subcommands |" in sent_map
+    assert "Another section" not in sent_map
+    # The file listing follows it, with verdict/ listed before tests/.
+    assert "[File listing]" in sent_map
+    assert sent_map.index("verdict/mod.py") < sent_map.index("tests/test_mod.py")
+    assert sent_map.index('[AGENTS.md "Where things live"]') < sent_map.index("[File listing]")
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_repair_call_resends_same_map_and_emits_no_second_plan_context(
+    tmp_path: Path,
+) -> None:
+    """One plan_context per plan() call; the validation-repair call carries the same map.
+
+    The spec says exactly this: the repair prompt is the planning prompt plus the
+    validation error, so it holds the same repo map, and no second plan_context
+    event is emitted for it.
+    """
+    repo = _init_git_repo_with_agents_md(tmp_path)
+    events = _RecordingEvents()
+    executor = _ScriptedExecutor(
+        [
+            WorkerTerminal(ok=True, output="not json at all"),
+            WorkerTerminal(ok=True, output=_VALID_NODES_JSON),
+        ]
+    )
+    await FrontierPlanner().plan(
+        "test goal", repo=repo, executor=executor, route_id="cc/test", events=events
+    )
+    assert len(executor.calls) == 2, "the first answer was invalid, so a repair call must follow"
+    first_map = _repo_map_in_prompt(executor.calls[0])
+    repair_map = _repo_map_in_prompt(executor.calls[1])
+    assert first_map and repair_map == first_map
+    assert "Your previous response failed validation" in executor.calls[1]
+    kinds = [e["type"] for e in events.emitted]
+    assert kinds == ["plan_context", "plan_repair_started", "plan_repair_terminal"]
+    assert events.emitted[0]["repo_map_sha256"] == hashlib.sha256(first_map.encode()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_frontier_planner_no_plan_context_without_events(tmp_path: Path) -> None:
+    """plan() emits no plan_context when events=None (default)."""
+    repo = _init_git_repo(tmp_path)
+    executor = _ScriptedExecutor([WorkerTerminal(ok=True, output=_VALID_NODES_JSON)])
+    # Should not raise; events=None means no emit attempted
+    graph, _ = await FrontierPlanner().plan(
+        "test goal", repo=repo, executor=executor, route_id="cc/test"
+    )
+    assert isinstance(graph, WorkGraph)
 
 
 class _ToolAwareExecutor(_ScriptedExecutor):
@@ -1129,7 +1325,7 @@ async def test_planner_reselection_follows_cheapest_qualified_capacity(tmp_path,
         ("gl/glm-5", "glm", 2),
         ("ms/mistral-large", "mistral", 2),
     ]
-    connections = [conn("claude"), conn("glm", plan="free"), conn("mistral", plan="free")]
+    connections = [conn("claude"), conn("glm", free_only=True), conn("mistral", free_only=True)]
     # Planner requirements include tools, so FREE routes need fresh agentic
     # proof (BOD-299 AC2); seed the health cache for both free routes.
     from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult

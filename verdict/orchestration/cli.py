@@ -111,6 +111,15 @@ def add_parsers(subparsers: Any) -> None:
     orch.add_argument(
         "--gateway", default=os.environ.get("VERDICT_GATEWAY", "http://127.0.0.1:20128")
     )
+    orch.add_argument(
+        "--serve-url",
+        default=None,
+        metavar="URL",
+        help=(
+            "verdict serve address for workers that route through it (the opencode executor); "
+            "default: VERDICT_SERVE_URL, else http://127.0.0.1:8000"
+        ),
+    )
     orch.add_argument("--max-parallel", type=int, default=3)
     orch.add_argument("--max-attempts-per-node", type=_positive_int, default=4)
     orch.add_argument(
@@ -173,9 +182,15 @@ def add_parsers(subparsers: Any) -> None:
         choices=tuple(DEFAULT_REGISTRY.names()),
         default=DEFAULT_REGISTRY.default_name(),
         help=f"Worker executor backend (default: {DEFAULT_REGISTRY.default_name()}). "
-        "Backends are the registered HarnessAdapter names. Prime Agent is an "
-        "optional harness: select it with --executor prime-headless (the legacy "
-        "alias 'prime' resolves to prime-headless).",
+        "Backends are the registered HarnessAdapter names. OpenCode, the default, runs each "
+        "coding node as a full edit-test-fix loop through 'verdict serve'; it needs the "
+        "pinned opencode binary, a running 'verdict serve' and the worker signing key "
+        "('verdict setup --apply --allow host.serve' creates it). A machine without them "
+        "ends the run in a harness_configuration block that says so; it never falls back "
+        "to another executor. --executor direct-gateway selects the previous default (one "
+        "gateway call per node, no agent harness). Prime Agent is an optional harness: "
+        "select it with --executor prime-headless (the legacy alias 'prime' resolves to "
+        "prime-headless).",
     )
     orch.add_argument(
         "--planner-executor",
@@ -223,13 +238,28 @@ def add_parsers(subparsers: Any) -> None:
     rec.add_argument("--json", action="store_true")
 
     met = subparsers.add_parser("metrics", help="Compute efficiency metrics from verified receipts")
-    met.add_argument("path", nargs="?", help="Run directory or runs directory root")
+    met.add_argument(
+        "path",
+        nargs="?",
+        help="Run directory, runs directory root or run id (wins over --runs-dir)",
+    )
     met.add_argument(
         "--runs-dir",
         default=str(DEFAULT_RUNS),
-        help="Runs directory root (used when path is a run id)",
+        help="Runs directory root (used when no path is given, or path is a run id)",
     )
     met.add_argument("--json", action="store_true", help="Print JSON output")
+    met.add_argument(
+        "--daily",
+        action="store_true",
+        help="Show M0 headline metric report (accepted/paid share) across all runs",
+    )
+    met.add_argument(
+        "--since",
+        default=None,
+        metavar="DATE",
+        help="Filter to runs started on or after DATE (YYYY-MM-DD)",
+    )
 
     from verdict.orchestration import supervisor
 
@@ -496,7 +526,9 @@ def _prime_visibility(args: argparse.Namespace) -> int:
     return 0 if report["in_sync"] else 1
 
 
-def _build_single_executor(name: str, *, gateway: str, api_key: str) -> WorkerExecutor:
+def _build_single_executor(
+    name: str, *, gateway: str, api_key: str, serve_url: str | None = None
+) -> WorkerExecutor:
     """Build one named executor backend via the HarnessRegistry.
 
     CLI/backend selection knows only the harness name; the eligibility ladder
@@ -504,7 +536,25 @@ def _build_single_executor(name: str, *, gateway: str, api_key: str) -> WorkerEx
     carries the harness plus unknown identity here.
     """
     target = ExecutionTarget(harness=name, capacity_class=CapacityClass.UNKNOWN)
-    return DEFAULT_REGISTRY.executor_for(target, gateway=gateway, api_key=api_key)
+    return DEFAULT_REGISTRY.executor_for(
+        target, gateway=gateway, api_key=api_key, serve_url=serve_url
+    )
+
+
+def _worker_serve_origin(args: argparse.Namespace) -> str | None:
+    """The ``verdict serve`` origin workers call, resolved as the opencode executor resolves it.
+
+    ``--serve-url``, else ``VERDICT_SERVE_URL``, else the serve unit's own address. An address
+    that is not an http(s) origin binds none (None): the opencode executor raises on it when it
+    is built, and an executor that sends through serve is refused when none is bound, so a bad
+    address is never replaced by the default. Runs that never use serve are not affected by it.
+    """
+    from verdict.serve_service import ServeServiceError, resolve_serve_origin
+
+    try:
+        return resolve_serve_origin(getattr(args, "serve_url", None))
+    except ServeServiceError:
+        return None
 
 
 def _parse_executor_map(raw: str) -> dict[str, str]:
@@ -576,11 +626,16 @@ def _worker_executor(args: argparse.Namespace) -> WorkerExecutor:
     node_backend_map = _parse_executor_map(raw_map)
 
     default_name = getattr(args, "executor", "") or DEFAULT_REGISTRY.default_name()
-    default_executor = _build_single_executor(default_name, gateway=args.gateway, api_key=api_key)
+    serve_url = getattr(args, "serve_url", None)
+    default_executor = _build_single_executor(
+        default_name, gateway=args.gateway, api_key=api_key, serve_url=serve_url
+    )
 
     if node_backend_map:
         named: dict[str, WorkerExecutor] = {
-            node_id: _build_single_executor(backend, gateway=args.gateway, api_key=api_key)
+            node_id: _build_single_executor(
+                backend, gateway=args.gateway, api_key=api_key, serve_url=serve_url
+            )
             for node_id, backend in node_backend_map.items()
         }
         return MixedExecutor(node_map=named, default=default_executor)
@@ -937,13 +992,16 @@ def _orchestrate(args: argparse.Namespace) -> int:
 
     # BOD-433: every worker send needs a permit proven by a stored, fresh passport.
     # Each worker executor must report this origin (Prime: its launch's models.json
-    # baseUrl; direct-gateway: --gateway), or its send is denied.
+    # baseUrl; direct-gateway: --gateway), or its send is denied. A worker that sends
+    # through verdict serve (opencode) reports its serve origin and is checked against
+    # ``worker_serve_origin`` instead (#1326).
     from verdict.orchestration.runtime import REDACT_GATEWAY_ORIGIN_ENV
 
     dispatch_authority = DispatchAuthority(
         gateway_origin=args.gateway.rstrip("/"),
         confirm=lambda route_ids, now: passport_confirmation(route_ids, now=now),
         record_gateway_origin=os.environ.get(REDACT_GATEWAY_ORIGIN_ENV) != "1",
+        worker_serve_origin=_worker_serve_origin(args),
     )
     events_path = run_dir / "events.jsonl"
     events_path.touch()
@@ -1176,6 +1234,27 @@ def _derive_no_change_nodes(run_dir: Path, receipt: Mapping[str, Any]) -> list[s
     return [str(n) for n in fresh.get("no_change_nodes", []) if str(n).strip()]
 
 
+def _assignment_note(attempt: dict[str, Any]) -> str:
+    """What the attempt's signed assignment adds to its line in ``run-receipt``, or nothing.
+
+    ``, streaming waived`` when serve served at least one request of the attempt with a
+    requirement waived; ``, serve receipts unavailable`` when that could not be read, so a
+    reader never takes an unread record for a clean one.  An attempt that signed nothing, or that
+    serve saw without a waiver, adds nothing.
+    """
+    record = attempt.get("worker_assignment")
+    serve = record.get("serve_receipts") if isinstance(record, dict) else None
+    if not isinstance(serve, dict):
+        return ""
+    if serve.get("status") == "unavailable":
+        return ", serve receipts unavailable"
+    waivers = serve.get("requirement_waivers") or []
+    names = sorted(
+        {str(w["requirement"]) for w in waivers if isinstance(w, dict) and w.get("requirement")}
+    )
+    return f", {', '.join(names)} waived" if names else ""
+
+
 def _receipt(args: argparse.Namespace) -> int:
     from verdict.actions.registry import run_action
 
@@ -1224,6 +1303,7 @@ def _receipt(args: argparse.Namespace) -> int:
                 f"{a.get('route_id') or 'merge'}[{a.get('outcome')}"
                 + (f":{a['failure_category']}" if a.get("failure_category") else "")
                 + ("*" if a.get("fault_injected") else "")
+                + _assignment_note(a)
                 + "]"
                 for a in node.get("attempts", [])
             )
@@ -1359,6 +1439,36 @@ def _metrics(args: argparse.Namespace) -> int:
     # Determine runs_dir and run_dir
     runs_dir = args.runs_dir
     path_arg = args.path
+    daily: bool = getattr(args, "daily", False)
+    since: str | None = getattr(args, "since", None)
+
+    # --daily or --since triggers the headline metric report.
+    if daily or since:
+        # The positional path wins over --runs-dir, as on the per-run branch
+        # below: an existing directory is read as given, anything else is a run
+        # id under --runs-dir.  A path that is neither is an error, never a
+        # silent report on some other directory.
+        report_dir = runs_dir
+        if path_arg:
+            resolved = _resolve_run(path_arg, runs_dir)
+            if not resolved.is_dir():
+                print(f"metrics path is not a directory: {resolved}", file=sys.stderr)
+                return 2
+            report_dir = str(resolved)
+        result = run_action(
+            "headline.metric", {"runs_dir": report_dir, "since": since, "json": args.json}
+        )
+        data = result.data
+        if data.get("error"):
+            print(data["error"], file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(data, indent=2, default=str))
+        else:
+            from verdict.headline_metric import format_headline_report
+
+            print(format_headline_report(data))
+        return 0
 
     if path_arg:
         # Path could be a run directory or a run id

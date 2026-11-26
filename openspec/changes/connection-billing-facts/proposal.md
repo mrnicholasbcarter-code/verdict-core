@@ -25,7 +25,7 @@ Three more gaps sit next to it:
 - Overage behaviour is not recorded, so a subscription route that bills past its
   window looks cost-free after the window is spent.
 
-## What changes
+## What Changes
 
 - `capacity_of` decides `SUBSCRIPTION` and `METERED` from connection billing
   facts, not `authType`:
@@ -52,6 +52,37 @@ Three more gaps sit next to it:
 - A read-only `verdict discovery connections` lists every connection with its
   class, deciding fact and overage. It makes no model calls.
 - There is still exactly one classifier, `verdict/capacity.py::capacity_of`.
+
+## Capabilities
+
+### New Capabilities
+
+- `connection-billing-facts`: the capacity classifier reads billing class (`subscription`, `metered`, `keyless`) from a pinned snapshot of OmniRoute's curated connection billing catalog, plus an optional operator overlay. `authType` alone is no longer a deciding fact.
+- `overage-recorded`: each route's capacity evidence records overage behaviour (`hard-stop`, `meters-to-paid`, `unknown`). A subscription route whose overage is not `hard-stop` is treated as `METERED` while its quota window is spent.
+- `free-type-recorded`: the free-tier reader records `freeType` and `hardStopGuaranteed` per route; `one-time-initial` credits are reported separately from recurring supply; `discontinued` is not a free fact.
+- `verdict-discovery-connections`: read-only command listing each connection with its capacity class, deciding fact, overage and fact source. Makes no model calls.
+- `doctor-billing-drift`: `verdict doctor` reports when the installed gateway version or catalog hash differs from the snapshot.
+
+### Modified Capabilities
+
+- `capacity-classification`: the `oauth_subscription` deciding fact is removed. The `plan_label`, `tier` and `plan` substring free-inference rules are removed from `connection_signals_free`. There is still exactly one classifier, `verdict/capacity.py::capacity_of`.
+
+## Acceptance criteria
+
+1. An OAuth connection whose provider has no entry in the catalog or overlay is `UNKNOWN`, not `SUBSCRIPTION`.
+2. A catalog entry restricted to an `authType` wins over a provider-wide entry; an overlay entry wins over the snapshot.
+3. A route whose connection billing is `subscription` with overage `meters-to-paid` is treated as `METERED` after its quota window is spent.
+4. A route's free-tier entry with `freeType` `one-time-initial` is listed separately from recurring free supply.
+5. A plan label containing "free" decides nothing; the classifier does not treat it as a free fact.
+6. `verdict doctor` reports drift when the installed gateway version or file hash differs from the snapshot.
+7. `verdict discovery connections` lists every connection with class, deciding fact, overage and source; no model call is made.
+
+## Evidence boundary
+
+- KNOWN: `open-sse/config/connectionBillingCatalog.ts` ships 6 curated entries keyed by provider and authType. OmniRoute's own comment says authType "is NOT a safe proxy in either direction".
+- KNOWN: The gateway does not expose billing class over the candidates endpoint on 3.8.53.
+- INFERRED: OAuth connections absent from the catalog will become `UNKNOWN` after this change; the operator overlay declares the ones that are confirmed subscriptions.
+- NOT AVAILABLE: live before/after diff of `verdict discovery connections`; deferred to post-merge task 5.1.
 
 ## Impact
 

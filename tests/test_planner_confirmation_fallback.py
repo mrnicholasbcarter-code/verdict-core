@@ -16,6 +16,13 @@ from verdict.orchestration.eligibility import EligibilityLadder
 from verdict.orchestration.health_cache import HealthCache, ProbeResult
 from verdict.subagent_selection import HealthResult
 
+
+# CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("acold", "oauth"), ("freemodel-dev", "oauth")])
+
+
 FREE = "fmd/gpt-6-astra"
 SUB = "codex/gpt-5.5"
 REQ = TaskRequirements(frontier_worthy=True, max_capability_tier=2)

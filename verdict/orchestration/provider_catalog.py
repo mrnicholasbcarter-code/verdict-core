@@ -174,31 +174,24 @@ def sanitized_plan_label(value: object) -> str:
 
 
 def connection_signals_free(conn: Mapping[str, Any]) -> tuple[bool, str]:
-    """Check whether a connection signals free-tier access.
+    """Check whether a connection signals free-tier access via import flags.
 
     Returns ``(is_free, rule)`` where ``rule`` names the signal that fired.
 
-    Extra rules restored from origin/main ``_capacity_class``:
-    ``import_free_only`` (snake_case, used by tests and sanitize_connections)
-    and ``plan_label`` containing ``free`` for any auth type.
+    Only ``importFreeModelsOnly`` / ``import_free_only`` facts are checked here.
+    Billing-class facts (``subscription``, ``metered``, ``keyless``) are decided
+    by ``verdict.connection_billing.lookup`` in ``classify_route_capacity``.
+    Name-based rules (``plan_label``, ``providerSpecificData.tier``,
+    ``providerSpecificData.plan`` substring checks) were removed in CP2 — a
+    name is never proof of capacity (design.md CP2 §2.2, operator 2026-11-19).
     """
     if conn.get("importFreeModelsOnly") is True:
         return True, "importFreeModelsOnly"
     if bool(conn.get("import_free_only")):
         return True, "import_free_only"
     psd = conn.get("providerSpecificData")
-    if isinstance(psd, Mapping):
-        if psd.get("importFreeModelsOnly") is True:
-            return True, "importFreeModelsOnly"
-        tier = str(psd.get("tier", "")).lower()
-        if tier and "free" in tier:
-            return True, "providerSpecificData.tier"
-        plan = str(psd.get("plan", "")).lower()
-        if plan and "free" in plan:
-            return True, "providerSpecificData.plan"
-    plan_label = str(conn.get("plan_label", "")).lower()
-    if "free" in plan_label:
-        return True, "plan_label"
+    if isinstance(psd, Mapping) and psd.get("importFreeModelsOnly") is True:
+        return True, "importFreeModelsOnly"
     return False, ""
 
 

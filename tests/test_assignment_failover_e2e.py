@@ -31,6 +31,13 @@ from verdict.orchestration.recovery import FailureIntelligence
 from verdict.orchestration.review import OcrRun, OpenCodeReviewer
 from verdict.orchestration.runtime import DagRuntime, RuntimePolicy
 
+
+# CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("kiro", "oauth")])
+
+
 CONTEXT_400 = "[kiro/claude-opus-5.5] [400]: Input is too long. (reset after 84h 5m 18s)"
 CLEAN = (Path(__file__).parent / "fixtures" / "ocr" / "sample-clean.json").read_text()
 

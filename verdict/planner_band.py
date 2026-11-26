@@ -31,7 +31,7 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -142,6 +142,10 @@ class BandComputation:
     fetched_at: str
     model_scores: dict[str, float]  # model_key -> aa_intelligence score
     model_ranks: dict[str, int]  # model_key -> 1-indexed rank
+    # model_key -> id of the metadata record it resolves to.  Aliases of one model share a
+    # record id, so a receipt can tell "another alias of a model" from "another family".
+    # Empty when the caller built the band without metadata.
+    model_record_ids: dict[str, str] = field(default_factory=dict)
 
 
 def _strip_suffix(route_id: str) -> str:
@@ -302,13 +306,16 @@ def compute_planner_bands(
 
     # Step 6: expand bands and score/rank maps to include all aliases of each model
     # (all inventory routes that resolve to the same metadata record as a band member)
+    record_ids_map: dict[str, str] = {}
     for record_id, alias_keys in record_to_alias_keys.items():
         first_key = record_to_model_key.get(record_id)
         if first_key is None or first_key not in scores_map:
             continue  # record not in population (unrated or stale)
+        record_ids_map[first_key] = record_id
         for alias_key in alias_keys:
             if alias_key == first_key:
                 continue
+            record_ids_map[alias_key] = record_id
             scores_map[alias_key] = scores_map[first_key]
             ranks_map[alias_key] = ranks_map[first_key]
             if first_key in frontier_keys_set:
@@ -328,6 +335,7 @@ def compute_planner_bands(
         fetched_at=max_fetched,
         model_scores=scores_map,
         model_ranks=ranks_map,
+        model_record_ids=record_ids_map,
     )
 
 
@@ -351,9 +359,14 @@ class PlannerBandResult:
     rating: float  # the route's aa_intelligence score
     metric: str  # "aa_intelligence"
     fetched_at: str  # ISO timestamp of the score batch
+    # D39: set when planning proceeds with one family (fewer than two were admissible).
+    single_family_planner: bool = False
+    # Sorted (family, reason) pairs for band families with no admitted route.
+    # Populated only when single_family_planner=True; empty otherwise.
+    unavailable_families: tuple[tuple[str, str], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "required": self.required,
             "used": self.used,
             "reason": self.reason,
@@ -364,6 +377,10 @@ class PlannerBandResult:
             "metric": self.metric,
             "fetched_at": self.fetched_at,
         }
+        if self.single_family_planner:
+            d["single_family_planner"] = True
+            d["unavailable_families"] = {fam: rsn for fam, rsn in self.unavailable_families}
+        return d
 
 
 class PlannerBandError(ValueError):
@@ -483,15 +500,29 @@ def select_planner_routes(
     *,
     top_n: int = 1,
     now: datetime | None = None,
+    exclusion_reasons: Mapping[str, str] | None = None,
 ) -> list[tuple[str, PlannerBandResult]]:
     """Select up to ``top_n`` planner routes from admitted candidates using the band.
 
     Uses the frontier band first, falls back to the fallback band.  Applies the
     two-family rule (at least two route families across all selected routes; each
-    failover uses the best available band for a NEW family).  Raises
-    :class:`PlannerBandError` with ``no_frontier_or_fallback_planner`` when no
-    admissible route is in either band, or when fewer than 2 families are
-    admissible (and ``top_n >= 2``).
+    failover uses the best available band for a NEW family).  When exactly one
+    family is admissible and ``top_n >= 2``, planning proceeds with that family
+    and each result is annotated with ``single_family_planner=True`` and
+    ``unavailable_families`` listing the other band families with their reasons
+    (D39).  Raises :class:`PlannerBandError` with ``no_frontier_or_fallback_planner``
+    when no admissible route is in either band.
+
+    ``exclusion_reasons`` is optional.  It maps route ids (non-admitted inventory
+    routes) to the reason they were excluded.  Every band family that is not
+    selected is listed in ``unavailable_families`` whether or not the caller
+    passed it: the caller's reason is used when there is one, otherwise the
+    family is recorded as ``no_admitted_route``.  A model is one metadata record
+    (``band.model_record_ids``): it is listed once however many aliases it has, and
+    never when a route of it competed (the selected route's model included).  When
+    aliases of one unavailable model carry different reasons, a capacity exclusion
+    of an admitted alias wins, then the first reason in ``exclusion_reasons``, then
+    ``no_admitted_route`` under the first alias in sorted order.
 
     Returns a list of ``(route_id, PlannerBandResult)`` in priority order.
     """
@@ -544,11 +575,70 @@ def select_planner_routes(
             break
 
     if top_n >= 2 and len(selected) < 2:
-        family_count = len(used_families) if selected else 0
-        raise PlannerBandError(
-            f"no_frontier_or_fallback_planner: fewer than 2 admissible families found "
-            f"({family_count} family/families across both bands)"
-        )
+        # D39: proceed with one family instead of failing closed; annotate the result.
+        # (len(selected) >= 1 here because the empty check above already raised.)
+        all_band_keys = band.frontier_model_keys | band.fallback_model_keys
+
+        # A band model is listed as unavailable when no route of it competed above.  It is
+        # listed once, however many aliases it has: aliases share a metadata record id, so
+        # the record decides.  A record with a competing route (the selected route's record
+        # is one) is available and is never listed.  A key with no record id (a band built
+        # without metadata) is never deduplicated.  The first source below to name a record
+        # gives its family label and its reason; a family label that is already listed, or is
+        # the used family, adds nothing.  Sources, in precedence order:
+        # 1. Admitted routes in the band that _filter_to_band excluded (capacity, e.g. METERED),
+        #    in admitted order: the explicit guard reason takes priority.
+        # 2. Non-admitted routes supplied by the caller in exclusion_reasons, in map order.
+        # 3. Band models that neither names (not admitted, and the caller gave no reason):
+        #    the band itself says which models exist.  Sorted, so the alias that stands for a
+        #    model is the same on every run.
+        candidate_route_ids = {r for r, _, _, _ in all_candidates_in_order}
+        claimed_records = {
+            record_id
+            for r in candidate_route_ids
+            if (record_id := band.model_record_ids.get(_strip_suffix(r))) is not None
+        }
+        family_reasons: dict[str, str] = {}
+
+        def _list_unavailable(model_key: str, family: str, reason: str) -> None:
+            record_id = band.model_record_ids.get(model_key)
+            if record_id is not None:
+                if record_id in claimed_records:
+                    return
+                claimed_records.add(record_id)
+            if family not in used_families:
+                family_reasons.setdefault(family, reason)
+
+        for route_id in admitted_route_ids:
+            model_key = _strip_suffix(route_id)
+            if model_key not in all_band_keys or route_id in candidate_route_ids:
+                continue
+            cap = capacity_classes.get(route_id, CapacityClass.UNKNOWN)
+            reason = "metered_excluded" if cap not in _NON_METERED else "filtered"
+            _list_unavailable(model_key, route_family(route_id), reason)
+
+        if exclusion_reasons:
+            for excl_route, excl_reason in exclusion_reasons.items():
+                model_key = _strip_suffix(excl_route)
+                if model_key in all_band_keys:
+                    _list_unavailable(
+                        model_key, route_family(excl_route), excl_reason or "not_admitted"
+                    )
+
+        # A model a route above already names is skipped by band key, so a suffixed route
+        # ``x/model:free`` is not listed twice (once under its full route id and once under
+        # its stripped band key).
+        named_keys = {_strip_suffix(r) for r in admitted_route_ids}
+        if exclusion_reasons:
+            named_keys.update(_strip_suffix(r) for r in exclusion_reasons)
+        for model_key in sorted(all_band_keys - named_keys):
+            _list_unavailable(model_key, route_family(model_key), "no_admitted_route")
+
+        unavail = tuple(sorted(family_reasons.items()))
+        selected = [
+            (r, replace(res, single_family_planner=True, unavailable_families=unavail))
+            for r, res in selected
+        ]
 
     return selected
 

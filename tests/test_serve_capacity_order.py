@@ -15,6 +15,11 @@ from verdict.free_tier_admit import snapshot_from_payloads
 
 def _snapshot():
     ids = (live.STRONG, live.FAST, live.NEW, live.NO_TOOLS)
+    # CP2: Only the genuinely free routes (apikey, no billing catalog entry) get
+    # gateway_free_tier.  STRONG and NEW use oauth but are not in the billing
+    # catalog, so they fall through to UNKNOWN — not SUBSCRIPTION — without
+    # gateway_free_tier.  The test covers the FREE-first ordering invariant.
+    free_tier_ids = (live.FAST, live.NO_TOOLS)
     return snapshot_from_payloads(
         catalog={"data": [{"id": rid, "owned_by": rid.split("/")[0]} for rid in ids]},
         free_tier={
@@ -24,7 +29,7 @@ def _snapshot():
                     "provider": rid.split("/")[0],
                     "freeType": "keyless",
                 }
-                for rid in ids
+                for rid in free_tier_ids
             ]
         },
         providers={

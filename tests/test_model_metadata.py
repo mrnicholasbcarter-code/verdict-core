@@ -568,6 +568,34 @@ class TestStoreAndSchema:
         assert loaded.schema_version == METADATA_SCHEMA_VERSION
         assert loaded.to_dict() == snapshot.to_dict()
 
+    def test_sources_field_is_read_only(self, tmp_path: Path) -> None:
+        """sources must be read-only: the cache shares one snapshot across callers."""
+        _refresh(tmp_path)
+        path = tmp_path / "model-metadata.json"
+        snapshot = load_store(path)
+        with pytest.raises(TypeError):
+            snapshot.sources["__mutate_test__"] = None  # type: ignore[index]
+
+    def test_mapping_field_is_read_only(self, tmp_path: Path) -> None:
+        """mapping must be read-only: the cache shares one snapshot across callers."""
+        _refresh(tmp_path)
+        path = tmp_path / "model-metadata.json"
+        snapshot = load_store(path)
+        with pytest.raises(TypeError):
+            snapshot.mapping["__mutate_test__"] = None  # type: ignore[index]
+
+    def test_load_store_returns_same_cached_object(self, tmp_path: Path) -> None:
+        """Two calls to load_store on the same unmodified file return the same object.
+
+        This confirms the lru_cache is active and that the read-only test above
+        exercises the shared cached instance, not a fresh copy.
+        """
+        _refresh(tmp_path)
+        path = tmp_path / "model-metadata.json"
+        a = load_store(path)
+        b = load_store(path)
+        assert a is b, "expected cached identity: load_store returned two distinct objects"
+
     def test_receipt_cites_source_per_cap(self, tmp_path: Path) -> None:
         snapshot = _refresh(tmp_path)
         mapping = load_identity_map(FIXTURES / "omniroute_map.json")
@@ -1280,3 +1308,192 @@ class TestOpenRouterJoinAndPaginationInvariants:
         assert or_status.status == "error" or (
             or_status.reason is not None and "partial" in or_status.reason
         )
+
+
+class TestSkippedSourceCarryForward:
+    """#1300: a refresh that skips a ratings source keeps that source's stored values."""
+
+    @staticmethod
+    def _seed_with_p1(store_path: Path | None) -> MetadataSnapshot:
+        return refresh_metadata(
+            transport=file_transport(
+                models_dev_api=_load("models_dev_api.json"),
+                models_dev_models=_load("models_dev_models.json"),
+                litellm=_load("litellm_prices.json"),
+                fetched_at=FETCHED_AT,
+            ),
+            mapping_path=FIXTURES / "omniroute_map.json",
+            store_path=store_path,
+            include_p1=True,
+            p1_payloads={SOURCE_OPENROUTER_AA: _load("openrouter_models_aa.json")},
+            now=NOW,
+            persist=True,
+        )
+
+    @staticmethod
+    def _aa_intelligence(snapshot: MetadataSnapshot) -> dict[str, ProvenancedField]:
+        return {
+            record.id: record.scores.aa_intelligence
+            for record in snapshot.records
+            if record.scores.aa_intelligence is not None
+        }
+
+    @staticmethod
+    def _p1_values(snapshot: MetadataSnapshot) -> dict[tuple[str, str], ProvenancedField]:
+        """Every score the OpenRouter AA mirror wrote, keyed by (record id, field)."""
+        from verdict.metadata.records import SCORE_FIELDS
+
+        values: dict[tuple[str, str], ProvenancedField] = {}
+        for record in snapshot.records:
+            for name in SCORE_FIELDS:
+                field = getattr(record.scores, name)
+                if field is not None and field.provenance.source == SOURCE_OPENROUTER_AA:
+                    values[(record.id, name)] = field
+        return values
+
+    def test_refresh_without_include_p1_keeps_fresh_p1_ratings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from verdict.cli import cmd_metadata_refresh
+        from verdict.metadata.store import default_store_path
+
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("VERDICT_HOME", str(home / ".verdict"))
+        store_path = home / ".verdict" / "model-metadata.json"
+        assert default_store_path() == store_path
+
+        seeded = self._seed_with_p1(None)
+        before = self._aa_intelligence(seeded)
+        assert {"openai/gpt-4o-mini", "google/gemini-2.0-flash"} <= set(before)
+        before_values = self._p1_values(seeded)
+        assert len(before_values) > len(before)
+
+        later = NOW + timedelta(hours=1)
+        cmd_metadata_refresh(
+            mapping_path=FIXTURES / "omniroute_map.json",
+            models_dev_api_file=FIXTURES / "models_dev_api.json",
+            models_dev_models_file=FIXTURES / "models_dev_models.json",
+            litellm_file=FIXTURES / "litellm_prices.json",
+            include_p1=False,
+            output_json=True,
+            now=later,
+        )
+        output = json.loads(capsys.readouterr().out)
+        assert output["store"] == str(store_path)
+
+        refreshed = load_store(store_path)
+        after = self._aa_intelligence(refreshed)
+        assert after == before
+        assert self._p1_values(refreshed) == before_values
+        assert {field.provenance.fetched_at for field in after.values()} == {FETCHED_AT}
+        # P0 data moved to the new fetch; only the skipped source kept its own time.
+        mini = refreshed.record_by_id("openai/gpt-4o-mini")
+        assert mini is not None and mini.caps.tools is not None
+        assert mini.caps.tools.provenance.fetched_at != FETCHED_AT
+        # The refresh output says the ratings were carried forward, not dropped.
+        status = output["sources"][SOURCE_OPENROUTER_AA]
+        assert status["status"] == "skipped"
+        assert "pass --include-p1" in status["reason"]
+        records_with_p1 = {record_id for record_id, _ in before_values}
+        assert (
+            f"carried forward {len(before_values)} value(s) on {len(records_with_p1)} record(s)"
+            in status["reason"]
+        )
+
+    def test_carried_ratings_past_freshness_window_stay_stale_for_planner_band(
+        self, tmp_path: Path
+    ) -> None:
+        from verdict.planner_band import PlannerBandConfig, compute_planner_bands
+
+        store_path = tmp_path / "model-metadata.json"
+        seeded = self._seed_with_p1(store_path)
+        identity_map = load_identity_map(FIXTURES / "omniroute_map.json")
+        inventory = ["openai/gpt-4o-mini", "google/gemini-2.0-flash"]
+        config = PlannerBandConfig(frontier_top=0.20, fallback_top=0.30)
+        fresh_band = compute_planner_bands(inventory, seeded, identity_map, config=config, now=NOW)
+        assert fresh_band.rated_models == 2
+
+        past_window = NOW + timedelta(hours=13)
+        carried = refresh_metadata(
+            transport=file_transport(
+                models_dev_api=_load("models_dev_api.json"),
+                models_dev_models=_load("models_dev_models.json"),
+                litellm=_load("litellm_prices.json"),
+                fetched_at=past_window.isoformat().replace("+00:00", "Z"),
+            ),
+            mapping_path=FIXTURES / "omniroute_map.json",
+            store_path=store_path,
+            include_p1=False,
+            now=past_window,
+            persist=True,
+        )
+        # Carried, not dropped: same values with the original fetched_at ...
+        assert self._aa_intelligence(carried) == self._aa_intelligence(seeded)
+        # ... and the 12 h freshness rule still makes them stale for the band.
+        stale_band = compute_planner_bands(
+            inventory, carried, identity_map, config=config, now=past_window
+        )
+        assert stale_band.rated_models == 0
+        assert stale_band.frontier_model_keys == frozenset()
+        assert stale_band.fallback_model_keys == frozenset()
+
+    def test_repeated_skipped_refreshes_keep_original_time_and_one_note(
+        self, tmp_path: Path
+    ) -> None:
+        store_path = tmp_path / "model-metadata.json"
+        seeded = self._seed_with_p1(store_path)
+
+        snapshot = seeded
+        for hours in (1, 2):
+            later = NOW + timedelta(hours=hours)
+            snapshot = refresh_metadata(
+                transport=file_transport(
+                    models_dev_api=_load("models_dev_api.json"),
+                    models_dev_models=_load("models_dev_models.json"),
+                    litellm=_load("litellm_prices.json"),
+                    fetched_at=later.isoformat().replace("+00:00", "Z"),
+                ),
+                mapping_path=FIXTURES / "omniroute_map.json",
+                store_path=store_path,
+                include_p1=False,
+                now=later,
+                persist=True,
+            )
+
+        # Two skipped refreshes in a row: the values still carry the first fetch time ...
+        assert self._p1_values(snapshot) == self._p1_values(seeded)
+        # ... and the reason names the carry-forward once, not once per refresh.
+        reason = load_store(store_path).sources[SOURCE_OPENROUTER_AA].reason or ""
+        assert reason.count("carried forward") == 1
+        assert reason.count("pass --include-p1") == 1
+
+    def test_source_that_ran_is_not_carried_forward(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "model-metadata.json"
+        seeded = self._seed_with_p1(store_path)
+        assert "openai/gpt-4o-mini" in self._aa_intelligence(seeded)
+
+        payload = _load("openrouter_models_aa.json")
+        assert isinstance(payload, dict)
+        gemini_only = [row for row in payload["data"] if row["id"] == "google/gemini-2.0-flash"]
+        later = NOW + timedelta(hours=1)
+        refreshed = refresh_metadata(
+            transport=file_transport(
+                models_dev_api=_load("models_dev_api.json"),
+                models_dev_models=_load("models_dev_models.json"),
+                litellm=_load("litellm_prices.json"),
+                fetched_at=later.isoformat().replace("+00:00", "Z"),
+            ),
+            mapping_path=FIXTURES / "omniroute_map.json",
+            store_path=store_path,
+            include_p1=True,
+            p1_payloads={SOURCE_OPENROUTER_AA: gemini_only},
+            now=later,
+            persist=True,
+        )
+
+        # The source ran and no longer returns gpt-4o-mini: that is not a skip, so no
+        # carry-forward note and the old value is not resurrected.
+        assert refreshed.sources[SOURCE_OPENROUTER_AA].status == "ok"
+        assert "carried forward" not in (refreshed.sources[SOURCE_OPENROUTER_AA].reason or "")
+        assert set(self._aa_intelligence(refreshed)) == {"google/gemini-2.0-flash"}

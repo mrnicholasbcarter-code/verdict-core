@@ -10,8 +10,9 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from functools import cached_property
+from functools import cached_property, lru_cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from verdict.metadata.mapping import IdentityMap, load_identity_map
@@ -78,9 +79,9 @@ class MetadataSnapshot:
 
     schema_version: str
     refreshed_at: str
-    sources: dict[str, SourceStatus]
+    sources: Mapping[str, SourceStatus]
     records: tuple[ModelMetadataRecord, ...]
-    mapping: dict[str, Any] = field(default_factory=dict)
+    mapping: Mapping[str, Any] = field(default_factory=dict)
     drops: tuple[MetadataDrop, ...] = ()
     conflicts: tuple[FieldConflict, ...] = ()
 
@@ -90,6 +91,12 @@ class MetadataSnapshot:
         by_id = [item.id for item in self.records]
         if len(by_id) != len(set(by_id)):
             raise ModelMetadataError("snapshot records must have unique ids")
+        # Wrap mutable dicts in MappingProxyType so the frozen snapshot cannot
+        # be mutated by callers, including those that share the lru_cache copy.
+        # dict() copies the input so a live dict passed by the caller cannot
+        # be mutated through the proxy after construction.
+        object.__setattr__(self, "sources", MappingProxyType(dict(self.sources)))
+        object.__setattr__(self, "mapping", MappingProxyType(dict(self.mapping)))
 
     def record_by_id(self, models_dev_id: str) -> ModelMetadataRecord | None:
         return self._records_by_id.get(models_dev_id)
@@ -178,10 +185,19 @@ class MetadataSnapshot:
         )
 
 
-def load_store(path: Path | str | None = None) -> MetadataSnapshot:
-    resolved = Path(path) if path is not None else default_store_path()
+@lru_cache(maxsize=4)
+def _load_store_cached(resolved: Path, mtime_ns: int) -> MetadataSnapshot:
+    """Deserialize a store snapshot; keyed on (path, mtime_ns) so a changed
+    file is reloaded automatically while repeated calls to the same unmodified
+    file skip the ~1.4s deserialization cost."""
     document = json.loads(resolved.read_text(encoding="utf-8"))
     return MetadataSnapshot.from_dict(document)
+
+
+def load_store(path: Path | str | None = None) -> MetadataSnapshot:
+    resolved = Path(path) if path is not None else default_store_path()
+    mtime_ns = resolved.stat().st_mtime_ns  # raises OSError when missing
+    return _load_store_cached(resolved, mtime_ns)
 
 
 def save_store(
@@ -742,6 +758,7 @@ def refresh_metadata(
                 prior = None
         if prior is not None:
             ordered = _retain_failed_source_fields(ordered, prior, sources)
+            ordered = _carry_forward_skipped_source_fields(ordered, prior, sources)
         snapshot = MetadataSnapshot(
             schema_version=METADATA_SCHEMA_VERSION,
             refreshed_at=fetched_at,
@@ -804,6 +821,76 @@ def _retain_failed_source_fields(
                 caps=replace(record.caps, **caps) if caps else record.caps,
                 scores=replace(record.scores, **scores) if scores else record.scores,
             )
+        )
+    return tuple(merged)
+
+
+def _carry_forward_skipped_source_fields(
+    current: tuple[ModelMetadataRecord, ...],
+    previous: MetadataSnapshot,
+    sources: dict[str, SourceStatus],
+) -> tuple[ModelMetadataRecord, ...]:
+    """Keep the stored values of every source this refresh skipped (#1300).
+
+    A skipped source (for example the OpenRouter AA mirror without
+    ``--include-p1``) fetched nothing, so it is no evidence that its stored
+    values are gone. Each value it wrote earlier is carried forward unchanged,
+    with its original provenance and ``fetched_at``: the readers' freshness
+    rules (ADR-051's 12 hours for planner ratings) still decide whether it
+    counts. The skipped source's reason says how much was carried forward.
+    """
+    from dataclasses import replace
+
+    from verdict.metadata.records import CAP_FIELDS, SCORE_FIELDS
+
+    skipped = {name for name, status in sources.items() if status.status == "skipped"}
+    if not skipped:
+        return current
+    prior_by_id = {record.id: record for record in previous.records}
+    carried_values: dict[str, int] = {}
+    carried_records: dict[str, set[str]] = {}
+
+    def carry(new_field: Any, old_field: Any, record_id: str) -> bool:
+        if new_field is not None or old_field is None:
+            return False
+        source = old_field.provenance.source
+        if source not in skipped:
+            return False
+        carried_values[source] = carried_values.get(source, 0) + 1
+        carried_records.setdefault(source, set()).add(record_id)
+        return True
+
+    merged: list[ModelMetadataRecord] = []
+    for record in current:
+        old = prior_by_id.get(record.id)
+        if old is None:
+            merged.append(record)
+            continue
+        caps = {
+            name: old.caps.field(name)
+            for name in CAP_FIELDS
+            if carry(record.caps.field(name), old.caps.field(name), record.id)
+        }
+        scores = {
+            name: getattr(old.scores, name)
+            for name in SCORE_FIELDS
+            if carry(getattr(record.scores, name), getattr(old.scores, name), record.id)
+        }
+        merged.append(
+            replace(
+                record,
+                caps=replace(record.caps, **caps) if caps else record.caps,
+                scores=replace(record.scores, **scores) if scores else record.scores,
+            )
+        )
+    for source, count in carried_values.items():
+        status = sources[source]
+        note = (
+            f"carried forward {count} value(s) on {len(carried_records[source])} record(s) "
+            "from the previous store with their original fetched_at"
+        )
+        sources[source] = replace(
+            status, reason=f"{status.reason}; {note}" if status.reason else note
         )
     return tuple(merged)
 

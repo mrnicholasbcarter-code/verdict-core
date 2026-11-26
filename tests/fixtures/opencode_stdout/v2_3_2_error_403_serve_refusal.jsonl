@@ -1,0 +1,2 @@
+{"type":"step_start","timestamp":1795605437111,"sessionID":"ses_72307da4473247f9a7b7","part":{"id":"prt_2126c9ab7001KeW1xQuaAagDLv","sessionID":"ses_72307da4473247f9a7b7","messageID":"msg_2126c9a7c001tY4N9shtQMzr6w","type":"step-start","snapshot":"4b825dc642cb6eb9a060e54bf8d69288fbee4904"}}
+{"type":"error","timestamp":1795605437248,"sessionID":"ses_72307da4473247f9a7b7","error":{"type":"provider.auth","message":"authentication failed","status":403,"response":{"body":"{\"error\": {\"message\": \"authentication failed\", \"type\": \"authentication_error\"}}"}}}

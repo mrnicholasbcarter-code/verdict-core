@@ -14,6 +14,9 @@ Event ``data`` conventions read by the receipt (extra keys are ignored):
 * ``dispatch``: ``attempt``, ``route_id``, ``provider``, ``capacity_class``, ``fault_injected``
 * ``terminal``: ``attempt``, ``ok``, ``route_id``, ``reported_model``, ``error``, ``duration_seconds``, ``fault_injected``,
   optional ``served_check`` (``verdict.served_identity.ServedCheck.to_dict()``), which then decides ``route_identity``
+  optional ``worker_assignment`` (``{"assignment_digest", "serve_receipts": {"status", "reason",
+  "requests", "requests_waived", "requirement_waivers"}}``, what ``verdict serve`` recorded under
+  the attempt's signed assignment; projected as given when well formed, omitted otherwise)
 * ``failure``: ``attempt``, ``category``          * ``node_state``: ``state``
 * ``verify``: ``ok``, ``command``, ``exit_code``   * ``barrier``: ``name``, ``ok``
 * ``repo_gates``: discovery summary (``gates``, ``declared``, optional ``note``)
@@ -328,6 +331,64 @@ def _classify_route_identity(
     return "mismatch"
 
 
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+_SERVE_RECEIPT_STATUSES = frozenset({"read", "unavailable"})
+_MAX_REASON_CHARS = 300
+
+
+def _count_or_none(value: Any) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def _worker_assignment_row(raw: Any) -> dict[str, Any] | None:
+    """The attempt's signed-assignment evidence, or None when ``raw`` is not that record.
+
+    Only the known fields are kept, so nothing an executor adds (and no credential) can reach the
+    receipt: the digest must be a SHA-256, the counts non-negative integers or null, and a
+    waiver a pair of strings.  A record that does not have this shape is dropped whole rather
+    than half-shown.
+    """
+    if not isinstance(raw, Mapping):
+        return None
+    digest, serve = raw.get("assignment_digest"), raw.get("serve_receipts")
+    if not isinstance(digest, str) or not _SHA256_HEX.fullmatch(digest):
+        return None
+    if not isinstance(serve, Mapping):
+        return None
+    status = serve.get("status")
+    # A string first: an unhashable value (a list, a dict) must be dropped like any malformed
+    # record, not raise out of the set membership test and abort the receipt.
+    if not isinstance(status, str) or status not in _SERVE_RECEIPT_STATUSES:
+        return None
+    waivers: list[dict[str, str]] | None = None
+    raw_waivers = serve.get("requirement_waivers")
+    if raw_waivers is not None:
+        if not isinstance(raw_waivers, list):
+            return None
+        waivers = []
+        for item in raw_waivers:
+            if not (
+                isinstance(item, Mapping)
+                and isinstance(item.get("requirement"), str)
+                and isinstance(item.get("reason"), str)
+            ):
+                return None
+            waivers.append({"requirement": str(item["requirement"]), "reason": str(item["reason"])})
+    reason = serve.get("reason")
+    return {
+        "assignment_digest": digest,
+        "serve_receipts": {
+            "status": status,
+            "reason": scrub_secrets(reason)[:_MAX_REASON_CHARS]
+            if isinstance(reason, str)
+            else None,
+            "requests": _count_or_none(serve.get("requests")),
+            "requests_waived": _count_or_none(serve.get("requests_waived")),
+            "requirement_waivers": waivers,
+        },
+    }
+
+
 def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, Any]:
     attempts: dict[int, dict[str, Any]] = {}
     current = 0
@@ -429,6 +490,9 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
                     if check.get("served_route"):
                         row["executed_model"] = str(check["served_route"])
                     row["_terminal_served_status"] = str(check.get("status") or "")
+                assignment = _worker_assignment_row(data.get("worker_assignment"))
+                if assignment is not None:
+                    row["worker_assignment"] = assignment
                 if ok:
                     last_success_seq = event.seq
             elif event.type == "failure":
@@ -907,7 +971,8 @@ def build_run_receipt(
         "planner_attempts": [
             {"seq": e.seq, "at": e.at, **dict(e.data)}
             for e in events
-            if e.type in {"plan_started", "plan_repair_started", "plan_repair_terminal"}
+            if e.type
+            in {"plan_started", "plan_repair_started", "plan_repair_terminal", "plan_context"}
         ],
         "decision_signals": _free("decision_signals") or None,  # SHADOW signals (optional)
         "claimed_outcome": str(finished[-1].data.get("outcome", "")) if finished else "",
@@ -1430,4 +1495,187 @@ def compute_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "unknown_capacity_attempts": unknown_capacity_attempts,
         "run_id": str(receipt.get("run_id") or ""),
         "outcome": outcome,
+    }
+
+
+def extend_run_metrics(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Extend compute_run_metrics with per-role splits, frontier tokens, and
+    first-attempt pass rate.  Returns everything compute_run_metrics returns
+    plus the following keys.
+
+    Per-role splits (``_by_role`` and ``_by_cost_and_role``):
+    - ``attempts_by_role``: model attempt counts keyed by NodeKind value.
+    - ``accepted_nodes_by_role``: accepted node counts by role (non-zero only
+      for implement/integrate when the run is COMPLETE).
+    - ``attempts_by_cost_and_role``: nested ``{role: {cost_class: count}}``.
+
+    Frontier tokens (subscription + metered attempts on DAG nodes):
+    - ``frontier_tokens``: ``{input, output, total, per_accepted_task}`` where
+      ``total`` and ``per_accepted_task`` are ``None`` when any frontier attempt
+      lacks token data.  Planner and reviewer individual call tokens are not
+      currently recorded in receipts; ``planner_tokens_note`` documents this.
+
+    First-attempt pass rate (``first_attempt_pass_rate``):
+    - ``by_role``: fraction of nodes where attempt 1 succeeded and the node
+      was validated, keyed by role.
+    - ``by_cost``: the same fraction, keyed by the cost class of the first
+      attempt.  A worker's ok exit alone is never a pass (issue #1315).
+
+    Research-duplication share:
+    - ``research_duplication_note``: explains it is not tracked in receipts;
+      see ``verdict/orchestration/research_metrics.py`` for the per-call
+      measurement tool.
+    """
+    base = compute_run_metrics(receipt)
+    outcome = base["outcome"]
+    gated = {NodeKind.IMPLEMENT.value, NodeKind.INTEGRATE.value}
+    is_complete = outcome == RunOutcome.COMPLETE.value
+
+    # Accumulators keyed by role (NodeKind value string).
+    _roles = [k.value for k in NodeKind]
+    attempts_by_role: dict[str, int] = {r: 0 for r in _roles}
+    accepted_nodes_by_role: dict[str, int] = {r: 0 for r in _roles}
+    attempts_by_cost_and_role: dict[str, dict[str, int]] = {
+        r: {"free": 0, "subscription": 0, "metered": 0, "unknown": 0} for r in _roles
+    }
+
+    # Frontier-token accumulation (subscription + metered).
+    frontier_input: int = 0
+    frontier_output: int = 0
+    frontier_tokens_known: bool = True  # becomes False on any missing count
+
+    # First-attempt pass rate.
+    first_pass_by_role: dict[str, list[bool]] = {r: [] for r in _roles}
+    first_pass_by_cost: dict[str, list[bool]] = {
+        "free": [],
+        "subscription": [],
+        "metered": [],
+        "unknown": [],
+    }
+
+    for node in receipt.get("nodes") or []:
+        role = str(node.get("kind") or "")
+        if role not in attempts_by_role:
+            continue
+
+        attempts = node.get("attempts") or []
+
+        if is_complete and role in gated:
+            accepted_nodes_by_role[role] += 1
+
+        # First-attempt pass rate for this node.
+        model_attempts = [
+            a
+            for a in attempts
+            if str(a.get("route_id") or "")
+            and not str(a.get("route_id") or "").startswith("local/")
+            and a.get("route_identity") != "mechanical"
+        ]
+        if model_attempts:
+            first = model_attempts[0]
+            # A worker that returned ok is not yet accepted work: the node must
+            # also have been validated.  A rejected attempt already reads
+            # "failure" (the runtime emits a failure event after _validate), but
+            # one whose validation never finished (for example the node driver
+            # crashed after the worker's terminal) keeps "success" on a node
+            # that is not VALIDATED.
+            passed = (
+                first.get("outcome") == "success"
+                and node.get("final_state") == NodeState.VALIDATED.value
+            )
+            first_pass_by_role[role].append(passed)
+            cost_cls = str(first.get("capacity_class") or "unknown").lower()
+            if cost_cls not in first_pass_by_cost:
+                cost_cls = "unknown"
+            first_pass_by_cost[cost_cls].append(passed)
+
+        for attempt in attempts:
+            route_id = str(attempt.get("route_id") or "")
+            if (
+                not route_id
+                or route_id.startswith("local/")
+                or attempt.get("route_identity") == "mechanical"
+            ):
+                continue
+
+            attempts_by_role[role] += 1
+            capacity = str(attempt.get("capacity_class") or "unknown").lower()
+            if capacity not in ("free", "subscription", "metered"):
+                capacity = "unknown"
+            attempts_by_cost_and_role[role][capacity] += 1
+
+            if capacity in ("subscription", "metered"):
+                usage = attempt.get("usage")
+                if isinstance(usage, Mapping):
+                    tin = usage.get("input_tokens")
+                    tout = usage.get("output_tokens")
+                    if isinstance(tin, int) and isinstance(tout, int):
+                        frontier_input += tin
+                        frontier_output += tout
+                    else:
+                        frontier_tokens_known = False
+                else:
+                    frontier_tokens_known = False
+
+    # Frontier token summary.
+    if frontier_tokens_known:
+        frontier_total: int | None = frontier_input + frontier_output
+        accepted = base["accepted_tasks"]
+        fpt: float | None = frontier_total / accepted if accepted > 0 else None
+    else:
+        frontier_total = None
+        fpt = None
+
+    frontier_tokens: dict[str, Any] = {
+        "input": frontier_input if frontier_tokens_known else None,
+        "output": frontier_output if frontier_tokens_known else None,
+        "total": frontier_total,
+        "per_accepted_task": fpt,
+    }
+
+    # Reviewer token budget (approximate; individual call tokens not in receipt).
+    review = receipt.get("review") or {}
+    reviewer_budget_used = review.get("token_budget_used")
+
+    # First-attempt pass rate fractions and raw counts for weighted aggregation.
+    def _rate(lst: list[bool]) -> float | None:
+        return sum(lst) / len(lst) if lst else None
+
+    first_attempt_pass_rate: dict[str, Any] = {
+        "by_role": {r: _rate(first_pass_by_role[r]) for r in _roles},
+        "by_cost": {c: _rate(first_pass_by_cost[c]) for c in first_pass_by_cost},
+    }
+
+    # Raw success/eligible counts for weighted aggregation across runs.
+    # Averaging fractions gives wrong results when runs differ in node count.
+    first_attempt_pass_counts: dict[str, Any] = {
+        "by_role": {
+            r: {"success": sum(first_pass_by_role[r]), "eligible": len(first_pass_by_role[r])}
+            for r in _roles
+        },
+        "by_cost": {
+            c: {"success": sum(v), "eligible": len(v)} for c, v in first_pass_by_cost.items()
+        },
+    }
+
+    return {
+        **base,
+        "attempts_by_role": attempts_by_role,
+        "accepted_nodes_by_role": accepted_nodes_by_role,
+        "attempts_by_cost_and_role": attempts_by_cost_and_role,
+        "frontier_tokens": frontier_tokens,
+        "planner_attempts_count": len(receipt.get("planner_attempts") or []),
+        "planner_tokens_note": (
+            "Planner call tokens are not recorded in the receipt; "
+            "see planner_attempts_count for call frequency."
+        ),
+        "reviewer_token_budget_used": reviewer_budget_used
+        if isinstance(reviewer_budget_used, int)
+        else None,
+        "first_attempt_pass_rate": first_attempt_pass_rate,
+        "first_attempt_pass_counts": first_attempt_pass_counts,
+        "research_duplication_note": (
+            "Repeated-research token share is not tracked in receipts. "
+            "See verdict/orchestration/research_metrics.py for the per-call tool."
+        ),
     }

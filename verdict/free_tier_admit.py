@@ -158,6 +158,7 @@ class FreeTierModel:
     provider: str
     free_type: str | None = None
     display_name: str | None = None
+    hard_stop_guaranteed: bool | None = None
 
     @property
     def route_id(self) -> str:
@@ -193,6 +194,7 @@ class CatalogIdentity:
     # (context_window / context_length / context); None means the catalog
     # did not say. Caps the census needle steps for the route.
     max_context_tokens: int | None = None
+    price_source: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -887,6 +889,12 @@ class FreeTierAdmitReceipt:
     spend_policy: str | None = None
     candidate_pool: dict[str, Any] | None = None
     context_plans: tuple[ContextPlan, ...] = ()
+    #: Requirements a verified worker assignment waived for the capability gate (never for the
+    #: profile digest): ``{requirement, reason, run_id, node_id}`` rows.  Empty off the lane.
+    requirement_waivers: tuple[dict[str, Any], ...] = ()
+    #: The verified assignment this receipt was admitted for (route, run, node, expiry and the
+    #: payload digest; never the token).  ``None`` off the lane.
+    worker_assignment: dict[str, Any] | None = None
 
     @property
     def included_sources(self) -> tuple[IncludedProvenance, ...]:
@@ -937,6 +945,10 @@ class FreeTierAdmitReceipt:
             "spend_policy": self.spend_policy,
             "candidate_pool": None if self.candidate_pool is None else dict(self.candidate_pool),
             "context_plans": [plan.to_dict() for plan in self.context_plans],
+            "requirement_waivers": [dict(item) for item in self.requirement_waivers],
+            "worker_assignment": (
+                None if self.worker_assignment is None else dict(self.worker_assignment)
+            ),
         }
 
     def as_eligibility_result(self, snapshot: OmniRouteAdmitSnapshot) -> EligibilityResult:
@@ -1168,12 +1180,14 @@ def parse_free_tier_models(payload: object) -> tuple[FreeTierModel, ...]:
             provider = _provider_of(model_id)
         free_type = row.get("freeType") or row.get("free_type")
         display = row.get("displayName") or row.get("name")
+        hard_stop = row.get("hardStopGuaranteed", row.get("hard_stop_guaranteed"))
         out.append(
             FreeTierModel(
                 model_id=model_id,
                 provider=provider.strip(),
-                free_type=str(free_type) if isinstance(free_type, str) else None,
+                free_type=free_type.strip().lower() if isinstance(free_type, str) else None,
                 display_name=str(display) if isinstance(display, str) else None,
+                hard_stop_guaranteed=hard_stop if isinstance(hard_stop, bool) else None,
             )
         )
     return tuple(out)
@@ -1239,6 +1253,8 @@ def parse_catalog_identities(payload: object) -> tuple[CatalogIdentity, ...]:
         raw = payload
     if not isinstance(raw, list):
         return ()
+    from verdict.capacity import catalog_price_source
+
     out: list[CatalogIdentity] = []
     seen: set[str] = set()
     for row in raw:
@@ -1264,6 +1280,7 @@ def parse_catalog_identities(payload: object) -> tuple[CatalogIdentity, ...]:
                 input_cost=input_cost,
                 output_cost=output_cost,
                 max_context_tokens=_catalog_context_limit(row),
+                price_source=catalog_price_source(row) if price_known else "unknown",
             )
         )
     return tuple(out)
@@ -1656,6 +1673,38 @@ def _read_last_good(path: Path, origin: str, now: datetime, max_age: float) -> d
         if 0 <= age < max_age and "payload" in row:
             fresh[name] = row["payload"]
     return fresh
+
+
+def annotate_cached_free_tier(
+    rows: list[dict[str, Any]], *, origin: str, now: datetime, path: Path | None = None
+) -> list[dict[str, Any]]:
+    """Attach fresh, origin-bound summary facts without an extra gateway read."""
+    payload = _read_last_good(
+        path or default_admit_last_good_path(), origin, now, ADMIT_LAST_GOOD_MAX_AGE_SECONDS
+    ).get("free_tier")
+    if payload is None:
+        return rows
+    by_provider: dict[str, list[CatalogIdentity]] = {}
+    for identity in parse_catalog_identities({"data": rows}):
+        by_provider.setdefault(identity.provider, []).append(identity)
+    facts: dict[str, FreeTierModel] = {}
+    for model in parse_free_tier_models(payload):
+        for route in resolve_catalog_matches(
+            model.model_id, model.provider, by_provider.get(model.provider, [])
+        ):
+            if route not in facts or model.free_type == "discontinued":
+                facts[route] = model
+    return [
+        {
+            **row,
+            "gateway_free_tier": fact.free_type != "discontinued",
+            "free_type": fact.free_type,
+            "hard_stop_guaranteed": fact.hard_stop_guaranteed,
+        }
+        if isinstance(row.get("id"), str) and (fact := facts.get(row["id"])) is not None
+        else row
+        for row in rows
+    ]
 
 
 def _write_last_good(

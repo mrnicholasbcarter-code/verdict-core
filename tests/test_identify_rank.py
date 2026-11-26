@@ -74,6 +74,12 @@ def _conn(provider: str, *, auth: str, free: bool = False) -> dict[str, Any]:
     }
 
 
+# CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("cc", "oauth"), ("op", "oauth"), ("p", "oauth")])
+
+
 def _ranked(ladder: EligibilityLadder, req: TaskRequirements) -> list[str]:
     verdicts = ladder.evaluate(req, now=NOW)
     ranked = sorted((v for v in verdicts if v.rank is not None), key=lambda v: v.rank or 0)

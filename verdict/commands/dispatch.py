@@ -335,8 +335,9 @@ def _cmd_bench(args: argparse.Namespace) -> None:
 def _cmd_bench_context_lift(args: argparse.Namespace) -> None:
     """``verdict bench context-lift``: measure context-pack lift on a free model.
 
-    FREE capacity only.  A blocked or missing gateway result exits 0 and writes
-    a blocked receipt so the daily timer never fails over capacity issues.
+    FREE capacity only.  A blocked result (no qualified free identity) exits 2
+    so systemd records a failed unit; ``verdict doctor`` then surfaces it as a
+    warning, not ok.  A dry-run always exits 0.
     """
     import json as _json
     from datetime import datetime, timezone
@@ -370,18 +371,29 @@ def _cmd_bench_context_lift(args: argparse.Namespace) -> None:
     home = verdict_home()
     out_dir = home / "context-lift"
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    now = datetime.now(timezone.utc)
+    stamp = now.strftime("%Y%m%dT%H%M%SZ")
     out_file = out_dir / f"{stamp}.json"
+    # invocation_id ties the receipt to the systemd unit run that wrote it.  systemd
+    # gives every process of one runtime cycle of a unit the same $INVOCATION_ID and
+    # exposes it as the unit's InvocationID property, so doctor can tell the receipt
+    # of the failed unit run from a later manual or --dry-run receipt (no
+    # INVOCATION_ID, or another unit's) that overwrote latest.json.
+    receipt["invocation_id"] = os.environ.get("INVOCATION_ID") or None
     payload = _json.dumps(receipt, indent=2)
     out_file.write_text(payload, encoding="utf-8")
     (out_dir / "latest.json").write_text(payload, encoding="utf-8")
 
+    conclusion = receipt.get("conclusion", "unknown")
     if getattr(args, "json", False):
         print(payload)
     else:
-        conclusion = receipt.get("conclusion", "unknown")
         identity = receipt.get("identity_id", "unknown")
         print(f"context-lift: {conclusion} ({identity}); evidence written to {out_file}")
+    # A blocked result that actually ran (not --dry-run) exits 2: systemd records
+    # a failed unit so doctor can surface the block as a warning rather than ok.
+    if conclusion == "blocked" and execute:
+        sys.exit(2)
 
 
 def _cmd_bench_fusion_plan(args: argparse.Namespace) -> None:
@@ -935,6 +947,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 execution_path_decision=legacy._cli_execution_path_decision(
                     parser, getattr(args, "execution_path_request", None), task=args.objective
                 ),
+                worker_harness=getattr(args, "worker_harness", None),
             )
     elif args.command == "autodev-golden-path":
         legacy.cmd_autodev_golden_path(
@@ -1453,6 +1466,19 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 print(_json.dumps(refresh_result, indent=2))
             else:
                 print(render_refresh_plain(refresh_result))
+        elif args.discovery_command == "connections":
+            import json as _json
+
+            from verdict.actions.registry import run_action
+            from verdict.discovery.connections import render_connections_plain
+
+            result = run_action("discovery.connections")
+            if getattr(args, "output_json", False):
+                print(_json.dumps(result.data, indent=2))
+            else:
+                print(render_connections_plain(result.data))
+            if result.exit_code:
+                raise SystemExit(result.exit_code)
         else:
             parser.print_help()
     elif args.command == "openspec":

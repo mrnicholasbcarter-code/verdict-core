@@ -16,6 +16,8 @@ calls, no network, and an isolated ``VERDICT_HOME``.  They prove:
 from __future__ import annotations
 
 import asyncio
+import inspect
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -87,8 +89,160 @@ def test_registry_resolves_production_adapters_and_aliases() -> None:
     assert "prime-headless" in DEFAULT_REGISTRY.names()
     assert "direct-gateway" in DEFAULT_REGISTRY.names()
     assert "prime" in DEFAULT_REGISTRY.names()
-    # 1.0: direct-gateway is the default; Prime is an optional, explicit harness.
-    assert DEFAULT_REGISTRY.default_name() == "direct-gateway"
+    # ADR-053 Decision 2 (amended 2026-11-25): OpenCode is the default; direct-gateway and
+    # Prime stay registered and are selected by name.
+    assert DEFAULT_REGISTRY.default_name() == "opencode"
+
+
+def test_opencode_is_the_default_and_direct_gateway_stays_selectable() -> None:
+    """ADR-053 Decision 2, amended 2026-11-25 (#1328): OpenCode is the default worker executor.
+
+    The previous default (``direct-gateway``) and Prime stay registered and resolvable by name
+    (``--executor direct-gateway``); naming one builds that adapter's executor, and the default
+    builds OpenCode's.
+    """
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
+
+    assert DEFAULT_REGISTRY.default_name() == "opencode"
+    assert DEFAULT_REGISTRY.resolve(DEFAULT_REGISTRY.default_name()).name == "opencode"
+    for name in ("direct-gateway", "prime-headless", "prime"):
+        assert name in DEFAULT_REGISTRY.names()
+        assert DEFAULT_REGISTRY.resolve(name).name != DEFAULT_REGISTRY.default_name()
+    default_target = ExecutionTarget(
+        harness=DEFAULT_REGISTRY.default_name(), capacity_class=CapacityClass.UNKNOWN
+    )
+    assert isinstance(
+        DEFAULT_REGISTRY.executor_for(default_target, gateway="http://x:20128", api_key=""),
+        OpenCodeExecutor,
+    )
+    named = ExecutionTarget(harness="direct-gateway", capacity_class=CapacityClass.UNKNOWN)
+    assert isinstance(
+        DEFAULT_REGISTRY.executor_for(named, gateway="http://x:20128/v1", api_key="k"),
+        DirectGatewayExecutor,
+    )
+
+
+def _default_opencode_executor() -> Any:
+    target = ExecutionTarget(
+        harness=DEFAULT_REGISTRY.default_name(), capacity_class=CapacityClass.UNKNOWN
+    )
+    return DEFAULT_REGISTRY.executor_for(
+        target, gateway="http://x:20128", api_key="", serve_url="http://127.0.0.1:9"
+    )
+
+
+def _run_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, inner: WorkerTerminal
+) -> tuple[WorkerTerminal, list[dict[str, Any]]]:
+    """Run the default executor with the OpenCode executor's own ``run`` replaced by ``inner``."""
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
+
+    calls: list[dict[str, Any]] = []
+
+    async def fake_run(self: Any, prompt: str, **kwargs: Any) -> WorkerTerminal:
+        calls.append({"prompt": prompt, **kwargs})
+        return inner
+
+    monkeypatch.setattr(OpenCodeExecutor, "run", fake_run)
+    executor = _default_opencode_executor()
+    terminal = asyncio.run(
+        executor.run(
+            "task", route_id="cc/x", cwd=tmp_path, timeout_seconds=5.0, run_id="r1", node_id="n1"
+        )
+    )
+    return terminal, calls
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "opencode binary not found or not executable at 'opencode'",
+        "verdict serve is unreachable at http://127.0.0.1:8000",
+        "the worker assignment signing key is unavailable (key_unavailable); "
+        "run 'verdict setup --apply --allow host.serve' to create it",
+    ],
+)
+def test_a_configuration_block_names_the_way_out_of_the_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reason: str
+) -> None:
+    """With OpenCode as the default, every ``harness_configuration:`` block of its worker also
+    names what the default needs and ``--executor direct-gateway``; its own reason stays first."""
+    from verdict.orchestration.executor_opencode import OPENCODE_BIN_ENV, PINNED_VERSION
+    from verdict.orchestration.recovery import FailureIntelligence
+
+    blocked = WorkerTerminal(
+        ok=False, model="cc/x", harness="opencode", error=f"harness_configuration: {reason}"
+    )
+    terminal, calls = _run_default(monkeypatch, tmp_path, blocked)
+    assert terminal.error.startswith(f"harness_configuration: {reason}")
+    assert "--executor direct-gateway" in terminal.error
+    assert terminal.error.count("--executor direct-gateway") == 1
+    # What the default needs, so the operator can fix the machine instead of leaving the default.
+    assert f"opencode {PINNED_VERSION}" in terminal.error
+    assert OPENCODE_BIN_ENV in terminal.error
+    assert "verdict serve" in terminal.error
+    assert "verdict setup --apply --allow host.serve" in terminal.error
+    # The rest of the terminal is the executor's own, untouched; recovery still blocks, once.
+    assert (terminal.ok, terminal.model, terminal.harness) == (False, "cc/x", "opencode")
+    failure = FailureIntelligence().classify(terminal, now=datetime.now(timezone.utc))
+    assert (failure.category, failure.action) == ("harness_configuration", "BLOCK")
+    # The run id and node id reach the OpenCode executor (they sign the worker's assignment).
+    assert calls == [
+        {
+            "prompt": "task",
+            "route_id": "cc/x",
+            "cwd": tmp_path,
+            "timeout_seconds": 5.0,
+            "run_id": "r1",
+            "node_id": "n1",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "inner",
+    [
+        WorkerTerminal(ok=True, output="RESULT: DONE", model="cc/x", harness="opencode"),
+        WorkerTerminal(ok=False, model="cc/x", harness="opencode", error="timeout"),
+        WorkerTerminal(
+            ok=False, model="cc/x", harness="opencode", error="worker_error: RuntimeError"
+        ),
+        WorkerTerminal(
+            ok=False,
+            model="cc/x",
+            harness="opencode",
+            error="provider said: harness_configuration: not a block",
+        ),
+    ],
+)
+def test_the_way_out_is_added_to_configuration_blocks_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, inner: WorkerTerminal
+) -> None:
+    terminal, _ = _run_default(monkeypatch, tmp_path, inner)
+    assert terminal == inner
+
+
+def test_the_default_executor_takes_the_ids_and_keeps_the_opencode_label() -> None:
+    """The runtime offers ``run_id`` and ``node_id`` only to an executor whose ``run`` takes
+    them; the receipt label for the default's executor is ``opencode``."""
+    from verdict.orchestration.contracts import _accepts_keyword
+    from verdict.orchestration.executor_opencode import OpenCodeExecutor
+
+    executor = _default_opencode_executor()
+    assert isinstance(executor, OpenCodeExecutor)
+    assert _accepts_keyword(executor, "run_id") and _accepts_keyword(executor, "node_id")
+    # The subclass offers exactly the keywords the executor's own ``run`` takes: a keyword the
+    # executor gains later must be added to the subclass, or the runtime (which offers only what
+    # ``run`` declares) would stop passing it.
+    own = inspect.signature(OpenCodeExecutor.run).parameters
+    default = inspect.signature(type(executor).run).parameters
+    assert [(n, p.kind, p.default) for n, p in default.items()] == [
+        (n, p.kind, p.default) for n, p in own.items()
+    ]
+    assert DEFAULT_REGISTRY.label_for(executor) == "opencode"
+    assert DEFAULT_REGISTRY.label_for(OpenCodeExecutor(serve_base_url="http://127.0.0.1:9")) == (
+        "opencode"
+    )
 
 
 def test_unknown_adapter_raises() -> None:

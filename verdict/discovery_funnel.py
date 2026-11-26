@@ -203,7 +203,7 @@ def build_funnel(
                 # import_free_only, importFreeModelsOnly, etc.
                 # We include free_suffix here (it is a real classifier output for
                 # S0; S1 will remove it as a valid free signal).
-                is_free = ce in _FREE_EVIDENCE_VALUES
+                is_free = ce.partition(":")[0] in _FREE_EVIDENCE_VALUES
                 if is_free:
                     hc_free.add(route_id)
                     free_by_rule[ce] += 1
@@ -275,6 +275,12 @@ def build_funnel(
             "lower bound: health-cache only covers screened routes;"
             " full count requires a live fetch"
         )
+
+    from verdict.capacity import free_supply_type
+
+    free_supply = {kind: 0 for kind in ("one_time_initial", "recurring", "unknown")}
+    for fact, count in free_by_rule.items():
+        free_supply[free_supply_type(fact)] += count
 
     # Drops from listed → free_by_fact (approximate)
     free_drops: dict[str, int] = {}
@@ -435,6 +441,7 @@ def build_funnel(
             "free_by_fact": _stage(free_count, drops=free_drops, raw=listed_count)
             | ({"note": free_note} if free_note else {}),
             "free_by_rule": dict(free_by_rule),
+            "free_supply_by_type": free_supply if free_routes is not None else None,
             "probed": _stage(
                 probed_count, cap=f"SCREEN_MAX_ROUTES={SCREEN_MAX_ROUTES}", drops=probed_drops
             ),

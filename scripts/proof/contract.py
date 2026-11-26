@@ -27,6 +27,10 @@ ALLOWED_CLASSIFY = frozenset(
 )
 
 
+ALLOWED_SHARD = frozenset({"split", "leader"})
+SHARDED_MODE = "full"
+
+
 class ContractError(ValueError):
     """Raised when a proof contract is malformed or unsafe."""
 
@@ -40,6 +44,11 @@ class GateSpec:
     required: bool = True
     when: str | None = None
     targets_placeholder: str | None = None
+    # "split": the gate's tests are divided across the legs of a sharded run.
+    # "leader": the gate runs in leg 1 only. None: the gate runs in every leg, unchanged.
+    shard: str | None = None
+    # Environment variable names the runner removes when it launches this gate.
+    env_clear: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -49,6 +58,15 @@ class ProofContract:
     runner: str
     modes: Mapping[str, Mapping[str, Any]]
     gates: tuple[GateSpec, ...]
+
+    @property
+    def shards(self) -> int | None:
+        """The number of legs the full proof declares, or None when it declares none."""
+        full = self.modes.get(SHARDED_MODE)
+        if not isinstance(full, Mapping):
+            return None
+        declared = full.get("shards")
+        return declared if isinstance(declared, int) and not isinstance(declared, bool) else None
 
     def gates_for_mode(self, mode: str, *, llm_boundary: bool = False) -> tuple[GateSpec, ...]:
         if mode not in self.modes:
@@ -65,6 +83,18 @@ class ProofContract:
                 continue
             selected.append(gate)
         return tuple(selected)
+
+
+def gate_extends(leader: GateSpec, split: GateSpec) -> bool:
+    """True when ``leader``'s command is ``split``'s plus more arguments: a narrower run of it.
+
+    The loader requires this of a leader gate, and the runner requires it before it
+    lets a split gate stand in for a leader that an unsharded run skips.
+    """
+    return (
+        len(leader.command) > len(split.command)
+        and leader.command[: len(split.command)] == split.command
+    )
 
 
 def _require_str(value: object, *, field: str) -> str:
@@ -96,6 +126,19 @@ def _parse_gate(raw: object, *, index: int) -> GateSpec:
         targets_placeholder = _require_str(
             targets_placeholder, field=f"gates[{index}].targets_placeholder"
         )
+    shard = raw.get("shard")
+    if shard is not None and (not isinstance(shard, str) or shard not in ALLOWED_SHARD):
+        raise ContractError(
+            f"gates[{index}].shard must be one of {sorted(ALLOWED_SHARD)}; got {shard!r}"
+        )
+    env_clear_raw = raw.get("env_clear")
+    env_clear: tuple[str, ...] = ()
+    if env_clear_raw is not None:
+        if not isinstance(env_clear_raw, list):
+            raise ContractError(f"gates[{index}].env_clear must be a list of strings")
+        env_clear = tuple(
+            _require_str(name, field=f"gates[{index}].env_clear") for name in env_clear_raw
+        )
     return GateSpec(
         id=gate_id,
         phase=phase,
@@ -104,7 +147,23 @@ def _parse_gate(raw: object, *, index: int) -> GateSpec:
         required=required,
         when=when,
         targets_placeholder=targets_placeholder,
+        shard=shard,
+        env_clear=env_clear,
     )
+
+
+def _validate_shards(modes: Mapping[str, object]) -> None:
+    """Refuse a bad ``shards`` value; only the full mode may declare one."""
+    for mode_name, config in modes.items():
+        if not isinstance(config, Mapping) or "shards" not in config:
+            continue
+        declared = config["shards"]
+        if mode_name != SHARDED_MODE:
+            raise ContractError(f"modes.{mode_name}.shards is only allowed on the full mode")
+        if isinstance(declared, bool) or not isinstance(declared, int) or declared < 1:
+            raise ContractError(
+                f"modes.{mode_name}.shards must be a positive integer; got {declared!r}"
+            )
 
 
 def load_contract(path: Path) -> ProofContract:
@@ -134,6 +193,7 @@ def load_contract(path: Path) -> ProofContract:
     modes = payload.get("modes")
     if not isinstance(modes, dict) or not modes:
         raise ContractError("modes must be a non-empty object")
+    _validate_shards(modes)
     gates_raw = payload.get("gates")
     if not isinstance(gates_raw, list) or not gates_raw:
         raise ContractError("gates must be a non-empty list")
@@ -141,4 +201,18 @@ def load_contract(path: Path) -> ProofContract:
     ids = [gate.id for gate in gates]
     if len(ids) != len(set(ids)):
         raise ContractError("gate ids must be unique")
+    split = [g for g in gates if g.shard == "split"]
+    for gate in gates:
+        if gate.shard is not None and gate.classify != "test":
+            raise ContractError(f"gate {gate.id}: shard requires classify: test")
+        if gate.shard is not None and gate.targets_placeholder is not None:
+            raise ContractError(
+                f"gate {gate.id}: a sharded gate cannot take a targets placeholder, because "
+                "the runner would skip it for want of --targets, outside any leg's accounting"
+            )
+        if gate.shard == "leader" and not any(gate_extends(gate, s) for s in split):
+            raise ContractError(
+                f"gate {gate.id}: a leader gate must extend the command of a split gate, "
+                "because an unsharded run skips it and relies on that gate to run its tests"
+            )
     return ProofContract(schema_version=1, name=name, runner=runner, modes=modes, gates=gates)

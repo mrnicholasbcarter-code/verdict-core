@@ -9,6 +9,7 @@ and replayable from the same nodes.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -456,11 +457,44 @@ def parse_plan(text: str, goal: str, *, max_parallel: int = 3) -> WorkGraph:
 
 # ---------------------------------------------------------------- repo map
 
+_AGENTS_MD_WHERE_THINGS_LIVE_MAX_BYTES = 4096
+
+
+def _agents_md_where_things_live(root: Path) -> str:
+    """Extract the 'Where things live' table from AGENTS.md, for planner context.
+
+    Returns the section text (from the heading through the last row) capped at
+    ``_AGENTS_MD_WHERE_THINGS_LIVE_MAX_BYTES`` bytes.  Returns an empty string
+    when the file is absent, unreadable, or has no such section.
+    """
+    agents_md = root / "AGENTS.md"
+    try:
+        text = agents_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    # Match from the heading to the next same-level heading or end of file.
+    m = re.search(r"^## Where things live\b(.*?)(?=^## |\Z)", text, re.DOTALL | re.MULTILINE)
+    if not m:
+        return ""
+    section = ("## Where things live" + m.group(1)).rstrip()
+    return section.encode("utf-8")[:_AGENTS_MD_WHERE_THINGS_LIVE_MAX_BYTES].decode(
+        "utf-8", errors="ignore"
+    )
+
 
 def repo_map(
     root: Path, *, max_files: int = 400, include: tuple[str, ...] = ("verdict", "tests", "docs")
 ) -> str:
-    """Compact listing of tracked python/markdown files with line counts, for minimal hydration."""
+    """Compact listing of tracked python/markdown files with line counts, for minimal hydration.
+
+    Files are ordered by the ``include`` tuple first (so ``verdict/`` appears before
+    ``tests/``), then alphabetically within each group.  This prevents alphabetical
+    ordering from crowding out ``verdict/`` when the file cap is reached.
+
+    When ``root/AGENTS.md`` contains a "Where things live" section that section
+    is prepended so the planner can assign owned files correctly without an
+    operator ``--constraints-file``.
+    """
     try:
         proc = subprocess.run(
             ["git", "-C", str(root), "ls-files"],
@@ -472,17 +506,21 @@ def repo_map(
     except (OSError, subprocess.SubprocessError) as exc:
         raise OrchestrationError(f"repo_map: git ls-files failed: {exc}") from exc
 
-    prefixes = tuple(p.rstrip("/") + "/" for p in include)
-    solo = tuple(p.rstrip("/") for p in include)
-    tracked: list[str] = []
+    # Group files by their include prefix, preserving include-tuple order.
+    by_prefix: dict[str, list[str]] = {p: [] for p in include}
     for line in proc.stdout.splitlines():
         rel = line.strip()
         if not rel or not (rel.endswith(".py") or rel.endswith(".md")):
             continue
-        if not (rel.startswith(prefixes) or rel in solo):
-            continue
-        tracked.append(rel)
-    tracked.sort()
+        for p in include:
+            if rel.startswith(p.rstrip("/") + "/") or rel == p.rstrip("/"):
+                by_prefix[p].append(rel)
+                break
+
+    # Yield files in include-tuple order, sorted within each group, then cap.
+    tracked: list[str] = []
+    for p in include:
+        tracked.extend(sorted(by_prefix[p]))
     tracked = tracked[:max_files]
 
     lines = [f"{len(tracked)} tracked files (py/md) under {', '.join(include)}:"]
@@ -493,7 +531,17 @@ def repo_map(
         except OSError:
             count = 0
         lines.append(f"{rel}\t{count}")
-    return "\n".join(lines)
+    file_listing = "\n".join(lines)
+
+    agents_section = _agents_md_where_things_live(root)
+    if agents_section:
+        return (
+            '[AGENTS.md "Where things live"]\n'
+            + agents_section
+            + "\n\n[File listing]\n"
+            + file_listing
+        )
+    return file_listing
 
 
 # ---------------------------------------------------------------- frontier planner
@@ -556,6 +604,10 @@ class FrontierPlanner:
         # (a tool-enabled planner explored the repo until the 600 s timeout).
         executor = AnswerOnlyExecutor(executor)
         repo_map_text = repo_map(repo)
+        if events is not None:
+            events.emit(
+                "plan_context", repo_map_sha256=hashlib.sha256(repo_map_text.encode()).hexdigest()
+            )
         prompt = build_planning_prompt(goal, repo_map_text, constraints)
         terminal = await bounded_executor_call(
             executor,

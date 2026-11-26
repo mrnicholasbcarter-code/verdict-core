@@ -682,6 +682,15 @@ def _action_discovery_funnel(**kwargs: Any) -> ActionResult:
     return ActionResult(data=run_funnel())
 
 
+def _action_discovery_connections(**kwargs: Any) -> ActionResult:
+    """Report the configured gateway's connection billing evidence."""
+    from verdict.discovery.connections import run_connections_action
+
+    data = run_connections_action()
+    ok = data["status"] == "ok"
+    return ActionResult(data=data, ok=ok, exit_code=0 if ok else 1)
+
+
 def _action_discovery_refresh(**kwargs: Any) -> ActionResult:
     """Probe free/subscription routes and write 12-hour proof registry."""
     from verdict.discovery.refresh import run_refresh_action
@@ -1096,6 +1105,45 @@ def _action_metrics(**kwargs: Any) -> ActionResult:
         )
 
     return ActionResult(data=result, ok=aggregated["runs_processed"] > 0, exit_code=0)
+
+
+def _action_headline_metric(**kwargs: Any) -> ActionResult:
+    """M0 headline metric report: accepted work per paid model share.
+
+    Computes the headline metric from verified receipts in *runs_dir*, excluding
+    fixture runs (run_id starting with "test-").  A missing *runs_dir* gives an
+    empty report (``runs_dir_found`` false), never an error.
+
+    kwargs:
+        runs_dir (str): Path to the runs directory.
+        since (str|None): ISO date string (YYYY-MM-DD) to filter runs by start date.
+        json (bool): Return JSON-formatted output.
+    """
+    from datetime import date
+    from pathlib import Path
+
+    from verdict.headline_metric import compute_headline_report
+
+    runs_dir_str: str = kwargs.get("runs_dir", ".verdict/runs")
+    since_str: str | None = kwargs.get("since")
+
+    # A runs directory that does not exist (a fresh install) is an empty report,
+    # not an error; the report says the directory was not found.
+    runs_dir = Path(runs_dir_str)
+
+    since: date | None = None
+    if since_str:
+        try:
+            since = date.fromisoformat(since_str)
+        except ValueError:
+            return ActionResult(
+                data={"error": f"invalid --since date: {since_str!r} (use YYYY-MM-DD)"},
+                ok=False,
+                exit_code=2,
+            )
+
+    data = compute_headline_report(runs_dir, since=since)
+    return ActionResult(data=data, ok=data.get("runs_processed", 0) >= 0, exit_code=0)
 
 
 def _action_compare(**kwargs: Any) -> ActionResult:
@@ -1856,6 +1904,16 @@ def _register_builtins() -> None:
         ),
         (
             ActionSpec(
+                "discovery.connections",
+                "health",
+                "read",
+                "Report read-only connection billing evidence",
+                "Health",
+            ),
+            _action_discovery_connections,
+        ),
+        (
+            ActionSpec(
                 "discovery.refresh",
                 "health",
                 "mutation",
@@ -1940,6 +1998,16 @@ def _register_builtins() -> None:
                 "Metrics",
             ),
             _action_metrics,
+        ),
+        (
+            ActionSpec(
+                "headline.metric",
+                "metrics",
+                "read",
+                "M0 headline metric report: accepted work per % paid quota / per paid dollar",
+                "Metrics",
+            ),
+            _action_headline_metric,
         ),
         (
             ActionSpec(

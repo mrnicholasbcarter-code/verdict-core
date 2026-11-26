@@ -24,6 +24,24 @@ from verdict.subagent_selection import HealthResult
 NOW = datetime(2026, 2, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _state_in_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep every default state path this file resolves inside the test's tmp_path.
+
+    Several tests below write a ``ProveAtRestCycle`` at ``default_state_path()``
+    and the ladder reads the same path; a ladder built without ``health_cache=``
+    writes ``<verdict_home>/health-cache.json``. Pinning HOME and VERDICT_HOME
+    (and dropping the per-store overrides) keeps all of it off the operator's
+    ``~/.verdict`` even when ``tests/conftest.py`` is not loaded (issue #1306).
+    """
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("VERDICT_HOME", str(home / ".verdict"))
+    for name in ("VERDICT_PROVE_AT_REST_STATE", "VERDICT_HEALTH_CACHE", "VERDICT_SESSION_EVIDENCE"):
+        monkeypatch.delenv(name, raising=False)
+    return home / ".verdict"
+
+
 def row(
     route_id: str,
     owned_by: str | None = None,
@@ -63,6 +81,18 @@ def conn(
         "rate_limited_until": rate_limited_until,
         "import_free_only": free_only,
     }
+
+
+# CP2 removed oauth → SUBSCRIPTION; declare the fake test providers via overlay.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    # D36: list price is METERED evidence for API-key connections only.  Fake
+    # oauth providers used in tests would fall through to UNKNOWN (no catalog
+    # entry, non-apikey), triggering the agentic-probe gate.  Declare them as
+    # SUBSCRIPTION so tests that do not care about authType are not blocked.
+    billing_overlay_subscription(
+        [("kiro", "oauth"), ("zz", "oauth"), ("pp", "oauth"), ("p0", "oauth")]
+    )
 
 
 class FakeProbe:
@@ -554,7 +584,7 @@ class TestSelect:
         )
         cache.save()
 
-        # Create a passport store at the default path (uses HOME from test fixture)
+        # Create a passport store at the default path (under tmp_path, pinned by _state_in_tmp)
         passport_store_path = default_state_path()
         passport_store_path.parent.mkdir(parents=True, exist_ok=True)
         passport = ModelPassport(
@@ -1652,7 +1682,7 @@ def test_planner_respects_capability_floor_before_cheapest_tier(tmp_path, free_t
             {**row("gl/glm-5", owned_by="glm"), "capability_tier": free_tier},
             {**row("cc/claude-sonnet-5", owned_by="claude"), "capability_tier": 1},
         ],
-        [conn("glm", plan="free"), conn("claude")],
+        [conn("glm", free_only=True), conn("claude")],
     )
     choice, _ = ladder.select(
         TaskRequirements(

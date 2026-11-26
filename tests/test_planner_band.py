@@ -14,7 +14,8 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -41,10 +42,19 @@ from verdict.planner_band import (
 # Test constants
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2026, 11, 23, 12, 0, 0, tzinfo=timezone.utc)
-FETCHED_NEW = "2026-11-23T09:00:00Z"  # 3h before NOW → fresh, newest batch
-FETCHED_OLD = "2026-11-22T09:00:00Z"  # 27h before NOW → stale (> 12h)
-FETCHED_MID = "2026-11-23T06:00:00Z"  # 6h before NOW → fresh but older batch
+# NOW follows the real clock (truncated to the hour) because integration tests
+# import these fixtures and run production code that checks freshness against
+# ``datetime.now()``. A fixed date here goes stale 12 h later and fails them.
+NOW = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+
+
+def _iso(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+FETCHED_NEW = _iso(NOW - timedelta(hours=3))  # fresh, newest batch
+FETCHED_OLD = _iso(NOW - timedelta(hours=27))  # stale (> 12h)
+FETCHED_MID = _iso(NOW - timedelta(hours=6))  # fresh but older batch
 DEFAULT_CONFIG = PlannerBandConfig(frontier_top=0.20, fallback_top=0.30)
 
 
@@ -604,8 +614,8 @@ class TestSelectPlannerRoutes:
         route_id, _ = selected[0]
         assert route_id == "cc/free"  # FREE before SUBSCRIPTION at same score
 
-    def test_fewer_than_two_families_raises_for_top_n_2(self) -> None:
-        # Only one family (claude) available across both bands
+    def test_fewer_than_two_families_proceeds_single_family(self) -> None:
+        # D39: only one family (claude) available across both bands → proceed with flag
         records = [
             _record("p/a", ("cc/claude-3-opus",), aa_intelligence=_score(95.0)),
             _record("p/b", ("cc/claude-3-sonnet",), aa_intelligence=_score(85.0)),
@@ -615,10 +625,442 @@ class TestSelectPlannerRoutes:
             ["cc/claude-3-opus", "cc/claude-3-sonnet"], snap, None, config=DEFAULT_CONFIG, now=NOW
         )
         caps = _caps_map("cc/claude-3-opus", "cc/claude-3-sonnet")
+        selected = select_planner_routes(
+            ["cc/claude-3-opus", "cc/claude-3-sonnet"], caps, band, snap, None, top_n=2, now=NOW
+        )
+        # Returns 1 result (best of the one family), annotated with the flag
+        assert len(selected) == 1
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        # No other family was in the band, so unavailable_families is empty
+        assert result.unavailable_families == ()
+
+    def test_single_family_records_unavailable_families_with_reasons(self) -> None:
+        # Use the two-family band (10 routes, frontier={claude-3-opus, gpt-4o}).
+        # Admit only claude routes; gpt-4o is in the band but excluded with a reason.
+        band, snap = self._two_family_band()
+        admitted = ["cc/claude-3-opus", "cc/claude-3-sonnet", "cc/claude-3-haiku"]
+        caps = _caps_map(*admitted)
+        exclusion_reasons = {"oa/gpt-4o": "metered_capacity", "oa/gpt-4-turbo": "quota_low"}
+        selected = select_planner_routes(
+            admitted, caps, band, snap, None, top_n=2, now=NOW, exclusion_reasons=exclusion_reasons
+        )
+        assert len(selected) == 1
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        # gpt-4o is the band representative for the gpt family
+        assert result.unavailable_families == (("gpt", "metered_capacity"),)
+        # to_dict includes the new keys when single_family_planner=True
+        d = result.to_dict()
+        assert d["single_family_planner"] is True
+        assert d["unavailable_families"] == {"gpt": "metered_capacity"}
+
+    def test_two_families_no_single_family_flag(self) -> None:
+        # Normal two-family case: single_family_planner must be False
+        band, snap = self._two_family_band()
+        admitted = ["cc/claude-3-opus", "oa/gpt-4o"]
+        caps = _caps_map("cc/claude-3-opus", "oa/gpt-4o")
+        selected = select_planner_routes(admitted, caps, band, snap, None, top_n=2, now=NOW)
+        assert len(selected) == 2
+        for _, result in selected:
+            assert result.single_family_planner is False
+            assert result.unavailable_families == ()
+        d = selected[0][1].to_dict()
+        assert "single_family_planner" not in d
+        assert "unavailable_families" not in d
+
+    def test_zero_admissible_routes_still_fails_closed(self) -> None:
+        # No routes admitted at all → PlannerBandError, even with top_n=3 (D39 does not apply)
+        band, snap = self._two_family_band()
+        caps: dict[str, CapacityClass] = {}
         with pytest.raises(PlannerBandError, match="no_frontier_or_fallback_planner"):
-            select_planner_routes(
-                ["cc/claude-3-opus", "cc/claude-3-sonnet"], caps, band, snap, None, top_n=2, now=NOW
+            select_planner_routes([], caps, band, snap, None, top_n=3, now=NOW)
+
+    def test_admitted_metered_band_route_appears_in_unavailable_families(self) -> None:
+        """D39/finding-1: an admitted METERED band route's family appears in unavailable_families
+        even when no exclusion_reasons map is supplied for it."""
+        band, snap = self._two_family_band()
+        # Claude is admitted FREE; GPT is admitted but METERED — _filter_to_band excludes it.
+        # No exclusion_reasons is passed; the capacity exclusion must still be recorded.
+        admitted = ["cc/claude-3-opus", "oa/gpt-4o"]
+        caps = {"cc/claude-3-opus": CapacityClass.FREE, "oa/gpt-4o": CapacityClass.METERED}
+        selected = select_planner_routes(admitted, caps, band, snap, None, top_n=2, now=NOW)
+        assert len(selected) == 1
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        assert result.unavailable_families == (("gpt", "metered_excluded"),)
+        assert result.to_dict()["unavailable_families"] == {"gpt": "metered_excluded"}
+
+    @pytest.mark.parametrize("exclusion_reasons", [None, {}], ids=["no_map", "empty_map"])
+    def test_single_family_without_reasons_lists_other_band_family(
+        self, exclusion_reasons: dict[str, str] | None
+    ) -> None:
+        """#1317: a band family with no admitted route and no caller reason is still listed.
+
+        The two-family band has claude and gpt in the frontier band. Only claude is
+        admitted, and the caller names no reason for gpt. The receipt must say gpt was
+        unavailable (``no_admitted_route``), not leave ``unavailable_families`` empty.
+        """
+        band, snap = self._two_family_band()
+        admitted = ["cc/claude-3-opus", "cc/claude-3-sonnet"]
+        caps = _caps_map(*admitted)
+        selected = select_planner_routes(
+            admitted, caps, band, snap, None, top_n=2, now=NOW, exclusion_reasons=exclusion_reasons
+        )
+        assert [r for r, _ in selected] == ["cc/claude-3-opus"]
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        assert result.unavailable_families == (("gpt", "no_admitted_route"),)
+        d = result.to_dict()
+        assert d["single_family_planner"] is True
+        assert d["unavailable_families"] == {"gpt": "no_admitted_route"}
+
+    def test_single_family_non_band_reason_is_not_the_band_family_reason(self) -> None:
+        """A caller reason for a route outside the band does not become a band family's reason."""
+        band, snap = self._two_family_band()
+        admitted = ["cc/claude-3-opus"]
+        caps = _caps_map(*admitted)
+        # oa/gpt-3.5 is not in the frontier or fallback band; oa/gpt-4o (the band route) has no reason.
+        selected = select_planner_routes(
+            admitted,
+            caps,
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"oa/gpt-3.5": "quota_low"},
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (("gpt", "no_admitted_route"),)
+
+    def test_single_family_mixes_caller_reasons_and_no_admitted_route(self) -> None:
+        """Caller reasons win; families without one get ``no_admitted_route``; the used family
+        and families outside the band are never listed."""
+        records = [
+            _record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0)),
+            _record("p/c1", ("cc/claude-3-sonnet",), aa_intelligence=_score(80.0)),
+            _record("p/g0", ("oa/gpt-4o",), aa_intelligence=_score(90.0)),
+            _record("p/m0", ("gg/gemini-2-pro",), aa_intelligence=_score(85.0)),
+            # llama is in the inventory but unrated, so it is in neither band.
+            _record("p/l0", ("ml/llama-3",)),
+        ]
+        snap = _snapshot(*records)
+        inventory = [
+            "cc/claude-3-opus",
+            "cc/claude-3-sonnet",
+            "oa/gpt-4o",
+            "gg/gemini-2-pro",
+            "ml/llama-3",
+        ]
+        everything_in_band = PlannerBandConfig(frontier_top=1.0, fallback_top=1.0)
+        band = compute_planner_bands(inventory, snap, None, config=everything_in_band, now=NOW)
+        assert "ml/llama-3" not in band.frontier_model_keys | band.fallback_model_keys
+
+        admitted = ["cc/claude-3-opus"]
+        caps = _caps_map(*admitted)
+        selected = select_planner_routes(
+            admitted,
+            caps,
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={
+                "oa/gpt-4o": "quota_low",  # caller reason for a band family: it wins
+                "cc/claude-3-sonnet": "unhealthy",  # same family as the used route: never listed
+                "ml/llama-3": "unhealthy",  # not a band family: never listed
+            },
+        )
+        assert [r for r, _ in selected] == ["cc/claude-3-opus"]
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        # gemini has no admitted route and no caller reason; gpt keeps the caller's reason.
+        assert result.unavailable_families == (
+            ("gemini", "no_admitted_route"),
+            ("gpt", "quota_low"),
+        )
+
+    def test_single_family_suffixed_route_reason_is_not_listed_twice(self) -> None:
+        """A band model whose route carries a ``:suffix`` and has a caller reason is listed once,
+        under the family of the full route id, with the caller's reason."""
+        records = [
+            _record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0)),
+            _record("p/d0", ("fr/dead",), aa_intelligence=_score(90.0)),
+        ]
+        snap = _snapshot(*records)
+        inventory = ["cc/claude-3-opus", "fr/dead:free"]
+        everything_in_band = PlannerBandConfig(frontier_top=1.0, fallback_top=1.0)
+        band = compute_planner_bands(inventory, snap, None, config=everything_in_band, now=NOW)
+        assert "fr/dead" in band.frontier_model_keys
+
+        admitted = ["cc/claude-3-opus"]
+        selected = select_planner_routes(
+            admitted,
+            _caps_map(*admitted),
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"fr/dead:free": "unhealthy"},
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (("dead:free", "unhealthy"),)
+
+    def _alias_band(self) -> tuple[BandComputation, MetadataSnapshot]:
+        """One model with two aliases of different route_family values, plus a gpt model and
+        a claude model.  Every model is in the band."""
+        records = [
+            _record("p/model", ("cc/alpha", "cc/beta"), aa_intelligence=_score(95.0)),
+            _record("p/g0", ("oa/gpt-4o",), aa_intelligence=_score(90.0)),
+            _record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(85.0)),
+        ]
+        snap = _snapshot(*records)
+        inventory = ["cc/alpha", "cc/beta", "oa/gpt-4o", "cc/claude-3-opus"]
+        everything_in_band = PlannerBandConfig(frontier_top=1.0, fallback_top=1.0)
+        band = compute_planner_bands(inventory, snap, None, config=everything_in_band, now=NOW)
+        assert {"cc/alpha", "cc/beta"} <= band.frontier_model_keys
+        return band, snap
+
+    def test_single_family_alias_of_selected_model_is_not_unavailable(self) -> None:
+        """Review of #1317: aliases of one model are one model.  When cc/beta is selected, its
+        alias cc/alpha (another route_family value) must not be reported as an unavailable family."""
+        band, snap = self._alias_band()
+        admitted = ["cc/beta"]
+        selected = select_planner_routes(
+            admitted, _caps_map(*admitted), band, snap, None, top_n=2, now=NOW
+        )
+        assert [r for r, _ in selected] == ["cc/beta"]
+        _, result = selected[0]
+        assert result.single_family_planner is True
+        # The claude-3-opus model has no admitted route; the alpha alias of the selected model
+        # is not another family.
+        assert result.unavailable_families == (
+            ("claude", "no_admitted_route"),
+            ("gpt", "no_admitted_route"),
+        )
+
+    def test_single_family_alias_of_reasoned_model_is_listed_once(self) -> None:
+        """When the caller gives a reason for one alias, the model's other alias is not listed
+        again as ``no_admitted_route`` under a second family."""
+        band, snap = self._alias_band()
+        admitted = ["cc/claude-3-opus"]
+        selected = select_planner_routes(
+            admitted,
+            _caps_map(*admitted),
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"cc/alpha": "unhealthy"},
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (("alpha", "unhealthy"), ("gpt", "no_admitted_route"))
+
+    def test_single_family_unnamed_aliases_of_one_model_are_listed_once(self) -> None:
+        """Round 2 of the #1317 review: two aliases of one unavailable model are one family
+        entry, under the alphabetically first alias, not one entry per alias."""
+        band, snap = self._alias_band()
+        admitted = ["cc/claude-3-opus"]
+        selected = select_planner_routes(
+            admitted, _caps_map(*admitted), band, snap, None, top_n=2, now=NOW
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (
+            ("alpha", "no_admitted_route"),
+            ("gpt", "no_admitted_route"),
+        )
+
+    def test_single_family_reasoned_alias_of_selected_model_is_not_unavailable(self) -> None:
+        """Round 3 of the #1317 review: a caller reason for one alias of the model that was
+        selected does not make that model unavailable."""
+        band, snap = self._alias_band()
+        admitted = ["cc/beta"]
+        selected = select_planner_routes(
+            admitted,
+            _caps_map(*admitted),
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"cc/alpha": "unhealthy"},
+        )
+        assert [r for r, _ in selected] == ["cc/beta"]
+        _, result = selected[0]
+        assert result.unavailable_families == (
+            ("claude", "no_admitted_route"),
+            ("gpt", "no_admitted_route"),
+        )
+
+    def test_single_family_metered_alias_of_selected_model_is_not_unavailable(self) -> None:
+        """An admitted alias that the capacity filter excluded is not unavailable either when
+        another alias of the same model is the selected route."""
+        band, snap = self._alias_band()
+        admitted = ["cc/beta", "cc/alpha"]
+        caps = {"cc/beta": CapacityClass.FREE, "cc/alpha": CapacityClass.METERED}
+        selected = select_planner_routes(admitted, caps, band, snap, None, top_n=2, now=NOW)
+        assert [r for r, _ in selected] == ["cc/beta"]
+        _, result = selected[0]
+        assert result.unavailable_families == (
+            ("claude", "no_admitted_route"),
+            ("gpt", "no_admitted_route"),
+        )
+
+    def test_single_family_alias_of_unselected_candidate_is_not_unavailable(self) -> None:
+        """A model with an admitted route that lost only because its family was already used
+        is available; a caller reason for another alias of it does not list it."""
+        records = [
+            _record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0)),
+            _record("p/c1", ("cc/claude-3-sonnet", "cc/zeta"), aa_intelligence=_score(90.0)),
+            _record("p/g0", ("oa/gpt-4o",), aa_intelligence=_score(85.0)),
+        ]
+        snap = _snapshot(*records)
+        inventory = ["cc/claude-3-opus", "cc/claude-3-sonnet", "cc/zeta", "oa/gpt-4o"]
+        everything_in_band = PlannerBandConfig(frontier_top=1.0, fallback_top=1.0)
+        band = compute_planner_bands(inventory, snap, None, config=everything_in_band, now=NOW)
+        admitted = ["cc/claude-3-opus", "cc/claude-3-sonnet"]
+        selected = select_planner_routes(
+            admitted,
+            _caps_map(*admitted),
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"cc/zeta": "unhealthy"},
+        )
+        assert [r for r, _ in selected] == ["cc/claude-3-opus"]
+        _, result = selected[0]
+        assert result.unavailable_families == (("gpt", "no_admitted_route"),)
+
+    @pytest.mark.parametrize(
+        ("exclusion_reasons", "expected"),
+        [
+            pytest.param(
+                {"cc/alpha": "unhealthy", "cc/beta": "quota_low"},
+                ("alpha", "unhealthy"),
+                id="caller_order_alpha_first",
+            ),
+            pytest.param(
+                {"cc/beta": "quota_low", "cc/alpha": "unhealthy"},
+                ("beta", "quota_low"),
+                id="caller_order_beta_first",
+            ),
+        ],
+    )
+    def test_single_family_reasoned_aliases_of_one_model_are_listed_once(
+        self, exclusion_reasons: dict[str, str], expected: tuple[str, str]
+    ) -> None:
+        """Round 3 of the #1317 review: two aliases of one unavailable model, each with a
+        caller reason, are one entry.  The first reason in the caller's map wins."""
+        band, snap = self._alias_band()
+        admitted = ["cc/claude-3-opus"]
+        selected = select_planner_routes(
+            admitted,
+            _caps_map(*admitted),
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons=exclusion_reasons,
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (expected, ("gpt", "no_admitted_route"))
+
+    def test_single_family_capacity_reason_beats_caller_reason_across_aliases(self) -> None:
+        """The existing precedence holds across aliases of one model: the reason from the
+        capacity filter (an admitted alias) wins over a caller reason for another alias."""
+        band, snap = self._alias_band()
+        admitted = ["cc/claude-3-opus", "cc/beta"]
+        caps = {"cc/claude-3-opus": CapacityClass.FREE, "cc/beta": CapacityClass.METERED}
+        selected = select_planner_routes(
+            admitted,
+            caps,
+            band,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"cc/alpha": "unhealthy"},
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (
+            ("beta", "metered_excluded"),
+            ("gpt", "no_admitted_route"),
+        )
+
+    def test_single_family_without_record_ids_lists_each_alias_as_before(self) -> None:
+        """A band built without record ids (a direct constructor) cannot tell aliases from
+        families, so every alias is listed under its own family, as it always was."""
+        band, snap = self._alias_band()
+        no_ids = replace(band, model_record_ids={})
+        admitted = ["cc/beta"]
+        selected = select_planner_routes(
+            admitted,
+            _caps_map(*admitted),
+            no_ids,
+            snap,
+            None,
+            top_n=2,
+            now=NOW,
+            exclusion_reasons={"cc/alpha": "unhealthy"},
+        )
+        _, result = selected[0]
+        assert result.unavailable_families == (
+            ("alpha", "unhealthy"),
+            ("claude", "no_admitted_route"),
+            ("gpt", "no_admitted_route"),
+        )
+
+    @pytest.mark.parametrize(
+        ("admitted", "caps", "exclusion_reasons"),
+        [
+            pytest.param(["cc/beta"], {}, {"cc/alpha": "unhealthy"}, id="reasoned_alias"),
+            pytest.param(
+                ["cc/beta", "cc/alpha"],
+                {"cc/alpha": CapacityClass.METERED},
+                None,
+                id="metered_alias",
+            ),
+            pytest.param(
+                ["cc/claude-3-opus"],
+                {},
+                {"cc/alpha": "unhealthy", "cc/beta": "quota_low"},
+                id="two_reasoned_aliases",
+            ),
+            pytest.param(["cc/claude-3-opus"], {}, None, id="unnamed_aliases"),
+        ],
+    )
+    def test_record_ids_never_change_which_routes_are_selected(
+        self,
+        admitted: list[str],
+        caps: dict[str, CapacityClass],
+        exclusion_reasons: dict[str, str] | None,
+    ) -> None:
+        """The record ids only decide what the receipt lists.  The selected routes, their
+        order and every other result field are the same with and without them."""
+        band, snap = self._alias_band()
+        capacity = {r: caps.get(r, CapacityClass.FREE) for r in admitted}
+
+        def run(b: BandComputation) -> list[tuple[str, object]]:
+            selected = select_planner_routes(
+                admitted,
+                capacity,
+                b,
+                snap,
+                None,
+                top_n=2,
+                now=NOW,
+                exclusion_reasons=exclusion_reasons,
             )
+            return [(r, replace(res, unavailable_families=())) for r, res in selected]
+
+        assert run(band) == run(replace(band, model_record_ids={}))
 
     def test_band_result_fields_populated(self) -> None:
         records = [_record("p/c0", ("cc/claude-3-opus",), aa_intelligence=_score(95.0))]
@@ -639,7 +1081,10 @@ class TestSelectPlannerRoutes:
         assert result.rating == pytest.approx(95.0)
         assert result.metric == "aa_intelligence"
         assert result.fetched_at == FETCHED_NEW
+        assert result.single_family_planner is False
+        assert result.unavailable_families == ()
         d = result.to_dict()
+        # New fields absent from to_dict when single_family_planner=False
         assert set(d.keys()) == {
             "required",
             "used",
@@ -777,7 +1222,7 @@ class TestBandLadderIntegration:
     """EligibilityLadder.set_planner_band() injects band-based candidate ordering."""
 
     def test_set_planner_band_prefers_higher_rated_subscription_over_lower_rated_free(
-        self, tmp_path
+        self, tmp_path, billing_overlay_subscription
     ) -> None:
         """Blocking #2: band re-sort in _assess_all puts higher-rated SUB before lower-rated FREE.
 
@@ -790,9 +1235,12 @@ class TestBandLadderIntegration:
         from verdict.orchestration.contracts import TaskRequirements
         from verdict.orchestration.eligibility import EligibilityLadder
 
+        # CP2 removed the oauth → SUBSCRIPTION rule; declare "oa" via overlay so
+        # the billing lookup sees SUBSCRIPTION rather than UNKNOWN.
+        billing_overlay_subscription([("oa", "oauth")])
         rows = [row("oa/sub"), row("cc/free")]
         conns = [
-            conn("oa", auth="oauth"),  # → SUBSCRIPTION
+            conn("oa", auth="oauth"),  # → SUBSCRIPTION (via billing overlay)
             conn("cc", free_only=True),  # → FREE (import_free_only)
         ]
         ladder = EligibilityLadder(rows, conns, FakeProbe(), tmp_path / "state.json", metadata=None)
@@ -814,3 +1262,94 @@ class TestBandLadderIntegration:
         choice, _ = ladder.select(req, now=NOW)
         assert choice is not None
         assert choice.route_id == "oa/sub"
+
+    def test_probe_order_uses_band_score_not_health_freshness(
+        self, tmp_path, billing_overlay_subscription
+    ) -> None:
+        """Bug: _probe_order groups healthy routes first, overriding band score order.
+
+        Reproduces the production incident where cc/claude-fable-5-1 (fallback,
+        score 50.0) was selected as planner instead of cc/claude-opus-5-5
+        (frontier, score 59.1) because fable had a fresh health-cache entry
+        (written by selection_refresh_hook) while opus/sonnet were unprobed.
+
+        _probe_order placed fable first (healthy→fresh group) then sorted by
+        _rank_key[:4]; without band metadata, all three SUB routes tie on
+        _rank_key so the stable sort preserved fable at index 0.
+
+        After fix: when self._planner_band is not None, _probe_order sorts by
+        the band _sort_key, so opus (score 59.1) goes before sonnet (54.5) and
+        fable (50.0) regardless of health freshness.
+        """
+        from tests.test_orch_eligibility import FakeProbe, conn, row
+        from verdict.orchestration.contracts import TaskRequirements
+        from verdict.orchestration.eligibility import EligibilityLadder
+        from verdict.orchestration.health_cache import CATEGORY_OK, HealthCache, ProbeResult
+
+        # All three routes are SUBSCRIPTION via billing overlay.
+        billing_overlay_subscription([("claude", "oauth")])
+        rows = [
+            row("cc/claude-opus-5-5", owned_by="claude"),
+            row("cc/claude-sonnet-5-5", owned_by="claude"),
+            row("cc/claude-fable-5-1", owned_by="claude"),
+        ]
+        conns = [conn("claude", auth="oauth")]
+
+        # Fable is "healthy" in the health cache — simulates selection_refresh_hook
+        # having probed it before the main select() loop runs.  Opus and sonnet
+        # have no cache entry and therefore health="unprobed".
+        cache = HealthCache(tmp_path / "health.json")
+        checked = NOW - timedelta(seconds=60)
+        cache.record(
+            "cc/claude-fable-5-1",
+            ProbeResult(
+                category=CATEGORY_OK,
+                chat_ok=True,
+                tool_ok=True,
+                probe_class="agentic",
+                agentic_ok=True,
+            ),
+            checked,
+        )
+        cache.save()
+
+        # Band built manually: opus/sonnet in frontier, fable only in fallback.
+        band = BandComputation(
+            frontier_model_keys=frozenset({"cc/claude-opus-5-5", "cc/claude-sonnet-5-5"}),
+            fallback_model_keys=frozenset(
+                {"cc/claude-opus-5-5", "cc/claude-sonnet-5-5", "cc/claude-fable-5-1"}
+            ),
+            cutoff_frontier=54.5,
+            cutoff_fallback=50.0,
+            rated_models=3,
+            fetched_at=FETCHED_NEW,
+            model_scores={
+                "cc/claude-opus-5-5": 59.1,
+                "cc/claude-sonnet-5-5": 54.5,
+                "cc/claude-fable-5-1": 50.0,
+            },
+            model_ranks={
+                "cc/claude-opus-5-5": 1,
+                "cc/claude-sonnet-5-5": 2,
+                "cc/claude-fable-5-1": 3,
+            },
+        )
+
+        # FakeProbe returns healthy for every route — the bug is purely about
+        # ordering, not about whether any individual probe result fails.
+        ladder = EligibilityLadder(
+            rows, conns, FakeProbe(), tmp_path / "state.json", metadata=None, health_cache=cache
+        )
+        ladder.set_planner_band(band)
+
+        req = TaskRequirements(role_ordering="strongest_first", arena_role="planner")
+        # Before fix: fable is probed first (health="healthy" group wins in
+        #   _probe_order round-robin) → fable selected as planner.
+        # After fix:  opus is probed first (band sort: score 59.1 beats 50.0)
+        #   → opus selected as planner.
+        choice, _ = ladder.select(req, now=NOW)
+        assert choice is not None, "selection must succeed"
+        assert choice.route_id == "cc/claude-opus-5-5", (
+            f"expected frontier route cc/claude-opus-5-5 but got {choice.route_id!r}; "
+            "likely _probe_order is still grouping by health freshness rather than band score"
+        )

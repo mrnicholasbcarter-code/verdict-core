@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -285,13 +286,38 @@ def _secret_like(value: str) -> bool:
     )
 
 
-def _scrub(value: Any) -> str:
+# Thread-local used by project_verified_models to memoize _scrub within a single
+# projection call.  The cache is a plain dict set before the loop and cleared
+# (set to None) in a finally block so it never outlives the projection.
+_scrub_proj: threading.local = threading.local()
+
+
+def _scrub_uncached(value: Any) -> str:
     """Redact credentials, account emails and control characters at display."""
     text = redact_text(str(value))
     for pattern in (_BEARER_TOKEN_RE, _SK_TOKEN_RE, _SECRET_KEY_RE, _JWT_RE, _EMAIL_RE):
         text = pattern.sub("[redacted]", text)
     text = "".join(ch for ch in text if ch == " " or ch.isprintable())
     return text.strip()
+
+
+def _scrub(value: Any) -> str:
+    """Redact credentials and control characters; memoize within an active projection.
+
+    Only ``str`` values are memoized.  Non-str values (e.g. ``int``, ``bool``,
+    ``float``, ``list``) bypass the cache so equal-but-differently-typed
+    values (1, True, 1.0 are equal dict keys but have distinct ``str()``
+    representations) are always rendered correctly, and unhashable values
+    never raise ``TypeError``.
+    """
+    cache: dict[str, str] | None = getattr(_scrub_proj, "cache", None)
+    if cache is not None and isinstance(value, str):
+        result = cache.get(value)
+        if result is None:
+            result = _scrub_uncached(value)
+            cache[value] = result
+        return result
+    return _scrub_uncached(value)
 
 
 def _withhold_route_id(route_id: str) -> bool:
@@ -1182,8 +1208,14 @@ def _capacity_for_row(
     row: Mapping[str, Any],
     connection: Mapping[str, Any] | None,
     openrouter_free_set: OpenRouterFreeSet | None = None,
+    *,
+    _free_set_preloaded: bool = False,
 ) -> tuple[CapacityClass, str]:
-    if openrouter_free_set is None:
+    # Reload only when no value was supplied AND the caller has not already tried
+    # the load (which may have returned None when no on-disk cache exists).
+    # _free_set_preloaded=True lets project_verified_models load the set once and
+    # pass None through 7 000 rows without triggering a re-load on each row.
+    if openrouter_free_set is None and not _free_set_preloaded:
         openrouter_free_set = load_openrouter_free_set(refresh=False)
     cls, _, evidence = _classify_capacity(
         connection, row, route_id=str(row.get("id") or ""), openrouter_free_set=openrouter_free_set
@@ -1258,6 +1290,7 @@ def _classify_row(
     conn_index: Mapping[str, list[Mapping[str, Any]]],
     cd_index: _CooldownIndex,
     contradictory: set[str],
+    openrouter_free_set: OpenRouterFreeSet | None = None,
 ) -> VerifiedModelRow:
     provider = _resolve_provider_for_row(row, route_id)
     owned = str(row.get("owned_by", "") or "").lower()
@@ -1270,7 +1303,9 @@ def _classify_row(
         c for c in _active_connections_for(provider_names, conn_index) if c.get("isActive") is True
     ]
     connection = active_conns[0] if active_conns else None
-    capacity, capacity_evidence = _capacity_for_row(row, connection)
+    capacity, capacity_evidence = _capacity_for_row(
+        row, connection, openrouter_free_set=openrouter_free_set, _free_set_preloaded=True
+    )
     price, price_known = _marginal_price(row)
 
     restrictions: list[str] = []
@@ -2076,19 +2111,34 @@ def project_verified_models(
     )
     cd_index = _index_cooldowns(all_cooldowns)
 
-    projected: list[VerifiedModelRow] = []
-    for route_id in rows_by_id:
-        projected.append(
-            _classify_row(
-                route_id,
-                rows_by_id[route_id],
-                now=now,
-                evidence=evidence,
-                conn_index=conn_index,
-                cd_index=cd_index,
-                contradictory=contradictory,
+    # Load the OpenRouter free set once per projection so the per-row
+    # _capacity_for_row calls do not each rebuild the cache path and stat().
+    openrouter_free_set = load_openrouter_free_set(refresh=False)
+
+    # Activate the per-projection scrub cache: _scrub() is called ~21 000 times
+    # on a 7 000-row inventory (3 string fields x 7 000 rows) but the value set
+    # is small (a few hundred distinct route-name fragments).  Save and restore
+    # the previous cache value so nested calls each get their own scope (the
+    # outer cache resumes when the inner projection returns).
+    _prev_cache = getattr(_scrub_proj, "cache", None)
+    _scrub_proj.cache = {}
+    try:
+        projected: list[VerifiedModelRow] = []
+        for route_id in rows_by_id:
+            projected.append(
+                _classify_row(
+                    route_id,
+                    rows_by_id[route_id],
+                    now=now,
+                    evidence=evidence,
+                    conn_index=conn_index,
+                    cd_index=cd_index,
+                    contradictory=contradictory,
+                    openrouter_free_set=openrouter_free_set,
+                )
             )
-        )
+    finally:
+        _scrub_proj.cache = _prev_cache
 
     projected.sort(key=_sort_key)
 

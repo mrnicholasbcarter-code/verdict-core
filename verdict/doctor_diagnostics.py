@@ -446,6 +446,60 @@ def _doctor_advisory_rankings(diag: DoctorDiagnostics) -> None:
         diag.sections.append(("Advisory rankings", "warn", detail))
 
 
+def _doctor_billing_overlay_conflicts(diag: DoctorDiagnostics) -> None:
+    """Warn when the operator overlay has both an alias name and its canonical for the same key.
+
+    The canonical entry wins, but the duplicate is almost always a configuration mistake.
+    """
+    try:
+        from verdict.connection_billing import check_overlay_conflicts
+
+        warnings = check_overlay_conflicts()
+    except Exception as exc:
+        diag.warnings.append(f"Billing overlay conflict check failed: {exc}")
+        return
+
+    for warning in warnings:
+        diag.warnings.append(warning)
+
+
+def _doctor_billing_catalog_drift(diag: DoctorDiagnostics) -> None:
+    """Warn when the installed OmniRoute version or TS file hash differs from the snapshot.
+
+    This is advisory — a drift means the billing catalog snapshot may be stale and should
+    be regenerated (``uv run python scripts/regenerate_connection_billing.py``).
+    It is NOT a hard failure: the snapshot still works; only new entries are missing.
+    """
+    try:
+        from verdict.connection_billing import check_drift
+
+        result = check_drift()
+    except Exception as exc:
+        diag.sections.append(("Billing catalog", "warn", f"drift check error: {exc}"))
+        diag.warnings.append(f"Billing catalog drift check failed: {exc}")
+        return
+
+    status = result.get("status", "unavailable")
+    if status == "ok":
+        installed = result.get("installed_version", "?")
+        diag.sections.append(
+            ("Billing catalog", "ok", f"snapshot matches installed OmniRoute {installed}")
+        )
+    elif status == "unavailable":
+        diag.sections.append(
+            ("Billing catalog", "warn", result.get("detail", "OmniRoute not found"))
+        )
+        diag.warnings.append("Billing catalog: OmniRoute package not found — cannot check drift")
+    else:
+        # drift — warning only, not a hard failure
+        detail = result.get("detail", "drift detected")
+        diag.sections.append(("Billing catalog", "warn", detail))
+        diag.warnings.append(
+            f"Billing catalog may be stale: {detail}. "
+            "Run: uv run python scripts/regenerate_connection_billing.py"
+        )
+
+
 _ENV_KEY_REMEDY = (
     "Verdict needs a DB-backed OmniRoute API key. If this key is also set as "
     "OMNIROUTE_API_KEY in the gateway's own environment (for example ~/.omniroute/.env), "
@@ -716,6 +770,166 @@ def _doctor_acceptance(diag: DoctorDiagnostics) -> None:
     diag.warnings.extend(warnings)
 
 
+_OPENCODE_VERSION_TIMEOUT_SECONDS = 10.0
+#: Most bytes (stdout and stderr together) kept from the ``--version`` check.  The line it
+#: reads is a few bytes; a wrapper that prints more is broken or hostile, and unbounded
+#: buffering would let it exhaust doctor's memory inside the timeout.
+_OPENCODE_VERSION_MAX_OUTPUT_BYTES = 64 * 1024
+#: Longest version text echoed in a doctor row.
+_OPENCODE_VERSION_ECHO_CHARS = 60
+_OPENCODE_READ_CHUNK_BYTES = 8192
+
+
+class _OutputLimitExceededError(Exception):
+    """A bounded subprocess printed more than the byte cap it was given."""
+
+
+def _run_bounded(
+    argv: list[str], timeout: float, max_output_bytes: int | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` in its own process group, bounded in time and output, and kill that group.
+
+    ``VERDICT_OPENCODE_BIN`` may be a wrapper that spawns descendants, and
+    ``subprocess.run`` kills only the direct child (and only on timeout), leaving them
+    running.  Here the whole group is killed and the child reaped on every path: a normal
+    exit, a timeout, too much output, and an error such as undecodable output.  Output is
+    discarded on failure, so nothing is drained after the kill.
+
+    Both streams are read in small chunks against one shared byte budget
+    (``max_output_bytes``, default :data:`_OPENCODE_VERSION_MAX_OUTPUT_BYTES`); passing it
+    raises :class:`_OutputLimitExceededError` instead of buffering further.  The wall-clock
+    ``timeout`` still raises :class:`subprocess.TimeoutExpired`.
+    """
+    import contextlib
+    import selectors
+    import signal
+    import time
+
+    limit = _OPENCODE_VERSION_MAX_OUTPUT_BYTES if max_output_bytes is None else max_output_bytes
+    proc = subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+    )
+    try:
+        deadline = time.monotonic() + timeout
+        captured: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
+        total = 0
+        with selectors.DefaultSelector() as selector:
+            if proc.stdout is not None:
+                selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
+            if proc.stderr is not None:
+                selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                for key, _events in selector.select(remaining):
+                    chunk = os.read(key.fd, _OPENCODE_READ_CHUNK_BYTES)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    total += len(chunk)
+                    if total > limit:
+                        raise _OutputLimitExceededError(
+                            f"`--version` output exceeded {limit} bytes"
+                        )
+                    captured[key.data].extend(chunk)
+        proc.wait(timeout=max(deadline - time.monotonic(), 0.001))
+        return subprocess.CompletedProcess(
+            argv,
+            proc.returncode,
+            bytes(captured["stdout"]).decode(),
+            bytes(captured["stderr"]).decode(),
+        )
+    finally:
+        # The child leads the group (start_new_session), so its pid is the group id; a
+        # group outlives its leader while any member runs, and the kernel does not reuse
+        # a pid that is still a group id.
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                with contextlib.suppress(OSError):
+                    stream.close()
+        proc.wait()
+
+
+_OPENCODE_VERSION_TOKEN = re.compile(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]*)?")
+
+
+def _installed_opencode_version(line: str) -> str:
+    """The version an ``opencode --version`` line reports, as a whole token.
+
+    The installed binary prints ``opencode v2.3.2``; ``2.3.2``, ``v2.3.2`` and
+    ``opencode 2.3.2`` are accepted too.  Anything after the optional prefix is the version:
+    it is never reduced to a leading ``X.Y.Z`` (``2.3.2.1`` and ``2.3.2custom`` are not
+    ``2.3.2``).  Text that is not a version token is returned unchanged, so it can never equal
+    the pinned release.
+    """
+    text = line.strip()
+    if text.lower().startswith("opencode") and text[8:9].isspace():
+        text = text[8:].strip()
+    if text[:1] in {"v", "V"} and _OPENCODE_VERSION_TOKEN.match(text[1:]):
+        text = text[1:]
+    return text
+
+
+def _doctor_opencode_version(diag: DoctorDiagnostics) -> None:
+    """ADR-053 Decision 5: warn when installed OpenCode version differs from pinned v2.3.2.
+
+    OpenCode is optional as an executor; a missing binary is a note, not an
+    issue.  A version mismatch is a warning: the adapter is pinned to v2.3.2
+    and an upgrade or downgrade needs a re-run of the adapter's live check.
+    """
+
+    from verdict.orchestration.executor_opencode import PINNED_VERSION, _opencode_binary
+
+    try:
+        binary = _opencode_binary()
+    except Exception as exc:
+        diag.sections.append(("OpenCode", "note", f"binary resolution error: {exc}"))
+        return
+
+    try:
+        result = _run_bounded([binary, "--version"], _OPENCODE_VERSION_TIMEOUT_SECONDS)
+        if result.returncode != 0:
+            # A wrapper can print the pinned version and still fail (for example before
+            # reporting an initialisation error): that is a failed check, never "ok".
+            diag.sections.append(
+                (
+                    "OpenCode",
+                    "note",
+                    f"version check failed: `--version` exited {result.returncode}",
+                )
+            )
+            return
+        version_line = (result.stdout or result.stderr or "").strip().splitlines()
+        installed = version_line[0].strip() if version_line else ""
+        # The adapter is pinned to the exact release: the whole token must match, so
+        # "2.3.2-rc.1", "2.3.2.1" and "2.3.2custom" are each not "2.3.2".
+        installed_version = _installed_opencode_version(installed)
+    except FileNotFoundError:
+        diag.sections.append(("OpenCode", "note", "not installed (binary not found on PATH)"))
+        return
+    except Exception as exc:
+        diag.sections.append(("OpenCode", "note", f"version check error: {exc}"))
+        return
+
+    if not installed_version:
+        diag.sections.append(("OpenCode", "note", "version unavailable"))
+        return
+
+    if installed_version == PINNED_VERSION:
+        diag.sections.append(("OpenCode", "ok", f"v{installed_version}"))
+    else:
+        shown = installed_version[:_OPENCODE_VERSION_ECHO_CHARS]
+        msg = (
+            f"installed v{shown}, expected v{PINNED_VERSION}; "
+            "re-run the adapter live check after upgrading"
+        )
+        diag.sections.append(("OpenCode", "warn", msg))
+        diag.warnings.append(f"OpenCode version mismatch: {msg}")
+
+
 def _collect_doctor_diagnostics(
     fix: bool,
     *,
@@ -980,7 +1194,10 @@ def _collect_doctor_diagnostics(
     # 1d-ii. Gateway lifecycle state (report only; nothing is started here).
     _doctor_gateway_lifecycle(diag)
     _doctor_advisory_rankings(diag)
+    _doctor_billing_catalog_drift(diag)
+    _doctor_billing_overlay_conflicts(diag)
     _doctor_planner_supply(diag)
+    _doctor_opencode_version(diag)
     # 1d-iii. Verdict's key is DB-backed, never the gateway's env key.
     if gateway_url:
         _doctor_gateway_key(diag, gateway_url)
@@ -1497,10 +1714,65 @@ def _pr_watcher_timer_row(
     return {"label": label, "status": "failed", "detail": detail}
 
 
+def _context_lift_last_bench_result(home: Path | None = None) -> dict[str, Any] | None:
+    """Read the most-recent context-lift bench receipt from disk, None on any error.
+
+    Returns None when the file is missing, unreadable, or its contents are not a
+    JSON object — a list, string or number is never a valid receipt and must not
+    reach the timer-row check (which calls .get() on the result).
+    """
+    import json as _json
+
+    from verdict.paths import verdict_home as _verdict_home
+
+    path = (home or _verdict_home()) / "context-lift" / "latest.json"
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _receipt_is_from_invocation(bench: dict[str, Any], state: dict[str, Any]) -> bool:
+    """Return True when the receipt was written by the unit run that failed.
+
+    The bench records systemd's ``$INVOCATION_ID`` in its receipt and the unit
+    reports the same value as ``InvocationID`` (systemd.exec(5)).  A blocked
+    receipt from an earlier run, or one written later by a manual or ``--dry-run``
+    bench that overwrote ``latest.json``, has no matching ID, so it cannot turn a
+    crash or a usage-error exit into a warning.  A time window could not tell
+    these apart.
+
+    Returns False when either ID is absent, empty or not a string (systemd older
+    than v232 reports none).
+    """
+    receipt_id = bench.get("invocation_id")
+    unit_id = state.get("invocation_id")
+    if not isinstance(receipt_id, str) or not isinstance(unit_id, str):
+        return False
+    receipt_id, unit_id = receipt_id.strip().lower(), unit_id.strip().lower()
+    return bool(receipt_id) and receipt_id == unit_id
+
+
 def _context_lift_timer_row(
     timer_state: Callable[[str], dict[str, Any]] | None = None,
+    bench_result: Callable[[], dict[str, Any] | None] | None = None,
 ) -> dict[str, str]:
-    """The daily context-lift bench timer is active and its last run succeeded."""
+    """The daily context-lift bench timer is active and its last run succeeded.
+
+    When the service exited non-zero because all routes were blocked, the row
+    reports a warning (not a failure) and names the block reason so the operator
+    knows why no free routes are available without an install being unhealthy.
+
+    A warning is only issued when ALL of these hold:
+    - The service's ExecMainStatus is "2" (the intentional blocked-exit code).
+    - The receipt was written by that same unit run: its invocation_id equals the
+      service's InvocationID.
+    - The timer itself is active, so the bench will run again.  The service can
+      have failed while the timer was stopped or failed.
+    """
     from verdict import context_lift_service
     from verdict.setup_host import CONTEXT_LIFT, setup_repair
 
@@ -1512,6 +1784,21 @@ def _context_lift_timer_row(
 
     if name == "active" and result in {"success", "unknown"}:
         return {"label": label, "status": "ok", "detail": detail}
+    if name == "failed" and result == "exit-code":
+        # Distinguish a blocked bench (no free routes, expected) from a crash.
+        # Require ExecMainStatus=2 (intentional exit), a receipt written by this
+        # very unit run (matching invocation ID), and a timer that is still active.
+        bench = (bench_result or _context_lift_last_bench_result)()
+        if (
+            isinstance(bench, dict)
+            and bench.get("conclusion") == "blocked"
+            and str(state.get("exec_main_status", "")) == "2"
+            and _receipt_is_from_invocation(bench, state)
+            and state.get("timer_active_state") == "active"
+        ):
+            br = str(bench.get("block_reason") or "no eligible routes")
+            detail += f"; blocked: {br}"
+            return {"label": label, "status": "warning", "detail": detail}
     if name == "missing":
         detail += f"; repair: {setup_repair(CONTEXT_LIFT)}"
         return {"label": label, "status": "failed", "detail": detail}

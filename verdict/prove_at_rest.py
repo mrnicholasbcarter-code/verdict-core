@@ -63,6 +63,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from verdict.capacity import capacity_of
 from verdict.http_safety import (
     UNTRUSTED_RESPONSE_REASONS,
     omniroute_evidence_headers,
@@ -77,7 +78,6 @@ from verdict.openrouter_free_set import (
 )
 from verdict.orchestration.contracts import CapacityClass
 from verdict.orchestration.credential_pools import POOL_COOLDOWN_CATEGORIES, pool_of
-from verdict.orchestration.eligibility import capacity_class_of
 from verdict.orchestration.health_cache import (
     AGENTIC_PROBE_TTL_SECONDS,
     CATEGORY_AUTH,
@@ -2067,10 +2067,9 @@ def routes_from_evidence(
         row: Mapping[str, Any] = by_id.get(record.route_id, {})
         provider = record.provider or _provider_of(record.route_id)
         conn: Mapping[str, Any] | None = conn_by_provider.get(provider.lower())
-        capacity, plan = capacity_class_of(
+        capacity, evidence_label = capacity_of(
             conn, row, route_id=record.route_id, openrouter_free_set=free_set
         )
-        evidence_label = plan or None
         if capacity.value == "free" and openrouter_route_is_public_free(record.route_id, free_set):
             evidence_label = "openrouter_public_zero"
         out.append(
@@ -2134,13 +2133,16 @@ def load_admitted_routes(
     gateway: str, *, api_key: str | None, now: datetime | None = None, timeout: float = 30.0
 ) -> tuple[AdmittedRoute, ...]:
     """Fetch inventory and connections, then admit. Same GETs as eligibility."""
+    from verdict.free_tier_admit import annotate_cached_free_tier
     from verdict.orchestration.run import fetch_connections, fetch_inventory
 
     current = now or _now()
     origin = gateway.rstrip("/")
     if origin.endswith("/v1"):
         origin = origin[: -len("/v1")]
-    rows = fetch_inventory(origin, api_key=api_key, timeout=timeout)
+    rows = annotate_cached_free_tier(
+        fetch_inventory(origin, api_key=api_key, timeout=timeout), origin=origin, now=current
+    )
     connections = fetch_connections(origin, api_key=api_key, timeout=timeout)
     live = fetch_live_catalog(origin, api_key=api_key, timeout=timeout)
     return routes_from_evidence(rows, connections, now=current, live_catalog=live)

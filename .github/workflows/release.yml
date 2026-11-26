@@ -20,6 +20,7 @@ jobs:
     # Only a successful manual certification run can supply a retained bundle.
     # This job is read-only and runs before any publishing or registry preflight.
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       actions: read
     steps:
@@ -131,6 +132,7 @@ jobs:
   release:
     needs: [acceptance, certification-gate]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: pypi
     permissions:
       contents: write

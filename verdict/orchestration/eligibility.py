@@ -15,7 +15,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from verdict.capacity import CAPACITY_ORDER, billing_capacity_override, classify_route_capacity
+from verdict.capacity import (
+    CAPACITY_ORDER,
+    billing_capacity_override,
+    classify_route_capacity,
+    subscription_window_spent_metered,
+)
 from verdict.identify_rank import RatedModel, rate_model, rating_key
 from verdict.openrouter_free_set import (
     OpenRouterFreeSet,
@@ -666,16 +671,22 @@ class EligibilityLadder:
         and the Anthropic API-key connection are specifically metered.
         """
         cache = getattr(self, "_health_cache", None)
-        if cache is not None and billing_capacity_override(
-            cache, route_id, getattr(self, "_current_now", None) or datetime.now(timezone.utc)
-        ):
+        now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
+        if cache is not None and billing_capacity_override(cache, route_id, now):
             return CapacityClass.METERED, "", "billing_402_metered"
-        return _classify_capacity(
+        capacity, plan, fact = _classify_capacity(
             conn,
             row,
             route_id=route_id,
             openrouter_free_set=getattr(self, "openrouter_free_set", None),
         )
+        if (
+            cache is not None
+            and capacity is CapacityClass.SUBSCRIPTION
+            and subscription_window_spent_metered(cache, route_id, now, fact)
+        ):
+            return CapacityClass.METERED, plan, f"subscription_quota_spent:{fact}"
+        return capacity, plan, fact
 
     def _health_status(self, route_id: str, now: datetime) -> tuple[str, str]:
         cache = getattr(self, "_health_cache", None)
@@ -1516,7 +1527,7 @@ class EligibilityLadder:
         chosen: _Assessment | None = None
         chosen_rank: int | None = None
         blocked: dict[str, str] = {}  # provider -> cooldown_until (set in this select)
-        probe_order = self._probe_order(candidates)
+        probe_order = self._probe_order(candidates, getattr(requirements, "arena_role", None))
         # BOD-297: selection confirmation joins the shared coordinator lease;
         # never probe while another producer owns the job.
         # While another producer holds the refresh lease, skip probes and confirmations but still choose routes with fresh proof.
@@ -1732,7 +1743,9 @@ class EligibilityLadder:
         }
         return selected, final_verdicts
 
-    def _probe_order(self, candidates: list[_Assessment]) -> list[_Assessment]:
+    def _probe_order(
+        self, candidates: list[_Assessment], arena_role: str | None = None
+    ) -> list[_Assessment]:
         """Probe order mirrors the main rank key (role-dependent ordering).
 
         For cheapest-sufficient-first roles (workers): slack before rating,
@@ -1741,6 +1754,16 @@ class EligibilityLadder:
         ``[:4]`` captures (capacity, tokens_known, tokens_float, rating_rank).
         Within an equal ranking, fresh confirmations and provider round-robin
         retain the bounded scheduler.
+
+        When a planner band is active AND arena_role == "planner", the final
+        sort uses the band ``_sort_key`` (is_metered, -score, cls_order,
+        -aa_coding, route_id) so that frontier routes are probed in band-score
+        order regardless of health-cache freshness.  Without this override a
+        healthy lower-scored route (e.g. one probed by the refresh hook) would
+        appear before an unprobed higher-scored route, defeating the ADR-051
+        preference ordering.  The gate on arena_role prevents executor and
+        reviewer selections from being re-ordered by the planner band (ADR-051
+        D7: executors keep cheapest-sufficient order).
         """
         order: list[_Assessment] = []
         by_provider: dict[str, list[_Assessment]] = {}
@@ -1756,6 +1779,23 @@ class EligibilityLadder:
             depth = max((len(q) for q in queues), default=0)
             for i in range(depth):
                 order.extend(q[i] for q in queues if i < len(q))
+        # ADR-051: when a planner band is active and arena_role=="planner", sort
+        # by the band's own key so higher-rated routes are always probed before
+        # lower-rated ones, independent of which routes happen to have fresh
+        # health-cache entries.  Gated on arena_role to avoid applying the
+        # planner band sort to executor or reviewer selections (ADR-051 D7).
+        if self._planner_band is not None and arena_role == "planner":
+            from verdict.planner_band import _sort_key as _pb_sort_key
+
+            _band = self._planner_band
+            _pb_meta, _pb_idmap = self._rating_evidence()
+            _now_dt = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
+            return sorted(
+                order,
+                key=lambda a: _pb_sort_key(
+                    a.route_id, a.capacity, _band, _pb_meta, _pb_idmap, _now_dt
+                ),
+            )
         return sorted(
             order,
             key=lambda a: (
@@ -2036,20 +2076,3 @@ def _marginal_price(row: Mapping[str, Any]) -> tuple[float, bool]:
 
 
 _classify_capacity = classify_route_capacity
-
-
-def capacity_class_of(
-    conn: Mapping[str, Any] | None,
-    row: Mapping[str, Any],
-    *,
-    route_id: str | None = None,
-    openrouter_free_set: OpenRouterFreeSet | None = None,
-) -> tuple[CapacityClass, str]:
-    """Use the same D7 account-evidence policy as the eligibility ladder."""
-    capacity, plan, _ = _classify_capacity(
-        conn,
-        row,
-        route_id=route_id or str(row.get("id") or ""),
-        openrouter_free_set=openrouter_free_set,
-    )
-    return capacity, plan

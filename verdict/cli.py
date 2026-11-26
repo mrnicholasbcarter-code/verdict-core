@@ -1430,12 +1430,17 @@ def cmd_autodev(
     no_mechanical: bool = False,
     dry_run: bool = False,
     execution_path_decision: Any = None,
+    worker_harness: str | None = None,
 ) -> None:
     """Decompose an objective, execute each unit, verify it, and record the outcome.
 
     Execution edits the working tree and requires ``--allow-live`` plus launch
     authority. ``--dry-run`` itself consents to the planner model call and shows
     its measured cost, but never authorizes or executes a worker.
+
+    ``worker_harness="opencode"`` (opt-in, #1301) runs each model-tier unit on OpenCode in an
+    isolated attempt tree. It is checked first, before any probe or planner call, and a failed
+    check stops the run with one message; nothing falls back to the default executor.
     """
     from verdict.autodev_run import (
         AutodevError,
@@ -1447,6 +1452,17 @@ def cmd_autodev(
     from verdict.credentials_store import resolve_api_key
     from verdict.decomposer import Decomposer, DecompositionConfig, DecompositionError
 
+    opencode_note = ""
+    if worker_harness == "opencode" and allow_live and not dry_run:
+        from verdict.autodev_opencode import check_opencode_readiness
+
+        readiness = check_opencode_readiness()
+        if not readiness.ok:
+            _report_autodev_failure(
+                readiness.message, output_json=output_json, label="opencode readiness failed"
+            )
+            raise SystemExit(1)
+        opencode_note = readiness.version_note
     prepared_plan = None
     probe_headers = None
     pinned_capacity_class = ""
@@ -1692,6 +1708,17 @@ def cmd_autodev(
             )
         return
 
+    run_extras: dict[str, Any] = {}
+    retry_routes = selected_candidates
+    if worker_harness == "opencode":
+        from verdict.autodev_opencode import build_opencode_unit_executor
+
+        if decision is None:  # a live run always has one (`_require_launch_decision`)
+            raise AutodevError("autodev: the OpenCode executor needs a launch decision")
+        run_extras["executor"] = build_opencode_unit_executor(
+            repo_path, model=decision.selected_route.model
+        )
+        retry_routes = ()  # retries on OpenCode are a later story (#1314); none run on another executor
     try:
         report = run_autodev(
             objective,
@@ -1705,8 +1732,9 @@ def cmd_autodev(
             mechanical=not no_mechanical,
             plan=prepared_plan,
             probe_dropped=probe_dropped,
-            retry_routes=selected_candidates,
+            retry_routes=retry_routes,
             pinned_capacity_class=pinned_capacity_class,
+            **run_extras,
         )
     except DecompositionError as exc:
         # A decomposition that cannot state its own checks is a reportable
@@ -1720,11 +1748,15 @@ def cmd_autodev(
             payload["route_probe_headers"] = probe_headers
         if selection_payload is not None:
             payload["executor_selection"] = selection_payload
+        if worker_harness == "opencode":
+            payload["worker_harness"] = {"name": "opencode", "version_note": opencode_note or None}
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         from verdict import present
 
         present.header("Autodev")
+        if opencode_note:
+            present.warn("opencode", opencode_note)
         units_line = (
             f"{len(report.verified)} verified, {len(report.failed)} failed, "
             f"of {report.units_planned} planned"
@@ -1737,7 +1769,7 @@ def cmd_autodev(
         rows: dict[str, Any] = {
             "objective": report.objective,
             "mechanical (zero tokens)": len(report.mechanical),
-            f"model ({report.executor_model})": len(report.outcomes) - len(report.mechanical),
+            f"model ({report.executor_model})": len(report.model_units),
             "orchestrator tokens": (
                 f"{tokens['orchestrator']['total_tokens']} ({report.orchestrator_model})"
             ),
@@ -2228,13 +2260,15 @@ def cmd_autodev_golden_path(
         raise SystemExit(1)
 
 
-def _report_autodev_failure(reason: str, *, output_json: bool) -> None:
+def _report_autodev_failure(
+    reason: str, *, output_json: bool, label: str = "decomposition failed"
+) -> None:
     if output_json:
-        print(json.dumps({"error": "decomposition failed", "reason": reason}, sort_keys=True))
+        print(json.dumps({"error": label, "reason": reason}, sort_keys=True))
     else:
         from verdict import present
 
-        present.fail("decomposition failed", reason)
+        present.fail(label, reason)
 
 
 _probe_result_payload = _action_helpers.probe_result_payload

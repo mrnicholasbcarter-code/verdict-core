@@ -1,5 +1,6 @@
 """Clean-runner spawn visibility does not supply launch authority."""
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,7 +17,24 @@ def test_clean_runner_executor_visibility(tmp_path, monkeypatch, executor):
     home = tmp_path / "empty-home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("VERDICT_HOME", str(tmp_path / "state"))
+    state = tmp_path / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("VERDICT_HOME", str(state))
+    # CP2 removed oauth → SUBSCRIPTION; declare the fake "kr/oauth" connection.
+    (state / "connection_billing_overlay.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "provider": "kr",
+                        "authType": "oauth",
+                        "billing": "subscription",
+                        "overage": "hard-stop",
+                    }
+                ]
+            }
+        )
+    )
     for key in (
         "PRIME_AGENT_CODING_AGENT_DIR",
         "PRIME_AGENT_HOME",

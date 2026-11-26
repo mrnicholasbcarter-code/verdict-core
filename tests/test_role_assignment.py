@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from tests.test_controller_launch import NOW as CTRL_NOW
 from tests.test_controller_launch import _ctrl_offer, _ctrl_route, _hooks, _mission
 from tests.test_orch_eligibility import NOW, conn, make_ladder, row
@@ -27,6 +29,14 @@ from verdict.controller_selection import (
     select_controller_launch,
 )
 from verdict.orchestration.contracts import NodeKind, TaskRequirements, WorkNode, route_family
+
+
+# D36: "kr" and "cx" are fake test providers with oauth auth and positive prices; without
+# an overlay they fall through to UNKNOWN and block tests that only test role-assignment logic.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("kr", "oauth"), ("cx", "oauth")])
+
 
 INVENTORY = (
     "kr/claude-opus-5.5",  # tier 0

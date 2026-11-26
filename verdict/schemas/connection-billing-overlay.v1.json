@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "verdict.connection-billing-overlay/v1",
+  "title": "Connection Billing Overlay",
+  "description": "Operator-declared billing and overage facts for OmniRoute connections. Overlay entries win over the pinned snapshot for the same (provider, authType). An authType-specific entry wins over a provider-wide entry.",
+  "type": "object",
+  "required": ["entries"],
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/entry"
+      }
+    }
+  },
+  "definitions": {
+    "entry": {
+      "type": "object",
+      "required": ["provider", "billing", "overage"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OmniRoute connection provider key (case-insensitive)."
+        },
+        "authType": {
+          "type": "string",
+          "enum": ["oauth", "apikey"],
+          "description": "Optional authType; omit for a provider-wide entry."
+        },
+        "billing": {
+          "type": "string",
+          "enum": ["subscription", "metered", "keyless"],
+          "description": "Billing class. 'unknown' is not a valid overlay value — omit the entry instead."
+        },
+        "overage": {
+          "type": "string",
+          "enum": ["hard-stop", "meters-to-paid", "unknown"],
+          "description": "What happens when the subscription window is spent."
+        }
+      }
+    }
+  }
+}

@@ -28,6 +28,15 @@ OK = "kr/claude-sonnet-ok"
 CTRL = "kr/claude-controller"
 
 
+# D36: list price is METERED evidence for API-key connections only.  "cc" and
+# "kr" are fake test providers with oauth auth and positive prices; without an
+# overlay they fall through to UNKNOWN and trigger the agentic-probe gate,
+# blocking tests that only test admission and selection logic.
+@pytest.fixture(autouse=True)
+def _subscription_overlay(billing_overlay_subscription) -> None:  # type: ignore[no-untyped-def]
+    billing_overlay_subscription([("cc", "oauth"), ("kr", "oauth")])
+
+
 def _rows() -> list[dict[str, Any]]:
     return [row(DEAD, owned_by="cc"), row(OK, owned_by="kr"), row(CTRL, owned_by="kr")]
 
