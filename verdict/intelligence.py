@@ -1,17 +1,21 @@
+import asyncio
 import contextlib
+import contextvars
 import hashlib
 import json
 import logging
 import os
 import subprocess
+import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from verdict.admit_prove_confirm import gate_admit_prove_confirm
 from verdict.availability import is_opaque_route_id
@@ -91,6 +95,77 @@ from verdict.worthiness import classify_worthiness
 _LOG = logging.getLogger(__name__)
 # Wall-clock instant bound for one route() call; see IntelligenceService._request_clock.
 _REQUEST_NOW: ContextVar[datetime | None] = ContextVar("verdict_request_now", default=None)
+
+_T = TypeVar("_T")
+
+
+class StateLane:
+    """One worker thread that runs the request path's blocking state work, one job at a time.
+
+    ``verdict serve`` decides a request, records its evidence, commits its dispatch permit and
+    records its observation with synchronous file and database work.  Run on the event loop that
+    work stalls ``/health`` and every other request for as long as it takes (seconds on a large
+    receipt store).  The app owns one lane and awaits it from the handlers, so the loop stays
+    free while decisions keep today's serial order: a single worker runs jobs in the order they
+    were submitted, and a job is submitted the moment ``run`` is called.
+
+    This is not the *assigned lane* (``IntelligenceService._route_assigned``, the route a worker
+    request is pinned to); that is one of the things this runs.
+
+    ``run`` copies the caller's context into the job (the request's fixed instant is a context
+    variable) and shields the job from the waiter: a waiter that is cancelled, for example by a
+    client that disconnected mid-stream, never cancels a job that is still queued, so the terminal
+    evidence write it submitted still lands, in order.  Never hold the lane across an upstream
+    call: it would serialise all upstream traffic.
+    """
+
+    def __init__(self, *, name: str = "verdict-state-lane") -> None:
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=name)
+        self._lock = threading.Lock()
+        self._closed = False
+        # Strong references to every job not yet finished, so ``aclose`` can drain them.
+        self._pending: set[Future[Any]] = set()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def submit(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> Future[_T]:
+        """Queue ``fn`` behind every earlier job, with a copy of the caller's context."""
+        context = contextvars.copy_context()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("the state lane is closed")
+            future = self._executor.submit(context.run, lambda: fn(*args, **kwargs))
+            self._pending.add(future)
+        future.add_done_callback(self._forget)
+        return future
+
+    def _forget(self, future: Future[Any]) -> None:
+        with self._lock:
+            self._pending.discard(future)
+
+    async def run(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+        """Run ``fn`` on the lane and return its result or raise its exception.
+
+        Submission happens at this call, in call order.  If the waiter is cancelled the job still
+        runs; only the wait ends.
+        """
+        waiter = asyncio.wrap_future(self.submit(fn, *args, **kwargs))
+        return await asyncio.shield(waiter)
+
+    async def aclose(self, *, timeout: float = 10.0) -> None:
+        """Refuse new jobs, give the queued ones up to ``timeout`` seconds, then stop the worker.
+
+        A job still running after the bound is left to finish on its own thread (the loop is
+        never blocked waiting for it); queued jobs that never started are cancelled.
+        """
+        with self._lock:
+            self._closed = True
+            pending = list(self._pending)
+        if pending:
+            await asyncio.wait([asyncio.wrap_future(future) for future in pending], timeout=timeout)
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _bind_context_plan(assistance_plan: AssistancePlan, plan: ContextPlan) -> AssistancePlan:
@@ -591,6 +666,9 @@ class IntelligenceService:
         self._admit_snapshot_endpoint: tuple[str, str | None] | None = None
         self._admit_snapshot_loaded_at: float = 0.0
         self._admit_snapshot_refresh_error: str | None = None
+        # The serial worker lane ``verdict serve`` attaches at startup so a decision runs off the
+        # event loop.  None (every other caller) decides inline, exactly as before.
+        self.state_lane: StateLane | None = None
         # Catalog routing does not depend on managed intelligence backends.
         self.managed_backend_status = "offline" if allow_offline else "not_used"
         self._policy_version = "policy-2026-07-13.1"
@@ -704,9 +782,15 @@ class IntelligenceService:
         on the decision *before* it is logged so post-execution outcome receipts
         can join back to this row."""
         with self._request_clock():
-            return await self._route(task, criticality, context, request_id=request_id)
+            lane = self.state_lane
+            if lane is None:
+                return self._route(task, criticality, context, request_id=request_id)
+            # The fixed request instant is bound above, in this task's context, and ``run``
+            # copies the context into the lane thread.  The decision is all synchronous state
+            # work: it runs there so the event loop stays free for /health and cheap refusals.
+            return await lane.run(self._route, task, criticality, context, request_id=request_id)
 
-    async def _route(
+    def _route(
         self,
         task: str | dict[str, Any],
         criticality: str,

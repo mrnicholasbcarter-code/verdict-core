@@ -227,6 +227,22 @@ class ReceiptRecord:
         return self.receipt_type == "tombstone" or self.tombstone_for is not None
 
 
+@dataclass(frozen=True, eq=False)
+class VerifiedScope:
+    """Proof that one full chain walk of ``scope`` on ``store`` has just passed.
+
+    Only :meth:`ReceiptStore.verified_scope` makes one.  A caller that is about to make
+    several reads of one scope in one call walks the chain once and hands this to each
+    reader, instead of letting every reader walk it again.  It is not a cache: keep it
+    for that one call and never store it, because it says nothing about rows written or
+    damaged afterwards.  A reader honours it only for the same store and the same scope
+    and verifies as usual for anything else.
+    """
+
+    store: ReceiptStore
+    scope: str | None
+
+
 class ReceiptStore:
     """Thread-safe, restart-safe SQLite receipt ledger."""
 
@@ -444,10 +460,23 @@ class ReceiptStore:
             key_ref=row["key_ref"],
         )
 
-    def _assert_integrity(self, *, scope: str | None) -> None:
+    def _assert_integrity(
+        self, *, scope: str | None, verified: VerifiedScope | None = None
+    ) -> None:
+        if verified is not None and verified.store is self and verified.scope == scope:
+            return  # the caller walked this scope in this call; do not walk it again
         result = self.verify_integrity(scope=scope)
         if not result["valid"]:
             raise ReceiptIntegrityError("receipt integrity verification failed")
+
+    def verified_scope(self, scope: str | None) -> VerifiedScope:
+        """Walk ``scope`` once and return the proof, or raise :class:`ReceiptIntegrityError`.
+
+        The failure is the one :meth:`get_receipt` and :meth:`query_receipts` raise for the same
+        scope, so a caller that reads through the proof fails exactly where it failed before.
+        """
+        self._assert_integrity(scope=scope)
+        return VerifiedScope(self, scope)
 
     def _scope_clause(self, scope: str | None, params: list[Any]) -> str:
         if scope is None:
@@ -741,10 +770,19 @@ class ReceiptStore:
                 conn.close()
 
     def get_receipt(
-        self, receipt_id: str, *, scope: str | None = None, include_tombstones: bool = False
+        self,
+        receipt_id: str,
+        *,
+        scope: str | None = None,
+        include_tombstones: bool = False,
+        verified: VerifiedScope | None = None,
     ) -> ReceiptRecord | None:
-        """Fetch one record; a supplied scope always constrains the lookup."""
-        self._assert_integrity(scope=scope)
+        """Fetch one record; a supplied scope always constrains the lookup.
+
+        ``verified`` is the proof from :meth:`verified_scope` for this store and scope, made by
+        the same caller in the same call; without one the scope is walked, as always.
+        """
+        self._assert_integrity(scope=scope, verified=verified)
         if scope is None:
             if include_tombstones:
                 return self._fetch_one("SELECT * FROM receipts WHERE receipt_id = ?", (receipt_id,))
@@ -775,11 +813,15 @@ class ReceiptStore:
         *,
         include_tombstones: bool = False,
         parent_receipt_id: str | None = None,
+        verified: VerifiedScope | None = None,
     ) -> list[ReceiptRecord]:
-        """Query records, filtering tombstoned facts by default."""
+        """Query records, filtering tombstoned facts by default.
+
+        ``verified`` is the proof from :meth:`verified_scope`, as for :meth:`get_receipt`.
+        """
         if limit < 1 or limit > 100_000:
             raise ValueError("receipt query limit must be between 1 and 100000")
-        self._assert_integrity(scope=scope)
+        self._assert_integrity(scope=scope, verified=verified)
         query = "SELECT * FROM receipts WHERE 1=1"
         params: list[Any] = []
         if receipt_type is not None:

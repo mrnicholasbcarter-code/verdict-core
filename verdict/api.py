@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import ipaddress
 import json
 import logging
@@ -16,7 +17,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 from urllib.parse import urlsplit, urlunsplit
 
 try:
@@ -74,6 +75,7 @@ from verdict.intelligence import (
     DEFAULT_PROFILE,
     DEFAULT_TIMEOUT_MS,
     IntelligenceService,
+    StateLane,
     prepared_task_profile,
 )
 from verdict.model_passports import ModelPassport
@@ -84,6 +86,7 @@ from verdict.omniroute_webhook import RECEIVER_PATH as OMNIROUTE_WEBHOOK_PATH
 from verdict.omniroute_webhook import accept_delivery as accept_omniroute_webhook
 from verdict.orchestration.health_cache import (
     PERMIT_PROOF_MAX_VALIDITY_SECONDS,
+    DispatchScope,
     HealthCache,
     default_cache_path,
 )
@@ -153,17 +156,17 @@ class _EvidenceStreamAdapter:
             return await self._upstream.__anext__()
         except StopAsyncIteration:
             cleanup_error = await self._cleanup()
-            self._finish_at_eof(cleanup_error)
+            await self._finish_at_eof(cleanup_error)
             raise
         except asyncio.CancelledError:
             cleanup_error = await self._cleanup()
-            self._finish(
+            await self._finish(
                 f"{self._event_prefix}_stream_aborted", "cancelled", "aborted", cleanup_error
             )
             raise
         except StreamProtocolError as exc:
             cleanup_error = await self._cleanup()
-            self._finish(
+            await self._finish(
                 f"{self._event_prefix}_stream_error",
                 "error",
                 "error",
@@ -173,7 +176,7 @@ class _EvidenceStreamAdapter:
             raise StopAsyncIteration from None
         except Exception as exc:
             cleanup_error = await self._cleanup()
-            self._finish(
+            await self._finish(
                 f"{self._event_prefix}_stream_error",
                 "error",
                 "error",
@@ -184,22 +187,24 @@ class _EvidenceStreamAdapter:
 
     async def aclose(self) -> None:
         cleanup_error = await self._cleanup()
-        self._finish(f"{self._event_prefix}_stream_aborted", "cancelled", "aborted", cleanup_error)
+        await self._finish(
+            f"{self._event_prefix}_stream_aborted", "cancelled", "aborted", cleanup_error
+        )
 
-    def _finish_at_eof(self, cleanup_error: str | None) -> None:
+    async def _finish_at_eof(self, cleanup_error: str | None) -> None:
         """Map the validated stream's one outcome; only a semantic success is success."""
 
         outcome = self._outcome_of()
         cleanup_error = cleanup_error or (outcome.cleanup_error if outcome else None)
         prefix = self._event_prefix
         if outcome is not None and outcome.state is StreamState.SUCCESS:
-            self._finish(f"{prefix}_streamed", "success", "completed", cleanup_error)
+            await self._finish(f"{prefix}_streamed", "success", "completed", cleanup_error)
         elif outcome is not None and outcome.state is StreamState.FAILED:
-            self._finish(f"{prefix}_stream_failed", "failure", "completed", cleanup_error)
+            await self._finish(f"{prefix}_stream_failed", "failure", "completed", cleanup_error)
         elif outcome is not None and outcome.state is StreamState.INCOMPLETE:
-            self._finish(f"{prefix}_stream_incomplete", "partial", "completed", cleanup_error)
+            await self._finish(f"{prefix}_stream_incomplete", "partial", "completed", cleanup_error)
         else:
-            self._finish(
+            await self._finish(
                 f"{prefix}_stream_error",
                 "error",
                 "error",
@@ -228,7 +233,7 @@ class _EvidenceStreamAdapter:
                 await asyncio.shield(self._cleanup_task)
         return self._cleanup_error
 
-    def _finish(
+    async def _finish(
         self,
         event_type: str,
         outcome: str,
@@ -240,9 +245,13 @@ class _EvidenceStreamAdapter:
         if self._terminal:
             return
         self._terminal = True
-        self._on_terminal(
+        result = self._on_terminal(
             self._event_factory(event_type, outcome, phase, cleanup_error, error_class)
         )
+        # The relay's terminal callback is a coroutine (its state work runs on the lane); a plain
+        # callback, as a test passes, is called and done.
+        if inspect.isawaitable(result):
+            await result
 
 
 class _EvidenceStreamingResponse(StreamingResponse):
@@ -303,15 +312,34 @@ class ModelPassportStore:
 
 
 logger = logging.getLogger("verdict.api")
+_T = TypeVar("_T")
 
 # Singleton service instances
 intelligence_instance: IntelligenceService | None = None
+#: The one serial worker lane for the request path's blocking state work, created and shut down
+#: with the app (``lifespan``).  ``None`` only before startup and after shutdown.
+state_lane_instance: StateLane | None = None
 gate_instance: Gate | None = None
 proxy_instance: UpstreamProxy | None = None
 # Optional canonical live admission for relay attempts. When set, the selected
 # model and every alternative must be inside the admitted set; a provider error
 # fails the relay closed (503) instead of falling back to catalog truth.
 relay_admission_provider: Callable[[], AdmittedSet] | None = None
+
+
+async def _on_state_lane(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+    """Run synchronous request-path state work on the app's one serial lane and await it.
+
+    The lane keeps the event loop free for ``/health`` and the cheap refusals while a decision or
+    an evidence write is in progress, and runs jobs one at a time in the order they were
+    submitted.  Errors surface exactly as if ``fn`` had been called here.  An app whose lifespan
+    has not started has no lane (a test that sets the instances by hand): the work runs inline,
+    as it always did.  Never wrap an upstream call in this.
+    """
+    lane = state_lane_instance
+    if lane is None:
+        return fn(*args, **kwargs)
+    return await lane.run(fn, *args, **kwargs)
 
 
 class CachedRelayAdmission:
@@ -878,7 +906,7 @@ def _build_model_passport_store() -> ModelPassportStore:
 
 async def lifespan(app: FastAPI) -> Any:
     global intelligence_instance, gate_instance, proxy_instance, evidence_store_instance
-    global guidance_plane_instance
+    global guidance_plane_instance, state_lane_instance
     validate_server_security(host=os.getenv("LLMGATE_HOST", "127.0.0.1"))
     global server_bootstrap_report
     server_bootstrap_report = server_bootstrap_diagnostics()
@@ -1017,6 +1045,12 @@ async def lifespan(app: FastAPI) -> Any:
 
     await refresh_public_models()
     public_models_task = asyncio.create_task(public_models_loop(), name="public-models-refresh")
+    # Last, so a startup failure above never leaves a lane behind.  The service decides on it and
+    # the handlers record on it: one worker, one order.
+    lane = StateLane()
+    state_lane_instance = lane
+    service = intelligence_instance
+    service.state_lane = lane
     yield
     task, public_models_task = public_models_task, None
     if task is not None:
@@ -1025,6 +1059,10 @@ async def lifespan(app: FastAPI) -> Any:
         with suppress(asyncio.CancelledError):
             await task
     public_models_readiness = None
+    # Drain the queued jobs (a terminal evidence write may still be waiting), within a bound.
+    await lane.aclose()
+    state_lane_instance = None
+    service.state_lane = None
     intelligence_instance = None
     gate_instance = None
     proxy_instance = None
@@ -1529,7 +1567,8 @@ async def route_task(
                 status_code=exc.status_code,
             )
         raise
-    route_evidence, evidence_key = _start_evidence(
+    route_evidence, evidence_key = await _on_state_lane(
+        _start_evidence,
         decision,
         task=req.task,
         criticality=req.criticality,
@@ -1551,7 +1590,7 @@ async def route_task(
         outcome="denied" if decision.decision == "denied" else "success",
         features={"route_only": True},
     )
-    route_evidence = _finish_evidence(route_evidence, outcome, evidence_key)
+    route_evidence = await _on_state_lane(_finish_evidence, route_evidence, outcome, evidence_key)
     status_code = 200 if decision.decision != "denied" else 503
     headers: dict[str, str] = {}
     if route_evidence.evidence_id:
@@ -2363,7 +2402,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             )
         return _proxy_error(503, "no executable route was selected", surface=surface)
     attempted_routes = [item.route.to_dict() for item in attempts]
-    route_evidence, evidence_key = _start_evidence(
+    route_evidence, evidence_key = await _on_state_lane(
+        _start_evidence,
         decision,
         task=task,
         criticality=criticality,
@@ -2385,7 +2425,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             outcome="denied",
             features=features,
         )
-        evidence = _finish_evidence(route_evidence, outcome, evidence_key)
+        evidence = await _on_state_lane(_finish_evidence, route_evidence, outcome, evidence_key)
         return _proxy_error(
             503,
             decision.reason,
@@ -2395,7 +2435,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         )
 
     if decision.protected and is_opaque_alias(attempts[0].model):
-        evidence = _finish_evidence(
+        evidence = await _on_state_lane(
+            _finish_evidence,
             route_evidence,
             build_outcome_event(
                 route_evidence.routing_decision,
@@ -2420,9 +2461,12 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     last_status: int | None = None
     _last_error_body: str = ""  # bounded upstream body for failure classification
 
-    def record_attempt_event(*, attempt: Any, event_type: str, details: dict[str, Any]) -> None:
+    async def record_attempt_event(
+        *, attempt: Any, event_type: str, details: dict[str, Any]
+    ) -> None:
         nonlocal route_evidence
-        route_evidence = _finish_evidence(
+        route_evidence = await _on_state_lane(
+            _finish_evidence,
             route_evidence,
             build_outcome_event(
                 route_evidence.routing_decision,
@@ -2591,7 +2635,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             if attempts_used:
                 break
             continue
-        permit = HealthCache(default_cache_path()).commit_dispatch(
+        permit = await _on_state_lane(
+            _commit_dispatch_permit,
             expected_scope,
             route_id=proof.route_id,
             attempt_id=attempt_id,
@@ -2623,7 +2668,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 rescreen = "queued"
             except Exception as exc:
                 rescreen = f"persistence_error:{type(exc).__name__}"
-            record_attempt_event(
+            await record_attempt_event(
                 attempt=attempt,
                 event_type=f"{event_prefix}_subscription_fallback",
                 details={
@@ -2635,7 +2680,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 },
             )
         if "subscription_fallback_policy" in decision.safety_flags and capacity == 2:
-            record_attempt_event(
+            await record_attempt_event(
                 attempt=attempt,
                 event_type=f"{event_prefix}_metered_fallback",
                 details={
@@ -2770,7 +2815,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                         "context_pack": injection.to_dict(),
                     }
                 )
-                record_attempt_event(
+                await record_attempt_event(
                     attempt=attempt,
                     event_type=f"{event_prefix}_attempt_failed",
                     details={
@@ -2810,7 +2855,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "context_pack": injection.to_dict(),
                 }
             )
-            record_attempt_event(
+            await record_attempt_event(
                 attempt=attempt,
                 event_type=(
                     f"{event_prefix}_attempt_completed"
@@ -2853,7 +2898,9 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 latency_ms=(monotonic() - started_at) * 1000,
                 details={"attempted_routes": attempts_used},
             )
-            _finish_evidence(route_evidence, outcome, evidence_key)
+            # The job is queued before the wait, and the lane shields it from this cancellation:
+            # the terminal event lands even though this task is going away.
+            await _on_state_lane(_finish_evidence, route_evidence, outcome, evidence_key)
             raise
         except Exception as exc:
             result = None
@@ -2874,7 +2921,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "transition_legal": True if index == 0 else bool(edge and edge.legal),
                 }
             )
-            record_attempt_event(
+            await record_attempt_event(
                 attempt=attempt,
                 event_type=f"{event_prefix}_attempt_failed",
                 details={
@@ -2889,7 +2936,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     if result is None:
         if dispatch_denial is not None and not attempts_used:
             return _proxy_error(503, dispatch_denial, surface=surface)
-        evidence = _finish_evidence(
+        evidence = await _on_state_lane(
+            _finish_evidence,
             route_evidence,
             build_outcome_event(
                 route_evidence.routing_decision,
@@ -2961,10 +3009,14 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         if result.status_code < 400 and response_actual_route_status(result) != "mismatch":
             from verdict.admit_prove_confirm import record_dispatch_observation
 
-            record_dispatch_observation(
-                attempts_used[-1]["model"], healthy=True, observed_at=datetime.now(timezone.utc)
+            await _on_state_lane(
+                record_dispatch_observation,
+                attempts_used[-1]["model"],
+                healthy=True,
+                observed_at=datetime.now(timezone.utc),
             )
-        evidence = _finish_evidence(
+        evidence = await _on_state_lane(
+            _finish_evidence,
             route_evidence,
             build_outcome_event(
                 route_evidence.routing_decision,
@@ -3012,25 +3064,35 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     if isinstance(result, StreamedUpstreamResponse):
         assert validated_stream is not None
 
-        def finalize_stream(event: Any) -> None:
-            _finish_evidence(route_evidence, event, evidence_key)
+        async def finalize_stream(event: Any) -> None:
             label, cls = _stream_ledger_outcome(validated_stream.outcome)
-            if label == "accepted":
-                from verdict.admit_prove_confirm import record_dispatch_observation
-
-                record_dispatch_observation(
-                    stream_ledger["model"], healthy=True, observed_at=datetime.now(timezone.utc)
-                )
             usage = validated_stream.outcome.usage if validated_stream.outcome else None
-            ledger(
-                stream_ledger["attempt_id"],
-                stream_ledger["model"],
-                stream_ledger["sent"],
-                outcome=label,
-                failure_class=cls,
-                headers=stream_ledger["headers"],
-                body=json.dumps({"usage": usage}).encode() if usage else None,
-            )
+
+            def write_ledger() -> None:
+                ledger(
+                    stream_ledger["attempt_id"],
+                    stream_ledger["model"],
+                    stream_ledger["sent"],
+                    outcome=label,
+                    failure_class=cls,
+                    headers=stream_ledger["headers"],
+                    body=json.dumps({"usage": usage}).encode() if usage else None,
+                )
+
+            try:
+                # One lane job, so a cancelled closer cannot land the terminal event and lose
+                # the observation (or the reverse).
+                await _on_state_lane(
+                    _finalize_stream_state,
+                    route_evidence,
+                    event,
+                    evidence_key,
+                    stream_ledger["model"] if label == "accepted" else None,
+                )
+            except asyncio.CancelledError:
+                write_ledger()  # the attempt's ledger row is written even when the closer is cancelled
+                raise
+            write_ledger()
 
         def stream_event(
             event_type: str,
@@ -3173,6 +3235,28 @@ def _finish_evidence(
         if stored is not None:
             return stored
     return updated
+
+
+def _finalize_stream_state(
+    evidence: ExplainEvidence, event: Any, evidence_key: str | None, observed_model: str | None
+) -> None:
+    """A stream's terminal bookkeeping as one lane job: the evidence event, then the observation.
+
+    ``observed_model`` is the model whose dispatch to record as healthy (an accepted stream), or
+    ``None`` to record none.
+    """
+    _finish_evidence(evidence, event, evidence_key)
+    if observed_model is not None:
+        from verdict.admit_prove_confirm import record_dispatch_observation
+
+        record_dispatch_observation(
+            observed_model, healthy=True, observed_at=datetime.now(timezone.utc)
+        )
+
+
+def _commit_dispatch_permit(expected_scope: DispatchScope, **kwargs: Any) -> Any:
+    """Commit one dispatch permit (state work: lock, reload, rewrite), for the lane."""
+    return HealthCache(default_cache_path()).commit_dispatch(expected_scope, **kwargs)
 
 
 # ---------------------------------------------------------------------------
