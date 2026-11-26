@@ -161,6 +161,16 @@ LAUNCH: dict[str, LaunchSpec] = {
         entry="verdict.orchestration.tui:follow",
         section="Orchestration",
     ),
+    "deliver": LaunchSpec(
+        reason=(
+            "_cmd_deliver (deliver_run): gates a verified COMPLETE run, then pushes a "
+            "branch with git and opens or reuses a draft pull request with gh, writing "
+            "a delivery record; external-effect publish run per run, exits 3 on refusal "
+            "and 4 on publish failure"
+        ),
+        entry="verdict.orchestration.deliver_service:deliver_run",
+        section="Orchestration",
+    ),
     "improve": LaunchSpec(
         reason=(
             "_improve (run_with_supervisor): runs bounded supervised orchestrate "
