@@ -15,10 +15,13 @@ Safety rules:
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import os
+import re
 import shutil
 import stat
+import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -33,6 +36,7 @@ _MAX_FILE_BYTES = 1_048_576
 _MAX_TOTAL_BYTES = 4_194_304
 _MAX_EVIDENCE_PATHS = 50
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_BASE_SHA_RE = re.compile(r"[0-9a-fA-F]{7,64}")
 
 
 @dataclass(frozen=True)
@@ -184,14 +188,67 @@ def _read_text_no_follow(path: Path) -> str:
         raise
 
 
-def _has_credential_content(path: Path) -> bool:
-    """Return True when content is credential-bearing or unreadable."""
+def _added_credential_lines(raw: str, base_text: str) -> bool:
+    """Return True when redaction changes a line that is not a line of base_text."""
+    redacted = redact_text(raw)
+    if redacted == raw:
+        return False
+    base_lines = frozenset(base_text.split("\n"))
+    raw_lines = raw.split("\n")
+    matcher = difflib.SequenceMatcher(None, raw_lines, redacted.split("\n"), autojunk=False)
+    for tag, i1, i2, _j1, _j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "insert":
+            return True
+        if any(line not in base_lines for line in raw_lines[i1:i2]):
+            return True
+    return False
+
+
+def _has_credential_content(path: Path, base_text: str | None = None) -> bool:
+    """Return True when content is credential-bearing or unreadable.
+
+    With ``base_text`` only lines that are not already lines of the base
+    version are judged; without it the whole file is judged.
+    """
     try:
         raw = _read_text_no_follow(path)
     except OSError:
         return True
-    redacted = redact_text(raw)
-    return redacted != raw
+    if base_text is None:
+        return redact_text(raw) != raw
+    return _added_credential_lines(raw, base_text)
+
+
+def _read_base_text(worktree: Path, base_sha: str, relative: str) -> str | None:
+    """Return the text of ``relative`` at ``base_sha``, or None when unavailable."""
+    if not _BASE_SHA_RE.fullmatch(base_sha):
+        return None
+    try:
+        completed = subprocess.run(  # nosec B603 B607
+            ["git", "-C", str(worktree), "show", f"{base_sha}:{relative}"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def _read_worktree_base_text(worktree: Path, relative: str) -> str | None:
+    """Return the fresh worktree's copy of ``relative``, or None when not a regular file."""
+    if _has_symlink_component(worktree, relative):
+        return None
+    try:
+        return _read_text_no_follow(worktree / relative)
+    except OSError:
+        return None
 
 
 def _copy_regular_no_follow(src: Path, dst: Path) -> None:
@@ -304,7 +361,6 @@ def salvage_owned_files(
 
     Returns a content-free ``SalvageResult``.
     """
-    del base_sha  # Diff authority belongs to the caller; keep API compatibility.
     owned_set = _safe_owned_set(owned_files)
     saved: list[str] = []
     skipped: list[str] = []
@@ -395,7 +451,7 @@ def salvage_owned_files(
                 skipped.append(rel_path)
                 continue
 
-            if _has_credential_content(src):
+            if _has_credential_content(src, _read_base_text(worktree, base_sha, rel_path)):
                 skipped.append(rel_path)
                 continue
 
@@ -470,7 +526,7 @@ def restore_salvaged_files(
                 skipped.append(rel_path)
                 continue
 
-            if _has_credential_content(src):
+            if _has_credential_content(src, _read_worktree_base_text(worktree, rel_path)):
                 skipped.append(rel_path)
                 continue
 
