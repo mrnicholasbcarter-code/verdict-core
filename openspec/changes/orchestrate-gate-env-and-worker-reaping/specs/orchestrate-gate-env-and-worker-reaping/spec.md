@@ -79,6 +79,10 @@ signal number and without `run_finished`.
 - **WHEN** a run returns
 - **THEN** the caller's SIGTERM and SIGINT handlers are as they were before it
 
+#### Scenario: A signal the embedding loop handles
+- **WHEN** the caller's loop already handles SIGTERM or SIGINT with `add_signal_handler`
+- **THEN** the run installs nothing for that signal and the caller's callback is still registered afterwards
+
 #### Scenario: Handlers outside the main thread
 - **WHEN** a run is started in a thread other than the main thread
 - **THEN** no handler is installed and the run proceeds

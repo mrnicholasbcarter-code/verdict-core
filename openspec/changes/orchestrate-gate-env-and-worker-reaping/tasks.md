@@ -15,7 +15,7 @@ Tests are in `tests/test_orch_verify_command.py`.
 
 Tests are in `tests/test_orch_verify_command.py`.
 
-- [x] 2.1 Unresolved third-party imports are an environment error; first-party ones, other gates and other mypy errors are not: `test_unresolved_third_party_imports_are_an_environment_error`, `test_a_missing_first_party_module_is_never_an_environment_error`, `test_a_src_layout_first_party_module_is_never_an_environment_error`, `test_ordinary_type_errors_stay_verification_failures`, `test_only_the_mypy_gate_is_read_for_unresolved_imports`, `test_a_passing_gate_is_not_an_environment_error`
+- [x] 2.1 Unresolved third-party imports are an environment error; first-party ones, other gates and other mypy errors are not: `test_unresolved_third_party_imports_are_an_environment_error`, `test_a_missing_first_party_module_is_never_an_environment_error`, `test_a_src_layout_first_party_module_is_never_an_environment_error`, `test_a_module_in_a_configured_mypy_path_is_first_party`, `test_a_module_in_the_mypypath_environment_variable_is_first_party`, `test_ordinary_type_errors_stay_verification_failures`, `test_only_the_mypy_gate_is_read_for_unresolved_imports`, `test_a_passing_gate_is_not_an_environment_error`
 - [x] 2.2 At integration the failure is `environment_error` / `BLOCK`, not judged, and a real failure in another gate wins: `test_an_environment_fault_at_integration_is_an_environment_error`, `test_a_real_gate_failure_at_integration_stays_a_verification_failure`, `test_a_real_failure_in_another_gate_wins_over_an_environment_fault`
 
 ## 3. Worker processes end with their attempt
@@ -25,9 +25,9 @@ Tests are in `tests/test_orch_worker_reaping.py` (real subprocesses, bounded wai
 - [x] 3.1 Success: a child in a session of its own, and an orphan of a tool command, end with the attempt, and the attempt directory is gone: `test_success_leaves_no_process_of_a_session_of_its_own`, `test_success_leaves_no_orphan_of_a_tool_command`
 - [x] 3.2 Failure, timeout, a leader that keeps running after its final event, and cancellation: `test_failure_leaves_no_process_behind`, `test_timeout_leaves_no_process_behind`, `test_a_leader_that_keeps_running_after_its_final_event_is_stopped`, `test_cancellation_leaves_no_process_behind`
 - [x] 3.3 A second cancellation during cleanup, in both phases: `test_cancelling_again_while_the_attempt_is_ended_still_ends_it`
-- [x] 3.4 Only the attempt's own processes end: `test_only_the_attempts_own_processes_are_ended`, `test_two_attempts_end_only_their_own_processes`
+- [x] 3.4 Only the attempt's own processes end, and a signal checks the marker on the process it holds: `test_only_the_attempts_own_processes_are_ended`, `test_two_attempts_end_only_their_own_processes`, `test_a_process_that_does_not_carry_the_marker_is_never_signalled`
 - [x] 3.5 An orchestrator process sent SIGTERM or SIGINT while a worker runs leaves no worker behind and exits 143 or 130: `test_an_orchestrator_that_is_signalled_leaves_no_worker_behind`
-- [x] 3.6 Handlers are restored, and none is installed off the main thread: `test_the_signal_handlers_are_the_runs_while_it_lasts_and_the_callers_after`, `test_a_run_in_a_worker_thread_installs_no_handler_and_still_runs`
+- [x] 3.6 Handlers are restored, none is installed off the main thread, and a signal the embedding loop handles is left to it: `test_the_signal_handlers_are_the_runs_while_it_lasts_and_the_callers_after`, `test_a_run_in_a_worker_thread_installs_no_handler_and_still_runs`, `test_a_signal_the_embedding_loop_already_handles_is_left_to_it`
 
 ## 4. Spec
 

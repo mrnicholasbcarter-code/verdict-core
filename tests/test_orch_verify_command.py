@@ -896,13 +896,18 @@ def test_a_uv_made_venv_is_used_by_ruff_and_by_projects_without_extras(
     assert verification.resolve_gate_argv(("mypy", "pkg"), plain) == [str(mypy), "pkg"]
 
 
+@pytest.mark.integration
 @pytest.mark.skipif(shutil.which("uv") is None, reason="needs the uv binary")
 async def test_the_resolved_mypy_gate_passes_in_a_real_uv_project_whose_stubs_are_in_an_extra(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The acceptance check, with the real uv: ``import yaml`` needs ``types-PyYAML``, which only
     the ``typing`` extra installs.  Today's command fails with ``import-untyped``; the resolved
-    gate passes."""
+    gate passes.
+
+    The one step that needs the package index is filling the cache (``uv sync``); a project
+    that cannot be synced there skips the test.  The two commands under test then run offline.
+    """
     project = tmp_path / "proj"
     (project / "pkg").mkdir(parents=True)
     (project / "pkg" / "__init__.py").write_text("")
@@ -914,20 +919,31 @@ async def test_the_resolved_mypy_gate_passes_in_a_real_uv_project_whose_stubs_ar
     )
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
     monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-    locked = subprocess.run(
-        ["uv", "lock"], cwd=project, capture_output=True, text=True, timeout=120, check=False
-    )
-    if locked.returncode != 0:
-        pytest.skip(
-            f"uv could not resolve the temp project (no index reachable?): {locked.stderr[-200:]}"
+    monkeypatch.delenv("UV_OFFLINE", raising=False)
+    try:
+        warmed = subprocess.run(
+            ["uv", "sync", "--all-extras"],
+            cwd=project,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
         )
+    except subprocess.TimeoutExpired:
+        pytest.skip("uv could not fill its cache in time (no package index reachable?)")
+    if warmed.returncode != 0:
+        pytest.skip(f"uv could not sync the temp project (no index?): {warmed.stderr[-200:]}")
+    shutil.rmtree(project / ".venv")  # a fresh worktree has none
+    monkeypatch.setenv("UV_OFFLINE", "1")
 
     gate = ("mypy", "--strict", "pkg")
     today = [shutil.which("uv") or "uv", "run", "--frozen", *gate]
     today_code, today_out = await subprocess_runner(today, project, 120)
     assert today_code == 1, today_out
-    assert "import-untyped" in today_out or "types-PyYAML" in today_out, today_out
+    assert "import-untyped" in today_out, today_out
 
+    # today's command left a venv of the base dependencies (mypy, no stubs) behind, as the
+    # ruff gate before mypy does in a real worktree: the resolved gate completes it
     resolved = verification.resolve_gate_argv(gate, project)
     code, out = await subprocess_runner(resolved, project, 120)
     assert code == 0, f"{shlex.join(resolved)}: {out}"
@@ -986,6 +1002,27 @@ def test_a_src_layout_first_party_module_is_never_an_environment_error(tmp_path:
     (tmp_path / "src" / "pkg").mkdir(parents=True)
     out = 'src/pkg/a.py:3: error: Cannot find implementation or library stub for module named "pkg.gone"  [import-not-found]\n'
     assert verification.classify_gate_env_error(("mypy", "src"), 1, out, tmp_path) is None
+
+
+def test_a_module_in_a_configured_mypy_path_is_first_party(tmp_path: Path) -> None:
+    """A project that keeps its packages under ``lib/`` and says so in ``mypy_path``: a missing
+    module of its own there is the implementation's, not the environment's."""
+    (tmp_path / "lib" / "pkg").mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text('[tool.mypy]\nmypy_path = ["lib"]\n')
+    out = 'lib/pkg/a.py:3: error: Cannot find implementation or library stub for module named "pkg.missing"  [import-not-found]\n'
+    assert verification.classify_gate_env_error(("mypy", "lib"), 1, out, tmp_path) is None
+    # and without the configuration the same output is an environment fault: the config decides
+    (tmp_path / "pyproject.toml").write_text("[tool.mypy]\n")
+    assert verification.classify_gate_env_error(("mypy", "lib"), 1, out, tmp_path) is not None
+
+
+def test_a_module_in_the_mypypath_environment_variable_is_first_party(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "lib" / "pkg").mkdir(parents=True)
+    monkeypatch.setenv("MYPYPATH", "other:lib")
+    out = 'a.py:3: error: Cannot find implementation or library stub for module named "pkg.missing"  [import-not-found]\n'
+    assert verification.classify_gate_env_error(("mypy", "."), 1, out, tmp_path) is None
 
 
 def test_ordinary_type_errors_stay_verification_failures(tmp_path: Path) -> None:

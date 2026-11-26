@@ -1123,38 +1123,69 @@ async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
                 await asyncio.wait_for(proc.wait(), timeout=_TERM_GRACE_SECONDS)
 
 
+def _carries_marker(pid: int, marker: str) -> bool:
+    """True when process ``pid`` is alive and its environment carries ``marker``.
+
+    A process counts only while its environment can be read: a zombie has none (it has ended),
+    and a process of another user cannot be read (and could not be signalled).
+    """
+    needle = f"{ATTEMPT_MARKER_ENV}={marker}".encode()
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as fh:
+            environ = fh.read()
+    except OSError:
+        return False  # gone already, or not ours to read
+    return needle in environ.split(b"\0")
+
+
 def _marked_pids(marker: str) -> list[int]:
     """The live processes of this user whose environment carries ``marker``, found in ``/proc``.
 
-    A process counts only while its environment can be read: a zombie has none (it has ended),
-    and a process of another user cannot be read (and could not be signalled).  Nothing here
-    matches on a name or a command line.  Without ``/proc`` the answer is empty and the group
-    kill is all there is.
+    Nothing here matches on a name or a command line.  Without ``/proc`` the answer is empty and
+    the group kill is all there is.
     """
-    needle = f"{ATTEMPT_MARKER_ENV}={marker}".encode()
     own = os.getpid()
-    found: list[int] = []
     try:
         entries = os.listdir("/proc")
     except OSError:
-        return found
-    for entry in entries:
-        if not entry.isdigit() or int(entry) == own:
-            continue
-        try:
-            with open(f"/proc/{entry}/environ", "rb") as fh:
-                environ = fh.read()
-        except OSError:
-            continue  # gone already, or not ours to read
-        if needle in environ.split(b"\0"):
-            found.append(int(entry))
-    return found
+        return []
+    return [
+        int(entry)
+        for entry in entries
+        if entry.isdigit() and int(entry) != own and _carries_marker(int(entry), marker)
+    ]
 
 
-def _signal_pids(pids: Iterable[int], sig: signal.Signals) -> None:
+def _signal_marked(marker: str, pids: Iterable[int], sig: signal.Signals) -> None:
+    """Signal each of ``pids`` that still carries ``marker``.
+
+    A search takes time, and a PID can be reused by an unrelated process in between.  So, as
+    ``controller_operations`` does, a pidfd is opened first and the marker is checked after: the
+    handle then names the process that was checked, and the signal goes to the handle, never to a
+    bare PID.  Without pidfds (an old kernel, another platform) the marker is checked again just
+    before a plain ``kill``.
+    """
+    has_pidfd = hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")
     for pid in pids:
-        with contextlib.suppress(ProcessLookupError, OSError):
-            os.kill(pid, sig)
+        fd: int | None = None
+        if has_pidfd:
+            try:
+                fd = os.pidfd_open(pid)
+            except ProcessLookupError:
+                continue
+            except OSError:
+                fd = None
+        try:
+            if not _carries_marker(pid, marker):
+                continue
+            with contextlib.suppress(ProcessLookupError, OSError):
+                if fd is not None:
+                    signal.pidfd_send_signal(fd, sig)
+                else:
+                    os.kill(pid, sig)
+        finally:
+            if fd is not None:
+                os.close(fd)
 
 
 async def _reap_marked(marker: str) -> None:
@@ -1177,13 +1208,13 @@ async def _reap_marked(marker: str) -> None:
             if elapsed >= _MARKED_REAP_SECONDS:
                 return
             if elapsed < _MARKED_TERM_GRACE_SECONDS:
-                _signal_pids([pid for pid in pids if pid not in termed], signal.SIGTERM)
+                _signal_marked(marker, [pid for pid in pids if pid not in termed], signal.SIGTERM)
                 termed.update(pids)
             else:
-                _signal_pids(pids, signal.SIGKILL)
+                _signal_marked(marker, pids, signal.SIGKILL)
             await asyncio.sleep(_MARKED_POLL_SECONDS)
     finally:
-        _signal_pids(_marked_pids(marker), signal.SIGKILL)
+        _signal_marked(marker, _marked_pids(marker), signal.SIGKILL)
 
 
 async def _reap_attempt(proc: asyncio.subprocess.Process | None, marker: str) -> None:
@@ -1738,7 +1769,7 @@ class OpenCodeExecutor:
             except BaseException:
                 # Cancelled while the worker was being started: it may already exist, and
                 # asyncio ends only its leader.
-                _signal_pids(_marked_pids(marker), signal.SIGKILL)
+                _signal_marked(marker, _marked_pids(marker), signal.SIGKILL)
                 raise
 
             attempt.launched = True

@@ -162,14 +162,40 @@ def classify_verify_env_error(
     return None
 
 
+def _first_party_roots(worktree: Path) -> list[Path]:
+    """The directories mypy finds the project's own modules in: the worktree root, ``src/``, the
+    ``[tool.mypy] mypy_path`` entries of its ``pyproject.toml`` (a list, or one string separated
+    by ``:`` or ``,``; ``$MYPY_CONFIG_FILE_DIR`` is the worktree) and the ``MYPYPATH``
+    environment variable (``:``-separated, relative to the worktree the gate runs in)."""
+    entries: list[str] = []
+    try:
+        data = _load_pyproject(worktree)
+    except (ValueError, OSError):
+        data = {}
+    tool = data.get("tool")
+    mypy = tool.get("mypy") if isinstance(tool, dict) else None
+    configured = mypy.get("mypy_path") if isinstance(mypy, dict) else None
+    if isinstance(configured, str):
+        entries.extend(part for chunk in configured.split(os.pathsep) for part in chunk.split(","))
+    elif isinstance(configured, list):
+        entries.extend(item for item in configured if isinstance(item, str))
+    entries.extend(os.environ.get("MYPYPATH", "").split(os.pathsep))
+    roots = [worktree, worktree / "src"]
+    for entry in entries:
+        entry = entry.strip().replace("$MYPY_CONFIG_FILE_DIR", str(worktree))
+        if entry:
+            roots.append(worktree / entry)  # an absolute entry stays absolute
+    return roots
+
+
 def _is_first_party(module: str, worktree: Path) -> bool:
-    """True when ``module``'s top-level name is a package or module of the project itself, at
-    the repository root or under ``src/``: such an import is the implementation's to keep
-    resolvable, never the environment's."""
+    """True when ``module``'s top-level name is a package or module of the project itself, in
+    one of the places mypy looks for them (:func:`_first_party_roots`): such an import is the
+    implementation's to keep resolvable, never the environment's."""
     top = module.split(".", 1)[0]
     return any(
         (base / top).is_dir() or (base / f"{top}.py").is_file()
-        for base in (worktree, worktree / "src")
+        for base in _first_party_roots(worktree)
     )
 
 
@@ -178,14 +204,14 @@ def classify_gate_env_error(argv: Sequence[str], code: int, out: str, worktree: 
     because its environment lacks the project's dependencies, not because of the code.
 
     The one signal read is mypy's own: at least one ``import-not-found`` or ``import-untyped``
-    error, every one of them for a third-party module (the name is not a package or module of
-    the worktree, at its root or under ``src/``).  mypy's other errors in the same output are
-    not told apart: a missing library also breaks what is typed from it (an untyped decorator,
-    a ``no-any-return``), so the observed output mixes both, and a genuine type error beside
-    them shows once the environment is fixed.  ``None`` for a passing gate, any other gate,
-    output without such an error, and output with an unresolved import of the project's own
-    modules (a renamed or deleted module is a wrong implementation).  Only the output the
-    runner kept is read; a first-party error in a cut-off part is not seen.
+    error, every one of them for a third-party module (the name is not a package or module of the
+    project: at the worktree root, under ``src/`` or in a ``mypy_path``).  mypy's other errors in
+    the same output are not told apart: the observed output mixes the import errors with others
+    (``untyped-decorator``, ``no-any-return``) that pass once the libraries are installed, so a
+    genuine type error beside them shows once the environment is fixed.  ``None`` for a passing
+    gate, any other gate, output without such an error, and output with an unresolved import of
+    the project's own modules (a renamed or deleted module is a wrong implementation).  Only the
+    output the runner kept is read; a first-party error in a cut-off part is not seen.
 
     The reason names the first three packages only: no other output text reaches it.
     """

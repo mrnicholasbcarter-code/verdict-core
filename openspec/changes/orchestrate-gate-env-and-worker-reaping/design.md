@@ -78,8 +78,9 @@ base comparison stays as it is.
 `classify_gate_env_error` reads the whole gate output (not the 600-character tail the reason
 keeps): a failed `mypy` gate with at least one `import-not-found` or `import-untyped` error,
 every one for a third-party module, is an environment error. "Third party" means the name is not
-a package or module of the worktree at its root or under `src/`; an unresolved import of the
-project's own module is a wrong implementation. Other mypy errors in the same output are not told
+a package or module of the project, at the worktree root, under `src/` or in a `[tool.mypy]
+mypy_path` or `MYPYPATH` entry; an unresolved import of the project's own module is a wrong
+implementation. Other mypy errors in the same output are not told
 apart (the observed output mixes them; all of them pass with the libraries installed), so a
 genuine type error beside the import errors shows once the environment is fixed.
 
@@ -109,10 +110,13 @@ SIGTERM: 5 s (group) plus 3 s, inside the supervisor's 10 s kill grace. A spawn 
 while it starts gets the SIGKILL pass too.
 
 Matching is by exact marker, never by a name or a command line, and a search skips its own
-process. Limits: Linux only (`/proc`; elsewhere the group kill is all there is); a process that
-scrubs its environment (`env -i`) is not found; a process of another user cannot be read; a PID
-can be reused between a search and a signal (microseconds); a process in uninterruptible sleep
-survives SIGKILL and is left after the bound.
+process. A signal goes through a pidfd opened before the marker is checked, as
+`controller_operations` does, so a PID reused in between is never signalled; without pidfds the
+marker is checked again just before a plain `kill` and a window of microseconds remains.
+
+Limits: Linux only (`/proc`; elsewhere the group kill is all there is); a process that scrubs its
+environment (`env -i`) is not found; a process of another user cannot be read; a process in
+uninterruptible sleep survives SIGKILL and is left after the bound.
 
 ### D5. SIGTERM and SIGINT cancel the run; the process then exits as a signalled one
 

@@ -363,6 +363,31 @@ async def test_only_the_attempts_own_processes_are_ended(rec: Path, cwd: Path) -
         bystander.wait()
 
 
+def test_a_process_that_does_not_carry_the_marker_is_never_signalled(tmp_path: Path) -> None:
+    """The signal checks the marker on the process it holds: a PID that no longer (or never) names
+    a marked process is left alone, which is what protects a reused PID."""
+    from verdict.orchestration import executor_opencode as eo
+
+    marker = "marker-for-this-test"
+    plain = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    marked = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"],
+        env={**os.environ, eo.ATTEMPT_MARKER_ENV: marker},
+    )
+    try:
+        deadline = time.monotonic() + _BOUND
+        while marked.pid not in eo._marked_pids(marker) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert eo._marked_pids(marker) == [marked.pid]
+        eo._signal_marked(marker, [plain.pid, marked.pid], signal.SIGKILL)
+        assert marked.wait(timeout=_BOUND) == -signal.SIGKILL
+        assert plain.poll() is None, "a process without the marker was signalled"
+    finally:
+        for process in (plain, marked):
+            process.kill()
+            process.wait()
+
+
 async def test_two_attempts_end_only_their_own_processes(
     rec: Path, cwd: Path, tmp_path: Path
 ) -> None:
@@ -520,10 +545,13 @@ def test_an_orchestrator_that_is_signalled_leaves_no_worker_behind(
             proc.wait()
 
 
-@pytest.mark.skipif(
+_MAIN_THREAD_ONLY = pytest.mark.skipif(
     threading.current_thread() is not threading.main_thread(),
     reason="signal handlers belong to the main thread",
 )
+
+
+@_MAIN_THREAD_ONLY
 async def test_the_signal_handlers_are_the_runs_while_it_lasts_and_the_callers_after() -> None:
     from verdict.orchestration.run import _exit_when_signalled
 
@@ -536,8 +564,33 @@ async def test_the_signal_handlers_are_the_runs_while_it_lasts_and_the_callers_a
         return "done"
 
     assert await run() == "done"
-    assert all(during[sig] != before[sig] for sig in before), "the run installed no handler"
+    assert during[signal.SIGTERM] != before[signal.SIGTERM], "the run installed no handler"
     assert {sig: signal.getsignal(sig) for sig in before} == before
+
+
+@_MAIN_THREAD_ONLY
+async def test_a_signal_the_embedding_loop_already_handles_is_left_to_it() -> None:
+    """``loop.add_signal_handler`` callbacks cannot be read back or restored, so a run neither
+    replaces nor removes one: the caller's SIGTERM callback is still registered afterwards."""
+    from verdict.orchestration.run import _exit_when_signalled
+
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGTERM, lambda: None)
+    try:
+        installed = signal.getsignal(signal.SIGTERM)
+        seen: list[object] = []
+
+        @_exit_when_signalled
+        async def run() -> str:
+            seen.append(signal.getsignal(signal.SIGTERM))
+            return "done"
+
+        assert await run() == "done"
+        assert seen == [installed], "the run replaced the caller's handler"
+        assert signal.getsignal(signal.SIGTERM) == installed
+        assert loop.remove_signal_handler(signal.SIGTERM) is True, "the callback was removed"
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
 
 
 def test_a_run_in_a_worker_thread_installs_no_handler_and_still_runs() -> None:

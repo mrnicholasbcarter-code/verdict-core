@@ -820,6 +820,21 @@ _R = TypeVar("_R")
 _TERMINATION_SIGNALS = (signal.SIGTERM, signal.SIGINT)
 
 
+def _signal_is_unclaimed(handler: Any) -> bool:
+    """True when nobody but the interpreter (or ``asyncio.run`` for SIGINT) handles the signal.
+
+    ``signal.getsignal`` shows a handler installed with ``loop.add_signal_handler`` as asyncio's
+    own no-op, which is not any of these: such a signal is somebody else's, and replacing it
+    would lose their callback for good (asyncio cannot give it back).
+    """
+    if handler in (signal.SIG_DFL, signal.default_int_handler):
+        return True
+    # Python 3.11+: ``asyncio.run`` handles SIGINT with a partial of ``Runner._on_sigint``.
+    runner = getattr(asyncio, "Runner", None)
+    target = handler.func if isinstance(handler, functools.partial) else handler
+    return runner is not None and isinstance(getattr(target, "__self__", None), runner)
+
+
 @contextlib.contextmanager
 def _cancel_task_on_termination(received: list[int]) -> Iterator[None]:
     """While open, SIGTERM and SIGINT cancel the task that opened it, and say which in ``received``.
@@ -833,6 +848,7 @@ def _cancel_task_on_termination(received: list[int]) -> Iterator[None]:
     operator's way out of a cleanup that hangs.  The previous handlers are put back on the way
     out.  Only in the main thread of a loop that supports signal handlers; anywhere else (a
     worker thread, a platform without them) nothing is installed and the signal keeps its default.
+    A signal that something else already handles (:func:`_signal_is_unclaimed`) is left to it.
     """
     task = asyncio.current_task()
     loop = asyncio.get_running_loop()
@@ -846,8 +862,10 @@ def _cancel_task_on_termination(received: list[int]) -> Iterator[None]:
             task.cancel()
 
         for sig in _TERMINATION_SIGNALS:
+            before = signal.getsignal(sig)
+            if not _signal_is_unclaimed(before):
+                continue
             try:
-                before = signal.getsignal(sig)
                 loop.add_signal_handler(sig, on_signal, sig)
             except (NotImplementedError, RuntimeError, ValueError, OSError):
                 continue
