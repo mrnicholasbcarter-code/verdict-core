@@ -124,6 +124,7 @@ from verdict.orchestration.worker_context import (
     reuse_research_pack,
 )
 from verdict.relay import admission_proof, dispatch_scope
+from verdict.security import redact_text
 from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
 
 # Indirection for testing
@@ -452,6 +453,10 @@ class Git:
         Owned paths are staged as literal pathspecs (``:(literal)<path>``) so a
         path containing git pathspec magic characters (e.g. a filename starting
         with ``:(``) is matched exactly rather than reinterpreted.
+
+        Finally, ignored untracked regular files under the owned paths are
+        force-added so ``.gitignore`` cannot drop a deliverable; byproducts,
+        symlinks and files with credential-shaped content are never added.
         """
         _ensure_local_excludes(cwd)
         dir_excludes = [p for p in BYPRODUCT_EXCLUDES if p.endswith("/")]
@@ -475,6 +480,51 @@ class Git:
             # -A also stages a deletion of an already-tracked owned path even
             # when it no longer exists on disk.
             await self.call("add", "-A", "-f", "--", spec, cwd=cwd)
+        if owned_files:
+            code, listing = await self.run(
+                (
+                    "git",
+                    "ls-files",
+                    "-z",
+                    "-o",
+                    "-i",
+                    "--exclude-standard",
+                    "--",
+                    *(f":(literal){p}" for p in owned_files),
+                ),
+                cwd,
+                60,
+            )
+            if code != 0:
+                raise RuntimeError(f"git ls-files for owned ignored files failed ({code})")
+            if len(listing) >= 4000:
+                raise RuntimeError(
+                    "the ignored-file listing for the node's owned paths is too large to trust"
+                )
+            for ignored in (item for item in listing.split("\0") if item):
+                full = cwd / ignored
+                if full.is_symlink() or not full.is_file():
+                    continue
+                if ignored not in owned_files and any(
+                    (
+                        ignored.startswith(pattern) or f"/{pattern}" in ignored
+                        if pattern.endswith("/")
+                        else (
+                            ignored.endswith(pattern[1:])
+                            if pattern.startswith("*")
+                            else ignored.rsplit("/", 1)[-1] == pattern
+                        )
+                    )
+                    for pattern in BYPRODUCT_EXCLUDES
+                ):
+                    continue
+                try:
+                    content = full.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if redact_text(content) != content:
+                    continue
+                await self.call("add", "-A", "-f", "--", f":(literal){ignored}", cwd=cwd)
         out = await self.call("diff", "--cached", "--name-only", base, cwd=cwd)
         return [line for line in out.splitlines() if line.strip()]
 
