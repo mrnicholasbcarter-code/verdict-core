@@ -831,6 +831,52 @@ class TestDagRuntimeSalvageRestore:
         # No restore because nothing was saved
         assert not events.of("restore")
 
+    @pytest.mark.parametrize(
+        ("extra_lines", "expect_saved"),
+        [("extra clean line\n", ["a.txt"]), ("{base_line}\n", [])],
+        ids=["clean_addition_is_salvaged", "duplicated_credential_line_is_skipped"],
+    )
+    def test_runtime_judges_only_lines_added_since_the_node_base(
+        self, repo: Path, extra_lines: str, expect_saved: list[str]
+    ) -> None:
+        """The runtime hands the node base and the trusted repo to salvage: a credential-shaped
+        line the base already has is tolerated once, a further copy of it is not."""
+        base_line = "api_key=" + "-".join(("sk", "ant", "abc123def456ghi789jkl012mno345pq"))
+        (repo / "a.txt").write_text(base_line + "\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "seed a.txt"], cwd=repo, check=True)
+        run_dir = repo.parent / "run1"
+        events = Events()
+        executor = Executor(
+            fail_on={("a", "r1/m1")},
+            partial_content=base_line + "\n" + extra_lines.format(base_line=base_line),
+        )
+
+        runtime = DagRuntime(
+            repo=repo,
+            run_dir=run_dir,
+            graph=WorkGraph("g", (_node("a"),)),
+            selector=Selector(["r1/m1", "r2/m2"]),
+            executor=executor,
+            classifier=SimpleClassifier(),
+            events=events,
+            prompt_for=lambda n, cwd, **kw: f"{n.node_id}: {n.objective}",
+            reviewer=None,
+            policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+            now=lambda: NOW,
+        )
+
+        result = asyncio.run(runtime.run())
+        assert result.outcome is RunOutcome.COMPLETE, result.reason
+
+        salvage_events = events.of("salvage", "a")
+        assert len(salvage_events) == 1
+        assert salvage_events[0]["saved"] == expect_saved
+        if not expect_saved:
+            assert salvage_events[0]["skipped"] == ["a.txt"]
+            assert not events.of("restore")
+        assert base_line not in json.dumps(salvage_events)
+
     def test_existing_acceptance_verification_unchanged(self, repo: Path) -> None:
         """Salvage/restore does not alter the existing ownership or verification
         barriers: a failing verification still blocks the node."""

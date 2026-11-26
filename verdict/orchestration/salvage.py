@@ -15,11 +15,16 @@ Safety rules:
 
 from __future__ import annotations
 
+import difflib
+import functools
 import hashlib
 import os
+import re
 import shutil
 import stat
-from collections.abc import Mapping, Sequence
+import subprocess
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -33,6 +38,7 @@ _MAX_FILE_BYTES = 1_048_576
 _MAX_TOTAL_BYTES = 4_194_304
 _MAX_EVIDENCE_PATHS = 50
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_BASE_SHA_RE = re.compile(r"[0-9a-fA-F]{7,64}")
 
 
 @dataclass(frozen=True)
@@ -184,14 +190,100 @@ def _read_text_no_follow(path: Path) -> str:
         raise
 
 
-def _has_credential_content(path: Path) -> bool:
-    """Return True when content is credential-bearing or unreadable."""
+def _added_credential_lines(raw: str, redacted: str, base_text: str) -> bool:
+    """Return True when redaction changes a line the base version does not account for.
+
+    A redaction-changed line counts as already in the base only as many times as the
+    base holds that line, so an attempt cannot pass a second copy of a credential
+    line the base has once.
+    """
+    base_counts = Counter(base_text.split("\n"))
+    raw_lines = raw.split("\n")
+    matcher = difflib.SequenceMatcher(None, raw_lines, redacted.split("\n"), autojunk=False)
+    for tag, i1, i2, _j1, _j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "insert":
+            return True
+        for line in raw_lines[i1:i2]:
+            if base_counts[line] <= 0:
+                return True
+            base_counts[line] -= 1
+    return False
+
+
+def _has_credential_content(path: Path, read_base: Callable[[], str | None] | None = None) -> bool:
+    """Return True when content is credential-bearing or unreadable.
+
+    ``read_base`` is called only when redaction changes the content.  With base text
+    only the lines an attempt added are judged; without it (no reader, or the reader
+    returns None) the whole file is judged.
+    """
     try:
         raw = _read_text_no_follow(path)
     except OSError:
         return True
     redacted = redact_text(raw)
-    return redacted != raw
+    if redacted == raw:
+        return False
+    base_text = read_base() if read_base is not None else None
+    if base_text is None:
+        return True
+    return _added_credential_lines(raw, redacted, base_text)
+
+
+def _git_stdout(repo_root: Path, *args: str) -> str | None:
+    """Run a read-only git query against the trusted repository; None on any failure.
+
+    ``--no-replace-objects`` keeps ``refs/replace/*``, which a worktree shares with the
+    repository and an attempt can write, from substituting different content for the
+    objects the base commit names.
+    """
+    try:
+        completed = subprocess.run(  # nosec B603 B607
+            ["git", "-C", str(repo_root), "--no-replace-objects", *args],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def _read_base_text(repo_root: Path | None, base_sha: str, relative: str) -> str | None:
+    """Return the text of ``relative`` at ``base_sha``, or None when unavailable.
+
+    Reads from the trusted repository, never from the attempt's worktree.  A blob
+    larger than the per-file limit is not read.
+    """
+    if repo_root is None or not _BASE_SHA_RE.fullmatch(base_sha):
+        return None
+    spec = f"{base_sha}:{relative}"
+    size_text = _git_stdout(repo_root, "cat-file", "-s", spec)
+    if size_text is None:
+        return None
+    try:
+        size = int(size_text.strip())
+    except ValueError:
+        return None
+    if size > _MAX_FILE_BYTES:
+        return None
+    return _git_stdout(repo_root, "cat-file", "blob", spec)
+
+
+def _read_worktree_base_text(worktree: Path, relative: str) -> str | None:
+    """Return the fresh worktree's copy of ``relative``, or None when not a regular file."""
+    if _has_symlink_component(worktree, relative):
+        return None
+    try:
+        return _read_text_no_follow(worktree / relative)
+    except OSError:
+        return None
 
 
 def _copy_regular_no_follow(src: Path, dst: Path) -> None:
@@ -292,19 +384,24 @@ def salvage_owned_files(
     changed_files: Sequence[str] | None = None,
     replace_existing: bool = False,
     base_sha: str = "",
+    repo_root: Path | None = None,
 ) -> SalvageResult:
     """Preserve owned modified files from a failed attempt's worktree.
 
     Only files that (a) exist in the worktree, (b) were reported as changed by
     the caller's Git diff authority when supplied, (c) are listed in
-    owned_files, (d) are within size limits, and (e) contain no detectable
+    owned_files, (d) are within size limits, and (e) add no detectable
     credentials are saved.  Runtime callers set ``replace_existing`` so each
     capture replaces the previous node snapshot and no-change or deletion-only
     attempts cannot resurrect stale partial work.
 
+    A credential-shaped line the base version already has is tolerated once per
+    copy in the base.  The base text is read from ``repo_root`` (the trusted
+    repository, not the attempt's worktree) at ``base_sha``; without either, or
+    when the base cannot be read, the whole file is judged.
+
     Returns a content-free ``SalvageResult``.
     """
-    del base_sha  # Diff authority belongs to the caller; keep API compatibility.
     owned_set = _safe_owned_set(owned_files)
     saved: list[str] = []
     skipped: list[str] = []
@@ -395,7 +492,9 @@ def salvage_owned_files(
                 skipped.append(rel_path)
                 continue
 
-            if _has_credential_content(src):
+            if _has_credential_content(
+                src, functools.partial(_read_base_text, repo_root, base_sha, rel_path)
+            ):
                 skipped.append(rel_path)
                 continue
 
@@ -470,7 +569,9 @@ def restore_salvaged_files(
                 skipped.append(rel_path)
                 continue
 
-            if _has_credential_content(src):
+            if _has_credential_content(
+                src, functools.partial(_read_worktree_base_text, worktree, rel_path)
+            ):
                 skipped.append(rel_path)
                 continue
 

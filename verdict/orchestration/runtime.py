@@ -2653,8 +2653,9 @@ class DagRuntime:
                         run.salvage_poisoned = True
                 else:
                     # Work was interrupted: preserve partial owned files.
+                    node_base = await self._node_base(run.node)
                     changed = await self.git.changed_files(
-                        worktree, await self._node_base(run.node), owned_files=run.node.owned_files
+                        worktree, node_base, owned_files=run.node.owned_files
                     )
                     result = salvage_owned_files(
                         worktree,
@@ -2662,6 +2663,8 @@ class DagRuntime:
                         salvage_dir,
                         changed_files=changed,
                         replace_existing=True,
+                        base_sha=node_base,
+                        repo_root=self.repo,
                     )
                     if result.saved and not result.error:
                         # Successful save replaced any prior stale content.
