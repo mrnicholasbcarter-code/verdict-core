@@ -10,9 +10,9 @@ import math
 import os
 import re
 import sys
+import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
-from concurrent.futures import Future
 from contextlib import suppress
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
@@ -3311,33 +3311,69 @@ def _queue_cancelled_terminal(
     Used when the task is cancelled while it waits on a lane job after its decision row exists
     and before any attempt could record the cancellation.  The event is queued behind the job
     the task was waiting on, so it lands after it; a request that already has a terminal event
-    keeps it (an append of a different terminal outcome is refused and ignored).  A lane that
-    has already closed (the app is shutting down) takes no more jobs: nothing is recorded then.
+    keeps it (an append of a different terminal outcome is refused and ignored).  It is queued
+    as lane cleanup, which a closed lane still takes while its worker runs and which runs at
+    once once the worker has been told to stop, so a task cancelled during shutdown still ends
+    its row.  With no lane left (the app has finished shutting down) it is written at once.
     """
-    lane = state_lane_instance
-    if lane is None or evidence_key is None:
+    if evidence_key is None:
         return
     event = _cancelled_event(evidence, event_prefix=event_prefix, features=features)
-    with suppress(RuntimeError):
-        lane.submit(_finish_evidence, evidence, event, evidence_key)
-
-
-def _end_started_row(
-    started: Future[tuple[ExplainEvidence, str | None]],
-    *,
-    event_prefix: str,
-    features: dict[str, Any],
-) -> None:
-    """A lane job, queued behind ``started``'s: give the row it wrote its cancelled event."""
-    if started.cancelled() or started.exception() is not None:
+    lane = state_lane_instance
+    if lane is not None:
+        lane.submit_cleanup(_finish_evidence, evidence, event, evidence_key)
         return
-    evidence, evidence_key = started.result()
-    if evidence_key is not None:
-        _finish_evidence(
-            evidence,
-            _cancelled_event(evidence, event_prefix=event_prefix, features=features),
-            evidence_key,
-        )
+    # Without a lane the work runs inline and cannot be cancelled while it waits, so a missing
+    # lane here means the app has finished shutting down: write it now, never replace the
+    # cancellation with a store error.
+    try:
+        _finish_evidence(evidence, event, evidence_key)
+    except Exception:
+        logger.warning("the cancelled terminal event could not be recorded", exc_info=True)
+
+
+class _StartJob:
+    """The lane job that starts a decision row, and ends that row if its waiter gave up.
+
+    ``abandon`` is called when the waiter is cancelled.  If the job has not finished, the job
+    itself ends the row the moment it has written it, on its own thread: nothing is submitted, so
+    this holds when the lane has closed and when its worker has been told to stop (a stopping
+    worker still finishes the job it holds).  If the job has already finished, the row is ended
+    through ``_queue_cancelled_terminal``.  Exactly one of the two ends the row.
+    """
+
+    def __init__(self, *, event_prefix: str, features: dict[str, Any]) -> None:
+        self._event_prefix = event_prefix
+        self._features = features
+        self._lock = threading.Lock()
+        self._started: tuple[ExplainEvidence, str | None] | None = None
+        self._abandoned = False
+
+    def __call__(self, decision: Any, **kwargs: Any) -> tuple[ExplainEvidence, str | None]:
+        started = _start_evidence(decision, **kwargs)
+        with self._lock:
+            self._started = started
+            abandoned = self._abandoned
+        if abandoned:
+            evidence, evidence_key = started
+            if evidence_key is not None:
+                _finish_evidence(
+                    evidence,
+                    _cancelled_event(
+                        evidence, event_prefix=self._event_prefix, features=self._features
+                    ),
+                    evidence_key,
+                )
+        return started
+
+    def abandon(self) -> None:
+        with self._lock:
+            self._abandoned = True
+            started = self._started
+        if started is not None:
+            _queue_cancelled_terminal(
+                *started, event_prefix=self._event_prefix, features=self._features
+            )
 
 
 async def _start_evidence_on_lane(
@@ -3346,25 +3382,18 @@ async def _start_evidence_on_lane(
     """``_start_evidence`` on the lane; a cancelled waiter still gives the new row a terminal event.
 
     The job is queued at the call and runs whatever happens to this task, so a task cancelled
-    while it waits would leave a decision row nobody ends.  On cancellation a second job is
-    queued behind the first, in the same lane, to end the row it wrote.
+    while it waits would leave a decision row nobody ends.  The job (``_StartJob``) ends the row
+    it wrote when the waiter gave up first, even if the lane has closed by then.
     """
     lane = state_lane_instance
     if lane is None:
         return _start_evidence(decision, **kwargs)
-    future = lane.submit(_start_evidence, decision, **kwargs)
+    job = _StartJob(event_prefix=cancelled_event_prefix, features=kwargs["features"])
+    future = lane.submit(job, decision, **kwargs)
     try:
         return await asyncio.shield(asyncio.wrap_future(future))
     except asyncio.CancelledError:
-        # Queued now, behind the start job, so it is accepted while the lane is open, drained if
-        # the lane is closing, and runs after the row exists.
-        with suppress(RuntimeError):
-            lane.submit(
-                _end_started_row,
-                future,
-                event_prefix=cancelled_event_prefix,
-                features=kwargs["features"],
-            )
+        job.abandon()
         raise
 
 

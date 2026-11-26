@@ -50,11 +50,18 @@ request, `/health` 16 to 32 s.
    (the CLI, orchestration, tests) decides inline, unchanged.
 5. **Cancellation never drops queued work, and a started row is always ended.** `run` shields
    the job from its waiter: a request task cancelled while its terminal evidence write is queued
-   still gets the write, in order. A task cancelled while the decision row is being started, or
-   while a step between the row and the first attempt (the permit commit, a fallback event) is
-   queued, queues a `<surface>_cancelled` terminal event behind that job. A stream's terminal
-   bookkeeping (event and observation) and the buffered response's are each one job.
-   `_EvidenceStreamAdapter` awaits an async terminal callback and still accepts a plain one.
+   still gets the write, in order. A task cancelled while the decision row is being started hands
+   the ending of the row to the start job itself (`_StartJob`): if the waiter gave up before the
+   job finished, the job writes a `<surface>_cancelled` terminal event as soon as it has written
+   the row, on the lane thread, so nothing has to be submitted after the lane has closed or its
+   worker has been told to stop; if the job had already finished, the event is queued as cleanup
+   (below). A task cancelled while a later step (the permit commit, a fallback event) is queued
+   queues the same event as cleanup: `StateLane.submit_cleanup` is taken by a closed lane while
+   its worker runs (behind the job the task waited on; the close waits for it), runs at once on
+   the calling thread once the worker has been told to stop, and the event is written directly
+   when the app has no lane left. A stream's terminal bookkeeping (event and observation) and
+   the buffered response's are each one job. `_EvidenceStreamAdapter` awaits an async terminal
+   callback and still accepts a plain one.
 6. **Never hold the lane across an upstream call.** The lane runs the decision before the call
    and the bookkeeping after it; streaming and the upstream call stay on the loop.
 7. **Lifecycle.** The lifespan creates the lane as its last startup step (a failed startup leaves
@@ -66,9 +73,10 @@ request, `/health` 16 to 32 s.
 
 ## Risks / Trade-offs
 
-- At shutdown the lane refuses new jobs, so a request task cancelled then cannot queue its
-  cancelled terminal event; its decision row stays without one. The terminal write of a cancelled
-  attempt or stream, and of a task cancelled before the lane closed, still lands.
+- Once a close has given up on a stuck job, the cancelled terminal event of a task cancelled then
+  is written on the thread of the cancelled task (one store append, on the event loop) and can
+  land before the stuck job's own write. The request was cancelled, so `cancelled` is its true
+  outcome, and the store refuses a second, different terminal outcome for the row.
 - Work now runs on a second thread beside the loop. The state it touches is already used from
   `to_thread` workers (receipt store: locked writes and per-call connections; health cache: file
   lock), and only the lane thread decides.

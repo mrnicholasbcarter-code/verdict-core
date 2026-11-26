@@ -48,9 +48,13 @@ cancelled SHALL still run.
 - **THEN** no upstream call is made and no proof is minted for a denial, `ExecutionPathError` is the same 400 and another error the same 500
 
 #### Scenario: A cancelled waiter does not drop its job, and a started row is ended
-- **WHEN** a request task is cancelled while its terminal evidence write is queued behind a busy lane, or while its decision row is being started or its permit committed, and the lane has not yet closed
-- **THEN** the queued write still runs in order, and the cancelled request's decision row gets a `cancelled` terminal event, with no upstream call made; if the lane closes before the start job finishes, the cancelled event queued behind it is still drained
+- **WHEN** a request task is cancelled while its terminal evidence write is queued behind a busy lane, or while its decision row is being started or its permit committed
+- **THEN** the queued write still runs in order, and the cancelled request's decision row gets a `cancelled` terminal event, with no upstream call made
+
+#### Scenario: A row is ended even when the lane closed first
+- **WHEN** the lane is closed (its worker still running, or told to stop after the close gave up on a held job) and then a request task is cancelled while its start job or its permit commit is still held
+- **THEN** the row gets exactly one `cancelled` terminal event: the start job ends its own row when it has written it, and a cleanup for a later step is queued behind the held job while the worker runs, or run at once when it has stopped
 
 #### Scenario: Shutdown
 - **WHEN** the app ends, normally or with an error, with jobs queued
-- **THEN** the lane refuses new jobs, waits up to its bound for the queued ones, stops its worker even if that wait is cancelled, runs jobs still queued at the bound to completion on the worker thread, and the lifespan clears its references even if its own teardown is cancelled; a task cancelled after the lane has closed queues nothing
+- **THEN** the lane refuses new jobs, waits up to its bound for the queued ones and for any cleanup accepted meanwhile, stops its worker even if that wait is cancelled, runs jobs still queued at the bound to completion on the worker thread, and the lifespan clears its references even if its own teardown is cancelled

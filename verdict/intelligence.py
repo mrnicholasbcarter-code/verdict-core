@@ -115,8 +115,9 @@ class StateLane:
     ``run`` copies the caller's context into the job (the request's fixed instant is a context
     variable) and shields the job from the waiter: a waiter that is cancelled, for example by a
     client that disconnected mid-stream, never cancels a job that is still queued, so the terminal
-    evidence write it submitted still lands, in order.  Never hold the lane across an upstream
-    call: it would serialise all upstream traffic.
+    evidence write it submitted still lands, in order.  A closed lane refuses ``submit`` but
+    still takes ``submit_cleanup``, for the terminal write of a request that was cancelled.
+    Never hold the lane across an upstream call: it would serialise all upstream traffic.
     """
 
     def __init__(self, *, name: str = "verdict-state-lane") -> None:
@@ -136,9 +137,48 @@ class StateLane:
         with self._lock:
             if self._closed:
                 raise RuntimeError("the state lane is closed")
-            future = self._executor.submit(context.run, lambda: fn(*args, **kwargs))
-            self._pending.add(future)
+            future = self._enqueue(context, fn, args, kwargs)
         future.add_done_callback(self._forget)
+        return future
+
+    def submit_cleanup(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> Future[_T]:
+        """Queue ``fn`` as cleanup: taken even after the lane is closed to new work.
+
+        A closed lane refuses ``submit``, but the terminal write of a request that was cancelled
+        is not new work: its decision row already exists and nothing else would end it.  A
+        cleanup is queued behind every earlier job for as long as the worker has not been told to
+        stop, and ``aclose`` waits for it with the rest.  Once the worker has been told to stop
+        (the close gave up on a stuck job) no job can be queued: ``fn`` runs at once on the
+        calling thread, which is safe because the stores take their own locks.  The future holds
+        the result or the error; nothing is raised, so a cancellation is never replaced by it.
+        """
+        context = contextvars.copy_context()
+        queued: Future[_T] | None
+        with self._lock:
+            try:
+                queued = self._enqueue(context, fn, args, kwargs)
+            except RuntimeError:  # the executor was shut down: the worker takes no more jobs
+                queued = None
+        if queued is not None:
+            queued.add_done_callback(self._forget)
+            return queued
+        done: Future[_T] = Future()
+        try:
+            done.set_result(context.run(lambda: fn(*args, **kwargs)))
+        except Exception as error:
+            done.set_exception(error)
+        return done
+
+    def _enqueue(
+        self,
+        context: contextvars.Context,
+        fn: Callable[..., _T],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Future[_T]:
+        """Queue one job; the caller holds ``_lock``."""
+        future = self._executor.submit(context.run, lambda: fn(*args, **kwargs))
+        self._pending.add(future)
         return future
 
     def _forget(self, future: Future[Any]) -> None:
@@ -160,15 +200,21 @@ class StateLane:
         The wait is bounded so the loop is never held at shutdown; it is the only thing that
         ends at the bound.  Jobs still queued then are not cancelled: the worker runs them to
         completion on its own thread and exits (a terminal evidence write is never dropped).
+        Cleanups accepted while the wait lasts (``submit_cleanup``) are waited for too.
         The worker is told to stop even when this wait is itself cancelled.
         """
         with self._lock:
             self._closed = True
-            pending = list(self._pending)
+        deadline = time.monotonic() + timeout
         try:
-            if pending:
+            while True:
+                with self._lock:
+                    pending = list(self._pending)
+                remaining = deadline - time.monotonic()
+                if not pending or remaining <= 0:
+                    break
                 await asyncio.wait(
-                    [asyncio.wrap_future(future) for future in pending], timeout=timeout
+                    [asyncio.wrap_future(future) for future in pending], timeout=remaining
                 )
         finally:
             self._executor.shutdown(wait=False)
