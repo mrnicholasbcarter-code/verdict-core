@@ -6,6 +6,8 @@ import argparse
 import math
 from typing import Any
 
+from verdict.orchestration.deliver_publish import DEFAULT_PUSH_TIMEOUT_S
+
 EXIT_REFUSED = 3
 EXIT_FAILED = 4
 #: Minutes the ready gate waits for checks by default; ``ready_gate.DEFAULT_CI_DEADLINE_S``
@@ -64,6 +66,16 @@ def register(subparsers: Any) -> None:
         help=(
             "Minutes (finite, greater than zero) to wait for checks before the ready gate "
             "stops (default: 60)"
+        ),
+    )
+    parser.add_argument(
+        "--push-timeout",
+        type=finite_positive_minutes,
+        default=DEFAULT_PUSH_TIMEOUT_S / 60.0,
+        metavar="MINUTES",
+        help=(
+            "Minutes (finite, greater than zero) allowed for git push, including the "
+            "repository's pre-push hook (default: 30)"
         ),
     )
     parser.add_argument(

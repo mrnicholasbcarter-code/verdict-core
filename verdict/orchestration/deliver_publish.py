@@ -1,8 +1,9 @@
 """Git and GitHub CLI adapter behind ``verdict deliver``.
 
 Every external command goes through an injectable ``CommandRunner`` that takes an
-argv list and a working directory. The default runner wraps ``subprocess.run``
-with argument lists, a timeout and no shell. This module never
+argv list and a working directory. The default runner starts each command with an
+argument list, a timeout, no shell and its own process group, and ends that whole
+group when the command times out or is interrupted. This module never
 force-pushes, never pushes to the base or default branch, and redacts secrets
 from any captured output before it reaches an error message.
 
@@ -60,8 +61,9 @@ def run_command(
 ) -> CommandResult:
     """Default runner: an argv list, no shell, a timeout, and its own process group.
 
-    On a timeout the whole group gets SIGTERM, then SIGKILL after a short grace
-    period, so a hook or helper the command started cannot outlive it.
+    On a timeout, or when the caller is interrupted, the whole group gets SIGTERM, then
+    SIGKILL after a short grace period, so a hook or helper the command started cannot
+    outlive it.
     """
     try:
         proc = subprocess.Popen(
@@ -79,6 +81,10 @@ def run_command(
     except subprocess.TimeoutExpired:
         _end_process_group(proc)
         return CommandResult(_TIMEOUT_RC, "", f"command timed out after {timeout:g}s")
+    except BaseException:
+        # The child is in its own session, so Ctrl-C never reaches it: end it here.
+        _end_process_group(proc)
+        raise
     return CommandResult(proc.returncode, stdout or "", stderr or "")
 
 

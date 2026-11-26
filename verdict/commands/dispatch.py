@@ -214,6 +214,7 @@ def _cmd_deliver(args: argparse.Namespace) -> None:
         dry_run=args.dry_run,
         ci_deadline_s=args.ci_deadline * 60.0,
         run_ready_gate=not args.no_ready,
+        push_timeout_s=args.push_timeout * 60.0,
     )
     reviewer = make_cross_family_reviewer(
         repo=Path.cwd(),

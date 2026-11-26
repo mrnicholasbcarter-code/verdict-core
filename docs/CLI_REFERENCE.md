@@ -331,7 +331,7 @@ Turns a verified `COMPLETE` orchestrate run into a draft pull request and prints
 its URL. It pushes the run's integration commit to a new branch with a
 create-only `git push` (the repository's pre-push hook runs; the push creates
 the branch and can never move an existing one, even one another writer creates
-while the push is in flight) and opens the pull request with `gh pr create --draft`.
+while the push is in flight) and opens the pull request with `gh pr create --draft`. The push has its own timeout (`--push-timeout`, default 30 minutes) because the pre-push hook can take minutes, and when a command times out its whole process group is ended, so a hook or helper it started does not keep running.
 An open pull request for the branch is reused only while it is still a draft.
 
 After the draft is published, the ready gate runs unless `--no-ready` is given.
@@ -357,6 +357,7 @@ approves or merges the pull request.
 | `--runs-dir RUNS_DIR` | Orchestration runs directory (default: `.verdict/runs`) |
 | `--dry-run` | Print the planned branch, base and title (full title and body with `--json`); push and create nothing |
 | `--ci-deadline MINUTES` | Minutes (finite, greater than zero) to wait for checks before the ready gate stops (default: 60) |
+| `--push-timeout MINUTES` | Minutes (finite, greater than zero) allowed for `git push`, including the repository's pre-push hook (default: 30) |
 | `--no-ready` | Skip the ready gate; the pull request stays a draft |
 | `--json` | Print the outcome as JSON |
 
