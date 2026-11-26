@@ -247,7 +247,13 @@ def _run_extra_review(
             f"cross-family review {result.status}: {result.detail or 'blocking findings'}",
             review_ran=True,
         )
-    if result.route_id and route_family(result.route_id) in excluded:
+    if not result.route_id.strip():
+        return _stop(
+            PrReadyReason.REVIEW_FAILED,
+            "cross-family review named no reviewer route",
+            review_ran=True,
+        )
+    if route_family(result.route_id) in excluded:
         return _stop(
             PrReadyReason.NO_CROSS_FAMILY_REVIEWER,
             f"reviewer route {result.route_id!r} is in an implementer family",

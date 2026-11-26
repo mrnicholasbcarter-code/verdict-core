@@ -217,6 +217,16 @@ def test_failing_or_erroring_review_stops_with_review_failed(
     assert gh.calls_with("gh", "api") == []
 
 
+@pytest.mark.parametrize("route_id", ["", "   "])
+def test_passing_review_without_a_reviewer_route_stops_with_review_failed(route_id: str) -> None:
+    gh = FakeGh()
+    outcome = _gate(_plan_at("route"), gh, FakeReviewer(ReviewResult("PASS", "ocr", route_id)))
+    assert not outcome.ready
+    assert outcome.reason is PrReadyReason.REVIEW_FAILED
+    assert outcome.review_ran
+    assert gh.calls_with("gh", "pr", "ready") == []
+
+
 def test_reviewer_in_implementer_family_is_not_cross_family() -> None:
     gh = FakeGh()
     result = ReviewResult("PASS", "ocr", "cc/claude-opus-5")

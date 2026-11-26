@@ -58,7 +58,7 @@ def test_push_timeout_minutes_reach_the_request_in_seconds(
 
 
 @pytest.mark.parametrize(
-    "value", ["nan", "inf", "-inf", "1e999", "0", "0.0", "-1", "-0.5", "abc", ""]
+    "value", ["nan", "inf", "-inf", "1e999", "1e308", "0", "0.0", "-1", "-0.5", "abc", ""]
 )
 def test_push_timeout_rejects_non_finite_zero_negative_and_garbage(
     value: str, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch

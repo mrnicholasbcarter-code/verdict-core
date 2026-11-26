@@ -19,13 +19,14 @@ def finite_positive_minutes(value: str) -> float:
     """argparse type for ``--ci-deadline``: a finite number of minutes greater than zero.
 
     ``float`` alone accepts ``nan``, ``inf`` and negatives, which would make the wait
-    unbounded (``remaining <= 0`` never holds) or zero.
+    unbounded (``remaining <= 0`` never holds) or zero. A value whose conversion to
+    seconds is not finite (for example ``1e308``) is rejected too.
     """
     try:
         minutes = float(value)
     except ValueError:
         raise argparse.ArgumentTypeError(f"{value!r} is not a number of minutes") from None
-    if not math.isfinite(minutes) or minutes <= 0:
+    if not math.isfinite(minutes) or not math.isfinite(minutes * 60) or minutes <= 0:
         raise argparse.ArgumentTypeError(
             f"{value!r} is not a finite number of minutes greater than zero"
         )
