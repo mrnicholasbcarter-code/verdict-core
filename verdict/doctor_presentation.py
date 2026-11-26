@@ -39,6 +39,8 @@ def repair_command(finding: str) -> str:
     if explicit:
         return explicit.group(1).strip().rstrip(".")
     lowered = finding.lower()
+    if lowered.startswith("github_delivery "):
+        return "gh auth login"
     if "OMNIROUTE_MANAGEMENT_TOKEN" in finding and any(
         word in lowered for word in ("rejected", "forbidden")
     ):
