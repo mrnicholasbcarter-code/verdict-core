@@ -4,10 +4,11 @@
 
 `verdict orchestrate` dispatches coding work through the `HarnessAdapter` /
 `HarnessRegistry` contract (`verdict/orchestration/harness.py`,
-`verdict.harness/v1`). Two adapters are registered today:
+`verdict.harness/v1`). Before this change two adapters were registered:
 `PrimeHeadlessAdapter` (`prime-headless`) and `DirectGatewayAdapter`
-(`direct-gateway`, default). Both are answer-only: they issue a single API call
-and return text. Neither can run tests, lint or repo gates after editing files.
+(`direct-gateway`, then the default). Both are answer-only: they issue a single API call
+and return text. Neither can run tests, lint or repo gates after editing files. The
+`OpenCodeAdapter` is the third, and since 2026-11-25 (#1328) the default.
 
 `verdict deliver` runs (#1269) are BLOCKED because one-shot workers cannot run
 their own tests and lint. Fixing the route-environment issues (#1276, #1214)
@@ -21,25 +22,34 @@ supports `--standalone` (private per-process server, isolating the session DB
 from the shared `~/.local/share/opencode/opencode.db`), and emits structured
 JSON output with `--format json`.
 
-**Code fact (verified):** `harness.py` registers `DirectGatewayAdapter(default=True)`.
-ADR-041 declared `prime-headless` as the initial default; the
-`default-executor-direct-gateway` OpenSpec change moved the code default to
-`direct-gateway` before this ADR. ADR-053 Decision 2 first made `opencode` the new default;
-the operator amended it on 2026-11-24: `opencode` merges opt-in (`--executor opencode`) and
-`direct-gateway` stays the default until a live smoke passes after #1313. The live smoke of
-this change (task 2.8) showed why: `verdict serve` refused all 13 of the worker's requests
-before any upstream call (11 by the escalation keyword scanner, whose branch of `route()`
-returns before the route pin is applied; 2 by the capability gate, which had no metadata for
-streaming and tools on the relay path). The serve fix is #1313, with the signed per-attempt
-assignment: a worker request with a valid assignment is pinned before serve classifies
-anything itself.
+**Code fact (verified):** `harness.py` registers `OpenCodeAdapter` with `default=True`
+(2026-11-25, #1328). Before that it registered `DirectGatewayAdapter(default=True)`: ADR-041
+declared `prime-headless` as the initial default and the `default-executor-direct-gateway`
+OpenSpec change moved the code default to `direct-gateway` before this ADR. ADR-053 Decision 2
+first made `opencode` the new default; the operator amended it on 2026-11-24: `opencode` merges
+opt-in (`--executor opencode`) and `direct-gateway` stays the default until a live smoke passes
+after #1313. The live smoke of this change (task 2.8) showed why: `verdict serve` refused all 13
+of the worker's requests before any upstream call (11 by the escalation keyword scanner, whose
+branch of `route()` returns before the route pin is applied; 2 by the capability gate, which had
+no metadata for streaming and tools on the relay path). The serve fix is #1313, with the signed
+per-attempt assignment: a worker request with a valid assignment is pinned before serve
+classifies anything itself. That fix has landed (serve's side in #1335, the executor's in #1325)
+and one live attempt through a spare serve from the branch passed (task 2.19, 2026-11-25, head
+`538cf004`: route `cc/claude-haiku-5-5`, the edit landed, serve's receipts show the pinned
+route), so the operator's condition for the default is met on a branch; the pull request of
+#1328 was built and reviewed first and was to merge only after the same smoke passes on installed
+main (task 2.20). It passed on installed main `c0452170` on 2026-11-26 (one attempt on
+`cc/claude-haiku-5-5`: the edit landed, serve's receipts show the pinned route and the streaming
+waiver; the probe of task 2.22: own key 400, other key 403), so the default switch is no longer
+held.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Register `OpenCodeAdapter` in `DEFAULT_REGISTRY` as an opt-in worker executor for
-  `verdict orchestrate` (`--executor opencode`); `direct-gateway` stays the default.
+- Register `OpenCodeAdapter` in `DEFAULT_REGISTRY` as the default worker executor for
+  `verdict orchestrate`; `direct-gateway` and `prime-headless` stay registered and selectable
+  (`--executor direct-gateway` is the previous default).
 - Build `OpenCodeExecutor` that runs `opencode run --auto --standalone
   --format json --model verdict/<route_id>` with per-attempt isolated config
   (`OPENCODE_CONFIG_DIR` → temp directory).
@@ -70,6 +80,31 @@ the provider base URL to `http://127.0.0.1:8000/v1`. The model entry maps
 worker reaches `verdict serve`, which records the attempt and applies admission
 and cost rules. If `verdict serve` does not today pin per-request route identity
 for relay calls, adding that is part of the build.
+
+**OpenCode is the default (Decision 2, amended 2026-11-25, #1328):** the default is the adapter
+registered with `default=True`; the CLI's `--executor` default, the selector's visibility
+executor and `--executor-map`'s unmapped nodes all read `DEFAULT_REGISTRY.default_name()`, so
+moving the flag moves all of them and nothing else is edited. OpenCode's harness visibility is the
+same live-catalog visibility the direct gateway has, so the route ladder is unchanged. The
+planner is its own flag (`--planner-executor`, one choice, `direct-gateway`); the planner wraps its
+executor in `AnswerOnlyExecutor`, which refuses an executor that is not answer-only, so OpenCode
+cannot plan even if the flag were wired wrongly.
+
+A machine without the binary, the signing key, serve or serve's credential must end in a clear
+block and never in a fallback. The executor already returns one `harness_configuration:` block
+for each of them before it launches anything, and recovery maps it to BLOCK (no retry, no
+cooldown), so the node ends BLOCKED after one attempt. What was missing is the way out: the
+executor does not know it is the default or that `--executor direct-gateway` exists, and it is not
+changed here. The registry therefore builds `OpenCodeWorkerExecutor`, a subclass in `harness.py`
+whose `run` is the executor's own and appends one note to a `harness_configuration:` error: what
+the default needs (the pinned binary and where it is looked for, a running `verdict serve` with
+its credential and the signing key, and `verdict setup --apply --allow host.serve`) and
+`--executor direct-gateway`. The reason that comes first is the executor's own, from the check that
+failed; any other error and every ok terminal pass through unchanged. A subclass keeps the
+executor's `run` signature (the runtime offers `run_id` and `node_id` only to a `run` that takes
+them), its `gateway_origin` and its receipt label (`opencode`; the registry labels both classes).
+The full text is in the attempt's `terminal` event; failure evidence in the classification keeps
+300 characters, so the note is not in it.
 
 **Capability facets (design detail):** The proposed `OpenCodeAdapter` capability
 declaration:
@@ -426,13 +461,15 @@ rejected and classified as a failure before verification runs.
   build time. If usage fields are absent, `opencode session export <attempt_id>`
   is used as a fallback; the builder handles the case where both sources are
   incomplete.
-- **No behaviour change for runs that do not name `opencode`.** `direct-gateway` stays the
-  default, so a run without `--executor` is unchanged. A run that opts in with
-  `--executor opencode` needs the signing key that `verdict setup --apply --allow host.serve`
-  creates, and the orchestrator and serve must read the same one; without it the attempt ends in
-  a `harness_configuration:` block before anything is launched. The default is not switched here
-  (#1328): one live attempt through a spare serve passed on 2026-11-25 (task 2.19), the run on
-  installed main is post-merge (task 8.1).
+- **A run without `--executor` now uses OpenCode (#1328).** It needs the pinned binary, a
+  running `verdict serve` with its credential and the signing key that `verdict setup --apply
+  --allow host.serve` creates, and the orchestrator and serve must read the same key; without
+  them the attempt ends in a `harness_configuration:` block before anything is launched, and
+  `--executor direct-gateway` is the way out (see "OpenCode is the default" above). Nothing
+  falls back silently: not to the direct gateway, and not to serve's own token. One live attempt
+  through a spare serve passed on 2026-11-25 (task 2.19), and one through the installed serve
+  passed on 2026-11-26 (task 2.20, the condition for merging the pull request of #1328); the run
+  of `verdict orchestrate` with no `--executor` flag on installed main is post-merge (task 8.1).
 - **Resolved gap (2026-11-25, #1336): the status matcher reads the `requests` forms.** At the
   time of the 2026-11-24 review an HTTP status in unstructured text needed an HTTP or status
   marker or its reason phrase right after the number, so `429 Client Error: Too Many Requests
@@ -443,23 +480,23 @@ rejected and classified as a failure before verification runs.
 
 ## Migration / rollback
 
-- Existing `verdict orchestrate` runs with no `--executor` flag are unchanged: they use
-  `direct-gateway`. To use OpenCode, pass `--executor opencode`.
-- `prime-headless` users are unaffected.
-- Making OpenCode the default is a later one-line change to the `DEFAULT_REGISTRY` default
-  (`default=True` on `OpenCodeAdapter`, removed from `DirectGatewayAdapter`), with the
-  default tests flipped, made in its own change (#1328) after a live run on installed main
-  passes. If the adapter is defective before then, nothing needs reverting for runs that do not
-  name it.
+- `verdict orchestrate` runs with no `--executor` flag now use OpenCode (#1328). To keep the
+  previous behaviour pass `--executor direct-gateway`; scripts that must not depend on the
+  default name it (`scripts/live_failover_smoke.py` does since this change, and
+  `scripts/run_certification_rehearsals.py` already did).
+- `prime-headless` users are unaffected, and so are runs that name any executor.
+- Rolling back is one line in `verdict/orchestration/harness.py`: `default=True` moves back from
+  `OpenCodeAdapter` to `DirectGatewayAdapter`, and the default tests flip back. Nothing else
+  needs reverting.
 
 ## ADR impact
 
-- Amends nothing yet: [ADR-041](../../../docs/adr/ADR-041-generic-harness-contracts.md)'s
-  default worker executor (`direct-gateway`) is unchanged until the default is switched.
-  This change adds an opt-in `opencode` worker executor, and ADR-053 Decision 2 is amended
-  (2026-11-24): the move of the default to `opencode` waits for a passing live smoke with
-  serve honouring the signed assignment (serve's side merged in #1335, the executor's in
-  #1325) and is made in its own change (#1328).
+- Amends [ADR-041](../../../docs/adr/ADR-041-generic-harness-contracts.md)'s default worker
+  executor: `opencode` replaces `direct-gateway` as the default, which stays registered and
+  selectable. ADR-053 Decision 2 was amended on 2026-11-24 (the default waits for a passing live
+  smoke with serve honouring the signed assignment) and again on 2026-11-25 (#1328): the default is
+  switched in its own change, built and reviewed first and merged after the signed-assignment
+  smoke passed on installed main (task 2.20, 2026-11-26).
 - Relates to [ADR-036](../../../docs/adr/ADR-036-goal-to-receipt-orchestration.md)
   (goal-to-receipt orchestration): worker output becomes richer (edit loop
   instead of answer-only).

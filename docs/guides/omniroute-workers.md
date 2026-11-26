@@ -44,7 +44,8 @@ The ADR-036 path uses a stricter execution boundary than the general worker
 client. Before a node launch, `EligibilityLadder` evaluates live inventory,
 provider connection evidence, probe health, cooldowns, task requirements, and
 current load. The selected concrete route is passed to the
-worker executor: `direct-gateway` by default, which sends the worker request
+worker executor: OpenCode by default, whose workers call `verdict serve`, which forwards to the
+gateway; with `--executor direct-gateway` the worker request goes
 straight to the gateway. With the optional Prime Agent harness
 (`--executor prime-headless`), the route must also be visible in Prime's
 OmniRoute model registry, and `PrimeHeadlessExecutor` invokes `prime-agent`

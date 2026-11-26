@@ -2,22 +2,27 @@
 
 ## ADDED Requirements
 
-### Requirement: OpenCode adapter is registered as an opt-in worker executor
+### Requirement: OpenCode is the default worker executor
 
-`DEFAULT_REGISTRY` SHALL register an `OpenCodeAdapter` as a worker executor for
-`verdict orchestrate` that is selected only by name (`--executor opencode`). It SHALL NOT be
-the default: `direct-gateway` SHALL remain the default worker executor until a later change
-makes `opencode` the default after a live smoke passes (ADR-053 Decision 2, amended
-2026-11-24). All nine `HarnessCapability` facets SHALL be declared explicitly. `direct-gateway`
-and `prime-headless` SHALL remain registered and selectable via `--executor`.
+`DEFAULT_REGISTRY` SHALL register an `OpenCodeAdapter` as the default worker executor for
+`verdict orchestrate` (ADR-053 Decision 2, amended 2026-11-25, #1328). All nine
+`HarnessCapability` facets SHALL be declared explicitly. `direct-gateway` and `prime-headless`
+SHALL remain registered and selectable via `--executor`; `--executor direct-gateway` SHALL select
+the previous default. The planner executor (`--planner-executor`, answer-only, `direct-gateway`)
+SHALL NOT change, and the OpenCode executor SHALL NOT be asked to plan.
 
-#### Scenario: Default executor is unchanged
+#### Scenario: OpenCode is the default
 
 - **WHEN** `verdict orchestrate` is invoked with no `--executor` flag
-- **THEN** coding nodes are dispatched to `direct-gateway`, `opencode` is not
-  invoked, and the receipt does not record `harness: opencode`
+- **THEN** coding nodes are dispatched to OpenCode workers, `direct-gateway` is not invoked for
+  them, and the receipt records `harness: opencode`
 
-#### Scenario: OpenCode is selected by name
+#### Scenario: The previous default is selected by name
+
+- **WHEN** `--executor direct-gateway` is passed
+- **THEN** coding nodes use `direct-gateway` exactly as before and `opencode` is not invoked
+
+#### Scenario: OpenCode is selected by name or by node
 
 - **WHEN** `--executor opencode` is passed, or a node is mapped to it with
   `--executor-map node=opencode`
@@ -30,11 +35,32 @@ and `prime-headless` SHALL remain registered and selectable via `--executor`.
 - **THEN** coding nodes use `prime-headless` and neither `direct-gateway` nor `opencode`
   is invoked
 
-#### Scenario: The help text says OpenCode is opt-in
+#### Scenario: The executor map is unchanged by the default
+
+- **WHEN** `--executor-map` names some nodes and `--executor` is not passed
+- **THEN** the named nodes use their named backends and every other node uses the default
+  executor, OpenCode; with `--executor direct-gateway` the other nodes use the direct gateway
+
+#### Scenario: Planning is unaffected by the default
+
+- **WHEN** `verdict orchestrate` plans a goal with no `--executor` flag
+- **THEN** the planning call is made by the answer-only direct gateway executor, the OpenCode
+  executor is not asked, and an executor that is not answer-only is refused as a planner
+
+#### Scenario: A machine without what OpenCode needs ends in one block, never a fallback
+
+- **WHEN** the default worker executor is used on a machine without the `opencode` binary, without
+  the worker signing key, without a reachable `verdict serve`, or without serve's credential
+- **THEN** the attempt ends in one `harness_configuration:` block that names the check that failed,
+  what the default needs (the pinned binary, a running `verdict serve` with its credential and the
+  signing key, and `verdict setup --apply --allow host.serve`) and `--executor direct-gateway`; the
+  node is blocked, not retried, and no other executor is dispatched in its place
+
+#### Scenario: The help text says OpenCode is the default
 
 - **WHEN** `verdict orchestrate --help` is shown
-- **THEN** the `--executor` option names `direct-gateway` as the default and says OpenCode
-  is selected with `--executor opencode`
+- **THEN** the `--executor` option names `opencode` as the default, says what it needs, and names
+  `--executor direct-gateway` as the way to select the previous default
 
 #### Scenario: Adapter registration rejects missing facets
 

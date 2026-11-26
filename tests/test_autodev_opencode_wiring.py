@@ -1205,6 +1205,10 @@ class TestEndToEnd:
 
         monkeypatch.setattr(exec_module, "_check_binary", lambda *a, **k: None)
         monkeypatch.setattr(exec_module, "_check_serve", lambda *a, **k: None)
+        # The pre-launch assignment probe (#1340) posts to the default serve address; stubbed like
+        # the two checks above so that a serve listening on this machine's port 8000 cannot refuse
+        # this test's throwaway key.
+        monkeypatch.setattr(exec_module, "_check_assignment", lambda *a, **k: None)
         seen = tmp_path / "assignment.txt"
         listing = tmp_path / "cwd-listing.txt"
         script = tmp_path / "fake-opencode"

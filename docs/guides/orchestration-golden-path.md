@@ -18,8 +18,10 @@ GOAL -> CONTROLLER (frontier planner) -> PLAN / DAG -> SELECT (eligibility ladde
 Roles:
 
 - **Verdict:** plans, selects models, recovers, verifies and writes receipts.
-- **Worker executor:** `direct-gateway` by default (one gateway call per worker,
-  no agent harness). Prime Agent is an optional harness, selected with
+- **Worker executor:** OpenCode by default (a full edit-test-fix loop per coding node, through
+  `verdict serve`; see [the harnesses guide](harnesses.md#opencode-as-a-worker-harness)).
+  `--executor direct-gateway` selects the previous default (one gateway call per worker, no
+  agent harness). Prime Agent is an optional harness, selected with
   `--executor prime-headless` (`prime-agent -p --model <exact route>`), and
   `--executor-map` mixes backends per node. None of these change Verdict's
   orchestration ownership.

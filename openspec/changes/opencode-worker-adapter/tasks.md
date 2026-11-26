@@ -12,12 +12,11 @@
 
 - [x] 2.1 Add `OpenCodeAdapter` to `verdict/orchestration/harness.py` with all
       nine `HarnessCapability` facets declared explicitly (ADR-041). Register it in
-      `DEFAULT_REGISTRY` as an opt-in executor (selected with `--executor opencode`; not
-      `default=True`; ADR-053 Decision 2 amended 2026-11-24), keeping `direct-gateway` as the
-      default and `prime-headless` registered. Add `harness-opencode` capability label to the
-      registry executor map. Verify: `DEFAULT_REGISTRY.names()` lists `opencode`,
-      `direct-gateway` and `prime-headless`, and the default stays `direct-gateway`
-      (`tests/test_harness_registry.py`, task 2.9).
+      `DEFAULT_REGISTRY` (opt-in when it merged, selected with `--executor opencode`; the default
+      since 2026-11-25, task 9.1), keeping `direct-gateway` and `prime-headless` registered. Add
+      `harness-opencode` capability label to the registry executor map. Verify:
+      `DEFAULT_REGISTRY.names()` lists `opencode`, `direct-gateway` and `prime-headless`
+      (`tests/test_harness_registry.py`, task 9.1).
 - [x] 2.2 Write `OpenCodeExecutor` in `verdict/orchestration/executors.py` (or a
       new `verdict/orchestration/harness_opencode_executor.py`). The executor
       writes a per-attempt config to a temp directory, sets `OPENCODE_CONFIG_DIR`,
@@ -234,10 +233,20 @@
       with the `RuntimeError` from `start()`; both pass after the change. With a place not given
       back after a failed start the second fails, and with one not given back when a helper ends
       both fail.
-- [ ] (post-merge) 2.22 On installed main, after `verdict setup --apply --allow host.serve`: the
+- [x] (post-merge) 2.22 On installed main, after `verdict setup --apply --allow host.serve`: the
       installed serve answers `_probe_assignment` for an assignment signed with its own key 400
       (accepted), and for one signed with another key 403 (refused), with no model call and no
       evidence row; record the raw output in the story's DoD evidence file.
+      **Evidence (2026-11-26, 00:22:12Z, installed main `c0452170`, reinstalled with `verdict setup
+      --non-interactive --apply --allow host.serve` and `systemctl --user restart verdict-serve`):**
+      the installed serve accepted an assignment signed with its own key and refused one signed
+      with another key, with no model call. Raw output, quoted from the controller's post-merge
+      evidence of that date (also in the pull request body of #1343 under "Evidence"):
+      `own key -> 400 {"error":{"message":"the request's model must equal the route in the worker
+      assignment","type":"invalid_request_error"}}` and `other key -> 403 {"error":{"message":
+      "authentication failed","type":"authentication_error"}}`; serve's log shows `POST
+      /v1/chat/completions 400`, then `403`. The story's DoD evidence file takes this output when
+      it is built after merge.
 - [x] 2.18 The streaming waiver serve records is shown in the run receipt (#1325): serve's receipt
       database is read back read-only by digest (`verdict/orchestration/serve_evidence.py`,
       `serve_service.resolve_serve_receipts_db`), the terminal carries `worker_assignment`, the
@@ -275,10 +284,34 @@
       established. Before the attempt, the dry runs called the gateway's management API (reads,
       no model call) and two loopback rehearsals ran the real OpenCode binary against a local
       stand-in for serve (no gateway, no model).
-- [ ] (post-merge) 2.20 The same one-attempt smoke on installed main, after `verdict setup --apply
+- [x] (post-merge) 2.20 The same one-attempt smoke on installed main, after `verdict setup --apply
       --allow host.serve` has created the signing key and restarted serve: an `OpenCodeExecutor`
       attempt on an admitted route lands an edit in a scratch repository and the installed serve's
       receipt shows the pinned route. Record the raw output in the story's DoD evidence file.
+      Operator decision (2026-11-25): the pull request that makes OpenCode the default (task 9.1,
+      #1328) is built and reviewed before this task but merges only after it passes.
+      **Evidence (2026-11-26, 00:22:28Z to 00:23:27Z, installed main `c0452170`, one attempt,
+      permission of the operator of that date):** the attempt passed, so the condition for merging
+      the pull request of task 9.1 is met. Route `cc/claude-haiku-5-5`, a scratch git repository in
+      a temp directory, `OpenCodeExecutor()` with the default serve address (port 8000),
+      `run_id=run-postmerge-2-20`, `node_id=smoke-1`, timeout 300 s. Raw output, quoted from the
+      controller's post-merge evidence of that date (also in the pull request body of #1343 under
+      "Evidence"): `ok: true   error: ""   model: cc/claude-haiku-5-5   harness: opencode
+      stop_reason: stop   duration_seconds: 58.5`; `usage: input_tokens 267, output_tokens 452,
+      cost_usd null (not_reported: opencode reported 0 for a step (no pricing for a custom
+      provider)), tokens_source opencode_ndjson`; `worker_assignment: assignment_digest
+      ce3eb11450a96cba2011d0d797a5766d2c3a9fb70704d612c2260bf62083765b`; `serve_receipts: status
+      read, requests 3, requests_waived 3, requirement_waivers [streaming /
+      verified_worker_assignment]`; scratch git diff `-    return "hi"` and `+    return "hello, "
+      + name`; verification `python3 -c "from greet import greet; assert greet('verdict') ==
+      'hello, verdict'"` passed. Serve's receipt database (read-only): the rows carrying the
+      assignment digest have `decision.chosen_from_admit = cc/claude-haiku-5-5`, the pinned route.
+      Serve's log for the attempt: `GET /v1/guidance/status 200`, `POST /v1/chat/completions 400`
+      (the pre-launch probe of task 2.21, accepted), then `POST /v1/chat/completions 200` for the
+      worker's requests; it also shows `GET /v1/models 401` from the worker (OpenCode asks for the
+      model list with the assignment and serve refuses it; harmless, not investigated). The
+      story's DoD evidence file takes this output when it is built after merge. Tasks 2.8 and 8.1
+      (the `verdict orchestrate` runs) are still open.
 - [x] 2.6 Serve address from configuration (`--serve-url`, `VERDICT_SERVE_URL`, default
       `http://127.0.0.1:8000`). Verify: `tests/test_orch_executors.py`,
       `tests/test_serve_service_resolvers.py`.
@@ -291,16 +324,14 @@
       and the receipt attests that model identity. Verify: a test or live check
       confirms no call reaches OmniRoute (:20128) directly; the receipt shows the
       correct route.
-- [x] 2.9 `direct-gateway` stays the default worker executor; OpenCode is opt-in with
-      `--executor opencode` (operator decision, 2026-11-24; ADR-053 Decision 2 amended). The
-      `--executor` help says so. Verify: `tests/test_harness_registry.py`
-      (`test_registry_resolves_production_adapters_and_aliases`,
-      `test_opencode_is_registered_and_selectable_but_not_the_default`) and
-      `tests/test_orch_executors.py` (`test_cli_parser_exposes_planner_executor_role`,
+- [x] 2.9 (superseded 2026-11-25 by task 9.1) `direct-gateway` stays the default worker executor;
+      OpenCode is opt-in with `--executor opencode` (operator decision, 2026-11-24; ADR-053
+      Decision 2 amended). The operator's condition was a live smoke that passes after #1313; task
+      2.19 met it on a branch and the default was switched in its own change (#1328), so the tests
+      this task named (`test_opencode_is_registered_and_selectable_but_not_the_default`,
       `test_default_executor_builds_direct_gateway_not_prime`,
       `test_opencode_executor_is_built_only_when_named`,
-      `test_orchestrate_help_says_opencode_is_opt_in`); each fails against a registry that makes
-      `opencode` the default.
+      `test_orchestrate_help_says_opencode_is_opt_in`) were replaced by those of task 9.1.
 - [x] 2.10 The HTTP status printed on stderr is the fallback when an NDJSON error carries a
       message but no status; stderr is sanitized in every case and the NDJSON message stays the
       recorded error (the last open review finding of the first review rounds). Verify:
@@ -358,7 +389,8 @@
       path through serve is tasks 2.8 and 8.1; serve's own proof that it forwards to the permit's
       gateway and the signed assignment stay with #1313.
 - [ ] (post-merge) 2.8 Live smoke of the worker on an admitted route, run with
-      `--executor opencode` (OpenCode is opt-in; it failed until #1313 landed, because serve
+      `--executor opencode` (OpenCode was opt-in when this was written, and has since become the
+      default, task 9.1; it failed until #1313 landed, because serve
       refused the worker's requests before it honoured the worker's assignment; the serve side
       merged in #1335 and the executor signs the assignment in #1325, whose branch smoke is task
       2.19; this task is the run through `verdict orchestrate` on installed main): one attempt through
@@ -388,7 +420,8 @@
       own escalation and tier classification; the capability gate gets metadata on the relay
       path); at the time this task and 8.1 were expected to fail until #1313 landed (it has since:
       serve's side in #1335 and the executor's in #1325, whose branch smoke is 2.19), and OpenCode
-      becomes the default only after this smoke passes on installed main. An earlier attempt on a free route
+      becomes the default only after the smoke of task 2.20 passes on installed main (the pull
+      request of task 9.1 merges after it; it passed on 2026-11-26). An earlier attempt on a free route
       (`run-20261124T042116Z`) was also denied, for other admission reasons (`passport_stale`,
       `confirm_budget_exhausted`). Raw output:
       `/tmp/claude-takeover/oc1-smoke/run-20261124T051739Z/` (`smoke-run-transcript.txt`,
@@ -422,8 +455,8 @@
 ## 7. Docs, tests and gates
 
 - [x] 7.1 Update `docs/guides/harnesses.md` to record OpenCode as an opt-in
-      worker executor (`--executor opencode`; `direct-gateway` stays the default) and the
-      route-through-serve contract. Update ETHOS.md `In
+      worker executor (`--executor opencode`; `direct-gateway` was the default then, task 9.4
+      records the default switch) and the route-through-serve contract. Update ETHOS.md `In
       force` or `NOW` only if the operator asks. Verify: `check_doc_links.py` and
       `check_reachability.py` are green; no host paths in fixtures or docs.
 - [x] 7.2 Run the full suite, ruff, mypy --strict, reachability, the lint gates,
@@ -443,9 +476,75 @@
       serve until #1313 reworked that path (it has since: serve's side in #1335, the executor's
       in #1325). The matcher has since been fixed (2026-11-25, #1336: it reads both `requests`
       forms). No review was run on the commit that records this decision.
-- [ ] (post-merge) 8.1 On installed main, run `verdict orchestrate --executor opencode` on a
-      task with a coding node (OpenCode is opt-in, so the flag is required); it needed #1313 (serve
-      honours the assignment) and #1325 (the executor signs one) and needs the signing key from
-      `verdict setup --apply --allow host.serve`: the node edits a file, runs
-      verification, and the receipt shows `harness: opencode` with the correct route and usage
+- [ ] (post-merge) 8.1 On installed main, run `verdict orchestrate` with no `--executor` flag on a
+      task with a coding node (OpenCode is the default since #1328, task 9.1; it needed #1313
+      (serve honours the assignment) and #1325 (the executor signs one) and needs the signing key from
+      `verdict setup --apply --allow host.serve`): the node edits a file, runs
+      verification, and the receipt shows `harness: opencode` with the admitted route and usage
       and what OpenCode reports as cost. Record the raw output in the story's DoD evidence file.
+
+## 9. OpenCode becomes the default (#1328, ADR-053 Decision 2 amended 2026-11-25)
+
+The operator's condition (2026-11-24) was a live smoke that passes after #1313. One attempt through
+a spare serve from the branch landed an edit on the pinned route (task 2.19, head `538cf004`, route
+`cc/claude-haiku-5-5`). The operator decided on 2026-11-25 that this change is built and reviewed
+now and merged only after the same smoke passes on installed main (task 2.20). That smoke passed
+on installed main `c0452170` on 2026-11-26 (task 2.20, and the probe of task 2.22), so the hold
+is lifted and the change can merge.
+
+- [x] 9.1 Make OpenCode the default worker executor: `default=True` moves from
+      `DirectGatewayAdapter` to `OpenCodeAdapter` in `DEFAULT_REGISTRY`; `--executor direct-gateway`
+      still selects the previous default; `--executor-map` is unchanged (unmapped nodes use
+      `--executor`). Verify: `tests/test_harness_registry.py`
+      (`test_registry_resolves_production_adapters_and_aliases`,
+      `test_opencode_is_the_default_and_direct_gateway_stays_selectable`),
+      `tests/test_orch_executors.py` (`test_cli_parser_exposes_planner_executor_role`,
+      `test_default_executor_builds_opencode_not_prime_or_direct_gateway`,
+      `test_opencode_executor_is_built_when_named_or_by_default`) and
+      `tests/test_mixed_executor.py` (`test_executor_map_keeps_working_under_the_default`).
+      Tests that relied on the old default and were changed, not weakened: in
+      `tests/test_orch_executors.py`, `test_cli_parser_exposes_planner_executor_role` (the default
+      is now `opencode`; the planner assertion is kept), `test_default_executor_builds_direct_gateway_not_prime`
+      (now `..._builds_opencode_not_prime_or_direct_gateway`), `test_opencode_executor_is_built_only_when_named`
+      (now `..._when_named_or_by_default`: the unmapped node of a map now expects OpenCode, and a second
+      case with `--executor direct-gateway` expects the direct gateway) and
+      `test_orchestrate_help_says_opencode_is_opt_in` (now `..._is_the_default`); in
+      `tests/test_harness_registry.py`, `test_registry_resolves_production_adapters_and_aliases`
+      (the default assertion) and `test_opencode_is_registered_and_selectable_but_not_the_default`
+      (replaced). Each asserted the old default; each now asserts the new one, and the old
+      behaviour stays covered as an explicit `--executor direct-gateway` case.
+      `scripts/live_failover_smoke.py` passes `--executor direct-gateway` so that the smoke stays
+      what it was. **Evidence (2026-11-25):** the tests were run against the unchanged code
+      first: 21 of the 122 tests of `tests/test_harness_registry.py`,
+      `tests/test_mixed_executor.py` and `tests/test_orch_executors.py` failed; with the change all
+      122 pass, and 439 pass when `tests/test_opencode_executor.py`,
+      `tests/test_opencode_signed_assignment.py` and `tests/test_live_smoke_opt_in.py` are added.
+- [x] 9.2 Planning is unaffected: the planner call of a run with no `--executor` goes to the
+      answer-only direct gateway executor and never to OpenCode. Verify:
+      `tests/test_orch_executors.py` (`test_planning_is_unaffected_by_the_default_worker_executor`,
+      `test_a_run_with_no_executor_flag_plans_on_the_direct_gateway_not_opencode`); against the
+      unchanged code both fail (the worker default was not OpenCode), and with the planner built
+      from `--executor` instead of `--planner-executor` both fail together with
+      `test_cli_builds_direct_planner_and_prime_workers`.
+- [x] 9.3 A machine without the binary, the signing key, serve or serve's credential ends in one
+      clear `harness_configuration:` block that names the failed check, what the default needs and
+      `--executor direct-gateway`; the node is not retried and nothing falls back to another
+      executor. `OpenCodeWorkerExecutor` (in `harness.py`, the executor the registry builds)
+      appends one note to such a block and changes nothing else; `OpenCodeExecutor` itself is
+      unchanged. Verify: `tests/test_harness_registry.py`
+      (`test_a_configuration_block_names_the_way_out_of_the_default`,
+      `test_the_way_out_is_added_to_configuration_blocks_only`,
+      `test_the_default_executor_takes_the_ids_and_keeps_the_opencode_label`) and
+      `tests/test_mixed_executor.py`
+      (`test_default_executor_without_opencode_ends_in_one_clear_block_never_a_fallback`, which runs
+      the real executor, `run_golden_path` and the recovery classifier in a temporary home against
+      a missing binary, a missing key, a closed serve port and a missing serve credential, and
+      fails if the direct gateway is dispatched). **Evidence (2026-11-25):** against the unchanged
+      code the 12 tests (8 in the registry file, 4 in the mixed-executor file) failed; with the
+      note added to every error instead of to a `harness_configuration:` block only, the three
+      tests that check the other errors pass through unchanged fail.
+- [x] 9.4 The `--executor` help, `docs/guides/harnesses.md`, `docs/CONFIGURATION.md`, the README,
+      this change (proposal, design, spec delta) and ADR-053 Decision 2 say OpenCode is the default,
+      what it needs and the way out, with the date and the evidence the decision rests on (task
+      2.19). Verify: `tests/test_orch_executors.py::test_orchestrate_help_says_opencode_is_the_default`,
+      `scripts/check_doc_links.py`, and `openspec validate opencode-worker-adapter --strict`.
