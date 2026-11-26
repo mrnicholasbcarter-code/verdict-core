@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import ipaddress
 import json
 import logging
@@ -9,6 +10,7 @@ import math
 import os
 import re
 import sys
+import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
@@ -16,7 +18,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 from urllib.parse import urlsplit, urlunsplit
 
 try:
@@ -74,6 +76,7 @@ from verdict.intelligence import (
     DEFAULT_PROFILE,
     DEFAULT_TIMEOUT_MS,
     IntelligenceService,
+    StateLane,
     prepared_task_profile,
 )
 from verdict.model_passports import ModelPassport
@@ -84,6 +87,7 @@ from verdict.omniroute_webhook import RECEIVER_PATH as OMNIROUTE_WEBHOOK_PATH
 from verdict.omniroute_webhook import accept_delivery as accept_omniroute_webhook
 from verdict.orchestration.health_cache import (
     PERMIT_PROOF_MAX_VALIDITY_SECONDS,
+    DispatchScope,
     HealthCache,
     default_cache_path,
 )
@@ -153,17 +157,17 @@ class _EvidenceStreamAdapter:
             return await self._upstream.__anext__()
         except StopAsyncIteration:
             cleanup_error = await self._cleanup()
-            self._finish_at_eof(cleanup_error)
+            await self._finish_at_eof(cleanup_error)
             raise
         except asyncio.CancelledError:
             cleanup_error = await self._cleanup()
-            self._finish(
+            await self._finish(
                 f"{self._event_prefix}_stream_aborted", "cancelled", "aborted", cleanup_error
             )
             raise
         except StreamProtocolError as exc:
             cleanup_error = await self._cleanup()
-            self._finish(
+            await self._finish(
                 f"{self._event_prefix}_stream_error",
                 "error",
                 "error",
@@ -173,7 +177,7 @@ class _EvidenceStreamAdapter:
             raise StopAsyncIteration from None
         except Exception as exc:
             cleanup_error = await self._cleanup()
-            self._finish(
+            await self._finish(
                 f"{self._event_prefix}_stream_error",
                 "error",
                 "error",
@@ -184,22 +188,24 @@ class _EvidenceStreamAdapter:
 
     async def aclose(self) -> None:
         cleanup_error = await self._cleanup()
-        self._finish(f"{self._event_prefix}_stream_aborted", "cancelled", "aborted", cleanup_error)
+        await self._finish(
+            f"{self._event_prefix}_stream_aborted", "cancelled", "aborted", cleanup_error
+        )
 
-    def _finish_at_eof(self, cleanup_error: str | None) -> None:
+    async def _finish_at_eof(self, cleanup_error: str | None) -> None:
         """Map the validated stream's one outcome; only a semantic success is success."""
 
         outcome = self._outcome_of()
         cleanup_error = cleanup_error or (outcome.cleanup_error if outcome else None)
         prefix = self._event_prefix
         if outcome is not None and outcome.state is StreamState.SUCCESS:
-            self._finish(f"{prefix}_streamed", "success", "completed", cleanup_error)
+            await self._finish(f"{prefix}_streamed", "success", "completed", cleanup_error)
         elif outcome is not None and outcome.state is StreamState.FAILED:
-            self._finish(f"{prefix}_stream_failed", "failure", "completed", cleanup_error)
+            await self._finish(f"{prefix}_stream_failed", "failure", "completed", cleanup_error)
         elif outcome is not None and outcome.state is StreamState.INCOMPLETE:
-            self._finish(f"{prefix}_stream_incomplete", "partial", "completed", cleanup_error)
+            await self._finish(f"{prefix}_stream_incomplete", "partial", "completed", cleanup_error)
         else:
-            self._finish(
+            await self._finish(
                 f"{prefix}_stream_error",
                 "error",
                 "error",
@@ -228,7 +234,7 @@ class _EvidenceStreamAdapter:
                 await asyncio.shield(self._cleanup_task)
         return self._cleanup_error
 
-    def _finish(
+    async def _finish(
         self,
         event_type: str,
         outcome: str,
@@ -240,9 +246,13 @@ class _EvidenceStreamAdapter:
         if self._terminal:
             return
         self._terminal = True
-        self._on_terminal(
+        result = self._on_terminal(
             self._event_factory(event_type, outcome, phase, cleanup_error, error_class)
         )
+        # The relay's terminal callback is a coroutine (its state work runs on the lane); a plain
+        # callback, as a test passes, is called and done.
+        if inspect.isawaitable(result):
+            await result
 
 
 class _EvidenceStreamingResponse(StreamingResponse):
@@ -303,15 +313,69 @@ class ModelPassportStore:
 
 
 logger = logging.getLogger("verdict.api")
+_T = TypeVar("_T")
 
 # Singleton service instances
 intelligence_instance: IntelligenceService | None = None
+#: The one serial worker lane for the request path's blocking state work, created and shut down
+#: with the app (``lifespan``).  ``None`` only before startup and after shutdown.
+state_lane_instance: StateLane | None = None
+#: The lane of an app that has shut down while its worker was still running earlier jobs (the
+#: close gave up on a held job).  It takes no new work, but a write to a row that already exists
+#: is still queued behind those jobs on it, off the event loop, until it has drained.
+draining_state_lane_instance: StateLane | None = None
 gate_instance: Gate | None = None
 proxy_instance: UpstreamProxy | None = None
 # Optional canonical live admission for relay attempts. When set, the selected
 # model and every alternative must be inside the admitted set; a provider error
 # fails the relay closed (503) instead of falling back to catalog truth.
 relay_admission_provider: Callable[[], AdmittedSet] | None = None
+
+
+async def _on_state_lane(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+    """Run synchronous request-path state work on the app's one serial lane and await it.
+
+    The lane keeps the event loop free for ``/health`` and the cheap refusals while a decision or
+    an evidence write is in progress, and runs jobs one at a time in the order they were
+    submitted.  Errors surface exactly as if ``fn`` had been called here.  An app whose lifespan
+    has not started has no lane (a test that sets the instances by hand): the work runs inline,
+    as it always did.  Never wrap an upstream call in this.
+    """
+    lane = state_lane_instance
+    if lane is None:
+        return fn(*args, **kwargs)
+    return await lane.run(fn, *args, **kwargs)
+
+
+def _cleanup_lane() -> StateLane | None:
+    """The lane that takes a write to a decision row that already exists, or ``None``.
+
+    The app's own lane, or, once the app has shut down, the lane that is still finishing earlier
+    jobs: a write must queue behind them on it, never run on the caller's thread.  ``None`` means
+    no lane is running any job (an app that never started one, or one that has drained).
+    """
+    lane = state_lane_instance
+    if lane is not None:
+        return lane
+    draining = draining_state_lane_instance
+    if draining is not None and not draining.drained:
+        return draining
+    return None
+
+
+async def _write_row_on_lane(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+    """``_on_state_lane`` for a write to a decision row that already exists.
+
+    Ending or extending a row is cleanup, not new work: a lane that has closed (the app is
+    shutting down, or has shut down with its worker still busy) still takes it, queued behind the
+    jobs it already holds and run on its worker, so a request that outlives the close, or is
+    cancelled after it, still records how it ended instead of failing on the closed lane and
+    leaving the row open.
+    """
+    lane = _cleanup_lane()
+    if lane is None:
+        return fn(*args, **kwargs)
+    return await lane.run_cleanup(fn, *args, **kwargs)
 
 
 class CachedRelayAdmission:
@@ -878,7 +942,7 @@ def _build_model_passport_store() -> ModelPassportStore:
 
 async def lifespan(app: FastAPI) -> Any:
     global intelligence_instance, gate_instance, proxy_instance, evidence_store_instance
-    global guidance_plane_instance
+    global guidance_plane_instance, state_lane_instance, draining_state_lane_instance
     validate_server_security(host=os.getenv("LLMGATE_HOST", "127.0.0.1"))
     global server_bootstrap_report
     server_bootstrap_report = server_bootstrap_diagnostics()
@@ -1017,14 +1081,34 @@ async def lifespan(app: FastAPI) -> Any:
 
     await refresh_public_models()
     public_models_task = asyncio.create_task(public_models_loop(), name="public-models-refresh")
-    yield
-    task, public_models_task = public_models_task, None
-    if task is not None:
-        stopping = True
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
-    public_models_readiness = None
+    # Last, so a startup failure above never leaves a lane behind.  The service decides on it and
+    # the handlers record on it: one worker, one order.
+    lane = StateLane()
+    state_lane_instance = lane
+    draining_state_lane_instance = None  # an earlier app's lane is no longer this process's concern
+    service = intelligence_instance
+    service.state_lane = lane
+    try:
+        yield
+        task, public_models_task = public_models_task, None
+        if task is not None:
+            stopping = True
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        public_models_readiness = None
+    finally:
+        # However the app ends (an exception thrown at the yield, a failed refresh task), the
+        # lane is released: queued jobs (a terminal evidence write may still be waiting) get a
+        # bounded wait, then the worker stops.
+        try:
+            await lane.aclose()
+        finally:
+            state_lane_instance = None
+            service.state_lane = None
+            # A close that gave up on a held job leaves its worker running: a write to an
+            # existing row still queues behind that job there (``_cleanup_lane``).
+            draining_state_lane_instance = None if lane.drained else lane
     intelligence_instance = None
     gate_instance = None
     proxy_instance = None
@@ -1529,8 +1613,9 @@ async def route_task(
                 status_code=exc.status_code,
             )
         raise
-    route_evidence, evidence_key = _start_evidence(
+    route_evidence, evidence_key = await _start_evidence_on_lane(
         decision,
+        cancelled_event_prefix="route_decision",
         task=req.task,
         criticality=req.criticality,
         features={
@@ -1551,7 +1636,9 @@ async def route_task(
         outcome="denied" if decision.decision == "denied" else "success",
         features={"route_only": True},
     )
-    route_evidence = _finish_evidence(route_evidence, outcome, evidence_key)
+    route_evidence = await _write_row_on_lane(
+        _finish_evidence, route_evidence, outcome, evidence_key
+    )
     status_code = 200 if decision.decision != "denied" else 503
     headers: dict[str, str] = {}
     if route_evidence.evidence_id:
@@ -2363,8 +2450,9 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             )
         return _proxy_error(503, "no executable route was selected", surface=surface)
     attempted_routes = [item.route.to_dict() for item in attempts]
-    route_evidence, evidence_key = _start_evidence(
+    route_evidence, evidence_key = await _start_evidence_on_lane(
         decision,
+        cancelled_event_prefix=event_prefix,
         task=task,
         criticality=criticality,
         features=features,
@@ -2385,7 +2473,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             outcome="denied",
             features=features,
         )
-        evidence = _finish_evidence(route_evidence, outcome, evidence_key)
+        evidence = await _write_row_on_lane(_finish_evidence, route_evidence, outcome, evidence_key)
         return _proxy_error(
             503,
             decision.reason,
@@ -2395,7 +2483,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
         )
 
     if decision.protected and is_opaque_alias(attempts[0].model):
-        evidence = _finish_evidence(
+        evidence = await _write_row_on_lane(
+            _finish_evidence,
             route_evidence,
             build_outcome_event(
                 route_evidence.routing_decision,
@@ -2420,9 +2509,27 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     last_status: int | None = None
     _last_error_body: str = ""  # bounded upstream body for failure classification
 
-    def record_attempt_event(*, attempt: Any, event_type: str, details: dict[str, Any]) -> None:
+    async def on_lane(
+        fn: Callable[..., _T], /, *args: Any, row_write: bool = False, **kwargs: Any
+    ) -> _T:
+        """``_on_state_lane`` for the steps after the decision row exists and before an attempt's
+        own cancellation handler: a task cancelled while it waits still ends its row.
+        ``row_write`` marks a write to the row itself (taken by a closed lane as cleanup)."""
+        run = _write_row_on_lane if row_write else _on_state_lane
+        try:
+            return await run(fn, *args, **kwargs)
+        except asyncio.CancelledError:
+            _queue_cancelled_terminal(
+                route_evidence, evidence_key, event_prefix=event_prefix, features=features
+            )
+            raise
+
+    async def record_attempt_event(
+        *, attempt: Any, event_type: str, details: dict[str, Any]
+    ) -> None:
         nonlocal route_evidence
-        route_evidence = _finish_evidence(
+        route_evidence = await on_lane(
+            _finish_evidence,
             route_evidence,
             build_outcome_event(
                 route_evidence.routing_decision,
@@ -2438,6 +2545,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 },
             ),
             evidence_key,
+            row_write=True,
         )
 
     # Proofs are bound to the task profile of the request actually being sent,
@@ -2591,7 +2699,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
             if attempts_used:
                 break
             continue
-        permit = HealthCache(default_cache_path()).commit_dispatch(
+        permit = await on_lane(
+            _commit_dispatch_permit,
             expected_scope,
             route_id=proof.route_id,
             attempt_id=attempt_id,
@@ -2623,7 +2732,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 rescreen = "queued"
             except Exception as exc:
                 rescreen = f"persistence_error:{type(exc).__name__}"
-            record_attempt_event(
+            await record_attempt_event(
                 attempt=attempt,
                 event_type=f"{event_prefix}_subscription_fallback",
                 details={
@@ -2635,7 +2744,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 },
             )
         if "subscription_fallback_policy" in decision.safety_flags and capacity == 2:
-            record_attempt_event(
+            await record_attempt_event(
                 attempt=attempt,
                 event_type=f"{event_prefix}_metered_fallback",
                 details={
@@ -2770,7 +2879,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                         "context_pack": injection.to_dict(),
                     }
                 )
-                record_attempt_event(
+                await record_attempt_event(
                     attempt=attempt,
                     event_type=f"{event_prefix}_attempt_failed",
                     details={
@@ -2810,7 +2919,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "context_pack": injection.to_dict(),
                 }
             )
-            record_attempt_event(
+            await record_attempt_event(
                 attempt=attempt,
                 event_type=(
                     f"{event_prefix}_attempt_completed"
@@ -2853,7 +2962,9 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 latency_ms=(monotonic() - started_at) * 1000,
                 details={"attempted_routes": attempts_used},
             )
-            _finish_evidence(route_evidence, outcome, evidence_key)
+            # The job is queued before the wait, and the lane shields it from this cancellation:
+            # the terminal event lands even though this task is going away.
+            await _write_row_on_lane(_finish_evidence, route_evidence, outcome, evidence_key)
             raise
         except Exception as exc:
             result = None
@@ -2874,7 +2985,7 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                     "transition_legal": True if index == 0 else bool(edge and edge.legal),
                 }
             )
-            record_attempt_event(
+            await record_attempt_event(
                 attempt=attempt,
                 event_type=f"{event_prefix}_attempt_failed",
                 details={
@@ -2889,7 +3000,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     if result is None:
         if dispatch_denial is not None and not attempts_used:
             return _proxy_error(503, dispatch_denial, surface=surface)
-        evidence = _finish_evidence(
+        evidence = await _write_row_on_lane(
+            _finish_evidence,
             route_evidence,
             build_outcome_event(
                 route_evidence.routing_decision,
@@ -2958,13 +3070,13 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     if isinstance(result, BufferedUpstreamResponse):
         from verdict.orchestration.eligibility import selection_accounting
 
-        if result.status_code < 400 and response_actual_route_status(result) != "mismatch":
-            from verdict.admit_prove_confirm import record_dispatch_observation
-
-            record_dispatch_observation(
-                attempts_used[-1]["model"], healthy=True, observed_at=datetime.now(timezone.utc)
-            )
-        evidence = _finish_evidence(
+        observed_model = (
+            attempts_used[-1]["model"]
+            if result.status_code < 400 and response_actual_route_status(result) != "mismatch"
+            else None
+        )
+        evidence = await _write_row_on_lane(
+            _finish_with_observation,
             route_evidence,
             build_outcome_event(
                 route_evidence.routing_decision,
@@ -3001,6 +3113,8 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
                 },
             ),
             evidence_key,
+            observed_model,
+            observe_first=True,
         )
         if result.status_code >= 400:
             return Response(
@@ -3012,25 +3126,35 @@ async def _relay_completion(request: Request, *, surface: str) -> Response:
     if isinstance(result, StreamedUpstreamResponse):
         assert validated_stream is not None
 
-        def finalize_stream(event: Any) -> None:
-            _finish_evidence(route_evidence, event, evidence_key)
+        async def finalize_stream(event: Any) -> None:
             label, cls = _stream_ledger_outcome(validated_stream.outcome)
-            if label == "accepted":
-                from verdict.admit_prove_confirm import record_dispatch_observation
-
-                record_dispatch_observation(
-                    stream_ledger["model"], healthy=True, observed_at=datetime.now(timezone.utc)
-                )
             usage = validated_stream.outcome.usage if validated_stream.outcome else None
-            ledger(
-                stream_ledger["attempt_id"],
-                stream_ledger["model"],
-                stream_ledger["sent"],
-                outcome=label,
-                failure_class=cls,
-                headers=stream_ledger["headers"],
-                body=json.dumps({"usage": usage}).encode() if usage else None,
-            )
+
+            def write_ledger() -> None:
+                ledger(
+                    stream_ledger["attempt_id"],
+                    stream_ledger["model"],
+                    stream_ledger["sent"],
+                    outcome=label,
+                    failure_class=cls,
+                    headers=stream_ledger["headers"],
+                    body=json.dumps({"usage": usage}).encode() if usage else None,
+                )
+
+            try:
+                # One lane job, so a cancelled closer cannot land the terminal event and lose
+                # the observation (or the reverse).
+                await _write_row_on_lane(
+                    _finish_with_observation,
+                    route_evidence,
+                    event,
+                    evidence_key,
+                    stream_ledger["model"] if label == "accepted" else None,
+                )
+            except asyncio.CancelledError:
+                write_ledger()  # the attempt's ledger row is written even when the closer is cancelled
+                raise
+            write_ledger()
 
         def stream_event(
             event_type: str,
@@ -3173,6 +3297,151 @@ def _finish_evidence(
         if stored is not None:
             return stored
     return updated
+
+
+def _finish_with_observation(
+    evidence: ExplainEvidence,
+    event: Any,
+    evidence_key: str | None,
+    observed_model: str | None,
+    *,
+    observe_first: bool = False,
+) -> ExplainEvidence:
+    """A terminal evidence event and the dispatch observation beside it, as one lane job.
+
+    One job, so a waiter cancelled between the two cannot land one and lose the other.
+    ``observed_model`` is the model whose dispatch to record as healthy, or ``None`` for none.
+    The observation comes first on the buffered path and second on the stream path, as each
+    always did.
+    """
+    from verdict.admit_prove_confirm import record_dispatch_observation
+
+    if observed_model is not None and observe_first:
+        record_dispatch_observation(
+            observed_model, healthy=True, observed_at=datetime.now(timezone.utc)
+        )
+    finished = _finish_evidence(evidence, event, evidence_key)
+    if observed_model is not None and not observe_first:
+        record_dispatch_observation(
+            observed_model, healthy=True, observed_at=datetime.now(timezone.utc)
+        )
+    return finished
+
+
+def _commit_dispatch_permit(expected_scope: DispatchScope, **kwargs: Any) -> Any:
+    """Commit one dispatch permit (state work: lock, reload, rewrite), for the lane."""
+    return HealthCache(default_cache_path()).commit_dispatch(expected_scope, **kwargs)
+
+
+def _cancelled_event(
+    evidence: ExplainEvidence, *, event_prefix: str, features: dict[str, Any]
+) -> Any:
+    return build_outcome_event(
+        evidence.routing_decision,
+        event_type=f"{event_prefix}_cancelled",
+        outcome="cancelled",
+        features=features,
+        abort_observed=True,
+    )
+
+
+def _queue_cancelled_terminal(
+    evidence: ExplainEvidence,
+    evidence_key: str | None,
+    *,
+    event_prefix: str,
+    features: dict[str, Any],
+) -> None:
+    """Queue, without waiting, the cancelled terminal event of a request whose task was cancelled.
+
+    Used when the task is cancelled while it waits on a lane job after its decision row exists
+    and before any attempt could record the cancellation.  The event is queued behind the job
+    the task was waiting on, so it lands after it; a request that already has a terminal event
+    keeps it (an append of a different terminal outcome is refused and ignored).  It is queued
+    as lane cleanup, which a closed lane still takes while its worker runs, including one the
+    close gave up on, so a task cancelled during shutdown still ends its row, in order and off
+    the event loop.  With no lane running any job (the app never started one, or has drained)
+    it is written at once.
+    """
+    if evidence_key is None:
+        return
+    event = _cancelled_event(evidence, event_prefix=event_prefix, features=features)
+    lane = _cleanup_lane()
+    if lane is not None:
+        lane.submit_cleanup(_finish_evidence, evidence, event, evidence_key)
+        return
+    # Without a lane the work runs inline and cannot be cancelled while it waits, so a missing
+    # lane here means no job is running anywhere: write it now, never replace the cancellation
+    # with a store error.
+    try:
+        _finish_evidence(evidence, event, evidence_key)
+    except Exception:
+        logger.warning("the cancelled terminal event could not be recorded", exc_info=True)
+
+
+class _StartJob:
+    """The lane job that starts a decision row, and ends that row if its waiter gave up.
+
+    ``abandon`` is called when the waiter is cancelled.  If the job has not finished, the job
+    itself ends the row the moment it has written it, on its own thread: nothing is submitted,
+    because the row does not exist yet, so this holds whatever the lane's state.  If the job has
+    already finished, the row is ended through ``_queue_cancelled_terminal``.  Exactly one of
+    the two ends the row.
+    """
+
+    def __init__(self, *, event_prefix: str, features: dict[str, Any]) -> None:
+        self._event_prefix = event_prefix
+        self._features = features
+        self._lock = threading.Lock()
+        self._started: tuple[ExplainEvidence, str | None] | None = None
+        self._abandoned = False
+
+    def __call__(self, decision: Any, **kwargs: Any) -> tuple[ExplainEvidence, str | None]:
+        started = _start_evidence(decision, **kwargs)
+        with self._lock:
+            self._started = started
+            abandoned = self._abandoned
+        if abandoned:
+            evidence, evidence_key = started
+            if evidence_key is not None:
+                _finish_evidence(
+                    evidence,
+                    _cancelled_event(
+                        evidence, event_prefix=self._event_prefix, features=self._features
+                    ),
+                    evidence_key,
+                )
+        return started
+
+    def abandon(self) -> None:
+        with self._lock:
+            self._abandoned = True
+            started = self._started
+        if started is not None:
+            _queue_cancelled_terminal(
+                *started, event_prefix=self._event_prefix, features=self._features
+            )
+
+
+async def _start_evidence_on_lane(
+    decision: Any, *, cancelled_event_prefix: str, **kwargs: Any
+) -> tuple[ExplainEvidence, str | None]:
+    """``_start_evidence`` on the lane; a cancelled waiter still gives the new row a terminal event.
+
+    The job is queued at the call and runs whatever happens to this task, so a task cancelled
+    while it waits would leave a decision row nobody ends.  The job (``_StartJob``) ends the row
+    it wrote when the waiter gave up first, even if the lane has closed by then.
+    """
+    lane = state_lane_instance
+    if lane is None:
+        return _start_evidence(decision, **kwargs)
+    job = _StartJob(event_prefix=cancelled_event_prefix, features=kwargs["features"])
+    future = lane.submit(job, decision, **kwargs)
+    try:
+        return await asyncio.shield(asyncio.wrap_future(future))
+    except asyncio.CancelledError:
+        job.abandon()
+        raise
 
 
 # ---------------------------------------------------------------------------
