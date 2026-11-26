@@ -32,7 +32,7 @@ INTEGRATION = "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0"
 PASS = {"status": "PASS", "reviewer": "ocr v1", "route_id": "gm/gemini-3", "findings": []}
 PR_URL = "https://github.com/acme/repo/pull/77"
 FIXED = datetime(2026, 11, 26, 12, 0, 0, tzinfo=timezone.utc)
-BRANCH = "verdict/issue-1269-deliverit"
+BRANCH = "verdict/issue-1269-deliver-it"
 
 
 def _make_run(

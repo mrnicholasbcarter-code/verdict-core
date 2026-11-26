@@ -100,7 +100,7 @@ def test_complete_verified_run_yields_plan(tmp_path: Path) -> None:
     assert plan.goal == "add feature x"
     assert plan.issue_number == 1269
     assert plan.base_branch == "main"
-    assert plan.head_branch == "verdict/issue-1269-deliverit"
+    assert plan.head_branch == "verdict/issue-1269-deliver-it"
     assert plan.integration_commit == INTEGRATION
     assert plan.receipt_path == run_dir / "receipt.json"
     assert plan.receipt_digest.startswith("sha256:")
@@ -247,11 +247,11 @@ def test_reason_codes_are_distinct_and_stable() -> None:
 
 
 def test_slug_is_sanitised_and_bounded() -> None:
-    assert slugify_title("Fix: the `rm -rf /` bug; $(whoami)!") == "fixtherm-rfbugwhoami"
+    assert slugify_title("Fix: the `rm -rf /` bug; $(whoami)!") == "fix-the-rm-rf-bug-whoami"
     assert len(slugify_title("a" * 100)) == 40
     assert slugify_title("日本語") == ""
     assert head_branch_name(7, "") == "verdict/issue-7"
-    assert head_branch_name(7, "Hello World") == "verdict/issue-7-helloworld"
+    assert head_branch_name(7, "Hello World") == "verdict/issue-7-hello-world"
     assert "/" not in slugify_title("a/b")
 
 
