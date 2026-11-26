@@ -29,10 +29,10 @@ SHALL run on it the route decision (including the assigned lane), the evidence s
 the dispatch permit commit and the dispatch observation, awaiting each from the handler. Jobs
 SHALL run one at a time in the order submitted, with the submitting request's context copied in.
 The lane SHALL NOT be held across an upstream call. A job queued by a request that is then
-cancelled SHALL still run. The one exception to the single worker and the submission order is a
-write to a decision row that already exists (a cleanup) after a close has given up on a held job
-and told the worker to stop: it SHALL run at once on the thread of its caller, not be dropped, and
-may then run beside, or ahead of, a job the worker still holds.
+cancelled SHALL still run. A write to a decision row that already exists (a cleanup) SHALL be accepted by a closed lane,
+SHALL run on the lane's worker behind every earlier job, and SHALL NOT run on the thread of its
+caller, also after a close has given up waiting for a held job. The worker SHALL keep running its
+queue after that bound and retire only when nothing is pending.
 
 #### Scenario: /health and cheap refusals answer during a decision
 - **WHEN** a request's route decision is held inside a slow function
@@ -55,8 +55,8 @@ may then run beside, or ahead of, a job the worker still holds.
 - **THEN** the queued write still runs in order, and the cancelled request's decision row gets a `cancelled` terminal event, with no upstream call made
 
 #### Scenario: A row is ended even when the lane closed first
-- **WHEN** the lane is closed (its worker still running, or told to stop after the close gave up on a held job) and then a request task is cancelled while its start job or its permit commit is still held, or while it awaits its upstream call
-- **THEN** the row gets exactly one `cancelled` terminal event: the start job ends its own row when it has written it, and a cleanup for a later step is queued behind the held job while the worker runs, or run at once when it has stopped
+- **WHEN** the lane is closed (also after the close gave up waiting for a held job) and then a request task is cancelled while its start job or its permit commit is still held, or while it awaits its upstream call
+- **THEN** the row gets exactly one `cancelled` terminal event: the start job ends its own row when it has written it, and a cleanup for a later step is queued behind the held job on the lane's worker, also after the close gave up waiting for it
 
 #### Scenario: A request that outlives the close still records how it ended
 - **WHEN** the lane is closed while a request awaits its upstream call and the request then completes
@@ -64,4 +64,8 @@ may then run beside, or ahead of, a job the worker still holds.
 
 #### Scenario: Shutdown
 - **WHEN** the app ends, normally or with an error, with jobs queued
-- **THEN** the lane refuses new jobs, waits up to its bound for the queued ones and for any cleanup accepted meanwhile, stops its worker even if that wait is cancelled, runs jobs still queued at the bound to completion on the worker thread, and the lifespan clears its references even if its own teardown is cancelled
+- **THEN** the lane refuses new jobs, waits up to its bound for the queued ones and for any cleanup accepted meanwhile, lets its worker retire once nothing is pending even if that wait is cancelled, runs jobs still queued at the bound to completion on the worker thread, and the lifespan clears its references even if its own teardown is cancelled
+
+#### Scenario: A write after the close gave up never runs on the event loop
+- **WHEN** the app has shut down because its close gave up waiting for a held job, and a request handler then writes to its existing decision row (a terminal event, or the cancelled event of a cancelled task)
+- **THEN** the write is queued behind the held job on the lane's worker and runs after it, in submission order, on the worker's thread and not on the event loop, and a cleanup that arrives after the lane drained gets a fresh worker that retires again when idle

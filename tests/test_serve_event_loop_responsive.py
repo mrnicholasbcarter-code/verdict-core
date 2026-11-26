@@ -548,7 +548,12 @@ def test_a_closed_lane_still_takes_cleanup_behind_its_queued_jobs_while_its_work
     assert all(name.startswith(LANE_PREFIX) for _, name in ran), ran
 
 
-def test_cleanup_runs_at_once_on_the_calling_thread_once_the_worker_was_told_to_stop() -> None:
+def test_cleanup_after_a_close_gave_up_on_a_stuck_job_waits_behind_it_on_the_lane_thread() -> None:
+    """The bound ends the wait, not the queue: a cleanup never runs on the caller's thread.
+
+    The caller is a request handler on the event loop; running its cleanup there would stall
+    ``/health`` again and let the write overtake the jobs the stuck worker still holds.
+    """
     ran: list[tuple[str, str]] = []
 
     def record(label: str) -> str:
@@ -562,17 +567,184 @@ def test_cleanup_runs_at_once_on_the_calling_thread_once_the_worker_was_told_to_
         lane = StateLane()
         stuck = threading.Event()
         job = asyncio.ensure_future(lane.run(stuck.wait, 10))
+        queued = asyncio.ensure_future(lane.run(record, "queued"))
         await asyncio.sleep(0.05)
-        await lane.aclose(timeout=0.05)  # gives up on the stuck job and stops the worker
+        await lane.aclose(timeout=0.05)  # gives up waiting for the stuck job
         done = lane.submit_cleanup(record, "cleanup")
-        assert done.done() and done.result(timeout=0) == "cleanup"
         failed = lane.submit_cleanup(broken)
-        assert isinstance(failed.exception(timeout=0), ValueError), "the error was lost"
+        await asyncio.sleep(0.05)
+        assert not done.done() and not failed.done(), "a cleanup overtook the stuck job"
+        assert ran == [], "a cleanup ran on the caller's thread while the lane was stuck"
         stuck.set()
         await job
+        await queued
+        assert await asyncio.wrap_future(done) == "cleanup"
+        assert isinstance(failed.exception(timeout=5), ValueError), "the error was lost"
 
     asyncio.run(scenario())
-    assert ran == [("cleanup", threading.current_thread().name)]
+    assert [label for label, _ in ran] == ["queued", "cleanup"], "a cleanup overtook queued work"
+    assert all(name.startswith(LANE_PREFIX) for _, name in ran), ran
+
+
+def test_a_cleanup_after_the_lane_drained_gets_a_fresh_worker_that_retires_again() -> None:
+    ran: list[tuple[str, str]] = []
+
+    def record(label: str) -> str:
+        ran.append((label, threading.current_thread().name))
+        return label
+
+    async def scenario() -> StateLane:
+        lane = StateLane()
+        await lane.aclose()  # idle: the worker retires
+        assert await lane.run_cleanup(record, "late") == "late"
+        assert await lane.run_cleanup(record, "later") == "later"
+        return lane
+
+    lane = asyncio.run(scenario())
+    assert ran == [("late", ran[0][1]), ("later", ran[1][1])]
+    assert all(name.startswith(LANE_PREFIX) for _, name in ran), ran
+    assert lane.closed
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and any(
+        t.name.startswith(LANE_PREFIX) for t in threading.enumerate()
+    ):
+        time.sleep(0.02)
+    assert not [t for t in threading.enumerate() if t.name.startswith(LANE_PREFIX)]
+
+
+def test_a_cleanup_that_cannot_be_queued_fails_its_future_and_never_runs_on_the_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``submit_cleanup`` is called inside a ``CancelledError`` handler: it must not raise."""
+    ran: list[str] = []
+    lane = StateLane()
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("cannot schedule new futures after interpreter shutdown")
+
+    monkeypatch.setattr(ThreadPoolExecutor, "submit", refuse)
+    future = lane.submit_cleanup(ran.append, "x")
+
+    assert isinstance(future.exception(timeout=0), RuntimeError)
+    assert ran == [], "the cleanup ran on the caller's thread"
+
+
+def test_a_lane_is_drained_only_when_closed_and_every_job_has_finished() -> None:
+    async def scenario() -> None:
+        lane = StateLane()
+        gate = threading.Event()
+        assert not lane.drained
+        busy = asyncio.ensure_future(lane.run(gate.wait, 10))
+        await asyncio.sleep(0.05)
+        await lane.aclose(timeout=0.05)
+        assert lane.closed and not lane.drained
+        gate.set()
+        await busy
+        assert lane.drained
+
+    asyncio.run(scenario())
+
+
+def test_cleanups_across_worker_retirements_run_once_serially_and_in_order() -> None:
+    """A closed lane retires its worker whenever it is idle, and a cleanup restarts it.
+
+    Submitting from the caller's thread while each job finishes and the worker retires drives the
+    retire/restart race: no cleanup may be lost, run twice, overlap another, or run out of order.
+    """
+    count = 300
+    ran: list[int] = []
+    names: set[str] = set()
+    active = 0
+    overlaps = 0
+    guard = threading.Lock()
+
+    def job(index: int) -> int:
+        nonlocal active, overlaps
+        with guard:
+            active += 1
+            overlaps += active > 1
+        names.add(threading.current_thread().name)
+        ran.append(index)
+        with guard:
+            active -= 1
+        return index
+
+    async def scenario() -> None:
+        lane = StateLane()
+        await lane.aclose()
+        futures = []
+        for index in range(count):
+            futures.append(lane.submit_cleanup(job, index))
+            if index % 3 == 0:
+                await asyncio.wrap_future(futures[-1])  # let it finish: the worker may retire
+        for future in futures:
+            assert await asyncio.wait_for(asyncio.wrap_future(future), 10) is not None
+
+    asyncio.run(scenario())
+    assert ran == list(range(count)) and overlaps == 0
+    assert all(name.startswith(LANE_PREFIX) for name in names), names
+
+
+def test_a_write_to_an_existing_row_after_the_app_shut_down_with_a_busy_worker_queues_behind_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The lifespan has ended and cleared its lane references, but the close gave up on a job.
+
+    A handler still finishing then (a cancelled request, a stream that ends) writes through the
+    same helpers.  They must queue behind the held job on its worker, in order, and not run
+    inline on the event loop, where the write would overtake the job and stall the loop again.
+    """
+    _Harness(monkeypatch, _service(), tmp_path)
+    service = _service()
+    monkeypatch.setattr(api, "_build_intelligence", lambda: service)
+    monkeypatch.setattr(api, "draining_state_lane_instance", None, raising=False)
+    real_aclose = StateLane.aclose
+
+    async def quick_close(self: StateLane, *, timeout: float = 10.0) -> None:
+        await real_aclose(self, timeout=0.05)  # the lifespan's bound, shortened for the test
+
+    monkeypatch.setattr(StateLane, "aclose", quick_close)
+    order: list[tuple[str, str]] = []
+
+    def record(label: str) -> str:
+        order.append((label, threading.current_thread().name))
+        return label
+
+    monkeypatch.setattr(
+        api, "_finish_evidence", lambda evidence, event, key=None: record(f"finish:{event}")
+    )
+    monkeypatch.setattr(
+        api, "_cancelled_event", lambda evidence, *, event_prefix, features: f"{event_prefix}_gone"
+    )
+    stuck = threading.Event()
+
+    async def scenario() -> None:
+        context = contextlib.asynccontextmanager(api.lifespan)(api.app)
+        await context.__aenter__()
+        lane = api.state_lane_instance
+        assert lane is not None
+        busy = asyncio.ensure_future(lane.run(stuck.wait, 10))
+        queued = asyncio.ensure_future(lane.run(record, "queued"))
+        await asyncio.sleep(0.05)
+        await context.__aexit__(None, None, None)  # the close gives up on the held job
+        assert api.state_lane_instance is None and service.state_lane is None
+        write = asyncio.ensure_future(api._write_row_on_lane(record, "write"))
+        await asyncio.sleep(0)  # the write is submitted now, before the terminal event below
+        api._queue_cancelled_terminal("evidence", "key", event_prefix="chat", features={})
+        await asyncio.sleep(0.05)
+        assert order == [], f"a write to an existing row ran ahead of the held job: {order}"
+        assert not write.done()
+        stuck.set()
+        await busy
+        await queued
+        assert await asyncio.wait_for(write, 10) == "write"
+        deadline = time.monotonic() + 5
+        while len(order) < 3 and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+
+    asyncio.run(scenario())
+    assert [label for label, _ in order] == ["queued", "write", "finish:chat_gone"], order
+    assert all(name.startswith(LANE_PREFIX) for _, name in order), order
 
 
 def test_the_lifespan_releases_the_lane_when_the_app_exits_with_an_error(
@@ -651,8 +823,8 @@ def _cancel_while_held(
 
     ``lane_close`` is when the app's lane is closed relative to the cancellation: ``never``,
     ``after_cancel``, ``before_cancel`` (closed, its worker still running), or
-    ``worker_stopped_before_cancel`` (closed and its bounded wait spent, so the worker has been
-    told to stop and takes no job at all while the held one is still running).
+    ``worker_stopped_before_cancel`` (closed and its bounded wait spent: the close gave up on
+    the held job, which the worker still runs; a cleanup queues behind it).
     """
     harness = _Harness(monkeypatch, _service(), tmp_path)
     entered = threading.Event()
@@ -762,8 +934,8 @@ def test_a_row_is_ended_when_the_lane_closes_before_its_waiter_is_cancelled(
 ) -> None:
     """Shutdown first, cancellation second, the job still held: the accepted job's row is ended.
 
-    With the worker still running the cleanup is accepted behind the held job; with the worker
-    already told to stop, the start job ends its own row and the permit's cleanup runs at once.
+    The permit's cleanup is accepted behind the held job, also after the close gave up waiting
+    for it; the start job ends its own row.
     """
     harness, finished = _cancel_while_held(monkeypatch, tmp_path, hold_site, lane_close=lane_close)
 
@@ -777,8 +949,8 @@ def _close_the_lane_during_upstream_io(
     """Close the lane while a request awaits its upstream call, then cancel it or let it finish.
 
     Returns the harness, the evidence events recorded, and the response (``None`` when the
-    request was cancelled or raised).  The lane is idle when it closes, so its worker has been
-    told to stop by the time the request writes how it ended.
+    request was cancelled or raised).  The lane is idle when it closes, so its worker has
+    retired by the time the request writes how it ended; the write gets a fresh one.
     """
     import httpx
 
@@ -892,7 +1064,7 @@ def _fake_evidence_calls(
 def test_a_start_job_abandoned_before_it_finishes_ends_its_own_row_on_its_own_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The lane is closed and its worker told to stop: nothing can be submitted, the job ends it."""
+    """The lane is closed and its close gave up: no row exists yet, so the job ends its own."""
     hold = threading.Event()
     finished = _fake_evidence_calls(monkeypatch, hold=hold)
 
@@ -929,7 +1101,7 @@ def test_a_start_job_that_was_not_abandoned_leaves_its_row_open(
     assert finished == []
 
 
-@pytest.mark.parametrize("lane_state", ["open", "closed_and_stopped", "gone"])
+@pytest.mark.parametrize("lane_state", ["open", "closed", "gone"])
 def test_a_start_job_abandoned_after_it_finished_ends_its_row_once_whatever_the_lane_is(
     monkeypatch: pytest.MonkeyPatch, lane_state: str
 ) -> None:
@@ -944,13 +1116,15 @@ def test_a_start_job_abandoned_after_it_finished_ends_its_row_once_whatever_the_
             await lane.aclose(timeout=0.05)
         monkeypatch.setattr(api, "state_lane_instance", None if lane_state == "gone" else lane)
         job.abandon()
-        if lane_state == "open":
-            await lane.run(lambda: None)  # the cleanup was queued behind it
+        if lane_state != "gone":
+            await lane.run_cleanup(lambda: None)  # the cleanup was queued before this one
             await lane.aclose()
 
     asyncio.run(scenario())
     assert [(event, key) for event, key, _ in finished] == [("chat_gone", "key")], finished
-    expected_thread = LANE_PREFIX if lane_state == "open" else main_thread
+    # With no lane at all nothing is running: the write is made where it is called.  A lane that
+    # is open or closed (its worker retired) takes it on its worker.
+    expected_thread = main_thread if lane_state == "gone" else LANE_PREFIX
     assert finished[0][2].startswith(expected_thread), finished
 
 

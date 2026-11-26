@@ -53,34 +53,43 @@ request, `/health` 16 to 32 s.
    still gets the write, in order. A task cancelled while the decision row is being started hands
    the ending of the row to the start job itself (`_StartJob`): if the waiter gave up before the
    job finished, the job writes a `<surface>_cancelled` terminal event as soon as it has written
-   the row, on the lane thread, so nothing has to be submitted after the lane has closed or its
-   worker has been told to stop; if the job had already finished, the event is queued as cleanup
-   (below). A task cancelled while a later step (the permit commit, a fallback event) is queued
-   queues the same event as cleanup: `StateLane.submit_cleanup` is taken by a closed lane while
-   its worker runs (behind the job the task waited on; the close waits for it), runs at once on
-   the calling thread once the worker has been told to stop, and the event is written directly
-   when the app has no lane left. Every write to a row that already exists (attempt events, the
-   terminal event of an attempt, a denial, a stream or a buffered response) goes the same way
+   the row, on the lane thread (the row does not exist before that, so there is nothing to
+   queue); if the job had already finished, the event is queued as cleanup (below). A task
+   cancelled while a later step (the permit commit, a fallback event) is queued queues the same
+   event as cleanup. Every write to a row that already exists (attempt events, the terminal
+   event of an attempt, a denial, a stream or a buffered response) goes the same way
    (`_write_row_on_lane`), so a request that outlives the close, or is cancelled during its
    upstream call after it, still records how it ended; only new work (the decision, the row's
-   start, the permit commit) is refused by a closed lane. A stream's terminal bookkeeping (event and observation) and
-   the buffered response's are each one job. `_EvidenceStreamAdapter` awaits an async terminal
-   callback and still accepts a plain one.
+   start, the permit commit) is refused by a closed lane. A stream's terminal bookkeeping (event
+   and observation) and the buffered response's are each one job. `_EvidenceStreamAdapter`
+   awaits an async terminal callback and still accepts a plain one.
+   A cleanup (`StateLane.submit_cleanup`) is taken by a closed lane, queued behind every earlier
+   job and run on the lane's worker, never on the caller's thread, which is a handler on the
+   event loop: the close's bound ends the wait, not the queue. The worker retires (shuts down)
+   only when the lane is closed and nothing is pending, so a close that gave up on a held job
+   leaves the worker running its queue and any cleanup that arrives, in order; a cleanup that
+   arrives after the worker retired gets a fresh worker, which retires again when idle. The
+   lifespan clears the app's lane references at shutdown (new work then has no lane), but keeps
+   a lane that has not drained reachable for cleanup only (`draining_state_lane_instance`), so a
+   handler that is still finishing writes behind the held job instead of inline. A cleanup that
+   cannot be queued (no worker can be started) fails its future and is never run inline.
 6. **Never hold the lane across an upstream call.** The lane runs the decision before the call
    and the bookkeeping after it; streaming and the upstream call stay on the loop.
 7. **Lifecycle.** The lifespan creates the lane as its last startup step (a failed startup leaves
    none), attaches it to the service, and on shutdown, however the app ended, refuses new jobs,
-   waits up to 10 s for the queued ones, then tells the worker to stop. The bound ends the wait,
-   not the work: jobs still queued run to completion on the worker thread, so no terminal write
-   is dropped, and the loop is never held. With no lifespan (tests that set the instances by
+   waits up to 10 s for the queued ones, then lets the worker retire once nothing is pending. The
+   bound ends the wait, not the work: jobs still queued run to completion on the worker thread,
+   so no terminal write is dropped, and the loop is never held. With no lifespan (tests that set the instances by
    hand) the handlers run the work inline.
 
 ## Risks / Trade-offs
 
-- Once a close has given up on a stuck job, the cancelled terminal event of a task cancelled then
-  is written on the thread of the cancelled task (one store append, on the event loop) and can
-  land before the stuck job's own write. The request was cancelled, so `cancelled` is its true
-  outcome, and the store refuses a second, different terminal outcome for the row.
+- A write to an existing row made when no lane is running any job runs on the caller's thread:
+  an app whose lifespan never started (tests that set the instances by hand), or one that has
+  shut down and drained. Nothing is queued for it to overtake, and after the lifespan has ended
+  there is no `/health` left to stall.
+- A close that gave up on a stuck job leaves its worker running past the lifespan, so the
+  process exit waits for that job, as it does for any executor thread.
 - Work now runs on a second thread beside the loop. The state it touches is already used from
   `to_thread` workers (receipt store: locked writes and per-call connections; health cache: file
   lock), and only the lane thread decides.

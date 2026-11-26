@@ -320,6 +320,10 @@ intelligence_instance: IntelligenceService | None = None
 #: The one serial worker lane for the request path's blocking state work, created and shut down
 #: with the app (``lifespan``).  ``None`` only before startup and after shutdown.
 state_lane_instance: StateLane | None = None
+#: The lane of an app that has shut down while its worker was still running earlier jobs (the
+#: close gave up on a held job).  It takes no new work, but a write to a row that already exists
+#: is still queued behind those jobs on it, off the event loop, until it has drained.
+draining_state_lane_instance: StateLane | None = None
 gate_instance: Gate | None = None
 proxy_instance: UpstreamProxy | None = None
 # Optional canonical live admission for relay attempts. When set, the selected
@@ -343,15 +347,32 @@ async def _on_state_lane(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) ->
     return await lane.run(fn, *args, **kwargs)
 
 
+def _cleanup_lane() -> StateLane | None:
+    """The lane that takes a write to a decision row that already exists, or ``None``.
+
+    The app's own lane, or, once the app has shut down, the lane that is still finishing earlier
+    jobs: a write must queue behind them on it, never run on the caller's thread.  ``None`` means
+    no lane is running any job (an app that never started one, or one that has drained).
+    """
+    lane = state_lane_instance
+    if lane is not None:
+        return lane
+    draining = draining_state_lane_instance
+    if draining is not None and not draining.drained:
+        return draining
+    return None
+
+
 async def _write_row_on_lane(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
     """``_on_state_lane`` for a write to a decision row that already exists.
 
     Ending or extending a row is cleanup, not new work: a lane that has closed (the app is
-    shutting down) still takes it, and once its worker has been told to stop it runs at once, so
-    a request that outlives the close, or is cancelled after it, still records how it ended
-    instead of failing on the closed lane and leaving the row open.
+    shutting down, or has shut down with its worker still busy) still takes it, queued behind the
+    jobs it already holds and run on its worker, so a request that outlives the close, or is
+    cancelled after it, still records how it ended instead of failing on the closed lane and
+    leaving the row open.
     """
-    lane = state_lane_instance
+    lane = _cleanup_lane()
     if lane is None:
         return fn(*args, **kwargs)
     return await lane.run_cleanup(fn, *args, **kwargs)
@@ -921,7 +942,7 @@ def _build_model_passport_store() -> ModelPassportStore:
 
 async def lifespan(app: FastAPI) -> Any:
     global intelligence_instance, gate_instance, proxy_instance, evidence_store_instance
-    global guidance_plane_instance, state_lane_instance
+    global guidance_plane_instance, state_lane_instance, draining_state_lane_instance
     validate_server_security(host=os.getenv("LLMGATE_HOST", "127.0.0.1"))
     global server_bootstrap_report
     server_bootstrap_report = server_bootstrap_diagnostics()
@@ -1064,6 +1085,7 @@ async def lifespan(app: FastAPI) -> Any:
     # the handlers record on it: one worker, one order.
     lane = StateLane()
     state_lane_instance = lane
+    draining_state_lane_instance = None  # an earlier app's lane is no longer this process's concern
     service = intelligence_instance
     service.state_lane = lane
     try:
@@ -1084,6 +1106,9 @@ async def lifespan(app: FastAPI) -> Any:
         finally:
             state_lane_instance = None
             service.state_lane = None
+            # A close that gave up on a held job leaves its worker running: a write to an
+            # existing row still queues behind that job there (``_cleanup_lane``).
+            draining_state_lane_instance = None if lane.drained else lane
     intelligence_instance = None
     gate_instance = None
     proxy_instance = None
@@ -3333,20 +3358,21 @@ def _queue_cancelled_terminal(
     and before any attempt could record the cancellation.  The event is queued behind the job
     the task was waiting on, so it lands after it; a request that already has a terminal event
     keeps it (an append of a different terminal outcome is refused and ignored).  It is queued
-    as lane cleanup, which a closed lane still takes while its worker runs and which runs at
-    once once the worker has been told to stop, so a task cancelled during shutdown still ends
-    its row.  With no lane left (the app has finished shutting down) it is written at once.
+    as lane cleanup, which a closed lane still takes while its worker runs, including one the
+    close gave up on, so a task cancelled during shutdown still ends its row, in order and off
+    the event loop.  With no lane running any job (the app never started one, or has drained)
+    it is written at once.
     """
     if evidence_key is None:
         return
     event = _cancelled_event(evidence, event_prefix=event_prefix, features=features)
-    lane = state_lane_instance
+    lane = _cleanup_lane()
     if lane is not None:
         lane.submit_cleanup(_finish_evidence, evidence, event, evidence_key)
         return
     # Without a lane the work runs inline and cannot be cancelled while it waits, so a missing
-    # lane here means the app has finished shutting down: write it now, never replace the
-    # cancellation with a store error.
+    # lane here means no job is running anywhere: write it now, never replace the cancellation
+    # with a store error.
     try:
         _finish_evidence(evidence, event, evidence_key)
     except Exception:
@@ -3357,10 +3383,10 @@ class _StartJob:
     """The lane job that starts a decision row, and ends that row if its waiter gave up.
 
     ``abandon`` is called when the waiter is cancelled.  If the job has not finished, the job
-    itself ends the row the moment it has written it, on its own thread: nothing is submitted, so
-    this holds when the lane has closed and when its worker has been told to stop (a stopping
-    worker still finishes the job it holds).  If the job has already finished, the row is ended
-    through ``_queue_cancelled_terminal``.  Exactly one of the two ends the row.
+    itself ends the row the moment it has written it, on its own thread: nothing is submitted,
+    because the row does not exist yet, so this holds whatever the lane's state.  If the job has
+    already finished, the row is ended through ``_queue_cancelled_terminal``.  Exactly one of
+    the two ends the row.
     """
 
     def __init__(self, *, event_prefix: str, features: dict[str, Any]) -> None:
