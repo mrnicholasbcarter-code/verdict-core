@@ -26,10 +26,16 @@ no readiness check runs, no attempt tree is made and no OpenCode process starts.
 
 ### Requirement: With the flag, autodev SHALL stop with one message when opencode or serve is unavailable
 
-With `--worker-harness opencode` and live consent, autodev SHALL check, before any probe,
-planner call, attempt tree or model call, that the opencode binary resolves and runs, and
-that `verdict serve` answers `GET /health` with status 200 and `"engine": "verdict"`. When a
-check fails it SHALL print one message naming the failed check and the remedy, exit with
+With `--worker-harness opencode`, live consent and no `--dry-run`, autodev SHALL check, before
+any probe, planner call, attempt tree or model call and whether or not an execution-path
+decision was supplied, that the opencode binary resolves and runs, that `verdict serve` answers
+`GET /health` with status 200 and `"engine": "verdict"`, and that the credentials the
+OpenCode executor signs with exist: the serve token resolves and the worker signing key is
+readable. Without them every unit would fail after the probe and the planner call had been paid
+for. The credential check only reads: the serve token (the environment, the credential store,
+then `serve.env`) and the signing key file. It creates, removes and modifies nothing, whether
+the credentials are there or not, and its message never contains a value.
+When a check fails it SHALL print one message naming the failed check and the remedy, exit with
 status 1, and SHALL NOT fall back to `PatchExecutor`. A version of OpenCode different from
 the pinned one SHALL NOT fail the check and SHALL be named in the output.
 
@@ -40,6 +46,18 @@ the pinned one SHALL NOT fail the check and SHALL be named in the output.
 #### Scenario: serve not answering
 - **WHEN** the connection to serve is refused, times out, returns a non-200, or returns a body whose `engine` is not `verdict`
 - **THEN** autodev exits 1 with one message naming the serve check, with no upstream request beyond that health request
+
+#### Scenario: Credentials missing
+- **WHEN** the serve token does not resolve, or the worker signing key file is absent or unreadable, and the binary and serve checks pass
+- **THEN** autodev exits 1 with one message naming the credential check and the remedy, and the route probe, the decomposer, `run_autodev` and `PatchExecutor` are never called
+
+#### Scenario: Credential check creates or modifies nothing
+- **WHEN** the credential check runs with the credentials present, with no serve token, and with a token but no signing key
+- **THEN** no path under the home directory is created, removed or changed (kind, mode, modification time and bytes), and the check reports the credentials as present or names the missing one
+
+#### Scenario: Readiness runs even when a decision is supplied
+- **WHEN** an execution-path decision is passed to the command and the binary check fails
+- **THEN** autodev exits 1 with the binary message and `run_autodev` is never called
 
 #### Scenario: One message in JSON mode
 - **WHEN** a readiness check fails and `--json` is given
@@ -59,7 +77,39 @@ object, ref, config or hook into the user's repository. A rename or copy reporte
 `git status -z` is two records, destination then source; the executor SHALL consume both,
 copy the destination's current working-tree bytes, and remove the source from the clone when
 the user's tree no longer has it. It SHALL record a manifest of the seeded tree before the
-worker starts. The attempt directory SHALL be removed on every exit path.
+worker starts. The overlay SHALL follow no link in the clone: it opens every ancestor of a path it
+removes or writes from a descriptor for the clone's root without following links, so a symlink committed
+to the repository cannot send a removal or a write outside the clone. A removal below an ancestor that is
+absent, a link or a file has nothing to remove; a write replaces such an ancestor by a directory.
+The files the overlay reads from the user's tree are held in memory until the clone is written, so
+they SHALL share one byte budget (`MAX_SEED_BYTES`) and one file budget (`MAX_SEED_FILES`) while
+they are loaded: each read stops at what is left of the byte budget, the load stops at the file
+that crosses either budget, and the seed is refused with the limit named before the rest are read.
+Only a file or a symlink kept in memory counts; a path the user deleted keeps nothing and counts
+for neither budget. The manifest of the finished clone is still checked against both limits.
+
+The attempt directory SHALL be removed on every exit path in which the worker has left it where the
+executor made it and the executor can empty it; on no exit path SHALL the executor remove an entry it did not
+make, so its cleanup is best effort and identity-checked, and it leaves what it cannot safely remove. The
+worker runs as the same user inside it, so it can rename the directory or leave a link where it was: the
+executor SHALL hold the directory by descriptor from the moment it makes it, SHALL empty it through that
+descriptor, descending by descriptor and following no link, and SHALL remove its name only when the entry
+there still is the directory it made (device and inode). What it leaves, by design: a directory the worker
+moved away is emptied and left where it was moved; whatever the worker put at the old name is not touched
+(a replacement entry stays, a link is not followed); a directory the worker made unreadable is opened
+again by changing its mode by name, relative to its parent's descriptor and without following a link,
+where the host supports that, and where it does not, that directory and the attempt directory above it
+are left; an entry that cannot be removed is left with the directory above it. Cleanup SHALL NOT raise an
+`Exception`, so that it cannot replace an exception that is propagating, and a descriptor whose close fails
+SHALL NOT stop the executor closing the others. That holds for every close of a directory descriptor or of a
+file opened only to read it, wherever it runs (a `finally`, a handler or any other cleanup), on the path that
+succeeds as well as on the one that fails: a failing close SHALL NOT replace the exception that is
+propagating (a `PermissionError` or a `KeyboardInterrupt` from a transfer or a restore reaches the caller
+as itself), and SHALL NOT skip a later close. A file the executor wrote is the one exception: when nothing
+else is propagating, a failing close of it is the write's own failure and surfaces; when another exception
+is propagating, it SHALL NOT replace that exception. A close that fails while a path's directories are being
+opened and one of them is not a real directory SHALL NOT replace that refusal. Every descriptor the executor
+opened for an attempt is closed on every exit path.
 
 #### Scenario: Clone shares nothing with the repository
 - **WHEN** an attempt tree is seeded from a repository that has its own hook, local config value and `info/exclude` entry
@@ -85,9 +135,85 @@ worker starts. The attempt directory SHALL be removed on every exit path.
 - **WHEN** the repository has no HEAD commit, contains a submodule or a nested repository, or exceeds the seed limit
 - **THEN** the attempt is `error` with a reason naming which, no worker starts and no attempt directory remains
 
-#### Scenario: Attempt tree removed on every exit path
-- **WHEN** an attempt ends applied, rejected, with a failed or timed-out worker, with an exception, or by cancellation
+#### Scenario: Overlay bytes share one budget while they are loaded
+- **WHEN** several dirty or untracked files each fit the seed's byte limit and together exceed it
+- **THEN** the seed is refused with the limit, and no more than the byte limit plus one read chunk was read from the user's tree
+
+#### Scenario: Overlay file count is bounded while the files are loaded
+- **WHEN** the files to copy outnumber the seed's file limit
+- **THEN** the seed is refused with the limit, and no file past the one that crossed the limit was read
+
+#### Scenario: Deleted files do not count against the overlay limits
+- **WHEN** the user deleted more tracked files than the seed's file limit and nothing else is dirty
+- **THEN** the seed succeeds
+
+#### Scenario: Attempt tree removed on every ordinary exit path
+- **WHEN** an attempt ends applied, rejected, with a failed or timed-out worker, with an exception, or by cancellation, and the worker has not moved, replaced or locked the attempt directory or anything in it (the scenarios below cover those cases)
 - **THEN** the attempt directory no longer exists
+
+#### Scenario: Removal does not follow a symlinked ancestor
+- **WHEN** the repository commits `d` as a symlink to a directory outside it, the user replaced `d` by a real directory, and the unit owns the absent `d/victim` while the outside directory holds a file or a directory named `victim`
+- **THEN** the outside `victim` is untouched, `d` is a real directory in the attempt tree, and the user's repository is byte-identical after seeding
+
+#### Scenario: Copy does not write through a symlinked ancestor
+- **WHEN** the repository commits `d` as a symlink to a directory outside it and the user replaced `d` by a real directory holding the untracked `new.txt`
+- **THEN** the attempt tree holds `d/new.txt` in a real directory `d` and the outside directory is still empty
+
+#### Scenario: Removal of a directory
+- **WHEN** the unit owns a path that is a directory in the clone and is absent in the user's tree
+- **THEN** the directory and everything below it is absent from the attempt tree
+
+#### Scenario: Cleanup does not follow a replaced attempt directory
+- **WHEN** the worker renames the attempt directory and leaves a symlink to a directory outside it at the old name
+- **THEN** the outside directory and everything below it keep their modes and contents, the renamed directory Verdict made is emptied, and the attempt is `error`
+
+#### Scenario: Cleanup leaves a directory that replaced the attempt directory
+- **WHEN** the worker renames the attempt directory and creates a different, empty directory at the old name
+- **THEN** that directory is not removed, and the renamed directory Verdict made is emptied
+
+#### Scenario: Cleanup does not follow a link inside the tree
+- **WHEN** the worker leaves a symlink to an outside directory inside a read-only ignored directory of the attempt tree
+- **THEN** the attempt directory is removed and the outside directory keeps its mode and contents
+
+#### Scenario: Cleanup removes directories the worker made unusable
+- **WHEN** the worker leaves a directory tree with mode 0o555 (readable), or with mode 0o000 on a host that can change a directory's mode by name without following a link
+- **THEN** the attempt directory no longer exists
+
+#### Scenario: No descriptor is left open
+- **WHEN** an attempt ends applied, rejected, with a failed worker, with an exception, or by interrupt
+- **THEN** the process has the same number of open descriptors as before the attempt
+
+#### Scenario: Cleanup never raises when a close fails
+- **WHEN** closing the attempt directory's descriptor fails with an I/O error while `remove` runs
+- **THEN** `remove` does not raise, the temporary directory's descriptor is still closed, and the attempt directory is removed
+
+#### Scenario: A failed construction does not replace its own error
+- **WHEN** the attempt directory cannot be opened after it was made, and closing the descriptor already opened also fails
+- **THEN** the error that propagates is the one from the failed open, and the directory that was made is removed
+
+#### Scenario: A parent that is a file is still a conflict when a close fails
+- **WHEN** a component of a path's parent directories is a file, and closing the directory descriptors already opened for the path fails
+- **THEN** the path is reported as a conflict (a parent directory is not a real directory), not as an I/O error
+
+#### Scenario: A refused seed keeps its own error when cleanup cannot close
+- **WHEN** the seed is refused (the repository has no commit) and closing the descriptor the cleanup opened fails
+- **THEN** the refusal propagates and not the close error
+
+#### Scenario: A transfer failure is not replaced by a close that fails while it unwinds
+- **WHEN** a `PermissionError` or a `KeyboardInterrupt` is raised during a transfer, with a directory of the user's repository held open, and every directory and read-only close that runs while it unwinds reports an I/O error
+- **THEN** a `KeyboardInterrupt` reaches the caller as the same object with its journal intact, a `PermissionError` raised in the write loop is the cause of the rollback's `TransferFailedError` and one raised outside the loop reaches the caller as itself, the rollback still completes, and every descriptor opened is closed
+
+#### Scenario: A restore failure is not replaced by a close that fails while it unwinds
+- **WHEN** a `PermissionError` or a `KeyboardInterrupt` is raised while one journalled path is restored, and the closes that run while it unwinds report an I/O error
+- **THEN** the `KeyboardInterrupt` reaches the caller as the same object with the entry still journalled, the `PermissionError` is the one reason named for that path and no second entry names a close, and every descriptor opened is closed
+
+#### Scenario: A close that fails never stops an attempt
+- **WHEN** every close of a directory or of a file opened only to read it reports an I/O error during a seed, a delta, a transfer and a restore that would otherwise succeed
+- **THEN** each of them completes as it would without the failure, and every descriptor opened is closed
+
+#### Scenario: A failing close of a written file is the write's failure only when nothing else is propagating
+- **WHEN** the close of the file `replace_file` or the seed's copy wrote reports an I/O error
+- **THEN** with nothing else propagating the I/O error surfaces (and the temporary file is removed), and with the write's own failure propagating, that failure reaches the caller and not the close error
 
 ### Requirement: An owned file SHALL be tracked and unmodified, or absent, before a worker starts
 
@@ -96,7 +222,9 @@ file was replaced cannot undo it, and git must hold the user's bytes. The execut
 therefore refuse a unit when any of its owned paths:
 
 - is reported by `git status` (modified, staged, deleted, renamed or untracked), or exists and
-  is not tracked (an ignored file);
+  is not tracked (an ignored file), or does not exist and is ignored by the repository's ignore
+  rules (`git check-ignore`; `git status` never lists an ignored path, so neither the change
+  the unit makes nor the receipt's `changed_files` would show it);
 - is tracked and `git ls-files -v` tags it with anything but `H` (`h` assume-unchanged, `S` or
   `s` skip-worktree: git does not read the working-tree bytes, so an edit leaves `git status`
   clean); or
@@ -104,8 +232,9 @@ therefore refuse a unit when any of its owned paths:
   `unset` (a clean filter or an `ident` keyword can map different working-tree bytes to the same
   blob, so `git status` reports clean while `git checkout` writes other bytes).
 
-It SHALL also refuse when any of the three reads (`git status`, `git ls-files -v`, `git
-check-attr`) fails. An owned path that does not exist and that git does not report SHALL NOT be
+It SHALL also refuse when any of the four reads (`git status`, `git ls-files -v`, `git
+check-attr`, and `git check-ignore` for an owned path that does not exist) fails. An owned path
+that does not exist, that git does not report and that no ignore rule matches SHALL NOT be
 refused, whatever attributes match its name, and no other file is checked. Line endings and
 encoding are not checked: under a `text`, `eol`, `core.autocrlf` or `working-tree-encoding`
 conversion `git checkout` writes the bytes git chooses. The reads are made at the start of the unit, before the mechanical tier; a
@@ -147,15 +276,23 @@ owned file.
 - **THEN** the unit is refused as above, naming the file and the attribute
 
 #### Scenario: Absent owned file accepted
-- **WHEN** an owned path does not exist, git does not report it, and the unit is to create it, even where a `filter` attribute matches its name
+- **WHEN** an owned path does not exist, git does not report it, no ignore rule matches it, and the unit is to create it, even where a `filter` attribute matches its name
 - **THEN** the unit is not refused
+
+#### Scenario: Ignored absent owned file refused
+- **WHEN** an owned path does not exist and an ignore rule of the user's repository matches it
+- **THEN** the unit is refused as above, naming the file and saying that an ignored file is not shown by `git status`, and no worker starts
+
+#### Scenario: Ignored and plain absent owned files refused
+- **WHEN** a unit owns one absent path that an ignore rule matches and one absent path that none matches
+- **THEN** the unit is refused naming the ignored path, no worker starts and nothing is created, so a repair cannot transfer only the plain file
 
 #### Scenario: Unowned dirty file does not refuse
 - **WHEN** a file the unit does not own has uncommitted changes
 - **THEN** the unit is not refused and the file is carried into the seed
 
 #### Scenario: Git read fails closed
-- **WHEN** `git status`, `git ls-files -v` or `git check-attr` exits non-zero
+- **WHEN** `git status`, `git ls-files -v`, `git check-attr` or `git check-ignore` exits with a failure (for `check-ignore`, any status other than 0 and 1)
 - **THEN** the unit is refused with the git failure as the reason, and is not treated as clean
 
 #### Scenario: Mechanical edit does not refuse
@@ -200,11 +337,36 @@ successfully SHALL transfer nothing even if the attempt tree holds edits.
 Ownership SHALL be decided on file and link entries only, never on directories. The executor
 SHALL read the attempt tree without following links and without opening anything that is not a
 regular file, resolving every directory component relative to a held descriptor, so that
-swapping an ancestor directory for a symlink cannot redirect a read.
+swapping an ancestor directory for a symlink cannot redirect a read. It SHALL open the attempt tree once
+for the walk and for every read, and accept only the directory it seeded (its device and inode), because
+the directories above the tree are the worker's to rename or replace by a link. It SHALL stop reading a
+file as soon as the tree's byte budget is spent, so a huge or still-growing file is never hashed to its end.
+
+A change is a difference in a path's kind, executable bit or bytes between the seed and the end of the
+attempt. Git's own state in the clone (a commit, a branch, the index, anything under `.git`) is not a
+change, is never read and never copied back: a commit or an index-only edit to an unowned file that
+leaves its working-tree bytes as seeded is therefore not seen, and reaches nothing in the user's
+repository. A new path the user's ignore rules match is dropped as a byproduct (next requirement).
 
 #### Scenario: Out-of-bounds edits are rejected
-- **WHEN** a worker edits an unowned file by a plain edit, by staging it, by committing it, by creating an unowned new file, or by swapping a symlink into an owned path
+- **WHEN** a worker edits the bytes of an unowned file (and, in two variants, also stages or commits that edit), creates an unowned new file, or swaps a symlink into an owned path
 - **THEN** the attempt is `rejected` naming the path and the user's repository is byte-identical
+
+#### Scenario: Git-only changes to unowned files are not a change
+- **WHEN** a worker edits an owned file, makes an empty commit, and stages and commits an edit to an unowned file while its working-tree bytes are put back to what was seeded
+- **THEN** the delta contains the owned file alone
+
+#### Scenario: A tree reached through a replaced attempt directory is not read
+- **WHEN** the worker renames the attempt directory and leaves a symlink at the old name to a directory that holds a complete copy of the tree with an owned edit
+- **THEN** the attempt is `error` with the reason that the attempt tree changed during validation, and the user's repository is byte-identical
+
+#### Scenario: Manifest hashing stops at the byte budget
+- **WHEN** a worker leaves one huge file, or several files that together exceed the tree's byte budget
+- **THEN** the attempt is `rejected` for being over the limit, and no more than the budget plus one read chunk was read from the tree
+
+#### Scenario: Seed walk stops at the byte budget
+- **WHEN** the repository holds a tracked file larger than the byte budget
+- **THEN** the seed is refused with the limit, and no more than the budget plus one read chunk was read from the clone
 
 #### Scenario: A new owned file in a new directory
 - **WHEN** a worker creates the owned file `newdir/file.py` and nothing else
@@ -238,46 +400,63 @@ swapping an ancestor directory for a symlink cannot redirect a read.
 - **WHEN** the worker times out, stalls, exits non-zero, or serve refuses the route, and the attempt tree holds edits
 - **THEN** the attempt is `error` with the worker's redacted reason and the user's repository is byte-identical
 
-### Requirement: Worker byproducts SHALL NOT count as edits, and a path that existed at seed time SHALL NOT be a byproduct
+### Requirement: A new path ignored by the user's rules SHALL NOT count as an edit unless the unit owns it, and a path that existed at seed time SHALL NOT be a byproduct
 
 A path absent from the seed manifest SHALL be dropped from the delta, and never transferred,
-when it is in the executor-byproduct set or is ignored by the user's own ignore rules. A path
-present in the seed manifest SHALL always be subject to the ownership check. A `.gitignore`
-written by the worker SHALL NOT be consulted. The executor SHALL NOT require any
-executor-written context file and SHALL work when none is written.
-
-#### Scenario: Context file created by the executor
-- **WHEN** the OpenCode executor writes `.verdict-context.md` into the attempt tree and the worker repairs an owned file
-- **THEN** the attempt is `applied`, the context file is absent from the user's repository, and the unit is not rejected for it
+when it is ignored by the user's own ignore rules and the unit does not own it. A path the unit
+owns SHALL NEVER be dropped as a byproduct: dropping it would transfer only part of a repair or
+reject a whole repair as empty. A path present in the seed manifest SHALL always be subject to
+the ownership check. A `.gitignore` written by the worker SHALL NOT be consulted. The executor
+writes no context file into the attempt tree (the OpenCode executor delivers the task through its
+own configuration directory), SHALL NOT require any executor-written file and SHALL treat a file
+a worker or the OpenCode process writes that is neither ignored nor owned like any other
+out-of-bounds path.
 
 #### Scenario: No context file at all
-- **WHEN** the OpenCode executor writes no context file
-- **THEN** the same repair is `applied` with the same result
-
-#### Scenario: A tracked file with the byproduct name
-- **WHEN** `.verdict-context.md` is tracked in the user's repository and a worker edits it while the unit does not own it
-- **THEN** the attempt is `rejected` for that path
+- **WHEN** the OpenCode executor writes nothing into the attempt tree and the worker repairs an owned file
+- **THEN** the attempt is `applied`, `changed_files` lists exactly the owned file and nothing else is in the user's repository
 
 #### Scenario: Ignored byproduct
 - **WHEN** a worker's test run creates `.pytest_cache/` and `__pycache__/` files that the user's `.gitignore` ignores
 - **THEN** they are not in the delta and are not transferred
 
+#### Scenario: Ignored owned new file
+- **WHEN** a worker creates only a new owned file that the user's ignore rules match
+- **THEN** the file is in the delta (it is not dropped as a byproduct and the delta is not empty)
+
+#### Scenario: Ignored and plain owned new files
+- **WHEN** a worker creates two new owned files, one that the user's ignore rules match and one that they do not
+- **THEN** both are in the delta, so a transfer cannot carry only the plain one
+
 #### Scenario: A worker cannot hide a path by editing .gitignore
 - **WHEN** a worker adds a new unowned file and rewrites `.gitignore` in the attempt tree to ignore it
 - **THEN** the attempt is `rejected` for the unowned file and for `.gitignore`
 
-### Requirement: Transfer SHALL be all-or-nothing and SHALL NOT overwrite a file that changed after the seed
+### Requirement: Transfer SHALL be all-or-nothing and SHALL NOT overwrite a file it sees changed after the seed
+
+The seed SHALL record the device and inode of the repository directory it opens to read the
+user's files, and the transfer SHALL be given that record. The transfer reopens the repository by
+pathname; when the directory it opened is not the recorded one (the repository was renamed away
+and another directory took its name since the seed) the executor SHALL refuse the whole attempt,
+`rejected` with one reason (the repository was replaced since the seed), before it compares or
+writes any path: nothing is created, nothing is written and nothing is journalled, whatever the
+delta holds (a new file, which is absent on both sides of the comparison below, a changed file or a
+deleted file) and whatever the replacement holds. A directory renamed away and renamed back is
+the same directory and is not refused.
 
 The executor SHALL resolve every transfer path component by component from a descriptor on
 the repository root without following symlinks, and SHALL compare, for each path, the user's
 current kind, executable bit and bytes with the seed manifest (or absence, when the manifest
-has no entry), both before any write and again immediately before that path's write. If any
+has no entry), before any write, again immediately before that path's write, and a third time
+after that path's temporary file is written and immediately before the rename. If any
 comparison differs the attempt SHALL be `rejected` with the reason and nothing SHALL be written
 for a pre-write difference. The checks before the first write SHALL be read-only and SHALL
 create nothing; directories SHALL be created only during the write phase, each journalled
-before it is created (journal order is in the restore requirement below). The second comparison SHALL also confirm that every held directory
+before it is created (journal order is in the restore requirement below). The second and third comparisons SHALL also confirm that every held directory
 descriptor is still the directory reachable at its name, by device and inode. A refusal found
-by the read-only checks SHALL make the attempt `rejected`. A refusal or failure after the write
+by the read-only checks, or by the third comparison when nothing was written or created before it,
+SHALL make the attempt `rejected`: the third comparison refuses before the rename, so the path's
+journal entry is withdrawn and the temporary file is unlinked. A refusal or failure after the write
 phase has begun SHALL roll back every path and directory already written or created, SHALL make
 the attempt `error`, and its reason SHALL name the refused path and list any path the rollback
 could not restore. Every file the executor writes, in the transfer and in restore, SHALL go
@@ -286,6 +465,20 @@ descriptor, sets its mode, renames it over the target, and unlinks the temporary
 same descriptor on every failure before the rename succeeds. An unlink that itself fails SHALL
 be named in the reason and SHALL NOT replace the original error. The executor SHALL refuse to
 run on a host whose descriptor-relative file operations it needs are unavailable.
+
+**What the third comparison guarantees, and what it does not.** A change to an owned path (its
+kind, executable bit or bytes) or to a held directory that the comparison can see SHALL refuse that
+path, whenever it was made before the comparison read it, including during the temporary file's
+write: nothing is renamed and no temporary file is left. It is a look, not a lock: POSIX has no
+rename that compares the target's content, and `renameat2` with `RENAME_EXCHANGE` was assessed
+and not adopted (design D6). These stay outside the guarantee: a write that lands after the
+comparison has read the file (including while it hashes the bytes) and before the rename returns;
+a write through a descriptor that was open on the target before the rename, which the rename
+detaches from its name; a change that leaves kind, executable bit and bytes equal (the other
+permission bits, timestamps, ownership); and the deletion of an owned file, whose comparison
+immediately precedes the `unlink` and has no later one. An edit that lands in those windows is
+overwritten, and rollback cannot recover it, because the journal holds the seed's bytes and not
+the edit. The executor assumes it is the only writer of an owned file while a unit runs.
 
 #### Scenario: Owned file changed after the seed
 - **WHEN** the user edits an owned file after the seed and before the transfer
@@ -303,6 +496,22 @@ run on a host whose descriptor-relative file operations it needs are unavailable
 - **WHEN** the user edits an owned file after the read-only checks and before the first write
 - **THEN** the attempt is `rejected`, nothing was written or created, and the user's edit is intact
 
+#### Scenario: Change while the temporary file is written is refused
+- **WHEN** the user edits an owned file, changes only its executable bit, or removes it after the executor has written the temporary file and before the rename
+- **THEN** the attempt is `rejected` with the reason (changed since the seed, its executable bit, removed after the seed), the user's state is intact, no temporary file is left and nothing is journalled for that path
+
+#### Scenario: File created while the temporary file is written is refused
+- **WHEN** the seed had no file at an owned path and the user creates one after the temporary file is written and before the rename
+- **THEN** the attempt is `rejected` as appeared after the seed, the user's file is intact and no temporary file is left
+
+#### Scenario: Change while a later temporary file is written rolls back
+- **WHEN** a transfer of two owned files has written the first and the user edits the second while its temporary file is written
+- **THEN** the first path is restored, the user's edit is intact, no temporary file is left and the attempt is `error` naming the second path
+
+#### Scenario: Parent swapped while the temporary file is written
+- **WHEN** a parent directory is renamed away and another directory takes its name after the temporary file is written and before the rename
+- **THEN** nothing is renamed into the displaced directory or into the replacement, the displaced file is unchanged, no temporary file is left and the attempt is `rejected`
+
 #### Scenario: Only the mode changed
 - **WHEN** the user changes only the executable bit of an owned file after the seed
 - **THEN** the attempt is `rejected` for that file and the user's mode is intact
@@ -314,6 +523,14 @@ run on a host whose descriptor-relative file operations it needs are unavailable
 #### Scenario: Parent swapped for a symlink during the transfer
 - **WHEN** a parent directory is replaced by a symlink after the first comparison and before the write
 - **THEN** nothing is written through the link
+
+#### Scenario: Repository replaced between the seed and the transfer
+- **WHEN** the repository directory is renamed away after the seed and another directory takes its name, either a copy of the repository (so a changed or a deleted file holds the seeded bytes there) or an empty directory, and the delta is only a new file, a new file in new directories, a changed file or a deleted file (eight cases), and also when the replacement happens while the worker runs
+- **THEN** the attempt is `rejected` with the one reason (the repository was replaced since the seed), the journal is empty, the replacement and the displaced repository are byte-identical to what they held, and no temporary file exists
+
+#### Scenario: Repository renamed away and back is transferred into
+- **WHEN** the repository directory is renamed away and renamed back after the seed and the transfer runs
+- **THEN** the transfer writes into it and every journal entry's root is the seed's record
 
 #### Scenario: Parent directory renamed away during the transfer
 - **WHEN** a parent directory is renamed and a symlink or another directory is put at its old name after the first comparison and before the write
@@ -343,7 +560,7 @@ run on a host whose descriptor-relative file operations it needs are unavailable
 - **WHEN** a failed write is followed by a failing unlink of its temporary file
 - **THEN** the reason names the original failure first and the leftover temporary file second
 
-### Requirement: Every exit after a transfer other than a verified success SHALL restore the owned files, and restore SHALL NOT overwrite content it did not write
+### Requirement: Every exit after a transfer other than a verified success SHALL restore the owned files, and restore SHALL NOT overwrite content it sees the transfer did not write
 
 For an executor that has a `restore` method, every exit from `_run_unit_once` after
 `execute_unit` was called, other than a verified success, SHALL call `restore()` exactly once
@@ -352,10 +569,15 @@ an exception from `execute_unit`, including one raised after its transfer; an ex
 `_touched_since` or `_verify`, including any error the command runner raises that `_run` does
 not catch (for example `PermissionError`); and `KeyboardInterrupt`. `restore()` is a no-op
 when nothing was transferred. For a false result `_run_unit_once` SHALL record the real
-restore result in the outcome reason. For an exception it SHALL re-raise the original
-exception unchanged after restore; a failure inside `restore()` SHALL be caught and reported
-on standard error and SHALL NOT replace or hide the original exception. A second interrupt
-during `restore()` is not covered. The executor SHALL make the transfer the last step of
+restore result in the outcome reason. An `Exception` from `execute_unit` keeps its behaviour on
+main: it becomes an unverified outcome whose reason begins `executor error:`, after the one
+`restore()` call, and is not re-raised. Every other exception (a `KeyboardInterrupt` from
+anywhere, and any exception from `_touched_since` or `_verify`) SHALL be re-raised unchanged
+after restore. A failure inside `restore()`, including a `KeyboardInterrupt` or `SystemExit` raised in
+it, SHALL be caught and reported on standard error, as far as standard error can be written (a closed or
+failing standard error ends the report, never the original exception), and SHALL NOT replace or hide the original
+exception: an interrupt that arrives while an earlier exception is propagating is reported, not
+obeyed, and the journal entries not yet restored stay journalled (git can put them back, as after a crash). The executor SHALL make the transfer the last step of
 `execute_unit` that can fail: the attempt tree is removed before it. The executor's journal
 SHALL belong to one `execute_unit` call: it is emptied as that call's first action and after a
 rollback, so a later unit's failure cannot undo an earlier unit's verified change.
@@ -369,7 +591,37 @@ holds the intended state to the prior state, using the same no-follow traversal 
 at-the-moment comparison as the transfer; SHALL leave a path that already holds the prior state
 as it is and not report it (the mutation was never made); SHALL leave alone and name a path in
 any other state (kind, executable bit or bytes differ from both); and SHALL remove directories
-it created when empty. Restore SHALL cover only paths the transfer wrote. A verified unit SHALL
+it created when they are empty and are still the directory it created. The transfer SHALL record
+the device and inode of each directory it creates as soon as the creation has returned, and
+restore SHALL compare them with the directory now at that name before removing it: a directory
+that was removed and replaced by another one (even an empty one) is left alone and named as not
+restored. The transfer SHALL record the device and inode of the repository root it wrote through (the
+directory the seed read: the transfer refuses any other) in
+every journal entry (a directory creation, a write and a deletion alike), when the entry is made, and
+restore, which reopens the repository by pathname, SHALL compare the directory it opened with that
+record before it reads or writes any path: when the repository was renamed away and another directory
+took its name, nothing is read or written, every journalled path is named as not restored with one
+reason (the repository was replaced), and the journal is empty; when any entry's root was not recorded,
+nothing is read or written either and every journalled path is named as not restored (not recorded). For every file it writes or deletes the transfer SHALL also record, in the journal entry and
+before that entry is appended, the device and inode of each directory above the path, below the root,
+as the transfer opened it, and restore SHALL open the same path by descriptor and compare them before it reads the
+file: a directory that is not the one the transfer wrote through (moved away and absent, or
+replaced by a real directory, whatever bytes the replacement's file holds) makes that path not
+restored and named, and nothing is written there. An entry whose recorded directories do not match
+the path's depth is not restored and named. A device and inode pair can be reused once the original
+directory has been deleted; a replacement that reuses the pair of a deleted original is outside this
+guarantee (the file the transfer wrote went with that directory). Restore's own write SHALL take the
+same last look as the transfer's third comparison, immediately before its rename (the held
+directories and the target's state against the state restore read), and a change found there is that
+path's not-restored entry, with the same stated limits; the removal of a file the transfer created has,
+like a deletion, only the comparison immediately before its `unlink`. A journal entry whose directory identity was never recorded (a `KeyboardInterrupt`
+arrived between the creation returning and the identity being read) cannot be compared; restore
+removes that directory only if it exists, is a real directory and is empty. That window is a
+stated limit. A read or write failure on one path during restore (a permission error on reading its
+state, say) SHALL be that path's not-restored entry, with the failure named, and SHALL NOT end the
+restore: the entries still in the journal are restored. An entry leaves the journal only after it has
+been dealt with, so an interrupt in the middle of one leaves it (and those before it) journalled and a
+second restore covers them. Restore SHALL cover only paths the transfer wrote. A verified unit SHALL
 NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 
 #### Scenario: Verification fails after an applied attempt
@@ -388,6 +640,10 @@ NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 - **WHEN** the user changes only the executable bit of a transferred file and verification then fails
 - **THEN** restore leaves that mode as the user left it and the reason names the file as not restored
 
+#### Scenario: Created directory replaced
+- **WHEN** a directory the transfer created is removed and replaced by another empty real directory before restore runs
+- **THEN** restore leaves the replacement in place and names it as not restored
+
 #### Scenario: Created files and directories are removed
 - **WHEN** the transferred change created an owned file in a new directory and verification fails
 - **THEN** the file and the directory restore created are gone
@@ -395,6 +651,34 @@ NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 #### Scenario: Earlier verified unit is not undone
 - **WHEN** unit A is verified and unit B on the same executor is then rejected, errors or raises
 - **THEN** `restore()` for unit B leaves unit A's transferred files as they are
+
+#### Scenario: Repository replaced between transfer and restore
+- **WHEN** after a transfer that wrote an existing top-level file, created a top-level file, or deleted one (three cases), and also created a nested file in new directories, the repository directory is renamed away and a different directory takes its name, holding at the top level what restore would act on (the worker's bytes, the created file, or no file for the deleted one), and restore runs
+- **THEN** restore writes nothing in the replacement or in the displaced repository, names every journalled path as not restored with the one reason (the repository was replaced), `restored` is empty and the journal is empty
+
+#### Scenario: Repository renamed away and back is the same directory
+- **WHEN** the repository directory is renamed away and renamed back after a transfer, and restore runs
+- **THEN** restore returns the owned file to its prior bytes, and nothing is named as not restored
+
+#### Scenario: Entry without a recorded repository is named
+- **WHEN** one entry of a journal of two has no recorded repository directory
+- **THEN** restore writes nothing for either and names both as not restored (not recorded)
+
+#### Scenario: Parent replaced by a real directory between transfer and restore
+- **WHEN** a transferred file's parent directory is renamed away and a real directory takes its name, holding either the worker's bytes or the file's prior bytes, and restore runs
+- **THEN** restore writes nothing in the replacement or the displaced directory, names the path as not restored (replaced), and the journal is empty
+
+#### Scenario: Parent renamed away and not replaced is named
+- **WHEN** the directory of a transferred file is renamed away, for an existing owned file and for one the transfer created, and nothing takes its name
+- **THEN** restore names the path as not restored (its directory is gone) and the displaced file is unchanged
+
+#### Scenario: Entry without recorded parent directories is named
+- **WHEN** a journal entry for a path below a directory has no recorded parent directories
+- **THEN** restore writes nothing for it and names it as not restored (not recorded)
+
+#### Scenario: Change while restore writes the prior bytes is kept
+- **WHEN** the user edits a transferred file after restore has written its temporary file and before the rename
+- **THEN** the edit is intact, the path is named as not restored (changed since the transfer) and no temporary file is left
 
 #### Scenario: Parent swapped between transfer and restore
 - **WHEN** a transferred file's parent directory is replaced by a symlink after the transfer and restore runs
@@ -421,8 +705,8 @@ NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 - **THEN** `restore()` is called once, the repository is byte-identical to before the attempt, and the `KeyboardInterrupt` propagates
 
 #### Scenario: Executor raises after its transfer
-- **WHEN** `execute_unit` raises after the transfer was written
-- **THEN** `restore()` is called once and the owned files hold their prior content
+- **WHEN** `execute_unit` raises an `Exception` after the transfer was written
+- **THEN** `restore()` is called once, the owned files hold their prior content, and the unit is unverified with a reason beginning `executor error:`
 
 #### Scenario: Interrupt inside the executor
 - **WHEN** a `KeyboardInterrupt` is raised inside `execute_unit` right after a mutation of its transfer, with the real `OpenCodeUnitExecutor`
@@ -431,6 +715,26 @@ NOT be restored. The `PatchExecutor` path SHALL be unchanged.
 #### Scenario: Restore fails while an exception propagates
 - **WHEN** `_verify` raises and `restore()` then raises a different exception
 - **THEN** the exception that propagates is the original, and the restore failure is on standard error
+
+#### Scenario: The restore diagnostic cannot replace the original
+- **WHEN** `restore()` fails while an exception propagates and standard error is closed or its write fails (`OSError`, `BrokenPipeError` or `ValueError`)
+- **THEN** the exception that propagates is the original object, and `restore()` was called once
+
+#### Scenario: Restore is interrupted while an exception propagates
+- **WHEN** `_verify` raises (or a `KeyboardInterrupt` is raised) and `restore()` then raises a `KeyboardInterrupt` or a `SystemExit`
+- **THEN** the exception that propagates is the original object, `restore()` was called once, and the interrupt is on standard error
+
+#### Scenario: Restore continues after a state read error
+- **WHEN** reading the state of one journalled path raises a `PermissionError` during `restore_transfer`
+- **THEN** that path is in `not_restored` with the failure named, the other journalled paths are restored, and the journal is empty
+
+#### Scenario: Rollback continues after a state read error
+- **WHEN** a transfer fails on its third path and reading the state of its second path then fails during the rollback
+- **THEN** the transfer raises `TransferFailedError` naming the second path as not restored, the first path is restored, and the journal is empty
+
+#### Scenario: Interrupted restore keeps the unprocessed entry
+- **WHEN** a `KeyboardInterrupt` arrives while `restore_transfer` reads the state of a path
+- **THEN** that path's entry and those before it stay in the journal, and a second `restore_transfer` leaves the repository byte-identical to before the transfer
 
 #### Scenario: Restore without a transfer
 - **WHEN** the executor's attempt was rejected or errored, so nothing was transferred, and a later step raises
@@ -509,6 +813,26 @@ to be constructed. With the flag the CLI SHALL pass no retry routes.
 #### Scenario: Failed unit is not retried
 - **WHEN** a unit's attempt is rejected or errors on the isolated executor
 - **THEN** the unit is reported unverified once, no second attempt runs, and `PatchExecutor` patched to raise is never constructed
+
+### Requirement: Each OpenCode attempt SHALL be signed under the autodev run id and the unit id
+
+The OpenCode executor signs a per-attempt worker assignment bound to a run id and a node id and
+launches nothing without them. `run_autodev` SHALL give an executor that has a `begin_run`
+method the attempt-ledger run id (`autodev-<uuid>`) once, before the first unit, and the
+isolated executor SHALL pass that run id and the unit's `unit_id` as `run_id` and `node_id` on
+every OpenCode attempt, so `verdict serve`'s receipts and the autodev attempt ledger name the
+same ids. An isolated executor that was not given a run id SHALL return an `error` attempt
+without creating an attempt tree. The attempt timeout SHALL be above the time OpenCode spends
+retrying an upstream 429 or 503 before it prints the status (about 100 s) and short enough for
+the assignment lifetime (the timeout rounded up plus 60 s, at most 1,800 s).
+
+#### Scenario: Run id and unit id reach the OpenCode executor
+- **WHEN** `run_autodev` runs a unit on the isolated executor
+- **THEN** the OpenCode executor receives the same `run_id` the unit's receipt records as `attempt_run_id` and the unit's `unit_id` as `node_id`
+
+#### Scenario: No run id
+- **WHEN** the isolated executor's `execute_unit` is called before `begin_run`
+- **THEN** it returns an `error` attempt naming the missing run id, the OpenCode executor is not called and no attempt tree is created
 
 ### Requirement: Unknown values SHALL be recorded as unknown, and the unit executor SHALL NOT hold the worker credential
 

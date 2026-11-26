@@ -1,0 +1,2835 @@
+"""OC2a (#1301): the isolated OpenCode executor for `verdict autodev` units.
+
+Task groups 2 and 3 of ``openspec/changes/autodev-opencode-isolated-executor``. Nothing here calls a
+model, a probe or the real ``opencode``; every test runs in a temporary home with git's own global and
+system configuration switched off.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import errno
+import fcntl
+import hashlib
+import inspect
+import os
+import select
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import textwrap
+import time
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from verdict import autodev_opencode as oc
+from verdict.orchestration.contracts import AttemptUsage, WorkerTerminal
+from verdict.orchestration.executor_opencode import OpenCodeExecutor
+from verdict.work_unit import WorkUnit
+
+# --------------------------------------------------------------------------------------------
+# helpers
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("VERDICT_HOME", str(home / ".verdict"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "t")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "t@t")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "t")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@t")
+
+
+def git(repo: Path, *args: str, check: bool = True) -> str:
+    done = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=False, env=os.environ
+    )
+    if check and done.returncode != 0:
+        raise AssertionError(f"git {args} failed: {done.stderr}")
+    return done.stdout
+
+
+def write(repo: Path, rel: str, text: str | bytes, *, mode: int | None = None) -> Path:
+    path = repo / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode() if isinstance(text, str) else text)
+    if mode is not None:
+        path.chmod(mode)
+    return path
+
+
+def make_repo(tmp_path: Path, files: Mapping[str, str | bytes] | None = None) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    for rel, text in (files or {"a.py": "import os\nx = 1\n", "b.py": "y = 2\n"}).items():
+        write(repo, rel, text)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "init")
+    return repo
+
+
+def unit(*owned: str, command: tuple[str, ...] = (sys.executable, "-c", "pass")) -> WorkUnit:
+    return WorkUnit(
+        unit_id="u1",
+        objective="repair the owned file",
+        owned_files=owned or ("a.py",),
+        verification_command=command,
+    )
+
+
+def snapshot(repo: Path) -> dict[str, Any]:
+    """The spec's definition of byte-identical for a user repository."""
+    files: dict[str, Any] = {}
+    dirs: set[str] = set()
+    for root, dirnames, filenames in os.walk(repo, followlinks=False):
+        rel_root = Path(root).relative_to(repo)
+        if rel_root.parts and rel_root.parts[0] == ".git":
+            dirnames[:] = []
+            continue
+        if ".git" in dirnames and not rel_root.parts:
+            dirnames.remove(".git")
+        for name in dirnames:
+            dirs.add(str(rel_root / name))
+        for name in filenames:
+            path = Path(root) / name
+            st = path.lstat()
+            rel = str(rel_root / name)
+            if stat.S_ISLNK(st.st_mode):
+                files[rel] = ("symlink", os.readlink(path))
+            elif stat.S_ISREG(st.st_mode):
+                files[rel] = ("file", bool(st.st_mode & stat.S_IXUSR), path.read_bytes())
+            else:
+                files[rel] = ("other",)
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+        env=env,
+    ).stdout
+    refs = git(repo, "for-each-ref")
+    head = git(repo, "rev-parse", "HEAD")
+    git_dir = repo / ".git"
+    meta: dict[str, bytes] = {}
+    for rel in ("config", "info/exclude"):
+        target = git_dir / rel
+        meta[rel] = target.read_bytes() if target.exists() else b""
+    hooks = git_dir / "hooks"
+    if hooks.is_dir():
+        for hook in sorted(hooks.iterdir()):
+            if hook.is_file():
+                meta[f"hooks/{hook.name}"] = hook.read_bytes()
+    return {
+        "files": files,
+        "dirs": dirs,
+        "status": status,
+        "refs": refs,
+        "head": head,
+        "meta": meta,
+    }
+
+
+def seed(
+    repo: Path, tmp_path: Path, owned: tuple[str, ...] = ("a.py",), name: str = "attempt"
+) -> oc.AttemptTree:
+    parent = tmp_path / name
+    parent.mkdir(mode=0o700)
+    return oc.seed_attempt_tree(repo, parent, owned)
+
+
+# --------------------------------------------------------------------------------------------
+# 2.1 seed
+# --------------------------------------------------------------------------------------------
+
+
+class TestSeed:
+    def test_the_seed_records_the_identity_of_the_repository_root(self, tmp_path: Path) -> None:
+        """The directory the seed opened to read the user's files, not the clone and not a name."""
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        assert tree.root_identity == identity_of(repo)
+        assert tree.root_identity != tree.identity == identity_of(tree.path)
+
+    def test_clone_shares_nothing_with_the_repository(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        hook = repo / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\nexit 0\n")
+        hook.chmod(0o755)
+        git(repo, "config", "local.marker", "from-the-user")
+        with (repo / ".git" / "info" / "exclude").open("a") as handle:
+            handle.write("user-only-exclude\n")
+        before = snapshot(repo)
+        tree = seed(repo, tmp_path)
+        gitdir = tree.path / ".git"
+        assert not (gitdir / "objects" / "info" / "alternates").exists()
+        linked = [
+            p for p in (gitdir / "objects").rglob("*") if p.is_file() and p.stat().st_nlink > 1
+        ]
+        assert linked == []
+        assert git(tree.path, "remote").strip() == ""
+        assert not (gitdir / "hooks" / "pre-commit").exists()
+        assert "from-the-user" not in (gitdir / "config").read_text()
+        assert "user-only-exclude" not in (gitdir / "info" / "exclude").read_text()
+        assert snapshot(repo) == before
+
+    def test_dirty_state_is_carried_over(self, tmp_path: Path) -> None:
+        repo = make_repo(
+            tmp_path,
+            {
+                "mod.py": "m = 1\n",
+                "gone.py": "g = 1\n",
+                "staged.py": "s = 1\n",
+                ".gitignore": "ign.txt\n",
+            },
+        )
+        write(repo, "mod.py", "m = 2\n")
+        (repo / "gone.py").unlink()
+        write(repo, "staged.py", "s = 2\n")
+        git(repo, "add", "staged.py")
+        write(repo, "new dir/untracked file.py", "u = 1\n")
+        write(repo, "ign.txt", "ignored\n")
+        before = snapshot(repo)
+        tree = seed(repo, tmp_path, ("mod.py",))
+        assert (tree.path / "mod.py").read_text() == "m = 2\n"
+        assert (tree.path / "staged.py").read_text() == "s = 2\n"
+        assert (tree.path / "new dir" / "untracked file.py").read_text() == "u = 1\n"
+        assert not (tree.path / "gone.py").exists()
+        assert not (tree.path / "ign.txt").exists()
+        assert snapshot(repo) == before
+
+    def test_staged_rename(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"old.py": "o = 1\n", "keep.py": "k = 1\n"})
+        git(repo, "mv", "old.py", "new.py")
+        before = snapshot(repo)
+        tree = seed(repo, tmp_path, ("keep.py",))
+        assert (tree.path / "new.py").read_text() == "o = 1\n"
+        assert not (tree.path / "old.py").exists()
+        assert "R" in git(repo, "status", "--porcelain")
+        assert snapshot(repo) == before
+
+    def test_staged_rename_whose_destination_was_then_modified(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"old.py": "o = 1\n", "keep.py": "k = 1\n"})
+        git(repo, "mv", "old.py", "new.py")
+        write(repo, "new.py", "o = 99\n")
+        before = snapshot(repo)
+        tree = seed(repo, tmp_path, ("keep.py",))
+        assert (tree.path / "new.py").read_text() == "o = 99\n"
+        assert not (tree.path / "old.py").exists()
+        assert snapshot(repo) == before
+
+    def test_owned_files_hold_working_tree_bytes(self, tmp_path: Path) -> None:
+        # A clean filter drops the trailing note, so a same-size edit of the note leaves git status
+        # clean while the working-tree bytes differ from the blob (and from what a clone checks out).
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "config", "filter.strip.clean", "sed 's/  # note.*//'")
+        write(repo, ".gitattributes", "a.txt filter=strip\n")
+        write(repo, "a.txt", "x = 1  # note A\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "init")
+        write(repo, "a.txt", "x = 1  # note B\n")
+        assert git(repo, "status", "--porcelain") == ""  # so it cannot pass for the wrong reason
+        assert git(repo, "cat-file", "-p", "HEAD:a.txt") == "x = 1\n"
+        tree = seed(repo, tmp_path, ("a.txt",))
+        assert (tree.path / "a.txt").read_bytes() == b"x = 1  # note B\n"
+        assert tree.manifest["a.txt"].digest == hashlib.sha256(b"x = 1  # note B\n").hexdigest()
+
+    def test_status_record_with_a_space_is_one_path(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"with space.py": "w = 1\n", "keep.py": "k = 1\n"})
+        git(repo, "mv", "with space.py", "still spaced.py")
+        tree = seed(repo, tmp_path, ("keep.py",))
+        assert (tree.path / "still spaced.py").exists()
+        assert not (tree.path / "with space.py").exists()
+
+    def test_symlinks_are_copied_as_symlinks(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret\n")
+        (repo / "link.txt").symlink_to(outside)
+        tree = seed(repo, tmp_path)
+        link = tree.path / "link.txt"
+        assert link.is_symlink()
+        assert os.readlink(link) == str(outside)
+        assert tree.manifest["link.txt"].kind == "symlink"
+
+    @pytest.mark.parametrize(
+        "case", ["no_head", "submodule", "nested_repository", "limit", "dot_git"]
+    )
+    def test_seed_refused_before_any_worker_starts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+    ) -> None:
+        owned: tuple[str, ...] = ("a.py",)
+        if case == "no_head":
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            git(repo, "init", "-q", "-b", "main")
+            write(repo, "a.py", "x = 1\n")
+            expect = "no HEAD"
+        else:
+            repo = make_repo(tmp_path)
+            expect = ""
+        if case == "submodule":
+            sub = tmp_path / "subsrc"
+            sub.mkdir()
+            git(sub, "init", "-q", "-b", "main")
+            write(sub, "s.py", "s = 1\n")
+            git(sub, "add", "-A")
+            git(sub, "commit", "-qm", "s")
+            git(
+                repo,
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                str(sub),
+                "vendored",
+            )
+            git(repo, "commit", "-qm", "submodule")
+            expect = "submodule"
+        elif case == "nested_repository":
+            nested = repo / "nested"
+            nested.mkdir()
+            git(nested, "init", "-q", "-b", "main")
+            write(nested, "n.py", "n = 1\n")
+            expect = "nested repository"
+        elif case == "limit":
+            monkeypatch.setattr(oc, "MAX_SEED_FILES", 1)
+            expect = "limit"
+        elif case == "dot_git":
+            owned = (".git/config",)
+            expect = "unsafe"
+        before = snapshot(repo) if case != "no_head" else None
+        parent = tmp_path / "attempt"
+        parent.mkdir(mode=0o700)
+        with pytest.raises(oc.AttemptFailedError) as caught:
+            oc.seed_attempt_tree(repo, parent, owned)
+        assert expect in caught.value.reason
+        assert list(parent.iterdir()) == []
+        if before is not None:
+            assert snapshot(repo) == before
+
+    @pytest.mark.parametrize("victim", ["file", "directory"])
+    def test_removal_does_not_follow_a_symlinked_ancestor(
+        self, tmp_path: Path, victim: str
+    ) -> None:
+        """Review finding 3: the clone holds a committed symlink ``d``; the user replaced it by a real
+        directory and the unit owns the absent ``d/victim``. The removal pass must not unlink the
+        outside ``victim`` that ``d`` points at."""
+        external = tmp_path / "external"
+        external.mkdir()
+        if victim == "file":
+            (external / "victim").write_text("keep me\n")
+        else:
+            (external / "victim").mkdir()
+            (external / "victim" / "inner.txt").write_text("keep me\n")
+        repo = make_repo(tmp_path)
+        (repo / "d").symlink_to(external)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "commit d as a symlink")
+        (repo / "d").unlink()
+        write(
+            repo, "d/keep.txt", "the user's file\n"
+        )  # d is now a real directory in the user's tree
+        before = snapshot(repo)
+        tree = seed(repo, tmp_path, ("d/victim",))
+        survivor = external / "victim" if victim == "file" else external / "victim" / "inner.txt"
+        assert survivor.read_text() == "keep me\n"
+        assert snapshot(repo) == before
+        assert (tree.path / "d").is_dir() and not (tree.path / "d").is_symlink()
+        assert (tree.path / "d" / "keep.txt").read_text() == "the user's file\n"
+        assert not (tree.path / "d" / "victim").exists()
+
+    def test_copy_does_not_write_through_a_symlinked_ancestor(self, tmp_path: Path) -> None:
+        """The overlay of ``d/new.txt`` replaces the clone's committed symlink ``d`` by a directory."""
+        external = tmp_path / "external"
+        external.mkdir()
+        repo = make_repo(tmp_path)
+        (repo / "d").symlink_to(external)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "commit d as a symlink")
+        (repo / "d").unlink()
+        write(repo, "d/new.txt", "the user's file\n")
+        tree = seed(repo, tmp_path)
+        assert list(external.iterdir()) == []
+        assert (tree.path / "d" / "new.txt").read_text() == "the user's file\n"
+        assert not (tree.path / "d").is_symlink()
+
+    def test_removal_of_a_directory(self, tmp_path: Path) -> None:
+        """A path the unit owns that is a directory in the clone and absent in the user's tree goes."""
+        repo = make_repo(
+            tmp_path, {"a.py": "a = 1\n", "pkg/x.py": "x = 1\n", "pkg/sub/y.py": "y = 1\n"}
+        )
+        shutil.rmtree(repo / "pkg")
+        tree = seed(repo, tmp_path, ("pkg",))
+        assert not (tree.path / "pkg").exists()
+        assert (tree.path / "a.py").exists()
+
+    @pytest.mark.parametrize("how", ["untracked", "modified"])
+    def test_overlay_bytes_share_one_budget_while_they_are_loaded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str
+    ) -> None:
+        """Review finding 4 (Codex on 1470a171): the overlay keeps every file it reads in memory, so the
+        byte budget is shared by all of them; four files that each fit it are stopped at the budget, not
+        read to the end."""
+        names = [f"big{index}.bin" for index in range(4)]
+        if how == "untracked":
+            repo = make_repo(tmp_path)
+        else:
+            repo = make_repo(tmp_path, {"a.py": "a = 1\n", **{name: b"y" * 3000 for name in names}})
+        for name in names:
+            write(repo, name, b"z" * 3000)  # each below the budget, together four times over it
+        monkeypatch.setattr(oc, "MAX_SEED_BYTES", 4096)
+        monkeypatch.setattr(oc, "_READ_CHUNK", 1024)
+        read = [0]
+        real_read = os.read
+
+        def counting(fd: int, count: int) -> bytes:
+            data = real_read(fd, count)
+            if count == 1024:  # the module's own chunk; a pipe read from git asks for more
+                read[0] += len(data)
+            return data
+
+        monkeypatch.setattr(os, "read", counting)
+        with pytest.raises(oc.AttemptFailedError) as caught:
+            seed(repo, tmp_path)
+        monkeypatch.setattr(os, "read", real_read)
+        assert "limit" in caught.value.reason and "bytes" in caught.value.reason
+        assert read[0] <= 4096 + 1024  # the budget plus the one chunk that crossed it
+
+    def test_overlay_file_count_is_bounded_while_the_files_are_loaded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path)
+        for index in range(5):
+            write(repo, f"extra{index}.txt", "x\n")
+        monkeypatch.setattr(oc, "MAX_SEED_FILES", 3)
+        real = oc._read_user_file
+        loaded: list[str] = []
+
+        def spy(root_fd: int, rel: str, *args: Any, **kwargs: Any) -> Any:
+            loaded.append(rel)
+            return real(root_fd, rel, *args, **kwargs)
+
+        monkeypatch.setattr(oc, "_read_user_file", spy)
+        with pytest.raises(oc.AttemptFailedError) as caught:
+            seed(repo, tmp_path)
+        assert "limit" in caught.value.reason and "files" in caught.value.reason
+        assert len(loaded) <= 3 + 1  # stopped at the file that crossed the limit
+
+    def test_deleted_files_do_not_count_against_the_overlay_limits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A guard: only files and links kept in memory count, so a mass deletion is still seeded."""
+        names = [f"f{index}.py" for index in range(6)]
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", **{name: "x = 1\n" for name in names}})
+        for name in names:
+            (repo / name).unlink()
+        monkeypatch.setattr(oc, "MAX_SEED_FILES", 3)
+        tree = seed(repo, tmp_path)
+        assert sorted(tree.manifest) == ["a.py"]
+
+
+# --------------------------------------------------------------------------------------------
+# 2.2 delta
+# --------------------------------------------------------------------------------------------
+
+
+def delta(
+    tree: oc.AttemptTree,
+    repo: Path,
+    owned: tuple[str, ...] = ("a.py",),
+    hooks: Mapping[str, Callable[..., None]] | None = None,
+) -> oc.Delta:
+    return oc.attempt_delta(tree, repo, unit(*owned), hooks=hooks)
+
+
+class TestDelta:
+    def test_planted_git_configuration_is_inert(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        marker = tmp_path / "marker"
+        script = tmp_path / "plant.sh"
+        script.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        script.chmod(0o755)
+        with (tree.path / ".git" / "config").open("a") as handle:
+            handle.write(f"[core]\n\tfsmonitor = {script}\n")
+        hook = tree.path / ".git" / "hooks" / "pre-commit"
+        hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        hook.chmod(0o755)
+        write(tree.path, "a.py", "x = 2\n")
+        result = delta(tree, repo)
+        assert [item.path for item in result.items] == ["a.py"]
+        assert not marker.exists()
+
+    def test_git_state_does_not_change_the_result(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        write(tree.path, "a.py", "x = 2\n")
+        assert [i.path for i in delta(tree, repo).items] == ["a.py"]
+        git(tree.path, "add", "a.py")
+        assert [i.path for i in delta(tree, repo).items] == ["a.py"]
+        git(tree.path, "commit", "-qm", "worker commit", "--no-verify")
+        assert [i.path for i in delta(tree, repo).items] == ["a.py"]
+        write(tree.path, "a.py", "import os\nx = 1\n")  # reverted
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            delta(tree, repo)
+        assert "no change" in caught.value.reason
+
+    def test_a_new_owned_file_in_a_new_directory(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path, ("newdir/file.py",))
+        write(tree.path, "newdir/file.py", "n = 1\n")
+        result = delta(tree, repo, ("newdir/file.py",))
+        assert [i.path for i in result.items] == ["newdir/file.py"]
+        assert result.items[0].data == b"n = 1\n"
+
+    def test_directory_and_file_swapped(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        tree = seed(repo, tmp_path, ("d/inner.py",))
+        (tree.path / "d" / "inner.py").unlink()
+        (tree.path / "d").rmdir()
+        write(tree.path, "d", "now a file\n")
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            delta(tree, repo, ("d/inner.py",))
+        assert "d" in caught.value.reason.replace("d/inner.py", "")
+
+    def test_special_files_in_the_attempt_tree(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        (tree.path / "a.py").unlink()
+        os.mkfifo(tree.path / "a.py")
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            delta(tree, repo)
+        assert "a.py" in caught.value.reason
+        (tree.path / "a.py").unlink()
+        (tree.path / "a.py").symlink_to("/etc/hostname")
+        with pytest.raises(oc.AttemptRefusedError) as caught2:
+            delta(tree, repo)
+        assert "a.py" in caught2.value.reason
+
+    @pytest.mark.parametrize("seam", ["before_open", "after_metadata"])
+    def test_a_regular_file_replaced_by_a_fifo_during_validation(
+        self, tmp_path: Path, seam: str
+    ) -> None:
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        write(tree.path, "a.py", "x = 2\n")
+        swapped: list[str] = []
+
+        def swap(path: str) -> None:
+            if path == "a.py" and not swapped:
+                swapped.append(path)
+                (tree.path / "a.py").unlink()
+                os.mkfifo(tree.path / "a.py")
+
+        class Hang(BaseException):  # not an OSError, so no handler under test can swallow it
+            pass
+
+        def hang_guard(_signum: int, _frame: Any) -> None:
+            raise Hang("the executor blocked opening a FIFO")
+
+        previous = signal.signal(signal.SIGALRM, hang_guard)
+        signal.alarm(15)
+        try:
+            with pytest.raises(oc.AttemptFailedError) as caught:
+                delta(tree, repo, hooks={seam: swap})
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        assert "changed during validation" in caught.value.reason
+
+    def test_ancestor_directory_swapped_during_validation(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        tree = seed(repo, tmp_path, ("d/inner.py",))
+        write(tree.path, "d/inner.py", "i = 2\n")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        # Identical bytes, so only refusing to follow the link (not a digest mismatch) catches it.
+        (outside / "inner.py").write_text("i = 2\n")
+        calls: list[str] = []
+
+        def swap(path: str) -> None:
+            # The first call measures d/inner.py; the second is the read of the delta.
+            calls.append(path)
+            if path == "d/inner.py" and calls.count(path) == 2:
+                (tree.path / "d").rename(tmp_path / "moved-away")
+                (tree.path / "d").symlink_to(outside)
+
+        with pytest.raises(oc.AttemptFailedError) as caught:
+            delta(tree, repo, ("d/inner.py",), hooks={"before_open": swap})
+        assert "changed during validation" in caught.value.reason
+
+    def test_a_worker_cannot_hide_a_path_by_editing_gitignore(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        write(tree.path, "a.py", "x = 2\n")
+        write(tree.path, "sneaky.txt", "x\n")
+        write(tree.path, ".gitignore", "sneaky.txt\n")
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            delta(tree, repo)
+        assert "sneaky.txt" in caught.value.reason
+        assert ".gitignore" in caught.value.reason
+
+    def test_ignored_byproduct(self, tmp_path: Path) -> None:
+        repo = make_repo(
+            tmp_path, {"a.py": "x = 1\n", ".gitignore": "__pycache__/\n.pytest_cache/\n"}
+        )
+        tree = seed(repo, tmp_path)
+        write(tree.path, "a.py", "x = 2\n")
+        write(tree.path, "__pycache__/a.cpython-313.pyc", b"\x00\x01")
+        write(tree.path, ".pytest_cache/v/cache/lastfailed", "{}")
+        result = delta(tree, repo)
+        assert [i.path for i in result.items] == ["a.py"]
+
+    def test_ignored_owned_new_file(self, tmp_path: Path) -> None:
+        """Carried finding 1, single file: an owned new file the ignore rules match is kept."""
+        repo = make_repo(tmp_path, {"a.py": "x = 1\n", ".gitignore": "generated_*.py\n"})
+        tree = seed(repo, tmp_path, ("generated_out.py",))
+        write(tree.path, "generated_out.py", "g = 1\n")
+        result = delta(tree, repo, ("generated_out.py",))
+        assert [i.path for i in result.items] == ["generated_out.py"]
+
+    def test_ignored_and_plain_owned_new_files(self, tmp_path: Path) -> None:
+        """Carried finding 1, mixed repair: both owned new files are in the delta."""
+        repo = make_repo(tmp_path, {"a.py": "x = 1\n", ".gitignore": "generated_*.py\n"})
+        owned = ("generated_out.py", "plain_out.py")
+        tree = seed(repo, tmp_path, owned)
+        write(tree.path, "generated_out.py", "g = 1\n")
+        write(tree.path, "plain_out.py", "p = 1\n")
+        result = delta(tree, repo, owned)
+        assert [i.path for i in result.items] == ["generated_out.py", "plain_out.py"]
+
+    def test_ignored_path_present_at_seed_is_not_a_byproduct(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"a.py": "x = 1\n", "forced.log": "one\n"})
+        (repo / ".gitignore").write_text("*.log\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "ignore logs")
+        tree = seed(repo, tmp_path)
+        write(tree.path, "forced.log", "two\n")
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            delta(tree, repo)
+        assert "forced.log" in caught.value.reason
+
+    def test_owned_delete_is_in_the_delta(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        (tree.path / "a.py").unlink()
+        result = delta(tree, repo)
+        assert [(i.path, i.kind) for i in result.items] == [("a.py", "delete")]
+
+    def test_mode_only_change_is_in_the_delta(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        (tree.path / "a.py").chmod(0o755)
+        result = delta(tree, repo)
+        assert [(i.path, i.executable) for i in result.items] == [("a.py", True)]
+
+    def test_symlink_in_an_owned_path_is_rejected(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        (tree.path / "a.py").unlink()
+        (tree.path / "a.py").symlink_to("b.py")
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            delta(tree, repo)
+        assert "a.py" in caught.value.reason
+        assert "regular file" in caught.value.reason
+
+    def test_delta_hash_mismatch_is_error(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        write(tree.path, "a.py", "x = 2\n")
+        seen: list[str] = []
+
+        def rewrite(path: str) -> None:
+            # a.py is opened once to measure and once to read: change it in between.
+            seen.append(path)
+            if path == "a.py" and seen.count(path) == 2:
+                (tree.path / "a.py").write_text("x = 3\n")
+
+        with pytest.raises(oc.AttemptFailedError) as caught:
+            delta(tree, repo, hooks={"before_open": rewrite})
+        assert "changed during validation" in caught.value.reason
+
+    def test_file_over_the_limit_is_a_named_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        monkeypatch.setattr(oc, "MAX_TRANSFER_FILE_BYTES", 8)
+        write(tree.path, "a.py", "x = 123456789\n")
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            delta(tree, repo)
+        assert "a.py" in caught.value.reason
+        assert "limit" in caught.value.reason
+
+    def test_tree_over_the_limit_is_a_named_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        write(tree.path, "a.py", "x = 2\n")
+        for index in range(5):
+            write(tree.path, f"extra{index}.txt", "x\n")
+        monkeypatch.setattr(oc, "MAX_SEED_FILES", 3)
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            delta(tree, repo)
+        assert "limit" in caught.value.reason
+
+    @pytest.mark.parametrize(
+        "sizes",
+        [
+            pytest.param([1024 * 1024], id="one-huge-file"),
+            pytest.param([3000, 3000, 3000], id="sum"),
+        ],
+    )
+    def test_manifest_hashing_stops_at_the_byte_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sizes: list[int]
+    ) -> None:
+        """Review finding 6: a worker-made file must not be read past the tree's byte budget."""
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        write(tree.path, "a.py", "x = 2\n")
+        for index, size in enumerate(sizes):
+            write(tree.path, f"big{index}.bin", b"x" * size)
+        monkeypatch.setattr(oc, "MAX_SEED_BYTES", 4096)
+        monkeypatch.setattr(oc, "_READ_CHUNK", 1024)
+        read = [0]
+        real_read = os.read
+
+        def counting(fd: int, count: int) -> bytes:
+            data = real_read(fd, count)
+            read[0] += len(data)
+            return data
+
+        monkeypatch.setattr(os, "read", counting)
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            delta(tree, repo)
+        monkeypatch.setattr(os, "read", real_read)
+        assert "limit" in caught.value.reason and "bytes" in caught.value.reason
+        assert read[0] <= 4096 + 1024  # the budget plus the one chunk that crossed it
+
+    def test_seed_walk_stops_at_the_byte_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same bound holds for the manifest taken at the end of the seed."""
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", "huge.bin": b"x" * (1024 * 1024)})
+        monkeypatch.setattr(oc, "MAX_SEED_BYTES", 4096)
+        monkeypatch.setattr(oc, "_READ_CHUNK", 1024)
+        read = [0]
+        real_read = os.read
+
+        def counting(fd: int, count: int) -> bytes:
+            data = real_read(fd, count)
+            read[0] += len(data)
+            return data
+
+        monkeypatch.setattr(os, "read", counting)
+        with pytest.raises(oc.AttemptFailedError) as caught:
+            seed(repo, tmp_path)
+        monkeypatch.setattr(os, "read", real_read)
+        assert "limit" in caught.value.reason and "bytes" in caught.value.reason
+        assert read[0] <= 4096 + 1024
+
+    def test_git_only_changes_to_unowned_files_are_not_a_change(self, tmp_path: Path) -> None:
+        """Review finding 2 (documented limit): the delta compares working-tree contents, so a commit or
+        an index-only edit that leaves an unowned file's bytes as seeded is not seen, and reaches nothing."""
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        write(tree.path, "a.py", "x = 2\n")  # the owned edit
+        git(tree.path, "commit", "-q", "--allow-empty", "-m", "empty worker commit", "--no-verify")
+        write(tree.path, "b.py", "staged only\n")
+        git(tree.path, "add", "b.py")  # an index-only edit to an unowned file ...
+        write(tree.path, "b.py", "y = 2\n")  # ... with the working tree put back
+        git(
+            tree.path, "commit", "-q", "-m", "unowned edit, committed", "--no-verify"
+        )  # HEAD: "staged only"
+        assert [item.path for item in delta(tree, repo).items] == ["a.py"]
+
+
+# --------------------------------------------------------------------------------------------
+# 2.3 transfer, 2.4 restore
+# --------------------------------------------------------------------------------------------
+
+
+def witem(path: str, text: str, *, executable: bool = False) -> oc.DeltaItem:
+    data = text.encode()
+    return oc.DeltaItem(path, "write", data, executable, hashlib.sha256(data).hexdigest())
+
+
+def ditem(path: str) -> oc.DeltaItem:
+    return oc.DeltaItem(path, "delete")
+
+
+def user_manifest(repo: Path) -> dict[str, oc.Entry]:
+    return oc.walk_manifest(repo, limit_error=lambda reason: AssertionError(reason))
+
+
+def identity_of(path: Path) -> tuple[int, int]:
+    """The device and inode of the directory at ``path`` now."""
+    info = path.stat()
+    return (info.st_dev, info.st_ino)
+
+
+def run_transfer(
+    repo: Path,
+    items: list[oc.DeltaItem],
+    m0: Mapping[str, oc.Entry] | None = None,
+    journal: list[oc.JournalEntry] | None = None,
+    hooks: Mapping[str, Callable[..., None]] | None = None,
+    root_identity: tuple[int, int] | None = None,
+) -> list[oc.JournalEntry]:
+    """Transfer into ``repo``; the directory the seed read is the one at ``repo`` now unless given."""
+    journal = [] if journal is None else journal
+    oc.transfer(
+        oc.Delta(tuple(items)),
+        repo,
+        user_manifest(repo) if m0 is None else m0,
+        journal,
+        hooks,
+        root_identity=identity_of(repo) if root_identity is None else root_identity,
+    )
+    return journal
+
+
+class TestTransfer:
+    def test_owned_file_changed_after_the_seed(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+        write(repo, "a.py", "user edit\n")
+        before = snapshot(repo)
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            run_transfer(repo, [witem("a.py", "worker\n")], m0)
+        assert "changed since the seed" in caught.value.reason
+        assert snapshot(repo) == before
+
+    def test_file_appeared_after_the_seed(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+        write(repo, "fresh.py", "user file\n")
+        before = snapshot(repo)
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            run_transfer(repo, [witem("fresh.py", "worker\n")], m0)
+        assert "appeared after the seed" in caught.value.reason
+        assert snapshot(repo) == before
+
+    @pytest.mark.parametrize("kind", ["fifo", "directory"])
+    def test_non_regular_file_in_the_user_s_tree(self, tmp_path: Path, kind: str) -> None:
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+        if kind == "fifo":
+            os.mkfifo(repo / "special")
+        else:
+            (repo / "special").mkdir()
+        before = snapshot(repo)
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            run_transfer(repo, [witem("special", "worker\n")], m0)
+        assert "not a regular file" in caught.value.reason
+        assert snapshot(repo) == before
+
+    def test_edit_between_the_checks_and_the_first_write(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+
+        def edit() -> None:
+            write(repo, "a.py", "user edit after the checks\n")
+
+        with pytest.raises(oc.AttemptRefusedError):
+            run_transfer(repo, [witem("a.py", "worker\n")], m0, hooks={"after_checks": edit})
+        assert (repo / "a.py").read_text() == "user edit after the checks\n"
+        assert not [p for p in repo.rglob(".verdict-transfer-*")]
+
+    @pytest.mark.parametrize(
+        ("how", "reason"),
+        [
+            ("edit", "changed since the seed"),
+            ("executable", "executable bit"),
+            ("removed", "removed after the seed"),
+        ],
+    )
+    def test_change_while_the_temporary_file_is_written_is_refused(
+        self, tmp_path: Path, how: str, reason: str
+    ) -> None:
+        """Review finding 2 (Codex on 1470a171): the last look at the target comes after the temporary
+        file is written, so a change made during that write is refused, not renamed over."""
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+
+        def change(path: str) -> None:
+            if how == "edit":
+                write(repo, "a.py", "user edit during the write\n")
+            elif how == "executable":
+                (repo / "a.py").chmod(0o755)
+            else:
+                (repo / "a.py").unlink()
+
+        journal: list[oc.JournalEntry] = []
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            run_transfer(
+                repo, [witem("a.py", "worker\n")], m0, journal, hooks={"after_temp_write": change}
+            )
+        assert reason in caught.value.reason
+        if how == "edit":
+            assert (repo / "a.py").read_text() == "user edit during the write\n"
+        elif how == "executable":
+            assert (repo / "a.py").read_text() == "import os\nx = 1\n"
+            assert (repo / "a.py").stat().st_mode & stat.S_IXUSR
+        else:
+            assert not (repo / "a.py").exists()
+        assert not list(repo.rglob(".verdict-transfer-*"))
+        assert journal == []  # the rename was never made, so nothing is journalled to undo
+
+    def test_file_created_while_the_temporary_file_is_written_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+
+        def create(path: str) -> None:
+            write(repo, "fresh.py", "user file created during the write\n")
+
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            run_transfer(
+                repo, [witem("fresh.py", "worker\n")], m0, hooks={"after_temp_write": create}
+            )
+        assert "appeared after the seed" in caught.value.reason
+        assert (repo / "fresh.py").read_text() == "user file created during the write\n"
+        assert not list(repo.rglob(".verdict-transfer-*"))
+
+    def test_change_while_a_later_temporary_file_is_written_rolls_back(
+        self, tmp_path: Path
+    ) -> None:
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", "b.py": "b = 1\n"})
+        m0 = user_manifest(repo)
+
+        def edit(path: str) -> None:
+            if path == "b.py":
+                write(repo, "b.py", "user edit during the write\n")
+
+        journal: list[oc.JournalEntry] = []
+        with pytest.raises(oc.TransferFailedError) as caught:
+            run_transfer(
+                repo,
+                [witem("a.py", "w\n"), witem("b.py", "w\n")],
+                m0,
+                journal,
+                hooks={"after_temp_write": edit},
+            )
+        assert "b.py" in caught.value.reason and "changed since the seed" in caught.value.reason
+        assert (repo / "a.py").read_text() == "a = 1\n"  # the first path was rolled back
+        assert (repo / "b.py").read_text() == "user edit during the write\n"
+        assert not list(repo.rglob(".verdict-transfer-*"))
+        assert journal == []
+
+    def test_parent_swapped_while_the_temporary_file_is_written(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        m0 = user_manifest(repo)
+
+        def swap(path: str) -> None:
+            (repo / "d").rename(tmp_path / "d-moved")
+            (repo / "d").mkdir()
+            write(repo, "d/inner.py", "a different directory\n")
+
+        with pytest.raises(oc.AttemptRefusedError):
+            run_transfer(
+                repo, [witem("d/inner.py", "worker\n")], m0, hooks={"after_temp_write": swap}
+            )
+        assert (tmp_path / "d-moved" / "inner.py").read_text() == "i = 1\n"  # nothing written there
+        assert (repo / "d" / "inner.py").read_text() == "a different directory\n"
+        assert not list(tmp_path.rglob(".verdict-transfer-*"))
+
+    def test_only_the_mode_changed(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+        (repo / "a.py").chmod(0o755)
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            run_transfer(repo, [witem("a.py", "worker\n")], m0)
+        assert "executable bit" in caught.value.reason
+        assert (repo / "a.py").stat().st_mode & 0o111
+
+    @pytest.mark.parametrize(
+        "bad", ["../escape.py", "/tmp/escape-abs.py", ".git/hooks/pre-commit", "a/../b.py"]
+    )
+    def test_path_that_escapes_the_root_is_refused(self, tmp_path: Path, bad: str) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            run_transfer(repo, [witem(bad, "evil\n")], {})
+        assert "not safe" in caught.value.reason
+        assert not (tmp_path / "escape.py").exists()
+        assert snapshot(repo) == before
+
+    def test_user_file_over_the_limit_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+        monkeypatch.setattr(oc, "MAX_TRANSFER_FILE_BYTES", 4)
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            run_transfer(repo, [witem("a.py", "z\n")], m0)
+        assert "limit" in caught.value.reason
+
+    def test_symlinked_parent(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (repo / "d").symlink_to(outside)
+        with pytest.raises(oc.AttemptRefusedError):
+            run_transfer(repo, [witem("d/new.py", "worker\n")], {})
+        assert list(outside.iterdir()) == []
+
+    def test_parent_swapped_for_a_symlink_during_the_transfer(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        m0 = user_manifest(repo)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        def swap() -> None:
+            (repo / "d").rename(tmp_path / "d-moved")
+            (repo / "d").symlink_to(outside)
+
+        with pytest.raises(oc.AttemptRefusedError):
+            run_transfer(repo, [witem("d/inner.py", "worker\n")], m0, hooks={"after_checks": swap})
+        assert list(outside.iterdir()) == []
+        assert (tmp_path / "d-moved" / "inner.py").read_text() == "i = 1\n"
+
+    @pytest.mark.parametrize("second", [False, True])
+    def test_parent_directory_renamed_away_during_the_transfer(
+        self, tmp_path: Path, second: bool
+    ) -> None:
+        repo = make_repo(tmp_path, {"d1/x.py": "x = 1\n", "d2/y.py": "y = 1\n", "a.py": "a = 1\n"})
+        m0 = user_manifest(repo)
+        items = [witem("d1/x.py", "w1\n"), witem("d2/y.py", "w2\n")]
+        target = "d2/y.py" if second else "d1/x.py"
+
+        def displace(path: str) -> None:
+            if path == target:
+                parent = repo / path.split("/")[0]
+                parent.rename(tmp_path / "displaced")
+                parent.mkdir()
+                (parent / path.split("/")[1]).write_text("a different directory\n")
+
+        journal: list[oc.JournalEntry] = []
+        expected = oc.TransferFailedError if second else oc.AttemptRefusedError
+        with pytest.raises(expected):
+            run_transfer(repo, items, m0, journal, hooks={"before_write": displace})
+        assert (tmp_path / "displaced" / ("y.py" if second else "x.py")).read_text() in (
+            "y = 1\n",
+            "x = 1\n",
+        )
+        if second:  # the first path was written and then rolled back
+            assert (repo / "d1" / "x.py").read_text() == "x = 1\n"
+
+    def test_a_refusal_on_a_later_path_leaves_no_directory_behind(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+        write(repo, "b.py", "user edit\n")
+        before = snapshot(repo)
+        with pytest.raises(oc.AttemptRefusedError):
+            run_transfer(repo, [witem("adir/x.py", "w\n"), witem("b.py", "w\n")], m0)
+        assert snapshot(repo) == before
+        assert not (repo / "adir").exists()
+
+    def test_late_conflict_after_earlier_paths_were_written(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", "b.py": "b = 1\n", "c.py": "c = 1\n"})
+        m0 = user_manifest(repo)
+
+        def edit(path: str) -> None:
+            if path == "b.py":
+                write(repo, "b.py", "user edit\n")
+
+        items = [witem("a.py", "w\n"), witem("b.py", "w\n"), witem("c.py", "w\n")]
+        with pytest.raises(oc.TransferFailedError) as caught:
+            run_transfer(repo, items, m0, hooks={"before_item": edit})
+        assert "b.py" in caught.value.reason
+        assert (repo / "a.py").read_text() == "a = 1\n"
+        assert (repo / "b.py").read_text() == "user edit\n"
+        assert (repo / "c.py").read_text() == "c = 1\n"
+
+    def test_rollback_blocked_by_a_later_user_edit(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", "b.py": "b = 1\n"})
+        m0 = user_manifest(repo)
+
+        def edit(path: str) -> None:
+            if path == "b.py":
+                write(repo, "a.py", "user edit of the written file\n")
+                write(repo, "b.py", "user edit\n")
+
+        with pytest.raises(oc.TransferFailedError) as caught:
+            run_transfer(
+                repo, [witem("a.py", "w\n"), witem("b.py", "w\n")], m0, hooks={"before_item": edit}
+            )
+        assert (repo / "a.py").read_text() == "user edit of the written file\n"
+        assert "not restored" in caught.value.reason
+        assert "a.py" in caught.value.reason
+
+    def test_failure_part_way(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", "b.py": "b = 1\n", "c.py": "c = 1\n"})
+        m0 = user_manifest(repo)
+        before = snapshot(repo)
+        real = oc.replace_file
+        calls: list[str] = []
+
+        def flaky(fd: int, name: str, data: bytes, mode: int, **kwargs: Any) -> None:
+            calls.append(name)
+            if len(calls) == 2:
+                raise OSError(errno.EIO, "disk")
+            real(fd, name, data, mode, **kwargs)
+
+        monkeypatch.setattr(oc, "replace_file", flaky)
+        items = [witem("a.py", "w\n"), witem("b.py", "w\n"), witem("c.py", "w\n")]
+        with pytest.raises(oc.TransferFailedError):
+            run_transfer(repo, items, m0)
+        assert snapshot(repo) == before
+
+    @pytest.mark.parametrize("failing", ["write", "fchmod", "rename"])
+    @pytest.mark.parametrize("existing", [True, False])
+    def test_temporary_file_removed_after_a_failed_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str, existing: bool
+    ) -> None:
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+        before = snapshot(repo)
+        real = getattr(os, failing)
+
+        def boom(*args: Any, **kwargs: Any) -> Any:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(os, failing, boom)
+        target = "a.py" if existing else "newdir/new.py"
+        try:
+            with pytest.raises(oc.AttemptFailedError) as caught:
+                run_transfer(repo, [witem(target, "worker\n")], m0)
+        finally:
+            monkeypatch.setattr(os, failing, real)
+        assert "ENOSPC" in caught.value.reason or "No space" in caught.value.reason
+        assert not list(repo.rglob(".verdict-transfer-*"))
+        assert snapshot(repo) == before
+
+    def test_temporary_file_removal_fails_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path)
+        m0 = user_manifest(repo)
+        real_unlink = os.unlink
+
+        def failing_rename(*args: Any, **kwargs: Any) -> Any:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def failing_unlink(path: Any, *args: Any, **kwargs: Any) -> Any:
+            if str(path).startswith(".verdict-transfer-"):
+                raise OSError(errno.EACCES, "Permission denied")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "rename", failing_rename)
+        monkeypatch.setattr(os, "unlink", failing_unlink)
+        try:
+            with pytest.raises(oc.AttemptFailedError) as caught:
+                run_transfer(repo, [witem("a.py", "worker\n")], m0)
+        finally:
+            monkeypatch.setattr(os, "rename", os.rename)
+        reason = caught.value.reason
+        assert "No space left" in reason
+        assert reason.index("No space left") < reason.index(".verdict-transfer-")
+        assert "could not be removed" in reason
+
+    @pytest.mark.parametrize("replacement", ["copy", "empty"])
+    @pytest.mark.parametrize("case", ["new", "new_nested", "changed", "deleted"])
+    def test_repository_replaced_between_seed_and_transfer(
+        self, tmp_path: Path, case: str, replacement: str
+    ) -> None:
+        """The seed read one directory; a different one now has the repository's name.  The read-only
+        phase compares paths with the seed's manifest, and a new path is absent on both sides, so only
+        the directory's own identity can tell the replacement from the repository.  The replacement is a
+        copy of it (a changed or deleted file holds the seeded bytes there, so the comparison passes) or
+        an empty directory; the whole attempt is refused before anything is written or journalled."""
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        item = {
+            "new": witem("new.py", "worker\n"),
+            "new_nested": witem("deep/er/new.py", "worker\n"),
+            "changed": witem("a.py", "worker\n"),
+            "deleted": ditem("b.py"),
+        }[case]
+        displaced = tmp_path / "repo-moved"
+        repo.rename(displaced)  # kept alive, so a reused inode number cannot hide the swap
+        if replacement == "copy":
+            shutil.copytree(displaced, repo, symlinks=True)
+        else:
+            repo.mkdir()
+        replacement_before, displaced_before = listing(repo), listing(displaced)
+        journal: list[oc.JournalEntry] = []
+        with pytest.raises(oc.AttemptRefusedError) as caught:
+            run_transfer(repo, [item], tree.manifest, journal, root_identity=tree.root_identity)
+        reason = caught.value.reason
+        assert "repository" in reason and "replaced" in reason and "seed" in reason
+        assert journal == []
+        assert listing(repo) == replacement_before
+        assert listing(displaced) == displaced_before
+        assert not list(tmp_path.rglob(".verdict-transfer-*"))
+
+    def test_repository_renamed_away_and_back_is_transferred_into(self, tmp_path: Path) -> None:
+        """The comparison is of the directory, not of its name."""
+        repo = make_repo(tmp_path)
+        tree = seed(repo, tmp_path)
+        repo.rename(tmp_path / "elsewhere")
+        (tmp_path / "elsewhere").rename(repo)
+        journal = run_transfer(
+            repo, [witem("a.py", "worker\n")], tree.manifest, root_identity=tree.root_identity
+        )
+        assert (repo / "a.py").read_text() == "worker\n"
+        assert {entry.root for entry in journal} == {tree.root_identity}
+
+
+CHILD = textwrap.dedent(
+    """
+    import sys
+
+    sys.path.insert(0, sys.argv[5])  # -I ignores PYTHONPATH: import the module the test imported
+    import hashlib, json
+    from pathlib import Path
+    from verdict import autodev_opencode as oc
+
+    repo, phase, count = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+    items = []
+    for path, text in json.loads(sys.argv[4]):
+        data = text.encode()
+        items.append(oc.DeltaItem(path, "write", data, False, hashlib.sha256(data).hexdigest()))
+    m0 = oc.walk_manifest(repo, limit_error=lambda reason: RuntimeError(reason))
+    seen = {"n": 0}
+
+    def block(*_args):
+        seen["n"] += 1
+        if seen["n"] == count:
+            print("ready", flush=True)
+            sys.stdin.readline()  # blocks until the test kills this process
+
+    root = repo.stat()
+    oc.transfer(
+        oc.Delta(tuple(items)), repo, m0, [], {phase: block}, root_identity=(root.st_dev, root.st_ino)
+    )
+    """
+)
+
+
+#: How long a crash test waits for its child to say it has reached the phase it will be killed in.
+HANDSHAKE_SECONDS = 30.0
+
+#: Children for the handshake tests: neither says ``ready``, and each ends by itself after 20 seconds, so
+#: a test that fails to stop one cannot leave it behind for long on a shared host.
+MUTE_CHILD = "import time; time.sleep(20)"
+WRONG_LINE_CHILD = textwrap.dedent(
+    """
+    import time
+
+    print("not ready", flush=True)
+    time.sleep(20)
+    """
+)
+
+
+def read_line(proc: subprocess.Popen[bytes], timeout: float) -> str | None:
+    """The first line ``proc`` prints, or ``None`` when it prints none (or closes its output) within
+    ``timeout`` seconds.  Reads the raw descriptor to a deadline: a partial line cannot block it."""
+    assert proc.stdout is not None
+    fd = proc.stdout.fileno()
+    deadline = time.monotonic() + timeout
+    seen = b""
+    while b"\n" not in seen:
+        left = deadline - time.monotonic()
+        if left <= 0 or not select.select([fd], [], [], left)[0]:
+            return None
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            return None
+        seen += chunk
+    return seen.split(b"\n", 1)[0].decode().strip()
+
+
+def kill_during(
+    repo: Path,
+    phase: str,
+    count: int,
+    items: list[tuple[str, str]],
+    *,
+    child: str = CHILD,
+    handshake_timeout: float = HANDSHAKE_SECONDS,
+    spawned: list[subprocess.Popen[bytes]] | None = None,
+) -> None:
+    import json
+
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            child,
+            str(repo),
+            phase,
+            str(count),
+            json.dumps(items),
+            str(Path(oc.__file__).resolve().parent.parent),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        env=os.environ,
+    )
+    if spawned is not None:
+        spawned.append(proc)
+    try:
+        line = read_line(proc, handshake_timeout)
+        assert line == "ready", (
+            f"the child said {line!r}, not 'ready', within {handshake_timeout:g}s"
+        )
+        proc.send_signal(signal.SIGKILL)
+    finally:
+        with contextlib.suppress(OSError):
+            proc.kill()  # a child that never reached the kill is not left running
+        proc.wait(timeout=30)
+        for pipe in (proc.stdin, proc.stdout):
+            if pipe is not None:
+                with contextlib.suppress(OSError):
+                    pipe.close()
+
+
+class TestCrash:
+    def test_kill_after_the_temporary_write(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        kill_during(
+            repo, "after_temp_write", 1, [("a.py", "worker one\n"), ("b.py", "worker two\n")]
+        )
+        assert (repo / "a.py").read_text() == "import os\nx = 1\n"
+        assert (repo / "b.py").read_text() == "y = 2\n"
+        temps = list(repo.glob(".verdict-transfer-*"))
+        assert len(temps) <= 1
+        listed = git(repo, "status", "--porcelain", "--untracked-files=all").splitlines()
+        assert [line for line in listed if ".verdict-transfer-" not in line] == []
+
+    def test_kill_after_the_first_of_two_renames(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        kill_during(repo, "after_item", 1, [("a.py", "worker one\n"), ("b.py", "worker two\n")])
+        assert (repo / "a.py").read_text() == "worker one\n"
+        assert (repo / "b.py").read_text() == "y = 2\n"
+        git(repo, "checkout", "--", "a.py", "b.py")
+        for temp in repo.glob(".verdict-transfer-*"):
+            temp.unlink()
+        assert snapshot(repo) == before
+
+    def test_kill_after_the_last_rename(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        kill_during(
+            repo, "after_item", 2, [("a.py", "worker one\n"), ("newdir/new.py", "created\n")]
+        )
+        assert (repo / "a.py").read_text() == "worker one\n"
+        assert (repo / "newdir" / "new.py").read_text() == "created\n"
+        git(repo, "checkout", "--", "a.py")
+        (repo / "newdir" / "new.py").unlink()
+        (repo / "newdir").rmdir()
+        assert snapshot(repo) == before
+
+    @pytest.mark.parametrize(
+        "child", [MUTE_CHILD, WRONG_LINE_CHILD], ids=["never-ready", "wrong-line"]
+    )
+    def test_a_child_that_does_not_say_ready_fails_the_test_within_the_bound(
+        self, tmp_path: Path, child: str
+    ) -> None:
+        """Review finding 3 (Codex on 4ee5c0f3): the handshake is bounded, and a child that is still
+        running when the test fails is killed, not waited for."""
+        repo = make_repo(tmp_path)
+        spawned: list[subprocess.Popen[bytes]] = []
+        started = time.monotonic()
+        try:
+            with pytest.raises(AssertionError, match="ready"):
+                kill_during(
+                    repo,
+                    "after_item",
+                    1,
+                    [("a.py", "worker\n")],
+                    child=child,
+                    handshake_timeout=2.0,
+                    spawned=spawned,
+                )
+            elapsed = time.monotonic() - started
+        finally:
+            for proc in spawned:  # this test's own guard: nothing outlives it whatever happens
+                with contextlib.suppress(OSError):
+                    proc.kill()
+                proc.wait(timeout=30)
+        assert elapsed < 10  # the bound, not the child's own 20 seconds
+        assert len(spawned) == 1 and spawned[0].poll() is not None
+        assert (repo / "a.py").read_text() == "import os\nx = 1\n"
+
+
+def transferred(
+    repo: Path, items: list[oc.DeltaItem], hooks: Mapping[str, Callable[..., None]] | None = None
+) -> list[oc.JournalEntry]:
+    return run_transfer(repo, items, None, None, hooks)
+
+
+def interrupt_case(which: str) -> tuple[list[oc.DeltaItem], Callable[[tuple[Any, ...]], bool]]:
+    """The delta and the call to interrupt: the rename over a.py, its deletion, or mkdir newdir."""
+    if which == "rename":
+        return [witem("a.py", "worker\n")], lambda args: len(args) > 1 and args[1] == "a.py"
+    if which == "unlink":
+        return [ditem("a.py")], lambda args: bool(args) and args[0] == "a.py"
+    return [witem("newdir/new.py", "created\n")], lambda args: bool(args) and args[0] == "newdir"
+
+
+def listing(root: Path) -> dict[str, bytes | None]:
+    """Every path under ``root`` (a directory maps to ``None``) with its bytes: a directory that is not a repository."""
+    return {
+        str(path.relative_to(root)): path.read_bytes() if path.is_file() else None
+        for path in sorted(root.rglob("*"))
+    }
+
+
+class TestRestore:
+    def test_created_files_and_directories_are_removed(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        journal = transferred(repo, [witem("deep/er/new.py", "created\n")])
+        assert (repo / "deep" / "er" / "new.py").exists()
+        result = oc.restore_transfer(journal, repo)
+        assert not (repo / "deep").exists()
+        assert result.not_restored == []
+        assert snapshot(repo) == before
+
+    def test_created_directory_replaced(self, tmp_path: Path) -> None:
+        """Carried finding 2: a directory the transfer created, removed and replaced, is not removed."""
+        repo = make_repo(tmp_path)
+        journal = transferred(repo, [witem("newdir/new.py", "created\n")])
+        directory = repo / "newdir"
+        # Swap in a replacement while the original inode is still held, so a reused inode number
+        # cannot hide the swap; then remove the original.
+        directory.rename(repo / "newdir-original")
+        directory.mkdir()
+        (repo / "newdir-original" / "new.py").unlink()
+        (repo / "newdir-original").rmdir()
+        result = oc.restore_transfer(journal, repo)
+        assert directory.is_dir() and list(directory.iterdir()) == []
+        assert ("newdir", "replaced by another directory") in result.not_restored
+        assert "newdir" in result.summary()
+
+    def test_user_edit_after_the_transfer_is_kept(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        journal = transferred(repo, [witem("a.py", "worker\n")])
+        write(repo, "a.py", "user edit after the transfer\n")
+        result = oc.restore_transfer(journal, repo)
+        assert (repo / "a.py").read_text() == "user edit after the transfer\n"
+        assert result.not_restored == [("a.py", "changed since the transfer")]
+
+    def test_user_mode_change_after_the_transfer_is_kept(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        journal = transferred(repo, [witem("a.py", "worker\n")])
+        (repo / "a.py").chmod(0o755)
+        result = oc.restore_transfer(journal, repo)
+        assert (repo / "a.py").stat().st_mode & stat.S_IXUSR
+        assert [path for path, _ in result.not_restored] == ["a.py"]
+
+    def test_parent_swapped_between_transfer_and_restore(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        journal = transferred(repo, [witem("d/inner.py", "worker\n")])
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "inner.py").write_text("outside content\n")
+        (repo / "d").rename(tmp_path / "d-moved")
+        (repo / "d").symlink_to(outside)
+        result = oc.restore_transfer(journal, repo)
+        assert (outside / "inner.py").read_text() == "outside content\n"
+        assert [path for path, _ in result.not_restored] == ["d/inner.py"]
+
+    @pytest.mark.parametrize("replacement_holds", ["worker", "prior"])
+    def test_parent_replaced_by_a_real_directory_between_transfer_and_restore(
+        self, tmp_path: Path, replacement_holds: str
+    ) -> None:
+        """Review finding 3 (Codex on 1470a171): a real directory that takes the parent's name is not the
+        directory the transfer wrote through, whatever bytes its file holds; restore names the path and
+        writes nothing there."""
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        journal = transferred(repo, [witem("d/inner.py", "worker\n")])
+        (repo / "d").rename(tmp_path / "d-moved")
+        (repo / "d").mkdir()
+        replacement = "worker\n" if replacement_holds == "worker" else "i = 1\n"
+        write(repo, "d/inner.py", replacement)
+        result = oc.restore_transfer(journal, repo)
+        assert (repo / "d" / "inner.py").read_text() == replacement  # the replacement is untouched
+        assert (
+            tmp_path / "d-moved" / "inner.py"
+        ).read_text() == "worker\n"  # so is the displaced file
+        assert [path for path, _ in result.not_restored] == ["d/inner.py"]
+        assert "replaced" in dict(result.not_restored)["d/inner.py"]
+        assert result.restored == []
+        assert not list(tmp_path.rglob(".verdict-transfer-*"))
+        assert journal == []
+
+    def test_entry_without_recorded_parent_directories_is_named(self, tmp_path: Path) -> None:
+        """Fail closed: an entry whose parent directories were not recorded is not written through."""
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        journal = transferred(repo, [witem("d/inner.py", "worker\n")])
+        journal[0].parents = None
+        result = oc.restore_transfer(journal, repo)
+        assert (repo / "d" / "inner.py").read_text() == "worker\n"
+        assert [path for path, _ in result.not_restored] == ["d/inner.py"]
+        assert "not recorded" in dict(result.not_restored)["d/inner.py"]
+
+    @pytest.mark.parametrize("case", ["write", "create", "delete"])
+    def test_repository_replaced_between_transfer_and_restore(
+        self, tmp_path: Path, case: str
+    ) -> None:
+        """Review finding 2 (Codex on 4ee5c0f3): the repository root is part of the identity chain.  A
+        directory that takes its name holds, at the top level, exactly what restore would act on (the
+        worker's bytes, the created file, or no file for a deletion); restore writes nothing there or in
+        the displaced repository, and names every journalled path with the one reason."""
+        repo = make_repo(tmp_path)
+        top = {
+            "write": witem("a.py", "worker\n"),
+            "create": witem("top.py", "created\n"),
+            "delete": ditem("b.py"),
+        }[case]
+        journal = transferred(repo, [top, witem("deep/er/new.py", "nested\n")])
+        journalled = sorted(entry.path for entry in journal)
+        assert journalled == sorted([top.path, "deep", "deep/er", "deep/er/new.py"])
+        displaced = tmp_path / "repo-moved"
+        repo.rename(displaced)  # kept alive, so a reused inode number cannot hide the swap
+        repo.mkdir()
+        if case == "write":
+            write(repo, "a.py", "worker\n")
+        elif case == "create":
+            write(repo, "top.py", "created\n")
+        replacement_before, displaced_before = listing(repo), listing(displaced)
+        result = oc.restore_transfer(journal, repo)
+        assert sorted(path for path, _ in result.not_restored) == journalled
+        reasons = {why for _, why in result.not_restored}
+        assert len(reasons) == 1
+        assert "repository" in next(iter(reasons)) and "replaced" in next(iter(reasons))
+        assert result.restored == [] and result.touched
+        assert journal == []
+        assert listing(repo) == replacement_before
+        assert listing(displaced) == displaced_before
+        assert not list(tmp_path.rglob(".verdict-transfer-*"))
+
+    def test_repository_renamed_away_and_back_is_the_same_directory(self, tmp_path: Path) -> None:
+        """The comparison is of the directory, not of its name."""
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        journal = transferred(repo, [witem("a.py", "worker\n")])
+        repo.rename(tmp_path / "elsewhere")
+        (tmp_path / "elsewhere").rename(repo)
+        result = oc.restore_transfer(journal, repo)
+        assert result.restored == ["a.py"] and result.not_restored == []
+        assert snapshot(repo) == before
+
+    def test_entry_without_a_recorded_repository_is_named(self, tmp_path: Path) -> None:
+        """Fail closed: one entry whose repository directory was not recorded keeps the whole journal
+        from being written through, and every path in it is named."""
+        repo = make_repo(tmp_path)
+        journal = transferred(repo, [witem("a.py", "worker one\n"), witem("b.py", "worker two\n")])
+        journal[0].root = None
+        result = oc.restore_transfer(journal, repo)
+        assert (repo / "a.py").read_text() == "worker one\n"
+        assert (repo / "b.py").read_text() == "worker two\n"
+        assert sorted(path for path, _ in result.not_restored) == ["a.py", "b.py"]
+        assert all("not recorded" in why for _, why in result.not_restored)
+        assert result.restored == [] and journal == []
+
+    @pytest.mark.parametrize("existing", [True, False])
+    def test_parent_renamed_away_and_not_replaced_is_named(
+        self, tmp_path: Path, existing: bool
+    ) -> None:
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        target = "d/inner.py" if existing else "d/fresh.py"
+        journal = transferred(repo, [witem(target, "worker\n")])
+        (repo / "d").rename(tmp_path / "d-moved")
+        result = oc.restore_transfer(journal, repo)
+        assert [path for path, _ in result.not_restored] == [target]
+        assert "gone" in dict(result.not_restored)[target]
+        assert (tmp_path / "d-moved" / target.split("/")[1]).read_text() == "worker\n"
+
+    def test_change_while_restore_writes_the_prior_bytes_is_kept(self, tmp_path: Path) -> None:
+        """The restore write shares the helper's last look: an edit made while its temporary file is
+        written is named as not restored, not renamed over."""
+        repo = make_repo(tmp_path)
+        journal = transferred(repo, [witem("a.py", "worker\n")])
+
+        def edit(path: str) -> None:
+            write(repo, "a.py", "user edit during the restore\n")
+
+        result = oc.restore_transfer(journal, repo, hooks={"after_temp_write": edit})
+        assert (repo / "a.py").read_text() == "user edit during the restore\n"
+        assert [path for path, _ in result.not_restored] == ["a.py"]
+        assert "changed since the transfer" in dict(result.not_restored)["a.py"]
+        assert not list(repo.rglob(".verdict-transfer-*"))
+        assert journal == []
+
+    def test_restore_twice(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        journal = transferred(repo, [witem("a.py", "worker\n")])
+        first = oc.restore_transfer(journal, repo)
+        second = oc.restore_transfer(journal, repo)
+        assert first.restored == ["a.py"]
+        assert second.restored == [] and second.not_restored == [] and second.summary() == ""
+        assert snapshot(repo) == before
+
+    def test_restore_without_a_transfer(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        result = oc.restore_transfer([], repo)
+        assert result.summary() == "" and result.restored == []
+        assert snapshot(repo) == before
+
+    def test_restore_write_failure_leaves_no_temporary_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path)
+        journal = transferred(repo, [witem("a.py", "worker one\n"), witem("b.py", "worker two\n")])
+        real_rename = os.rename
+
+        def flaky(src: str, dst: str, *args: Any, **kwargs: Any) -> None:
+            if dst == "b.py":
+                raise OSError(errno.ENOSPC, "No space left on device")
+            real_rename(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(os, "rename", flaky)
+        result = oc.restore_transfer(journal, repo)
+        monkeypatch.setattr(os, "rename", real_rename)
+        assert [path for path, _ in result.not_restored] == ["b.py"]
+        assert result.restored == ["a.py"]
+        assert (repo / "a.py").read_text() == "import os\nx = 1\n"
+        assert (repo / "b.py").read_text() == "worker two\n"
+        assert not list(repo.glob(".verdict-transfer-*"))
+
+    def test_restore_continues_after_a_state_read_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review finding 5: a read failure on one path is that path's ``not_restored``, not the loop's end."""
+        repo = make_repo(tmp_path)
+        journal = transferred(repo, [witem("a.py", "worker one\n"), witem("b.py", "worker two\n")])
+        real = oc._state_at
+
+        def flaky(parent_fd: int, name: str, **kwargs: Any) -> Any:
+            if name == "b.py":  # the last journal entry, so it is the first one restored
+                raise PermissionError(errno.EACCES, "Permission denied")
+            return real(parent_fd, name, **kwargs)
+
+        monkeypatch.setattr(oc, "_state_at", flaky)
+        result = oc.restore_transfer(journal, repo)
+        monkeypatch.setattr(oc, "_state_at", real)
+        assert result.restored == ["a.py"]
+        assert [path for path, _ in result.not_restored] == ["b.py"]
+        assert "PermissionError" in dict(result.not_restored)["b.py"]
+        assert (repo / "a.py").read_text() == "import os\nx = 1\n"
+        assert (repo / "b.py").read_text() == "worker two\n"  # named, not silently left
+        assert journal == []
+        assert "b.py" in result.summary()
+
+    def test_rollback_continues_after_a_state_read_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review finding 5, inside ``transfer``'s own rollback: nothing is left transferred unreported."""
+        repo = make_repo(tmp_path)
+        armed: list[bool] = []
+
+        def fail_the_third(path: str) -> None:
+            if path == "c.py":
+                armed.append(True)
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        real = oc._state_at
+
+        def flaky(parent_fd: int, name: str, **kwargs: Any) -> Any:
+            if armed and name == "b.py":
+                raise PermissionError(errno.EACCES, "Permission denied")
+            return real(parent_fd, name, **kwargs)
+
+        monkeypatch.setattr(oc, "_state_at", flaky)
+        journal: list[oc.JournalEntry] = []
+        items = [
+            witem("a.py", "worker one\n"),
+            witem("b.py", "worker two\n"),
+            witem("c.py", "new\n"),
+        ]
+        with pytest.raises(oc.TransferFailedError) as caught:
+            run_transfer(repo, items, None, journal, {"before_item": fail_the_third})
+        monkeypatch.setattr(oc, "_state_at", real)
+        assert "b.py" in caught.value.reason and "not restored" in caught.value.reason
+        assert (repo / "a.py").read_text() == "import os\nx = 1\n"  # restored although b.py was not
+        assert not (repo / "c.py").exists()
+        assert journal == []
+
+    def test_interrupted_restore_keeps_the_unprocessed_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review finding 5: an interrupt mid-entry leaves that entry journalled, so a second restore covers it."""
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        journal = transferred(repo, [witem("a.py", "worker one\n"), witem("b.py", "worker two\n")])
+        real = oc._state_at
+
+        def interrupted(parent_fd: int, name: str, **kwargs: Any) -> Any:
+            if name == "b.py":
+                raise KeyboardInterrupt
+            return real(parent_fd, name, **kwargs)
+
+        monkeypatch.setattr(oc, "_state_at", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            oc.restore_transfer(journal, repo)
+        monkeypatch.setattr(oc, "_state_at", real)
+        assert [entry.path for entry in journal] == ["a.py", "b.py"]
+        oc.restore_transfer(journal, repo)
+        assert snapshot(repo) == before
+
+    def test_restore_of_a_modified_file_and_of_a_deleted_file(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        (repo / "b.py").chmod(0o755)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "exec")
+        before = snapshot(repo)
+        journal = transferred(repo, [witem("a.py", "worker\n"), ditem("b.py")])
+        assert not (repo / "b.py").exists()
+        result = oc.restore_transfer(journal, repo)
+        assert sorted(result.restored) == ["a.py", "b.py"]
+        assert snapshot(repo) == before
+        assert (repo / "b.py").stat().st_mode & stat.S_IXUSR
+
+    def interrupt_right_after(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, which: str
+    ) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        real = getattr(os, which)
+        items, hit = interrupt_case(which)
+
+        def interrupted(*args: Any, **kwargs: Any) -> Any:
+            value = real(*args, **kwargs)  # the real operation happens ...
+            if hit(args):
+                raise KeyboardInterrupt  # ... and then the interrupt arrives
+            return value
+
+        monkeypatch.setattr(os, which, interrupted)
+        journal: list[oc.JournalEntry] = []
+        with pytest.raises(KeyboardInterrupt):
+            run_transfer(repo, items, None, journal)
+        monkeypatch.setattr(os, which, real)
+        result = oc.restore_transfer(journal, repo)
+        assert snapshot(repo) == before  # bytes, executable bit and the directory set
+        assert result.not_restored == []
+
+    def test_interrupt_right_after_a_rename(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self.interrupt_right_after(tmp_path, monkeypatch, "rename")
+
+    def test_interrupt_right_after_a_deletion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self.interrupt_right_after(tmp_path, monkeypatch, "unlink")
+
+    def test_interrupt_right_after_a_directory_creation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self.interrupt_right_after(tmp_path, monkeypatch, "mkdir")
+
+    @pytest.mark.parametrize("which", ["rename", "unlink", "mkdir"])
+    def test_interrupt_before_the_mutation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, which: str
+    ) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        real = getattr(os, which)
+        items, hit = interrupt_case(which)
+
+        def interrupted(*args: Any, **kwargs: Any) -> Any:
+            if hit(args):
+                raise KeyboardInterrupt  # raised without performing the operation
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(os, which, interrupted)
+        journal: list[oc.JournalEntry] = []
+        with pytest.raises(KeyboardInterrupt):
+            run_transfer(repo, items, None, journal)
+        monkeypatch.setattr(os, which, real)
+        result = oc.restore_transfer(journal, repo)
+        assert result.restored == [] and result.not_restored == []
+        assert snapshot(repo) == before
+
+
+# --------------------------------------------------------------------------------------------
+# 3.1 prompt
+# --------------------------------------------------------------------------------------------
+
+
+class TestPrompt:
+    def test_prompt_carries_the_context_pack_unchanged(self) -> None:
+        pack = "## Context\nline one  \n\n  indented `code` \u00e9\n"
+        task = WorkUnit(
+            unit_id="u1",
+            objective="drop the unused import",
+            owned_files=("a.py", "pkg/b.py"),
+            verification_command=("python", "-m", "ruff", "check", "a.py"),
+            context=pack,
+        )
+        prompt = oc.build_opencode_prompt(task)
+        assert pack in prompt
+        assert "drop the unused import" in prompt
+        assert "- a.py" in prompt and "- pkg/b.py" in prompt
+        assert "python -m ruff check a.py" in prompt
+        assert "git commit" in prompt and "git push" in prompt
+
+    def test_prompt_never_contains_the_credential(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VERDICT_WORKER_API_KEY", "SECRET-WORKER-KEY-123")
+        monkeypatch.setenv("LLMGATE_AUTH_TOKEN", "SECRET-SERVE-TOKEN-456")
+        prompt = oc.build_opencode_prompt(unit("a.py"))
+        assert "SECRET-WORKER-KEY-123" not in prompt
+        assert "SECRET-SERVE-TOKEN-456" not in prompt
+
+
+# --------------------------------------------------------------------------------------------
+# 3.2 executor
+# --------------------------------------------------------------------------------------------
+
+
+class StubRunner:
+    """A stand-in for ``OpenCodeExecutor``: ``async run`` with the real signature."""
+
+    def __init__(
+        self,
+        behave: Callable[[Path], None] | None = None,
+        *,
+        ok: bool = True,
+        error: str = "",
+        usage: AttemptUsage | None = None,
+        raises: BaseException | None = None,
+    ) -> None:
+        self.behave = behave
+        self.ok = ok
+        self.error = error
+        self.usage = usage
+        self.raises = raises
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(
+        self,
+        prompt: str,
+        *,
+        route_id: str,
+        cwd: Path,
+        timeout_seconds: float,
+        run_id: str | None = None,
+        node_id: str | None = None,
+    ) -> WorkerTerminal:
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "route_id": route_id,
+                "cwd": Path(cwd),
+                "timeout_seconds": timeout_seconds,
+                "run_id": run_id,
+                "node_id": node_id,
+            }
+        )
+        if self.raises is not None:
+            raise self.raises
+        if self.behave is not None:
+            self.behave(Path(cwd))
+        return WorkerTerminal(
+            ok=self.ok, model=route_id, error=self.error, usage=self.usage, harness="opencode"
+        )
+
+
+def make_executor(
+    repo: Path,
+    tmp_path: Path,
+    runner: StubRunner,
+    *,
+    hooks: Mapping[str, Callable[..., None]] | None = None,
+    run_id: str | None = "autodev-run-1",
+) -> oc.OpenCodeUnitExecutor:
+    temp_root = tmp_path / "attempts"
+    temp_root.mkdir(exist_ok=True)
+    executor = oc.OpenCodeUnitExecutor(
+        repo,
+        runner,
+        model="cheap/model",
+        base_url="http://127.0.0.1:8000",
+        temp_root=temp_root,
+        hooks=hooks,
+    )
+    if run_id is not None:
+        executor.begin_run(run_id)
+    return executor
+
+
+def attempts_left(tmp_path: Path) -> list[Path]:
+    return list((tmp_path / "attempts").iterdir())
+
+
+def edit_a(tree: Path) -> None:
+    write(tree, "a.py", "x = 2\n")
+
+
+class TestExecute:
+    def test_a_valid_owned_repair_is_applied(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        runner = StubRunner(edit_a)
+        executor = make_executor(repo, tmp_path, runner)
+        attempt = executor.execute_unit(unit("a.py"))
+        assert attempt.outcome == "applied" and attempt.applied
+        assert attempt.changed_files == ("a.py",)
+        assert (repo / "a.py").read_text() == "x = 2\n"
+        assert attempt.usage.reported is False
+        call = runner.calls[0]
+        assert call["route_id"] == "cheap/model"
+        assert call["run_id"] == "autodev-run-1" and call["node_id"] == "u1"
+        assert call["timeout_seconds"] == oc.ATTEMPT_TIMEOUT_SECONDS
+        assert str(call["cwd"]).startswith(str(tmp_path / "attempts"))
+
+    def test_usage_is_reported_when_the_worker_counts_tokens(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        runner = StubRunner(edit_a, usage=AttemptUsage(input_tokens=120, output_tokens=30))
+        attempt = make_executor(repo, tmp_path, runner).execute_unit(unit("a.py"))
+        assert attempt.usage.reported is True
+        assert (attempt.usage.prompt_tokens, attempt.usage.completion_tokens) == (120, 30)
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            "timed out after 600s",
+            "stalled: no output for 120s",
+            "authentication failed (serve refused)",
+            "exited 3",
+        ],
+    )
+    def test_worker_failed(self, tmp_path: Path, error: str) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        runner = StubRunner(edit_a, ok=False, error=error)  # the tree holds an owned edit
+        attempt = make_executor(repo, tmp_path, runner).execute_unit(unit("a.py"))
+        assert attempt.outcome == "error"
+        assert error in attempt.reason
+        assert snapshot(repo) == before
+        assert attempts_left(tmp_path) == []
+
+    def test_worker_makes_no_change(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        attempt = make_executor(repo, tmp_path, StubRunner()).execute_unit(unit("a.py"))
+        assert attempt.outcome == "rejected"
+        assert attempt.reason == "worker made no change to the owned files"
+        assert snapshot(repo) == before
+
+    @pytest.mark.parametrize(
+        "exit_path", ["applied", "rejected", "error", "exception", "interrupt"]
+    )
+    def test_attempt_tree_removed_on_every_ordinary_exit_path(
+        self, tmp_path: Path, exit_path: str
+    ) -> None:
+        repo = make_repo(tmp_path)
+        runner = {
+            "applied": StubRunner(edit_a),
+            "rejected": StubRunner(lambda tree: write(tree, "b.py", "evil\n")),
+            "error": StubRunner(edit_a, ok=False, error="exited 1"),
+            "exception": StubRunner(raises=RuntimeError("boom")),
+            "interrupt": StubRunner(raises=KeyboardInterrupt()),
+        }[exit_path]
+        executor = make_executor(repo, tmp_path, runner)
+        if exit_path == "exception":
+            with pytest.raises(RuntimeError):
+                executor.execute_unit(unit("a.py"))
+        elif exit_path == "interrupt":
+            with pytest.raises(KeyboardInterrupt):
+                executor.execute_unit(unit("a.py"))
+        else:
+            assert executor.execute_unit(unit("a.py")).outcome == exit_path
+        assert attempts_left(tmp_path) == []
+
+    def test_attempt_tree_removed_when_the_seed_is_refused(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        (repo / "nested").mkdir()
+        git(repo / "nested", "init", "-q", "-b", "main")
+        write(repo, "nested/n.py", "n = 1\n")
+        runner = StubRunner(edit_a)
+        attempt = make_executor(repo, tmp_path, runner).execute_unit(unit("a.py"))
+        assert attempt.outcome == "error" and "nested repository" in attempt.reason
+        assert runner.calls == []
+        assert attempts_left(tmp_path) == []
+
+    def test_tree_is_removed_before_the_transfer(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        seen: list[list[Path]] = []
+
+        def look() -> None:
+            seen.append(attempts_left(tmp_path))
+
+        executor = make_executor(repo, tmp_path, StubRunner(edit_a), hooks={"after_checks": look})
+        assert executor.execute_unit(unit("a.py")).applied
+        assert seen == [[]]
+
+    def test_a_repository_replaced_while_the_worker_runs_is_rejected(self, tmp_path: Path) -> None:
+        """The executor hands the transfer the identity the seed recorded: the worker's edit is a
+        valid owned repair, and the replacement (a copy of the repository) holds the seeded bytes."""
+        repo = make_repo(tmp_path)
+        displaced = tmp_path / "repo-moved"
+        before: dict[str, dict[str, bytes | None]] = {}
+
+        def edit_and_replace(tree: Path) -> None:
+            edit_a(tree)
+            repo.rename(displaced)
+            shutil.copytree(displaced, repo, symlinks=True)
+            before["replacement"], before["displaced"] = listing(repo), listing(displaced)
+
+        executor = make_executor(repo, tmp_path, StubRunner(edit_and_replace))
+        attempt = executor.execute_unit(unit("a.py"))
+        assert before, "the worker stub did not run"
+        assert attempt.outcome == "rejected" and not attempt.applied
+        assert "repository" in attempt.reason and "replaced" in attempt.reason
+        assert listing(repo) == before["replacement"]
+        assert listing(displaced) == before["displaced"]
+        assert attempts_left(tmp_path) == []
+
+    def test_running_event_loop_returns_error(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        runner = StubRunner(edit_a)
+        executor = make_executor(repo, tmp_path, runner)
+
+        async def inside() -> Any:
+            return executor.execute_unit(unit("a.py"))
+
+        attempt = asyncio.run(inside())
+        assert attempt.outcome == "error" and "running event loop" in attempt.reason
+        assert runner.calls == [] and attempts_left(tmp_path) == []
+
+    def test_no_run_id(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        runner = StubRunner(edit_a)
+        executor = make_executor(repo, tmp_path, runner, run_id=None)
+        attempt = executor.execute_unit(unit("a.py"))
+        assert attempt.outcome == "error" and "run id" in attempt.reason
+        assert runner.calls == [] and attempts_left(tmp_path) == []
+
+    @pytest.mark.parametrize(
+        ("timeout", "accepted"), [(119.0, False), (120.0, True), (1740.0, True), (1741.0, False)]
+    )
+    def test_attempt_timeout_bounds(self, tmp_path: Path, timeout: float, accepted: bool) -> None:
+        repo = make_repo(tmp_path)
+        if accepted:
+            oc.OpenCodeUnitExecutor(repo, StubRunner(), model="m", timeout_seconds=timeout)
+        else:
+            with pytest.raises(ValueError, match="attempt timeout"):
+                oc.OpenCodeUnitExecutor(repo, StubRunner(), model="m", timeout_seconds=timeout)
+
+    def test_stub_matches_the_real_run_signature(self) -> None:
+        real = inspect.signature(OpenCodeExecutor.run)
+        stub = inspect.signature(StubRunner.run)
+        assert list(stub.parameters) == list(real.parameters)
+        for name, parameter in real.parameters.items():
+            assert stub.parameters[name].kind == parameter.kind
+            assert stub.parameters[name].default == parameter.default
+
+    def test_journal_is_emptied_at_the_start_of_each_attempt(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        runner = StubRunner(edit_a)
+        executor = make_executor(repo, tmp_path, runner)
+        assert executor.execute_unit(unit("a.py")).applied  # unit A, verified by the caller
+        runner.behave = None  # unit B: the worker changes nothing and is rejected
+        assert executor.execute_unit(unit("b.py")).outcome == "rejected"
+        assert executor.restore() == ""  # nothing of unit B to undo ...
+        assert (repo / "a.py").read_text() == "x = 2\n"  # ... and unit A's file stays
+
+    def test_no_served_identity_is_claimed(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        executor = make_executor(repo, tmp_path, StubRunner(edit_a))
+        attempt = executor.execute_unit(unit("a.py"))
+        assert attempt.resolved_model is None
+        assert executor.response_headers == {}
+        assert executor.config.model == "cheap/model"
+        assert executor.config.temperature is None and executor.config.max_tokens is None
+        assert executor.isolated is True
+
+    def test_credential_never_appears_in_a_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VERDICT_WORKER_API_KEY", "SECRET-WORKER-KEY-123")
+        repo = make_repo(tmp_path)
+        runner = StubRunner(ok=False, error="serve refused the route; key [REDACTED]")
+        attempt = make_executor(repo, tmp_path, runner).execute_unit(unit("a.py"))
+        assert "[REDACTED]" in attempt.reason
+        assert "SECRET-WORKER-KEY-123" not in repr(attempt.to_dict())
+        assert "SECRET-WORKER-KEY-123" not in runner.calls[0]["prompt"]
+
+
+def no_follow_chmod_works(tmp_path: Path) -> bool:
+    """Whether this Python and kernel can chmod a directory by name relative to a descriptor, no-follow."""
+    probe = tmp_path / "chmod-probe"
+    (probe / "child").mkdir(parents=True)
+    fd = os.open(probe, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.chmod("child", 0o700, dir_fd=fd, follow_symlinks=False)
+        return True
+    except (OSError, NotImplementedError, ValueError):
+        return False
+    finally:
+        os.close(fd)
+
+
+def open_descriptors() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+class TestAttemptDirectory:
+    """Review finding 4: the attempt directory is worker-controlled, so its cleanup follows no path."""
+
+    def test_cleanup_does_not_follow_a_replaced_attempt_directory(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        external = tmp_path / "external"
+        (external / "sub").mkdir(parents=True)
+        (external / "sub" / "f.txt").write_text("outside\n")
+        external.chmod(0o755)
+        (external / "sub").chmod(0o755)
+        moved = tmp_path / "moved"
+
+        def hostile(tree: Path) -> None:
+            edit_a(tree)
+            attempt_dir = tree.parent
+            attempt_dir.rename(moved)  # the worker moves its own attempt directory ...
+            attempt_dir.symlink_to(
+                external
+            )  # ... and leaves a link to an outside directory in its place
+
+        attempt = make_executor(repo, tmp_path, StubRunner(hostile)).execute_unit(unit("a.py"))
+        assert attempt.outcome == "error"
+        assert stat.S_IMODE(external.stat().st_mode) == 0o755
+        assert stat.S_IMODE((external / "sub").stat().st_mode) == 0o755
+        assert (external / "sub" / "f.txt").read_text() == "outside\n"
+        assert list(moved.iterdir()) == []  # the directory Verdict made was still emptied
+
+    def test_cleanup_leaves_a_directory_that_replaced_the_attempt_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """Only the entry that still is the directory Verdict made is removed by name."""
+        repo = make_repo(tmp_path)
+        moved = tmp_path / "moved"
+        replaced: list[Path] = []
+
+        def hostile(tree: Path) -> None:
+            edit_a(tree)
+            tree.parent.rename(moved)
+            tree.parent.mkdir()  # an empty directory of the worker's, at the name Verdict made
+            replaced.append(tree.parent)
+
+        attempt = make_executor(repo, tmp_path, StubRunner(hostile)).execute_unit(unit("a.py"))
+        assert attempt.outcome == "error"
+        assert replaced[0].is_dir() and list(replaced[0].iterdir()) == []
+        assert list(moved.iterdir()) == []  # the original was emptied through its descriptor
+
+    def test_a_tree_reached_through_a_replaced_attempt_directory_is_not_read(
+        self, tmp_path: Path
+    ) -> None:
+        """The walk and the reads open the tree once and accept only the directory that was seeded."""
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        forged = tmp_path / "forged"
+        forged.mkdir()
+
+        def hostile(tree: Path) -> None:
+            shutil.copytree(tree, forged / "tree", symlinks=True)  # a complete copy ...
+            write(forged / "tree", "a.py", "x = 2\n")  # ... holding an owned edit
+            tree.parent.rename(tmp_path / "moved")
+            tree.parent.symlink_to(forged)  # the executor's path to the tree now leads here
+
+        attempt = make_executor(repo, tmp_path, StubRunner(hostile)).execute_unit(unit("a.py"))
+        assert attempt.outcome == "error"
+        assert "changed during validation" in attempt.reason
+        assert snapshot(repo) == before
+
+    def test_cleanup_does_not_follow_a_link_inside_the_tree(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", ".gitignore": "cache/\n"})
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / "f.txt").write_text("outside\n")
+        external.chmod(0o755)
+
+        def hostile(tree: Path) -> None:
+            edit_a(tree)
+            (tree / "cache").mkdir()  # ignored, so a byproduct
+            (tree / "cache" / "link").symlink_to(external)
+            (tree / "cache").chmod(0o500)
+
+        attempt = make_executor(repo, tmp_path, StubRunner(hostile)).execute_unit(unit("a.py"))
+        assert attempt.outcome == "applied"
+        assert attempts_left(tmp_path) == []
+        assert stat.S_IMODE(external.stat().st_mode) == 0o755
+        assert (external / "f.txt").read_text() == "outside\n"
+
+    @pytest.mark.parametrize(("mode", "outcome"), [(0o555, "applied"), (0o000, "error")])
+    def test_cleanup_removes_directories_the_worker_made_unusable(
+        self, tmp_path: Path, mode: int, outcome: str
+    ) -> None:
+        if mode == 0 and not no_follow_chmod_works(tmp_path):
+            pytest.skip("this host cannot chmod a directory by name without following links")
+        repo = make_repo(tmp_path, {"a.py": "a = 1\n", ".gitignore": "cache/\n"})
+
+        def hostile(tree: Path) -> None:
+            edit_a(tree)
+            write(tree, "cache/deep/f.txt", "x\n")  # ignored, so the 0o555 case is applied
+            (tree / "cache" / "deep").chmod(mode)
+            (tree / "cache").chmod(mode)
+
+        attempt = make_executor(repo, tmp_path, StubRunner(hostile)).execute_unit(unit("a.py"))
+        assert attempt.outcome == outcome
+        assert attempts_left(tmp_path) == []
+
+    @pytest.mark.skipif(not os.path.isdir("/proc/self/fd"), reason="needs /proc/self/fd")
+    @pytest.mark.parametrize(
+        "exit_path", ["applied", "rejected", "error", "exception", "interrupt"]
+    )
+    def test_no_descriptor_is_left_open(self, tmp_path: Path, exit_path: str) -> None:
+        repo = make_repo(tmp_path)
+        runner = {
+            "applied": StubRunner(edit_a),
+            "rejected": StubRunner(lambda tree: write(tree, "b.py", "evil\n")),
+            "error": StubRunner(edit_a, ok=False, error="exited 1"),
+            "exception": StubRunner(raises=RuntimeError("boom")),
+            "interrupt": StubRunner(raises=KeyboardInterrupt()),
+        }[exit_path]
+        executor = make_executor(repo, tmp_path, runner)
+        before = open_descriptors()
+        with contextlib.suppress(RuntimeError, KeyboardInterrupt):
+            executor.execute_unit(unit("a.py"))
+        assert open_descriptors() == before
+
+
+def failing_directory_close(
+    real: Callable[[int], None], closed: list[int] | None = None
+) -> Callable[[int], None]:
+    """An ``os.close`` that closes a directory descriptor and then reports an I/O error for it."""
+
+    def close(fd: int) -> None:
+        is_directory = False
+        with contextlib.suppress(OSError):
+            is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        real(fd)
+        if is_directory:
+            if closed is not None:
+                closed.append(fd)
+            raise OSError(errno.EIO, "Input/output error")
+
+    return close
+
+
+class CloseLedger:
+    """Wraps ``os.open`` and ``os.close`` on ``patch`` and records every directory or regular-file
+    descriptor opened and closed (a pipe or a device a subprocess uses is not counted).
+
+    Once ``armed``, a close of a descriptor in ``fail`` ("read": a directory or a file open read-only;
+    "written": a file open for writing) really closes it and then reports an I/O error, as close(2)
+    may.  A test arms it from inside the failure it injects, so only the closes that run while that
+    failure unwinds can fail.
+    """
+
+    def __init__(
+        self, patch: pytest.MonkeyPatch, *, fail: tuple[str, ...] = ("read",), armed: bool = False
+    ) -> None:
+        self.opened: list[int] = []
+        self.closed: list[int] = []
+        self.armed = armed
+        real_open, real_close = os.open, os.close
+
+        def kind_of(fd: int) -> str | None:
+            try:
+                mode = os.fstat(fd).st_mode
+                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            except OSError:
+                return None
+            if stat.S_ISDIR(mode):
+                return "read"
+            if stat.S_ISREG(mode):
+                return "written" if flags & os.O_ACCMODE == os.O_WRONLY else "read"
+            return None
+
+        def tracking_open(*args: Any, **kwargs: Any) -> int:
+            fd = real_open(*args, **kwargs)
+            if kind_of(fd) is not None:
+                self.opened.append(fd)
+            return fd
+
+        def close(fd: int) -> None:
+            kind = kind_of(fd)
+            real_close(fd)
+            if kind is None:
+                return
+            self.closed.append(fd)
+            if self.armed and kind in fail:
+                raise OSError(errno.EIO, "Input/output error")
+
+        patch.setattr(os, "open", tracking_open)
+        patch.setattr(os, "close", close)
+
+    def assert_every_descriptor_closed(self) -> None:
+        """Each descriptor opened was closed exactly once: a failing close skipped none of the others."""
+        assert self.opened  # the call under test opened descriptors
+        assert sorted(self.closed) == sorted(self.opened)
+
+
+class TestCleanupNeverMasks:
+    """Sweep after review finding 4 (Codex on 4ee5c0f3): cleanup that runs because something failed, or
+    on every exit, never raises, so it cannot replace the exception that is propagating."""
+
+    def test_cleanup_never_raises_when_a_close_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        parent = tmp_path / "attempts"
+        parent.mkdir()
+        attempt_dir = oc.AttemptDirectory(parent)
+        held = {attempt_dir._fd, attempt_dir._root_fd}
+        closed: list[int] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "close", failing_directory_close(os.close, closed))
+            attempt_dir.remove()  # must not raise
+        assert sorted(closed) == sorted(held)  # the first failing close did not skip the second
+        assert list(parent.iterdir()) == []
+
+    def test_a_failed_construction_does_not_replace_its_own_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        parent = tmp_path / "attempts"
+        parent.mkdir()
+
+        def too_many(*_args: Any, **_kwargs: Any) -> int:
+            raise OSError(errno.EMFILE, "Too many open files")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(oc, "_open_dir_at", too_many)
+            patch.setattr(os, "close", failing_directory_close(os.close))
+            with pytest.raises(OSError) as caught:
+                oc.AttemptDirectory(parent)
+        assert caught.value.errno == errno.EMFILE
+        assert list(parent.iterdir()) == []  # the directory made before the failure is removed
+
+    def test_a_parent_that_is_a_file_is_still_a_conflict_when_a_close_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path, {"d/blocker": "a file, not a directory\n", "a.py": "a = 1\n"})
+        root_fd = os.open(str(repo), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(os, "close", failing_directory_close(os.close))
+                with pytest.raises(oc._ConflictError) as caught:
+                    oc._descend_existing(root_fd, ["d", "blocker"], "d/blocker/x.py")
+        finally:
+            os.close(root_fd)
+        assert "not a real directory" in str(caught.value)
+
+    def test_a_refused_seed_keeps_its_own_error_when_cleanup_cannot_close(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")  # no commit: the seed is refused
+        parent = tmp_path / "attempt"
+        parent.mkdir(mode=0o700)
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "close", failing_directory_close(os.close))
+            with pytest.raises(oc.AttemptFailedError) as caught:
+                oc.seed_attempt_tree(repo, parent, ("a.py",))
+        assert "no HEAD commit" in caught.value.reason
+
+    # Review round 5 (Codex on 6af5e4cd): every close in a ``finally`` or a handler of the module,
+    # not only in the attempt directory's own cleanup.  Each test arms the ledger from inside the
+    # failure it injects, so the closes that fail are the ones that run while that failure unwinds.
+
+    @pytest.mark.parametrize(
+        ("hook", "primary_type", "expected"),
+        [
+            ("after_checks", PermissionError, PermissionError),
+            ("after_checks", KeyboardInterrupt, KeyboardInterrupt),
+            ("before_write", PermissionError, oc.TransferFailedError),
+            ("before_write", KeyboardInterrupt, KeyboardInterrupt),
+        ],
+    )
+    def test_a_transfer_failure_is_not_replaced_by_a_close_that_fails_while_it_unwinds(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        hook: str,
+        primary_type: type[BaseException],
+        expected: type[BaseException],
+    ) -> None:
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        m0 = user_manifest(repo)
+        before = snapshot(repo)
+        primary = primary_type("primary failure")
+        journal: list[oc.JournalEntry] = []
+        items = [witem("a.py", "worker\n"), witem("d/inner.py", "worker\n")]
+        with monkeypatch.context() as patch:
+            ledger = CloseLedger(patch)
+
+            def fail(*args: str) -> None:
+                if not args or args[0] == "d/inner.py":  # the second write, with ``d`` held open
+                    ledger.armed = True  # every read-only and directory close from here on fails
+                    raise primary
+
+            with pytest.raises(expected) as caught:
+                run_transfer(repo, items, m0, journal, {hook: fail})
+        ledger.assert_every_descriptor_closed()
+        if isinstance(caught.value, oc.TransferFailedError):
+            assert caught.value.__cause__ is primary  # the failure the rollback was run for
+            assert "PermissionError: primary failure" in caught.value.reason
+            assert "Input/output" not in caught.value.reason
+            assert journal == [] and snapshot(repo) == before  # and the rollback finished
+        else:
+            assert caught.value is primary  # the original object, not an OSError for the close
+            if hook == "before_write":
+                assert len(journal) == 1  # a.py is journalled for the caller's restore()
+                oc.restore_transfer(journal, repo)
+            assert snapshot(repo) == before
+
+    @pytest.mark.parametrize("path", ["a.py", "d/inner.py"])
+    @pytest.mark.parametrize("primary_type", [PermissionError, KeyboardInterrupt])
+    def test_a_restore_failure_is_not_replaced_by_a_close_that_fails_while_it_unwinds(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
+        primary_type: type[BaseException],
+    ) -> None:
+        """``a.py`` holds no directory, so only ``restore_transfer``'s own close can mask; ``d/inner.py``
+        holds one, so ``_restore_file``'s can too."""
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        before = snapshot(repo)
+        journal = transferred(repo, [witem(path, "worker\n")])
+        primary = primary_type("primary failure")
+        with monkeypatch.context() as patch:
+            ledger = CloseLedger(patch)
+
+            def failing_state(*_args: Any, **_kwargs: Any) -> tuple[Any, bytes]:
+                ledger.armed = True
+                raise primary
+
+            patch.setattr(oc, "_state_at", failing_state)
+            if primary_type is KeyboardInterrupt:
+                with pytest.raises(KeyboardInterrupt) as caught:
+                    oc.restore_transfer(journal, repo)
+                assert caught.value is primary
+                assert len(journal) == 1  # the entry in progress stays for a second restore
+            else:
+                result = oc.restore_transfer(journal, repo)
+                # the path's own failure is what is named, and no second entry is made for a close
+                assert result.not_restored == [(path, "PermissionError: primary failure")]
+                assert journal == []
+        ledger.assert_every_descriptor_closed()
+        if primary_type is KeyboardInterrupt:
+            oc.restore_transfer(journal, repo)
+            assert snapshot(repo) == before
+
+    @pytest.mark.parametrize("primary_type", [PermissionError, KeyboardInterrupt])
+    def test_a_directory_restore_failure_is_not_replaced_by_a_close_that_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, primary_type: type[BaseException]
+    ) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        journal = transferred(repo, [witem("deep/er/new.py", "created\n")])
+        primary = (
+            PermissionError(errno.EACCES, "primary failure")
+            if primary_type is PermissionError
+            else KeyboardInterrupt("primary failure")
+        )
+        real_rmdir = os.rmdir
+        with monkeypatch.context() as patch:
+            ledger = CloseLedger(patch)
+
+            def failing_rmdir(name: str, *args: Any, **kwargs: Any) -> None:
+                if name != "er":  # the created directory with ``deep`` held open above it
+                    real_rmdir(name, *args, **kwargs)
+                    return
+                ledger.armed = True
+                raise primary
+
+            patch.setattr(os, "rmdir", failing_rmdir)
+            if primary_type is KeyboardInterrupt:
+                with pytest.raises(KeyboardInterrupt) as caught:
+                    oc.restore_transfer(journal, repo)
+                assert caught.value is primary
+                assert len(journal) == 2  # deep/er and deep are still to be undone
+            else:
+                result = oc.restore_transfer(journal, repo)
+                assert ("deep/er", "primary failure") in result.not_restored
+                assert not any("Input/output" in why for _path, why in result.not_restored)
+                assert journal == []
+        ledger.assert_every_descriptor_closed()
+        if primary_type is KeyboardInterrupt:
+            oc.restore_transfer(journal, repo)
+            assert snapshot(repo) == before
+
+    def test_every_directory_and_read_only_close_may_fail_and_an_attempt_still_completes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The success paths of the seed, the delta, the transfer and the restore: a close of a
+        directory or of a file opened only to read it is not worth an error."""
+        repo = make_repo(tmp_path, {"d/inner.py": "i = 1\n", "a.py": "a = 1\n"})
+        before = snapshot(repo)
+        # one to change, one to create in a directory that exists, one in directories to create
+        owned = ("d/inner.py", "d/new.py", "deep/er/new.py")
+        with monkeypatch.context() as patch:
+            ledger = CloseLedger(patch, armed=True)
+            assert user_manifest(repo)["a.py"].kind == "file"  # the walk, opened by pathname
+            tree = seed(repo, tmp_path, owned)
+            for rel in owned:
+                write(tree.path, rel, "worker\n")
+            changes = delta(tree, repo, owned)
+            journal: list[oc.JournalEntry] = []
+            oc.transfer(changes, repo, tree.manifest, journal, root_identity=tree.root_identity)
+            assert (repo / "deep" / "er" / "new.py").read_text() == "worker\n"
+            result = oc.restore_transfer(journal, repo)
+        ledger.assert_every_descriptor_closed()
+        assert result.not_restored == []
+        assert snapshot(repo) == before
+
+    def test_cleanup_removes_nested_directories_when_every_close_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A close that fails must not skip the ``rmdir`` of the directory it was opened to empty."""
+        parent = tmp_path / "attempts"
+        parent.mkdir()
+        with monkeypatch.context() as patch:
+            ledger = CloseLedger(patch, armed=True)
+            attempt_dir = oc.AttemptDirectory(parent)
+            write(attempt_dir.path, "tree/sub/deep/f.txt", "x\n")
+            attempt_dir.remove()  # must not raise
+        assert list(parent.iterdir()) == []
+        ledger.assert_every_descriptor_closed()
+
+    def test_a_directory_in_the_way_of_a_copied_file_is_replaced_when_its_close_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tree = tmp_path / "tree"
+        write(tree, "x/inner/f.txt", "in the way\n")
+        tree_fd = os.open(tree, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with monkeypatch.context() as patch:
+                ledger = CloseLedger(patch, armed=True)
+                oc._copy_into_tree(tree_fd, "x", "file", (b"data\n", 0o644))
+        finally:
+            os.close(tree_fd)
+        assert (tree / "x").read_text() == "data\n"
+        ledger.assert_every_descriptor_closed()
+
+    @pytest.mark.parametrize("primary_type", [PermissionError, KeyboardInterrupt])
+    @pytest.mark.parametrize("writer", ["replace_file", "copy_into_tree"])
+    def test_a_write_failure_is_not_replaced_by_a_failing_close_of_the_written_file(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        writer: str,
+        primary_type: type[BaseException],
+    ) -> None:
+        directory = tmp_path / "target"
+        directory.mkdir()
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        primary = primary_type("primary failure")
+        real_write = os.write
+        try:
+            with monkeypatch.context() as patch:
+                ledger = CloseLedger(patch, fail=("read", "written"))
+
+                def failing_write(fd: int, data: Any) -> int:
+                    if fd not in ledger.opened:
+                        return real_write(fd, data)
+                    ledger.armed = True  # the written file's close, and the directories', now fail
+                    raise primary
+
+                patch.setattr(os, "write", failing_write)
+                with pytest.raises(primary_type) as caught:
+                    if writer == "replace_file":
+                        oc.replace_file(dir_fd, "f.txt", b"data", 0o644)
+                    else:
+                        oc._copy_into_tree(dir_fd, "sub/f.txt", "file", (b"data", 0o644))
+        finally:
+            os.close(dir_fd)
+        assert caught.value is primary
+        ledger.assert_every_descriptor_closed()
+        if writer == "replace_file":
+            assert list(directory.iterdir()) == []  # the temporary file was removed
+
+    @pytest.mark.parametrize("writer", ["replace_file", "copy_into_tree"])
+    def test_a_failing_close_of_the_written_file_is_still_the_write_s_own_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, writer: str
+    ) -> None:
+        """The other half of the rule: with nothing else propagating, a close of a file that was
+        written is the write's failure and surfaces (the seed names it, the transfer rolls back)."""
+        directory = tmp_path / "target"
+        directory.mkdir()
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with monkeypatch.context() as patch:
+                ledger = CloseLedger(patch, fail=("written",), armed=True)
+                with pytest.raises(OSError) as caught:
+                    if writer == "replace_file":
+                        oc.replace_file(dir_fd, "f.txt", b"data", 0o644)
+                    else:
+                        oc._copy_into_tree(dir_fd, "f.txt", "file", (b"data", 0o644))
+        finally:
+            os.close(dir_fd)
+        assert caught.value.errno == errno.EIO
+        ledger.assert_every_descriptor_closed()
+        if writer == "replace_file":
+            assert list(directory.iterdir()) == []  # no temporary file is left behind
+
+
+# --------------------------------------------------------------------------------------------
+# 3.3 preflight
+# --------------------------------------------------------------------------------------------
+
+
+def preflight_executor(
+    repo: Path, tmp_path: Path, git_runner: Callable[..., Any] | None = None
+) -> oc.OpenCodeUnitExecutor:
+    kwargs: dict[str, Any] = {} if git_runner is None else {"git_runner": git_runner}
+    temp_root = tmp_path / "attempts"
+    temp_root.mkdir(exist_ok=True)
+    return oc.OpenCodeUnitExecutor(
+        repo, StubRunner(), model="cheap/model", temp_root=temp_root, **kwargs
+    )
+
+
+def refused(repo: Path, tmp_path: Path, owned: tuple[str, ...], path: str) -> str:
+    before = snapshot(repo)
+    reason = preflight_executor(repo, tmp_path).preflight(unit(*owned))
+    assert reason is not None
+    assert path in reason
+    assert "commit or stash" in reason or "ignore rule" in reason
+    assert snapshot(repo) == before
+    assert attempts_left(tmp_path) == []
+    return reason
+
+
+class TestPreflight:
+    def test_tracked_and_unmodified_owned_file(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        assert preflight_executor(repo, tmp_path).preflight(unit("a.py", "b.py")) is None
+
+    def test_modified_owned_file_refused(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        write(repo, "a.py", "x = 99\n")
+        refused(repo, tmp_path, ("a.py",), "a.py")
+
+    @pytest.mark.parametrize("how", ["staged", "deleted"])
+    def test_staged_or_deleted_owned_file_refused(self, tmp_path: Path, how: str) -> None:
+        repo = make_repo(tmp_path)
+        if how == "staged":
+            write(repo, "a.py", "x = 99\n")
+            git(repo, "add", "a.py")  # staged, and the working tree equals the index
+        else:
+            (repo / "a.py").unlink()
+        refused(repo, tmp_path, ("a.py",), "a.py")
+
+    @pytest.mark.parametrize("how", ["untracked", "ignored"])
+    def test_untracked_or_ignored_owned_file_refused(self, tmp_path: Path, how: str) -> None:
+        repo = make_repo(tmp_path)
+        if how == "untracked":
+            write(repo, "fresh.py", "f = 1\n")
+        else:
+            write(repo, ".gitignore", "fresh.py\n")
+            git(repo, "add", ".gitignore")
+            git(repo, "commit", "-qm", "ignore")
+            write(repo, "fresh.py", "f = 1\n")
+        refused(repo, tmp_path, ("fresh.py",), "fresh.py")
+
+    def test_assume_unchanged_owned_file_refused(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        git(repo, "update-index", "--assume-unchanged", "a.py")
+        write(repo, "a.py", "x = 99\n")
+        assert git(repo, "status", "--porcelain") == ""  # the edit is invisible to git status
+        reason = refused(repo, tmp_path, ("a.py",), "a.py")
+        assert "'h'" in reason
+
+    @pytest.mark.parametrize("state", ["edited", "absent"])
+    def test_skip_worktree_owned_file_refused(self, tmp_path: Path, state: str) -> None:
+        repo = make_repo(tmp_path)
+        git(repo, "update-index", "--skip-worktree", "a.py")
+        if state == "edited":
+            write(repo, "a.py", "x = 99\n")
+        else:
+            (repo / "a.py").unlink()
+        assert git(repo, "status", "--porcelain") == ""
+        reason = refused(repo, tmp_path, ("a.py",), "a.py")
+        assert "'S'" in reason
+
+    @pytest.mark.parametrize("attribute", ["filter", "ident"])
+    def test_owned_file_with_a_filter_or_ident_attribute_refused(
+        self, tmp_path: Path, attribute: str
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        if attribute == "filter":
+            git(repo, "config", "filter.strip.clean", "sed 's/  # note.*//'")
+            write(repo, ".gitattributes", "a.txt filter=strip\n")
+            write(repo, "a.txt", "x = 1  # note A\n")
+            edited = "x = 1  # note B\n"
+        else:
+            write(repo, ".gitattributes", "a.txt ident\n")
+            write(repo, "a.txt", "$Id: " + "1" * 40 + " $\n")
+            edited = "$Id: " + "2" * 40 + " $\n"
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "init")
+        write(repo, "a.txt", edited)
+        assert git(repo, "status", "--porcelain") == ""  # same-size edit the attribute hides
+        reason = refused(repo, tmp_path, ("a.txt",), "a.txt")
+        assert attribute in reason
+
+    @pytest.mark.parametrize("with_attribute", [False, True])
+    def test_absent_owned_file_accepted(self, tmp_path: Path, with_attribute: bool) -> None:
+        repo = make_repo(tmp_path)
+        if with_attribute:
+            write(repo, ".gitattributes", "new_file.py filter=anything\n")
+            git(repo, "add", ".gitattributes")
+            git(repo, "commit", "-qm", "attr")
+        assert preflight_executor(repo, tmp_path).preflight(unit("new_file.py")) is None
+
+    def test_ignored_absent_owned_file_refused(self, tmp_path: Path) -> None:
+        """Carried finding 1: a unit that would create an ignored file is refused."""
+        repo = make_repo(tmp_path, {"a.py": "x = 1\n", ".gitignore": "generated_*.py\n"})
+        reason = refused(repo, tmp_path, ("generated_out.py",), "generated_out.py")
+        assert "ignore rule" in reason
+
+    def test_ignored_and_plain_absent_owned_files_refused(self, tmp_path: Path) -> None:
+        """Carried finding 1, mixed: the whole unit is refused, so nothing is half-transferred."""
+        repo = make_repo(tmp_path, {"a.py": "x = 1\n", ".gitignore": "generated_*.py\n"})
+        before = snapshot(repo)
+        reason = preflight_executor(repo, tmp_path).preflight(
+            unit("generated_out.py", "plain_out.py")
+        )
+        assert reason is not None and "generated_out.py" in reason
+        assert snapshot(repo) == before
+        assert not (repo / "plain_out.py").exists()
+
+    def test_unowned_dirty_file_does_not_refuse(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        write(repo, "b.py", "dirty = 1\n")
+        write(repo, "untracked.py", "u = 1\n")
+        assert preflight_executor(repo, tmp_path).preflight(unit("a.py")) is None
+        tree = seed(repo, tmp_path, ("a.py",))  # ... and the dirty unowned files go into the seed
+        assert (tree.path / "b.py").read_text() == "dirty = 1\n"
+        assert (tree.path / "untracked.py").read_text() == "u = 1\n"
+
+    @pytest.mark.parametrize("read", ["status", "ls-files", "check-attr", "check-ignore"])
+    def test_git_read_fails_closed(self, tmp_path: Path, read: str) -> None:
+        repo = make_repo(tmp_path)
+        owned = ("a.py", "gen.py") if read == "check-ignore" else ("a.py",)
+
+        def failing(argv: list[str], **kwargs: Any) -> Any:
+            if read in argv:
+                # check-ignore exits 1 for "nothing ignored"; any status other than 0 and 1 is a failure
+                return subprocess.CompletedProcess(argv, 128, b"", b"fatal: simulated")
+            return subprocess.run(argv, **kwargs)
+
+        before = snapshot(repo)
+        reason = preflight_executor(repo, tmp_path, failing).preflight(unit(*owned))
+        assert reason is not None and read.replace("-", " ") in reason.replace("-", " ")
+        assert "simulated" in reason
+        assert snapshot(repo) == before
+
+    def test_check_ignore_exit_one_is_not_a_failure(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+
+        def clean(argv: list[str], **kwargs: Any) -> Any:
+            if "check-ignore" in argv:
+                return subprocess.CompletedProcess(argv, 1, b"", b"")
+            return subprocess.run(argv, **kwargs)
+
+        assert preflight_executor(repo, tmp_path, clean).preflight(unit("gen.py")) is None
+
+
+# --------------------------------------------------------------------------------------------
+# 3.4 isolation matrix
+# --------------------------------------------------------------------------------------------
+
+
+class TestMatrix:
+    @pytest.mark.parametrize(
+        "variant",
+        ["plain", "staged", "commit", "unowned_new_file", "symlink_swap", "push", "planted_config"],
+    )
+    def test_out_of_bounds_edits_are_rejected(self, tmp_path: Path, variant: str) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+        marker = tmp_path / "marker"
+
+        def hostile(tree: Path) -> None:
+            if variant == "plain":
+                write(tree, "b.py", "evil\n")
+            elif variant == "staged":
+                write(tree, "b.py", "evil\n")
+                git(tree, "add", "b.py")
+            elif variant == "commit":
+                write(tree, "b.py", "evil\n")
+                git(tree, "add", "b.py")
+                git(tree, "commit", "-qm", "evil", "--no-verify")
+            elif variant == "unowned_new_file":
+                write(tree, "newfile.py", "evil\n")
+            elif variant == "symlink_swap":
+                (tree / "a.py").unlink()
+                (tree / "a.py").symlink_to(repo / "b.py")
+            elif variant == "push":
+                write(tree, "b.py", "evil\n")
+                done = subprocess.run(
+                    ["git", "push", "origin"], cwd=tree, capture_output=True, text=True, check=False
+                )
+                assert done.returncode != 0  # the clone has no origin to push to
+            else:
+                script = tmp_path / "plant.sh"
+                script.write_text(f"#!/bin/sh\ntouch {marker}\n")
+                script.chmod(0o755)
+                with (tree / ".git" / "config").open("a") as handle:
+                    handle.write(f"[core]\n\tfsmonitor = {script}\n")
+                hook = tree / ".git" / "hooks" / "pre-commit"
+                hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+                hook.chmod(0o755)
+                write(tree, "b.py", "evil\n")
+
+        executor = make_executor(repo, tmp_path, StubRunner(hostile))
+        attempt = executor.execute_unit(unit("a.py"))
+        assert attempt.outcome == "rejected"
+        assert snapshot(repo) == before
+        assert attempts_left(tmp_path) == []
+        assert not marker.exists()
+
+    def test_no_context_file_at_all(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        attempt = make_executor(repo, tmp_path, StubRunner(edit_a)).execute_unit(unit("a.py"))
+        assert attempt.outcome == "applied" and attempt.changed_files == ("a.py",)
+        assert git(repo, "status", "--porcelain", "--untracked-files=all") == " M a.py\n"
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="ADR-053 Decision 4: a worker shell can write an absolute path in the user's tree",
+    )
+    def test_absolute_path_write_is_an_accepted_risk(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        before = snapshot(repo)
+
+        def absolute(tree: Path) -> None:
+            edit_a(tree)
+            (repo / "written-by-absolute-path.txt").write_text("a shell can do this\n")
+
+        make_executor(repo, tmp_path, StubRunner(absolute)).execute_unit(unit("a.py"))
+        assert snapshot(repo) == before

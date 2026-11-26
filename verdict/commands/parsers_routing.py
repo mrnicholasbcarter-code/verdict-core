@@ -85,6 +85,18 @@ def register(subparsers: Any) -> None:
         "--dry-run", action="store_true", help="Show the plan and its cost without executing"
     )
     autodev_p.add_argument(
+        "--worker-harness",
+        choices=["opencode"],
+        default=None,
+        help=(
+            "Experimental, opt-in: run model-tier units on this harness in an isolated clone "
+            "instead of the default gateway patch executor. Needs opencode, 'verdict serve' and "
+            "its credentials (checked first; one message and exit 1 if missing, no fallback). "
+            "An owned file with uncommitted changes is refused. Retries and lineage are not yet "
+            "supported."
+        ),
+    )
+    autodev_p.add_argument(
         "--execution-path-request",
         default=None,
         help=(

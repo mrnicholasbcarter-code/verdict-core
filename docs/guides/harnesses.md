@@ -471,6 +471,105 @@ model choosing its route, it is not a boundary against a hostile worker.  A work
 offer and cannot pin the assigned route, and pinned execution-path support for workers is not
 built.
 
+### OpenCode for `verdict autodev` (experimental, opt-in)
+
+`verdict autodev --worker-harness opencode` runs each model-tier unit on OpenCode instead of the
+default one-shot gateway patch (`PatchExecutor`), so a unit gets the edit, test and fix loop on
+the route autodev selected.  Without the flag nothing changes: no check runs, no clone is made
+and no OpenCode process starts.  With `--dry-run` the flag has no effect.
+
+```bash
+verdict autodev --allow-live --worker-harness opencode --objective "fix the ruff errors"
+```
+
+**Checked first.**  With the flag and `--allow-live`, before any route probe or planner call
+(whether or not a decision was supplied), autodev checks that the `opencode` binary runs
+`--version`, that `verdict serve` (`VERDICT_SERVE_URL`, default `http://127.0.0.1:8000`) answers
+`GET /health` with 200 and `"engine": "verdict"`, and that the serve token resolves and the worker
+signing key (`~/.config/verdict/worker-assignment.key`) is readable.  A failure prints one message
+naming the check and the remedy and exits 1 (one JSON object with `--json`); nothing falls back to
+the default executor.  An OpenCode version other than the pinned v2.3.2 is named in the output and
+does not stop the run.
+
+**Each attempt runs in a clone, not in your repository.**  Autodev makes an unshared `git clone
+--no-local` of the repository in a new private directory under the system temporary directory
+(`verdict-autodev-oc-*`, mode 0700), copies your modified, deleted, staged, renamed and untracked
+files over it, and runs OpenCode there with a signed assignment bound to the autodev run id (the
+one the attempt ledger uses) and the unit id.  An attempt lasts at most 600 seconds.  When it ends
+Verdict compares the clone with what it seeded, from file contents, without running git in the
+clone (a hook or `core.fsmonitor` the worker plants never runs).  Only changes to the files the
+unit owns, as regular files or deletions, are copied back.  Any other change to a file's bytes, kind
+or executable bit (an unowned file edited, created or deleted, a symlink, a special file) rejects the
+attempt and leaves your repository byte-identical, whether or not the worker also staged or committed
+it in the clone.  Two things are deliberately not changes: git's own state in the clone (a commit, a
+branch, the index) is never read or copied back, so a commit or an index-only edit to an unowned file
+whose working-tree bytes are as seeded is not seen and reaches nothing; and a new file that your own
+ignore rules match (a cache or build output) is dropped as a byproduct unless the unit owns it.
+
+**The clone is removed** before the copy-back, and on every exit path in which the worker left it
+where Verdict made it (the cases where it did not are named next).  The worker runs as you inside
+it, so it could rename it or leave a link where it was; Verdict holds the directory open from the
+moment it makes it, empties it through that handle without following any link, and removes its name
+only if the entry there is still the directory it made.  A directory the worker moved away is emptied
+and left where it was moved, and what it put at the old name is not touched.  Where this host cannot
+change a directory's mode without following links, a directory the worker made unreadable (mode 000)
+is left behind.
+
+**An owned file git cannot recover is refused.**  The copy-back keeps its undo information in
+memory, so before a worker starts git must hold your bytes.  A unit is refused, with the file and
+the remedy ("commit or stash it, or run without --worker-harness opencode"), when an owned file
+has uncommitted changes (modified, staged, deleted, renamed), is untracked or ignored, is hidden
+from `git status` (`assume-unchanged`, `skip-worktree`, a `filter` or `ident` attribute), or does
+not exist yet and an ignore rule matches it.  A refused unit starts no worker and is not counted
+as a model attempt.  If the mechanical tier (`ruff --fix`) had already edited the file when it
+declined the unit, that edit stays, exactly as on the default path.  Unowned dirty files are fine:
+they are seeded into the clone.
+
+**Restore.**  Every exit after the copy-back other than a verified success (a failing
+verification command, an error, Ctrl-C) puts the owned files back.  Restore leaves a change made
+since as it is, within the limits under "Your edits while it runs" below: a file the verification
+command or you edited is left as it is and named in the unit's reason, and a file whose state cannot be read during the restore is named too while the
+others are still restored.  A verified unit stays, and a later unit's failure never undoes it.  If the
+restore itself fails or is interrupted while an exception is already propagating, that is printed (when
+standard error can be written) and the original exception is the one raised, and what the restore had not reached is put back the way
+**A crash** below describes.
+
+**Your edits while it runs.**  The copy-back refuses a file you changed since the clone was seeded
+(an edit, a mode change, a file you created or removed), and it looks once more after each temporary
+file is written, immediately before the rename (the file, and the directories above it, which must be
+the ones it opened), so an edit you make while Verdict is copying is refused, not overwritten.
+Restore takes the same last look, and it also names a file as not restored when its directory is no
+longer the one the copy-back wrote through (renamed away, or replaced by another directory),
+whatever bytes the replacement holds, and when the repository itself was renamed away and another
+directory took its name it restores nothing and names every file it changed.  The copy-back
+likewise refuses the whole attempt, before it writes anything, when the repository was renamed away
+and another directory took its name after the clone was seeded: it writes only into the directory
+the seed read.  POSIX
+has no rename that compares content, so a write that lands between that last look and the rename, or
+through a file you already had open, is still overwritten, and the journal holds the seed's bytes, not
+your edit; keep from editing an owned file while a unit runs.
+
+**A crash.**  If the process is killed while it writes, each owned file holds either its old or its
+new bytes (the copy is a rename), at most one `.verdict-transfer-*` file is left in a directory the
+unit owns, and `git checkout -- <owned files>` plus removing the files and empty directories the
+unit created puts the repository back (line endings as git writes them).  Nothing runs
+automatically after a crash, an interrupted attempt can leave its clone in the temporary
+directory, and power loss is not covered.  What the verification command writes is outside this
+guarantee.
+
+**What this does not isolate.**  A worker's shell can still write an absolute path
+([ADR-053](../adr/ADR-053-opencode-worker-adapter.md) decision 4); the mechanical tier and the
+unit's verification command still run in your repository, as on the default path; the clone has no
+ignored files (`.venv`, caches), so the worker's own test loop may fail or be slow; line-ending and
+encoding conversions are not refused.  Limits: 50,000 files and 512 MiB in the seed (the files copied
+from your tree share that budget as they are read), 1 MiB per transferred file; POSIX only.
+
+**Not yet supported.**  A failed unit is not retried on any executor (autodev refuses retry
+routes with this flag), the attempt ledger still labels these units `verdict-autodev-executor`,
+and the receipt records the requested route with no served identity.  Retries, lineage and the
+live check are
+[#1314](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1314).
+
 ## Prime Agent
 
 Architect lock: `verdict harness prime discover|enable|disable|status|certify`.
