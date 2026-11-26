@@ -135,6 +135,42 @@ def test_no_github_remote_is_a_note() -> None:
     assert row["status"] == "note"
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "git@github.com:owner/repo.git",
+        "https://github.com/owner/repo.git",
+        "https://github.com/owner/repo",
+        "https://user@github.com/owner/repo.git",
+        "ssh://git@github.com/owner/repo.git",
+    ],
+)
+def test_github_remote_forms_are_recognised(url: str) -> None:
+    stub = StubGh(remote=CommandResult(0, url + "\n"))
+    row = dd.github_delivery_row(stub)
+    assert row["status"] == "ok"
+    assert "owner/repo" in row["detail"]
+    view = next(call for call in stub.calls if call[:3] == ["gh", "repo", "view"])
+    assert view[3] == "https://github.com/owner/repo"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://notgithub.com/owner/repo.git",
+        "https://github.com.evil.example/owner/repo.git",
+        "https://evil.example/github.com/owner/repo",
+        "git@evil.example:github.com/owner/repo.git",
+    ],
+)
+def test_non_github_hosts_are_not_github_remotes(url: str) -> None:
+    stub = StubGh(remote=CommandResult(0, url + "\n"))
+    row = dd.github_delivery_row(stub)
+    assert row["status"] == "note"
+    assert "no GitHub origin remote" in row["detail"]
+    assert not any(call[0] == "gh" and call[1] != "--version" for call in stub.calls)
+
+
 def test_output_with_token_never_reaches_the_row() -> None:
     noisy = f"Logged in as octocat (token: {TOKEN})\nToken scopes: 'repo'\n"
     rows = [
