@@ -93,6 +93,11 @@ and `_record_failure` does not count it as a judged failure. The reason names th
 most; no other output text reaches it. Only the output the runner kept is read (its last 4,000
 characters): a first-party error in a cut-off part is not seen.
 
+Known limit (open review finding, not fixed here): "first party" is read from the worktree being
+checked, so a top-level module that the run itself deleted while an import of it remains looks
+like a missing dependency. At node level the full-environment gate reports that to the worker
+(the base still has the module); only an interplay between two nodes reaches integration this way.
+
 Left as it is: a gate that cannot start (exit 126 or 127) stays `verification_failed` at
 integration, as existing tests pin.
 
