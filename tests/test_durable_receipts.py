@@ -251,14 +251,15 @@ def test_verified_reads_walk_once_and_are_bound_to_their_scope(
 ) -> None:
     store, keys, _ = _evidence_store(tmp_path)
     receipts = store.receipts
-    receipts.put_receipt("decision", "other-scope", {"x": 1})
+    elsewhere = receipts.put_receipt("decision", "other-scope", {"x": 1})
     walks.clear()
     with receipts.verified_reads(_SCOPE) as reads:
         assert reads.get_receipt(keys[0], include_tombstones=True) is not None
         assert reads.query_receipts(limit=10) != []
         assert reads.query_receipts(parent_receipt_id=keys[0], include_tombstones=True) == []
         # The reads are the scope's own: another scope's rows are not visible through them.
-        assert reads.get_receipt("rcpt-other", include_tombstones=True) is None
+        assert reads.get_receipt(elsewhere.receipt_id, include_tombstones=True) is None
+        assert elsewhere.receipt_id not in {r.receipt_id for r in reads.query_receipts(limit=100)}
     assert walks == [_SCOPE]
     with pytest.raises(ValueError), receipts.verified_reads(_SCOPE) as reads:
         reads.query_receipts(limit=0)

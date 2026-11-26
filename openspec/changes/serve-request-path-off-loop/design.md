@@ -32,9 +32,10 @@ request, `/health` 16 to 32 s.
 1. **A scoped read block, not a flag or a token.** `ReceiptStore.verified_reads(scope)` is a
    context manager: it walks the scope once, raises `ReceiptIntegrityError` if the chain is
    broken (before yielding), then yields a `VerifiedReads` whose two readers have no scope
-   argument and no walk. The object stops working when the block ends, so it cannot be kept,
-   passed on or used after the data changed. `get_receipt` and `query_receipts` keep their
-   signatures and always walk; they have no skip argument for a caller to forge.
+   argument and no walk. The object stops working when the block ends, so it cannot be kept and
+   used after it. Inside the block it is not a snapshot: the walk and the reads are not one
+   transaction, as when the readers walked separately. `get_receipt` and `query_receipts` keep
+   their signatures and always walk; they have no skip argument for a caller to forge.
 2. **Same failure as before.** `get_receipt` walked first, so a broken chain raised from
    `_current` before any row was read, also for an unknown key. `verified_reads` raises the same
    error at the same point (on entry to the block). The old `return None` after a second walk

@@ -588,7 +588,7 @@ def test_a_stream_terminal_is_awaited_on_the_lane_even_when_the_closer_is_cancel
 
 
 def _cancel_while_held(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, hold_site: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, hold_site: str, *, close_lane: bool = False
 ) -> tuple[_Harness, list[tuple[str, str]]]:
     """Cancel a request task while ``hold_site`` is held on the lane; return what was recorded."""
     harness = _Harness(monkeypatch, _service(), tmp_path)
@@ -640,10 +640,18 @@ def _cancel_while_held(
                 request.cancel()  # the request task goes away while its lane job is held
                 with contextlib.suppress(asyncio.CancelledError):
                     await request
-                release.set()
                 lane = api.state_lane_instance
                 assert lane is not None
-                await lane.run(lambda: None)  # everything queued before this has now run
+                if close_lane:
+                    # The app starts shutting down while the held job is still running: the lane
+                    # takes no new job, yet the cancelled event queued before must still land.
+                    closing = asyncio.ensure_future(lane.aclose(timeout=10))
+                    await asyncio.sleep(0.05)
+                    release.set()
+                    await closing
+                else:
+                    release.set()
+                    await lane.run(lambda: None)  # everything queued before this has now run
 
     asyncio.run(scenario())
     return harness, finished
@@ -657,6 +665,45 @@ def test_a_task_cancelled_while_its_row_is_being_started_or_its_permit_committed
 
     assert ("chat_completion_cancelled", "cancelled") in finished, finished
     assert harness.transport.requests == [], "a cancelled request reached the upstream"
+
+
+def test_a_started_row_is_ended_even_when_the_lane_closes_before_its_start_job_finishes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Shutdown begins while the start job is held and its waiter is already cancelled."""
+    harness, finished = _cancel_while_held(monkeypatch, tmp_path, "start", close_lane=True)
+
+    assert ("chat_completion_cancelled", "cancelled") in finished, finished
+    assert harness.transport.requests == []
+
+
+def test_a_cancelled_lifespan_teardown_still_clears_the_lane_references(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _Harness(monkeypatch, _service(), tmp_path)
+    service = _service()
+    monkeypatch.setattr(api, "_build_intelligence", lambda: service)
+    gate = threading.Event()
+
+    async def scenario() -> StateLane:
+        context = contextlib.asynccontextmanager(api.lifespan)(api.app)
+        await context.__aenter__()
+        lane = api.state_lane_instance
+        assert lane is not None
+        busy = asyncio.ensure_future(lane.run(gate.wait, 10))
+        await asyncio.sleep(0.05)
+        teardown = asyncio.ensure_future(context.__aexit__(None, None, None))
+        await asyncio.sleep(0.05)
+        teardown.cancel()  # the app's own teardown is cancelled while the lane drains
+        with contextlib.suppress(asyncio.CancelledError):
+            await teardown
+        gate.set()
+        await busy
+        return lane
+
+    lane = asyncio.run(scenario())
+    assert lane.closed
+    assert api.state_lane_instance is None and service.state_lane is None
 
 
 def test_buffered_bookkeeping_keeps_its_order_in_one_lane_job(
