@@ -24,6 +24,7 @@ capture. Every line is one JSON object, as printed. Exit codes and stderr are no
 | `v2_3_2_error.jsonl` | answered every request `429` with a `retry-after: 7` header | 1 | empty |
 | `v2_3_2_error_503.jsonl` | answered every request `503`, no `retry-after` header | 1 | empty |
 | `v2_3_2_error_403_serve_refusal.jsonl` | a loopback stand-in for `verdict serve` that answered every chat request `403` with serve's own refusal body for a bad assignment, `{"error": {"message": "authentication failed", "type": "authentication_error"}}` (captured 2026-11-25, #1325; no gateway, no model; the bearer was a signed assignment minted by the executor with a throwaway key) | 1 | empty |
+| `v2_3_2_retry_503_serve_denial.jsonl` | a stand-in for `verdict serve` that answered every chat request `503` with the assigned-route denial text (`assigned route '<id>' denied: <code>`); two `retry` lines carrying it, cut short before OpenCode's ten retries (loopback only, no gateway, no model) | 1 | empty |
 
 What the captures show (and what the parser in `verdict/orchestration/executor_opencode.py`
 relies on):
