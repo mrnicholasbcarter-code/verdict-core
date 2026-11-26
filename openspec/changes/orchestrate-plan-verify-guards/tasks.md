@@ -70,6 +70,21 @@
 - [x] 3.2 `ruff check`, `ruff format --check`, `mypy verdict --strict`, `openspec validate --strict`
       and `scripts/check_lint_gates.py` pass.
 
+- [x] 3.3 Test-first, and the exception to it. Every new test fails on `main` (`9bca4982`) except six
+      compatibility controls, which pass there by design because they pin behaviour the change must
+      not alter. Each was shown able to fail by mutating the fix:
+      `test_merge_only_node_without_owned_files_is_accepted[integrate|review]` and
+      `test_parse_plan_accepts_a_file_less_integrate_node` fail when the rule rejects every
+      integrate or review node, with or without files;
+      `test_a_collection_error_in_an_owned_file_is_still_corrected_and_rerouted` fails when the
+      classifier skips the ownership check;
+      `test_run_controls_read_a_recorded_graph_that_has_an_integrate_node_with_files` and
+      `test_resume_reads_a_recorded_graph_that_has_an_integrate_node_with_files` fail when the
+      reader drops `allow_merge_only_owned_files=True`. The three-argument call in
+      `test_the_exact_run_tail_is_unchanged_without_the_node_owned_files` is compatibility coverage
+      too, but that test also passes `owned_files=None` explicitly, which `main` rejects with a
+      `TypeError`, so the test as a whole fails on `main`.
+
 ## 4. Live check
 
 - [ ] (post-merge) 4.1 From installed merged main, a self-build run of the remaining work of

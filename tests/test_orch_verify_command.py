@@ -382,9 +382,26 @@ def test_collection_errors_in_unowned_files_are_an_environment_error() -> None:
 
 
 def test_the_exact_run_tail_is_unchanged_without_the_node_owned_files() -> None:
+    """``owned_files`` is optional; leaving it out, or passing ``None``, keeps today's result.
+
+    The three-argument call is compatibility coverage and passes on ``main`` by design. The
+    explicit ``owned_files=None`` is the part that did not exist on ``main`` (a ``TypeError``
+    there): it pins the default of the new argument, so a caller that has no node (for example a
+    verification run outside the DAG runtime) never gets the collection rule by accident.
+    """
     from verdict.orchestration.verification import classify_verify_env_error
 
     assert classify_verify_env_error(_RUN_ARGV, 2, _RUN_20261126T020427Z_TAIL) is None
+    assert (
+        classify_verify_env_error(_RUN_ARGV, 2, _RUN_20261126T020427Z_TAIL, owned_files=None)
+        is None
+    )
+    # The same output with the node's files is the environment error, so the ``None`` above is
+    # the argument's doing and not an output that the rule cannot read.
+    assert (
+        classify_verify_env_error(_RUN_ARGV, 2, _RUN_20261126T020427Z_TAIL, owned_files=_RUN_OWNED)
+        is not None
+    )
 
 
 def test_collection_errors_are_an_environment_error_for_a_node_that_owns_nothing() -> None:
