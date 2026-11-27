@@ -11,6 +11,8 @@
 
 ## 2. Live checks
 
+Verify: each check is run on installed merged main and its raw output is recorded before the task is ticked.
+
 - [ ] (post-merge) 2.1 From installed merged main, replay one of the failing runs (`/tmp/real-story-5/runs/`) and confirm no "SEARCH text not found" failures appear on retry
 - [ ] (post-merge) 2.2 Confirm `verdict doctor` green and no salvage/restore regressions in a fresh orchestrate run after the fix is deployed
 

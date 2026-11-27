@@ -63,6 +63,12 @@ clean base.
   - `test_interrupted_restore_emits_reason_and_clears_research_pack`: interrupted failure →
     salvage saved, restore event has `reason="interrupted"`, stale research pack is deleted.
 
+## Capabilities
+
+### New Capabilities
+
+- `orchestration-retry-salvage`: what a retry of a DAG node starts from. After an interrupted attempt it restores the saved owned files; after a rejected attempt it starts from the clean base; after a failed verification of a worker that edits in place it continues from that attempt's owned files.
+
 ## Impact
 
 `verdict/orchestration/runtime.py`, `verdict/orchestration/recovery.py`,
@@ -70,3 +76,19 @@ clean base.
 
 REJECTED retry loops that produced "SEARCH text not found" failures are fixed. Interrupted
 salvage/restore is unchanged in behaviour; the restore event gains a `reason` field.
+
+## Evidence boundary
+
+- **KNOWN:**
+  - `diff_rejected` and "SEARCH text not found" are produced only in `verdict/orchestration/executors.py` (the worker that emits diffs); `verdict/orchestration/executor_opencode.py` produces neither.
+  - In run `20261127T000415Z` an OpenCode node failed verification on its first attempt and the `restore` event of its second attempt said `reason: "clean_base"` with nothing restored; the node was then built again from the base.
+  - `tests/test_orch_salvage.py` pins the clean base after a rejected attempt and the restore after an interrupted one; `tests/test_orch_retry_failed_tree.py` pins the continuation for harness `opencode` and the clean base for another harness, for `diff_rejected` and for `ownership_violation`.
+- **INFERRED:** for a worker that edits in place, the tree of a failed verification is usually nearer to a passing state than the base. No measurement supports this yet.
+- **NOT AVAILABLE:** a live run on installed main whose `restore` event says `reason: "verification_failed"` (task 3.2); live proof of the original clean-base rule (tasks 2.1 and 2.2 are still open); any measure of time or quota saved.
+
+## Acceptance criteria
+
+- After a rejected attempt (`diff_rejected`, `ownership_violation`, or a failed verification of a worker whose terminal harness is not `opencode`) the next attempt's `restore` event says `reason: "clean_base"` and restores nothing.
+- After a failed verification of a worker whose terminal harness is `opencode`, the attempt's owned files are salvaged, the next attempt's `restore` event says `reason: "verification_failed"` and lists them, and the retry text names them.
+- After an interrupted attempt the saved owned files are restored with `reason: "interrupted"` and the cached research pack is deleted.
+- (post-merge) Tasks 2.1, 2.2 and 3.2 pass on installed main.
