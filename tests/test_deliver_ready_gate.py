@@ -513,3 +513,108 @@ def test_green_check_runs_with_pending_statuses_stay_pending() -> None:
         statuses={"state": "pending", "total_count": 1, "statuses": [{"state": "pending"}]},
     )
     assert _gate(_plan_at("family"), gh, deadline_s=60.0).reason is PrReadyReason.CI_PENDING
+
+
+# --- the extra review's summary rides on the outcome -------------------------------------
+
+_SECRET = "sk-abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def test_passing_review_ends_ready_with_a_pass_summary() -> None:
+    outcome = _gate(_plan_at("route"), FakeGh(), FakeReviewer())
+    assert outcome.ready
+    assert outcome.extra_review == ready_gate.ExtraReviewSummary(
+        route_id="gm/gemini-3", status="PASS", findings=0, blocking=0, detail=""
+    )
+
+
+def test_failing_review_with_two_findings_one_blocking_is_summarised() -> None:
+    result = ReviewResult(
+        "FAIL",
+        "ocr",
+        "gm/gemini-3",
+        findings=(
+            ReviewFinding("high", "bug", "a.py", 1, "broken"),
+            ReviewFinding("low", "style", "a.py", 2, "nit"),
+        ),
+        detail="two findings",
+    )
+    outcome = _gate(_plan_at("route"), FakeGh(), FakeReviewer(result))
+    assert outcome.reason is PrReadyReason.REVIEW_FAILED
+    assert outcome.extra_review == ready_gate.ExtraReviewSummary(
+        route_id="gm/gemini-3", status="FAIL", findings=2, blocking=1, detail="two findings"
+    )
+
+
+def test_error_result_detail_is_redacted_and_capped() -> None:
+    detail = f"key {_SECRET} " + "x" * 2000
+    result = ReviewResult("ERROR", "ocr", "gm/gemini-3", detail=detail)
+    outcome = _gate(_plan_at("route"), FakeGh(), FakeReviewer(result))
+    summary = outcome.extra_review
+    assert summary is not None
+    assert summary.status == "ERROR"
+    assert _SECRET not in summary.detail
+    assert len(summary.detail) == ready_gate._MAX_DETAIL
+    assert summary.detail == ready_gate.redact_text(detail)[: ready_gate._MAX_DETAIL]
+
+
+def test_refused_result_still_carries_its_summary() -> None:
+    result = ReviewResult("PASS", "ocr", "cc/claude-opus-5")
+    outcome = _gate(_plan_at("route"), FakeGh(), FakeReviewer(result))
+    assert outcome.reason is PrReadyReason.NO_CROSS_FAMILY_REVIEWER
+    assert outcome.extra_review is not None
+    assert outcome.extra_review.route_id == "cc/claude-opus-5"
+    assert outcome.extra_review.status == "PASS"
+
+
+def test_raising_reviewer_gives_an_error_summary_with_the_type_name() -> None:
+    reviewer = FakeReviewer(RuntimeError(f"crashed with {_SECRET}"))
+    outcome = _gate(_plan_at("route"), FakeGh(), reviewer)
+    assert outcome.reason is PrReadyReason.REVIEW_FAILED
+    summary = outcome.extra_review
+    assert summary is not None
+    assert summary.status == "ERROR"
+    assert summary.route_id == ""
+    assert (summary.findings, summary.blocking) == (0, 0)
+    assert "RuntimeError" in summary.detail
+    assert _SECRET not in summary.detail
+
+
+@pytest.mark.parametrize("reviewer", [None, FakeReviewer(NoCrossFamilyReviewerError("none"))])
+def test_no_reviewer_gives_no_summary(reviewer: FakeReviewer | None) -> None:
+    outcome = _gate(_plan_at("route"), FakeGh(), reviewer)
+    assert outcome.reason is PrReadyReason.NO_CROSS_FAMILY_REVIEWER
+    assert outcome.extra_review is None
+
+
+def test_family_level_run_has_no_summary() -> None:
+    assert _gate(_plan_at("family"), FakeGh(), FakeReviewer()).extra_review is None
+
+
+def test_outcome_before_the_review_step_has_no_summary() -> None:
+    outcome = run_pr_ready_gate(_plan_at("route"), pr_ref=" ", head_sha=HEAD, runner=FakeGh())
+    assert outcome.reason is PrReadyReason.INVALID_REQUEST
+    assert outcome.extra_review is None
+
+
+def test_summary_survives_a_red_check_a_moved_head_and_a_pending_check() -> None:
+    red = _gate(_plan_at("route"), FakeGh(polls=[[_run("failure")]]), FakeReviewer())
+    assert red.reason is PrReadyReason.CI_RED
+    moved = _gate(_plan_at("route"), FakeGh(head="f" * 40), FakeReviewer())
+    assert moved.reason is PrReadyReason.HEAD_MOVED
+    pending = _gate(
+        _plan_at("route"),
+        FakeGh(polls=[[_run(None, status="in_progress")]]),
+        FakeReviewer(),
+        deadline_s=60.0,
+    )
+    assert pending.reason is PrReadyReason.CI_PENDING
+    for outcome in (red, moved, pending):
+        assert outcome.extra_review is not None
+        assert outcome.extra_review.route_id == "gm/gemini-3"
+        assert outcome.extra_review.status == "PASS"
+
+
+def test_positional_outcome_construction_still_works() -> None:
+    outcome = ready_gate.PrReadyOutcome(True, None, "ok", True, 2)
+    assert outcome.extra_review is None

@@ -347,7 +347,10 @@ is read, and a repository that reports only legacy commit statuses can pass),
 re-reads the pull request head, and only then runs `gh pr ready`. A head that
 moved while waiting stops the gate with `head_moved`. Any stop leaves the pull request a draft and is recorded in
 `delivery.json` (`ready`, `ready_reason`, `review_level`, `reviewer_route`,
-`extra_review_ran`, `ci_polls`) without failing the delivery. The command never
+`extra_review_ran`, `ci_polls`) without failing the delivery. When the extra review ran, the record also says which
+route ran it and how it ended: `extra_review_route`, `extra_review_status` (`PASS`, `FAIL` or `ERROR`),
+`extra_review_findings`, `extra_review_blocking` and a short redacted `extra_review_detail`; `reviewer_route` stays the
+in-run reviewer. The command never
 approves or merges the pull request.
 
 | Flag | Description |
