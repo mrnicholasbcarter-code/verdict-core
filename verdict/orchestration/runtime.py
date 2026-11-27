@@ -1754,6 +1754,7 @@ class DagRuntime:
             # start from the clean base instead of restoring stale partial files.
             # Only INTERRUPTED attempts (timeout, transport) have their saved state
             # restored.  The restore event always records which path was taken.
+            restored_paths: list[str] = []
             if run.attempt > 1 and run.node.owned_files:
                 salvage_dir = self.run_dir / "salvage" / run.node.node_id
                 was_rejected = run.last_rejected
@@ -1792,7 +1793,13 @@ class DagRuntime:
                 else:
                     # Previous attempt was interrupted: restore partial owned files.
                     restore = restore_salvaged_files(salvage_dir, worktree, run.node.owned_files)
+                    restored_paths = list(restore.restored[:_MAX_EVIDENCE_PATHS])
                     if restore.restored or restore.error:
+                        restore_reason = (
+                            "verification_failed"
+                            if run.failures and run.failures[-1].category == "verification_failed"
+                            else "interrupted"
+                        )
                         restored_proj = list(restore.restored[:_MAX_EVIDENCE_PATHS])
                         skipped_proj = list(restore.skipped[:_MAX_EVIDENCE_PATHS])
                         restore_truncated = (
@@ -1809,7 +1816,7 @@ class DagRuntime:
                             attempt=run.attempt,
                             evidence_truncated=restore_truncated,
                             error=restore.error,
-                            reason="interrupted",
+                            reason=restore_reason,
                         )
                         run.history.append(
                             {
@@ -1822,7 +1829,7 @@ class DagRuntime:
                                 "total_bytes": restore.total_bytes,
                                 "evidence_truncated": restore_truncated,
                                 "error": restore.error,
-                                "reason": "interrupted",
+                                "reason": restore_reason,
                             }
                         )
                         if restore.restored:
@@ -1862,6 +1869,12 @@ class DagRuntime:
                         + run.failure_feedback
                         + "\nFix the cause above, then run VERIFICATION_COMMAND again.\n"
                     )
+                    if restored_paths and run.failures[-1].category == "verification_failed":
+                        suffix += (
+                            "Your previous attempt's files are already in this worktree "
+                            f"({', '.join(restored_paths)}): continue from them and fix what "
+                            "failed; do not start again from nothing.\n"
+                        )
                 hydrated = self._prompt(node, worktree, budget, plan, suffix)
                 prompt = hydrated.text if isinstance(hydrated, WorkerPrompt) else hydrated
                 evidence = (
@@ -2148,7 +2161,9 @@ class DagRuntime:
                 self._set(run, NodeState.TERMINAL_SUCCESS)
                 verdict = await self._validate(run, worktree, base)
                 if verdict is not None:
-                    failed = WorkerTerminal(ok=False, model=run.route_id, error=verdict)
+                    failed = WorkerTerminal(
+                        ok=False, model=run.route_id, error=verdict, harness=terminal.harness
+                    )
                     if verdict.startswith("environment_error:"):
                         # The verification command could not start (missing runner or
                         # module).  This is an environment problem, not a route quality
@@ -2469,7 +2484,10 @@ class DagRuntime:
         judged = validated and failure.category != "environment_error"
         # fix(retry-clean-base): track whether this attempt's work was judged wrong so
         # _attempt() can start the next attempt from the clean base.
-        run.last_rejected = judged or failure.category in _JUDGED_WORK_CATEGORIES
+        if failure.category == "verification_failed" and terminal.harness == "opencode":
+            run.last_rejected = False
+        else:
+            run.last_rejected = judged or failure.category in _JUDGED_WORK_CATEGORIES
         # Capability escalation: count judged work failures and tighten the tier
         # ceiling once the threshold is reached.  Interrupted failures (transport,
         # timeout) do not count — only failures that mean the work was wrong.

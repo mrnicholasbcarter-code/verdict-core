@@ -21,7 +21,7 @@ exist to serve this. New work must say how it advances it.
 
 ## NOW
 
-Next focus (operator, 2026-11-23): Verdict builds a GitHub issue through to a PR ready for the operator's merge ([ADR-052](docs/adr/ADR-052-github-issue-to-ready-pr.md), D37). `verdict deliver` is merged and installed (#1355, #1371). On 2026-11-26 Verdict built a story with `verdict orchestrate` on an OpenCode worker and delivered it as a ready pull request by itself (#1373, issue #1269 task 6.1); the DoD evidence for #1269 is not filed yet. Self-build runs still need a dictated node plan and `--scope cc/,cx/`. Next: #1372 (node commits and retry base), #1366 part 2 (recover by denial reason), #1369 items 3 and 4, and #1367.
+Next focus (operator, 2026-11-23): Verdict builds a GitHub issue through to a PR ready for the operator's merge ([ADR-052](docs/adr/ADR-052-github-issue-to-ready-pr.md), D37). `verdict deliver` is merged and installed (#1355, #1371). On 2026-11-26 Verdict built a story with `verdict orchestrate` on an OpenCode worker and delivered it as a ready pull request by itself (#1373, issue #1269 task 6.1); the DoD evidence for #1269 is not filed yet. Self-build runs still need a dictated node plan and `--scope cc/,cx/`. On 2026-11-27 a story went from `verdict orchestrate` to a ready pull request with no controller code change (#1379). Done since: #1369 (closed), and for #1372 the commit of git-ignored owned files (#1377, #1379) and the retry that continues from a failed verification for OpenCode workers. Next: #1372's post-merge checks and its unowned ignored files, #1366 part 2 (recover by denial reason), and #1367.
 
 ## Decisions
 

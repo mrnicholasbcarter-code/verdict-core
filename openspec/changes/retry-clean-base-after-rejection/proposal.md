@@ -12,6 +12,17 @@ still received the rejected implementation in its worktree, causing "SEARCH text
 failures when the worker's prompt described the base revision's files but the worktree contained
 the wrong prior implementation.
 
+## Amendment (2026-11-27, GitHub issue #1372 defect 2)
+
+The clean-base rule stays for workers that emit diffs, which is where "SEARCH text not found"
+came from. For a worker that edits files in place (terminal harness `opencode`) a
+`verification_failed` attempt is no longer thrown away: its owned files are salvaged and restored,
+the restore event says `reason="verification_failed"`, and the retry text tells the worker its
+files are already there. Reason: in two self-build runs (`20261126T180407Z`, `20261127T000415Z`) a node
+lost a nearly passing attempt to a clean base and had to redo it inside the same attempt limit. Operator
+decision recorded on the issue (2026-11-26). `ownership_violation` and `diff_rejected` keep the
+clean base.
+
 ## What Changes
 
 **`verdict/orchestration/runtime.py`**
@@ -52,6 +63,12 @@ the wrong prior implementation.
   - `test_interrupted_restore_emits_reason_and_clears_research_pack`: interrupted failure →
     salvage saved, restore event has `reason="interrupted"`, stale research pack is deleted.
 
+## Capabilities
+
+### New Capabilities
+
+- `orchestration-retry-salvage`: what a retry of a DAG node starts from. After an interrupted attempt it restores the saved owned files; after a rejected attempt it starts from the clean base; after a failed verification of a worker that edits in place it continues from that attempt's owned files.
+
 ## Impact
 
 `verdict/orchestration/runtime.py`, `verdict/orchestration/recovery.py`,
@@ -59,3 +76,19 @@ the wrong prior implementation.
 
 REJECTED retry loops that produced "SEARCH text not found" failures are fixed. Interrupted
 salvage/restore is unchanged in behaviour; the restore event gains a `reason` field.
+
+## Evidence boundary
+
+- **KNOWN:**
+  - `diff_rejected` and "SEARCH text not found" are produced only in `verdict/orchestration/executors.py` (the worker that emits diffs); `verdict/orchestration/executor_opencode.py` produces neither.
+  - In run `20261127T000415Z` an OpenCode node failed verification on its first attempt and the `restore` event of its second attempt said `reason: "clean_base"` with nothing restored; the node was then built again from the base.
+  - `tests/test_orch_salvage.py` pins the clean base after a rejected attempt and the restore after an interrupted one; `tests/test_orch_retry_failed_tree.py` pins the continuation for harness `opencode` and the clean base for another harness, for `diff_rejected` and for `ownership_violation`.
+- **INFERRED:** for a worker that edits in place, the tree of a failed verification is usually nearer to a passing state than the base. No measurement supports this yet.
+- **NOT AVAILABLE:** a live run on installed main whose `restore` event says `reason: "verification_failed"` (task 3.2); live proof of the original clean-base rule (tasks 2.1 and 2.2 are still open); any measure of time or quota saved.
+
+## Acceptance criteria
+
+- After a rejected attempt (`diff_rejected`, `ownership_violation`, or a failed verification of a worker whose terminal harness is not `opencode`) the next attempt's `restore` event says `reason: "clean_base"` and restores nothing.
+- After a failed verification of a worker whose terminal harness is `opencode`, the attempt's owned files are salvaged, the next attempt's `restore` event says `reason: "verification_failed"` and lists them, and the retry text names them.
+- After an interrupted attempt the saved owned files are restored with `reason: "interrupted"` and the cached research pack is deleted.
+- (post-merge) Tasks 2.1, 2.2 and 3.2 pass on installed main.

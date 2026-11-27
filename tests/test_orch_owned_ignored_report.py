@@ -199,7 +199,9 @@ async def test_credential_shaped_owned_ignored_file_fails_the_attempt(
         "fixtures/x.jsonl" in p and "credential_shaped" in p for p in refused["refused_paths"]
     )
     assert "sk-" not in json.dumps(events.rows)
-    assert "verification_failed" in [e["category"] for e in events.of("failure", "a")]
+    failures = [e for e in events.of("failure", "a") if e["category"] == "verification_failed"]
+    assert failures
+    assert all("owned_file_not_committable" in e["evidence"] for e in failures)
 
 
 async def test_retry_with_clean_content_completes_with_ok_ownership_barrier(
