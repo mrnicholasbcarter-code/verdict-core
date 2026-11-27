@@ -447,6 +447,9 @@ class EligibilityLadder:
         # Canonical admitted set: a route it excludes fails before any ladder
         # stage, ranking or probe. The ladder can only narrow it further.
         self._admitted = admitted
+        # Selection confirms routes on a worker thread while the runtime may exclude one
+        # from the event loop: both derive a new set from the current one and replace it.
+        self._admitted_lock = threading.Lock()
         # Serve-denial recovery (GitHub issue #1366): run-scoped, in memory only.
         self._run_excluded: dict[str, str] = {}
         self._run_cooldowns: dict[str, datetime] = {}
@@ -590,17 +593,18 @@ class EligibilityLadder:
         Success records the confirmation source and time. Failure drops the
         route at ``HEALTHY``. A failed confirmation only narrows the set.
         """
-        if self._admitted is None:
-            return
-        self._admitted = self._admitted.record_confirmation(
-            route_id,
-            healthy=result.healthy,
-            source=LADDER_CONFIRMATION_SOURCE,
-            observed_at=_iso(now),
-            category=result.category,
-        )
-        if self._admission_receipt is not None:
-            self._admitted.write_receipt(self._admission_receipt)
+        with self._admitted_lock:
+            if self._admitted is None:
+                return
+            self._admitted = self._admitted.record_confirmation(
+                route_id,
+                healthy=result.healthy,
+                source=LADDER_CONFIRMATION_SOURCE,
+                observed_at=_iso(now),
+                category=result.category,
+            )
+            if self._admission_receipt is not None:
+                self._admitted.write_receipt(self._admission_receipt)
 
     def _load_state(self) -> dict[str, dict[str, dict[str, Any]]]:
         try:
@@ -1910,10 +1914,11 @@ class EligibilityLadder:
         from verdict.admission import AdmissionStage
 
         self._run_excluded[route_id] = reason
-        if self._admitted is not None:
-            self._admitted = self._admitted.exclude(
-                [route_id], AdmissionStage.DOWNSTREAM, reason, source="serve_denial"
-            )
+        with self._admitted_lock:
+            if self._admitted is not None:
+                self._admitted = self._admitted.exclude(
+                    [route_id], AdmissionStage.DOWNSTREAM, reason, source="serve_denial"
+                )
 
     def cool_for_run(self, key: str, seconds: float, *, now: datetime) -> None:
         """Cool ``key`` (``route:<id>`` or ``prefix:<id prefix>``) for this run, in memory only."""

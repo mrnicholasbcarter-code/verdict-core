@@ -6,8 +6,10 @@ and the cooldown in memory and writes neither to its health state file.
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from tests.test_orch_eligibility import (  # noqa: F401  (the fixture declares the fake providers)
     _subscription_overlay,
@@ -17,7 +19,7 @@ from tests.test_orch_eligibility import (  # noqa: F401  (the fixture declares t
     row,
 )
 from verdict.orchestration.contracts import EligibilityStage, TaskRequirements
-from verdict.orchestration.eligibility import EligibilityLadder
+from verdict.orchestration.eligibility import EligibilityLadder, HealthResult
 
 NOW = datetime(2026, 11, 27, 12, 0, tzinfo=timezone.utc)
 DENIED = "serve_denied:opaque_route_disallowed"
@@ -103,3 +105,54 @@ def test_nothing_is_written_to_the_health_state_file(tmp_path: Path) -> None:
     after = state.read_bytes() if state.exists() else b""
     assert after == before
     assert DENIED.encode() not in after and b"serve_denied" not in after
+
+
+class _SlowAdmitted:
+    """Stands in for the immutable admitted set; ``record_confirmation`` can be held open."""
+
+    def __init__(self, routes: frozenset[str], gate: _Gate | None = None) -> None:
+        self.routes = routes
+        self.gate = gate
+
+    def __contains__(self, route_id: object) -> bool:
+        return route_id in self.routes
+
+    def exclude(self, route_ids: Any, stage: Any, reason: str, *, source: str = "") -> Any:
+        return _SlowAdmitted(self.routes - frozenset(route_ids), self.gate)
+
+    def record_confirmation(self, route_id: str, **_: Any) -> Any:
+        if self.gate is not None:
+            self.gate.started.set()
+            assert self.gate.release.wait(5)
+        return _SlowAdmitted(self.routes, self.gate)  # derived from the set it started with
+
+
+class _Gate:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+
+def test_a_confirmation_in_flight_cannot_put_an_excluded_route_back(tmp_path: Path) -> None:
+    """Selection confirms routes on another thread; both replace the admitted set."""
+    gate = _Gate()
+    ladder = _ladder(tmp_path)
+    ladder._admitted = _SlowAdmitted(frozenset({"kiro/a", "kiro/b", "zz/a"}), gate)  # type: ignore[assignment]
+
+    confirming = threading.Thread(
+        target=ladder._record_confirmation,
+        args=("kiro/b", HealthResult(healthy=True, category=""), NOW),
+    )
+    confirming.start()
+    assert gate.started.wait(5)
+    excluding = threading.Thread(target=ladder.exclude_for_run, args=("kiro/a", DENIED))
+    excluding.start()
+    excluding.join(0.3)
+    waited_for_the_confirmation = excluding.is_alive()
+    gate.release.set()
+    confirming.join(5)
+    excluding.join(5)
+
+    assert waited_for_the_confirmation
+    assert "kiro/a" not in ladder.admitted  # type: ignore[operator]
+    assert "kiro/b" in ladder.admitted  # type: ignore[operator]
