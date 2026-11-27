@@ -21,10 +21,10 @@ Without the provider that never passes, 154 free models are waiting. That is one
 - One probe per model: the queue is keyed on the catalog's provider and model, not on the id.
 - A provider with a week of probes and no pass is backed off to one probe a day and named in the report.
 - A route that does not declare tool support is not probed.
-- Providers that have passed are probed first, then routes the passive check admits, then the rest; one probe in eight is kept for providers with no record.
-- `unknown`-capacity routes are screened on the same terms as free ones (operator decision, 2026-11-27).
+- Routes the passive check admits are probed first, then other routes of providers that have passed, then the rest; one probe in eight is kept for providers with no record.
+- `unknown`-capacity routes that the passive check admits are screened on the same terms as free ones (operator decision, 2026-11-27).
 - An operator-owned deny list excludes a provider. The gateway's terms rating is shown beside each provider and excludes nothing.
-- Connections that sign in as a person get at most two probes per run and none while they are terminal or cooling.
+- A provider whose connections sign in as a person gets at most two probes per run.
 - Every run reports the size of the proven pool, the backlog and each provider's record.
 
 **Proof from real work (`verdict orchestrate`)**
@@ -48,10 +48,12 @@ Rules this must keep (AGENTS.md, ADR-010, ADR-014, ADR-049): passive evidence or
 
 - **KNOWN** (journal of three screen runs and read-only gateway reads of 2026-11-27, installed main `46ef6daa`, OmniRoute 3.8.54; the analysis is on #1387):
   - Three screen runs: 40 probes each; 8, 3 and 18 passed. Free routes passed 10 of 84, subscription routes 19 of 36.
-  - Free passes by provider: `openrouter` 5 of 11, `bazaarlink` 3 of 7, `nvidia` 2 of 5; nine other providers 0 of 61.
+  - Free passes by provider: `openrouter` 5 of 11, `bazaarlink` 3 of 7, `nvidia` 2 of 5; eight other providers 0 of 61.
   - Free routes that declare tool support passed 10 of 66; those that do not, 0 of 18.
-  - With the two never-passing providers left out, free routes in the gateway's free candidate pool passed 7 of 15 and those outside it 3 of 27.
-  - `/v1/models` lists 4,243 ids for 2,312 distinct `owned_by` + `root` pairs; 1,706 ids carry a `parent`. Three of 96 probed models were probed under both ids.
+  - With the two never-passing providers left out, free routes that the passive check admitted in the same run passed 9 of 17 and the others 1 of 25. The two never-passing providers passed 0 of 13 even when admitted.
+  - Of the 74 free failures, 47 were the provider answering that it does not serve the model (`catalog_stale`, HTTP 400 on the first request).
+  - Unknown capacity: 1,823 ids, 1,130 models; 142 are passively admitted and unproven.
+  - `/v1/models` lists 4,243 ids for 2,312 distinct `owned_by` + `root` pairs; 1,706 ids carry a `parent`. Three of 96 probed models were probed under both ids, in different runs.
   - The 18:20 queue holds 559 distinct free models; 529 declare tools; 375 of those are `api-airforce`.
   - `record_agentic_evidence` has one caller, the manual session import; a dispatch success records liveness only.
   - Signals that did not separate passes from failures: the candidate row's `reachable` flag (6 of 27 against 1 of 3), free-catalog membership (1 of 26 against 9 of 58), having a rating (1 of 11 against 9 of 73), and the gateway's success rate (`duckduckgo-web`: 666 of 785 gateway requests succeeded, 0 of 15 probes passed).
@@ -64,9 +66,9 @@ Rules this must keep (AGENTS.md, ADR-010, ADR-014, ADR-049): passive evidence or
 
 ## Acceptance criteria
 
-- With recorded evidence as input, a screen run probes each model at most once, skips routes that do not declare tools, skips a provider with a week of probes and no pass except for its one daily probe, and probes providers with passes before the rest.
-- `unknown`-capacity routes are probed on the same terms as free ones; a provider on the operator's deny list is not probed, and a terms rating alone excludes nothing.
-- A connection that signs in as a person receives at most two probes in one run and none while it is terminal or cooling.
+- With recorded evidence as input, a screen run probes each model at most once, skips routes that do not declare tools, skips a provider with a week of probes and no pass except for its one daily probe, and probes passively admitted routes first.
+- A passively admitted `unknown`-capacity route is probed on the same terms as a free one; a provider on the operator's deny list is not probed, and a terms rating alone excludes nothing.
+- A provider whose connections sign in as a person receives at most two probes in one run.
 - No passive source makes a route eligible: with every passive signal favourable and no proof, the route is still `no_agentic_probe` for a worker node.
 - A node that needed tools and passed verification on a live worker with a verified served model gives that exact route a tool proof; a node without tool use, a fault-injected executor, an unverified served model or a failed verification gives none.
 - (post-merge) On installed main the number of free and unknown-capacity models holding a tool proof is reported daily for a week and compared with 2026-11-27.

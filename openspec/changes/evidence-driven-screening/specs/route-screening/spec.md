@@ -4,16 +4,21 @@
 
 ### Requirement: The screen probes each model once
 
-The scheduled screen SHALL treat catalog ids with the same `owned_by` and `root` as one model and SHALL probe a model at most once per run. A tool proof SHALL stay with the exact id that earned it.
+The scheduled screen SHALL treat catalog ids with the same `owned_by` and `root` as one model. It SHALL choose the id to probe by a fixed rule, so that the same id is chosen in every run, and SHALL NOT probe a model while either of its ids holds a fresh tool proof. A tool proof SHALL stay with the exact id that earned it.
 
 #### Scenario: one model under two ids
 
 - **WHEN** the catalog lists a model under its provider's alias and under its provider's full id
-- **THEN** the screen probes one of the two ids and reports the other as skipped
+- **THEN** the screen probes the same one of the two ids in every run and reports the other as skipped
+
+#### Scenario: the other id is not proven
+
+- **WHEN** one id of a model holds a fresh tool proof
+- **THEN** the model is not probed again and its other id is still not eligible for a worker node
 
 ### Requirement: The screen does not probe routes that cannot pass
 
-The screen SHALL NOT probe a route that does not declare tool support, and SHALL report it as `skipped_no_tools`. A route of unknown capacity SHALL be a candidate on the same terms as a free route.
+The screen SHALL NOT probe a route that does not declare tool support, and SHALL report it as `skipped_no_tools`. A route of unknown capacity SHALL be a candidate only when the passive check admits it, and then on the same terms as a free route.
 
 #### Scenario: no declared tool support
 
@@ -22,12 +27,12 @@ The screen SHALL NOT probe a route that does not declare tool support, and SHALL
 
 #### Scenario: unknown capacity
 
-- **WHEN** a route of unknown capacity declares tool support and holds no tool proof
+- **WHEN** a route of unknown capacity is admitted by the passive check, declares tool support and holds no tool proof
 - **THEN** it is a candidate on the same terms as a free route
 
 ### Requirement: A provider that keeps failing is backed off
 
-The screen SHALL keep, per provider, the probes and passes of the last seven days. A provider with at least the configured number of probes and no pass SHALL be skipped for the configured period and then given one probe. A pass SHALL end the back-off. Each skip SHALL be reported as `skipped_backoff`. A refusal by the gateway before any upstream call, and a rate limit, SHALL NOT count as a probe.
+The screen SHALL keep, per provider, the probes and passes of the last seven days. A provider with at least the configured number of probes and no pass SHALL be skipped for the configured period and then given one probe. A pass SHALL end the back-off. Each skip SHALL be reported as `skipped_backoff`. A pass, a tool failure and the provider's answer that it does not serve the model SHALL count as a probe. A refusal by the gateway before any upstream call, a rate limit, a timeout and an upstream server error SHALL NOT.
 
 #### Scenario: back-off and return
 
@@ -41,7 +46,7 @@ The screen SHALL keep, per provider, the probes and passes of the last seven day
 
 ### Requirement: The queue is ordered by the provider's record
 
-The screen SHALL probe, in this order: routes of a provider with at least one pass in seven days; routes the passive check admits; all other candidates. Inside each group it SHALL order by the provider's pass rate and then by Verdict's rating. While the last group is not empty it SHALL receive at least one probe in eight. No evidence used for ordering SHALL make a route eligible, healthy or proven.
+The screen SHALL probe, in this order: routes the passive check admits; other routes of a provider with at least one pass in seven days; all other candidates. Inside each group it SHALL order by the provider's pass rate and then by Verdict's rating. While the last group is not empty it SHALL receive at least one probe in eight. No evidence used for ordering SHALL make a route eligible, healthy or proven.
 
 #### Scenario: a provider that passes and one with no record
 
@@ -67,13 +72,13 @@ A route whose provider is on the operator's deny list SHALL NOT be screened and 
 - **WHEN** the operator's deny list names a provider
 - **THEN** its routes are not probed and are reported as `skipped_denied`
 
-### Requirement: Account-tied connections are probed within a limit
+### Requirement: Account-tied providers are probed within a limit
 
-For a connection that authenticates as a person (OAuth or cookie), the screen SHALL send at most the configured number of probes per connection in one run, and none while the connection is terminal or cooling.
+For a provider whose connections authenticate as a person (OAuth or cookie), the screen SHALL send at most the configured number of probes in one run.
 
-#### Scenario: a sign-in connection with many unproven routes
+#### Scenario: a sign-in provider with many unproven routes
 
-- **WHEN** a sign-in connection has ten unproven routes and the limit is two
+- **WHEN** a provider whose connection signs in as a person has ten unproven routes and the limit is two
 - **THEN** two are probed in the run and the rest are reported as skipped
 
 ### Requirement: Every screen run reports the proven pool
