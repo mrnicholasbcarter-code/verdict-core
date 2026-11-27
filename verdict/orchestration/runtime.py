@@ -2191,6 +2191,8 @@ class DagRuntime:
                 run.commit = await self.git.commit_all(
                     worktree, f"verdict({node.node_id}): {node.objective[:60]} [{run.route_id}]"
                 )
+                forced_report = self.git.owned_ignored.get(str(worktree))
+                force_staged = list(forced_report.forced) if forced_report is not None else []
                 # The commit is durable on its branch; the checkout is no longer needed.
                 await self.git.remove_worktree(worktree)
                 self.selector.record_success(run.route_id, now=self.now())
@@ -2203,7 +2205,12 @@ class DagRuntime:
                     }
                 )
                 self._persist_research_pack(node, hydrated, base, evidence)
-                self._set(run, NodeState.VALIDATED, commit=run.commit)
+                if force_staged:
+                    self._set(
+                        run, NodeState.VALIDATED, commit=run.commit, force_staged=force_staged
+                    )
+                else:
+                    self._set(run, NodeState.VALIDATED, commit=run.commit)
                 self._record_session_outcome(run, terminal, outcome="pass")
                 return True
             finally:
@@ -2965,20 +2972,39 @@ class DagRuntime:
     async def _validate(self, run: NodeRun, worktree: Path, base: str) -> str | None:
         node = run.node
         changed = await self.git.changed_files(worktree, base, owned_files=node.owned_files)
+        report = self.git.owned_ignored.get(str(worktree))
+        refused = report.refused if report is not None else ()
         if node.kind is NodeKind.IMPLEMENT:
             outside = [p for p in changed if not node.owns(p)]
+            refused_paths = [f"{path} ({reason})" for path, reason in refused][:8]
+            if outside:
+                detail = "outside owned: " + ", ".join(outside[:8])
+            elif refused_paths:
+                detail = "owned ignored file(s) not committable: " + ", ".join(refused_paths)
+            else:
+                detail = f"{len(changed)} file(s) within ownership"
+            ownership_extra: dict[str, Any] = {}
+            if refused_paths:
+                ownership_extra["refused_paths"] = refused_paths
             self.events.emit(
                 "barrier",
                 node.node_id,
                 name="ownership",
-                ok=not outside,
+                ok=not outside and not refused,
                 stray_paths=outside,
-                detail=("outside owned: " + ", ".join(outside[:8]))
-                if outside
-                else f"{len(changed)} file(s) within ownership",
+                detail=detail,
+                **ownership_extra,
             )
             if outside:
                 return "ownership_violation: " + ", ".join(outside[:8])
+            if refused_paths:
+                return (
+                    "verification_failed: owned_file_not_committable: "
+                    + ", ".join(refused_paths)
+                    + ". The file is git-ignored and cannot be committed as it is; remove the "
+                    "credential-shaped content or the symlink, or create such data at test "
+                    "run time."
+                )
             if not changed:
                 # Already satisfied (e.g. the planner scheduled a file that exists).
                 # Acceptance is the verification command, not the size of the diff.

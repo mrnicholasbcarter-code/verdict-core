@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from tests.test_orch_runtime import Executor, make, node
+from verdict.orchestration.contracts import (
+    NodeState,
+    RunOutcome,
+    WorkerTerminal,
+    WorkGraph,
+    WorkNode,
+)
 from verdict.orchestration.runtime import Git, OwnedIgnoredReport
 
 
@@ -132,3 +142,110 @@ async def test_reports_are_kept_per_worktree(repo: Path, tmp_path: Path) -> None
     assert git.owned_ignored[str(other)] == OwnedIgnoredReport(
         refused=(("fixtures/two.jsonl", "credential_shaped"),)
     )
+
+
+class _FixtureWriter(Executor):
+    """Node ``a`` writes ``fixtures/x.jsonl``; the first call may write credential content."""
+
+    def __init__(self, *, credential_first: bool = False, credential_always: bool = False) -> None:
+        super().__init__({}, delay=0)
+        self.credential_first = credential_first
+        self.credential_always = credential_always
+        self.writes = 0
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        if prompt.split(":", 1)[0] != "a":
+            return await super().run(
+                prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+            )
+        self.writes += 1
+        leaky = self.credential_always or (self.credential_first and self.writes == 1)
+        (cwd / "fixtures").mkdir(parents=True, exist_ok=True)
+        (cwd / "fixtures" / "x.jsonl").write_text(_credential_line() if leaky else '{"a": 1}\n')
+        return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id, stop_reason="stop")
+
+
+def _fixture_node() -> WorkNode:
+    return WorkNode(
+        "a",
+        "write a",
+        owned_files=("fixtures/x.jsonl",),
+        verification_command=("sh", "-c", "test -f fixtures/x.jsonl"),
+    )
+
+
+async def test_credential_shaped_owned_ignored_file_fails_the_attempt(
+    repo: Path, billing_overlay_subscription: Any
+) -> None:
+    billing_overlay_subscription([("cc", "oauth"), ("kr", "oauth")])
+    runtime, events, _ = make(
+        repo,
+        WorkGraph("g", (_fixture_node(),)),
+        _FixtureWriter(credential_always=True),
+        ["cc/s", "cx/g"],
+    )
+
+    result = await runtime.run()
+
+    assert result.outcome is not RunOutcome.COMPLETE
+    assert not any(e["state"] == NodeState.VALIDATED.value for e in events.of("node_state", "a"))
+    barriers = [e for e in events.of("barrier", "a") if e["name"] == "ownership"]
+    assert barriers
+    refused = barriers[0]
+    assert refused["ok"] is False
+    assert any(
+        "fixtures/x.jsonl" in p and "credential_shaped" in p for p in refused["refused_paths"]
+    )
+    assert "sk-" not in json.dumps(events.rows)
+    assert "verification_failed" in [e["category"] for e in events.of("failure", "a")]
+
+
+async def test_retry_with_clean_content_completes_with_ok_ownership_barrier(
+    repo: Path, billing_overlay_subscription: Any
+) -> None:
+    billing_overlay_subscription([("cc", "oauth"), ("kr", "oauth")])
+    runtime, events, _ = make(
+        repo,
+        WorkGraph("g", (_fixture_node(),)),
+        _FixtureWriter(credential_first=True),
+        ["cc/s", "cx/g"],
+    )
+
+    result = await runtime.run()
+
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    barriers = [e for e in events.of("barrier", "a") if e["name"] == "ownership"]
+    assert barriers[0]["ok"] is False
+    assert barriers[-1]["ok"] is True
+
+
+async def test_clean_owned_ignored_file_is_listed_on_the_validated_event(
+    repo: Path, billing_overlay_subscription: Any
+) -> None:
+    billing_overlay_subscription([("cc", "oauth"), ("kr", "oauth")])
+    runtime, events, _ = make(
+        repo, WorkGraph("g", (_fixture_node(),)), _FixtureWriter(), ["cc/s", "cx/g"]
+    )
+
+    result = await runtime.run()
+
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    validated = [e for e in events.of("node_state", "a") if e["state"] == "VALIDATED"]
+    assert len(validated) == 1
+    assert validated[0]["force_staged"] == ["fixtures/x.jsonl"]
+
+
+async def test_ordinary_tracked_file_has_no_force_staged_field(
+    repo: Path, billing_overlay_subscription: Any
+) -> None:
+    billing_overlay_subscription([("cc", "oauth"), ("kr", "oauth")])
+    runtime, events, _ = make(repo, WorkGraph("g", (node("a"),)), Executor({}), ["cc/s", "cx/g"])
+
+    result = await runtime.run()
+
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    validated = [e for e in events.of("node_state", "a") if e["state"] == "VALIDATED"]
+    assert len(validated) == 1
+    assert "force_staged" not in validated[0]
