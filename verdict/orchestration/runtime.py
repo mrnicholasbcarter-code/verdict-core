@@ -405,6 +405,14 @@ def _ensure_local_excludes(cwd: Path) -> None:
         pass
 
 
+@dataclass(frozen=True)
+class OwnedIgnoredReport:
+    """Owned git-ignored files force-staged, and those refused with a reason."""
+
+    forced: tuple[str, ...] = ()
+    refused: tuple[tuple[str, str], ...] = ()
+
+
 class Git:
     """Minimal git worktree operations for node isolation and integration."""
 
@@ -412,6 +420,7 @@ class Git:
         self.repo = repo
         self.run = runner
         self._worktree_lock = asyncio.Lock()
+        self.owned_ignored: dict[str, OwnedIgnoredReport] = {}
 
     async def call(self, *args: str, cwd: Path | None = None, timeout: float = 120) -> str:
         code, out = await self.run(("git", *args), cwd or self.repo, timeout)
@@ -481,6 +490,8 @@ class Git:
             # -A also stages a deletion of an already-tracked owned path even
             # when it no longer exists on disk.
             await self.call("add", "-A", "-f", "--", spec, cwd=cwd)
+        forced: list[str] = []
+        refused: list[tuple[str, str]] = []
         if owned_files:
             code, listing = await self.run(
                 (
@@ -508,8 +519,6 @@ class Git:
                 )
             for ignored in (item for item in listing.split("\0") if item):
                 full = cwd / ignored
-                if full.is_symlink() or not full.is_file():
-                    continue
                 if any(
                     (
                         ignored.startswith(pattern) or f"/{pattern}" in ignored
@@ -523,13 +532,25 @@ class Git:
                     for pattern in BYPRODUCT_EXCLUDES
                 ):
                     continue
+                if full.is_symlink():
+                    refused.append((ignored, "symlink"))
+                    continue
+                if not full.is_file():
+                    refused.append((ignored, "not_a_regular_file"))
+                    continue
                 try:
                     content = full.read_text(encoding="utf-8", errors="replace")
                 except OSError:
+                    refused.append((ignored, "unreadable"))
                     continue
                 if redact_text(content) != content:
+                    refused.append((ignored, "credential_shaped"))
                     continue
                 await self.call("add", "-A", "-f", "--", f":(literal){ignored}", cwd=cwd)
+                forced.append(ignored)
+        self.owned_ignored[str(cwd)] = OwnedIgnoredReport(
+            forced=tuple(forced), refused=tuple(refused)
+        )
         out = await self.call("diff", "--cached", "--name-only", base, cwd=cwd)
         return [line for line in out.splitlines() if line.strip()]
 
@@ -2170,6 +2191,8 @@ class DagRuntime:
                 run.commit = await self.git.commit_all(
                     worktree, f"verdict({node.node_id}): {node.objective[:60]} [{run.route_id}]"
                 )
+                forced_report = self.git.owned_ignored.get(str(worktree))
+                force_staged = list(forced_report.forced) if forced_report is not None else []
                 # The commit is durable on its branch; the checkout is no longer needed.
                 await self.git.remove_worktree(worktree)
                 self.selector.record_success(run.route_id, now=self.now())
@@ -2182,7 +2205,12 @@ class DagRuntime:
                     }
                 )
                 self._persist_research_pack(node, hydrated, base, evidence)
-                self._set(run, NodeState.VALIDATED, commit=run.commit)
+                if force_staged:
+                    self._set(
+                        run, NodeState.VALIDATED, commit=run.commit, force_staged=force_staged
+                    )
+                else:
+                    self._set(run, NodeState.VALIDATED, commit=run.commit)
                 self._record_session_outcome(run, terminal, outcome="pass")
                 return True
             finally:
@@ -2944,20 +2972,39 @@ class DagRuntime:
     async def _validate(self, run: NodeRun, worktree: Path, base: str) -> str | None:
         node = run.node
         changed = await self.git.changed_files(worktree, base, owned_files=node.owned_files)
+        report = self.git.owned_ignored.get(str(worktree))
+        refused = report.refused if report is not None else ()
         if node.kind is NodeKind.IMPLEMENT:
             outside = [p for p in changed if not node.owns(p)]
+            refused_paths = [f"{path} ({reason})" for path, reason in refused][:8]
+            if outside:
+                detail = "outside owned: " + ", ".join(outside[:8])
+            elif refused_paths:
+                detail = "owned ignored file(s) not committable: " + ", ".join(refused_paths)
+            else:
+                detail = f"{len(changed)} file(s) within ownership"
+            ownership_extra: dict[str, Any] = {}
+            if refused_paths:
+                ownership_extra["refused_paths"] = refused_paths
             self.events.emit(
                 "barrier",
                 node.node_id,
                 name="ownership",
-                ok=not outside,
+                ok=not outside and not refused,
                 stray_paths=outside,
-                detail=("outside owned: " + ", ".join(outside[:8]))
-                if outside
-                else f"{len(changed)} file(s) within ownership",
+                detail=detail,
+                **ownership_extra,
             )
             if outside:
                 return "ownership_violation: " + ", ".join(outside[:8])
+            if refused_paths:
+                return (
+                    "verification_failed: owned_file_not_committable: "
+                    + ", ".join(refused_paths)
+                    + ". The file is git-ignored and cannot be committed as it is; remove the "
+                    "credential-shaped content or the symlink, or create such data at test "
+                    "run time."
+                )
             if not changed:
                 # Already satisfied (e.g. the planner scheduled a file that exists).
                 # Acceptance is the verification command, not the size of the diff.

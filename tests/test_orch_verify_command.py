@@ -309,6 +309,8 @@ async def test_hydrated_command_matches_runtime_execution(
         return 0, "ok"
 
     class Git:
+        owned_ignored: ClassVar[dict[str, Any]] = {}
+
         async def changed_files(
             self, worktree: Path, base: str, *, owned_files: tuple[str, ...] = ()
         ) -> list[str]:
