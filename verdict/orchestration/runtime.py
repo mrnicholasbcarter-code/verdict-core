@@ -405,6 +405,14 @@ def _ensure_local_excludes(cwd: Path) -> None:
         pass
 
 
+@dataclass(frozen=True)
+class OwnedIgnoredReport:
+    """Owned git-ignored files force-staged, and those refused with a reason."""
+
+    forced: tuple[str, ...] = ()
+    refused: tuple[tuple[str, str], ...] = ()
+
+
 class Git:
     """Minimal git worktree operations for node isolation and integration."""
 
@@ -412,6 +420,7 @@ class Git:
         self.repo = repo
         self.run = runner
         self._worktree_lock = asyncio.Lock()
+        self.owned_ignored: dict[str, OwnedIgnoredReport] = {}
 
     async def call(self, *args: str, cwd: Path | None = None, timeout: float = 120) -> str:
         code, out = await self.run(("git", *args), cwd or self.repo, timeout)
@@ -481,6 +490,8 @@ class Git:
             # -A also stages a deletion of an already-tracked owned path even
             # when it no longer exists on disk.
             await self.call("add", "-A", "-f", "--", spec, cwd=cwd)
+        forced: list[str] = []
+        refused: list[tuple[str, str]] = []
         if owned_files:
             code, listing = await self.run(
                 (
@@ -508,8 +519,6 @@ class Git:
                 )
             for ignored in (item for item in listing.split("\0") if item):
                 full = cwd / ignored
-                if full.is_symlink() or not full.is_file():
-                    continue
                 if any(
                     (
                         ignored.startswith(pattern) or f"/{pattern}" in ignored
@@ -523,13 +532,25 @@ class Git:
                     for pattern in BYPRODUCT_EXCLUDES
                 ):
                     continue
+                if full.is_symlink():
+                    refused.append((ignored, "symlink"))
+                    continue
+                if not full.is_file():
+                    refused.append((ignored, "not_a_regular_file"))
+                    continue
                 try:
                     content = full.read_text(encoding="utf-8", errors="replace")
                 except OSError:
+                    refused.append((ignored, "unreadable"))
                     continue
                 if redact_text(content) != content:
+                    refused.append((ignored, "credential_shaped"))
                     continue
                 await self.call("add", "-A", "-f", "--", f":(literal){ignored}", cwd=cwd)
+                forced.append(ignored)
+        self.owned_ignored[str(cwd)] = OwnedIgnoredReport(
+            forced=tuple(forced), refused=tuple(refused)
+        )
         out = await self.call("diff", "--cached", "--name-only", base, cwd=cwd)
         return [line for line in out.splitlines() if line.strip()]
 
