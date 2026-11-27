@@ -1381,6 +1381,94 @@ class CatalogUnavailableTest(unittest.TestCase):
             self.assertEqual(len(loaded.entries), 0)
 
 
+class CatalogSourceErrorTest(unittest.TestCase):
+    """A catalog built from a failed gateway source is not a confirmed-empty catalog.
+
+    ``fetch_omniroute_evidence`` does not raise when one of its sources fails: it
+    names the source in ``source_errors`` and parses the rest. With ``v1_models``
+    failed there are no rows; with ``providers`` failed no route has a capacity
+    class. Either way the route list comes back empty and, before this guard, the
+    refresh overwrote a good registry with an empty one (seen live on 2026-11-27).
+    """
+
+    def _evidence(self, *errors: str) -> object:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            source_errors=tuple(errors), route_capacities={}, route_capacity_evidence={}
+        )
+
+    def _load(self, *errors: str) -> object:
+        from unittest.mock import patch
+
+        from verdict.discovery.refresh import _load_omniroute_routes
+
+        with (
+            patch(
+                "verdict.omniroute_evidence.fetch_omniroute_evidence",
+                return_value=self._evidence(*errors),
+            ),
+            patch("verdict.discovery.sources.omniroute.rows_from_evidence", return_value=[]),
+        ):
+            return _load_omniroute_routes({"OMNIROUTE_API_KEY": "test-key"})
+
+    def test_failed_model_catalog_source_is_unavailable(self) -> None:
+        result = self._load("v1_models")
+        self.assertFalse(result.available)  # type: ignore[attr-defined]
+        self.assertEqual(result.reason, "source_error:v1_models")  # type: ignore[attr-defined]
+
+    def test_failed_connections_source_is_unavailable(self) -> None:
+        result = self._load("health_matrix", "providers")
+        self.assertFalse(result.available)  # type: ignore[attr-defined]
+        self.assertEqual(result.reason, "source_error:providers")  # type: ignore[attr-defined]
+
+    def test_each_connection_usability_source_is_unavailable_when_failed(self) -> None:
+        """Without any of these every connection is ``availability_unknown``."""
+        for name in ("resilience", "limits", "cooldowns"):
+            with self.subTest(source=name):
+                result = self._load(name)
+                self.assertFalse(result.available)  # type: ignore[attr-defined]
+                self.assertEqual(result.reason, f"source_error:{name}")  # type: ignore[attr-defined]
+
+    def test_both_failed_sources_are_named_in_order(self) -> None:
+        result = self._load("v1_models", "providers")
+        self.assertEqual(result.reason, "source_error:providers,v1_models")  # type: ignore[attr-defined]
+
+    def test_an_unrelated_failed_source_does_not_block_the_catalog(self) -> None:
+        result = self._load("health_matrix", "candidates")
+        self.assertTrue(result.available)  # type: ignore[attr-defined]
+        self.assertEqual(result.routes, [])  # type: ignore[attr-defined]
+
+    def test_no_source_error_is_a_confirmed_catalog(self) -> None:
+        result = self._load()
+        self.assertTrue(result.available)  # type: ignore[attr-defined]
+
+    def test_refresh_keeps_the_prior_registry_when_the_model_catalog_failed(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**_env(tmp), "OMNIROUTE_API_KEY": "test-key"}
+            prior = DiscoveryRegistry(
+                schema=REGISTRY_SCHEMA,
+                written_at="2026-11-27T12:49:29+00:00",
+                ttl_s=REGISTRY_TTL_S,
+                entries=[],
+            )
+            save_registry(prior, env)
+            prior_bytes = registry_path(env).read_bytes()
+            with (
+                patch(
+                    "verdict.omniroute_evidence.fetch_omniroute_evidence",
+                    return_value=self._evidence("v1_models"),
+                ),
+                patch("verdict.discovery.sources.omniroute.rows_from_evidence", return_value=[]),
+            ):
+                result = run_refresh_action(force=True, free_only=True, env=env)
+            self.assertEqual(registry_path(env).read_bytes(), prior_bytes)
+            self.assertEqual(result.get("source"), "catalog_unavailable")
+            self.assertEqual(result.get("reason"), "source_error:v1_models")
+
+
 # ---------------------------------------------------------------------------
 # Fix 6: --force flag reaches run_refresh_action via CLI parser + dispatch
 # ---------------------------------------------------------------------------
