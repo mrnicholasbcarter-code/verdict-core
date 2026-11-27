@@ -447,6 +447,9 @@ class EligibilityLadder:
         # Canonical admitted set: a route it excludes fails before any ladder
         # stage, ranking or probe. The ladder can only narrow it further.
         self._admitted = admitted
+        # Serve-denial recovery (GitHub issue #1366): run-scoped, in memory only.
+        self._run_excluded: dict[str, str] = {}
+        self._run_cooldowns: dict[str, datetime] = {}
         # Where the admitted set (with live confirmations) is persisted.
         self._admission_receipt = admission_receipt
         # Health cache (from #742 prove-at-rest daemon). Read-only in selection.
@@ -824,6 +827,10 @@ class EligibilityLadder:
         cache = getattr(self, "_health_cache", None)
         a.agentic_capability = agentic_capability(cache.entry(route_id) if cache else None, now)
 
+        run_reason = self._run_excluded.get(route_id)
+        if run_reason is not None:
+            a.failed_stage, a.reason = EligibilityStage.TASK_ELIGIBLE, f"admission:{run_reason}"
+            return a
         if self._admitted is not None and route_id not in self._admitted:
             record = self._admitted.first_failure(route_id)
             stage = _ADMISSION_TO_LADDER.get(
@@ -853,6 +860,13 @@ class EligibilityLadder:
                 a.cooldown_scope = _ck  # AC6: non-secret scope key
             return a
 
+        for run_key in (f"route:{route_id}", f"prefix:{route_id.split('/', 1)[0]}"):
+            run_until = self._run_cooldowns.get(run_key)
+            if run_until is not None and run_until > now:
+                a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "cooldown:serve_denied"
+                a.cooldown_until = _iso(run_until)
+                a.cooldown_scope = run_key
+                return a
         for key, label in (
             (f"pool:{pool}", "cooldown:pool"),
             (f"route:{route_id}", "cooldown:route"),
@@ -1886,6 +1900,24 @@ class EligibilityLadder:
                         include_pool=not route_scoped_openrouter,
                     )
             self._persist()
+
+    def exclude_for_run(self, route_id: str, reason: str) -> None:
+        """Remove ``route_id`` for the rest of this run.
+
+        Held in memory only: nothing is persisted, and the next run builds a fresh
+        admitted set. The admitted set only narrows.
+        """
+        from verdict.admission import AdmissionStage
+
+        self._run_excluded[route_id] = reason
+        if self._admitted is not None:
+            self._admitted = self._admitted.exclude(
+                [route_id], AdmissionStage.DOWNSTREAM, reason, source="serve_denial"
+            )
+
+    def cool_for_run(self, key: str, seconds: float, *, now: datetime) -> None:
+        """Cool ``key`` (``route:<id>`` or ``prefix:<id prefix>``) for this run, in memory only."""
+        self._run_cooldowns[key] = now + timedelta(seconds=seconds)
 
     def record_failure(
         self, route_id: str, failure: FailureClassification, *, now: datetime
