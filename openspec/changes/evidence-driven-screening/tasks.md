@@ -8,12 +8,12 @@
 
 ## 2. Evidence readers
 
-- [ ] 2.1 Bounded, fail-closed readers for model-health, model-latency stats, the capability filter, the `best-free` channel, the free catalog and the provider rankings. Verify: tests with recorded payloads, malformed payloads and timeouts; a failed reader changes order only.
+- [ ] 2.1 Bounded, fail-closed readers for model-health, the routing quality state, model-latency stats, the capability filter, the `best-free` channel, the free catalog and the provider rankings; the latest discovery registry is read from disk. Verify: tests with recorded payloads, malformed payloads and timeouts; a failed reader changes order only.
 - [ ] 2.2 No passive signal grants eligibility. Verify: a ladder test with every signal favourable and no proof.
 
 ## 3. Policy and report
 
-- [ ] 3.1 `unknown` in the timer's capacity classes; `avoid`-rated providers skipped unless on the operator's allow list. Verify: tests on the installed unit text and on the skip reason.
+- [ ] 3.1 `unknown` in the timer's capacity classes; the terms rating in the report; providers on the operator's deny list skipped. Verify: tests on the installed unit text, the report and the skip reason.
 - [ ] 3.2 Proven-pool size by capacity, backlog and per-prefix record in the screen output and a doctor row. Verify: tests on the report and the doctor row.
 
 ## 4. Proof from real work

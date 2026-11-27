@@ -20,7 +20,7 @@ A run restricted to free routes found no eligible worker route at all (run `2026
 - The queue is ordered by expected value: the chance that a route passes, estimated from its prefix's own screening record and its passive health, times its quality rating.
 - A prefix that keeps failing is backed off and reported, instead of taking the same share of every run.
 - `unknown`-capacity routes are screened on the same terms as free ones (operator decision, 2026-11-27).
-- A route whose provider the gateway's free catalog rates `avoid` on terms of use is not screened unless the operator has allowed that provider.
+- Each prefix is shown with the terms rating the gateway's free catalog gives its provider. The rating excludes nothing by itself; an operator-owned deny list does.
 - Every run reports the size of the proven pool, the backlog and each prefix's record.
 
 **Proof from real work (`verdict orchestrate`)**
@@ -49,13 +49,15 @@ Rules this must keep (AGENTS.md, ADR-010, ADR-014, ADR-049): passive evidence or
   - `record_agentic_evidence` has one caller, the manual session import; a dispatch success records liveness only.
   - Gateway reads that work without inference and that the queue does not use: `/api/monitoring/model-health`, `/api/usage/model-latency-stats`, `capabilities.tool_calling` and the capability filter on `/v1/models` (3,739 of about 4,250 ids), candidate channels `best-free` and `coding:free` (143 rows, 66 of them reachable, healthy and declaring tools), `/api/free-models` (465 rows with `freeType` and a `tos` rating: 311 caution, 71 avoid, 52 ok), `/api/free-provider-rankings` (37 providers with an average score).
   - The `free-coding-models` roster: 222 models, 51 matched to a gateway route, 8 with a fresh tool proof.
+  - The discovery registry refresh sends one small request to every free route: 1,065 to 1,182 routes a run, 26 to 37 answered, 1 or 2 passed the tool request (three runs on 2026-11-27 before the run that wrote an empty registry, fixed in #1389).
+  - The gateway keeps a per-model quality state from real traffic (success average, samples, recency) behind `/v1/explain/routing`; its reference for free tiers says the terms flag is advisory and not a routing gate.
 - **INFERRED:** a prefix's recent pass rate predicts its next result well enough to order by. The numbers above suggest it; nothing has tested it.
 - **NOT AVAILABLE:** the cost of one probe in requests and seconds by provider; how the proven pool behaves under the new order (task 5.1); a live run in which a free route does a worker node (task 5.2); whether the gateway's `tos` rating is right for any given provider.
 
 ## Acceptance criteria
 
 - With recorded evidence as input, the routes a screen run probes are the passively admitted ones (plus frontier subscription routes) in expected-value order; a prefix with a long record of failures and no pass is skipped and named in the report.
-- `unknown`-capacity routes are probed on the same terms as free ones; a route of a provider rated `avoid` is not probed unless the operator allowed the provider.
+- `unknown`-capacity routes are probed on the same terms as free ones; a provider on the operator's deny list is not probed, and a terms rating alone excludes nothing.
 - No passive source makes a route eligible: with every passive signal favourable and no proof, the route is still `no_agentic_probe` for a worker node.
 - A node that needed tools and passed verification on a live worker with a verified served model gives that exact route a tool proof; a node without tool use, a fault-injected executor, an unverified served model or a failed verification gives none.
 - (post-merge) On installed main the number of free and unknown-capacity routes holding a tool proof is reported daily for a week and compared with 2026-11-27.

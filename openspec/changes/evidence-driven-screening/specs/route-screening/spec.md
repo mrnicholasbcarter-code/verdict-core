@@ -18,7 +18,7 @@ The scheduled screen SHALL take as candidates the free and unknown-capacity rout
 
 ### Requirement: The queue is ordered by expected value
 
-The screen SHALL order its candidates by the product of an estimated chance of passing and a quality score. The chance SHALL be derived from the route prefix's own screening results of the last seven days and from passive evidence for the route. The quality score SHALL be Verdict's rating where one exists and otherwise the gateway's ranking of the provider. No such evidence SHALL make a route eligible, healthy or proven.
+The screen SHALL order its candidates by the product of an estimated chance of passing and a quality score. The chance SHALL be derived from the route prefix's own screening results of the last seven days, weighted by how many results there are so that a prefix with few results stays near the overall rate, and from passive evidence for the route. The quality score SHALL be Verdict's rating where one exists and otherwise the gateway's ranking of the provider. No such evidence SHALL make a route eligible, healthy or proven.
 
 #### Scenario: a prefix that never passes
 
@@ -39,14 +39,19 @@ A prefix with at least the configured number of probes and no pass within seven 
 - **WHEN** a prefix has 8 probes and no pass in seven days
 - **THEN** its routes are skipped for 24 hours, then one is probed, and a pass restores the prefix
 
-### Requirement: Providers the gateway rates avoid are not screened unless allowed
+### Requirement: Terms ratings are reported and the operator's deny list excludes
 
-A route whose provider the gateway's free catalog rates `avoid` on terms of use SHALL NOT be screened and SHALL be reported as `skipped_terms`, unless the operator's allow list names the provider. No provider name SHALL be fixed in code.
+Each screen run SHALL report, per prefix, the terms rating that the gateway's free catalog gives its provider. The rating SHALL NOT by itself exclude a route. A route whose provider is on the operator's deny list SHALL NOT be screened and SHALL be reported as `skipped_denied`. The deny list SHALL be empty unless the operator sets it, and no provider name SHALL be fixed in code.
 
-#### Scenario: operator allows a provider
+#### Scenario: provider rated avoid, not denied
 
-- **WHEN** the operator's allow list names a provider that the catalog rates `avoid`
-- **THEN** its routes are candidates like any other
+- **WHEN** a provider is rated `avoid` and is not on the deny list
+- **THEN** its routes stay candidates and the report shows the rating
+
+#### Scenario: operator denies a provider
+
+- **WHEN** the operator's deny list names a provider
+- **THEN** its routes are not probed and are reported as `skipped_denied`
 
 ### Requirement: Every screen run reports the proven pool
 
