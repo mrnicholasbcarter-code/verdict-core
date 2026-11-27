@@ -16,7 +16,7 @@ import json
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -190,19 +190,41 @@ CrossFamilyReviewer = Callable[[CrossFamilyReviewRequest], ReviewResult]
 
 
 @dataclass(frozen=True)
+class ExtraReviewSummary:
+    """What the ready gate's extra cross-family review was and how it ended."""
+
+    route_id: str = ""
+    status: str = ""
+    findings: int = 0
+    blocking: int = 0
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class PrReadyOutcome:
     ready: bool
     reason: PrReadyReason | None = None
     message: str = ""
     review_ran: bool = False
     polls: int = 0
+    extra_review: ExtraReviewSummary | None = None
 
 
 def _stop(
-    reason: PrReadyReason, message: str, *, review_ran: bool = False, polls: int = 0
+    reason: PrReadyReason,
+    message: str,
+    *,
+    review_ran: bool = False,
+    polls: int = 0,
+    extra_review: ExtraReviewSummary | None = None,
 ) -> PrReadyOutcome:
     return PrReadyOutcome(
-        False, reason, redact_text(message)[:_MAX_DETAIL], review_ran=review_ran, polls=polls
+        False,
+        reason,
+        redact_text(message)[:_MAX_DETAIL],
+        review_ran=review_ran,
+        polls=polls,
+        extra_review=extra_review,
     )
 
 
@@ -220,46 +242,76 @@ def _gh_json(
 
 def _run_extra_review(
     plan: DeliverPlan, head_sha: str, pr_ref: str, reviewer: CrossFamilyReviewer | None
-) -> PrReadyOutcome | None:
-    """Return a stop outcome, or ``None`` when the cross-family review passed."""
+) -> tuple[PrReadyOutcome | None, ExtraReviewSummary | None]:
+    """Return ``(stop outcome or None when the review passed, summary or None)``."""
     if reviewer is None:
-        return _stop(
-            PrReadyReason.NO_CROSS_FAMILY_REVIEWER,
-            "in-run review was route-level and no cross-family reviewer is available",
+        return (
+            _stop(
+                PrReadyReason.NO_CROSS_FAMILY_REVIEWER,
+                "in-run review was route-level and no cross-family reviewer is available",
+            ),
+            None,
         )
     excluded = frozenset(f for f in plan.review.implementer_families if f)
     request = CrossFamilyReviewRequest(head_sha, plan.base_branch, pr_ref, excluded)
     try:
         result = reviewer(request)
     except NoCrossFamilyReviewerError as exc:
-        return _stop(PrReadyReason.NO_CROSS_FAMILY_REVIEWER, f"no cross-family reviewer: {exc}")
+        return _stop(
+            PrReadyReason.NO_CROSS_FAMILY_REVIEWER, f"no cross-family reviewer: {exc}"
+        ), None
     except Exception as exc:  # fail closed: an erroring review is a failed review
-        return _stop(
-            PrReadyReason.REVIEW_FAILED,
-            f"cross-family review errored: {type(exc).__name__}: {exc}",
-            review_ran=True,
+        error = ExtraReviewSummary(
+            status="ERROR", detail=redact_text(f"{type(exc).__name__}: {exc}")[:_MAX_DETAIL]
         )
+        return (
+            _stop(
+                PrReadyReason.REVIEW_FAILED,
+                f"cross-family review errored: {type(exc).__name__}: {exc}",
+                review_ran=True,
+            ),
+            error,
+        )
+    summary = ExtraReviewSummary(
+        route_id=result.route_id,
+        status=result.status,
+        findings=len(result.findings),
+        blocking=sum(1 for f in result.findings if f.blocking()),
+        detail=redact_text(result.detail)[:_MAX_DETAIL],
+    )
     if result.status == "ERROR" and _NO_REVIEWER_MARKER in result.detail:
-        return _stop(PrReadyReason.NO_CROSS_FAMILY_REVIEWER, result.detail, review_ran=True)
+        return (
+            _stop(PrReadyReason.NO_CROSS_FAMILY_REVIEWER, result.detail, review_ran=True),
+            summary,
+        )
     if not result.passed:
-        return _stop(
-            PrReadyReason.REVIEW_FAILED,
-            f"cross-family review {result.status}: {result.detail or 'blocking findings'}",
-            review_ran=True,
+        return (
+            _stop(
+                PrReadyReason.REVIEW_FAILED,
+                f"cross-family review {result.status}: {result.detail or 'blocking findings'}",
+                review_ran=True,
+            ),
+            summary,
         )
     if not result.route_id.strip():
-        return _stop(
-            PrReadyReason.REVIEW_FAILED,
-            "cross-family review named no reviewer route",
-            review_ran=True,
+        return (
+            _stop(
+                PrReadyReason.REVIEW_FAILED,
+                "cross-family review named no reviewer route",
+                review_ran=True,
+            ),
+            summary,
         )
     if route_family(result.route_id) in excluded:
-        return _stop(
-            PrReadyReason.NO_CROSS_FAMILY_REVIEWER,
-            f"reviewer route {result.route_id!r} is in an implementer family",
-            review_ran=True,
+        return (
+            _stop(
+                PrReadyReason.NO_CROSS_FAMILY_REVIEWER,
+                f"reviewer route {result.route_id!r} is in an implementer family",
+                review_ran=True,
+            ),
+            summary,
         )
-    return None
+    return None, summary
 
 
 def _check_runs_state(runs: Sequence[Any]) -> str:
@@ -407,15 +459,16 @@ def run_pr_ready_gate(
         )
 
     review_ran = False
+    summary: ExtraReviewSummary | None = None
     if plan.review.level != _FAMILY_LEVEL:
-        stopped = _run_extra_review(plan, sha, ref, reviewer)
+        stopped, summary = _run_extra_review(plan, sha, ref, reviewer)
         review_ran = reviewer is not None
         if stopped is not None:
-            return stopped
+            return replace(stopped, extra_review=summary)
 
     moved = _verify_head(runner, ref, sha, cwd, review_ran=review_ran)
     if moved is not None:
-        return moved
+        return replace(moved, extra_review=summary)
 
     deadline = clock() + deadline_s
     polls = 0
@@ -428,10 +481,15 @@ def run_pr_ready_gate(
                 f"gh api checks failed: {failure.stderr}",
                 review_ran=review_ran,
                 polls=polls,
+                extra_review=summary,
             )
         if state == "red":
             return _stop(
-                PrReadyReason.CI_RED, f"a check failed on {sha}", review_ran=review_ran, polls=polls
+                PrReadyReason.CI_RED,
+                f"a check failed on {sha}",
+                review_ran=review_ran,
+                polls=polls,
+                extra_review=summary,
             )
         if state == "green":
             break
@@ -442,13 +500,14 @@ def run_pr_ready_gate(
                 f"checks on {sha} still pending after {deadline_s:g}s",
                 review_ran=review_ran,
                 polls=polls,
+                extra_review=summary,
             )
         sleep(min(poll_interval_s, remaining))
 
     # The wait may have lasted up to the deadline: promote only the commit that was checked.
     moved = _verify_head(runner, ref, sha, cwd, review_ran=review_ran, polls=polls)
     if moved is not None:
-        return moved
+        return replace(moved, extra_review=summary)
     ready = runner(["gh", "pr", "ready", ref], cwd)
     if ready.returncode != 0:
         return _stop(
@@ -456,5 +515,6 @@ def run_pr_ready_gate(
             f"gh pr ready failed: {ready.stderr or ready.stdout}",
             review_ran=review_ran,
             polls=polls,
+            extra_review=summary,
         )
-    return PrReadyOutcome(True, None, "pull request marked ready", review_ran, polls)
+    return PrReadyOutcome(True, None, "pull request marked ready", review_ran, polls, summary)
