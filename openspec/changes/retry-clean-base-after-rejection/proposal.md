@@ -12,6 +12,17 @@ still received the rejected implementation in its worktree, causing "SEARCH text
 failures when the worker's prompt described the base revision's files but the worktree contained
 the wrong prior implementation.
 
+## Amendment (2026-11-27, GitHub issue #1372 defect 2)
+
+The clean-base rule stays for workers that emit diffs, which is where "SEARCH text not found"
+came from. For a worker that edits files in place (terminal harness `opencode`) a
+`verification_failed` attempt is no longer thrown away: its owned files are salvaged and restored,
+the restore event says `reason="verification_failed"`, and the retry text tells the worker its
+files are already there. Reason: in two self-build runs (`20261126T180407Z`, `20261127T000415Z`) a node
+lost a nearly passing attempt to a clean base and had to redo it inside the same attempt limit. Operator
+decision recorded on the issue (2026-11-26). `ownership_violation` and `diff_rejected` keep the
+clean base.
+
 ## What Changes
 
 **`verdict/orchestration/runtime.py`**

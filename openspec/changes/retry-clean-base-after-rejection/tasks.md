@@ -13,3 +13,8 @@
 
 - [ ] (post-merge) 2.1 From installed merged main, replay one of the failing runs (`/tmp/real-story-5/runs/`) and confirm no "SEARCH text not found" failures appear on retry
 - [ ] (post-merge) 2.2 Confirm `verdict doctor` green and no salvage/restore regressions in a fresh orchestrate run after the fix is deployed
+
+## 3. Amendment: in-place workers continue from a failed verification (GitHub issue #1372, defect 2)
+
+- [x] 3.1 `_record_failure()` keeps the work of a `verification_failed` attempt whose terminal harness is `opencode`; the terminal built after a failed validation carries the worker's harness; the restore event says `reason="verification_failed"`; the retry text names the restored files. Tests: `tests/test_orch_retry_failed_tree.py` (in-place worker continues; other harness, `diff_rejected` and `ownership_violation` keep the clean base)
+- [ ] (post-merge) 3.2 On installed main, an orchestrate run in which an OpenCode worker's attempt fails verification shows a `restore` event with `reason: "verification_failed"` for the next attempt, and that attempt finishes the node
