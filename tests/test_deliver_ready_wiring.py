@@ -236,7 +236,7 @@ def test_old_record_without_ready_fields_reads_with_defaults(tmp_path: Path) -> 
         "extra_review_detail",
         "ci_polls",
     ):
-        raw.pop(key, None)
+        del raw[key]
     data = (json.dumps(raw, indent=2, sort_keys=True) + "\n").encode()
     (run_dir / DELIVERY_FILE).write_bytes(data)
     (run_dir / DELIVERY_DIGEST_FILE).write_text(deliver_service._digest(data) + "\n")
