@@ -16,7 +16,7 @@ import pytest
 from tests.test_deliver_service import INTEGRATION, PR_URL, FakeRunner, _clock, _make_run, _request
 from verdict import cli
 from verdict.orchestration import deliver_service, ready_gate
-from verdict.orchestration.contracts import ReviewResult
+from verdict.orchestration.contracts import ReviewFinding, ReviewResult
 from verdict.orchestration.deliver_publish import CommandResult
 from verdict.orchestration.deliver_service import (
     DELIVERY_DIGEST_FILE,
@@ -229,9 +229,14 @@ def test_old_record_without_ready_fields_reads_with_defaults(tmp_path: Path) -> 
         "review_level",
         "reviewer_route",
         "extra_review_ran",
+        "extra_review_route",
+        "extra_review_status",
+        "extra_review_findings",
+        "extra_review_blocking",
+        "extra_review_detail",
         "ci_polls",
     ):
-        del raw[key]
+        raw.pop(key, None)
     data = (json.dumps(raw, indent=2, sort_keys=True) + "\n").encode()
     (run_dir / DELIVERY_FILE).write_bytes(data)
     (run_dir / DELIVERY_DIGEST_FILE).write_text(deliver_service._digest(data) + "\n")
@@ -242,6 +247,11 @@ def test_old_record_without_ready_fields_reads_with_defaults(tmp_path: Path) -> 
     assert record.review_level == ""
     assert record.reviewer_route == ""
     assert record.extra_review_ran is False
+    assert record.extra_review_route == ""
+    assert record.extra_review_status == ""
+    assert record.extra_review_findings == 0
+    assert record.extra_review_blocking == 0
+    assert record.extra_review_detail == ""
     assert record.ci_polls == 0
     again = deliver_run(_request(run_dir), runner=GhRunner(), clock=_clock)
     assert again.status is DeliverStatus.ALREADY_DELIVERED
@@ -317,3 +327,110 @@ def test_empty_reviewer_route_is_refused_before_any_command(tmp_path: Path) -> N
     assert outcome.status is DeliverStatus.REFUSED
     assert outcome.reason == "review_failed"
     assert runner.calls == []
+
+
+# --- the extra review's summary reaches delivery.json and the outcome ----------------------
+
+FIVE_DEFAULTS = {
+    "extra_review_route": "",
+    "extra_review_status": "",
+    "extra_review_findings": 0,
+    "extra_review_blocking": 0,
+    "extra_review_detail": "",
+}
+
+
+class StubReviewer:
+    def __init__(self, result: ReviewResult) -> None:
+        self.result = result
+
+    def __call__(self, request: CrossFamilyReviewRequest) -> ReviewResult:
+        return self.result
+
+
+def _five(data: Any) -> dict[str, Any]:
+    getter = data.get if isinstance(data, dict) else lambda key: getattr(data, key)
+    return {key: getter(key) for key in FIVE_DEFAULTS}
+
+
+def test_route_level_pass_records_the_reviewer_route_and_status(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path, review=SAME_FAMILY_REVIEW)
+    outcome = deliver_run(
+        _request(run_dir), runner=GhRunner(), clock=_clock, reviewer=FakeReviewer()
+    )
+    expected = {**FIVE_DEFAULTS, "extra_review_route": "gm/gemini-3", "extra_review_status": "PASS"}
+    assert outcome.ready is True
+    assert _five(outcome) == expected
+    assert _five(outcome.to_dict()) == expected
+    raw = json.loads((run_dir / DELIVERY_FILE).read_text())
+    assert _five(raw) == expected
+    record = read_delivery_record(run_dir)
+    assert record is not None and _five(record) == expected
+
+
+def test_reviewer_error_leaves_a_draft_and_records_the_summary(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path, review=SAME_FAMILY_REVIEW)
+    findings = (
+        ReviewFinding("high", "bug", "a.py", 3, "broken"),
+        ReviewFinding("low", "style", "b.py", None, "nit"),
+        ReviewFinding("info", "note", "c.py", None, "fyi"),
+    )
+    result = ReviewResult(
+        "ERROR", "ocr", "gm/gemini-3", findings=findings, detail="reviewer crashed"
+    )
+    runner = GhRunner()
+    outcome = deliver_run(
+        _request(run_dir), runner=runner, clock=_clock, reviewer=StubReviewer(result)
+    )
+    expected = {
+        "extra_review_route": "gm/gemini-3",
+        "extra_review_status": "ERROR",
+        "extra_review_findings": 3,
+        "extra_review_blocking": 1,
+        "extra_review_detail": "reviewer crashed",
+    }
+    assert outcome.status is DeliverStatus.DELIVERED
+    assert outcome.ready is False
+    assert outcome.ready_reason == "review_failed"
+    assert runner.ready_calls() == []
+    assert _five(outcome) == expected
+    assert _five(json.loads((run_dir / DELIVERY_FILE).read_text())) == expected
+
+
+def test_run_without_the_ready_gate_records_the_defaults(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path, review=SAME_FAMILY_REVIEW)
+    outcome = deliver_run(
+        _request(run_dir, run_ready_gate=False),
+        runner=GhRunner(),
+        clock=_clock,
+        reviewer=FakeReviewer(),
+    )
+    assert _five(outcome) == FIVE_DEFAULTS
+    assert _five(json.loads((run_dir / DELIVERY_FILE).read_text())) == FIVE_DEFAULTS
+
+
+def test_family_level_run_records_the_defaults(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path)
+    outcome = deliver_run(_request(run_dir), runner=GhRunner(), clock=_clock)
+    assert outcome.review_level == "family"
+    assert _five(outcome) == FIVE_DEFAULTS
+    assert _five(outcome.to_dict()) == FIVE_DEFAULTS
+    assert _five(json.loads((run_dir / DELIVERY_FILE).read_text())) == FIVE_DEFAULTS
+
+
+def test_already_delivered_answers_with_the_stored_summary(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path, review=SAME_FAMILY_REVIEW)
+    first = deliver_run(_request(run_dir), runner=GhRunner(), clock=_clock, reviewer=FakeReviewer())
+    second = deliver_run(_request(run_dir), runner=GhRunner(), clock=_clock)
+    assert second.status is DeliverStatus.ALREADY_DELIVERED
+    assert _five(second) == _five(first)
+    assert second.extra_review_route == "gm/gemini-3"
+    assert second.extra_review_status == "PASS"
+
+
+def test_delivery_digest_still_matches_with_the_summary(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path, review=SAME_FAMILY_REVIEW)
+    deliver_run(_request(run_dir), runner=GhRunner(), clock=_clock, reviewer=FakeReviewer())
+    data = (run_dir / DELIVERY_FILE).read_bytes()
+    stored = (run_dir / DELIVERY_DIGEST_FILE).read_text().strip()
+    assert stored == deliver_service._digest(data)
