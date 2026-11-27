@@ -1422,6 +1422,14 @@ class CatalogSourceErrorTest(unittest.TestCase):
         self.assertFalse(result.available)  # type: ignore[attr-defined]
         self.assertEqual(result.reason, "source_error:providers")  # type: ignore[attr-defined]
 
+    def test_each_connection_usability_source_is_unavailable_when_failed(self) -> None:
+        """Without any of these every connection is ``availability_unknown``."""
+        for name in ("resilience", "limits", "cooldowns"):
+            with self.subTest(source=name):
+                result = self._load(name)
+                self.assertFalse(result.available)  # type: ignore[attr-defined]
+                self.assertEqual(result.reason, f"source_error:{name}")  # type: ignore[attr-defined]
+
     def test_both_failed_sources_are_named_in_order(self) -> None:
         result = self._load("v1_models", "providers")
         self.assertEqual(result.reason, "source_error:providers,v1_models")  # type: ignore[attr-defined]
