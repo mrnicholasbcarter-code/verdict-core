@@ -106,6 +106,11 @@ class DeliveryRecord:
     review_level: str = ""
     reviewer_route: str = ""
     extra_review_ran: bool = False
+    extra_review_route: str = ""
+    extra_review_status: str = ""
+    extra_review_findings: int = 0
+    extra_review_blocking: int = 0
+    extra_review_detail: str = ""
     ci_polls: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -126,6 +131,11 @@ class DeliveryRecord:
             "review_level": self.review_level,
             "reviewer_route": self.reviewer_route,
             "extra_review_ran": self.extra_review_ran,
+            "extra_review_route": self.extra_review_route,
+            "extra_review_status": self.extra_review_status,
+            "extra_review_findings": self.extra_review_findings,
+            "extra_review_blocking": self.extra_review_blocking,
+            "extra_review_detail": self.extra_review_detail,
             "ci_polls": self.ci_polls,
         }
 
@@ -150,6 +160,11 @@ class DeliverOutcome:
     review_level: str = ""
     reviewer_route: str = ""
     extra_review_ran: bool = False
+    extra_review_route: str = ""
+    extra_review_status: str = ""
+    extra_review_findings: int = 0
+    extra_review_blocking: int = 0
+    extra_review_detail: str = ""
     ci_polls: int = 0
 
     @property
@@ -182,6 +197,11 @@ class DeliverOutcome:
             "review_level": self.review_level,
             "reviewer_route": self.reviewer_route,
             "extra_review_ran": self.extra_review_ran,
+            "extra_review_route": self.extra_review_route,
+            "extra_review_status": self.extra_review_status,
+            "extra_review_findings": self.extra_review_findings,
+            "extra_review_blocking": self.extra_review_blocking,
+            "extra_review_detail": self.extra_review_detail,
             "ci_polls": self.ci_polls,
         }
 
@@ -266,6 +286,11 @@ def read_delivery_record(run_dir: Path) -> DeliveryRecord | None:
         review_level=str(raw.get("review_level") or ""),
         reviewer_route=str(raw.get("reviewer_route") or ""),
         extra_review_ran=raw.get("extra_review_ran") is True,
+        extra_review_route=str(raw.get("extra_review_route") or ""),
+        extra_review_status=str(raw.get("extra_review_status") or ""),
+        extra_review_findings=_count(raw.get("extra_review_findings")),
+        extra_review_blocking=_count(raw.get("extra_review_blocking")),
+        extra_review_detail=str(raw.get("extra_review_detail") or ""),
         ci_polls=_count(raw.get("ci_polls")),
     )
 
@@ -395,6 +420,11 @@ def deliver_run(
             review_level=existing.review_level,
             reviewer_route=existing.reviewer_route,
             extra_review_ran=existing.extra_review_ran,
+            extra_review_route=existing.extra_review_route,
+            extra_review_status=existing.extra_review_status,
+            extra_review_findings=existing.extra_review_findings,
+            extra_review_blocking=existing.extra_review_blocking,
+            extra_review_detail=existing.extra_review_detail,
             ci_polls=existing.ci_polls,
         )
 
@@ -451,6 +481,11 @@ def deliver_run(
         "review_level": plan.review.level,
         "reviewer_route": plan.review.route_id,
         "extra_review_ran": False,
+        "extra_review_route": "",
+        "extra_review_status": "",
+        "extra_review_findings": 0,
+        "extra_review_blocking": 0,
+        "extra_review_detail": "",
         "ci_polls": 0,
     }
     if bool(getattr(request, "run_ready_gate", True)):
@@ -469,6 +504,14 @@ def deliver_run(
             extra_review_ran=gate.review_ran,
             ci_polls=gate.polls,
         )
+        if gate.extra_review is not None:
+            ready_fields.update(
+                extra_review_route=gate.extra_review.route_id,
+                extra_review_status=gate.extra_review.status,
+                extra_review_findings=gate.extra_review.findings,
+                extra_review_blocking=gate.extra_review.blocking,
+                extra_review_detail=gate.extra_review.detail,
+            )
 
     stamp = _timestamp(clock or _utc_now)
     record = DeliveryRecord(
