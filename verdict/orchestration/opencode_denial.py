@@ -40,6 +40,13 @@ def _match_code(pattern: re.Pattern[str], text: object) -> str | None:
     return found.group(1) if found else None
 
 
+def denial_code_in_text(text: object, route_id: str) -> str | None:
+    """Return the denial code if ``text`` holds serve's denial of ``route_id``, else None."""
+    if not route_id:
+        return None
+    return _match_code(_denial_pattern(route_id), text)
+
+
 def serve_denial_code(line: str | bytes, route_id: str) -> str | None:
     """Return the denial code if ``line`` is a 503 retry denying ``route_id``.
 
