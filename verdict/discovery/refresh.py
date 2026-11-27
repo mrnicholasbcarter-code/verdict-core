@@ -34,6 +34,11 @@ from verdict.discovery.registry import (
 _PROBEABLE = frozenset({"free", "subscription"})
 
 
+# Gateway sources the probeable route list is built from: the model catalog gives the
+# rows, the connections give each route its capacity class.
+_CATALOG_SOURCES = frozenset({"v1_models", "providers"})
+
+
 @dataclass
 class CatalogResult:
     """Typed result from a catalog fetch attempt.
@@ -57,8 +62,9 @@ def _load_omniroute_routes(env: Any = None) -> CatalogResult:
     Capacity is read from ``evidence.route_capacities`` / ``route_capacity_evidence``
     (pre-computed by ``parse_omniroute_evidence`` from connection facts).
 
-    Returns ``CatalogResult(available=False)`` when the OmniRoute key is absent
-    or the fetch/parse fails.  Returns ``CatalogResult(available=True)`` with an
+    Returns ``CatalogResult(available=False)`` when the OmniRoute key is absent,
+    the fetch/parse fails, or the fetch reports a failed model-catalog or
+    connections source (``reason`` is then ``source_error:<names>``).  Returns ``CatalogResult(available=True)`` with an
     empty route list when the key is present but no FREE/SUBSCRIPTION routes
     exist.  Never raises.
     """
@@ -89,6 +95,14 @@ def _load_omniroute_routes(env: Any = None) -> CatalogResult:
         disc_rows = rows_from_evidence(evidence, base_url=base)
     except Exception:
         return CatalogResult(routes=[], available=False, reason="fetch_failed")
+
+    # The fetch names a failed source in ``source_errors`` and parses the rest. Without
+    # the model catalog there are no rows, and without the connections no route has a
+    # capacity class: the route list would be empty because a read failed, not because
+    # the gateway has nothing to probe. That is not a confirmed-empty catalog.
+    failed = sorted(_CATALOG_SOURCES.intersection(getattr(evidence, "source_errors", ()) or ()))
+    if failed:
+        return CatalogResult(routes=[], available=False, reason="source_error:" + ",".join(failed))
 
     result: list[tuple[Route, str, str]] = []
     for row in disc_rows:
