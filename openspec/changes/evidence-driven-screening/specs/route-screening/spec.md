@@ -2,46 +2,60 @@
 
 ## ADDED Requirements
 
-### Requirement: The screen probes routes that passive evidence admits
+### Requirement: The screen probes each model once
 
-The scheduled screen SHALL take as candidates the free and unknown-capacity routes that the passive check admits, and the subscription routes in the planner's frontier band. It SHALL NOT probe a free or unknown-capacity route that the passive check rejects, and SHALL report such a route as skipped with the reason.
+The scheduled screen SHALL treat catalog ids with the same `owned_by` and `root` as one model and SHALL probe a model at most once per run. A tool proof SHALL stay with the exact id that earned it.
 
-#### Scenario: route rejected by the passive check
+#### Scenario: one model under two ids
 
-- **WHEN** a free route has no live candidate row or its provider's breaker is open
-- **THEN** the screen does not probe it and reports it as skipped
+- **WHEN** the catalog lists a model under its provider's alias and under its provider's full id
+- **THEN** the screen probes one of the two ids and reports the other as skipped
+
+### Requirement: The screen does not probe routes that cannot pass
+
+The screen SHALL NOT probe a route that does not declare tool support, and SHALL report it as `skipped_no_tools`. A route of unknown capacity SHALL be a candidate on the same terms as a free route.
+
+#### Scenario: no declared tool support
+
+- **WHEN** a free route's catalog row does not declare tool calling
+- **THEN** the screen does not probe it and reports `skipped_no_tools`
 
 #### Scenario: unknown capacity
 
-- **WHEN** a route of unknown capacity passes the passive check and holds no tool proof
+- **WHEN** a route of unknown capacity declares tool support and holds no tool proof
 - **THEN** it is a candidate on the same terms as a free route
 
-### Requirement: The queue is ordered by expected value
+### Requirement: A provider that keeps failing is backed off
 
-The screen SHALL order its candidates by the product of an estimated chance of passing and a quality score. The chance SHALL be derived from the route prefix's own screening results of the last seven days, weighted by how many results there are so that a prefix with few results stays near the overall rate, and from passive evidence for the route. The quality score SHALL be Verdict's rating where one exists and otherwise the gateway's ranking of the provider. No such evidence SHALL make a route eligible, healthy or proven.
-
-#### Scenario: a prefix that never passes
-
-- **WHEN** one prefix has many recent probes and no pass and another has passed several times
-- **THEN** candidates of the second prefix are probed before candidates of the first
-
-#### Scenario: favourable evidence without a proof
-
-- **WHEN** a route is healthy in the gateway's records, had successful traffic today, declares tool support and has no tool proof
-- **THEN** it is early in the queue and is still not eligible for a worker node
-
-### Requirement: A prefix that keeps failing is backed off
-
-A prefix with at least the configured number of probes and no pass within seven days SHALL be skipped for the configured period and then given one probe. A pass SHALL end the back-off. Each skip SHALL be reported as `skipped_backoff`.
+The screen SHALL keep, per provider, the probes and passes of the last seven days. A provider with at least the configured number of probes and no pass SHALL be skipped for the configured period and then given one probe. A pass SHALL end the back-off. Each skip SHALL be reported as `skipped_backoff`. A refusal by the gateway before any upstream call, and a rate limit, SHALL NOT count as a probe.
 
 #### Scenario: back-off and return
 
-- **WHEN** a prefix has 8 probes and no pass in seven days
-- **THEN** its routes are skipped for 24 hours, then one is probed, and a pass restores the prefix
+- **WHEN** a provider has 8 probes and no pass in seven days
+- **THEN** its routes are skipped for 24 hours, then one is probed, and a pass restores the provider
 
-### Requirement: Terms ratings are reported and the operator's deny list excludes
+#### Scenario: the gateway refused
 
-Each screen run SHALL report, per prefix, the terms rating that the gateway's free catalog gives its provider. The rating SHALL NOT by itself exclude a route. A route whose provider is on the operator's deny list SHALL NOT be screened and SHALL be reported as `skipped_denied`. The deny list SHALL be empty unless the operator sets it, and no provider name SHALL be fixed in code.
+- **WHEN** eight requests for a provider's routes were refused by the gateway because its breaker was open
+- **THEN** the provider's record is unchanged and it is not backed off
+
+### Requirement: The queue is ordered by the provider's record
+
+The screen SHALL probe, in this order: routes of a provider with at least one pass in seven days; routes the passive check admits; all other candidates. Inside each group it SHALL order by the provider's pass rate and then by Verdict's rating. While the last group is not empty it SHALL receive at least one probe in eight. No evidence used for ordering SHALL make a route eligible, healthy or proven.
+
+#### Scenario: a provider that passes and one with no record
+
+- **WHEN** one provider has passed several times this week and another has never been probed
+- **THEN** the first provider's routes are probed first and the second still receives a probe in the run
+
+#### Scenario: favourable evidence without a proof
+
+- **WHEN** a route is admitted by the passive check, declares tool support, belongs to a provider that passes and has no tool proof
+- **THEN** it is early in the queue and is still not eligible for a worker node
+
+### Requirement: The operator's deny list excludes and a terms rating does not
+
+A route whose provider is on the operator's deny list SHALL NOT be screened and SHALL be reported as `skipped_denied`. The deny list SHALL be keyed by provider id, SHALL be empty unless the operator sets it, and no provider name SHALL be fixed in code. Each screen run SHALL report, per provider, the terms rating that the gateway's free catalog gives it. The rating SHALL NOT by itself exclude a route.
 
 #### Scenario: provider rated avoid, not denied
 
@@ -53,11 +67,20 @@ Each screen run SHALL report, per prefix, the terms rating that the gateway's fr
 - **WHEN** the operator's deny list names a provider
 - **THEN** its routes are not probed and are reported as `skipped_denied`
 
+### Requirement: Account-tied connections are probed within a limit
+
+For a connection that authenticates as a person (OAuth or cookie), the screen SHALL send at most the configured number of probes per connection in one run, and none while the connection is terminal or cooling.
+
+#### Scenario: a sign-in connection with many unproven routes
+
+- **WHEN** a sign-in connection has ten unproven routes and the limit is two
+- **THEN** two are probed in the run and the rest are reported as skipped
+
 ### Requirement: Every screen run reports the proven pool
 
-Each screen run SHALL report the number of routes holding a tool proof by capacity class, the number of admitted routes without one, and the passes and probes of each prefix over seven days. `verdict doctor` SHALL show the proven-pool size.
+Each screen run SHALL report the number of routes holding a tool proof by capacity class, the number of candidate models without one, the passes and probes of each provider over seven days, and the providers in back-off. `verdict doctor` SHALL show the proven-pool size.
 
 #### Scenario: report after a run
 
 - **WHEN** a screen run ends
-- **THEN** its output contains the proven-pool counts, the backlog and the per-prefix record
+- **THEN** its output contains the proven-pool counts, the backlog and the per-provider record
