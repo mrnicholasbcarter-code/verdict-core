@@ -9,6 +9,7 @@ from verdict.free_tier_admit import REASON_METADATA_GHOST, REASON_OPAQUE_ROUTE_D
 from verdict.orchestration.opencode_denial import (
     PERMANENT_DENIAL_CODES,
     DenialWatch,
+    denial_code_in_text,
     serve_denial_code,
 )
 
@@ -201,3 +202,10 @@ def test_serve_denial_fixture_shape() -> None:
         )
     assert serve_denial_code(lines[1], ROUTE) == "opaque_route_disallowed"
     assert _feed_fixture("v2_3_2_retry_503_serve_denial.jsonl", "cc/other") == []
+
+
+def test_denial_code_in_text_matches_own_route_and_empty_route_is_none() -> None:
+    text = _denial("opaque_route_disallowed") + " (why)"
+    assert denial_code_in_text(text, ROUTE) == "opaque_route_disallowed"
+    assert denial_code_in_text(text, "cc/other") is None
+    assert denial_code_in_text(text, "") is None

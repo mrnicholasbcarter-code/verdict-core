@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from verdict.orchestration.contracts import FailureClassification, WorkerTerminal
+from verdict.orchestration.opencode_denial import denial_code_in_text
 from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY, is_context_length_error
 
 CLASSIFIER_VERSION = "v1"
@@ -396,6 +397,19 @@ class FailureIntelligence:
                     cooldown_seconds=cooldown,
                     scope="route",
                     evidence=_sanitize_error(error_text),
+                )
+
+            # 503 serve denial of this worker's own assigned route
+            elif (
+                status == 503
+                and (code := denial_code_in_text(terminal.error, terminal.model)) is not None
+            ):
+                return FailureClassification(
+                    category="route_denied",
+                    action="REROUTE",
+                    cooldown_seconds=0,
+                    scope="none",
+                    evidence=f"serve_denied:{code}",
                 )
 
             # 5xx - Server errors

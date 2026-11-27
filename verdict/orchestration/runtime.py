@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
 from verdict.context_pack import ContextPlan, estimate_tokens
+from verdict.free_tier_admit import REASON_PROVIDER_UNHEALTHY
 from verdict.models import AdmissionProof
 from verdict.orchestration.candidate_builder import (
     MAX_CANDIDATES as _MAX_CANDIDATES,  # noqa: F401 re-exported; tests import from runtime
@@ -91,6 +92,7 @@ from verdict.orchestration.health_cache import (
     HealthCache,
     default_cache_path,
 )
+from verdict.orchestration.opencode_denial import PERMANENT_DENIAL_CODES
 from verdict.orchestration.recovery import RecoveryBudget
 from verdict.orchestration.repo_gates import RepoGate, describe_gates, discover_repo_gates
 from verdict.orchestration.research_metrics import (
@@ -126,6 +128,10 @@ from verdict.orchestration.worker_context import (
 from verdict.relay import admission_proof, dispatch_scope
 from verdict.security import redact_text
 from verdict.subagent_selection import CONTEXT_LENGTH_CATEGORY
+
+# Serve-denial recovery: run-scoped cooldowns, in seconds (never persisted).
+_DENIAL_PREFIX_COOLDOWN_S = 300.0
+_DENIAL_ROUTE_COOLDOWN_S = 60.0
 
 # Indirection for testing
 _sleep = asyncio.sleep
@@ -2467,6 +2473,39 @@ class DagRuntime:
                 ok=False, model=route_id, error=f"transport: {type(exc).__name__}: {exc}"
             )
 
+    def _apply_serve_denial(self, run: NodeRun, failure: FailureClassification) -> None:
+        """Act on ``verdict serve``'s refusal of this attempt's route, for this run only.
+
+        A permanent code removes the route for every node; ``provider_unhealthy`` cools the
+        routes sharing its id prefix; any other code cools only that route. Nothing is
+        persisted (OpenSpec change ``serve-denial-recovery``).
+        """
+        code = failure.evidence.removeprefix("serve_denied:")
+        action = "none"
+        if code in PERMANENT_DENIAL_CODES:
+            exclude = getattr(self.selector, "exclude_for_run", None)
+            if callable(exclude):
+                exclude(run.route_id, f"serve_denied:{code}")
+                action = "excluded"
+        else:
+            cool = getattr(self.selector, "cool_for_run", None)
+            if callable(cool):
+                if code == REASON_PROVIDER_UNHEALTHY:
+                    prefix = run.route_id.split("/", 1)[0]
+                    cool(f"prefix:{prefix}", _DENIAL_PREFIX_COOLDOWN_S, now=self.now())
+                    action = "prefix_cooled"
+                else:
+                    cool(f"route:{run.route_id}", _DENIAL_ROUTE_COOLDOWN_S, now=self.now())
+                    action = "route_cooled"
+        self.events.emit(
+            "controller",
+            run.node.node_id,
+            phase="serve_denial",
+            route_id=run.route_id,
+            code=code,
+            action=action,
+        )
+
     def _record_failure(
         self,
         run: NodeRun,
@@ -2587,6 +2626,8 @@ class DagRuntime:
                     phase="session_feedback",
                     reason=f"persistence_error:{type(exc).__name__}",
                 )
+        if failure.category == "route_denied":
+            self._apply_serve_denial(run, failure)
         if failure.scope != "none" and failure.cooldown_seconds > 0:
             self.selector.record_failure(run.route_id, failure, now=self.now())
             pooled = failure.scope == "provider" and failure.category in POOL_COOLDOWN_CATEGORIES

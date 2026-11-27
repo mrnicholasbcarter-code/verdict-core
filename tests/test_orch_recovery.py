@@ -529,3 +529,94 @@ def test_reset_hint_duration_forms(text: str, seconds: int) -> None:
     from verdict.orchestration.recovery import _parse_reset_hint
 
     assert _parse_reset_hint(text) == seconds
+
+
+class TestRouteDeniedClassification:
+    """503 serve denial of the worker's own assigned route classifies as route_denied."""
+
+    @pytest.fixture
+    def fi(self) -> FailureIntelligence:
+        return FailureIntelligence()
+
+    @pytest.fixture
+    def _now(self) -> datetime:
+        return datetime(2025, 1, 15, 12, 0, 0)
+
+    def _denial_text(self, route: str, code: str, detail: str = "") -> str:
+        suffix = f" ({detail})" if detail else ""
+        return f"assigned route {route!r} denied: {code}{suffix}"
+
+    def test_503_permanent_denial_of_own_route_is_route_denied(
+        self, fi: FailureIntelligence, _now: datetime
+    ) -> None:
+        route = "cc/example-model"
+        code = "opaque_route_disallowed"
+        terminal = WorkerTerminal(
+            ok=False, status_code=503, model=route, error=self._denial_text(route, code)
+        )
+        result = fi.classify(terminal, now=_now)
+        assert result.category == "route_denied"
+        assert result.action == "REROUTE"
+        assert result.cooldown_seconds == 0
+        assert result.scope == "none"
+        assert result.evidence == f"serve_denied:{code}"
+
+    def test_503_denial_with_detail_suffix_uses_bare_code(
+        self, fi: FailureIntelligence, _now: datetime
+    ) -> None:
+        route = "cc/example-model"
+        code = "opaque_route_disallowed"
+        terminal = WorkerTerminal(
+            ok=False,
+            status_code=503,
+            model=route,
+            error=self._denial_text(route, code, detail="opaque/combo route is not auditable"),
+        )
+        result = fi.classify(terminal, now=_now)
+        assert result.category == "route_denied"
+        assert result.evidence == f"serve_denied:{code}"
+
+    def test_503_denial_of_another_route_stays_upstream_temporary(
+        self, fi: FailureIntelligence, _now: datetime
+    ) -> None:
+        assigned_route = "cc/example-model"
+        other_route = "cc/other-model"
+        terminal = WorkerTerminal(
+            ok=False,
+            status_code=503,
+            model=assigned_route,
+            error=self._denial_text(other_route, "opaque_route_disallowed"),
+        )
+        result = fi.classify(terminal, now=_now)
+        assert result.category == "upstream_temporary"
+        assert result.scope == "route"
+        assert result.cooldown_seconds == 60
+
+    def test_plain_503_non_denial_error_stays_upstream_temporary(
+        self, fi: FailureIntelligence, _now: datetime
+    ) -> None:
+        terminal = WorkerTerminal(
+            ok=False,
+            status_code=503,
+            model="cc/example-model",
+            error="upstream 503 service unavailable",
+        )
+        result = fi.classify(terminal, now=_now)
+        assert result.category == "upstream_temporary"
+        assert result.scope == "route"
+        assert result.cooldown_seconds == 60
+
+    def test_denial_text_with_status_500_stays_upstream_temporary(
+        self, fi: FailureIntelligence, _now: datetime
+    ) -> None:
+        route = "cc/example-model"
+        terminal = WorkerTerminal(
+            ok=False,
+            status_code=500,
+            model=route,
+            error=self._denial_text(route, "opaque_route_disallowed"),
+        )
+        result = fi.classify(terminal, now=_now)
+        assert result.category == "upstream_temporary"
+        assert result.scope == "route"
+        assert result.cooldown_seconds == 60
