@@ -145,3 +145,57 @@ def test_opencode_ownership_violation_starts_from_clean_base(repo: Path) -> None
     assert len(restores) == 1, restores
     assert restores[0]["reason"] == "clean_base"
     assert executor.second_start_content == ""
+
+
+class _PromptExecutor(_Executor):
+    """Same scenario as ``_Executor``, also recording every prompt it receives."""
+
+    def __init__(self, harness: str) -> None:
+        super().__init__(harness)
+        self.prompts: list[str] = []
+
+    async def run(
+        self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float
+    ) -> WorkerTerminal:
+        self.prompts.append(prompt)
+        return await super().run(
+            prompt, route_id=route_id, cwd=cwd, timeout_seconds=timeout_seconds
+        )
+
+
+def _run_capturing_prompts(repo_path: Path, executor: _PromptExecutor) -> None:
+    runtime = DagRuntime(
+        repo=repo_path,
+        run_dir=repo_path.parent / "run-retry-failed-tree-prompts",
+        graph=WorkGraph("g", (_node("a"),)),
+        selector=Selector(["r1/m1", "r2/m2"]),
+        executor=executor,
+        classifier=FailureIntelligence(),
+        events=Events(),
+        prompt_for=lambda n, cwd: f"{n.node_id}: {n.objective}",
+        reviewer=None,
+        policy=RuntimePolicy(require_review=False, run_repo_gates=False),
+        now=lambda: NOW,
+    )
+    result = asyncio.run(runtime.run())
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+
+
+def test_opencode_retry_prompt_names_restored_files(repo: Path) -> None:
+    executor = _PromptExecutor("opencode")
+    _run_capturing_prompts(repo, executor)
+
+    assert len(executor.prompts) == 2
+    assert "already in this worktree" not in executor.prompts[0]
+    second = executor.prompts[1]
+    assert "already in this worktree (a.txt)" in second
+    assert "do not start again from nothing" in second
+    assert second.index("Fix the cause above") < second.index("already in this worktree")
+
+
+def test_other_harness_retry_prompt_has_no_restored_files_line(repo: Path) -> None:
+    executor = _PromptExecutor("")
+    _run_capturing_prompts(repo, executor)
+
+    assert len(executor.prompts) == 2
+    assert "already in this worktree" not in executor.prompts[1]
