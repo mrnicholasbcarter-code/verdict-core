@@ -1754,6 +1754,7 @@ class DagRuntime:
             # start from the clean base instead of restoring stale partial files.
             # Only INTERRUPTED attempts (timeout, transport) have their saved state
             # restored.  The restore event always records which path was taken.
+            restored_paths: list[str] = []
             if run.attempt > 1 and run.node.owned_files:
                 salvage_dir = self.run_dir / "salvage" / run.node.node_id
                 was_rejected = run.last_rejected
@@ -1792,6 +1793,7 @@ class DagRuntime:
                 else:
                     # Previous attempt was interrupted: restore partial owned files.
                     restore = restore_salvaged_files(salvage_dir, worktree, run.node.owned_files)
+                    restored_paths = list(restore.restored[:_MAX_EVIDENCE_PATHS])
                     if restore.restored or restore.error:
                         restore_reason = (
                             "verification_failed"
@@ -1867,6 +1869,12 @@ class DagRuntime:
                         + run.failure_feedback
                         + "\nFix the cause above, then run VERIFICATION_COMMAND again.\n"
                     )
+                    if restored_paths and run.failures[-1].category == "verification_failed":
+                        suffix += (
+                            "Your previous attempt's files are already in this worktree "
+                            f"({', '.join(restored_paths)}): continue from them and fix what "
+                            "failed; do not start again from nothing.\n"
+                        )
                 hydrated = self._prompt(node, worktree, budget, plan, suffix)
                 prompt = hydrated.text if isinstance(hydrated, WorkerPrompt) else hydrated
                 evidence = (
