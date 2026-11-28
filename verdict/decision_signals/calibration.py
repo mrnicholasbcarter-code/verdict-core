@@ -205,7 +205,12 @@ def _evaluate_slice(
 
     usable = [r for r in records if _usable(r, min_confidence)]
 
-    sec = [r for r in usable if r.security_relevant and r.security_sensitive is not None]
+    # Signal collection is still counted, but excluded runs supply no task labels.
+    sec = [
+        r
+        for r in usable
+        if r.excluded_reason is None and r.security_relevant and r.security_sensitive is not None
+    ]
     sec_fn = [r for r in sec if (r.security_sensitive or 0.0) < security_threshold]
 
     avoided = sum(

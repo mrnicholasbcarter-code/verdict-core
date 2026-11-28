@@ -384,6 +384,34 @@ def test_the_report_does_not_count_an_excluded_run_as_a_task_failure() -> None:
     assert report.lift_counts["template"] == {"present": 0, "absent": 0, "unknown": 2}
 
 
+@pytest.mark.parametrize("excluded_security_score", [0.1, 0.9])
+def test_excluded_security_records_contribute_neither_false_negatives_nor_observations(
+    excluded_security_score: float,
+) -> None:
+    role = "implementation_worker"
+    included = [
+        _rec("missed", outcome="not_accepted", role=role, security_relevant=True,
+             security_sensitive=0.1),
+        _rec("detected", outcome="accepted", verified=True, role=role, security_relevant=True,
+             security_sensitive=0.9),
+    ]  # fmt: skip
+    excluded = _rec(
+        "env",
+        excluded_reason="environment_error",
+        role=role,
+        security_relevant=True,
+        security_sensitive=excluded_security_score,
+    )
+
+    report = evaluate([*included, excluded])
+
+    assert report.usable_signals == 3  # collection counts still include excluded runs
+    assert report.excluded_records == 1
+    assert report.security_fn_rate == 0.5
+    assert report.per_role[role]["security_fn_rate"] == 0.5
+    assert evaluate([excluded]).security_fn_rate is None  # unknown, not a task failure or zero
+
+
 def test_an_excluded_record_with_a_task_outcome_is_refused() -> None:
     with pytest.raises(ValueError, match="excluded"):
         _rec("x", outcome="accepted", excluded_reason="environment_error")
