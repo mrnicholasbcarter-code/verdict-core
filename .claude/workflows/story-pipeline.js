@@ -171,7 +171,7 @@ const CI_RESULT = {
 const runReview = (s, pr, context) =>
   agent(
     `Run exactly this one command from ${REPO} and report its output. Do nothing else: no edits, no other commands except reading the output.\n\n` +
-      `REVIEW_RECORD_SUFFIX=${REVIEW_SUFFIX} ${KEYWRAP} ${REVIEW} ${pr} ${shq(context)}; echo "EXIT=$?"\n\n` +
+      `REVIEW_AUTHOR_FAMILY=codex REVIEW_RECORD_SUFFIX=${REVIEW_SUFFIX} ${KEYWRAP} ${REVIEW} ${pr} ${shq(context)}; echo "EXIT=$?"\n\n` +
       `It can take up to 40 minutes; run it in the foreground with a long timeout. Do not pipe it through anything. Its summary line looks like ` +
       `"PR #N head <full sha> review=<status> model=<m> files=<done>/<selected> findings=<n> tool_calls=<n> tool_failures=<n>" ` +
       `(it may be preceded by "(stored result for unchanged head)"), followed by one line per finding ("  - <path> <line> <text>"). ` +
@@ -453,7 +453,7 @@ const ci = async (prev) => {
   // Ready only when the independent review record and the green check runs are on one commit: the PR's current head.
   const v = await agent(
     `Run exactly this one command from ${REPO} and report its output. Do nothing else.\n\n` +
-      `REVIEW_RECORD_SUFFIX=${REVIEW_SUFFIX} ${VERIFY} ${pr}; echo "EXIT=$?"\n\n` +
+      `REVIEW_AUTHOR_FAMILY=codex REVIEW_RECORD_SUFFIX=${REVIEW_SUFFIX} ${VERIFY} ${pr}; echo "EXIT=$?"\n\n` +
       `It prints one line starting "READY" or "NOT READY", then "EXIT=<code>". Put that line, unchanged, in line; the number in exit_code ` +
       `(99 if the EXIT line is missing); and the 40-character value after "head=" in head_sha.`,
     { label: `verify ${tag(s)}`, phase: 'CI', schema: READY, effort: 'low' },

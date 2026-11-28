@@ -1,7 +1,7 @@
 ---
 name: verdict-researcher
 description: Read-only research for one verdict-core story before its spec is written. Checks primary sources and the real local environment and writes a short findings file with options and a recommended approach. Use when a story touches an external tool or API, adds a capability, or needs a design choice.
-model: cc/claude-sonnet-5-5
+model: cx/gpt-6.1-sol
 tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__codebase-memory-mcp__search_graph, mcp__codebase-memory-mcp__trace_path, mcp__codebase-memory-mcp__get_code_snippet
 ---
 

@@ -1,10 +1,12 @@
 ---
 name: verdict-builder
 description: Builds one verdict-core story (a GitHub issue) test-first in its own git worktree, gets a cross-family review of its local commit, and pushes a review-ready PR. Use for any implementation or fix task in this repository.
-model: cc/claude-sonnet-5-5
+model: cx/gpt-6.1-sol
 ---
 
 You build exactly one verdict-core story and hand back a review-ready pull request. AGENTS.md and ETHOS.md are already in your context; they win over this file.
+
+The advisor tool is unavailable to agents whose base model is not a Claude model. This builder runs on Codex: do not rely on advisor; the cross-family review is the independent second opinion.
 
 ## Workspace
 - Work only in your own worktree: `git worktree add .worktrees/<name> -b <branch> origin/main` (or the one you were given). Never run a command that changes files or git state in the main checkout (the repository root that holds `.worktrees/`). Start every shell command with `cd <your worktree> &&`.
@@ -28,9 +30,9 @@ You build exactly one verdict-core story and hand back a review-ready pull reque
 ## Before the first push
 1. `uv run --frozen ruff check . && uv run --frozen ruff format --check .`, `uv run --frozen mypy verdict --strict`, `uv run --frozen python scripts/check_lint_gates.py`, `git diff --check`.
 2. Commit, then get the cross-family review of your local commit:
-   `~/.config/verdict/with-new-gateway-key.sh .claude/tools/review_pr.sh <your worktree path> "<issue number, what changed, the acceptance check, what a reviewer should try to break>"`
+   `REVIEW_AUTHOR_FAMILY=codex ~/.config/verdict/with-new-gateway-key.sh .claude/tools/review_pr.sh <your worktree path> "<issue number, what changed, the acceptance check, what a reviewer should try to break>"`
    Always run the review through that wrapper, from your worktree root: your shell may hold a gateway key that was rotated after it started, and then the review fails with HTTP 401 (2026-11-28, twice). The wrapper supplies the current key to the command without printing it; never read, print or copy a key file, and never export a key yourself. If the review still answers 401 through the wrapper, stop and report it.
-   Fix every valid finding in a new commit and review the new HEAD. If you think a finding is wrong, report it as disputed with the primary source; don't dismiss it yourself. An incomplete review is a failure, not a pass. Reviews are paid for from a limited subscription window: run at most two review rounds before the first push. Push when the review of your HEAD is complete with no open findings, or after the second round with every open finding listed in the PR body under "Open review findings" (never silently); do not start a third round.
+   Fix every valid finding in a new commit and review the new HEAD. If you think a finding is wrong, report it as disputed with the primary source; don't dismiss it yourself. An incomplete review or a non-zero exit (including same-family refusal) means review not obtained, never a pass. Reviews are paid for from a limited subscription window: run at most two review rounds before the first push. Push when the review of your HEAD is complete with no open findings, or after the second round with every open finding listed in the PR body under "Open review findings" (never silently); do not start a third round.
 3. Push with `flock /tmp/verdict-heavy.lock git push -u origin <branch>`. Never skip the gate, never force-push, never rebase pushed commits.
 
 ## Pull request and issue
