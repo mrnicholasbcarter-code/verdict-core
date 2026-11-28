@@ -46,7 +46,6 @@ TASK = {
     "task_id": "pr-640",
     "task_class": "bounded_implementation",
     "summary": "skip too-small windows after context overflow",
-    "frontier_needed": False,
     "security_relevant": False,
     "planner_was_frontier": True,
     "verified": True,

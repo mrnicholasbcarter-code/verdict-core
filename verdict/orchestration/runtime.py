@@ -1858,6 +1858,7 @@ class DagRuntime:
                     base=base,
                     provider=route_provider(run.route_id),
                     capacity_class=self._capacity.get(node.node_id, "unknown"),
+                    capability_tier=run.last_selected_tier,
                 )
                 self._set(run, NodeState.RUNNING)
                 budget = run.context_budget or self.policy.context_budget_bytes

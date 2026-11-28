@@ -5,12 +5,15 @@ Pairs durable run receipts (``verdict/orchestration/receipt.py`` format) with
 ``decision_signals`` event snapshots recorded in each run's event log and emits
 CalibrationRecord JSONL consumable by ``calibration.load_records()``.
 
-Ground-truth labels come ONLY from observed outcomes in the receipt (verified
-completion, first-pass success, retries, escalations, whether frontier topology
-was actually used).  Never from OpenJev itself.
+Ground-truth labels come ONLY from observed outcomes in the receipt: the
+verified outcome, the capacity class and tier of the route that passed, the
+attempts used and the lifts the events show (``calibration_labels.label_run``),
+plus first-pass success, retries and escalations.  Never from OpenJev itself and
+never from the DAG topology.  A run that ended on an environment or
+infrastructure failure gets no task label (``excluded_reason``).
 
 Records with missing mandatory evidence are skipped and counted in a stderr
-summary, never guessed.
+summary, never guessed.  Fault-injected runs make no record.
 
 Usage::
 
@@ -24,6 +27,9 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+
+from verdict.decision_signals.calibration_labels import AttemptFailures, attempt_failures, label_run
+from verdict.orchestration.receipt import EVENTS_FILE, EventLog
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -182,36 +188,14 @@ def _time_span_seconds(receipt: dict[str, Any]) -> float | None:
         return None
 
 
-def _frontier_needed(receipt: dict[str, Any]) -> bool:
-    """Ground-truth: did verified completion actually require frontier cognition?
+def build_record(
+    run_id: str, receipt: dict[str, Any], failures: AttemptFailures | None = None
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Build a CalibrationRecord dict from a receipt, or return (None, reason).
 
-    Heuristic based on observed evidence only:
-    - If topology was frontier AND the run completed successfully -> True
-    - If topology was SOLO and completed successfully -> False
-    - If the run was NOT complete, we look at whether frontier was used and
-      retries/escalations suggest it was needed.
-
-    This is conservative: if a SOLO run failed and was never retried with
-    frontier, we mark frontier_needed=False (we don't know it was needed).
+    ``failures`` is each attempt's failure class from the run's events; without
+    it the labels fall back to the receipt's per-attempt category.
     """
-    topology = receipt.get("topology", "")
-    outcome = receipt.get("outcome", "")
-    planner_was_frontier = topology in _FRONTIER_TOPOLOGIES
-
-    if outcome == "COMPLETE":
-        # The run succeeded with whatever topology was chosen.
-        # If frontier was used, that's evidence it was needed.
-        # If SOLO succeeded, frontier was not needed.
-        return planner_was_frontier
-
-    # Incomplete run: if frontier was used but still failed, conservatively
-    # mark as needed (frontier couldn't even solve it).
-    # If SOLO failed, we can't say frontier was needed — we'd be guessing.
-    return planner_was_frontier
-
-
-def build_record(run_id: str, receipt: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
-    """Build a CalibrationRecord dict from a receipt, or return (None, reason)."""
     # Must have nodes
     nodes = receipt.get("nodes")
     if not nodes or not isinstance(nodes, list):
@@ -224,6 +208,14 @@ def build_record(run_id: str, receipt: dict[str, Any]) -> tuple[dict[str, Any] |
     outcome = receipt.get("outcome", "")
     if not outcome:
         return None, "missing outcome"
+
+    if any(
+        isinstance(a, dict) and a.get("fault_injected")
+        for n in nodes
+        if isinstance(n, dict)
+        for a in n.get("attempts") or []
+    ):
+        return None, "fault-injected run"
 
     # Extract decision signals
     sig_entry = _extract_signals(receipt)
@@ -254,7 +246,6 @@ def build_record(run_id: str, receipt: dict[str, Any]) -> tuple[dict[str, Any] |
     retries = _count_retries(nodes)
     escalations = _count_escalations(receipt)
     planner_was_frontier = topology in _FRONTIER_TOPOLOGIES
-    fn = _frontier_needed(receipt)
     time_to_green = _time_span_seconds(receipt) if verified else None
 
     # Security relevance: from signals if present, else False
@@ -282,7 +273,6 @@ def build_record(run_id: str, receipt: dict[str, Any]) -> tuple[dict[str, Any] |
         "frontier_worthy": frontier_worthy,
         "confidence": confidence,
         "security_sensitive": security_sensitive,
-        "frontier_needed": fn,
         "security_relevant": security_relevant,
         "planner_was_frontier": planner_was_frontier,
         "verified": verified,
@@ -296,11 +286,23 @@ def build_record(run_id: str, receipt: dict[str, Any]) -> tuple[dict[str, Any] |
         "total_output_tokens": usage["total_output_tokens"],
         "attempts_with_usage": usage["attempts_with_usage"],
         "attempts_without_usage": usage["attempts_without_usage"],
+        **label_run(receipt, failures),
     }
     if role is not None:
         record["role"] = role
 
     return record, None
+
+
+def _failures_of(run_dir: Path) -> AttemptFailures | None:
+    """Per-attempt failure classes from the run's event log, or None when unreadable.
+
+    Read-only: the log is opened without repair.
+    """
+    try:
+        return attempt_failures(EventLog(run_dir / EVENTS_FILE, repair=False).read())
+    except (OSError, ValueError):
+        return None
 
 
 def process_runs_dir(runs_dir: Path) -> tuple[list[dict[str, Any]], dict[str, int]]:
@@ -331,7 +333,7 @@ def process_runs_dir(runs_dir: Path) -> tuple[list[dict[str, Any]], dict[str, in
             continue
 
         run_id = receipt.get("run_id", child.name)
-        record, reason = build_record(str(run_id), receipt)
+        record, reason = build_record(str(run_id), receipt, _failures_of(child))
         if record is None:
             assert reason is not None
             skip_reasons[reason] = skip_reasons.get(reason, 0) + 1

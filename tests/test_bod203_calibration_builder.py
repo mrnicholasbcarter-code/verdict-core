@@ -143,7 +143,8 @@ class TestBuildRecord:
         assert reason is None
         assert record["task_id"] == "run-001"
         assert record["task_class"] == "bounded_implementation"
-        assert record["frontier_needed"] is False
+        assert "frontier_needed" not in record
+        assert record["outcome"] == "accepted"
         assert record["planner_was_frontier"] is False
         assert record["verified"] is True
         assert record["first_pass"] is True
@@ -162,7 +163,7 @@ class TestBuildRecord:
         record, reason = build_record("run-002", receipt)
         assert record is not None
         assert reason is None
-        assert record["frontier_needed"] is True
+        assert record["outcome"] == "accepted"
         assert record["planner_was_frontier"] is True
         assert record["task_class"] == "multi_file_implementation"
         assert record["frontier_worthy"] == 0.9
@@ -177,7 +178,7 @@ class TestBuildRecord:
         assert record is not None
         assert record["task_class"] == "decomposable_parallel"
         assert record["planner_was_frontier"] is True
-        assert record["frontier_needed"] is True
+        assert "frontier_needed" not in record  # topology says what the planner used, not need
 
     def test_retries_counted(self) -> None:
         nodes = [
@@ -282,8 +283,8 @@ class TestBuildRecord:
         assert record is not None
         assert record.get("role") == "research_test_worker"
 
-    def test_frontier_needed_false_for_incomplete_solo(self) -> None:
-        """SOLO run that failed: we don't guess frontier was needed."""
+    def test_incomplete_run_without_a_non_task_failure_is_not_accepted(self) -> None:
+        """A failed attempt with no environment or infrastructure class is a task failure."""
         nodes = [
             {
                 "node_id": "impl-1",
@@ -296,7 +297,8 @@ class TestBuildRecord:
         receipt = _make_receipt(nodes=nodes, topology="SOLO", outcome="BLOCKED")
         record, _ = build_record("run-solo-fail", receipt)
         assert record is not None
-        assert record["frontier_needed"] is False
+        assert record["outcome"] == "not_accepted"
+        assert record["excluded_reason"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +368,7 @@ class TestProcessRunsDir:
         assert cr.task_id == "run-e2e"
         assert cr.frontier_worthy == 0.7
         assert cr.confidence == 0.85
-        assert cr.frontier_needed is True
+        assert cr.outcome == "accepted"
         assert cr.verified is True
         assert cr.planner_was_frontier is True
 

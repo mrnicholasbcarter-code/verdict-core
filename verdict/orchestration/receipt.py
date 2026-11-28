@@ -11,7 +11,8 @@ Event ``data`` conventions read by the receipt (extra keys are ignored):
 * ``run_started``: ``run_id``, ``goal``, optional ``producer``
   ``{verdict_version, git_sha, dirty}`` (captured once; nulls explicit)
 * ``run_finished``: ``outcome``, ``reason``
-* ``dispatch``: ``attempt``, ``route_id``, ``provider``, ``capacity_class``, ``fault_injected``
+* ``dispatch``: ``attempt``, ``route_id``, ``provider``, ``capacity_class``, ``capability_tier``
+  (null when the route's tier is unknown), ``fault_injected``
 * ``terminal``: ``attempt``, ``ok``, ``route_id``, ``reported_model``, ``error``, ``duration_seconds``, ``fault_injected``,
   optional ``served_check`` (``verdict.served_identity.ServedCheck.to_dict()``), which then decides ``route_identity``
   optional ``worker_assignment`` (``{"assignment_digest", "serve_receipts": {"status", "reason",
@@ -430,6 +431,11 @@ def _node_record(node_id: str, kind: str, events: list[RunEvent]) -> dict[str, A
             row["provider"] = str(data.get("provider") or row["provider"] or route_provider(route))
             if data.get("capacity_class"):
                 row["capacity_class"] = str(data["capacity_class"])
+            # Tier of the route this attempt ran on (1 strongest). Omitted when the
+            # dispatch did not record one: never a default tier.
+            tier = data.get("capability_tier")
+            if isinstance(tier, int) and not isinstance(tier, bool):
+                row["capability_tier"] = tier
             # Free-first story 3: probe class and cache freshness.
             for field in ("probe_class", "cache_checked_at", "cache_freshness", "evidence_level"):
                 if data.get(field):
