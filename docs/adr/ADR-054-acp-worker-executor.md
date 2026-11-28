@@ -87,7 +87,8 @@ The executor turns the outcome into the existing `WorkerTerminal` fields, and th
 
 | What arrives | What is recorded | Class |
 |---|---|---|
-| `end_turn`, Verdict sent no cancel and refused no request | `ok`, stop reason `end_turn`, usage when given | Success; verification and the gates run as today |
+| `end_turn`, Verdict sent no cancel and refused no request, and the agent's messages carry text | `ok`, stop reason `end_turn`, `output` is the text of the `agent_message_chunk` updates, usage when given | Success; verification and the gates run as today |
+| `end_turn` under the same conditions, but no message text | `ok`, empty `output` | `empty_output`: the existing rule fails an empty output even when `ok`, as it does for the existing executor today. This ADR does not change that rule |
 | `cancelled` after Verdict sent `session/cancel` because its own timer ran out | stop reason `timeout` | `timeout` |
 | A stop reason after Verdict refused a permission request (the spike: `cancelled` on OpenCode, `end_turn` on Kilo) | `worker_blocked:` with the refused kind and path | `worker_blocked`: task feedback, no cooldown, the node is corrected, no provider is blamed |
 | `cancelled` with no cancel sent and no refusal | not ok, the stop reason as given | `no_final_answer`, by the existing rule for any stop reason other than `stop` or `end_turn` |
