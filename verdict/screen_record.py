@@ -200,9 +200,13 @@ class ScreenRecord:
                 pending.flush()
                 os.fsync(pending.fileno())
             temporary.replace(self.path)
-        except (OSError, ValueError):
+        except BaseException as exc:
+            # Every exit path removes the temporary file; only a write failure is
+            # absorbed, anything else (an interrupt, a bug) still propagates.
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+            if not isinstance(exc, (OSError, ValueError)):
+                raise
             self.error = ERROR_UNWRITABLE
 
 
@@ -237,14 +241,21 @@ def _summarise(provider: str, entries: Sequence[ProbeRecord]) -> ProviderSummary
 
 
 def provider_record_report(record: ScreenRecord, now: datetime) -> dict[str, Any]:
-    """The screen's JSON block: per provider, results by kind for the window."""
+    """The screen's JSON block: per provider, results by kind for the window.
+
+    ``providers`` is ``null`` when the file could not be read and this run has added
+    nothing: the history is unknown, which is not the same as no results.
+    """
+    summaries = record.summaries(now)
     return {
         "window_days": RECORD_WINDOW.days,
         "backoff_min_counted_results": BACKOFF_MIN_COUNTED_RESULTS,
         "backoff_probe_interval_hours": BACKOFF_PROBE_INTERVAL.total_seconds() / 3600,
         "counted_kinds": sorted(COUNTED_KINDS),
         "error": record.error,
-        "providers": {
+        "providers": None
+        if record.error == ERROR_UNREADABLE and not summaries
+        else {
             s.provider: {
                 "passes": s.passes,
                 "counted_results": s.counted,
@@ -254,7 +265,7 @@ def provider_record_report(record: ScreenRecord, now: datetime) -> dict[str, Any
                 "backed_off": s.backed_off,
                 "last_probe_at": s.last_probe_at.isoformat() if s.last_probe_at else None,
             }
-            for s in record.summaries(now)
+            for s in summaries
         },
     }
 

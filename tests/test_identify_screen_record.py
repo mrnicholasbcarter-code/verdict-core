@@ -623,6 +623,30 @@ def test_a_provider_with_no_record_still_receives_a_probe_while_others_have_many
     assert "new/first" in probed(calls)
 
 
+def test_a_rescreen_request_is_not_skipped_as_the_alias_of_a_route_handled_first(tmp_path):
+    """The request no longer moves a route ahead, so it must still reach the route.
+
+    ``x/model`` and ``y/model`` are one model (same owned_by and root). The id order
+    puts ``x/model`` first; ``y/model`` carries the request, and only a probe
+    consumes it.
+    """
+    cache = make_cache(tmp_path)
+    cache.request_rescreen(["y/model"], now=T0)
+    specs = [("x/model", "prov", True), ("y/model", "prov", True)]
+    calls = []
+    report = run(
+        tmp_path, specs, calls=calls, cache=cache, transport=scripted(calls, default="pass")
+    )
+    assert probed(calls) == ["x/model", "y/model"]
+    assert results(report) == {"x/model": "pass", "y/model": "pass"}
+    assert not make_cache(tmp_path).rescreen_requests()
+    # Without a request the second id is still the alias of the first.
+    calls = []
+    plain = run(tmp_path / "plain", specs, calls=calls, transport=scripted(calls, default="pass"))
+    assert probed(calls) == ["x/model"]
+    assert results(plain)["y/model"] == "skipped_alias"
+
+
 def test_rescreen_request_no_longer_moves_a_route_ahead(tmp_path):
     """Catches the old sort that put every rescreen-requested route first."""
     cache = make_cache(tmp_path)
@@ -802,6 +826,42 @@ def test_result_kind_reads_the_entry_only_for_a_failure():
     # A result that wrote no entry keeps its own name whatever the old entry says.
     for result in ("rate_limited", "auth_failed", "identity_mismatch", "skipped_deadline"):
         assert result_kind(result, "catalog_stale") == result
+
+
+def test_an_unreadable_record_reports_unknown_providers_not_an_empty_object(tmp_path):
+    from verdict.screen_record import provider_record_report
+
+    path = tmp_path / RECORD_FILE
+    path.write_text("{")
+    block = provider_record_report(ScreenRecord.load(path), T0)
+    assert block["error"] == "unreadable"
+    assert block["providers"] is None
+    # A missing file is a known empty history.
+    empty = provider_record_report(ScreenRecord.load(tmp_path / "other.json"), T0)
+    assert empty["error"] is None and empty["providers"] == {}
+
+
+def test_a_failed_save_leaves_no_temporary_file_on_any_exit(tmp_path, monkeypatch):
+    import verdict.screen_record as module
+
+    record = ScreenRecord.load(tmp_path / RECORD_FILE)
+    record.add("p", "p/a", "pass", T0)
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(module.json, "dump", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        record.save(T0)
+    assert list(tmp_path.iterdir()) == []
+
+    def refused(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(module.json, "dump", refused)
+    record.save(T0)  # absorbed: the screen goes on without a record
+    assert record.error == "unwritable"
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_the_record_file_drops_invalid_entries_and_says_so(tmp_path):

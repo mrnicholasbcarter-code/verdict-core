@@ -333,13 +333,13 @@ def test_capability_rejection_steps_up_not_same_route(monkeypatch):
     assert [r["body"]["model"] for r in transport.requests] == ["selected-model", "backup-model"]
 
 
-def test_queued_free_screen_is_probed_behind_its_alias_and_its_hint_consumed(tmp_path):
-    """A queued rescreen no longer jumps the queue, but is still probed and consumed.
+def test_queued_free_screen_does_not_jump_the_queue_and_its_hint_stays_pending(tmp_path):
+    """A queued rescreen no longer runs first; the hint stays until a probe consumes it.
 
-    ``alias/strong`` and ``p/strong`` are one model and rank alike; the id order
+    ``alias/strong`` and ``p/strong`` are one model and rank alike, and the id order
     puts ``alias/strong`` first. The hint used to move ``p/strong`` ahead (decision 4
-    of ``evidence-driven-screening`` removes that); it must still reach it, within
-    the caps, instead of being skipped as the alias of a route handled earlier.
+    of ``evidence-driven-screening`` removes that), so with one probe the caps are
+    spent on ``alias/strong`` and the hint is not consumed.
     """
     from tests.test_identify_screen import NOW as SCREEN_NOW
     from tests.test_identify_screen import passing, ratings, snapshot
@@ -358,13 +358,13 @@ def test_queued_free_screen_is_probed_behind_its_alias_and_its_hint_consumed(tmp
         cache=cache,
         transport=passing(calls),
         allow_live_probe=True,
-        max_per_provider=2,
-        max_routes=2,
+        max_per_provider=1,
+        max_routes=1,
         clock=lambda: SCREEN_NOW,
     )
-    assert [r for r, _ in calls] == ["alias/strong"] * 3 + ["p/strong"] * 3
-    assert report["routes_checked"] == 2
-    assert not HealthCache(cache.path).rescreen_requests()
+    assert [r for r, _ in calls] == ["alias/strong"] * 3
+    assert report["routes_checked"] == 1
+    assert HealthCache(cache.path).rescreen_requests() == {"p/strong"}
 
 
 def test_token_metric_requires_three_unique_accepted_same_family_samples():
