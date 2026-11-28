@@ -39,13 +39,53 @@ def test_quickstart_script_contains_no_host_specific_path() -> None:
     )
 
 
-def test_quickstart_script_resolves_the_repo_root_from_its_own_location() -> None:
+def _root_the_script_resolves(tmp_path: Path, invoke: str, cwd: Path) -> str:
+    """Run only the part of the script that finds the repository root and print what it found.
+
+    The script is copied into ``<tmp>/clone/scripts/`` so the clone's real root is known, then run
+    the way a stranger might: directly, from another directory, or through a symlink.
+    """
+
     text = SCRIPT.read_text(encoding="utf-8")
-    assert re.search(
-        r'REPO_ROOT="\$\(cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)/\.\." && pwd\)"', text
+    marker = '\necho "Verdict Core quickstart (offline)"'
+    assert marker in text, "the script's first output line moved; update this test"
+    clone = tmp_path / "clone"
+    (clone / "scripts").mkdir(parents=True)
+    copy = clone / "scripts" / "quickstart.sh"
+    copy.write_text(text[: text.index(marker)] + '\necho "$REPO_ROOT"\n', encoding="utf-8")
+    copy.chmod(0o755)
+    if invoke == "symlink":
+        link_dir = tmp_path / "elsewhere" / "bin"
+        link_dir.mkdir(parents=True)
+        (link_dir / "verdict-quickstart").symlink_to(copy)
+        target = link_dir / "verdict-quickstart"
+    else:
+        target = copy
+    result = subprocess.run(
+        ["bash", str(target)], cwd=cwd, capture_output=True, text=True, check=False
     )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not installed")
+@pytest.mark.parametrize("invoke", ["direct", "symlink"])
+def test_quickstart_script_resolves_the_repo_root_from_its_own_location(
+    tmp_path: Path, invoke: str
+) -> None:
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    root = _root_the_script_resolves(tmp_path, invoke, cwd=elsewhere)
+    assert root == str((tmp_path / "clone").resolve())
     # The root it resolved is the only thing the script installs from.
-    assert 'pip install -e "$REPO_ROOT"' in text
+    assert 'pip install -e "$REPO_ROOT"' in SCRIPT.read_text(encoding="utf-8")
+
+
+def test_quickstart_script_does_not_fail_when_the_cleanup_prompt_gets_end_of_input() -> None:
+    # Ctrl-D at `read` returns non-zero; under `set -e` that would end a successful run in failure.
+    prompt = [line for line in SCRIPT.read_text(encoding="utf-8").splitlines() if "read -p" in line]
+    assert len(prompt) == 1
+    assert prompt[0].rstrip().endswith("|| true")
 
 
 def test_quickstart_script_keeps_its_state_out_of_the_real_home() -> None:

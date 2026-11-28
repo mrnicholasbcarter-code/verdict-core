@@ -12,7 +12,17 @@
 set -euo pipefail
 
 # The repository root comes from this script's own location, never from a fixed path.
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Follow symlinks first, so a link to this script elsewhere still finds the clone.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    SOURCE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    case "$SOURCE" in
+        /*) ;;
+        *) SOURCE="$SOURCE_DIR/$SOURCE" ;;
+    esac
+done
+REPO_ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 
 echo "Verdict Core quickstart (offline)"
 echo "================================="
@@ -53,14 +63,16 @@ echo "   To run again: source $QUICKSTART_DIR/venv/bin/activate && VERDICT_HOME=
 echo ""
 
 # Cleanup: ask only when a person is at the keyboard; otherwise keep it and say where it is.
+# Ctrl-D at the prompt makes `read` fail; that is "no", not an error.
+REPLY=""
 if [ -t 0 ]; then
-    read -p "Clean up environment? (y/N) " -n 1 -r
+    read -p "Clean up environment? (y/N) " -n 1 -r || true
     echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        deactivate
-        rm -rf "$QUICKSTART_DIR"
-        echo "Cleaned up $QUICKSTART_DIR"
-        exit 0
-    fi
+fi
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    deactivate
+    rm -rf "$QUICKSTART_DIR"
+    echo "Cleaned up $QUICKSTART_DIR"
+    exit 0
 fi
 echo "Environment preserved at $QUICKSTART_DIR"
