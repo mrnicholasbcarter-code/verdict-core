@@ -12,6 +12,9 @@ A push event has no pull request in it, so the label has to be looked up (issue 
   pushed branch as that commit and carries the label.
 * anything else: not wip.
 
+Only the first page of that answer (100 pull requests) is read; a full page is not trusted
+to be complete, so it is "not wip" like any other doubt.
+
 Everything that cannot be established is "not wip", so the strict task check runs: no
 pull request for the commit, more than one candidate, a response of an unexpected shape,
 a failed or timed-out ``gh`` call. This script never decides that open tasks are fine
@@ -34,6 +37,8 @@ from collections.abc import Callable
 
 WIP_LABEL = "wip"
 TIMEOUT_SECONDS = 30
+# Only the first page is read. A full page may have more behind it, so it is not trusted.
+PAGE_SIZE = 100
 
 Fetch = Callable[[str, str], object]
 
@@ -51,7 +56,7 @@ def fetch_pulls(repo: str, sha: str) -> object:
             "api",
             "-H",
             "X-GitHub-Api-Version: 2022-11-28",
-            f"repos/{repo}/commits/{sha}/pulls?per_page=100",
+            f"repos/{repo}/commits/{sha}/pulls?per_page={PAGE_SIZE}",
         ],
         capture_output=True,
         text=True,
@@ -99,6 +104,11 @@ def _decide(
         )
     if not isinstance(pulls, list):
         return False, f"unexpected answer for the pull requests of {sha[:8]}: not wip"
+    if len(pulls) >= PAGE_SIZE:
+        return (
+            False,
+            f"{len(pulls)} pull requests for {sha[:8]} fill the first page; may be more: not wip",
+        )
     produced = [p for p in (_produced(pull, sha=sha, branch=branch) for pull in pulls) if p]
     if len(produced) != 1:
         return (

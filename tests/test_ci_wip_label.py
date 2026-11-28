@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from scripts.ci_wip_label import fetch_pulls, is_wip, main
+from scripts.ci_wip_label import PAGE_SIZE, fetch_pulls, is_wip, main
 
 REPO = "owner/repo"
 SHA = "a" * 40
@@ -178,6 +178,14 @@ def test_two_pull_requests_for_one_commit_are_ambiguous_and_not_wip() -> None:
     assert _push(_lookup(two)) is False
 
 
+def test_a_full_first_page_may_hide_a_second_match_and_is_not_wip() -> None:
+    others = [_pull(merge_commit_sha="c" * 40, number=n) for n in range(100, 198)]
+    mine = _pull(labels=["wip"], number=7)
+    assert len(others) + 1 == PAGE_SIZE - 1
+    assert _push(_lookup([mine, *others])) is True
+    assert _push(_lookup([mine, *others, _pull(merge_commit_sha="d" * 40, number=300)])) is False
+
+
 @pytest.mark.parametrize(("repo", "sha"), [("", SHA), (REPO, ""), ("", "")])
 def test_a_push_without_a_repository_or_commit_is_not_wip_and_looks_nothing_up(
     repo: str, sha: str
@@ -209,7 +217,7 @@ def test_fetch_pulls_asks_for_the_pull_requests_of_the_commit_and_parses_them(
     assert got == [_pull(labels=["wip"])]
     args = log.read_text(encoding="utf-8").split()
     assert args[0] == "api"
-    assert f"repos/{REPO}/commits/{SHA}/pulls" in args[-1]
+    assert args[-1] == f"repos/{REPO}/commits/{SHA}/pulls?per_page={PAGE_SIZE}"
 
 
 def test_fetch_pulls_raises_when_gh_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
