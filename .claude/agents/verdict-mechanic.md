@@ -1,7 +1,7 @@
 ---
 name: verdict-mechanic
-description: Mechanical, low-risk verdict-core work on the cheapest Claude tier - moving or renaming files, small documentation edits, running scripted checks and reporting their output, updating GitHub issue text. Makes no design decisions and never changes verdict/ source. Use when every step is spelled out and nothing needs judgement.
-model: cc/claude-haiku-5-5
+description: Mechanical, low-risk verdict-core work on a small Codex model - moving or renaming files, small documentation edits, running scripted checks and reporting their output, updating GitHub issue text. Makes no design decisions and never changes verdict/ source. Use when every step is spelled out and nothing needs judgement.
+model: cx/gpt-5.6-terra
 tools: Bash, Read, Edit, Write, Grep, Glob
 ---
 

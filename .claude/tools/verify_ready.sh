@@ -3,7 +3,7 @@
 # Usage: verify_ready.sh <pr-number>
 # Ready means, all on the PR's CURRENT head commit:
 #   1. the stored cross-family review record reviews/<full-sha><suffix>.json is complete, covers every
-#      selected file, has 0 findings, 0 failed reviewer tool calls and was made by a cx/ (non-Claude) model;
+#      selected file, has 0 findings, 0 failed reviewer tool calls and differs from the author's family;
 #   2. at least one check run exists and every check run is completed with success, skipped or neutral.
 # REVIEW_RECORD_SUFFIX picks the record (default ".independent", the story-pipeline workflow's own review;
 # set it to "" for a PR that was not built by the workflow).
@@ -16,14 +16,31 @@ SUFFIX="${REVIEW_RECORD_SUFFIX-.independent}"
 # that review_pr.sh writes its review records to; it is not versioned.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT=/tmp/claude-takeover/reviews
+# Builders use Codex unless a caller supplies a different author family.
+source "$REPO/.claude/tools/review_pr.sh"
+AUTHOR_FAMILY="${REVIEW_AUTHOR_FAMILY:-codex}"
+AUTHOR_FAMILY="${AUTHOR_FAMILY,,}"
+case "$AUTHOR_FAMILY" in
+  codex|claude|gemini) ;;
+  *) echo "NOT READY invalid REVIEW_AUTHOR_FAMILY '$AUTHOR_FAMILY' (codex, claude or gemini)"; exit 1;;
+esac
 cd "$REPO"
 SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
 STATE=$(gh pr view "$PR" --json state --jq .state)
 TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT
 gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" > "$TMP"
-python3 -I - "$PR" "$SHA" "$STATE" "$OUT/$SHA$SUFFIX.json" "$TMP" <<'EOF'
+REC="$OUT/$SHA$SUFFIX.json"
+MODEL=""
+if [ -s "$REC" ]; then
+  if ! MODEL=$(python3 -I -c 'import json,sys; print((json.load(open(sys.argv[1])).get("llm") or {}).get("model") or "")' "$REC" 2>/dev/null); then
+    echo "NOT READY pr=$PR head=$SHA :: unreadable review record"
+    exit 1
+  fi
+fi
+FAMILY=$(review_family "$MODEL")
+python3 -I - "$PR" "$SHA" "$STATE" "$REC" "$TMP" "$AUTHOR_FAMILY" "$FAMILY" <<'EOF'
 import json, os, sys
-pr, sha, state, rec, checks_file = sys.argv[1:6]
+pr, sha, state, rec, checks_file, author_family, reviewer_family = sys.argv[1:8]
 reasons = []
 if state != "OPEN":
     reasons.append(f"pull request is {state}")
@@ -48,14 +65,12 @@ else:
         reasons.append(f"review has {findings} finding(s)")
     if failed:
         reasons.append(f"{failed} reviewer tool call(s) failed")
-    # A cx/ (Codex) reviewer is the default bar. REVIEW_ACCEPT_MODELS (space-separated exact route ids)
-    # names other reviewers the operator has accepted for this check; a Claude model is never accepted.
-    # Added 2026-11-24: the operator accepted agy/gemini-3.8-flash-high while Codex was exhausted.
-    accepted = set((os.environ.get("REVIEW_ACCEPT_MODELS") or "").split())
-    if "claude" in model.lower() or model.startswith("cc/"):
-        reasons.append(f"reviewer model {model!r} is a Claude model")
-    elif not (model.startswith("cx/") or model in accepted):
-        reasons.append(f"reviewer model {model!r} is not a cx/ model")
+    if not model:
+        reasons.append("reviewer model is missing")
+    elif reviewer_family == author_family:
+        reasons.append(f"reviewer model {model!r} is the same family as author ({author_family})")
+    elif reviewer_family.startswith("unknown:"):
+        review += f" reviewer_family={reviewer_family} (unknown prefix treated as different)"
 runs = json.load(open(checks_file)).get("check_runs", [])
 bad = sorted({r.get("name") for r in runs
               if r.get("status") != "completed" or r.get("conclusion") not in ("success", "skipped", "neutral")})

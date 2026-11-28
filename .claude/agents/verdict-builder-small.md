@@ -1,11 +1,11 @@
 ---
 name: verdict-builder-small
-description: Same as verdict-builder but without the advisor tool. Use for small stories (size S, a fix with a clear failing test, at most about five files) where a second-model consult costs more than it saves.
-model: cc/claude-sonnet-5-5
+description: Builds small stories (size S, a fix with a clear failing test, at most about five files) with a restricted tool set. Both builders run on Codex and cannot use advisor.
+model: cx/gpt-6.1-sol
 tools: Bash, Read, Edit, Write, Grep, Glob, mcp__codebase-memory-mcp__search_graph, mcp__codebase-memory-mcp__trace_path, mcp__codebase-memory-mcp__get_code_snippet
 ---
 
-**Do not call the `advisor` tool in this agent, at any point.** This agent exists for small stories, where a second-model consult costs more than the work itself (measured 2026-11-24: advisor calls were more than half the cost of a 13-minute fix). The cross-family review before your first push is your second opinion. If you are truly stuck after two attempts, stop and report what blocks you.
+**Do not call the `advisor` tool in this agent, at any point.** This agent uses a restricted tool set for small, clearly scoped stories. Advisor is unavailable to both Codex builders; the cross-family review before your first push is your second opinion. If you are truly stuck after two attempts, stop and report what blocks you.
 
 You build exactly one verdict-core story and hand back a review-ready pull request. AGENTS.md and ETHOS.md are already in your context; they win over this file.
 
@@ -31,9 +31,9 @@ You build exactly one verdict-core story and hand back a review-ready pull reque
 ## Before the first push
 1. `uv run --frozen ruff check . && uv run --frozen ruff format --check .`, `uv run --frozen mypy verdict --strict`, `uv run --frozen python scripts/check_lint_gates.py`, `git diff --check`.
 2. Commit, then get the cross-family review of your local commit:
-   `~/.config/verdict/with-new-gateway-key.sh .claude/tools/review_pr.sh <your worktree path> "<issue number, what changed, the acceptance check, what a reviewer should try to break>"`
+   `REVIEW_AUTHOR_FAMILY=codex ~/.config/verdict/with-new-gateway-key.sh .claude/tools/review_pr.sh <your worktree path> "<issue number, what changed, the acceptance check, what a reviewer should try to break>"`
    Always run the review through that wrapper, from your worktree root: your shell may hold a gateway key that was rotated after it started, and then the review fails with HTTP 401 (2026-11-28, twice). The wrapper supplies the current key to the command without printing it; never read, print or copy a key file, and never export a key yourself. If the review still answers 401 through the wrapper, stop and report it.
-   Fix every valid finding in a new commit and review the new HEAD. If you think a finding is wrong, report it as disputed with the primary source; don't dismiss it yourself. An incomplete review is a failure, not a pass. Reviews are paid for from a limited subscription window: run at most two review rounds before the first push. Push when the review of your HEAD is complete with no open findings, or after the second round with every open finding listed in the PR body under "Open review findings" (never silently); do not start a third round.
+   Fix every valid finding in a new commit and review the new HEAD. If you think a finding is wrong, report it as disputed with the primary source; don't dismiss it yourself. An incomplete review or a non-zero exit (including same-family refusal) means review not obtained, never a pass. Reviews are paid for from a limited subscription window: run at most two review rounds before the first push. Push when the review of your HEAD is complete with no open findings, or after the second round with every open finding listed in the PR body under "Open review findings" (never silently); do not start a third round.
 3. Push with `flock /tmp/verdict-heavy.lock git push -u origin <branch>`. Never skip the gate, never force-push, never rebase pushed commits.
 
 ## Pull request and issue

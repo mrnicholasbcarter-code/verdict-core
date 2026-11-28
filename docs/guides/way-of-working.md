@@ -21,6 +21,8 @@ The controller is the most expensive model. It does four things: it slices work,
 writes briefs, starts agents, and checks their reports and decides. It does not
 do the building.
 
+Builders and researchers run on Codex models; the independent review runs on a different model family.
+
 Everything else goes to a cheaper agent:
 
 - Building and fixing: the builder agents, `verdict-builder` and
@@ -28,7 +30,7 @@ Everything else goes to a cheaper agent:
 - Research: the researcher agent, `verdict-researcher`.
 - Code lookups (who calls this, which tests cover it, where it is defined): the
   code-graph agents, `codebase-memory` and `codebase-memory-scout`.
-- Mechanical work: a mechanical-work agent on the cheapest Claude tier (added by
+- Mechanical work: a mechanical-work agent on a small Codex model (added by
   [#1399](https://github.com/mrnicholasbcarter-code/verdict-core/issues/1399)).
 
 ## 2. Two lanes

@@ -14,16 +14,50 @@
 # - REVIEW_RECORD_SUFFIX (default empty) keeps a second, separate record for the same head.
 #   The story-pipeline workflow sets it to ".independent" so its review is its own, with its own
 #   brief, and never the record the author made before pushing.
+# - REVIEW_MODEL selects the default reviewer (cc/claude-sonnet-5-5); argument 3 overrides it.
+# - REVIEW_AUTHOR_FAMILY (codex, claude, gemini) refuses that family, including cached reviews
+#   and fallback attempts. Unknown route prefixes are named and treated as different families.
 # - A missing, empty or incomplete review exits non-zero. It is never a pass.
 # - A review in which any reviewer tool call failed (for example code search) exits non-zero too:
 #   the reviewer could not look at what it asked for. (Added 2026-11-24: under git 2.34 every
 #   code_search call failed and the reviews still counted as complete.)
+# Route-prefix aliases live in one table, also sourced by verify_ready.sh.
+review_family() {
+  local route="${1,,}"
+  case "${route%%/*}" in
+    cx|codex) printf '%s\n' codex;;
+    cc|claude) printf '%s\n' claude;;
+    agy|antigravity) printf '%s\n' gemini;;
+    *) printf 'unknown:%s\n' "${1%%/*}";;
+  esac
+}
+# Sourcing exposes only the family table, without starting a review.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
 set -euo pipefail
-PR="$1"; CONTEXT="$2"; MODEL="${3:-cx/gpt-6.1-sol}"
-# Fallback reviewer (added 2026-11-24 after the Codex window ran out three times in a day): used
-# only when no model was named and the default reviewer was rate-limited. It must be a non-Claude
-# family. The record names the model that actually reviewed, and verify_ready.sh still reports a
-# non-cx reviewer, so a fallback review is visible and never passes as a Codex one.
+
+PR="$1"; CONTEXT="$2"; MODEL="${3:-${REVIEW_MODEL:-cc/claude-sonnet-5-5}}"
+AUTHOR_FAMILY="${REVIEW_AUTHOR_FAMILY:-}"
+AUTHOR_FAMILY="${AUTHOR_FAMILY,,}"
+case "$AUTHOR_FAMILY" in
+  ''|codex|claude|gemini) ;;
+  *) echo "invalid REVIEW_AUTHOR_FAMILY '$AUTHOR_FAMILY' (codex, claude or gemini); review not obtained. NOT a pass."; exit 3;;
+esac
+reviewer_allowed() {
+  local family
+  if [ -z "$1" ]; then
+    echo "reviewer model is missing; review not obtained. NOT a pass."
+    return 1
+  fi
+  family=$(review_family "$1")
+  if [ -n "$AUTHOR_FAMILY" ] && [ "$family" = "$AUTHOR_FAMILY" ]; then
+    echo "reviewer $1 is the same family as author ($AUTHOR_FAMILY); review not obtained. NOT a pass."
+    return 1
+  fi
+  case "$family" in unknown:*) echo "reviewer $1 family=$family; unknown prefix treated as different from author family ${AUTHOR_FAMILY:-unspecified}";; esac
+}
+if ! reviewer_allowed "$MODEL"; then exit 3; fi
+# Fallbacks are used only when no explicit third argument was named and the default reviewer
+# was rate-limited or timed out. Every attempted reviewer must differ from the author's family.
 EXPLICIT_MODEL="${3:-}"
 FALLBACK_MODEL="${REVIEW_FALLBACK_MODEL:-agy/gemini-3.8-flash-high}"
 SUFFIX="${REVIEW_RECORD_SUFFIX:-}"
@@ -53,16 +87,20 @@ fi
 REC="$OUT/$SHA$SUFFIX.json"
 
 summarise() {
-  python3 -I - "$REC" "$PR" "$SHA" <<'EOF'
+  local reviewer family
+  reviewer=$(python3 -I -c 'import json,sys; print((json.load(open(sys.argv[1])).get("llm") or {}).get("model") or "")' "$REC") || return 3
+  reviewer_allowed "$reviewer" || return 3
+  family=$(review_family "$reviewer")
+  python3 -I - "$REC" "$PR" "$SHA" "$family" <<'EOF'
 import json, sys
-rec, pr, sha = sys.argv[1:4]
+rec, pr, sha, family = sys.argv[1:5]
 d = json.load(open(rec))
 cov = (d.get("manifest") or {}).get("coverage") or {}
 done, sel = len(cov.get("completed") or []), len(cov.get("selected") or [])
 comments = d.get("comments") or []
 tc = d.get("tool_calls") if isinstance(d.get("tool_calls"), dict) else {}
 calls, failed = int(tc.get("total") or 0), int(tc.get("failure") or 0)
-print(f"PR #{pr} head {sha} review={d.get('status')} model={(d.get('llm') or {}).get('model')} files={done}/{sel} findings={len(comments)} tool_calls={calls} tool_failures={failed}")
+print(f"PR #{pr} head {sha} review={d.get('status')} model={(d.get('llm') or {}).get('model')} files={done}/{sel} findings={len(comments)} tool_calls={calls} tool_failures={failed} reviewer_family={family}")
 for c in comments:
     print("  -", c.get("path"), c.get("start_line"), (c.get("content") or "")[:900].replace("\n", " "))
 if failed:
@@ -134,14 +172,14 @@ sys.exit(1)
 PYEOF
 }
 # Fallback chain: each reviewer is tried in turn until one gives a complete review. Same order as
-# the cross-review plugin; every entry must be a non-Claude family.
+# the cross-review plugin; entries from the author's family are skipped.
 # gh/* (Copilot) routes are not in the chain: on 2026-11-24 every one answered 400 model_not_supported.
 # Fallback runs use ONE subtask at a time and a 12M-token budget: with 2 or 8 in parallel the Gemini routes answered 403 for some groups, and at 3M tokens a 30-file review ran out of budget.
 FALLBACK_MODELS="${REVIEW_FALLBACK_MODELS:-$FALLBACK_MODEL gc/grok-4.7}"
 try_fallbacks() {
   local n=0
   for m in $FALLBACK_MODELS; do
-    case "$m" in *claude*|cc/*) echo "fallback reviewer $m is a Claude model; skipped"; continue;; esac
+    if ! reviewer_allowed "$m"; then echo "(fallback reviewer $m skipped)"; continue; fi
     echo "(reviewing with fallback $m)"
     [ -s "$LOG" ] && cp -f "$LOG" "$LOG.attempt$n" 2>/dev/null || true
     [ -s "$REC" ] && cp -f "$REC" "$REC.attempt$n" 2>/dev/null || true
