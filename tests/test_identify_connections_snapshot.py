@@ -20,8 +20,18 @@ SECRET = "restricted-key-sentinel"
 MANAGEMENT = ("/api/providers", "/api/resilience", "/api/usage", "/api/providers/health")
 V1_MODELS = {
     "data": [
-        {"id": "kc/free-model", "owned_by": "kilocode", "root": "free-model"},
-        {"id": "cl/sub-model", "owned_by": "claude", "root": "sub-model"},
+        {
+            "id": "kc/free-model",
+            "owned_by": "kilocode",
+            "root": "free-model",
+            "capabilities": {"tool_calling": True},
+        },
+        {
+            "id": "cl/sub-model",
+            "owned_by": "claude",
+            "root": "sub-model",
+            "capabilities": {"tool_calling": True},
+        },
     ]
 }
 CANDIDATES = {

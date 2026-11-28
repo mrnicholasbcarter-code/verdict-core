@@ -793,7 +793,40 @@ probe before any pool gets a second, in the screen's usual order inside a
 pool. A route left out by this cap is `skipped_pool_cap` (`stopped_reason`
 `pool_cap` when no other cap was reached), and each row reports
 `backend_pool`. These options only remove routes from the probed set or change
-which route is probed first. Without them the screen is unchanged.
+which route is probed first. Without them they change nothing.
+
+The screen also learns from its own results (`evidence-driven-screening`,
+decisions 2 to 4; no option turns it on). It only skips and orders probes: no
+route becomes eligible, healthy or proven because of it, and a route is still
+usable only through its own tool proof.
+
+- A route whose catalog row does not declare `tool_calling: true` is not probed
+  and is reported `skipped_no_tools` (a probe could not make it usable for work
+  that needs tools). It takes no cap, alias or pool slot. A route with no
+  catalog row at all is still probed, and so is a route with a pending rescreen
+  request: acceptance asked for that exact route to be proved again, and only a
+  probe consumes the request. `--require-tools` keeps `skipped_task_floor`.
+- Every probe is recorded per provider (the catalog row's `owned_by`) for seven
+  days in `screen-record.json`, beside the health cache. A pass, a tool
+  failure, `catalog_stale` (the provider does not serve the model) and
+  `not_found` count. A rate limit, a timeout, an upstream 5xx, a refusal before
+  any upstream call, an auth or billing refusal and an identity mismatch are
+  recorded and do not count. A provider with at least 8 counted results and no
+  pass is `skipped_backoff`, except for one probe per 24 hours; a pass ends it.
+  The numbers are `BACKOFF_MIN_COUNTED_RESULTS`, `RECORD_WINDOW` and
+  `BACKOFF_PROBE_INTERVAL` in `verdict/screen_record.py`. An unreadable record
+  file counts as empty (the screen probes as before) and is named in the report.
+- Order: routes the passive check admits (`available_routes`); then other
+  routes of a provider with a pass in the window; then the rest. Inside a group
+  the provider's pass rate (passes over counted results; none counts as 0) comes
+  first, then the rating as before. While the last group is not empty, one probe
+  in eight (`THIRD_GROUP_PROBE_SHARE`) goes to it. A rescreen request no longer
+  moves a route ahead. A `--community-roster` screen keeps its oldest-evidence
+  order.
+- The JSON report carries `provider_record`: per provider, `passes`,
+  `counted_results`, `probes`, `by_kind`, `pass_rate` (`null` when nothing
+  counted), `backed_off` and `last_probe_at`, plus `error` (`null`, or
+  `unreadable`, `invalid_entries_dropped`, `unwritable`).
 
 The candidate pool is OmniRoute's live view: active connections with valid
 credentials, decorated with breaker state, connection cooldown, model lockout and

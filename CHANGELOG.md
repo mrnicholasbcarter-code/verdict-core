@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `verdict identify --screen` stops probing where a pass cannot come from and probes the likeliest routes first. A route whose catalog row does not declare tool support is skipped (`skipped_no_tools`); a provider with at least 8 counted results and no pass in seven days is skipped (`skipped_backoff`) except for one probe per 24 hours; admitted routes come first, then other routes of providers that passed, with one probe in eight kept for the rest. A rescreen request no longer moves a route ahead. The report carries `provider_record`. Nothing here admits a route (#1395, slice 1 of #1387).
+
 ## [1.0.0] - 2026-11-19
 
 The first complete version. It also carries the 0.5.0 changes below, which were never

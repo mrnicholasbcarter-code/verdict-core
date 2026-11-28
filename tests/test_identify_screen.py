@@ -462,7 +462,9 @@ def test_community_screen_joins_exact_routes_and_skips_billing_aliases(tmp_path)
         snapshot(),
         proven_by_traffic={},
         inventory_route_ids=frozenset(ids),
-        inventory_rows={rid: {"owned_by": "p"} for rid in ids},
+        inventory_rows={
+            rid: {"owned_by": "p", "capabilities": {"tool_calling": True}} for rid in ids
+        },
         route_identities={rid: ("p", rid.partition("/")[2]) for rid in ids},
         live_candidates={rid: LiveCandidate(rid, "p", ("connection",), True) for rid in ids},
         route_capacities={rid: "metered" if rid == "p/metered" else "unknown" for rid in ids},
@@ -510,7 +512,9 @@ def test_roster_screen_checks_unknown_capacity_and_expired_refusals_by_default(t
         snapshot(),
         proven_by_traffic={},
         inventory_route_ids=frozenset(ids),
-        inventory_rows={rid: {"owned_by": "p"} for rid in ids},
+        inventory_rows={
+            rid: {"owned_by": "p", "capabilities": {"tool_calling": True}} for rid in ids
+        },
         route_identities={rid: ("p", rid.partition("/")[2]) for rid in ids},
         live_candidates={rid: LiveCandidate(rid, "p", ("connection",), True) for rid in ids},
         route_capacities=dict.fromkeys(ids, "unknown"),
@@ -776,13 +780,22 @@ def test_unknown_context_and_unknown_tools_are_below_the_floor(tmp_path):
         "c/tools-false": "skipped_task_floor",
         "d/meets-floor": "pass",
     }
-    # Each half of the floor applies only when asked for.
+    # The context half of the floor applies only when asked for. The tools half is
+    # now also the default: a route whose catalog row does not declare tool support
+    # is never probed (``skipped_no_tools``, #1395); ``require_tools`` keeps its own
+    # reason, ``skipped_task_floor``, for the same routes.
     calls = []
     screen_inventory(tmp_path / "tools", calls, specs, require_tools=True)
     assert probed(calls) == ["a/context-unknown", "d/meets-floor"]
     calls = []
-    screen_inventory(tmp_path / "context", calls, specs, min_context_tokens=100_000)
-    assert probed(calls) == ["b/tools-unknown", "c/tools-false", "d/meets-floor"]
+    context_only = screen_inventory(tmp_path / "context", calls, specs, min_context_tokens=100_000)
+    assert probed(calls) == ["d/meets-floor"]
+    assert results(context_only) == {
+        "a/context-unknown": "skipped_task_floor",
+        "b/tools-unknown": "skipped_no_tools",
+        "c/tools-false": "skipped_no_tools",
+        "d/meets-floor": "pass",
+    }
 
 
 @pytest.mark.parametrize(
@@ -856,7 +869,10 @@ def test_skipped_route_takes_no_pool_slot(tmp_path):
 def test_without_new_options_the_screen_matches_main(tmp_path):
     """Catches the floor or the pool cap leaking into screens that did not ask for them.
 
-    The golden file is this screen's JSON as produced by main at 59cfc45d.
+    The golden file is this screen's JSON as produced by main at 59cfc45d, changed
+    only where #1395 changes the default screen: the two groq routes whose catalog
+    row does not declare tool support are ``skipped_no_tools`` and take no slot, and
+    the report carries ``provider_record``.
     """
     calls = []
     report = screen_inventory(tmp_path, calls, GOLDEN_INVENTORY, max_per_provider=1, max_routes=4)

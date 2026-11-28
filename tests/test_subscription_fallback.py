@@ -333,8 +333,14 @@ def test_capability_rejection_steps_up_not_same_route(monkeypatch):
     assert [r["body"]["model"] for r in transport.requests] == ["selected-model", "backup-model"]
 
 
-def test_queued_free_screen_runs_first_without_extending_caps(tmp_path):
-    """Prioritize a queued free route within screen caps and consume its hint."""
+def test_queued_free_screen_does_not_jump_the_queue_and_its_hint_stays_pending(tmp_path):
+    """A queued rescreen no longer runs first; the hint stays until a probe consumes it.
+
+    ``alias/strong`` and ``p/strong`` are one model and rank alike, and the id order
+    puts ``alias/strong`` first. The hint used to move ``p/strong`` ahead (decision 4
+    of ``evidence-driven-screening`` removes that), so with one probe the caps are
+    spent on ``alias/strong`` and the hint is not consumed.
+    """
     from tests.test_identify_screen import NOW as SCREEN_NOW
     from tests.test_identify_screen import passing, ratings, snapshot
     from verdict.identify import screen_models
@@ -356,9 +362,9 @@ def test_queued_free_screen_runs_first_without_extending_caps(tmp_path):
         max_routes=1,
         clock=lambda: SCREEN_NOW,
     )
-    assert [r for r, _ in calls] == ["p/strong"] * 3
+    assert [r for r, _ in calls] == ["alias/strong"] * 3
     assert report["routes_checked"] == 1
-    assert not HealthCache(cache.path).rescreen_requests()
+    assert HealthCache(cache.path).rescreen_requests() == {"p/strong"}
 
 
 def test_token_metric_requires_three_unique_accepted_same_family_samples():

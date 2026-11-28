@@ -18,12 +18,17 @@ The scheduled screen SHALL treat catalog ids with the same `owned_by` and `root`
 
 ### Requirement: The screen does not probe routes that cannot pass
 
-The screen SHALL NOT probe a route that does not declare tool support, and SHALL report it as `skipped_no_tools`. A route of unknown capacity SHALL be a candidate only when the passive check admits it, and then on the same terms as a free route.
+The screen SHALL NOT probe a route whose catalog row does not declare tool support (a row without `tool_calling: true`), and SHALL report it as `skipped_no_tools`. A route with no catalog row is not skipped for that reason, and neither is a route with a pending rescreen request: a request names that exact route and only a probe consumes it. A route of unknown capacity SHALL be a candidate only when the passive check admits it, and then on the same terms as a free route.
 
 #### Scenario: no declared tool support
 
 - **WHEN** a free route's catalog row does not declare tool calling
 - **THEN** the screen does not probe it and reports `skipped_no_tools`
+
+#### Scenario: a rescreen request on a route without declared tool support
+
+- **WHEN** a route whose catalog row does not declare tool calling has a pending rescreen request
+- **THEN** the screen probes it once and the probe consumes the request
 
 #### Scenario: unknown capacity
 
@@ -46,7 +51,7 @@ The screen SHALL keep, per provider, the probes and passes of the last seven day
 
 ### Requirement: The queue is ordered by the provider's record
 
-The screen SHALL probe, in this order: routes the passive check admits; other routes of a provider with at least one pass in seven days; all other candidates. Inside each group it SHALL order by the provider's pass rate and then by Verdict's rating. While the last group is not empty it SHALL receive at least one probe in eight. No evidence used for ordering SHALL make a route eligible, healthy or proven.
+The screen SHALL probe, in this order: routes the passive check admits; other routes of a provider with at least one pass in seven days; all other candidates. Inside each group it SHALL order by the provider's pass rate and then by Verdict's rating. While the last group is not empty it SHALL receive at least one probe in eight. A pending rescreen request SHALL NOT move a route ahead, and SHALL NOT let another id of the same model skip the route as its alias. No evidence used for ordering SHALL make a route eligible, healthy or proven.
 
 #### Scenario: a provider that passes and one with no record
 
