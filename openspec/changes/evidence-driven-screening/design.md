@@ -90,5 +90,7 @@ ADR-049: no change (unknown capacity already needs the same proof). ADR-010 and 
 
 ## Open questions for the operator
 
+Status on 2026-11-28: decisions 2, 3 and 4 only change which routes are probed and in what order, and are being built now. Decisions 7 and 8 change account risk and who is eligible; they wait for the operator's answer below and are not approved by the merge of this design.
+
 1. May the screen probe account-tied connections at all? Recommended: yes, within the limit in decision 7.
 2. Does `duckduckgo-web` go on the deny list? Recommended: yes. Its terms forbid automated querying and it passed 0 of 15.
