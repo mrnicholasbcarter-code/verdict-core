@@ -76,6 +76,8 @@ _BAD_TEST_STATUS = frozenset(
         "quota_exhausted",
         "rate_limited",
         "banned",
+        "deactivated",
+        "credits_exhausted",
     }
 )
 _AUTH_CATEGORIES = frozenset({"authentication", "permission", "payment_required", "unauthorized"})
