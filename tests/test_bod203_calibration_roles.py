@@ -28,7 +28,6 @@ def _rec(
     frontier_worthy: float | None = 0.8,
     confidence: float | None = 0.9,
     security_sensitive: float | None = 0.1,
-    frontier_needed: bool = False,
     security_relevant: bool = False,
     planner_was_frontier: bool = False,
     verified: bool = True,
@@ -42,6 +41,8 @@ def _rec(
     retry_cost_usd: float = 0.0,
     verification_cost_usd: float = 0.0,
     escalation_cost_usd: float = 0.0,
+    outcome: str | None = None,
+    excluded_reason: str | None = None,
 ) -> CalibrationRecord:
     return CalibrationRecord(
         task_id=task_id,
@@ -49,7 +50,6 @@ def _rec(
         frontier_worthy=frontier_worthy,
         confidence=confidence,
         security_sensitive=security_sensitive,
-        frontier_needed=frontier_needed,
         security_relevant=security_relevant,
         planner_was_frontier=planner_was_frontier,
         verified=verified,
@@ -58,6 +58,8 @@ def _rec(
         escalations=escalations,
         total_cost_usd=total_cost_usd,
         role=role,
+        outcome=outcome,
+        excluded_reason=excluded_reason,
         context_cost_usd=context_cost_usd,
         tool_cost_usd=tool_cost_usd,
         retry_cost_usd=retry_cost_usd,
@@ -99,7 +101,6 @@ class TestAC5RoleField:
             "frontier_worthy": 0.5,
             "confidence": 0.9,
             "security_sensitive": 0.1,
-            "frontier_needed": False,
             "security_relevant": False,
             "planner_was_frontier": False,
             "verified": True,
@@ -117,7 +118,6 @@ class TestAC5RoleField:
             "frontier_worthy": 0.5,
             "confidence": 0.9,
             "security_sensitive": 0.1,
-            "frontier_needed": False,
             "security_relevant": False,
             "planner_was_frontier": False,
             "verified": True,
@@ -133,7 +133,6 @@ class TestAC5RoleField:
             "frontier_worthy": 0.5,
             "confidence": 0.9,
             "security_sensitive": 0.1,
-            "frontier_needed": False,
             "security_relevant": False,
             "planner_was_frontier": False,
             "verified": True,
@@ -151,7 +150,6 @@ class TestAC5RoleField:
             "frontier_worthy": 0.5,
             "confidence": 0.9,
             "security_sensitive": 0.1,
-            "frontier_needed": False,
             "security_relevant": False,
             "planner_was_frontier": False,
             "verified": True,
@@ -176,7 +174,6 @@ class TestAC5RoleField:
             "frontier_worthy": 0.5,
             "confidence": 0.9,
             "security_sensitive": 0.1,
-            "frontier_needed": False,
             "security_relevant": False,
             "planner_was_frontier": False,
             "verified": True,
@@ -242,7 +239,6 @@ class TestAC6PerCategoryCost:
             "frontier_worthy": 0.5,
             "confidence": 0.9,
             "security_sensitive": 0.1,
-            "frontier_needed": False,
             "security_relevant": False,
             "planner_was_frontier": False,
             "verified": True,
@@ -263,7 +259,6 @@ class TestAC6PerCategoryCost:
             "frontier_worthy": 0.5,
             "confidence": 0.9,
             "security_sensitive": 0.1,
-            "frontier_needed": False,
             "security_relevant": False,
             "planner_was_frontier": False,
             "verified": True,
@@ -412,45 +407,23 @@ class TestAC7PerRoleReports:
         # None-role records not in per_role at all
         assert len(report.per_role) == 1
 
-    def test_per_role_fn_rates_independent(self) -> None:
-        """Each role slice computes its own FN rate independently."""
+    def test_per_role_accepted_rates_independent(self) -> None:
+        """Each role slice computes its own accepted rate, and leaves excluded runs out."""
         records = [
-            # controller: 1 FN (frontier_needed=True, predicted low)
-            _rec(
-                task_id="c1",
-                role="controller",
-                frontier_needed=True,
-                frontier_worthy=0.2,
-                verified=True,
-            ),
-            _rec(
-                task_id="c2",
-                role="controller",
-                frontier_needed=False,
-                frontier_worthy=0.8,
-                verified=True,
-            ),
-            # worker: 0 FN
-            _rec(
-                task_id="w1",
-                role="implementation_worker",
-                frontier_needed=True,
-                frontier_worthy=0.8,
-                verified=True,
-            ),
+            _rec(task_id="c1", role="controller", outcome="accepted"),
+            _rec(task_id="c2", role="controller", outcome="not_accepted"),
+            _rec(task_id="w1", role="implementation_worker", outcome="accepted"),
             _rec(
                 task_id="w2",
                 role="implementation_worker",
-                frontier_needed=False,
-                frontier_worthy=0.2,
-                verified=True,
+                outcome=None,
+                excluded_reason="environment_error",
             ),
         ]
         report = evaluate(records, threshold=0.5)
-        c_fn = report.per_role["controller"]["frontier_fn_rate"]
-        w_fn = report.per_role["implementation_worker"]["frontier_fn_rate"]
-        assert c_fn == 1.0  # 1/1 needed
-        assert w_fn == 0.0  # 0/1 needed
+        assert report.per_role["controller"]["accepted_rate"] == 0.5
+        assert report.per_role["implementation_worker"]["accepted_rate"] == 1.0
+        assert report.per_role["implementation_worker"]["excluded_records"] == 1
 
 
 class TestAC7PerRoleRecommendations:
@@ -474,7 +447,6 @@ class TestAC7PerRoleRecommendations:
                 _rec(
                     task_id=f"t{i}",
                     role="implementation_worker" if i < 5 else None,
-                    frontier_needed=False,
                     frontier_worthy=0.8,
                     security_relevant=True,
                     security_sensitive=0.9,
@@ -594,14 +566,15 @@ class TestBackwardCompatibility:
         assert report.per_role == {}
         # Existing fields still work
         assert report.records >= 60
-        assert report.recommended_state in ("SHADOW", "ADVISORY", "BOUNDED_SKIP")
+        assert report.recommended_state == "SHADOW"
 
-    def test_to_dict_schema_unchanged(self) -> None:
+    def test_to_dict_schema_version(self) -> None:
         fixtures = Path(__file__).parent / "fixtures" / "openjev" / "calibration"
         records = load_records(fixtures / "replay_sample.jsonl")
         report = evaluate(records)
         d = report.to_dict()
-        assert d["schema"] == "verdict.openjev-calibration/v1"
+        assert d["schema"] == "verdict.openjev-calibration/v2"  # frontier metrics removed (OJ1)
+        assert "frontier_fn_rate" not in d
 
 
 # ---------------------------------------------------------------------------

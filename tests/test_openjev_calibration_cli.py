@@ -36,7 +36,7 @@ def test_cli_json_output() -> None:
     assert result.returncode == 0
     data = json.loads(result.stdout)
     assert "schema" in data
-    assert data["schema"] == "verdict.openjev-calibration/v1"
+    assert data["schema"] == "verdict.openjev-calibration/v2"
     assert "records" in data
     assert "recommended_state" in data
 

@@ -11,7 +11,6 @@ from verdict.decision_signals.calibration import (
     TASK_CLASSES,
     CalibrationRecord,
     CalibrationReport,
-    ReliabilityBucket,
     _mean,
     _median,
     _rate,
@@ -19,7 +18,6 @@ from verdict.decision_signals.calibration import (
     evaluate,
     load_records,
     recommend,
-    reliability_buckets,
     render_markdown,
 )
 
@@ -39,7 +37,7 @@ def sample_records() -> list[CalibrationRecord]:
 
 @pytest.fixture
 def tiny_set() -> list[CalibrationRecord]:
-    """Hand-computed tiny set for Brier and calibration error verification."""
+    """A small hand-built set of records with and without usable signals."""
     return [
         CalibrationRecord(
             task_id="t1",
@@ -47,7 +45,6 @@ def tiny_set() -> list[CalibrationRecord]:
             frontier_worthy=0.8,
             confidence=0.9,
             security_sensitive=0.1,
-            frontier_needed=True,
             security_relevant=False,
             planner_was_frontier=True,
             verified=True,
@@ -59,7 +56,6 @@ def tiny_set() -> list[CalibrationRecord]:
             frontier_worthy=0.2,
             confidence=0.9,
             security_sensitive=0.1,
-            frontier_needed=False,
             security_relevant=False,
             planner_was_frontier=False,
             verified=True,
@@ -71,7 +67,6 @@ def tiny_set() -> list[CalibrationRecord]:
             frontier_worthy=0.8,
             confidence=0.9,
             security_sensitive=0.1,
-            frontier_needed=False,
             security_relevant=False,
             planner_was_frontier=False,
             verified=True,
@@ -83,7 +78,6 @@ def tiny_set() -> list[CalibrationRecord]:
             frontier_worthy=0.3,
             confidence=0.9,
             security_sensitive=0.1,
-            frontier_needed=True,
             security_relevant=False,
             planner_was_frontier=True,
             verified=True,
@@ -142,7 +136,6 @@ class TestHelperFunctions:
             frontier_worthy=0.5,
             confidence=0.7,
             security_sensitive=0.1,
-            frontier_needed=False,
             security_relevant=False,
             planner_was_frontier=False,
             verified=True,
@@ -159,7 +152,6 @@ class TestHelperFunctions:
             frontier_worthy=None,
             confidence=0.9,
             security_sensitive=0.1,
-            frontier_needed=False,
             security_relevant=False,
             planner_was_frontier=False,
             verified=True,
@@ -175,7 +167,6 @@ class TestHelperFunctions:
             frontier_worthy=0.5,
             confidence=None,
             security_sensitive=0.1,
-            frontier_needed=False,
             security_relevant=False,
             planner_was_frontier=False,
             verified=True,
@@ -191,7 +182,6 @@ class TestHelperFunctions:
             frontier_worthy=0.5,
             confidence=0.4,
             security_sensitive=0.1,
-            frontier_needed=False,
             security_relevant=False,
             planner_was_frontier=False,
             verified=True,
@@ -205,38 +195,6 @@ class TestHelperFunctions:
 # ---------------------------------------------------------------------------
 
 
-class TestReliabilityBuckets:
-    """Tests for reliability_buckets function."""
-
-    def test_empty_input(self) -> None:
-        """reliability_buckets returns empty list for empty input."""
-        result = reliability_buckets([])
-        assert result == []
-
-    def test_single_bin(self) -> None:
-        """All values in single bin when only one bin."""
-        pairs = [(0.95, True), (0.98, False)]
-        result = reliability_buckets(pairs, bins=10)
-        assert len(result) > 0
-        # 0.95 and 0.98 both fall in bin 9 (0.9-1.0)
-        assert any(r.count == 2 for r in result)
-
-    def test_distribution_across_bins(self) -> None:
-        """Values distributed across bins based on predicted probability."""
-        pairs = [
-            (0.05, True),  # bin 0
-            (0.15, False),  # bin 1
-            (0.5, True),  # bin 5
-            (0.95, False),  # bin 9
-        ]
-        result = reliability_buckets(pairs, bins=10)
-        bin_counts = {r.lower: r.count for r in result}
-        assert bin_counts.get(0.0) == 1
-        assert bin_counts.get(0.1) == 1
-        assert bin_counts.get(0.5) == 1
-        assert bin_counts.get(0.9) == 1
-
-
 # ---------------------------------------------------------------------------
 # evaluate tests
 # ---------------------------------------------------------------------------
@@ -244,33 +202,6 @@ class TestReliabilityBuckets:
 
 class TestEvaluate:
     """Tests for evaluate function."""
-
-    def test_threshold_and_fp_fn_rates(self, tiny_set: list[CalibrationRecord]) -> None:
-        """evaluate correctly computes FN/FP rates at a threshold."""
-        # With threshold=0.5:
-        # t1: frontier_worthy=0.8 >= 0.5, frontier_needed=True -> TP
-        # t2: frontier_worthy=0.2 < 0.5, frontier_needed=False -> TN
-        # t3: frontier_worthy=0.8 >= 0.5, frontier_needed=False -> FP
-        # t4: frontier_worthy=0.3 < 0.5, frontier_needed=True -> FN
-        # FN rate = 1/2 = 0.5 (2 needed frontier)
-        # FP rate = 1/2 = 0.5 (2 didn't need frontier)
-        report = evaluate(tiny_set, threshold=0.5, min_confidence=0.6)
-        assert report.frontier_fn_rate == 0.5
-        assert report.frontier_fp_rate == 0.5
-
-    def test_brier_score_calculation(self, tiny_set: list[CalibrationRecord]) -> None:
-        """Brier score correctly computed on hand-computed tiny set."""
-        report = evaluate(tiny_set, threshold=0.5, min_confidence=0.6)
-        # With threshold=0.5, min_confidence=0.6, all 4 records are usable
-        # Pairs: [(0.8, True), (0.2, False), (0.8, False), (0.3, True)]
-        # Brier = mean((p - o)^2):
-        # (0.8 - 1)^2 = 0.04
-        # (0.2 - 0)^2 = 0.04
-        # (0.8 - 0)^2 = 0.64
-        # (0.3 - 1)^2 = 0.49
-        # Mean = (0.04 + 0.04 + 0.64 + 0.49) / 4 = 1.21 / 4 = 0.3025
-        assert report.brier is not None
-        assert abs(report.brier - 0.3025) < 0.0001
 
     def test_records_without_usable_signal_not_counted_as_avoided(
         self, tiny_set: list[CalibrationRecord]
@@ -283,7 +214,6 @@ class TestEvaluate:
             frontier_worthy=0.1,  # Would avoid frontier
             confidence=None,  # No usable signal
             security_sensitive=0.1,
-            frontier_needed=False,  # Doesn't need frontier
             security_relevant=False,
             planner_was_frontier=True,  # But planner used frontier
             verified=True,
@@ -295,7 +225,6 @@ class TestEvaluate:
             frontier_worthy=0.1,  # Would avoid frontier
             confidence=0.9,  # Usable
             security_sensitive=0.1,
-            frontier_needed=False,  # Doesn't need frontier
             security_relevant=False,
             planner_was_frontier=True,  # But planner used frontier
             verified=True,
@@ -317,7 +246,6 @@ class TestEvaluate:
             frontier_worthy=0.5,
             confidence=0.9,
             security_sensitive=0.1,  # Low score = predicted NOT security sensitive
-            frontier_needed=False,
             security_relevant=True,  # But IS security relevant
             planner_was_frontier=False,
             verified=True,
@@ -335,21 +263,6 @@ class TestEvaluate:
         total = sum(report.per_class.values())
         assert total == report.records
 
-    def test_reliability_buckets_populated(self, sample_records: list[CalibrationRecord]) -> None:
-        """evaluate populates reliability buckets with correct structure."""
-        report = evaluate(sample_records, threshold=0.5, min_confidence=0.6)
-        assert len(report.reliability) > 0
-        for bucket in report.reliability:
-            assert isinstance(bucket, ReliabilityBucket)
-            assert bucket.lower < bucket.upper
-            assert bucket.count >= 0
-
-    def test_calibration_error_calculation(self, sample_records: list[CalibrationRecord]) -> None:
-        """evaluate computes calibration error (ECE) when usable signals exist."""
-        report = evaluate(sample_records, threshold=0.5, min_confidence=0.6)
-        assert report.calibration_error is not None
-        assert report.calibration_error >= 0
-
 
 # ---------------------------------------------------------------------------
 # recommend tests
@@ -359,142 +272,27 @@ class TestEvaluate:
 class TestRecommend:
     """Tests for recommend function."""
 
-    def test_shadows_when_usable_less_than_50(self) -> None:
-        """recommend returns SHADOW when usable < MIN_RECORDS_FOR_ADVISORY (50)."""
-        report = CalibrationReport(
+    def _report(self, usable: int) -> CalibrationReport:
+        return CalibrationReport(
             policy_threshold=0.5,
             min_confidence=0.6,
-            records=10,
-            usable_signals=10,
-            per_class={c: 1 for c in TASK_CLASSES[:1]},
-            frontier_fn_rate=0.0,
-            frontier_fp_rate=0.0,
+            records=usable,
+            usable_signals=usable,
+            per_class={c: usable for c in TASK_CLASSES},
             security_fn_rate=0.0,
-            brier=0.1,
-            calibration_error=0.05,
-            reliability=[],
         )
-        state, reasons = recommend(report)
+
+    def test_shadows_when_usable_less_than_50(self) -> None:
+        """recommend names the sample size when usable < MIN_RECORDS_FOR_ADVISORY (50)."""
+        state, reasons = recommend(self._report(10))
         assert state == "SHADOW"
         assert any("only 10 usable signals" in r for r in reasons)
 
-    def test_shadows_when_security_fn_exists(self) -> None:
-        """recommend returns SHADOW when any security FN exists."""
-        report = CalibrationReport(
-            policy_threshold=0.5,
-            min_confidence=0.6,
-            records=100,
-            usable_signals=100,
-            per_class={c: 10 for c in TASK_CLASSES},
-            frontier_fn_rate=0.0,
-            frontier_fp_rate=0.0,
-            security_fn_rate=0.5,  # Security FN present
-            brier=0.1,
-            calibration_error=0.05,
-            reliability=[],
-        )
-        state, reasons = recommend(report)
+    def test_never_promotes_without_a_verified_outcome_label(self) -> None:
+        """Enough records still gives SHADOW: no label scores frontier_worthy (OJ1)."""
+        state, reasons = recommend(self._report(500))
         assert state == "SHADOW"
-        assert any("security false-negative rate" in r for r in reasons)
-
-    def test_shadows_when_frontier_fn_rate_high(self) -> None:
-        """recommend returns SHADOW when frontier FN rate > MAX_FRONTIER_FN_RATE_ADVISORY (0.05)."""
-        report = CalibrationReport(
-            policy_threshold=0.5,
-            min_confidence=0.6,
-            records=100,
-            usable_signals=100,
-            per_class={c: 10 for c in TASK_CLASSES},
-            frontier_fn_rate=0.1,  # > 0.05
-            frontier_fp_rate=0.0,
-            security_fn_rate=0.0,
-            brier=0.1,
-            calibration_error=0.05,
-            reliability=[],
-        )
-        state, reasons = recommend(report)
-        assert state == "SHADOW"
-        assert any("frontier false-negative rate" in r for r in reasons)
-
-    def test_advisory_when_any_class_thin(self) -> None:
-        """recommend returns ADVISORY when any class has < MIN_RECORDS_PER_CLASS_FOR_SKIP (20)."""
-        per_class = {c: 25 for c in TASK_CLASSES}
-        per_class["trivial_local_edit"] = 10  # Thin class
-        report = CalibrationReport(
-            policy_threshold=0.5,
-            min_confidence=0.6,
-            records=250,
-            usable_signals=250,
-            per_class=per_class,
-            frontier_fn_rate=0.0,
-            frontier_fp_rate=0.0,
-            security_fn_rate=0.0,
-            brier=0.1,
-            calibration_error=0.05,
-            reliability=[],
-        )
-        state, reasons = recommend(report)
-        assert state == "ADVISORY"
-        assert any("below" in r and "records" in r for r in reasons)
-
-    def test_advisory_when_frontier_fn_positive(self) -> None:
-        """recommend returns ADVISORY when any frontier FNs present (BOUNDED_SKIP requires zero)."""
-        report = CalibrationReport(
-            policy_threshold=0.5,
-            min_confidence=0.6,
-            records=100,
-            usable_signals=100,
-            per_class={c: 10 for c in TASK_CLASSES},
-            frontier_fn_rate=0.02,  # > 0 but < 0.05
-            frontier_fp_rate=0.0,
-            security_fn_rate=0.0,
-            brier=0.1,
-            calibration_error=0.05,
-            reliability=[],
-            false_negatives=["t1", "t2"],
-        )
-        state, reasons = recommend(report)
-        assert state == "ADVISORY"
-        assert any("false negatives present" in r for r in reasons)
-
-    def test_bounded_skip_when_all_gates_pass(self) -> None:
-        """recommend returns BOUNDED_SKIP only when every gate passes."""
-        report = CalibrationReport(
-            policy_threshold=0.5,
-            min_confidence=0.6,
-            records=100,
-            usable_signals=100,
-            per_class={c: 25 for c in TASK_CLASSES},
-            frontier_fn_rate=0.0,  # Zero FNs
-            frontier_fp_rate=0.0,
-            security_fn_rate=0.0,
-            brier=0.1,
-            calibration_error=0.05,
-            reliability=[],
-            false_negatives=[],
-        )
-        state, reasons = recommend(report)
-        assert state == "BOUNDED_SKIP"
-        assert any("all gates met" in r for r in reasons)
-
-    def test_calibration_error_affects_advisory(self) -> None:
-        """recommend returns SHADOW when calibration error > MAX_CALIBRATION_ERROR_ADVISORY (0.10)."""
-        report = CalibrationReport(
-            policy_threshold=0.5,
-            min_confidence=0.6,
-            records=100,
-            usable_signals=100,
-            per_class={c: 10 for c in TASK_CLASSES},
-            frontier_fn_rate=0.0,
-            frontier_fp_rate=0.0,
-            security_fn_rate=0.0,
-            brier=0.1,
-            calibration_error=0.15,  # > 0.10
-            reliability=[],
-        )
-        state, reasons = recommend(report)
-        assert state == "SHADOW"
-        assert any("calibration error" in r for r in reasons)
+        assert any("no verified-outcome label" in r for r in reasons)
 
 
 # ---------------------------------------------------------------------------
@@ -522,14 +320,14 @@ class TestLoadRecords:
             f.write(
                 '{"task_id": "t1", "task_class": "bounded_implementation", "frontier_worthy": 0.5, '
             )
-            f.write('"confidence": 0.9, "security_sensitive": 0.1, "frontier_needed": false, ')
+            f.write('"confidence": 0.9, "security_sensitive": 0.1, ')
             f.write('"security_relevant": false, "planner_was_frontier": false, "verified": true, ')
             f.write('"first_pass": true}\n')
             f.write("\n")  # Empty line
             f.write(
                 '{"task_id": "t2", "task_class": "bounded_implementation", "frontier_worthy": 0.5, '
             )
-            f.write('"confidence": 0.9, "security_sensitive": 0.1, "frontier_needed": false, ')
+            f.write('"confidence": 0.9, "security_sensitive": 0.1, ')
             f.write('"security_relevant": false, "planner_was_frontier": false, "verified": true, ')
             f.write('"first_pass": true}\n')
             path = Path(f.name)
@@ -546,14 +344,14 @@ class TestLoadRecords:
             f.write(
                 '{"task_id": "t1", "task_class": "bounded_implementation", "frontier_worthy": 0.5, '
             )
-            f.write('"confidence": 0.9, "security_sensitive": 0.1, "frontier_needed": false, ')
+            f.write('"confidence": 0.9, "security_sensitive": 0.1, ')
             f.write('"security_relevant": false, "planner_was_frontier": false, "verified": true, ')
             f.write('"first_pass": true}\n')
             f.write("this is not valid JSON\n")  # Malformed
             f.write(
                 '{"task_id": "t3", "task_class": "bounded_implementation", "frontier_worthy": 0.5, '
             )
-            f.write('"confidence": 0.9, "security_sensitive": 0.1, "frontier_needed": false, ')
+            f.write('"confidence": 0.9, "security_sensitive": 0.1, ')
             f.write('"security_relevant": false, "planner_was_frontier": false, "verified": true, ')
             f.write('"first_pass": true}\n')
             path = Path(f.name)
@@ -572,7 +370,7 @@ class TestLoadRecords:
             f.write(
                 '{"task_id": "t1", "task_class": "bounded_implementation", "frontier_worthy": 0.5, '
             )
-            f.write('"confidence": 0.9, "security_sensitive": 0.1, "frontier_needed": false, ')
+            f.write('"confidence": 0.9, "security_sensitive": 0.1, ')
             f.write('"security_relevant": false, "planner_was_frontier": false, "verified": true, ')
             f.write('"first_pass": true}\n')
             path = Path(f.name)
@@ -605,13 +403,6 @@ class TestRenderMarkdown:
         md = render_markdown(report)
         assert f"recommended state: **{report.recommended_state}**" in md
 
-    def test_contains_fn_task_ids(self, sample_records: list[CalibrationRecord]) -> None:
-        """render_markdown contains false negative task IDs in output."""
-        report = evaluate(sample_records, threshold=0.5, min_confidence=0.6)
-        md = render_markdown(report)
-        # Check structure contains FN section
-        assert "## Frontier false negatives" in md or len(report.false_negatives) == 0
-
     def test_contains_basic_metrics(self, sample_records: list[CalibrationRecord]) -> None:
         """render_markdown contains key metrics."""
         report = evaluate(sample_records, threshold=0.5, min_confidence=0.6)
@@ -619,16 +410,8 @@ class TestRenderMarkdown:
         assert f"records: {report.records}" in md
         assert "usable signals:" in md
         assert "threshold:" in md
-        assert "frontier false-negative rate:" in md
-        assert "frontier false-positive rate:" in md
+        assert "frontier false-negative rate:" not in md
         assert "security false-negative rate:" in md
-
-    def test_contains_reliability_table(self, sample_records: list[CalibrationRecord]) -> None:
-        """render_markdown contains reliability table."""
-        report = evaluate(sample_records, threshold=0.5, min_confidence=0.6)
-        md = render_markdown(report)
-        assert "## Reliability" in md
-        assert "| bin | n | mean predicted | observed |" in md
 
     def test_contains_recommendation_reasons(self, sample_records: list[CalibrationRecord]) -> None:
         """render_markdown contains recommendation reasons."""

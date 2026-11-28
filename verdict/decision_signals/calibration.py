@@ -6,18 +6,25 @@ collected in SHADOW mode and the observed ground truth.
 
 This module only measures. It never changes routing, admission or planner
 behaviour, and it never grants OpenJev authority. The recommended promotion
-state is advice for a human; it is capped by false negatives first:
-**a cheap decision that wrongly skips necessary frontier work is a
-regression even if average cost improves.**
+state is advice for a human.
+
+Labels are a node's verified outcome (``outcome``), the capacity class and tier
+of the route that passed, the attempts used and the lifts the run shows. They
+come from receipts (``calibration_labels.py``). There is no ground truth for
+"frontier needed": the old label was the DAG topology, not an outcome, so the
+false-negative, Brier and calibration-error metrics built on it are gone and
+the recommendation stays SHADOW (OJ1, #1220).
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from verdict.decision_signals.calibration_labels import LIFTS
 
 TASK_CLASSES = (
     "trivial_local_edit",
@@ -40,15 +47,10 @@ ROLES: tuple[str, ...] = (
     "independent_reviewer",
 )
 
-# Promotion gates. Initial values are deliberately strict and are NOT
-# calibrated thresholds for production; they only decide what the report may
-# recommend. Changing them is a policy change that must be revisioned.
+# Records needed before the report may discuss promotion at all.
 MIN_RECORDS_FOR_ADVISORY = 50
-MIN_RECORDS_PER_CLASS_FOR_SKIP = 20
-MAX_FRONTIER_FN_RATE_ADVISORY = 0.05
-MAX_FRONTIER_FN_RATE_SKIP = 0.0
-MAX_SECURITY_FN_RATE = 0.0
-MAX_CALIBRATION_ERROR_ADVISORY = 0.10
+
+OUTCOMES = ("accepted", "not_accepted")
 
 
 @dataclass(frozen=True)
@@ -60,7 +62,6 @@ class CalibrationRecord:
     frontier_worthy: float | None  # OpenJev probability; None = no usable signal
     confidence: float | None
     security_sensitive: float | None
-    frontier_needed: bool  # ground truth: did verified completion need frontier cognition?
     security_relevant: bool
     planner_was_frontier: bool  # what the existing Verdict planner actually used
     verified: bool
@@ -83,24 +84,27 @@ class CalibrationRecord:
     total_output_tokens: int | None = None
     attempts_with_usage: int = 0
     attempts_without_usage: int = 0
+    # OJ1 -- labels from verified outcomes. None = not recorded (a record written
+    # before these existed, or a fact the run's events do not show).
+    outcome: str | None = None  # "accepted" | "not_accepted"; None when excluded or unknown
+    excluded_reason: str | None = None  # environment/infra failure class: no task label
+    capacity_class: str | None = None  # of the route that passed
+    capability_tier: int | None = None  # of the route that passed (1 = strongest)
+    attempts: int | None = None  # model attempts whose work was judged
+    lifts: dict[str, bool | None] | None = None  # per lift: present, absent, None = unknown
 
     def __post_init__(self) -> None:
         if self.role is not None and self.role not in ROLES:
             raise ValueError(f"unknown role {self.role!r}; expected one of {ROLES}")
+        if self.outcome is not None and self.outcome not in OUTCOMES:
+            raise ValueError(f"unknown outcome {self.outcome!r}; expected one of {OUTCOMES}")
+        if self.excluded_reason is not None and self.outcome is not None:
+            raise ValueError("a record excluded from task labels cannot carry an outcome")
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> CalibrationRecord:
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in raw.items() if k in known})
-
-
-@dataclass
-class ReliabilityBucket:
-    lower: float
-    upper: float
-    count: int
-    mean_predicted: float
-    observed_rate: float
 
 
 @dataclass
@@ -110,12 +114,7 @@ class CalibrationReport:
     records: int
     usable_signals: int
     per_class: dict[str, int]
-    frontier_fn_rate: float | None
-    frontier_fp_rate: float | None
     security_fn_rate: float | None
-    brier: float | None
-    calibration_error: float | None
-    reliability: list[ReliabilityBucket] = field(default_factory=list)
     planner_calls_avoided: int = 0
     verified_rate: float | None = None
     first_pass_rate: float | None = None
@@ -126,7 +125,6 @@ class CalibrationReport:
     cost_unknown_count: int = 0
     median_time_to_green_s: float | None = None
     mean_signal_latency_ms: float | None = None
-    false_negatives: list[str] = field(default_factory=list)
     recommended_state: str = "SHADOW"
     recommendation_reasons: list[str] = field(default_factory=list)
     # AC6 -- per-category cost totals (None = no records with known cost)
@@ -139,9 +137,17 @@ class CalibrationReport:
     # AC7 -- per-role breakdown (role -> sub-report dict)
     per_role: dict[str, dict[str, Any]] = field(default_factory=dict)
     per_role_recommendations: dict[str, tuple[str, list[str]]] = field(default_factory=dict)
+    # OJ1 -- verified-outcome labels. Excluded runs are not task failures.
+    labelled_records: int = 0  # records with a task outcome
+    excluded_records: int = 0
+    excluded_reasons: dict[str, int] = field(default_factory=dict)
+    accepted_rate: float | None = None
+    mean_attempts: float | None = None
+    per_capacity_class: dict[str, dict[str, int]] = field(default_factory=dict)
+    lift_counts: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"schema": "verdict.openjev-calibration/v1", **asdict(self)}
+        return {"schema": "verdict.openjev-calibration/v2", **asdict(self)}
 
 
 def load_records(path: Path) -> list[CalibrationRecord]:
@@ -181,29 +187,6 @@ def _usable(record: CalibrationRecord, min_confidence: float) -> bool:
     )
 
 
-def reliability_buckets(
-    pairs: Iterable[tuple[float, bool]], *, bins: int = 10
-) -> list[ReliabilityBucket]:
-    grouped: list[list[tuple[float, bool]]] = [[] for _ in range(bins)]
-    for predicted, observed in pairs:
-        index = min(int(predicted * bins), bins - 1)
-        grouped[index].append((predicted, observed))
-    out: list[ReliabilityBucket] = []
-    for index, items in enumerate(grouped):
-        if not items:
-            continue
-        out.append(
-            ReliabilityBucket(
-                lower=index / bins,
-                upper=(index + 1) / bins,
-                count=len(items),
-                mean_predicted=sum(p for p, _ in items) / len(items),
-                observed_rate=sum(1 for _, o in items if o) / len(items),
-            )
-        )
-    return out
-
-
 def _evaluate_slice(
     records: Sequence[CalibrationRecord],
     *,
@@ -221,28 +204,42 @@ def _evaluate_slice(
         per_class[record.task_class] = per_class.get(record.task_class, 0) + 1
 
     usable = [r for r in records if _usable(r, min_confidence)]
-    needed = [r for r in usable if r.frontier_needed]
-    not_needed = [r for r in usable if not r.frontier_needed]
-    fn = [r for r in needed if (r.frontier_worthy or 0.0) < threshold]
-    fp = [r for r in not_needed if (r.frontier_worthy or 0.0) >= threshold]
 
-    sec = [r for r in usable if r.security_relevant and r.security_sensitive is not None]
+    # Signal collection is still counted, but excluded runs supply no task labels.
+    sec = [
+        r
+        for r in usable
+        if r.excluded_reason is None and r.security_relevant and r.security_sensitive is not None
+    ]
     sec_fn = [r for r in sec if (r.security_sensitive or 0.0) < security_threshold]
 
-    pairs = [(float(r.frontier_worthy or 0.0), r.frontier_needed) for r in usable]
-    brier = _mean([(p - (1.0 if o else 0.0)) ** 2 for p, o in pairs])
-    buckets = reliability_buckets(pairs)
-    total = sum(b.count for b in buckets)
-    ece = (
-        sum(b.count / total * abs(b.mean_predicted - b.observed_rate) for b in buckets)
-        if total
-        else None
-    )
     avoided = sum(
         1 for r in usable if r.planner_was_frontier and (r.frontier_worthy or 0.0) < threshold
     )
 
-    verified_count = sum(r.verified for r in records)
+    # An environment or infrastructure failure says nothing about the work: it is
+    # counted as excluded, never as a task failure, and stays out of every rate.
+    # A record with neither an outcome nor an exclusion (written before OJ1) still
+    # feeds the verified / first-pass rates, but has no task label.
+    counted = [r for r in records if r.excluded_reason is None]
+    excluded_reasons: dict[str, int] = {}
+    for r in records:
+        if r.excluded_reason is not None:
+            excluded_reasons[r.excluded_reason] = excluded_reasons.get(r.excluded_reason, 0) + 1
+    judged = [r for r in counted if r.outcome is not None]
+    per_capacity: dict[str, dict[str, int]] = {}
+    for r in judged:
+        if r.capacity_class is not None:
+            row = per_capacity.setdefault(r.capacity_class, {"records": 0, "accepted": 0})
+            row["records"] += 1
+            row["accepted"] += r.outcome == "accepted"
+    lift_counts = {name: {"present": 0, "absent": 0, "unknown": 0} for name in LIFTS}
+    for r in judged:
+        for name in LIFTS:
+            seen = (r.lifts or {}).get(name)
+            lift_counts[name]["unknown" if seen is None else "present" if seen else "absent"] += 1
+
+    verified_count = sum(r.verified for r in counted)
 
     # Cost sums: only include records with known cost (not None).
     cost_known = [r for r in records if r.total_cost_usd is not None]
@@ -274,17 +271,19 @@ def _evaluate_slice(
         "records": len(records),
         "usable_signals": len(usable),
         "per_class": per_class,
-        "frontier_fn_rate": _rate(len(fn), len(needed)),
-        "frontier_fp_rate": _rate(len(fp), len(not_needed)),
         "security_fn_rate": _rate(len(sec_fn), len(sec)),
-        "brier": brier,
-        "calibration_error": ece,
-        "reliability": buckets,
         "planner_calls_avoided": avoided,
-        "verified_rate": _rate(verified_count, len(records)),
-        "first_pass_rate": _rate(sum(r.first_pass for r in records), len(records)),
-        "mean_retries": _mean([float(r.retries) for r in records]),
-        "mean_escalations": _mean([float(r.escalations) for r in records]),
+        "labelled_records": len(judged),
+        "excluded_records": len(records) - len(counted),
+        "excluded_reasons": excluded_reasons,
+        "accepted_rate": _rate(sum(r.outcome == "accepted" for r in judged), len(judged)),
+        "mean_attempts": _mean([float(r.attempts) for r in judged if r.attempts is not None]),
+        "per_capacity_class": per_capacity,
+        "lift_counts": lift_counts,
+        "verified_rate": _rate(verified_count, len(counted)),
+        "first_pass_rate": _rate(sum(r.first_pass for r in counted), len(counted)),
+        "mean_retries": _mean([float(r.retries) for r in counted]),
+        "mean_escalations": _mean([float(r.escalations) for r in counted]),
         "total_cost_usd": total_cost,
         "cost_known_count": cost_known_count,
         "cost_unknown_count": cost_unknown_count,
@@ -304,7 +303,6 @@ def _evaluate_slice(
         "mean_signal_latency_ms": _mean(
             [float(r.signal_latency_ms) for r in records if r.signal_latency_ms is not None]
         ),
-        "false_negatives": [r.task_id for r in fn],
     }
 
 
@@ -315,7 +313,7 @@ def evaluate(
     min_confidence: float = 0.6,
     security_threshold: float = 0.5,
 ) -> CalibrationReport:
-    """Score OpenJev against ground truth at one decision threshold.
+    """Summarise verified outcomes and OpenJev's usable signals at one threshold.
 
     ``frontier predicted`` means ``frontier_worthy >= threshold``. A record
     without a usable signal (missing, or below ``min_confidence``) falls back
@@ -323,9 +321,8 @@ def evaluate(
     matching the fail-closed rule "never default to the cheap path because
     OpenJev failed".
 
-    Per-role and per-task-class breakdowns are included when the data contains
-    records with a ``role`` field (AC5/AC7, BOD-203). Insufficient per-role
-    samples always yield SHADOW for that slice -- never promotion.
+    Per-role breakdowns are included when the data contains records with a
+    ``role`` field (AC5/AC7, BOD-203). Every slice yields SHADOW (see ``recommend``).
     """
     eval_kwargs = {
         "threshold": threshold,
@@ -340,12 +337,14 @@ def evaluate(
         records=m["records"],
         usable_signals=m["usable_signals"],
         per_class=m["per_class"],
-        frontier_fn_rate=m["frontier_fn_rate"],
-        frontier_fp_rate=m["frontier_fp_rate"],
         security_fn_rate=m["security_fn_rate"],
-        brier=m["brier"],
-        calibration_error=m["calibration_error"],
-        reliability=m["reliability"],
+        labelled_records=m["labelled_records"],
+        excluded_records=m["excluded_records"],
+        excluded_reasons=m["excluded_reasons"],
+        accepted_rate=m["accepted_rate"],
+        mean_attempts=m["mean_attempts"],
+        per_capacity_class=m["per_capacity_class"],
+        lift_counts=m["lift_counts"],
         planner_calls_avoided=m["planner_calls_avoided"],
         verified_rate=m["verified_rate"],
         first_pass_rate=m["first_pass_rate"],
@@ -356,7 +355,6 @@ def evaluate(
         cost_unknown_count=m["cost_unknown_count"],
         median_time_to_green_s=m["median_time_to_green_s"],
         mean_signal_latency_ms=m["mean_signal_latency_ms"],
-        false_negatives=m["false_negatives"],
         context_cost_usd=m["context_cost_usd"],
         tool_cost_usd=m["tool_cost_usd"],
         retry_cost_usd=m["retry_cost_usd"],
@@ -374,8 +372,6 @@ def evaluate(
 
     for role, role_records in sorted(roles_seen.items()):
         role_m = _evaluate_slice(role_records, **eval_kwargs)
-        # Strip reliability buckets from per-role dict for brevity
-        role_m.pop("reliability", None)
         report.per_role[role] = role_m
         # Per-role recommendation: build a minimal CalibrationReport to run
         # through the same recommend() logic, inheriting global thresholds.
@@ -385,11 +381,7 @@ def evaluate(
             records=role_m["records"],
             usable_signals=role_m["usable_signals"],
             per_class=role_m["per_class"],
-            frontier_fn_rate=role_m["frontier_fn_rate"],
-            frontier_fp_rate=role_m["frontier_fp_rate"],
             security_fn_rate=role_m["security_fn_rate"],
-            brier=role_m["brier"],
-            calibration_error=role_m["calibration_error"],
             total_cost_usd=role_m["total_cost_usd"],
             cost_known_count=role_m["cost_known_count"],
             cost_unknown_count=role_m["cost_unknown_count"],
@@ -400,40 +392,22 @@ def evaluate(
 
 
 def recommend(report: CalibrationReport) -> tuple[str, list[str]]:
-    """Promotion advice, false negatives first. Never above what evidence supports."""
+    """Promotion advice. Always SHADOW: no verified-outcome label scores ``frontier_worthy``.
+
+    The old ground truth was the DAG topology, which never said whether a frontier
+    model was needed, so it is removed. Until per-lift labels are calibrated
+    (OJ4) nothing here can support more than SHADOW.
+    """
     reasons: list[str] = []
     if report.usable_signals < MIN_RECORDS_FOR_ADVISORY:
         reasons.append(
             f"only {report.usable_signals} usable signals "
             f"(< {MIN_RECORDS_FOR_ADVISORY} required for ADVISORY)"
         )
-        return "SHADOW", reasons
-    if report.security_fn_rate is None or report.security_fn_rate > MAX_SECURITY_FN_RATE:
-        reasons.append(f"security false-negative rate {report.security_fn_rate} is not 0")
-        return "SHADOW", reasons
-    if report.frontier_fn_rate is None or report.frontier_fn_rate > MAX_FRONTIER_FN_RATE_ADVISORY:
-        reasons.append(
-            f"frontier false-negative rate {report.frontier_fn_rate} "
-            f"> {MAX_FRONTIER_FN_RATE_ADVISORY}"
-        )
-        return "SHADOW", reasons
-    if (
-        report.calibration_error is None
-        or report.calibration_error > MAX_CALIBRATION_ERROR_ADVISORY
-    ):
-        reasons.append(
-            f"calibration error {report.calibration_error} > {MAX_CALIBRATION_ERROR_ADVISORY}"
-        )
-        return "SHADOW", reasons
-    thin = [c for c, n in report.per_class.items() if n < MIN_RECORDS_PER_CLASS_FOR_SKIP]
-    if report.frontier_fn_rate > MAX_FRONTIER_FN_RATE_SKIP or thin:
-        if thin:
-            reasons.append(f"classes below {MIN_RECORDS_PER_CLASS_FOR_SKIP} records: {thin}")
-        if report.frontier_fn_rate > MAX_FRONTIER_FN_RATE_SKIP:
-            reasons.append("frontier false negatives present; BOUNDED_SKIP requires zero")
-        return "ADVISORY", reasons
-    reasons.append("all gates met; BOUNDED_SKIP still needs operator approval per task class")
-    return "BOUNDED_SKIP", reasons
+    reasons.append(
+        "no verified-outcome label scores frontier_worthy; promotion waits for per-lift labels"
+    )
+    return "SHADOW", reasons
 
 
 def render_markdown(report: CalibrationReport) -> str:
@@ -448,12 +422,12 @@ def render_markdown(report: CalibrationReport) -> str:
         f"- records: {report.records} (usable signals: {report.usable_signals})",
         f"- threshold: frontier_worthy >= {report.policy_threshold}; "
         f"min confidence {report.min_confidence}",
-        f"- frontier false-negative rate: {fmt(report.frontier_fn_rate)}",
-        f"- frontier false-positive rate: {fmt(report.frontier_fp_rate)}",
         f"- security false-negative rate: {fmt(report.security_fn_rate)}",
-        f"- Brier: {fmt(report.brier, pct=False)}; "
-        f"calibration error: {fmt(report.calibration_error, pct=False)}",
         f"- planner calls avoidable: {report.planner_calls_avoided}",
+        f"- labelled: {report.labelled_records}; excluded (environment or infrastructure): "
+        f"{report.excluded_records} {report.excluded_reasons or ''}".rstrip(),
+        f"- accepted: {fmt(report.accepted_rate)}; mean attempts: "
+        f"{fmt(report.mean_attempts, pct=False)}",
         f"- verified: {fmt(report.verified_rate)}; first pass: {fmt(report.first_pass_rate)}",
         f"- mean retries: {fmt(report.mean_retries, pct=False)}; "
         f"mean escalations: {fmt(report.mean_escalations, pct=False)}",
@@ -474,6 +448,16 @@ def render_markdown(report: CalibrationReport) -> str:
     lines += [f"  - {reason}" for reason in report.recommendation_reasons]
     lines += ["", "## Records per class", ""]
     lines += [f"- {name}: {count}" for name, count in report.per_class.items()]
+    lines += ["", "## Passing route capacity class", ""]
+    lines += [
+        f"- {name}: {row['accepted']} accepted of {row['records']}"
+        for name, row in sorted(report.per_capacity_class.items())
+    ]
+    lines += ["", "## Lifts (records with a task outcome)", ""]
+    lines += [
+        f"- {name}: present {c['present']}, absent {c['absent']}, unknown {c['unknown']}"
+        for name, c in report.lift_counts.items()
+    ]
 
     # AC7 -- per-role breakdown
     if report.per_role:
@@ -497,7 +481,6 @@ def render_markdown(report: CalibrationReport) -> str:
                 f"### {role}",
                 "",
                 f"- records: {rm['records']} (usable: {rm['usable_signals']})",
-                f"- frontier FN rate: {fmt(rm.get('frontier_fn_rate'))}",
                 f"- security FN rate: {fmt(rm.get('security_fn_rate'))}",
                 f"- verified: {fmt(rm.get('verified_rate'))}; "
                 f"first pass: {fmt(rm.get('first_pass_rate'))}",
@@ -516,18 +499,4 @@ def render_markdown(report: CalibrationReport) -> str:
             lines += [f"  - {r}" for r in rec_reasons]
             lines.append("")
 
-    lines += [
-        "",
-        "## Reliability",
-        "",
-        "| bin | n | mean predicted | observed |",
-        "|---|---|---|---|",
-    ]
-    lines += [
-        f"| {b.lower:.1f}-{b.upper:.1f} | {b.count} | {b.mean_predicted:.3f} | {b.observed_rate:.3f} |"
-        for b in report.reliability
-    ]
-    if report.false_negatives:
-        lines += ["", "## Frontier false negatives", ""]
-        lines += [f"- {task_id}" for task_id in report.false_negatives]
     return "\n".join(lines) + "\n"

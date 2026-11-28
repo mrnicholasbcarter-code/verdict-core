@@ -24,7 +24,6 @@ from verdict.decision_signals.calibration import CalibrationRecord
 from verdict.decision_signals.contracts import DecisionQuestionV1, DecisionSignalProvider
 
 OUTCOME_FIELDS = (
-    "frontier_needed",
     "security_relevant",
     "planner_was_frontier",
     "verified",
@@ -33,6 +32,12 @@ OUTCOME_FIELDS = (
     "escalations",
     "total_cost_usd",
     "time_to_green_s",
+    "outcome",
+    "excluded_reason",
+    "capacity_class",
+    "capability_tier",
+    "attempts",
+    "lifts",
 )
 
 

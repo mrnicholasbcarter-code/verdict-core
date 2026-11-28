@@ -784,3 +784,26 @@ async def test_empty_escalation_capacity_set_emits_exhausted_selects_nothing(rep
         "expected escalation_exhausted when escalation_tier0_capacity_classes is frozenset()"
     )
     assert exhaust[0]["reason"] == "at_strongest_tier"
+
+
+async def test_dispatch_events_record_the_capability_tier_of_each_route(repo: Path) -> None:
+    """Calibration labels (OJ1, #1220) read the tier of the route that passed.
+
+    The dispatch event is what the receipt projects per attempt, so it must carry
+    the tier of the route the selector chose for that attempt.
+    """
+
+    def behaviour(node_id: str, route: str, call_num: int) -> str:
+        return "badcode" if route == "cc/haiku" else "ok"
+
+    ex = CallCountingExecutor(behaviour)
+    graph = WorkGraph("g", (node("n"),))
+    rt, ev, _sel = make_esc(repo, graph, ex, [("cc/haiku", 3), ("cc/sonnet", 2)])
+
+    result = await rt.run()
+
+    assert result.outcome is RunOutcome.COMPLETE, result.reason
+    tiers = {
+        row["route_id"]: row.get("capability_tier", "absent") for row in ev.of("dispatch", "n")
+    }
+    assert tiers == {"cc/haiku": 3, "cc/sonnet": 2}
