@@ -4,6 +4,7 @@
 **Date:** 2026-11-23
 **Deciders:** Operator
 **Amends:** [ADR-041](ADR-041-generic-harness-contracts.md)'s default worker executor: `opencode` replaces `direct-gateway` as the default (Decision 2, amended 2026-11-25, #1328; effective when that pull request merges), and `direct-gateway` stays registered and selectable
+**Amended by:** [ADR-054](ADR-054-acp-worker-executor.md) (Proposed): workers are driven through the Agent Client Protocol with one executor; the default of Decision 2 changes only in a later change, after the live check passes
 **Relates to:**
 [ADR-036](ADR-036-goal-to-receipt-orchestration.md) (goal-to-receipt orchestration),
 [ADR-041](ADR-041-generic-harness-contracts.md) (generic harness contracts),
