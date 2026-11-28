@@ -124,8 +124,14 @@ push; a red `lint` on a pull request means this step was skipped.
 
 ## Workflow: release train
 
-1. One story = one branch = one worktree, with a disjoint file scope. Use an
-   OpenSpec change for behaviour changes and an ADR for architectural ones.
+How stories are sliced, reviewed and measured is in the
+[way-of-working guide](docs/guides/way-of-working.md).
+
+1. One story = one branch = one worktree, with a disjoint file scope. A
+   behaviour change needs an OpenSpec change and an architectural one needs an
+   ADR. For a slow-lane change (eligibility, spend, account risk or an
+   invariant) the OpenSpec change or ADR is approved before the build. A
+   fast-lane behaviour change carries its OpenSpec delta in the same PR.
 2. Commit small. Run the focused tests, ruff and mypy before each push.
 3. Independent review from a different model family than the author. The
    reviewer reads the diff, not the author's summary.
@@ -226,8 +232,9 @@ Per [BOD-342 D6](https://linear.app/bodanglin/issue/BOD-342), the code graph
 facts. Their facts are not copied into memory.
 
 - **Controller and ticket owner:** codebase-memory (`search_graph`,
-  `trace_path`, `get_code_snippet`) and Serena are required. Get code facts
-  from them before you write a claim or a context pack.
+  `trace_path`, `get_code_snippet`) is required for every brief and context
+  pack: get code facts from it before you write a claim. Serena is optional,
+  for rename-heavy stories.
 - **Workers:** get code facts from the context pack. No language server runs
   per worker by default (D6).
 - Use `git grep` for strings, configs and non-code files. Always confirm
