@@ -521,6 +521,9 @@ class TaskRequirements:
     # chain; "planner" uses text/webdev; "reviewer" uses webdev/text.
     # None means the arena snapshot is not consulted for this node.
     arena_role: str | None = None
+    # The kind of the work node this selection is for (``NodeKind`` value), set only by
+    # ``for_node``. It keys the verified success rank; None means no success ranking.
+    node_kind: str | None = None
 
     @classmethod
     def for_node(cls, node: WorkNode, **overrides: Any) -> TaskRequirements:
@@ -531,6 +534,7 @@ class TaskRequirements:
             reasoning=node.reasoning,
             frontier_worthy=node.risk == "high" or node.kind in {NodeKind.REVIEW},
             max_capability_tier=required_capability_tier(node),
+            node_kind=node.kind.value,
         )
         return cls(**{**asdict(base), **overrides})
 

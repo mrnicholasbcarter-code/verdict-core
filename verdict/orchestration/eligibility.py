@@ -47,6 +47,15 @@ from verdict.orchestration.provider_catalog import (
     record_not_free_override,
     resolve_provider,
 )
+from verdict.orchestration.success_rank import (
+    MAX_SUCCESS_WINDOW_DAYS,
+    SUCCESS_MIN_SAMPLE,
+    SUCCESS_WINDOW_DAYS,
+    SuccessRank,
+    index_outcomes,
+    rank_success,
+    unavailable,
+)
 from verdict.subagent_selection import HealthResult
 
 if TYPE_CHECKING:
@@ -412,6 +421,8 @@ class EligibilityLadder:
         admission_receipt: Path | None = None,
         health_cache: Any | None = None,
         session_ledger: SessionLedger | None = None,
+        success_window_days: int = SUCCESS_WINDOW_DAYS,
+        success_min_sample: int = SUCCESS_MIN_SAMPLE,
         allow_unknown_capacity: bool | None = None,
         refresh_hook: Callable[[Sequence[str], datetime], Mapping[str, str] | None] | None = None,
         min_quota_percent: float = DEFAULT_MIN_QUOTA_PERCENT,
@@ -466,6 +477,13 @@ class EligibilityLadder:
         # BOD-299 phase 1: optional real-session evidence, read-only in selection.
         self._session_ledger = session_ledger
         self._session_evidence_error: str | None = None
+        # #1216: the verified success rank's window and minimum sample (recorded in the receipt).
+        if not 0 < success_window_days <= MAX_SUCCESS_WINDOW_DAYS:
+            raise ValueError(f"success_window_days must be 1..{MAX_SUCCESS_WINDOW_DAYS}")
+        if success_min_sample < 1:
+            raise ValueError("success_min_sample must be at least 1")
+        self._success_window_days = success_window_days
+        self._success_min_sample = success_min_sample
         # UNKNOWN capacity opt-in: env override if not set explicitly.
         if allow_unknown_capacity is not None:
             self._allow_unknown = allow_unknown_capacity
@@ -1141,6 +1159,35 @@ class EligibilityLadder:
             self._session_evidence_error = "unreadable"
             return None
 
+    def _success_rank(self, route_id: str, now: datetime) -> SuccessRank:
+        """Verified success evidence for this selection's node kind (#1216); never admits.
+
+        The ledger is read once per selection and held on the selecting thread, keyed by
+        the time and window it was read for. Unreadable evidence fails open once per
+        selection, through the same guard as :meth:`_session_summary`.
+        """
+        kind: str | None = getattr(self._select_stats, "node_kind", None)
+        # getattr: ladders built without __init__ (partial mocks) keep the defaults.
+        window = getattr(self, "_success_window_days", SUCCESS_WINDOW_DAYS)
+        minimum = getattr(self, "_success_min_sample", SUCCESS_MIN_SAMPLE)
+        ledger: SessionLedger | None = getattr(self, "_session_ledger", None)
+        if ledger is None:
+            return unavailable("no_ledger", kind, window, minimum)
+        if kind is None:
+            return unavailable("no_node_kind", kind, window, minimum)
+        if getattr(self, "_session_evidence_error", None) is not None:
+            return unavailable("unreadable", kind, window, minimum)
+        held = getattr(self._select_stats, "success_index", None)
+        if held is None or held[0] != (now, window):
+            try:
+                outcomes = ledger.verified_real_outcomes(now, window)
+            except OSError:
+                self._session_evidence_error = "unreadable"
+                return unavailable("unreadable", kind, window, minimum)
+            held = ((now, window), index_outcomes(outcomes))
+            self._select_stats.success_index = held
+        return rank_success(held[1], route_id, kind, now, window_days=window, min_sample=minimum)
+
     def _fit(self, row: Mapping[str, Any], route_id: str, req: TaskRequirements) -> int:
         score = 0
         lowered = route_id.lower()
@@ -1158,11 +1205,17 @@ class EligibilityLadder:
         method assembles these into a sort tuple whose order depends on the role:
 
         * **cheapest_sufficient_first** (worker/implement): capacity tier ->
-          slack (smallest first) -> subscription tokens -> rating -> declared
-          tier -> advisory -> quota -> provider_pref -> load -> fit -> route_id.
-        * **strongest_first** (planner/reviewer): capacity tier -> subscription
-          tokens -> rating -> declared tier -> slack -> advisory -> quota ->
-          provider_pref -> load -> fit -> route_id.
+          verified success rank -> slack (smallest first) -> subscription tokens
+          -> rating -> declared tier -> advisory -> quota -> provider_pref ->
+          load -> fit -> route_id.
+        * **strongest_first** (planner/reviewer): capacity tier -> verified
+          success rank -> subscription tokens -> rating -> declared tier ->
+          slack -> advisory -> quota -> provider_pref -> load -> fit -> route_id.
+
+        The success rank (``success_order``, see :mod:`verdict.orchestration.success_rank`)
+        is neutral for every route unless the selection carries a node kind
+        (``TaskRequirements.for_node``) and a ledger is attached, so planner and
+        reviewer selections, which carry none, keep their order.
 
         Marginal price is display only; capacity class orders already-qualified
         candidates, never admission.
@@ -1190,6 +1243,7 @@ class EligibilityLadder:
         cache_freshness: str | None = None
         rc_now = getattr(self, "_current_now", None) or datetime.now(timezone.utc)
         session = self._session_summary(a.route_id, rc_now)
+        success = self._success_rank(a.route_id, rc_now)
         # Advisory ranks apply only to the category they were fetched for; an
         # admitted route with no entry has an unknown (None) rank and a named omission.
         rankings: dict[str, int] = getattr(self, "_rankings", None) or {}
@@ -1236,10 +1290,12 @@ class EligibilityLadder:
             "evidence_level": getattr(a, "evidence_level", None),
             "cache_checked_at": cache_checked_at,
             "cache_freshness": cache_freshness,
-            # Observational only in phase 1; _rank_key intentionally ignores these.
+            # Observational: the pooled all-kinds counts. The success rank below is what orders.
             "session_score": session.score if session is not None else None,
             "session_passes": session.passes if session is not None else None,
             "session_fails": session.fails if session is not None else None,
+            "success_order": success.order,
+            "success": success.to_dict(),
             "advisory_rank": rankings.get(a.route_id),
             "advisory_category": getattr(self, "_rankings_category", None),
             "advisory_omission": advisory_omission,
@@ -1253,6 +1309,7 @@ class EligibilityLadder:
     def _rank_key(
         self, a: _Assessment
     ) -> tuple[
+        int,
         int,
         int | float,
         int | float,
@@ -1281,6 +1338,11 @@ class EligibilityLadder:
           tier come before slack so the highest-quality admitted route wins.
           Subscriptions sort by token usage after rating, before slack.
 
+        In both, the verified success rank is the second key: after capacity
+        class (it never moves a route across classes) and before slack and every
+        name-based or rating key. It is in tenths, and equal for routes without
+        enough verified results, so it only reorders routes the ladder admitted.
+
         Price is excluded from the tuple in both orderings.
         """
         c = self._rank_components(a)
@@ -1291,6 +1353,7 @@ class EligibilityLadder:
             # Strongest-first: rating before slack.  Planner and reviewer roles.
             return (
                 c["capacity_order"],
+                c["success_order"],
                 int(tokens is None) if subscription else 0,
                 float(tokens or 0) if subscription else 0.0,
                 c["rating_rank"],
@@ -1307,6 +1370,7 @@ class EligibilityLadder:
         # Cheapest-sufficient-first: slack before rating.  Worker/implement nodes.
         return (
             c["capacity_order"],
+            c["success_order"],
             c["slack"],
             int(tokens is None) if subscription else 0,
             float(tokens or 0) if subscription else 0.0,
@@ -1362,6 +1426,7 @@ class EligibilityLadder:
             "session_score": components.get("session_score"),
             "session_passes": components.get("session_passes"),
             "session_fails": components.get("session_fails"),
+            "success": components.get("success"),
         }
         if "fallback" in components:
             display["fallback"] = components["fallback"]
@@ -1431,6 +1496,10 @@ class EligibilityLadder:
         self._select_stats.strongest_first = (
             getattr(requirements, "role_ordering", "cheapest_sufficient_first") == "strongest_first"
         )
+        # Threads are reused (to_thread): set the kind every time, None included, and drop
+        # the ledger read of the previous selection so a repaired file is read again.
+        self._select_stats.node_kind = getattr(requirements, "node_kind", None)
+        self._select_stats.success_index = None
         candidates.sort(key=self._rank_key)
         # ADR-051: when a planner band has been injected via set_planner_band(), re-sort
         # candidates using band-based ordering (is_metered, -score, cls_order, -aa_coding,
@@ -1767,9 +1836,9 @@ class EligibilityLadder:
         """Probe order mirrors the main rank key (role-dependent ordering).
 
         For cheapest-sufficient-first roles (workers): slack before rating,
-        ``[:4]`` captures (capacity, slack, tokens_known, tokens_float).
+        ``[:5]`` captures (capacity, success, slack, tokens_known, tokens_float).
         For strongest-first roles (planner/reviewer): rating before slack,
-        ``[:4]`` captures (capacity, tokens_known, tokens_float, rating_rank).
+        ``[:5]`` captures (capacity, success, tokens_known, tokens_float, rating_rank).
         Within an equal ranking, fresh confirmations and provider round-robin
         retain the bounded scheduler.
 
@@ -1817,7 +1886,7 @@ class EligibilityLadder:
         return sorted(
             order,
             key=lambda a: (
-                *self._rank_key(a)[:4],
+                *self._rank_key(a)[:5],
                 *(rating_key(a.rating) if a.rating is not None else (3, 0.0, 0)),
             ),
         )

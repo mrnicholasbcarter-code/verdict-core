@@ -24,6 +24,10 @@ from verdict.orchestration.health_cache import format_datetime, parse_datetime
 from verdict.orchestration.provider_catalog import backend_pool
 from verdict.paths import verdict_home
 
+# Rows the orchestration runtime writes for real work carry this ``kind``; imported
+# canary and ledger rows carry others and never count toward a success rank.
+REAL_TASK_KIND = "real_task"
+
 FAILURE_CLASSES = frozenset(
     {
         "narrates_tool_calls",
@@ -77,6 +81,11 @@ class SessionStats:
     last_pass_at: datetime | None
     last_fail_at: datetime | None
     score: float
+
+
+def pool_key(route_id: str) -> tuple[str, str]:
+    """Aliases of one model in one catalog-defined backend pool share this key."""
+    return backend_pool(route_id), route_id.partition("/")[2]
 
 
 def _identity(item: SessionOutcome) -> tuple[str, datetime, str]:
@@ -193,13 +202,18 @@ class SessionLedger:
 
     def summarize_pool(self, route: str, now: datetime, window_days: int = 14) -> SessionStats:
         """Combine aliases for the same model and catalog-defined backend pool."""
-        pool = backend_pool(route)
-        model = route.partition("/")[2]
+        key = pool_key(route)
         return _summarize(
-            item
-            for item in self._window(now, window_days)
-            if backend_pool(item.route_id) == pool and item.route_id.partition("/")[2] == model
+            item for item in self._window(now, window_days) if pool_key(item.route_id) == key
         )
+
+    def verified_real_outcomes(self, now: datetime, window_days: int) -> tuple[SessionOutcome, ...]:
+        """Controller-verified outcomes of real work inside the window, for every route.
+
+        Imported canary or ledger rows and unverified rows are left out. A caller that
+        ranks routes reads this once per selection and filters in memory.
+        """
+        return tuple(item for item in self._window(now, window_days) if item.kind == REAL_TASK_KIND)
 
     def _window(self, now: datetime, window_days: int) -> Iterable[SessionOutcome]:
         """Verified outcomes inside the inclusive, non-future window."""

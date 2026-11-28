@@ -811,7 +811,8 @@ for example `implement` or `research`) and `task_family` (derived from the run's
 goal, the same family the receipt's attempt records use). Both are optional:
 older rows and imported rows have neither. `SessionLedger.summarize(route, now,
 task_family=...)` counts only rows of that family; without `task_family` it
-counts every row. Nothing that selects or ranks a route reads these fields yet.
+counts every row. The verified success rank below reads `node_kind`; nothing reads `task_family` to
+rank a route yet.
 
 `import_worker_outcomes(path)` reads trusted controller JSONL and returns
 outcomes without writing. Append its results to the ledger to import them.
@@ -819,8 +820,34 @@ Route, timestamp and outcome identify duplicates. Worker self-reports must not
 be passed off as controller-verified evidence.
 
 Eligibility JSON rank components expose `session_score`, `session_passes`
-and `session_fails`. They are null when no ledger is attached. Phase 1 does
-not change the sort order or automatically attach a ledger to the CLI.
+and `session_fails`. They are null when no ledger is attached. They pool every
+node kind and stay observational: they do not order routes.
+
+#### Verified success rank
+
+For a worker node selection (the runtime builds it with `TaskRequirements.for_node`,
+which carries the node's kind), the ladder orders admitted routes within one capacity
+class by a verified success score. The score is the second sort key: after the capacity
+class, so a route never moves across classes, and before slack and every rating or
+name-based key. It reorders; it never admits, and a rejection reason is unchanged.
+
+The score is `score_task_history` (smoothed toward 0.5, 7-day half-life) fed from the
+ledger's controller-verified rows of real work (`kind` `real_task`) in the last 14
+days; imported canary and ledger rows and unverified rows do not count. A route is
+scored by its own results for the node's kind (key `route+kind`). With fewer than 3
+of them it uses its results for every kind (key `route`); with fewer than 3 of those it
+is neutral (0.5, no key), so a route without results is neither preferred nor
+excluded. Aliases of one model in one backend pool share a record. A false success
+claim counts once here; the gate above still vetoes it for 7 days. The sort key sees
+the score in tenths; the receipt keeps the exact value.
+
+Each candidate's `rank_components.success` records `score`, `n`, `key`
+(`route+kind`, `route` or null), `node_kind`, `window_days`, `min_sample` and `source`:
+`session_ledger`, `below_min_sample`, or, with no score, `no_ledger`, `no_node_kind`
+(planner and reviewer selections carry no kind and are not ranked this way) or
+`unreadable`. The window and the minimum sample are
+`EligibilityLadder(success_window_days=14, success_min_sample=3)`; the window may not
+exceed 30 days, the history scorer's own limit. No environment variable sets them.
 
 ### Admission boundary
 
