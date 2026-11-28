@@ -1552,7 +1552,7 @@ def test_a_step_that_reads_only_the_event_label_fails_the_behaviour_pin(tmp_path
 def test_a_step_that_aborts_when_the_helper_crashes_fails_the_behaviour_pin(tmp_path: Path) -> None:
     wf = _mutated()
     step = _open_tasks_step(wf)
-    assert " || true" in step["run"]
-    step["run"] = str(step["run"]).replace(" || true", "")
+    assert ") || wip=false" in step["run"]
+    step["run"] = str(step["run"]).replace(") || wip=false", ")")
     with pytest.raises(AssertionError, match="push when the helper crashes"):
         check_open_tasks_step_follows_the_wip_label(wf, tmp_path)

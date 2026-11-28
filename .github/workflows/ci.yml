@@ -427,7 +427,7 @@ jobs:
           PR_WIP: ${{ contains(github.event.pull_request.labels.*.name, 'wip') }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          wip=$(python scripts/ci_wip_label.py --event "$GITHUB_EVENT_NAME" --event-wip "$PR_WIP" --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --branch "$GITHUB_REF_NAME" || true)
+          wip=$(python scripts/ci_wip_label.py --event "$GITHUB_EVENT_NAME" --event-wip "$PR_WIP" --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --branch "$GITHUB_REF_NAME") || wip=false
           if [ "$wip" = true ]; then
             python scripts/check_openspec_tasks.py --base "$BASE_SHA" --wip
           else
