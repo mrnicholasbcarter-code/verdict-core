@@ -225,6 +225,12 @@ def test_the_score_never_changes_membership_or_a_rejection_reason(tmp_path: Path
 
     before, after = membership(bare), membership(scored)
     assert before == after
+    # Same ledger and health evidence, success ranking off (no node kind): same membership.
+    off = {
+        v.route_id: (v.reached, v.failed_stage, v.reason)
+        for v in scored.evaluate(replace(requirements, node_kind=None), now=NOW)
+    }
+    assert off == after
     assert after[FREE][2] == "no_agentic_probe"
     # The pairing assertion: the score is really in use, so the equality above is not vacuous.
     assert success(scored, requirements, PROVEN)["key"] == "route+kind"

@@ -8,8 +8,8 @@
 ## 2. Ranking
 
 - [x] 2.1 `TaskRequirements.for_node` carries the node kind, and the ladder puts the success rank second in `_rank_key` (after capacity class, before slack), without changing planner or reviewer selections that carry no kind. Verify: `tests/test_orch_rank_by_success.py` ordering tests, run through `for_node`; `tests/test_explain_selection.py::test_rank_key_built_from_rank_components`.
-- [x] 2.2 The score never changes membership or a rejection reason and never crosses a capacity class. Verify: `tests/test_orch_rank_by_success.py::test_the_score_never_changes_membership_or_a_rejection_reason` and `::test_many_verified_passes_rank_above_a_cold_route_never_above_a_cheaper_class`.
-- [x] 2.3 One ledger read per selection; an unreadable ledger fails open once. Verify: `tests/test_orch_rank_by_success.py::test_one_read_per_selection_not_one_per_route` and `::test_an_unreadable_ledger_fails_open_with_one_read`.
+- [x] 2.2 The success rank never changes membership or a rejection reason (with the same ledger and health evidence, on and off) and never crosses a capacity class. Verify: `tests/test_orch_rank_by_success.py::test_the_score_never_changes_membership_or_a_rejection_reason` and `::test_many_verified_passes_rank_above_a_cold_route_never_above_a_cheaper_class`.
+- [x] 2.3 The success rank adds one ledger read per selection, not one per route; an unreadable ledger fails open once. Verify: `tests/test_orch_rank_by_success.py::test_one_read_per_selection_not_one_per_route` and `::test_an_unreadable_ledger_fails_open_with_one_read`.
 
 ## 3. Receipt and docs
 

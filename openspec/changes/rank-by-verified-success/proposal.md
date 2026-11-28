@@ -48,9 +48,9 @@ Invariants this touches (AGENTS.md): admission comes before ranking and the admi
 
 ## Acceptance criteria
 
-- Two admitted routes in one capacity class: the one with recent verified failures for the node's kind ranks below a route with no results; for another kind the same route ranks as before.
+- Two admitted routes in one capacity class: the one with recent verified failures for the node's kind ranks below a route with no results; for another kind in which it has its own sufficient, neutral record the same route ranks as before (with fewer than the minimum sample for that kind it is scored by its results for every kind).
 - A route with many verified passes ranks above a route with none in its class, and never above any route of a cheaper class.
 - With fewer than the minimum sample for the kind the key is the route alone, and each candidate's `rank_components.success` names the key used, the score, n, the source, the window and the minimum.
-- Membership and every rejection reason are identical with and without a ledger.
+- Membership and every rejection reason are identical with the success rank on and off, against the same ledger and health evidence.
 - Imported, probe and unverified rows do not count.
 - (post-merge) On installed main, the receipt of a real `verdict orchestrate` run shows `success` with a score, n and key on its selection events.

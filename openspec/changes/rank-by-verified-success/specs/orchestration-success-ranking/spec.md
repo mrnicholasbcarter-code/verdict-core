@@ -9,7 +9,7 @@ For a node selection that carries the node's kind, the selector SHALL order admi
 #### Scenario: recent failures for this kind
 
 - **WHEN** two admitted routes share a capacity class, one has at least the minimum sample of verified failures for the node's kind and the other has no results
-- **THEN** the route with the failures ranks below the other, and for a node of another kind the first route ranks as it did without any history
+- **THEN** the route with the failures ranks below the other, and for a node of another kind in which the first route has its own results at or above the minimum sample, scored neutral, it ranks as it did without any history
 
 #### Scenario: many passes never cross a class
 
@@ -18,8 +18,8 @@ For a node selection that carries the node's kind, the selector SHALL order admi
 
 #### Scenario: membership is unchanged
 
-- **WHEN** the same routes are evaluated with and without a ledger of verified results
-- **THEN** each route reaches the same stage with the same reason in both
+- **WHEN** the same routes are evaluated against the same ledger and health evidence, once for a node that carries a kind (success ranking on) and once for a selection that carries none (success ranking off)
+- **THEN** each route reaches the same stage with the same reason in both; the success rank only reorders, and admission evidence that already reads the ledger (the FREE and UNKNOWN gate) is not part of it
 
 #### Scenario: a selection without a node kind
 
@@ -42,7 +42,7 @@ The score SHALL be computed by the existing verified-history scorer from the led
 
 ### Requirement: The receipt records the score and what it was based on
 
-Each candidate a selection event lists SHALL carry `rank_components.success` with the score, the sample size n, the key used (`route+kind`, `route` or null), the node kind, the source, the window in days and the minimum sample. When no score could be computed (no ledger, no node kind, unreadable ledger) the score and n SHALL be null and the source SHALL name the reason. The ledger SHALL be read at most once per selection, and an unreadable ledger SHALL leave the order and membership unchanged.
+Each candidate a selection event lists SHALL carry `rank_components.success` with the score, the sample size n, the key used (`route+kind`, `route` or null), the node kind, the source, the window in days and the minimum sample. When no score could be computed (no ledger, no node kind, unreadable ledger) the score and n SHALL be null and the source SHALL name the reason. The success rank SHALL add at most one ledger read per selection (the existing pooled summary reads are separate), and an unreadable ledger SHALL leave the order and membership unchanged.
 
 #### Scenario: key and settings in the receipt
 
