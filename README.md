@@ -148,7 +148,16 @@ OFFLINE SCENARIO: scripted workers (1.5 s each), injected faults
 
 ### Step 3: Run it live
 
-A live run needs four things: an OmniRoute gateway at `http://localhost:20128` with at least one provider account, its key exported as `VERDICT_OMNIROUTE_API_KEY`, `ocr` on your PATH, and a git repository to change.
+Steps 1 and 2 need no gateway, no key and no model call. A live run does not work from a fresh clone alone. It needs, on your machine:
+
+- an OmniRoute gateway at `http://localhost:20128` with at least one provider account, and its key exported as `VERDICT_OMNIROUTE_API_KEY`;
+- `ocr` on your PATH, which reviews the result on a different route;
+- a git repository to change;
+- for the default worker executor (OpenCode): the pinned `opencode` binary, a running `verdict serve`, and the worker signing key. `verdict setup --apply --allow host.serve` creates the serve token, the signing key and the service unit.
+
+`--executor direct-gateway` does not need `opencode`, `verdict serve` or the signing key. It still needs the gateway and its key, `ocr` and a git repository. A host that lacks what the default executor needs ends the node in a `harness_configuration:` block that names the fix. See [Limits](#limits).
+
+`verdict doctor` is red on a fresh home (it exits 1 and starts with "Verdict is installed but not set up yet") until `verdict setup` has run. A new state directory also has no recorded tool-use check, so the first `verdict orchestrate` ends `BLOCKED` with `no_agentic_probe` and prints the command that records one; see [first run](docs/CONFIGURATION.md#first-run).
 
 ```bash
 verdict doctor                                  # health check, with a repair command for each failure
