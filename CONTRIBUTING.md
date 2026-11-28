@@ -83,8 +83,11 @@ before any task number (`- [ ] (post-merge) 4.1 Run ...`). The CI step
 lets these stay open at merge time and lists them. Any other open task still
 fails it unless the pull request has the `wip` label; `(post merge)`,
 `(postmerge)`, `(Post-merge)` and a marker later in the line count as ordinary
-open tasks. `scripts/check_dod.py` counts post-merge tasks like any other: the
-story is not done, and archiving its change fails, until they are ticked.
+open tasks. On the push to main after a merge, the step reads the label of the
+pull request that produced the pushed commit (`scripts/ci_wip_label.py`); when
+that cannot be found, it runs the strict check. `scripts/check_dod.py` counts
+post-merge tasks like any other: the story is not done, and archiving its change
+fails, until they are ticked.
 
 A story that changed no behaviour (dead-code removal, a fix inside an existing
 spec) has no OpenSpec change. Its evidence file says

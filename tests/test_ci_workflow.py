@@ -1,4 +1,5 @@
-"""Tests that pin what ``ci-ok`` requires and how the shard union checks are wired (issues #1332, #1341).
+"""Tests that pin what ``ci-ok`` requires, how the shard union checks are wired and how the lint job
+finds the ``wip`` label (issues #1332, #1341, #1412).
 
 They read ``.github/workflows/ci.yml`` as a file. ``ci-ok`` is the single required check,
 so a job quietly dropped from its ``needs`` or moved from "required" to "may skip" would
@@ -15,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -552,6 +554,214 @@ def check_build_needs_only_changes(wf: Workflow) -> None:
     assert str(build.get("if", "")).strip() == BUILD_IF, f"build if changed: {build.get('if')!r}"
     assert "code" in _job(wf, "changes").get("outputs", {}), "changes no longer outputs code"
     assert "build" in _needs(_job(wf, "ci-ok")), "ci-ok no longer waits for build"
+
+
+LINT_JOB = "lint"
+OPEN_TASKS_STEP = "Touched OpenSpec changes have no open tasks (label wip skips)"
+WIP_SCRIPT = "scripts/ci_wip_label.py"
+TASKS_SCRIPT = "scripts/check_openspec_tasks.py"
+EVENT_WIP = "${{ contains(github.event.pull_request.labels.*.name, 'wip') }}"
+HEAD_BRANCH = "main"
+
+
+def _open_tasks_step(wf: Workflow) -> dict[str, Any]:
+    steps = [s for s in _job(wf, LINT_JOB)["steps"] if s.get("name") == OPEN_TASKS_STEP]
+    assert len(steps) == 1, f"{LINT_JOB} must have exactly one {OPEN_TASKS_STEP!r} step"
+    return steps[0]
+
+
+def check_wip_label_is_resolved_for_pushes(wf: Workflow) -> None:
+    """The open-tasks step asks the helper whether the run is wip, and only then passes ``--wip``."""
+    permissions = _job(wf, LINT_JOB).get("permissions") or {}
+    assert permissions.get("pull-requests") == "read", (
+        f"{LINT_JOB} needs pull-requests: read to list the pull requests of a pushed commit"
+    )
+    step = _open_tasks_step(wf)
+    env = step.get("env") or {}
+    assert env.get("GH_TOKEN") == "${{ github.token }}", "the step must pass the workflow token"
+    assert env.get("PR_WIP") == EVENT_WIP, "the step must pass the event's own wip label as PR_WIP"
+    assert "continue-on-error" not in step, "the open-tasks step must not continue on error"
+    _assert_default_shell(wf, LINT_JOB, step)
+    run = str(step["run"])
+    assert WIP_SCRIPT in run, f"the step must ask {WIP_SCRIPT} whether the run is wip"
+    assert (ROOT / WIP_SCRIPT).is_file(), f"{WIP_SCRIPT} does not exist"
+    checks = [line.strip() for line in run.splitlines() if TASKS_SCRIPT in line]
+    assert sorted(checks) == [
+        f'python {TASKS_SCRIPT} --base "$BASE_SHA"',
+        f'python {TASKS_SCRIPT} --base "$BASE_SHA" --wip',
+    ], f"the step must run the task check once strictly and once with --wip only: {checks}"
+
+
+@dataclass(frozen=True)
+class WipCase:
+    """One run of the open-tasks step: the event, what GitHub answers and the change's tasks."""
+
+    name: str
+    event: str
+    expect_exit: int
+    pr_wip: str = "false"
+    pulls: object | None = None  # what ``gh api`` prints; None makes gh fail
+    tasks: str = "- [ ] 1.1 build it\n"
+    crash_helper: bool = False
+
+
+def _wip_pull(*, labels: tuple[str, ...], sha: str, merged: bool = True) -> dict[str, Any]:
+    return {
+        "number": 7,
+        "merged_at": "2026-11-28T01:19:12Z" if merged else None,
+        "merge_commit_sha": sha,
+        "base": {"ref": HEAD_BRANCH},
+        "labels": [{"name": name} for name in labels],
+    }
+
+
+POST_MERGE_ONLY = "- [x] 1.1 built\n- [ ] (post-merge) 2.1 check it on main\n"
+ALL_TICKED = "- [x] 1.1 built\n"
+OTHER_SHA = "b" * 40
+
+
+def _wip_cases(head: str) -> list[WipCase]:
+    wip = [_wip_pull(labels=("wip",), sha=head)]
+    plain = [_wip_pull(labels=(), sha=head)]
+    return [
+        # The bug: the push that follows a wip pull request's merge has no pull request in its event.
+        WipCase("push after a wip pull request", "push", 0, pulls=wip),
+        WipCase("push after an unlabelled pull request", "push", 1, pulls=plain),
+        WipCase("push when the lookup fails", "push", 1, pulls=None),
+        WipCase("push with no pull request", "push", 1, pulls=[]),
+        WipCase(
+            "push after a wip pull request merged as another commit",
+            "push",
+            1,
+            pulls=[_wip_pull(labels=("wip",), sha=OTHER_SHA)],
+        ),
+        WipCase(
+            "push where the wip pull request was not merged",
+            "push",
+            1,
+            pulls=[_wip_pull(labels=("wip",), sha=head, merged=False)],
+        ),
+        WipCase("push when the helper crashes", "push", 1, pulls=wip, crash_helper=True),
+        WipCase(
+            "push when the helper crashes and nothing is open",
+            "push",
+            0,
+            tasks=ALL_TICKED,
+            crash_helper=True,
+        ),
+        # Nothing here is more permissive than before.
+        WipCase(
+            "push with only post-merge tasks open", "push", 0, pulls=plain, tasks=POST_MERGE_ONLY
+        ),
+        WipCase("push with every task ticked", "push", 0, pulls=plain, tasks=ALL_TICKED),
+        WipCase("pull request with the wip label", "pull_request", 0, pr_wip="true"),
+        WipCase("pull request without the wip label", "pull_request", 1, pr_wip="false"),
+        WipCase(
+            "pull request without the label, only post-merge tasks",
+            "pull_request",
+            0,
+            tasks=POST_MERGE_ONLY,
+        ),
+    ]
+
+
+def _git(repo: Path, *args: str) -> str:
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+    }
+    done = subprocess.run(
+        ["git", *args], cwd=repo, env=env, capture_output=True, text=True, check=True
+    )
+    return done.stdout.strip()
+
+
+def _wip_repo(work: Path, tasks: str) -> tuple[Path, str, str]:
+    """A repository with a base commit and a head commit that adds an OpenSpec change."""
+    repo = work / "repo"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", HEAD_BRANCH)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    change = repo / "openspec" / "changes" / "demo"
+    change.mkdir(parents=True)
+    (change / "tasks.md").write_text(tasks, encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "propose demo")
+    return repo, base, _git(repo, "rev-parse", "HEAD")
+
+
+def _wip_case(name: str, head: str = "0" * 40) -> WipCase:
+    return next(c for c in _wip_cases(head) if c.name == name)
+
+
+def _run_open_tasks_step(wf: Workflow, work: Path, name: str) -> tuple[int, str, str]:
+    """Run the step's script for the named case in a throwaway repository.
+
+    Returns the exit code, the step's output and what the stub ``gh`` was asked.
+    """
+    step = _open_tasks_step(wf)
+    repo, base, head = _wip_repo(work, _wip_case(name).tasks)
+    # The pull request payload names the pushed commit, which exists only now.
+    case = _wip_case(name, head)
+    scripts = repo / "scripts"
+    scripts.mkdir()
+    for rel in sorted(set(re.findall(r"scripts/\w+\.py", str(step["run"])))):
+        shutil.copy2(ROOT / rel, repo / rel)
+    if case.crash_helper:
+        (repo / WIP_SCRIPT).write_text("raise SystemExit(2)\n", encoding="utf-8")
+    stubs = work / "bin"
+    stubs.mkdir()
+    calls = work / "gh.log"
+    answer = work / "gh.json"
+    answer.write_text(json.dumps(case.pulls), encoding="utf-8")
+    body = f'cat "{answer}"' if case.pulls is not None else "echo 'HTTP 502' >&2\nexit 1"
+    (stubs / "gh").write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\n{body}\n', encoding="utf-8")
+    (stubs / "python").write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    for stub in stubs.iterdir():
+        stub.chmod(0o755)
+    supplied = {"BASE_SHA": base, "PR_WIP": case.pr_wip, "GH_TOKEN": "not-a-real-token"}
+    declared = step.get("env") or {}
+    unknown = sorted(set(declared) - set(supplied))
+    assert not unknown, f"this test does not know how to supply {unknown} to the step"
+    env = {
+        "PATH": f"{stubs}:/usr/bin:/bin",
+        "GITHUB_EVENT_NAME": case.event,
+        "GITHUB_REPOSITORY": "owner/repo",
+        "GITHUB_SHA": head,
+        "GITHUB_REF_NAME": HEAD_BRANCH,
+        **{key: supplied[key] for key in declared},
+    }
+    done = subprocess.run(
+        [_BASH or "bash", "-e", "-c", str(step["run"])],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    log = calls.read_text(encoding="utf-8") if calls.exists() else ""
+    return done.returncode, done.stdout + done.stderr, log
+
+
+def check_open_tasks_step_follows_the_wip_label(wf: Workflow, work: Path) -> None:
+    """Run the step for each case: only a wip pull request lets open tasks through."""
+    assert _HAS_BASH, "bash is needed to run the open-tasks step"
+    for index, case in enumerate(_wip_cases("0" * 40)):
+        code, output, calls = _run_open_tasks_step(wf, work / str(index), case.name)
+        assert code == case.expect_exit, (
+            f"{case.name}: the step exited {code}, expected {case.expect_exit}\n{output}"
+        )
+        if case.event == "pull_request":
+            assert calls == "", f"{case.name}: a pull request run must not call GitHub: {calls!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -1262,3 +1472,87 @@ def test_ci_ok_that_stops_waiting_for_build_fails_the_pin() -> None:
     _job(wf, "ci-ok")["needs"] = [n for n in _needs(_job(wf, "ci-ok")) if n != "build"]
     with pytest.raises(AssertionError, match="ci-ok no longer waits for build"):
         check_build_needs_only_changes(wf)
+
+
+def test_a_push_after_a_wip_pull_request_passes_the_open_tasks_step_and_other_pushes_do_not(
+    tmp_path: Path,
+) -> None:
+    wf = _workflow()
+    check_wip_label_is_resolved_for_pushes(wf)
+    check_open_tasks_step_follows_the_wip_label(wf, tmp_path)
+
+
+def test_a_workflow_that_does_not_look_the_label_up_fails_the_wip_pins() -> None:
+    wf = _mutated()
+    step = _open_tasks_step(wf)
+    step["run"] = str(step["run"]).replace(WIP_SCRIPT, "scripts/nothing.py")
+    with pytest.raises(AssertionError, match=re.escape(f"must ask {WIP_SCRIPT}")):
+        check_wip_label_is_resolved_for_pushes(wf)
+
+
+def test_a_lint_job_without_pull_request_read_fails_the_wip_pin() -> None:
+    wf = _mutated()
+    del _job(wf, LINT_JOB)["permissions"]["pull-requests"]
+    with pytest.raises(AssertionError, match="pull-requests: read"):
+        check_wip_label_is_resolved_for_pushes(wf)
+
+
+def test_a_step_that_cannot_reach_the_token_fails_the_wip_pin() -> None:
+    wf = _mutated()
+    del _open_tasks_step(wf)["env"]["GH_TOKEN"]
+    with pytest.raises(AssertionError, match="workflow token"):
+        check_wip_label_is_resolved_for_pushes(wf)
+
+
+def test_a_step_that_ignores_the_label_of_a_pull_request_event_fails_the_wip_pin() -> None:
+    wf = _mutated()
+    _open_tasks_step(wf)["env"]["PR_WIP"] = "false"
+    with pytest.raises(AssertionError, match="event's own wip label"):
+        check_wip_label_is_resolved_for_pushes(wf)
+
+
+def test_a_step_that_continues_on_error_fails_the_wip_pin() -> None:
+    wf = _mutated()
+    _open_tasks_step(wf)["continue-on-error"] = True
+    with pytest.raises(AssertionError, match="must not continue on error"):
+        check_wip_label_is_resolved_for_pushes(wf)
+
+
+def test_a_step_that_always_passes_wip_fails_the_behaviour_pin(tmp_path: Path) -> None:
+    wf = _mutated()
+    step = _open_tasks_step(wf)
+    step["run"] = f'python {WIP_SCRIPT} || true\npython {TASKS_SCRIPT} --base "$BASE_SHA" --wip\n'
+    with pytest.raises(AssertionError, match="push after an unlabelled pull request"):
+        check_open_tasks_step_follows_the_wip_label(wf, tmp_path)
+
+
+def test_a_step_that_never_passes_wip_fails_the_behaviour_pin(tmp_path: Path) -> None:
+    wf = _mutated()
+    step = _open_tasks_step(wf)
+    step["run"] = f'python {TASKS_SCRIPT} --base "$BASE_SHA"\n'
+    with pytest.raises(AssertionError, match="push after a wip pull request"):
+        check_open_tasks_step_follows_the_wip_label(wf, tmp_path)
+
+
+def test_a_step_that_reads_only_the_event_label_fails_the_behaviour_pin(tmp_path: Path) -> None:
+    # The step as it was before #1412: the label of a push event is always empty.
+    wf = _mutated()
+    step = _open_tasks_step(wf)
+    step["run"] = (
+        'if [ "$PR_WIP" = true ]; then\n'
+        f'  python {TASKS_SCRIPT} --base "$BASE_SHA" --wip\n'
+        "else\n"
+        f'  python {TASKS_SCRIPT} --base "$BASE_SHA"\n'
+        "fi\n"
+    )
+    with pytest.raises(AssertionError, match="push after a wip pull request"):
+        check_open_tasks_step_follows_the_wip_label(wf, tmp_path)
+
+
+def test_a_step_that_aborts_when_the_helper_crashes_fails_the_behaviour_pin(tmp_path: Path) -> None:
+    wf = _mutated()
+    step = _open_tasks_step(wf)
+    assert " || true" in step["run"]
+    step["run"] = str(step["run"]).replace(" || true", "")
+    with pytest.raises(AssertionError, match="push when the helper crashes"):
+        check_open_tasks_step_follows_the_wip_label(wf, tmp_path)

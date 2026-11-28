@@ -316,6 +316,7 @@ jobs:
     permissions:
       contents: write
       actions: write
+      pull-requests: read
     env:
       AUTOFIX: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
       OPENSPEC_TELEMETRY: "0"
@@ -414,13 +415,20 @@ jobs:
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
         run: python scripts/check_openspec_vendor.py --base "$BASE_SHA"
+      # A pull request with the wip label may merge with open tasks. The run on main after
+      # that merge is a push event with no pull request in it, so scripts/ci_wip_label.py
+      # looks up the pull request that produced the pushed commit and reports its label.
+      # A lookup that fails, or finds no single merged pull request, is "not wip": the
+      # strict check runs.
       - name: Touched OpenSpec changes have no open tasks (label wip skips)
         if: steps.base.outputs.sha != ''
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
-          WIP: ${{ contains(github.event.pull_request.labels.*.name, 'wip') }}
+          PR_WIP: ${{ contains(github.event.pull_request.labels.*.name, 'wip') }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$WIP" = true ]; then
+          wip=$(python scripts/ci_wip_label.py --event "$GITHUB_EVENT_NAME" --event-wip "$PR_WIP" --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --branch "$GITHUB_REF_NAME" || true)
+          if [ "$wip" = true ]; then
             python scripts/check_openspec_tasks.py --base "$BASE_SHA" --wip
           else
             python scripts/check_openspec_tasks.py --base "$BASE_SHA"
