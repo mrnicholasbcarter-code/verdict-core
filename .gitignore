@@ -50,7 +50,23 @@ coverage.xml
 
 # Local agent/tooling scaffolding (not part of the published project)
 .agents/
-.claude/
+# .claude/ stays ignored (settings.local.json, ledgers, retro notes, caches, backups,
+# transcripts, worktrees). Only the versioned build-pipeline tooling is un-ignored below (#1399);
+# a new file under .claude/ is ignored until its path is listed here on purpose.
+.claude/*
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/*.md
+!.claude/hooks/
+!.claude/pipeline-lessons.md
+!.claude/skills/
+!.claude/tools/
+.claude/tools/*
+!.claude/tools/*.sh
+!.claude/tools/*.py
+!.claude/workflows/
+.claude/workflows/*
+!.claude/workflows/*.js
 .claude-flow/
 .hermes/
 .swarm/
