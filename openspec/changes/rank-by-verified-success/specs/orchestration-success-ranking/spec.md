@@ -52,4 +52,4 @@ Each candidate a selection event lists SHALL carry `rank_components.success` wit
 #### Scenario: unreadable ledger
 
 - **WHEN** the ledger cannot be read during a selection
-- **THEN** every candidate's `success` has a null score and source `unreadable`, and the order and membership are those of a selection without a ledger
+- **THEN** every candidate's `success` has a null score and source `unreadable`, and the order and membership are those of the same selection with success ranking off and the same admission evidence
