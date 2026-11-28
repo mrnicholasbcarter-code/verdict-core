@@ -13,3 +13,11 @@
 ## 3. Live checks
 
 - [x] (post-merge) 3.1 On installed main, an orchestrate run whose first node adds a `*.jsonl` fixture reaches its second node with the fixture present. Verify: run `20261127T020413Z` on installed main `2b1fca69`, 2026-11-27 02:04 to 02:11 UTC: `fixture_node` VALIDATED with `force_staged: ["tests/fixtures/ac4_live/sample.jsonl"]`, `git show cdd7110b:tests/fixtures/ac4_live/sample.jsonl` prints both lines, `reader_node` verification passed on attempt 1, integration passed. The run then ended BLOCKED on its in-run review (GitHub issue #1381); that is outside this task.
+
+## 4. Negation line (GitHub issue #1381)
+
+- [ ] 4.1 After validation and before the commit, add `!<path>` to the root `.gitignore` for each force-staged file it un-ignores; skip a line that exists, a file still ignored after it, and a path with `.gitignore` special characters; list the paths in `unignored` on the VALIDATED event. Verify: unit tests with real git (pattern match, ignored directory, existing line, special characters) and a runtime test (commit holds the line, `git check-ignore` is silent, event fields).
+- [ ] 4.2 Set `.gitignore merge=union` in the repository's local `info/attributes` when the run prepares a worktree. Verify: a runtime test with two independent nodes that each commit an ignored fixture ends COMPLETE with both lines in `.gitignore`.
+- [ ] 4.3 A worker's own change to an unowned `.gitignore` still fails with `ownership_violation`. Verify: a runtime test.
+- [ ] (post-merge) 4.4 On installed main, the live check of task 3.1 is repeated and ends COMPLETE; the in-run review has no finding about a missing fixture. Verify: the run's receipt and review record.
+

@@ -16,7 +16,7 @@ Non-Goals:
 
 - Ignored files the node does not own. A worker's own tooling leaves such files (build output, logs), so reporting them needs its own research; tracked on GitHub issue #1372.
 - Re-running verification in a clean checkout of the node's commit (the operator declined it for now: it runs verification twice per node).
-- Making the reviewer see force-staged files (GitHub issue #1381).
+- Making the reviewer select a `.jsonl` file as a review item. With the negation line the reviewer can find and read the file; whether it is asked to review it is decided by the reviewer tool.
 
 ## Decisions
 
@@ -27,11 +27,17 @@ Non-Goals:
 5. **A refusal fails the attempt.** Refused paths are reported with a reason (`credential_shaped`, `unreadable`, `symlink`, `not_a_regular_file`) on the existing `ownership` barrier event, not on a new barrier name: the receipt keeps the last barrier event per name and requires each to be ok, so a failure-only barrier would stay failed after a good retry. The result string starts with `verification_failed:` so the worker receives it as correction feedback; `ownership_violation` would tell the worker it had changed files outside its ownership.
 6. **Per-worktree report.** One `Git` object serves concurrently running nodes, so the report is keyed by the worktree directory.
 
+7. **The runtime adds a `.gitignore` negation for each committed ignored file (GitHub issue #1381, operator decision 2026-11-27).** A force-staged file is tracked but still matches its ignore rule, and ignore-aware tools skip it: the in-run reviewer reported such a fixture as missing and blocked the run. This repository already keeps committed `*.jsonl` files visible with explicit `!path` lines, so the runtime does the same. The runtime writes the line, not the worker: a worker cannot know the rule, and making `.gitignore` an owned file would have to be dictated in every plan and would let a worker edit unrelated ignore rules. The line is written after the ownership check and verification, immediately before the commit, so it never takes part in either.
+8. **Union merge for `.gitignore` during the run.** Two nodes that each append a line conflict on a plain merge. The runtime sets `.gitignore merge=union` in the repository's local `info/attributes` (next to the byproduct excludes it already writes to `info/exclude`); linked worktrees share it and nothing is committed.
+9. **Where a negation cannot help, force-staging stays.** A file under an ignored directory cannot be re-included by a negation, and a path with characters that are special in `.gitignore` is not rewritten. Those files are committed as today and are named in the event; they remain invisible to ignore-aware tools.
+
 ## Risks / Trade-offs
 
 - The refusal covers implement nodes only; another node kind with owned files still skips such a file without failing.
 - A legitimate fixture that contains credential-shaped text is refused; the worker has to build that data at test run time.
 - An owned ignored file whose name is not valid UTF-8 is reported under a replaced name and refused as `not_a_regular_file`.
+- Every node that commits an ignored file now also changes `.gitignore`, which shows in the pull request diff and grows the file by one line per fixture.
+- The union merge applies to every `.gitignore` merge in the repository while the attribute is set, including merges a person runs by hand there; a union merge never reports a conflict, so two edits of the same ignore rule would both be kept.
 - Symlinks and non-regular files are refused, which goes beyond the operator's decision on credential-shaped and unreadable files; it follows the same principle and is flagged on the issue.
 
 ## Security / trust implications

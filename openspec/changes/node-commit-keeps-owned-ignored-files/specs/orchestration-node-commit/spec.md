@@ -57,3 +57,34 @@ When at least one git-ignored file was staged for a node attempt that is then VA
 
 - **WHEN** a node is VALIDATED and no ignored file was staged
 - **THEN** its VALIDATED `node_state` event has no `force_staged` field
+
+### Requirement: A committed ignored file is made visible to ignore-aware tools
+
+When a node is VALIDATED with force-staged files, the runtime SHALL, before it commits, add one negation line (`!<path>`) to the repository's root `.gitignore` for each force-staged file that such a line un-ignores, and SHALL stage `.gitignore` with the commit, so that the committed file no longer matches an ignore rule. It SHALL add the line only after the ownership check and the verification command have passed, SHALL NOT add a line that is already present, and SHALL NOT count its own edit of `.gitignore` as a change by the node. A file that is still ignored after its negation line (for example because a parent directory is ignored), or whose path cannot be written safely as a `.gitignore` pattern, SHALL stay force-staged without a negation line. The VALIDATED `node_state` event SHALL list the paths that received a negation line in `unignored`, and the paths that stayed without one remain visible as the difference from `force_staged`.
+
+While the run merges node commits, `.gitignore` SHALL be merged with a union merge, configured in the repository's local git attributes and never committed, so that two nodes that each added a negation line do not conflict.
+
+A worker's own edit of `.gitignore` is unaffected: it is a changed file like any other and is subject to the ownership check.
+
+#### Scenario: fixture matched by a pattern
+
+- **WHEN** a node owns `tests/fixtures/a/sample.jsonl`, the repository ignores `*.jsonl`, and the node is VALIDATED
+- **THEN** the node's commit contains the file and a `.gitignore` line `!tests/fixtures/a/sample.jsonl`
+- **AND** `git check-ignore` no longer reports the file
+- **AND** the VALIDATED event has the path in both `force_staged` and `unignored`
+
+#### Scenario: file under an ignored directory
+
+- **WHEN** a node owns `build/deep/out.txt` and the repository ignores `build/`
+- **THEN** the file is committed, no negation line is added, and the VALIDATED event has the path in `force_staged` only
+
+#### Scenario: two nodes each add a fixture
+
+- **WHEN** two nodes that do not depend on each other each commit an ignored fixture with its negation line
+- **THEN** the run's integration merge succeeds and `.gitignore` contains both lines
+
+#### Scenario: worker edits .gitignore itself
+
+- **WHEN** a worker changes `.gitignore` and the node does not own it
+- **THEN** the attempt fails with `ownership_violation`, as before
+
