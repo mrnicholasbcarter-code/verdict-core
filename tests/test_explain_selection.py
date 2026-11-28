@@ -332,6 +332,7 @@ class TestBehaviourParityAcrossFixtures:
                 "session_score",
                 "session_passes",
                 "session_fails",
+                "success",
                 *(
                     ["fallback", "fallback_reason"]
                     if v.reason == "selected" and v.capacity_class == CapacityClass.SUBSCRIPTION
@@ -703,9 +704,9 @@ def test_event_size_bound_stays_under_32kb_with_25_candidates() -> None:
 def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
     """_rank_components is the single source of truth for _rank_key (500 routes).
 
-    The key is capacity tier, then slack (cheapest sufficient first), then
-    rating evidence, quota, provider preference, load, fit and route_id.
-    Marginal price never enters it.
+    The key is capacity tier, then the verified success rank, then slack (cheapest
+    sufficient first), then rating evidence, quota, provider preference, load, fit
+    and route_id. Marginal price never enters it.
     """
     import random
 
@@ -759,6 +760,7 @@ def test_rank_key_built_from_rank_components(tmp_path: Path) -> None:
         c = ladder._rank_components(a)
         assert ladder._rank_key(a) == (
             c["capacity_order"],
+            c["success_order"],
             c["slack"],
             int(c["expected_tokens"] is None) if a.capacity == CapacityClass.SUBSCRIPTION else 0,
             float(c["expected_tokens"] or 0) if a.capacity == CapacityClass.SUBSCRIPTION else 0.0,
