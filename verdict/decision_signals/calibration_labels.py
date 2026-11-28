@@ -84,6 +84,17 @@ def _is_model_row(row: Mapping[str, Any]) -> bool:
     )
 
 
+def _in_play(row: Mapping[str, Any]) -> bool:
+    """A model attempt, or a node-level failure that never reached a route.
+
+    The runtime's no-eligible-model path records ``pool_exhausted`` with an empty
+    route, before any dispatch. That row says why the node did not run.
+    """
+    return _is_model_row(row) or (
+        not row.get("route_id") and row.get("failure_category") in NON_TASK_FAILURES
+    )
+
+
 def _category(node: Mapping[str, Any], row: Mapping[str, Any], failures: AttemptFailures) -> str:
     attempt = row.get("attempt")
     if isinstance(attempt, int):
@@ -164,7 +175,7 @@ def label_run(
     """
     known = failures or {}
     nodes = [n for n in receipt.get("nodes") or [] if isinstance(n, Mapping)]
-    model_nodes = [(n, [r for r in _rows(n) if _is_model_row(r)]) for n in nodes]
+    model_nodes = [(n, [r for r in _rows(n) if _in_play(r)]) for n in nodes]
     model_nodes = [(n, rows) for n, rows in model_nodes if rows]
 
     outcome: str | None = "not_accepted"

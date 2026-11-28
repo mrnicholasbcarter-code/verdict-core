@@ -33,12 +33,17 @@ def _clock() -> datetime:
     return FIXED
 
 
-def _new_run(tmp_path: Path) -> tuple[Path, EventLog]:
+def _new_run(tmp_path: Path, *, second_worker: bool = False) -> tuple[Path, EventLog]:
     graph = WorkGraph(
         goal="add feature x",
         nodes=(
             WorkNode("a", "build a", owned_files=("pkg/a.py",), verification_command=VERIFY,
                      barrier="int"),
+            *(
+                [WorkNode("b", "build b", owned_files=("pkg/b.py",), verification_command=VERIFY)]
+                if second_worker
+                else []
+            ),
             WorkNode("merge", "integrate a", kind="integrate", depends_on=("a",)),
             WorkNode("rev", "review", kind="review", depends_on=("merge",)),
         ),
@@ -156,15 +161,33 @@ def test_an_environment_or_infrastructure_failure_gets_no_task_label(
     assert loaded.outcome is None and loaded.excluded_reason == category
 
 
-def test_pool_exhaustion_before_any_dispatch_gets_no_task_label(tmp_path: Path) -> None:
+@pytest.mark.parametrize("route", ["", "gh/gpt-5"])  # "" is what "no eligible model" emits
+def test_pool_exhaustion_before_any_dispatch_gets_no_task_label(tmp_path: Path, route: str) -> None:
     run_dir, log = _new_run(tmp_path)
     log.emit("failure", node_id="a", category="pool_exhausted", action="FAIL_CLOSED",
-             route_id="gh/gpt-5")  # fmt: skip
+             route_id=route)  # fmt: skip
 
     record = _record(_finish(run_dir, log, complete=False))
 
     assert record["outcome"] is None
     assert record["excluded_reason"] == "pool_exhausted"
+    assert record["attempts"] == 0
+
+
+def test_a_node_that_never_ran_excludes_the_run_even_when_another_node_passed(
+    tmp_path: Path,
+) -> None:
+    run_dir, log = _new_run(tmp_path, second_worker=True)
+    _attempt(log, 1, "cc/claude-sonnet-5", "subscription", 2, verified=True)
+    log.emit("failure", node_id="b", category="pool_exhausted", action="FAIL_CLOSED",
+             route_id="")  # fmt: skip
+
+    record = _record(_finish(run_dir, log, complete=False))
+
+    assert record["outcome"] is None
+    assert record["excluded_reason"] == "pool_exhausted"
+    assert record["attempts"] == 1  # node a's judged attempt
+    assert record["capacity_class"] == "subscription"  # the route that did pass
 
 
 def test_an_exhausted_budget_after_judged_failures_is_still_a_task_failure(tmp_path: Path) -> None:
