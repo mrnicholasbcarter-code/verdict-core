@@ -14,6 +14,7 @@ then never reach the back-off threshold.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -147,8 +148,11 @@ class ScreenRecord:
     # -- reads --------------------------------------------------------------
 
     def _in_window(self, now: datetime) -> list[ProbeRecord]:
+        # Both ends: a result stamped after ``now`` (a clock that was put back) is not
+        # evidence from the last seven days, and counting it could back a provider
+        # off and hold its daily probe until that future time.
         floor = now - RECORD_WINDOW
-        return [entry for entry in self._entries if entry.at >= floor]
+        return [entry for entry in self._entries if floor <= entry.at <= now]
 
     def summary(self, provider: str, now: datetime) -> ProviderSummary:
         return _summarise(provider, [e for e in self._in_window(now) if e.provider == provider])
@@ -204,7 +208,10 @@ class ScreenRecord:
             # Every exit path removes the temporary file; only a write failure is
             # absorbed, anything else (an interrupt, a bug) still propagates.
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                # A cleanup failure must not replace the original error or stop the
+                # screen: the file is only a leftover.
+                with contextlib.suppress(OSError):
+                    temporary.unlink(missing_ok=True)
             if not isinstance(exc, (OSError, ValueError)):
                 raise
             self.error = ERROR_UNWRITABLE

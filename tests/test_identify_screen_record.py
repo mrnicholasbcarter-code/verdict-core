@@ -864,6 +864,45 @@ def test_a_failed_save_leaves_no_temporary_file_on_any_exit(tmp_path, monkeypatc
     assert list(tmp_path.iterdir()) == []
 
 
+def test_results_stamped_after_now_are_not_recent_results(tmp_path):
+    """Catches a clock put back: future results must not back a provider off.
+
+    Eight future failures would otherwise count, and the daily probe would wait
+    until a day after the future stamp.
+    """
+    future = T0 + timedelta(days=2)
+    seed(tmp_path, [("bad", f"bad/s{i}", "tool_failure", future) for i in range(9)], now=future)
+    record = ScreenRecord.load(tmp_path / RECORD_FILE)
+    assert record.summary("bad", T0).probes == 0
+    assert record.probe_allowed("bad", T0) is True
+    calls = []
+    report = run(tmp_path, bad_provider_specs(3), calls=calls)
+    assert len(probed(calls)) == 3
+    assert provider(report, "bad")["backed_off"] is False
+    # The same results are recent once the clock reaches them.
+    assert record.summary("bad", future).backed_off is True
+
+
+def test_a_cleanup_failure_does_not_replace_the_write_error_or_stop_the_screen(
+    tmp_path, monkeypatch
+):
+    import verdict.screen_record as module
+
+    record = ScreenRecord.load(tmp_path / RECORD_FILE)
+    record.add("p", "p/a", "pass", T0)
+
+    def refused(*args, **kwargs):
+        raise OSError("disk full")
+
+    def cleanup_refused(self, *args, **kwargs):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(module.json, "dump", refused)
+    monkeypatch.setattr(module.Path, "unlink", cleanup_refused)
+    record.save(T0)  # neither error escapes
+    assert record.error == "unwritable"
+
+
 def test_the_record_file_drops_invalid_entries_and_says_so(tmp_path):
     path = tmp_path / RECORD_FILE
     good = {"provider": "p", "route_id": "p/a", "kind": "pass", "at": T0.isoformat()}
