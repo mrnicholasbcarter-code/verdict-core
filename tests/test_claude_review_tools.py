@@ -117,6 +117,7 @@ def test_reviewer_selection(review_tools, models, settings, expected):
     [
         ("cx/gpt-6.1-sol", "codex"),
         ("codex/other", "codex"),
+        ("CX/gpt-6.1-sol", "Codex"),
         ("cc/claude-sonnet-5-5", "claude"),
         ("claude/other", "claude"),
         ("agy/gemini-other", "gemini"),
@@ -173,6 +174,31 @@ def test_cached_same_family_review_is_not_reused(review_tools):
     assert result.returncode == 0, result.stderr
     assert "(stored result for unchanged head)" not in result.stdout
     assert review_tools[2].read_text().splitlines() == ["cc/claude-sonnet-5-5"]
+
+
+def test_invalid_author_family_is_not_obtained(review_tools):
+    result = run_review(review_tools, REVIEW_AUTHOR_FAMILY="openai")
+    assert result.returncode != 0
+    assert "invalid REVIEW_AUTHOR_FAMILY" in result.stdout
+    assert "NOT a pass" in result.stdout
+    assert not review_tools[2].exists()
+
+
+def test_malformed_record_is_not_ready(review_tools):
+    tools, environment, _ = review_tools
+    record = tools.parents[1] / "state" / "reviews" / ("a" * 40 + ".independent.json")
+    record.write_text("{")
+    result = subprocess.run(
+        ["bash", str(tools / "verify_ready.sh"), "1427"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert result.stdout.startswith("NOT READY ")
+    assert "unreadable review record" in result.stdout
+    assert "Traceback" not in result.stderr
 
 
 def test_missing_reviewer_identity_is_not_a_cached_pass(review_tools):

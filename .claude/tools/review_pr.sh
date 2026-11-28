@@ -21,10 +21,10 @@
 # - A review in which any reviewer tool call failed (for example code search) exits non-zero too:
 #   the reviewer could not look at what it asked for. (Added 2026-11-24: under git 2.34 every
 #   code_search call failed and the reviews still counted as complete.)
-set -euo pipefail
 # Route-prefix aliases live in one table, also sourced by verify_ready.sh.
 review_family() {
-  case "${1%%/*}" in
+  local route="${1,,}"
+  case "${route%%/*}" in
     cx|codex) printf '%s\n' codex;;
     cc|claude) printf '%s\n' claude;;
     agy|antigravity) printf '%s\n' gemini;;
@@ -33,9 +33,15 @@ review_family() {
 }
 # Sourcing exposes only the family table, without starting a review.
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
+set -euo pipefail
 
 PR="$1"; CONTEXT="$2"; MODEL="${3:-${REVIEW_MODEL:-cc/claude-sonnet-5-5}}"
 AUTHOR_FAMILY="${REVIEW_AUTHOR_FAMILY:-}"
+AUTHOR_FAMILY="${AUTHOR_FAMILY,,}"
+case "$AUTHOR_FAMILY" in
+  ''|codex|claude|gemini) ;;
+  *) echo "invalid REVIEW_AUTHOR_FAMILY '$AUTHOR_FAMILY' (codex, claude or gemini); review not obtained. NOT a pass."; exit 3;;
+esac
 reviewer_allowed() {
   local family
   if [ -z "$1" ]; then

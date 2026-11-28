@@ -19,6 +19,11 @@ OUT=/tmp/claude-takeover/reviews
 # Builders use Codex unless a caller supplies a different author family.
 source "$REPO/.claude/tools/review_pr.sh"
 AUTHOR_FAMILY="${REVIEW_AUTHOR_FAMILY:-codex}"
+AUTHOR_FAMILY="${AUTHOR_FAMILY,,}"
+case "$AUTHOR_FAMILY" in
+  codex|claude|gemini) ;;
+  *) echo "NOT READY invalid REVIEW_AUTHOR_FAMILY '$AUTHOR_FAMILY' (codex, claude or gemini)"; exit 1;;
+esac
 cd "$REPO"
 SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
 STATE=$(gh pr view "$PR" --json state --jq .state)
@@ -27,7 +32,10 @@ gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" > "$TMP"
 REC="$OUT/$SHA$SUFFIX.json"
 MODEL=""
 if [ -s "$REC" ]; then
-  MODEL=$(python3 -I -c 'import json,sys; print((json.load(open(sys.argv[1])).get("llm") or {}).get("model") or "")' "$REC")
+  if ! MODEL=$(python3 -I -c 'import json,sys; print((json.load(open(sys.argv[1])).get("llm") or {}).get("model") or "")' "$REC" 2>/dev/null); then
+    echo "NOT READY pr=$PR head=$SHA :: unreadable review record"
+    exit 1
+  fi
 fi
 FAMILY=$(review_family "$MODEL")
 python3 -I - "$PR" "$SHA" "$STATE" "$REC" "$TMP" "$AUTHOR_FAMILY" "$FAMILY" <<'EOF'

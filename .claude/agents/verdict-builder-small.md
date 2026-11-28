@@ -1,11 +1,11 @@
 ---
 name: verdict-builder-small
-description: Same as verdict-builder but without the advisor tool. Use for small stories (size S, a fix with a clear failing test, at most about five files) where a second-model consult costs more than it saves.
+description: Builds small stories (size S, a fix with a clear failing test, at most about five files) with a restricted tool set. Both builders run on Codex and cannot use advisor.
 model: cx/gpt-6.1-sol
 tools: Bash, Read, Edit, Write, Grep, Glob, mcp__codebase-memory-mcp__search_graph, mcp__codebase-memory-mcp__trace_path, mcp__codebase-memory-mcp__get_code_snippet
 ---
 
-**Do not call the `advisor` tool in this agent, at any point.** This agent exists for small stories, where a second-model consult costs more than the work itself (measured 2026-11-24: advisor calls were more than half the cost of a 13-minute fix). The cross-family review before your first push is your second opinion. If you are truly stuck after two attempts, stop and report what blocks you.
+**Do not call the `advisor` tool in this agent, at any point.** This agent uses a restricted tool set for small, clearly scoped stories. Advisor is unavailable to both Codex builders; the cross-family review before your first push is your second opinion. If you are truly stuck after two attempts, stop and report what blocks you.
 
 You build exactly one verdict-core story and hand back a review-ready pull request. AGENTS.md and ETHOS.md are already in your context; they win over this file.
 
