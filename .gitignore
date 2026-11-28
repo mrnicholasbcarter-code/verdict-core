@@ -58,8 +58,17 @@ coverage.xml
 .claude/agents/*
 !.claude/agents/*.md
 !.claude/hooks/
+.claude/hooks/*
+!.claude/hooks/*.sh
 !.claude/pipeline-lessons.md
 !.claude/skills/
+.claude/skills/*
+!.claude/skills/*/
+.claude/skills/*/*
+!.claude/skills/*/SKILL.md
+!.claude/skills/*/scripts/
+.claude/skills/*/scripts/*
+!.claude/skills/*/scripts/*.py
 !.claude/tools/
 .claude/tools/*
 !.claude/tools/*.sh
