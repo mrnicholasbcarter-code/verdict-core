@@ -188,6 +188,22 @@ def test_an_exhausted_budget_after_judged_failures_is_still_a_task_failure(tmp_p
     assert record["attempts"] == 2
 
 
+def test_a_task_failure_before_an_infrastructure_failure_is_still_a_task_failure(
+    tmp_path: Path,
+) -> None:
+    run_dir, log = _new_run(tmp_path)
+    _attempt(log, 1, "gh/gpt-5", "free", 3, verified=False, category="verification_failed",
+             exit_code=1)  # fmt: skip
+    _attempt(log, 2, "cc/claude-sonnet-5", "subscription", 2, verified=False,
+             category="quota_exhausted")  # fmt: skip
+
+    record = _record(_finish(run_dir, log, complete=False))
+
+    assert record["outcome"] == "not_accepted"
+    assert record["excluded_reason"] is None
+    assert record["attempts"] == 1  # only the first attempt's work was judged
+
+
 def test_an_infrastructure_failure_does_not_hide_a_task_failure(tmp_path: Path) -> None:
     run_dir, log = _new_run(tmp_path)
     _attempt(log, 1, "gh/gpt-5", "free", 3, verified=False, category="model_mismatch")
@@ -328,15 +344,16 @@ def test_the_report_does_not_count_an_excluded_run_as_a_task_failure() -> None:
              capacity_class="free", capability_tier=3, lifts=lifts),
         _rec("bad", outcome="not_accepted", attempts=3, capacity_class=None),
         _rec("env", outcome=None, excluded_reason="environment_error", attempts=0),
+        _rec("legacy"),  # written before the labels: no outcome, not excluded
     ]  # fmt: skip
 
     report = evaluate(records)
 
-    assert report.records == 3
+    assert report.records == 4
     assert (report.labelled_records, report.excluded_records) == (2, 1)
     assert report.excluded_reasons == {"environment_error": 1}
-    assert report.accepted_rate == 0.5  # not 1 of 3
-    assert report.verified_rate == 0.5
+    assert report.accepted_rate == 0.5  # over the two with an outcome, not 1 of 4
+    assert report.verified_rate == pytest.approx(1 / 3)  # the legacy record still counts here
     assert report.mean_attempts == 2.0
     assert report.per_capacity_class == {"free": {"records": 1, "accepted": 1}}
     assert report.lift_counts["context_pack"] == {"present": 1, "absent": 0, "unknown": 1}

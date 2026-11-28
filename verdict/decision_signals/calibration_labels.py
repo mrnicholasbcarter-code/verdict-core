@@ -111,6 +111,22 @@ def _cause(
     return category if category in NON_TASK_FAILURES else None
 
 
+def _node_cause(
+    node: Mapping[str, Any], rows: list[Mapping[str, Any]], failures: AttemptFailures
+) -> str | None:
+    """Why a node that did not pass says nothing about the work, or None for a task failure.
+
+    One attempt that failed on the work makes it a task failure, whatever failed after it.
+    """
+    for row in rows:
+        if (
+            row.get("outcome") == "failure"
+            and _category(node, row, failures) not in NON_TASK_FAILURES
+        ):
+            return None
+    return _cause(node, rows[-1], failures)
+
+
 def _fold(values: list[bool | None]) -> bool | None:
     if any(v is True for v in values):
         return True
@@ -160,7 +176,7 @@ def label_run(
         outcome, excluded = None, "cancelled"
     else:
         causes = [
-            _cause(n, rows[-1], known)
+            _node_cause(n, rows, known)
             for n, rows in model_nodes
             if n.get("final_state") != "VALIDATED"
         ]

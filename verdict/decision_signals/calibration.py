@@ -138,7 +138,7 @@ class CalibrationReport:
     per_role: dict[str, dict[str, Any]] = field(default_factory=dict)
     per_role_recommendations: dict[str, tuple[str, list[str]]] = field(default_factory=dict)
     # OJ1 -- verified-outcome labels. Excluded runs are not task failures.
-    labelled_records: int = 0
+    labelled_records: int = 0  # records with a task outcome
     excluded_records: int = 0
     excluded_reasons: dict[str, int] = field(default_factory=dict)
     accepted_rate: float | None = None
@@ -214,25 +214,27 @@ def _evaluate_slice(
 
     # An environment or infrastructure failure says nothing about the work: it is
     # counted as excluded, never as a task failure, and stays out of every rate.
-    labelled = [r for r in records if r.excluded_reason is None]
+    # A record with neither an outcome nor an exclusion (written before OJ1) still
+    # feeds the verified / first-pass rates, but has no task label.
+    counted = [r for r in records if r.excluded_reason is None]
     excluded_reasons: dict[str, int] = {}
     for r in records:
         if r.excluded_reason is not None:
             excluded_reasons[r.excluded_reason] = excluded_reasons.get(r.excluded_reason, 0) + 1
-    judged = [r for r in labelled if r.outcome is not None]
+    judged = [r for r in counted if r.outcome is not None]
     per_capacity: dict[str, dict[str, int]] = {}
-    for r in labelled:
+    for r in judged:
         if r.capacity_class is not None:
             row = per_capacity.setdefault(r.capacity_class, {"records": 0, "accepted": 0})
             row["records"] += 1
             row["accepted"] += r.outcome == "accepted"
     lift_counts = {name: {"present": 0, "absent": 0, "unknown": 0} for name in LIFTS}
-    for r in labelled:
+    for r in judged:
         for name in LIFTS:
             seen = (r.lifts or {}).get(name)
             lift_counts[name]["unknown" if seen is None else "present" if seen else "absent"] += 1
 
-    verified_count = sum(r.verified for r in labelled)
+    verified_count = sum(r.verified for r in counted)
 
     # Cost sums: only include records with known cost (not None).
     cost_known = [r for r in records if r.total_cost_usd is not None]
@@ -266,17 +268,17 @@ def _evaluate_slice(
         "per_class": per_class,
         "security_fn_rate": _rate(len(sec_fn), len(sec)),
         "planner_calls_avoided": avoided,
-        "labelled_records": len(labelled),
-        "excluded_records": len(records) - len(labelled),
+        "labelled_records": len(judged),
+        "excluded_records": len(records) - len(counted),
         "excluded_reasons": excluded_reasons,
         "accepted_rate": _rate(sum(r.outcome == "accepted" for r in judged), len(judged)),
-        "mean_attempts": _mean([float(r.attempts) for r in labelled if r.attempts is not None]),
+        "mean_attempts": _mean([float(r.attempts) for r in judged if r.attempts is not None]),
         "per_capacity_class": per_capacity,
         "lift_counts": lift_counts,
-        "verified_rate": _rate(verified_count, len(labelled)),
-        "first_pass_rate": _rate(sum(r.first_pass for r in labelled), len(labelled)),
-        "mean_retries": _mean([float(r.retries) for r in labelled]),
-        "mean_escalations": _mean([float(r.escalations) for r in labelled]),
+        "verified_rate": _rate(verified_count, len(counted)),
+        "first_pass_rate": _rate(sum(r.first_pass for r in counted), len(counted)),
+        "mean_retries": _mean([float(r.retries) for r in counted]),
+        "mean_escalations": _mean([float(r.escalations) for r in counted]),
         "total_cost_usd": total_cost,
         "cost_known_count": cost_known_count,
         "cost_unknown_count": cost_unknown_count,
@@ -306,7 +308,7 @@ def evaluate(
     min_confidence: float = 0.6,
     security_threshold: float = 0.5,
 ) -> CalibrationReport:
-    """Summarise labelled outcomes and OpenJev's usable signals at one threshold.
+    """Summarise verified outcomes and OpenJev's usable signals at one threshold.
 
     ``frontier predicted`` means ``frontier_worthy >= threshold``. A record
     without a usable signal (missing, or below ``min_confidence``) falls back
@@ -446,7 +448,7 @@ def render_markdown(report: CalibrationReport) -> str:
         f"- {name}: {row['accepted']} accepted of {row['records']}"
         for name, row in sorted(report.per_capacity_class.items())
     ]
-    lines += ["", "## Lifts (labelled records)", ""]
+    lines += ["", "## Lifts (records with a task outcome)", ""]
     lines += [
         f"- {name}: present {c['present']}, absent {c['absent']}, unknown {c['unknown']}"
         for name, c in report.lift_counts.items()
