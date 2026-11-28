@@ -2724,11 +2724,29 @@ class DagRuntime:
                 at=self.now(),
                 source="verdict.orchestration.receipt",
                 child_id=f"{self.run_dir.name}:{run.node.node_id}:a{run.attempt}",
+                node_kind=run.node.kind.value,
+                task_family=self._session_task_family(),
             )
             SessionLedger().append(item)
         except Exception:
             self._session_evidence_error = "unreadable"
             return
+
+    def _session_task_family(self) -> str | None:
+        """The goal-derived task family, as the receipt's attempt records name it.
+
+        A goal that cannot be fingerprinted leaves the family null. It must not
+        reach the caller's ledger guard, which would stop every later write.
+        """
+        goal = self.graph.goal
+        if not goal.strip():
+            return None
+        try:
+            from verdict.candidate_pool import fingerprint_task
+
+            return fingerprint_task(goal).task_family
+        except Exception:
+            return None
 
     async def _fail(
         self,

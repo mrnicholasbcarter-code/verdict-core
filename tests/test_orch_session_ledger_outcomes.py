@@ -10,6 +10,7 @@ Covers the four behaviours the slice owns:
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -453,3 +454,77 @@ def test_session_failure_class_covers_every_runtime_category(repo: Path, ledger_
         )
         assert cls in valid, category
         assert SessionOutcome("cc/s", "fail", "real_task", cls, True, NOW, "t", "run1:a:a1")
+
+
+# --- L1b-0 (#1396): runtime rows carry the node kind and the task family -----
+
+
+@pytest.mark.parametrize(
+    "goal,family", [("fix the parser bug", "code_edit"), ("explain the config docs", "docs")]
+)
+async def test_verified_pass_and_fail_rows_carry_node_kind_and_task_family(
+    repo: Path, ledger_env: Path, goal: str, family: str
+) -> None:
+    """A verified fail (quota on cc/s) and a verified pass (cx/g) both name kind and family.
+
+    The family is the goal-derived one the receipt's attempt records use, so the
+    per-family scorer reads the same string from both stores.
+    """
+    graph = WorkGraph(goal, (node("a"),))
+    ex = Executor({("a", "cc/s"): "quota", ("a", "cx/g"): "ok"})
+    rt, _ = make(repo, repo.parent / "run1", graph, ex, ["cc/s", "cx/g"])
+    result = await rt.run()
+    assert result.outcome.value == "COMPLETE", result.reason
+
+    items = SessionLedger(ledger_env).load()
+    fails = [i for i in items if i.outcome == "fail"]
+    passes = [i for i in items if i.outcome == "pass"]
+    assert fails and passes
+    for item in (*fails, *passes):
+        assert item.kind == "real_task"  # unchanged: what produced the row
+        assert item.node_kind == "implement"
+        assert item.task_family == family
+    # The raw row carries both, so a reader that never imports the dataclass sees them.
+    raw = [json.loads(line) for line in ledger_env.read_text().splitlines()]
+    assert {(r["node_kind"], r["task_family"]) for r in raw} == {("implement", family)}
+
+
+async def test_a_research_node_row_names_its_own_kind(repo: Path, ledger_env: Path) -> None:
+    """The kind is the node's, not a constant: a research node is recorded as research."""
+    research = WorkNode("r", "look into the flaky test", kind=NodeKind.RESEARCH)
+    graph = WorkGraph("fix the parser bug", (node("a"), research))
+
+    class ReadOnlyResearchExecutor(Executor):
+        async def run(self, prompt: str, *, route_id: str, cwd: Path, timeout_seconds: float):
+            if prompt.startswith("r:"):  # research writes nothing, so owns nothing
+                return WorkerTerminal(ok=True, output="RESULT: DONE", model=route_id)
+            return await super().run(prompt, route_id=route_id, cwd=cwd, timeout_seconds=1.0)
+
+    rt, _ = make(repo, repo.parent / "run1", graph, ReadOnlyResearchExecutor({}), ["cc/s"])
+    # The ledger identity is (route, time, outcome): a ticking clock keeps the two passes apart.
+    ticks = itertools.count()
+    rt.now = lambda: NOW + timedelta(seconds=next(ticks))
+    result = await rt.run()
+    assert result.outcome.value == "COMPLETE", result.reason
+    kinds = {i.child_id.split(":")[1]: i.node_kind for i in SessionLedger(ledger_env).load()}
+    assert kinds == {"a": "implement", "r": "research"}
+
+
+async def test_a_goal_that_cannot_be_fingerprinted_still_records_the_row(
+    repo: Path, ledger_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A family lookup that raises leaves the family null; it never latches the ledger off."""
+    import verdict.candidate_pool as candidate_pool
+
+    def explode(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("no fingerprint")
+
+    monkeypatch.setattr(candidate_pool, "fingerprint_task", explode)
+    graph = WorkGraph("fix the parser bug", (node("a"),))
+    rt, _ = make(repo, repo.parent / "run1", graph, Executor({}), ["cc/s"])
+    result = await rt.run()
+    assert result.outcome.value == "COMPLETE", result.reason
+    assert rt._session_evidence_error is None
+    (item,) = SessionLedger(ledger_env).load()
+    assert (item.node_kind, item.task_family) == ("implement", None)
+    assert item.outcome == "pass"

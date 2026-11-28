@@ -806,6 +806,13 @@ outcomes in the last 14 days additionally require a Laplace score of at least
 0.5. A false success claim counts as two failures and blocks the route for
 7 days. No outcomes in the window leaves the probe-only behavior unchanged.
 
+Rows the orchestration runtime writes also carry `node_kind` (the node's kind,
+for example `implement` or `research`) and `task_family` (derived from the run's
+goal, the same family the receipt's attempt records use). Both are optional:
+older rows and imported rows have neither. `SessionLedger.summarize(route, now,
+task_family=...)` counts only rows of that family; without `task_family` it
+counts every row. Nothing that selects or ranks a route reads these fields yet.
+
 `import_worker_outcomes(path)` reads trusted controller JSONL and returns
 outcomes without writing. Append its results to the ledger to import them.
 Route, timestamp and outcome identify duplicates. Worker self-reports must not

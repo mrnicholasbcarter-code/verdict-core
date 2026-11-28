@@ -313,3 +313,115 @@ def test_append_preserves_existing_file_permissions(tmp_path: Path) -> None:
     ledger.path.chmod(0o640)
     ledger.append(evidence())
     assert stat.S_IMODE(ledger.path.stat().st_mode) == 0o640
+
+
+# --- L1b-0 (#1396): rows record the node kind and the task family ------------
+
+LEGACY_ROW = {
+    "route_id": ROUTE,
+    "outcome": "pass",
+    "kind": "real_task",
+    "failure_class": None,
+    "verified_by_controller": True,
+    "at": "2026-10-09T19:00:00Z",
+    "source": "verdict.orchestration.receipt",
+    "child_id": "run1:a:a1",
+}
+
+
+def test_node_kind_and_task_family_are_written_and_read_back(tmp_path: Path) -> None:
+    ledger = SessionLedger(tmp_path / "evidence.jsonl")
+    item = evidence(node_kind="implement", task_family="code_edit")
+    ledger.append(item)
+    row = json.loads(ledger.path.read_text())
+    assert (row["node_kind"], row["task_family"]) == ("implement", "code_edit")
+    (loaded,) = SessionLedger(ledger.path).load()
+    assert loaded == item
+    assert (loaded.node_kind, loaded.task_family) == ("implement", "code_edit")
+    # The existing `kind` column keeps its meaning: where the row came from.
+    assert loaded.kind == "session_canary_v1"
+
+
+def test_rows_written_before_the_new_fields_load_and_summarise_as_before(tmp_path: Path) -> None:
+    ledger = SessionLedger(tmp_path / "evidence.jsonl")
+    legacy_fail = {**LEGACY_ROW, "outcome": "fail", "failure_class": "wrong_result"}
+    legacy_fail["at"] = "2026-10-09T18:00:00Z"
+    legacy_fail["child_id"] = "run1:b:a1"
+    ledger.path.write_text(
+        "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in (LEGACY_ROW, legacy_fail))
+    )
+    assert "node_kind" not in ledger.path.read_text()
+    items = ledger.load()
+    assert ledger.last_load_skipped == 0
+    assert [(i.outcome, i.node_kind, i.task_family) for i in items] == [
+        ("pass", None, None),
+        ("fail", None, None),
+    ]
+    stats = ledger.summarize(ROUTE, NOW)
+    assert (stats.passes, stats.fails, stats.false_claims) == (1, 1, 0)
+    assert stats.score == pytest.approx(2 / 4)
+    # The pool summary the eligibility ladder reads is unchanged too.
+    assert ledger.summarize_pool(ROUTE, NOW) == stats
+
+
+def test_summary_can_be_asked_for_one_task_family(tmp_path: Path) -> None:
+    ledger = SessionLedger(tmp_path / "evidence.jsonl")
+    code_pass = evidence(task_family="code_edit", node_kind="implement")
+    code_fail = evidence(
+        "fail", task_family="code_edit", node_kind="implement", at=NOW - timedelta(days=1)
+    )
+    docs_pass = evidence(task_family="docs", node_kind="research", at=NOW - timedelta(days=2))
+    docs_pass_2 = evidence(task_family="docs", node_kind="research", at=NOW - timedelta(days=3))
+    no_family = evidence("fail", at=NOW - timedelta(days=4))
+    for item in (code_pass, code_fail, docs_pass, docs_pass_2, no_family):
+        ledger.append(item)
+
+    everything = ledger.summarize(ROUTE, NOW)
+    assert (everything.passes, everything.fails) == (3, 2)  # every row, including the legacy shape
+
+    code = ledger.summarize(ROUTE, NOW, task_family="code_edit")
+    assert (code.passes, code.fails) == (1, 1)
+    assert code.last_pass_at == NOW
+    assert code.last_fail_at == NOW - timedelta(days=1)
+    assert code.score == pytest.approx(2 / 4)
+
+    docs = ledger.summarize(ROUTE, NOW, task_family="docs")
+    assert (docs.passes, docs.fails) == (2, 0)
+
+    # A family with no rows is the empty summary, and the family row of another route is not read.
+    none = ledger.summarize(ROUTE, NOW, task_family="planning")
+    assert (none.passes, none.fails, none.score) == (0, 0, 0.5)
+    other_route = evidence(route_id="other", task_family="docs")
+    ledger.append(other_route)
+    assert ledger.summarize(ROUTE, NOW, task_family="docs").passes == 2
+
+
+def test_rows_without_a_family_count_only_in_the_all_families_summary(tmp_path: Path) -> None:
+    ledger = SessionLedger(tmp_path / "evidence.jsonl")
+    ledger.path.write_text(json.dumps(LEGACY_ROW, separators=(",", ":")) + "\n")
+    ledger.append(evidence("fail", at=NOW - timedelta(days=1), task_family="code_edit"))
+    assert ledger.summarize(ROUTE, NOW).passes == 1  # the legacy pass counts here
+    assert ledger.summarize(ROUTE, NOW, task_family="code_edit").passes == 0  # and only here
+
+
+@pytest.mark.parametrize("blank", ["", "  "])
+def test_a_blank_family_filter_is_refused_not_read_as_all_families(
+    tmp_path: Path, blank: str
+) -> None:
+    ledger = SessionLedger(tmp_path / "evidence.jsonl")
+    ledger.append(evidence(task_family="code_edit"))
+    with pytest.raises(ValueError, match="task_family"):
+        ledger.summarize(ROUTE, NOW, task_family=blank)
+
+
+@pytest.mark.parametrize("field", ["node_kind", "task_family"])
+@pytest.mark.parametrize("bad", ["", "  ", 7, ["code_edit"]])
+def test_a_malformed_node_kind_or_family_is_refused_and_skipped_on_load(
+    tmp_path: Path, field: str, bad: object
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        evidence(**{field: bad})
+    ledger = SessionLedger(tmp_path / "evidence.jsonl")
+    ledger.path.write_text(json.dumps({**LEGACY_ROW, field: bad}) + "\n")
+    assert ledger.load() == ()
+    assert ledger.last_load_skipped == 1
