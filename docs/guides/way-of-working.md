@@ -45,7 +45,9 @@ a design first, and the operator approves the design before the build starts.
 
 ## 3. Slices
 
-One story is one pull request of about 400 changed lines and 5 files.
+One story is one pull request of about 400 changed lines and 5 files. When
+stories are grouped into an `integration/<epic>` branch, steps 4 to 6 of the
+release train in [AGENTS.md](../../AGENTS.md) still apply to that branch.
 
 Cut the smallest slice that moves a number. Measure it for a day. Then decide the
 next slice.
