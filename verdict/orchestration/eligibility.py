@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from verdict.capacity import (
     CAPACITY_ORDER,
@@ -221,6 +221,54 @@ def quota_remaining(conn: Mapping[str, Any] | None, route_id: str) -> float | No
                 return float(per_model[name])
     value = conn.get("quota_percent")
     return float(value) if isinstance(value, (int, float)) else None
+
+
+@dataclass(frozen=True)
+class ProviderQuota:
+    """One provider's quota for one route, folded from its usable connections.
+
+    ``state`` is ``has_quota`` when a usable connection measures at or above the
+    floor, ``exhausted`` when every usable connection is measured and below it,
+    and ``unknown`` otherwise (no usable connection, or an unmeasured one that
+    could still serve). ``percent`` is the lowest measured value, ``None`` when
+    ``unknown``. ``reset_at`` is the earliest reset among the exhausted
+    connections and is set only when ``exhausted``.
+    """
+
+    state: Literal["has_quota", "exhausted", "unknown"]
+    percent: float | None
+    reset_at: datetime | None
+
+
+def provider_quota(
+    connections: Sequence[Mapping[str, Any]], provider: str, route_id: str, *, floor: float
+) -> ProviderQuota:
+    """Fold the quota of a provider's connections into one answer for a route.
+
+    A provider is out of quota only when every usable connection is. Unknown
+    quota stays unknown: it never counts as quota left and never as exhausted,
+    so a provider with an unmeasured connection beside an exhausted one is
+    ``unknown`` and the gateway decides at request time. A connection that is
+    inactive or has a failed test status is not usable and counts for nothing.
+    """
+    from verdict.admission import _BAD_TEST_STATUS
+
+    readings = [
+        (c, quota_remaining(c, route_id))
+        for c in connections
+        if str(c.get("provider", "")).lower() == provider
+        and c.get("isActive")
+        and str(c.get("testStatus", "") or "").strip().lower() not in _BAD_TEST_STATUS
+    ]
+    measured = [q for _, q in readings if q is not None]
+    if not measured:
+        return ProviderQuota("unknown", None, None)
+    if max(measured) >= floor:
+        return ProviderQuota("has_quota", min(measured), None)
+    if len(measured) < len(readings):
+        return ProviderQuota("unknown", None, None)
+    resets = (_parse_iso(str(c.get("quota_reset_at") or "")) for c, _ in readings)
+    return ProviderQuota("exhausted", min(measured), min((r for r in resets if r), default=None))
 
 
 def quota_rank(percent: float | None) -> int:
@@ -905,24 +953,14 @@ class EligibilityLadder:
             a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "provider_rate_limited"
             a.cooldown_until = _iso(limited)
             return a
-        measured = [
-            q
-            for c in self._connections
-            if str(c.get("provider", "")).lower() == provider and c.get("isActive")
-            for q in [quota_remaining(c, route_id)]
-            if q is not None
-        ]
-        a.quota_percent = min(measured) if measured else None
         floor = getattr(self, "_min_quota_percent", DEFAULT_MIN_QUOTA_PERCENT)
-        if measured and max(measured) < floor:
-            # Measured near-exhaustion: dispatching here fails mid-task on a 429.
+        quota = provider_quota(self._connections, provider, route_id, floor=floor)
+        a.quota_percent = quota.percent
+        if quota.state == "exhausted":
+            # Every usable connection measures near-exhaustion: dispatching here
+            # fails mid-task on a 429. One unmeasured connection would stop this.
             a.failed_stage, a.reason = EligibilityStage.AVAILABLE, "quota_low"
-            resets = [
-                _parse_iso(str(c.get("quota_reset_at") or ""))
-                for c in self._connections
-                if str(c.get("provider", "")).lower() == provider and c.get("isActive")
-            ]
-            reset = min((r for r in resets if r is not None), default=None)
+            reset = quota.reset_at
             a.cooldown_until = _iso(reset) if reset is not None and reset > now else None
             return a
 
