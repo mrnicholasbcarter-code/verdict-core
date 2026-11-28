@@ -2,6 +2,11 @@
 
 Only verified evidence affects summaries. False success claims count as two
 failures. Repeated imports share a route/timestamp/outcome identity.
+
+Rows written by the orchestration runtime also record the node's kind
+(``node_kind``) and the goal-derived ``task_family``, so a summary can be asked
+for one family. Both are optional: rows written before they existed, and rows
+from importers, have neither, and count only in the all-families summary.
 """
 
 from __future__ import annotations
@@ -43,6 +48,8 @@ class SessionOutcome:
     at: datetime
     source: str
     child_id: str | None = None
+    node_kind: str | None = None
+    task_family: str | None = None
 
     def __post_init__(self) -> None:
         if not self.route_id.strip() or self.outcome not in ("pass", "fail"):
@@ -53,6 +60,10 @@ class SessionOutcome:
             raise ValueError("a session pass cannot have a failure_class")
         if not isinstance(self.verified_by_controller, bool):
             raise ValueError("verified_by_controller must be a bool")
+        for name in ("node_kind", "task_family"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"session {name} must be a non-empty string or null")
         format_datetime(self.at)  # Reuse the health cache's aware timestamp contract.
 
 
@@ -93,6 +104,8 @@ def _read(stream: BinaryIO) -> tuple[tuple[SessionOutcome, ...], int]:
                 at=parse_datetime(raw["at"], "at"),
                 source=raw["source"],
                 child_id=raw.get("child_id"),
+                node_kind=raw.get("node_kind"),
+                task_family=raw.get("task_family"),
             )
             items.setdefault(_identity(item), item)
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
@@ -161,9 +174,22 @@ class SessionLedger:
             finally:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
-    def summarize(self, route: str, now: datetime, window_days: int = 14) -> SessionStats:
-        """Summarize verified outcomes for exactly one route."""
-        return _summarize(item for item in self._window(now, window_days) if item.route_id == route)
+    def summarize(
+        self, route: str, now: datetime, window_days: int = 14, *, task_family: str | None = None
+    ) -> SessionStats:
+        """Summarize verified outcomes for exactly one route.
+
+        ``task_family=None`` counts every row. A family counts only rows that
+        name exactly that family: rows without one (written before the field
+        existed, or by an importer) are in the all-families summary alone.
+        """
+        if task_family is not None and not task_family.strip():
+            raise ValueError("task_family must be a non-empty string when given")
+        return _summarize(
+            item
+            for item in self._window(now, window_days)
+            if item.route_id == route and (task_family is None or item.task_family == task_family)
+        )
 
     def summarize_pool(self, route: str, now: datetime, window_days: int = 14) -> SessionStats:
         """Combine aliases for the same model and catalog-defined backend pool."""
