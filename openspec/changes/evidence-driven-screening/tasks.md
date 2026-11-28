@@ -8,9 +8,9 @@
 ## 1. Queue
 
 - [ ] 1.1 The queue is keyed on the catalog's `owned_by` and `root`; the same id of a model is chosen in every run, and a model is not probed while either id holds a fresh proof. The design names which id the existing alias rule keeps. Verify: unit tests with a catalog that lists one model under two ids, over two runs, and a ladder test that the other id stays unproven.
-- [ ] 1.2 A route that does not declare tool support is skipped as `skipped_no_tools`. Verify: unit tests on the queue builder.
-- [ ] 1.3 The per-provider record over seven days, and the back-off with one probe after each period; the stored result kind decides what counts (pass, tool failure and model-not-served count; gateway refusals, rate limits, timeouts and 5xx do not). Verify: unit tests over a sequence of runs with a fake clock, including a refusal-only provider and a provider whose catalog is stale.
-- [ ] 1.4 Three tiers, ordered inside by the provider's pass rate and then the rating; one probe in eight for the third tier; a rescreen hint no longer outranks. Verify: unit tests with fixed inputs, including a provider with no record.
+- [x] 1.2 A route that does not declare tool support is skipped as `skipped_no_tools`. Verify: unit tests on the queue builder.
+- [x] 1.3 The per-provider record over seven days, and the back-off with one probe after each period; the stored result kind decides what counts (pass, tool failure and model-not-served count; gateway refusals, rate limits, timeouts and 5xx do not). Verify: unit tests over a sequence of runs with a fake clock, including a refusal-only provider and a provider whose catalog is stale.
+- [x] 1.4 Three tiers, ordered inside by the provider's pass rate and then the rating; one probe in eight for the third tier; a rescreen hint no longer outranks. Verify: unit tests with fixed inputs, including a provider with no record.
 - [ ] 1.5 At most two probes per run for a provider whose connections sign in as a person, read from the `authType` of the connection rows already used for capacity. Verify: unit tests with recorded connection rows, including a provider with both kinds of connection.
 
 ## 2. Evidence

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import time
-from collections import Counter, defaultdict
-from collections.abc import Callable, Mapping, Sequence
+from collections import Counter, defaultdict, deque
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -46,6 +46,14 @@ from verdict.prove_at_rest import (
     Prober,
     _cooled_pools,
     live_agentic_transport,
+)
+from verdict.screen_record import (
+    RECORD_FILE,
+    THIRD_GROUP_PROBE_SHARE,
+    ScreenRecord,
+    provider_record_report,
+    result_kind,
+    split_by_record,
 )
 
 _EXCLUDED_ROUTES_LIMIT = 100
@@ -204,6 +212,18 @@ def identify_models(
             evidence, metadata, identity_map, tool_proof, evidence.fetched_at
         ),
     }
+
+
+def _catalog_provider(route_id: str, evidence: OmniRouteEvidence) -> str:
+    """The provider the screen's record is kept under: the catalog row's ``owned_by``.
+
+    Only a route with no row (or a blank ``owned_by``) falls back to its id prefix,
+    as the roster join does.
+    """
+    owned = evidence.inventory_rows.get(route_id, {}).get("owned_by")
+    if isinstance(owned, str) and owned.strip():
+        return owned.strip()
+    return route_id.partition("/")[0]
 
 
 def _roster_routes(
@@ -385,13 +405,14 @@ def screen_models(
     candidates = [row["route_id"] for row in report["available_routes"]]
     rated = rank_models(candidates, metadata=metadata, identity_map=identity_map, now=clock())
 
-    # Task rating strongest first, unknown ratings last; rescreen-request
-    # hints only reorder routes. Capacity class never enters the sort key:
-    # price/capacity is excluded from selection ordering per the governing
-    # contract, and --capacity stays a membership filter only.
+    # Task rating strongest first, unknown ratings last. Capacity class never
+    # enters the sort key: price/capacity is excluded from selection ordering per
+    # the governing contract, and --capacity stays a membership filter only. A
+    # rescreen request makes a route a candidate (it bypasses skipped_fresh and
+    # skipped_no_tools) and no longer moves it ahead; the order is set by
+    # split_by_record below.
     cache.reload()
     requested = cache.rescreen_requests()
-    rated.sort(key=lambda rating: rating.route_id not in requested)
 
     # All configured, reachable supply is considered: inventory ids that are
     # live candidates but carry no traffic proof yet screen with an unknown
@@ -511,6 +532,7 @@ def screen_models(
     # shared lease before sending; another producer's in-flight job wins and
     # identify sends nothing.
     lock = _JobLock(cache.path.parent / "verified-refresh.lock")
+    record_path = cache.path.parent / RECORD_FILE
     if not lock.acquire():
         # The lease is held: report every candidate as skipped and send
         # nothing. Nothing was acquired, so there is nothing to release.
@@ -542,6 +564,8 @@ def screen_models(
             "model_calls": 0,
             "model_requests_sent": 0,
             "stopped_reason": stopped_reason,
+            # Read only: nothing was probed, so nothing is written.
+            "provider_record": provider_record_report(ScreenRecord.load(record_path), clock()),
             **(
                 _roster_report(
                     matches, rows, evidence, tool_proof=cache.routes(), observed_at=clock()
@@ -550,6 +574,9 @@ def screen_models(
                 else {}
             ),
         }
+    # Loaded only now that the lease is held: another screen may have added results
+    # since this run started, and this run saves the whole window after each probe.
+    record = ScreenRecord.load(record_path)
     pool_counts: Counter[str] = Counter()
     # Pools this screen saw refuse on account grounds (auth or payment, HTTP or
     # in-band), excluding route-scoped failures. A later route in the same pool
@@ -576,11 +603,15 @@ def screen_models(
         cache.reload()
         lookup = cache.lookup(route_id, now)
         if pool_round == 1:
-            if family in families:
+            # A pending rescreen request names this exact route, and only a probe
+            # consumes it. The request no longer moves the route ahead, so an alias
+            # of the same model may have been handled first; it must not starve it.
+            if family in families and route_id not in requested:
                 row.update(result="skipped_alias", alias_of=families[family])
                 return True
-            families[family] = route_id
+            families.setdefault(family, route_id)
         pool = backend_pool(route_id)
+        record_provider = _catalog_provider(route_id, evidence)
         # A fresh alias proof avoids repeating the same underlying model.
         siblings = [r for r in candidates if evidence.route_identities.get(r) == family]
         if route_id in refused_routes or family in refused_families:
@@ -591,6 +622,9 @@ def screen_models(
             agentic_capability(cache.entry(r), now)["qualified"] for r in [route_id, *siblings]
         ):
             row["result"] = "skipped_fresh"
+        elif not record.probe_allowed(record_provider, now):
+            # A provider with a week of counted results and no pass: one probe a day.
+            row["result"] = "skipped_backoff"
         elif provider in stopped_providers:
             row["result"] = "skipped_provider_stopped"
         elif pool in refused_pools:
@@ -625,6 +659,17 @@ def screen_models(
                 checked += 1
                 counts[provider] += 1
                 pool_counts[pool] += 1
+                # The entry's category is read for a failure only: for any other
+                # result no entry was written and the entry would be an older probe's.
+                probed_entry = cache.entry(route_id) if row["result"] == "fail" else None
+                probed_at = clock()
+                record.add(
+                    record_provider,
+                    route_id,
+                    result_kind(row["result"], probed_entry.category if probed_entry else None),
+                    probed_at,
+                )
+                record.save(probed_at)
             requests += row["turns_sent"]
             passed += int(row["result"] == "pass")
             if row["result"] == "rate_limited":
@@ -633,9 +678,40 @@ def screen_models(
                 refused_pools.add(pool)
         return True
 
+    def scheduled(now: datetime) -> Iterator[RatedModel]:
+        """The candidates in screen order, with the third group's share kept.
+
+        Order comes from the provider record (``split_by_record``). A roster screen
+        keeps its own oldest-evidence order and has no third group. While the third
+        group is not empty, the probe after ``THIRD_GROUP_PROBE_SHARE - 1`` others
+        comes from it: this reads ``checked`` after each candidate was handled, so
+        skipped candidates do not count as probes.
+        """
+        if matches is None:
+            first, third = split_by_record(
+                all_ratings,
+                route_id_of=lambda rating: rating.route_id,
+                admitted=frozenset(candidates),
+                provider_of=lambda route_id: _catalog_provider(route_id, evidence),
+                record=record,
+                now=now,
+            )
+        else:
+            first, third = list(all_ratings), []
+        pending_first, pending_third = deque(first), deque(third)
+        since_third = 0
+        while pending_first or pending_third:
+            from_third = bool(pending_third) and (
+                not pending_first or since_third >= THIRD_GROUP_PROBE_SHARE - 1
+            )
+            before = checked
+            yield (pending_third if from_third else pending_first).popleft()
+            if checked > before:
+                since_third = 0 if from_third else since_third + 1
+
     deferred: list[tuple[str, str, str, tuple[str, str], dict[str, Any]]] = []
     try:
-        for rating in all_ratings:
+        for rating in scheduled(clock()):
             route_id = rating.route_id
             if route_id in evidence.proven_by_traffic:
                 provider = evidence.proven_by_traffic[route_id].provider
@@ -709,6 +785,19 @@ def screen_models(
                 # a floor, and the route takes no alias, cap or pool slot.
                 row["result"] = "skipped_task_floor"
                 continue
+            if (
+                supports_tools is not True
+                and route_id in evidence.inventory_rows
+                and route_id not in requested
+            ):
+                # The catalog row does not declare tool calling (admission would drop
+                # the route for a worker node with the same reason), so a probe cannot
+                # make it usable. Same treatment as the floor above: no alias, cap or
+                # pool slot. A pending rescreen request is the exception: acceptance
+                # asked for this exact route to be proved again, and a hint is only
+                # consumed by a probe. A route with no catalog row is still probed.
+                row["result"] = "skipped_no_tools"
+                continue
             if not decide(route_id, provider, capacity, family, row, 1):
                 deferred.append((route_id, provider, capacity, family, row))
         pool_round = 1
@@ -736,6 +825,7 @@ def screen_models(
         "model_calls": requests,
         "model_requests_sent": requests,
         "stopped_reason": stopped_reason,
+        "provider_record": provider_record_report(record, clock()),
         **(
             _roster_report(matches, rows, evidence, tool_proof=cache.routes(), observed_at=clock())
             if matches is not None

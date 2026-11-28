@@ -207,6 +207,64 @@
  "model_calls": 12,
  "model_requests_sent": 12,
  "passed": 4,
+ "provider_record": {
+  "backoff_min_counted_results": 8,
+  "backoff_probe_interval_hours": 24.0,
+  "counted_kinds": [
+   "catalog_stale",
+   "not_found",
+   "pass",
+   "tool_failure"
+  ],
+  "error": null,
+  "providers": {
+   "agy": {
+    "backed_off": false,
+    "by_kind": {
+     "pass": 1
+    },
+    "counted_results": 1,
+    "last_probe_at": "2026-10-21T12:00:00+00:00",
+    "pass_rate": 1.0,
+    "passes": 1,
+    "probes": 1
+   },
+   "antigravity": {
+    "backed_off": false,
+    "by_kind": {
+     "pass": 1
+    },
+    "counted_results": 1,
+    "last_probe_at": "2026-10-21T12:00:00+00:00",
+    "pass_rate": 1.0,
+    "passes": 1,
+    "probes": 1
+   },
+   "cerebras": {
+    "backed_off": false,
+    "by_kind": {
+     "pass": 1
+    },
+    "counted_results": 1,
+    "last_probe_at": "2026-10-21T12:00:00+00:00",
+    "pass_rate": 1.0,
+    "passes": 1,
+    "probes": 1
+   },
+   "cf": {
+    "backed_off": false,
+    "by_kind": {
+     "pass": 1
+    },
+    "counted_results": 1,
+    "last_probe_at": "2026-10-21T12:00:00+00:00",
+    "pass_rate": 1.0,
+    "passes": 1,
+    "probes": 1
+   }
+  },
+  "window_days": 7
+ },
  "routes": [
   {
    "as_of": null,
@@ -320,7 +378,7 @@
    "metric": "aa_coding",
    "provider": "groq",
    "rescreen_requested": false,
-   "result": "skipped_cap",
+   "result": "skipped_no_tools",
    "route_id": "groq/tools-false",
    "score": null,
    "source": null,
@@ -340,7 +398,7 @@
    "metric": "aa_coding",
    "provider": "groq",
    "rescreen_requested": false,
-   "result": "skipped_cap",
+   "result": "skipped_no_tools",
    "route_id": "groq/tools-unknown",
    "score": null,
    "source": null,
